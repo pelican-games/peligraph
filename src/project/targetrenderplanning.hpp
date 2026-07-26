@@ -223,6 +223,10 @@ struct VulkanPhysicalScopePlan {
     VulkanPhysicalScopeKind kind =
         VulkanPhysicalScopeKind::rendering;
     std::vector<std::string> nodes;
+    // True when the nodes are verified to execute inside one Vulkan dynamic
+    // rendering instance. A multi-node scope may otherwise remain a logical
+    // scheduling group whose nodes each open their own rendering instance.
+    bool single_rendering_instance = false;
     std::vector<std::string> local_reads;
     std::vector<std::string> region_tags;
     std::uint32_t rasterization_samples = 1;
@@ -335,7 +339,9 @@ struct VulkanTargetPlanPinPackage {
 // A sparse, same-layer edit over the automatically compiled physical plan.
 // V1 permits conservative resource materialization, safe scope splitting,
 // verified alias groups, and capability-backed alternate image formats. V2
-// additionally permits verified per-node attachment load/store edits.
+// additionally permits verified per-node attachment load/store edits. V3
+// adds an explicit scope-edit mode so dependency-safe scheduling and
+// compatible rendering-scope fusion do not silently broaden older packages.
 struct VulkanPhysicalResourceFragment {
     std::string logical_resource;
     std::optional<std::string> format;
@@ -371,6 +377,14 @@ struct VulkanPhysicalAttachmentFragment {
         const VulkanPhysicalAttachmentFragment &) const = default;
 };
 
+enum class VulkanPhysicalScopeEditMode : std::uint8_t {
+    split_only,
+    dependency_safe,
+};
+
+std::string_view vulkanPhysicalScopeEditModeName(
+    VulkanPhysicalScopeEditMode mode);
+
 // Target-specific evidence for selecting a non-automatic image format from
 // a ResourcePattern. The target bridge snapshots these facts from the actual
 // device. A fragment cannot infer support from a format name alone.
@@ -389,6 +403,8 @@ struct VulkanPhysicalResourceFormatCapability {
 
 struct VulkanPhysicalFragmentPackage {
     std::uint32_t schema_version = 1;
+    VulkanPhysicalScopeEditMode scope_edit_mode =
+        VulkanPhysicalScopeEditMode::split_only;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;
     std::uint64_t automatic_plan_fingerprint = 0;

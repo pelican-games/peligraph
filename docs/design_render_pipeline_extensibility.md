@@ -53,8 +53,11 @@ RPE12b / WP204 Phase B v1 はその下へverified physical fragmentを追加し�
 alias groupだけをlinkし、logical/environment fingerprint、boundary、lifetime、feature
 closureを再検証する。後続sliceではrender targetが宣言した`format_candidates`から
 materialized-image formatを選び、実deviceのusage/sample/layer/external-depth capabilityを
-再検証してruntime generationへ適用する経路まで追加した。load/store、queue/barrier、
-scope fusionはaggressive follow-upまでcompiler-ownedに残す。
+再検証してruntime generationへ適用する経路まで追加した。さらにversion 3 fragmentで
+data/after/beforeを保つscope reorder、編集後lifetime、compatibleなsingle-sample
+materialized rendering scope fusionをruntime scheduleとdynamic renderingへ接続した。
+一般のload/store、queue/barrier、MSAA/external scope fusionはaggressive follow-upまで
+compiler-ownedに残す。
 
 関連文書:
 
@@ -941,6 +944,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE12b / WP204 transient-runtime slice（済 2026-07-26） | write-only attachmentの独立候補、device/format gate、runtime storage mode | automatic Store discard、transient usage、lazy-memory preference、OpenXR OFF/ON |
 | RPE12b / WP204 tile-local-runtime slice（済 2026-07-26） | same-pixel read、physical scope fusion、dynamic rendering local read | input-attachment shader ABI、single-view/multiview、materialized fallback |
 | RPE12b / WP204 alias-runtime slice（済 2026-07-26） | lifetime非重複imageのruntime group、VMA allocation共有、alias memory dependency | variant完全合意、generation分離、rollback/recreate、headless実描画 |
+| RPE12b / WP204 dependency-safe-scope slice（済 2026-07-26） | version 3 scope mode、dependency-preserving reorder、materialized scope fusion | lifetime再計算、physical-order scheduler、単一dynamic-rendering instance、compute/render headless hot reload、multiview回帰 |
 
 ### 12.1 いま着手する範囲
 
@@ -1025,6 +1029,13 @@ lifetimeが重ならないcolor attachment + sampled resourceを対象にする�
 同じgroupへ完全合意した場合だけ、別VkImageを一つのVMA allocationへbindする。
 registration generation固有token、shared allocation ownership、alias切替memory dependencyにより、
 hot reload candidate、rollback、deferred retire、同extent再生成を既存generation境界へ統合した。
+dependency-safe-scope sliceではphysical fragmentをversion 3へ上げ、旧versionのsplit-only意味を
+維持したまま`scope_edit_mode`を追加した。linkerはdata edgeと明示`after` / `before`を証明し、
+新しい物理順でresource lifetimeとalias legalityを再計算する。互換な内部single-sample
+materialized attachmentだけは一つのdynamic rendering instanceへ融合し、scheduler/barrier/
+sprite anchorは元node indexでなく実行済みphysical orderを参照する。attachment Loadはlogical
+shadow graphでも分離read/writeではなくversioned read-write useになり、手動fixtureと実configの
+意味を一致させた。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
@@ -1033,7 +1044,7 @@ hot reload candidate、rollback、deferred retire、同extent再生成を既存g
 - OIT の方式選定
 - `PassInfo` の未知 custom pass kind ABI
 - public `GraphVariantProvider` の ABI 凍結
-- 一般のload-store / scope-fusion / queue-barrier physical fragment
+- MSAA/external/異種attachmentを含む一般scope-fusion、load-store / queue-barrier physical fragment
 - complete raw physical plan の公開形式
 - `NativeScope` の game-DLL ABI
 - bindless / GPU-driven sort
@@ -1045,8 +1056,8 @@ hot reload candidate、rollback、deferred retire、同extent再生成を既存g
 backend candidateだけを固定するWP204 Phase Aのpinと、自動planへ安全な部分編集を戻す
 Phase B v1 fragment、宣言済み候補からdevice検証済みmaterialized-image formatを選ぶ
 runtime slice、verified attachment operation、write-only transient、same-pixel tile-local、
-materialized image alias runtimeは実装済みである。
-それより強い一般のload-store / scope-fusion / queue-barrier、
+materialized image alias runtime、dependency-safe reorderと限定materialized scope fusionは
+実装済みである。それより強い一般のload-store / MSAA・external scope-fusion / queue-barrier、
 complete raw plan、`NativeScope`は、現在のverifierを
 具体的な利用要求と対象GPU fixtureで拡張してから公開形式・ABIを凍結する。
 Vulkan physical plan と `NativeScope` という入口自体は本設計で予約済みであり、

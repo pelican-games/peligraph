@@ -369,7 +369,7 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
     REQUIRE(
         ejectVulkanPhysicalFragmentPackage(
             *compilation.plans.front())
-            .schema_version == 2);
+            .schema_version == 3);
 }
 
 TEST_CASE("rendering target bridge links attachment operations into the physical plan",

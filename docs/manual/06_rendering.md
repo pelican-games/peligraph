@@ -359,12 +359,12 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 
 v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
 
-### Vulkan physical fragment v1 / v2
+### Vulkan physical fragment v1 / v2 / v3
 
 `physical_target_plan.ejectable_physical_fragment`を丸ごとコピーし、対応するvariantの`vulkan_physical_fragments`へ貼ります。
-attachment契約を持つ現在のrender graphはversion 2をejectします。version 1は
-resource/scope/aliasだけを扱う既存packageとして引き続き読めますが、`attachments`は
-version 2だけのfieldです。
+現在はversion 3をejectします。version 1はresource/scope/alias、version 2はさらに
+attachment load/storeを扱う既存packageとして引き続き読めます。version 3は
+`scope_edit_mode`を追加し、古いpackageの意味を広げずに依存関係を保つscope編集を選べます。
 
 ```json
 {
@@ -372,7 +372,8 @@ version 2だけのfieldです。
     "flat": [
       {
         "schema": "pelican.vulkan_physical_fragment",
-        "version": 2,
+        "version": 3,
+        "scope_edit_mode": "dependency_safe",
         "graph": "main",
         "logical_graph_fingerprint": "fnv1a64:0123456789abcdef",
         "automatic_plan_fingerprint": "fnv1a64:fedcba9876543210",
@@ -429,20 +430,35 @@ link時には、対象deviceのrequired image usage（historyなら`TRANSFER_DST
 sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を再照合します。
 候補未宣言、非`materialized_image`、device非対応の変更はfallbackせずrejectされます。
 
-v1/v2 verifierが許可する編集は次です。
+全versionで共通して許可する編集は次です。
 
 - resource representationの維持、または自動`tile_local_attachment` / `transient_attachment`から`materialized_image`への保守的な変更
 - 自動planが選んだformatの保持、または`format_candidates`で宣言され、実device capabilityを満たす`materialized_image` formatへの変更
-- 自動scopeをさらに分けるexact ordered partition。tile-local値が新しいscope境界をまたぐ場合は、そのresourceを先にmaterializeする
 - format、representation、sample count、view layout、extentが一致し、論理lifetimeが重ならないresourceだけのalias group
-- v2では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
+- v2以降では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
   `load_op`は`load|clear|discard`、`store_op`は`store|discard`で、未記述fieldは自動planを維持する
+
+scope編集の意味はversionごとに異なります。
+
+- v1/v2、またはv3の`scope_edit_mode: "split_only"`は、自動scopeをさらに分ける
+  exact ordered partitionだけを許可します。tile-local値が新しい境界をまたぐ場合は、その
+  resourceを先にmaterializeします。
+- v3の`scope_edit_mode: "dependency_safe"`は、data edgeと明示`after` / `before`をすべて
+  保つ範囲でnode/scopeを並べ替えられます。宣言順はcorrectness根拠にしませんが、
+  feature compositionが通常pass列へ追加した明示`after`も消せません。
+- 並べ替え後はresource lifetimeを新しい物理順序から再計算し、手書きalias groupをその
+  lifetimeへ再照合します。
+- 異なる自動scopeの融合は、内部`materialized_image`だけを使うsingle-sample rendering
+  scopeに限定します。kind、view実行、ordered color/depth attachmentが一致し、2番目以降が
+  Load、最後以外がStoreでなければrejectされます。成立したscopeは一つのVulkan dynamic
+  rendering instanceとして実行されます。swapchain、UI/ImGui、MSAA、異なるattachment集合、
+  sampled/storage/transfer依存を含む融合はまだ受理しません。
 
 貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentはstale errorとなり、部分的に推測して修復しません。
 
 同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
 
-v2のattachment編集はlogical dependencyを壊せません。論理readを持つattachmentは必ず
+v2/v3のattachment編集はlogical dependencyを壊せません。論理readを持つattachmentは必ず
 `load`、readを持たないattachmentは`load`にできません。編集対象は現在
 `materialized_image`またはexternal targetに限定されます。`store`から`discard`への変更は、
 別MSAA resolveが論理値を保存し、そのmultisample surfaceを後続attachmentがloadしない場合だけ
@@ -461,8 +477,9 @@ allocation共有だけを無効化します。実行時はgroup内でも別々�
 共有します。hot reload candidateはgeneration固有groupなので、旧in-flight imageとは共有しません。
 
 まだ受理しないのはphysical fragmentによる`materialized_image`からtile-localへの攻めた変更、
-別の自動scope同士の融合/reorder、一般のmaterialized single-sample surfaceに対する
-store elision、barrier、queue、任意Vulkan flagです。production runtimeが実行する
+MSAA・external・異なるattachment集合をまたぐscope融合、依存関係を破るreorder、一般の
+materialized single-sample surfaceに対するstore elision、barrier、queue、任意Vulkan flagです。
+production runtimeが実行する
 非materialized imageは、上記のwrite-only `transient_attachment`と、verified
 same-pixel fullscreen subsetの`tile_local_attachment`です。alias runtimeは現在、
 color attachment + sampled用途のmaterialized imageだけを対象とし、MSAA、history、depth、

@@ -25,20 +25,20 @@ DECLARE_MODULE(RenderPassExecutor) {
                  const RenderPassExecutorDependencies &dependencies,
                  RenderTargetLayoutTracker &layout_tracker,
                  RenderPassViewInvocation invocation = {}) const;
-    void beginLocalReadScope(
+    void beginRenderingScope(
         const FrameRenderContext &frame,
         std::span<const CompiledPass *const> passes,
         const RenderPassExecutorDependencies &dependencies,
         RenderTargetLayoutTracker &layout_tracker,
         RenderPassViewInvocation invocation = {}) const;
-    void executeLocalReadPass(
+    void executeRenderingScopePass(
         const FrameRenderContext &frame,
         const CompiledPass &pass,
         const RenderPassExecutorDependencies &dependencies,
         RenderPassViewInvocation invocation = {}) const;
-    void localReadDependency(
+    void renderingScopeDependency(
         vk::CommandBuffer cmd_buf) const;
-    void endLocalReadScope(
+    void endRenderingScope(
         vk::CommandBuffer cmd_buf) const;
 };
 

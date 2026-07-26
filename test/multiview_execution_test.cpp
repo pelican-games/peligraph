@@ -985,7 +985,8 @@ TEST_CASE(
     local_command->draw(3, 1, 0, 0);
 
     GET_MODULE(RenderPassExecutor)
-        .localReadDependency(*local_command);
+        .renderingScopeDependency(
+            *local_command);
     set_local_mappings(
         {unusedPhysicalAttachmentMapping, 0},
         {0, unusedPhysicalAttachmentMapping});

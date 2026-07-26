@@ -639,6 +639,121 @@ TEST_CASE("logical shadow adapter preserves declared read footprints",
         std::runtime_error);
 }
 
+TEST_CASE(
+    "logical shadow adapter models attachment Load as one versioned read-write use",
+    "[logical-render-graph][shadow][attachment][read-write]") {
+    const auto registry =
+        makeBuiltinLogicalTypeRegistry();
+    const FrameGraphDefinition source{
+        .name = "attachment_read_write",
+        .declared_resources = {
+            "scene_color"},
+        .nodes = {
+            FrameGraphNodeDefinition{
+                .name = "base",
+                .kind =
+                    FramePlanNodeKind::render,
+                .declaration_index = 0,
+                .writes = {"scene_color"},
+                .attachments = {{
+                    .resource = "scene_color",
+                    .load_op =
+                        FrameGraphAttachmentLoadOp::
+                            clear,
+                    .store_op =
+                        FrameGraphAttachmentStoreOp::
+                            store,
+                }},
+            },
+            FrameGraphNodeDefinition{
+                .name = "overlay",
+                .kind =
+                    FramePlanNodeKind::render,
+                .declaration_index = 1,
+                .reads = {"scene_color"},
+                .read_footprints = {{
+                    "scene_color",
+                    {
+                        LogicalReadFootprintKind::
+                            same_pixel,
+                        std::nullopt,
+                    },
+                }},
+                .writes = {"scene_color"},
+                .attachments = {{
+                    .resource = "scene_color",
+                    .load_op =
+                        FrameGraphAttachmentLoadOp::
+                            load,
+                    .store_op =
+                        FrameGraphAttachmentStoreOp::
+                            store,
+                }},
+            },
+            FrameGraphNodeDefinition{
+                .name = "present",
+                .kind =
+                    FramePlanNodeKind::render,
+                .declaration_index = 2,
+                .reads = {"scene_color"},
+                .writes = {"swapchain"},
+            },
+        },
+    };
+
+    const auto graph =
+        compileLogicalFrameGraphShadow(
+            source, registry);
+    const auto &overlay =
+        graph.nodes.at(1);
+    REQUIRE(overlay.uses.size() == 1);
+    REQUIRE(overlay.ports.size() == 1);
+    REQUIRE(
+        overlay.ports.front().direction ==
+        LogicalPortDirection::input_output);
+    const auto &use = overlay.uses.front();
+    REQUIRE(
+        use.access ==
+        LogicalAccessMode::read_write);
+    REQUIRE(
+        use.intent ==
+        LogicalAccessIntent::attachment);
+    REQUIRE(
+        use.footprint.kind ==
+        LogicalReadFootprintKind::same_pixel);
+    REQUIRE(
+        use.input_value ==
+        LogicalValueId{"scene_color", 1});
+    REQUIRE(
+        use.output_value ==
+        LogicalValueId{"scene_color", 2});
+
+    const auto edges =
+        deriveLogicalDataEdges(graph);
+    REQUIRE(std::any_of(
+        edges.begin(), edges.end(),
+        [](const auto &edge) {
+            return edge.producer_node ==
+                       "base" &&
+                   edge.consumer_node ==
+                       "overlay" &&
+                   edge.value ==
+                       LogicalValueId{
+                           "scene_color", 1};
+        }));
+    REQUIRE(std::any_of(
+        edges.begin(), edges.end(),
+        [](const auto &edge) {
+            return edge.producer_node ==
+                       "overlay" &&
+                   edge.consumer_node ==
+                       "present" &&
+                   edge.value ==
+                       LogicalValueId{
+                           "scene_color", 2};
+        }));
+}
+
 TEST_CASE("legacy frame graph compiles to a diagnostic-only logical shadow",
           "[logical-render-graph][shadow]") {
     const auto registry = makeBuiltinLogicalTypeRegistry();

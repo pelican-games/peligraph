@@ -72,14 +72,14 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP | 内容 | 状態 |
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
-| WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias runtime実装済み・aggressive scope/queueと実機GPU gate待ち |
+| WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias + dependency-safe reorder/fusion runtime実装済み・general scope/queueと実機GPU gate待ち |
 
-WP204 の現在の runtime slice を閉じた後の描画候補は次。番号は実装順を固定するための
+WP204 の dependency-safe scope execution slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
 
 | 候補 | 内容 | 状態 |
 |---|---|---|
-| WP205 | public shadow contract + B-layer shadow reception | 計画済み・WP204 closure待ち |
+| WP205 | public shadow contract + B-layer shadow reception | 次着手・計画済み |
 | WP206a | stable draw tag/filter | 計画済み |
 | WP206b | pass-local material variant / multipass route | 計画済み・WP206a依存 |
 | WP207a | compute Frame/Light + sampled resource port | 計画済み |
@@ -273,13 +273,31 @@ XR2b最終gateを満たす。
    `Undefined`から必要layoutへ遷移する。headless Vulkanでallocation共有、barrier、画素、
    candidate publish/rollback、再生成を検証した。
 
+**Phase B v3 follow-up — dependency-safe physical scope execution(実装済み 2026-07-26)**:
+
+1. physical fragment version 3へ`scope_edit_mode: split_only|dependency_safe`を追加した。
+   version 1/2は従来のsplit-only意味を維持し、ejectはversion 3を生成する。
+2. logical data edgeと明示`after` / `before`を保つnode/scope reorderだけを受理し、
+   編集後のphysical orderからresource lifetimeを再計算してalias groupを再検証する。
+3. internal、single-sample、materialized、同一attachment/view契約のrender scopeを、
+   Load/Store条件を守る一つのdynamic rendering instanceへ限定的に融合できる。
+   tile-local local-readは同じ広いfusion契約のsubsetとして維持する。
+4. scheduler/runtimeは元node indexの連続性を仮定せず、scope membershipと実行済みnodeで
+   barrier、timing、sprite直前出力を解決する。sequential XRのview別recordingでも同じである。
+5. logical adapterはLoad attachmentを同一resourceの`read_write` version edgeとして表現し、
+   実config hot reloadとCPU fixtureの意味を統一した。
+6. CPU contract、headless Vulkan reorder/fusion、synthetic multiview、tile-local回帰を通過した。
+   詳細は
+   [`design_reviews/2026-07-26_wp204_scope_execution_report.md`](design_reviews/2026-07-26_wp204_scope_execution_report.md)。
+
 **残る WP204 後続**:
 
-1. automatic scopeをまたぐfusion/reorder、一般のmaterialized single-sample store elision、
-   queue/barrierを扱うaggressive physical fragment
-2. MSAA/history/depth/storage/transfer/bufferまで含むalias範囲の拡張と、対象tile GPU /
+1. MSAA/external/異なるattachment集合を含むscope union、arbitrary sampled/storage/transfer
+   dependencyのscope内同期、一般のmaterialized store elision
+2. queue family/queue assignment、手動barrier/event/semaphoreを扱うaggressive fragment
+3. MSAA/history/depth/storage/transfer/bufferまで含むalias範囲の拡張と、対象tile GPU /
    XR実機での性能・validation gate
-3. open external boundary、complete raw physical plan、`NativeScope`
+4. open external boundary、complete raw physical plan、`NativeScope`
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 

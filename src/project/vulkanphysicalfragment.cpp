@@ -14,12 +14,26 @@
 #include <nlohmann/json.hpp>
 
 namespace Pelican {
+
+std::string_view vulkanPhysicalScopeEditModeName(
+    VulkanPhysicalScopeEditMode mode) {
+    switch (mode) {
+    case VulkanPhysicalScopeEditMode::split_only:
+        return "split_only";
+    case VulkanPhysicalScopeEditMode::dependency_safe:
+        return "dependency_safe";
+    }
+    throw std::runtime_error(
+        "unknown Vulkan physical scope edit mode");
+}
+
 namespace {
 
 constexpr std::string_view kFragmentSchema =
     "pelican.vulkan_physical_fragment";
 constexpr std::uint32_t kFragmentVersionV1 = 1;
 constexpr std::uint32_t kFragmentVersionV2 = 2;
+constexpr std::uint32_t kFragmentVersionV3 = 3;
 constexpr std::string_view kSampledImageCapability =
     "pelican.vulkan.sampled_image@1";
 constexpr std::string_view kStorageBufferCapability =
@@ -154,6 +168,19 @@ VulkanPhysicalAttachmentStoreOp parseAttachmentStoreOp(
         std::string{value});
 }
 
+VulkanPhysicalScopeEditMode parseScopeEditMode(
+    std::string_view value) {
+    if (value == "split_only") {
+        return VulkanPhysicalScopeEditMode::split_only;
+    }
+    if (value == "dependency_safe") {
+        return VulkanPhysicalScopeEditMode::dependency_safe;
+    }
+    throw std::runtime_error(
+        "Vulkan physical fragment has unknown scope_edit_mode: " +
+        std::string{value});
+}
+
 template <typename Range>
 void requireNoDuplicateStrings(
     const Range &values, std::string_view context) {
@@ -184,9 +211,17 @@ void sortAndUniqueCapabilities(
 VulkanPhysicalFragmentPackage canonicalizePackage(
     VulkanPhysicalFragmentPackage package) {
     if (package.schema_version != kFragmentVersionV1 &&
-        package.schema_version != kFragmentVersionV2) {
+        package.schema_version != kFragmentVersionV2 &&
+        package.schema_version != kFragmentVersionV3) {
         throw std::runtime_error(
-            "Vulkan physical fragment package version must be 1 or 2");
+            "Vulkan physical fragment package version must be 1, 2, or 3");
+    }
+    if (package.schema_version < kFragmentVersionV3 &&
+        package.scope_edit_mode !=
+            VulkanPhysicalScopeEditMode::split_only) {
+        throw std::runtime_error(
+            "Vulkan physical fragment dependency-safe scope edits "
+            "require package version 3");
     }
     requireNonEmpty(package.graph,
                     "Vulkan physical fragment graph");
@@ -289,10 +324,10 @@ VulkanPhysicalFragmentPackage canonicalizePackage(
     }
 
     if (package.attachments) {
-        if (package.schema_version != kFragmentVersionV2) {
+        if (package.schema_version < kFragmentVersionV2) {
             throw std::runtime_error(
                 "Vulkan physical attachment fragments require package "
-                "version 2");
+                "version 2 or newer");
         }
         for (const auto &attachment : *package.attachments) {
             requireNonEmpty(
@@ -401,6 +436,8 @@ nlohmann::ordered_json physicalScopeToJson(
         {"id", scope.id},
         {"kind", vulkanPhysicalScopeKindName(scope.kind)},
         {"nodes", scope.nodes},
+        {"single_rendering_instance",
+         scope.single_rendering_instance},
         {"local_reads", scope.local_reads},
         {"region_tags", scope.region_tags},
         {"rasterization_samples",
@@ -903,19 +940,255 @@ void validateAliasGroups(
     }
 }
 
+using ScopeAttachmentContract =
+    std::vector<std::pair<
+        std::string,
+        VulkanPhysicalAttachmentAspect>>;
+
+ScopeAttachmentContract scopeAttachmentContract(
+    const VulkanTargetPlan &plan,
+    std::string_view node) {
+    ScopeAttachmentContract result;
+    for (const auto &attachment : plan.attachments) {
+        if (attachment.node == node) {
+            result.emplace_back(
+                attachment.logical_resource,
+                attachment.aspect);
+        }
+    }
+    return result;
+}
+
+void validateDependencySafeNodeOrder(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    const std::map<std::string, std::size_t, std::less<>>
+        &position) {
+    const auto require_before =
+        [&](std::string_view source,
+            std::string_view destination,
+            std::string_view dependency_kind) {
+            if (source == destination) return;
+            const auto from = position.find(source);
+            const auto to = position.find(destination);
+            if (from == position.end() ||
+                to == position.end()) {
+                throw std::runtime_error(
+                    "Vulkan physical scope partition lost a " +
+                    std::string{dependency_kind} +
+                    " dependency endpoint: " +
+                    std::string{source} + " -> " +
+                    std::string{destination});
+            }
+            if (from->second >= to->second) {
+                throw std::runtime_error(
+                    "Vulkan physical dependency-safe scope order "
+                    "reverses " +
+                    std::string{dependency_kind} +
+                    " dependency: " +
+                    std::string{source} + " -> " +
+                    std::string{destination});
+            }
+        };
+
+    for (const auto &edge :
+         deriveLogicalDataEdges(canonical_graph)) {
+        require_before(
+            edge.producer_node,
+            edge.consumer_node,
+            "data");
+    }
+    for (const auto &node : canonical_graph.nodes) {
+        for (const auto &dependency : node.after) {
+            require_before(
+                dependency, node.name, "after");
+        }
+        for (const auto &dependent : node.before) {
+            require_before(
+                node.name, dependent, "before");
+        }
+    }
+}
+
+void validateCompatibleRenderingScopeFusion(
+    const VulkanTargetPlan &plan,
+    const VulkanPhysicalScopeFragment &fragment,
+    const std::set<std::size_t> &automatic_scope_indices) {
+    if (automatic_scope_indices.size() < 2) return;
+
+    const auto &first =
+        plan.scopes[*automatic_scope_indices.begin()];
+    if (first.kind !=
+            VulkanPhysicalScopeKind::rendering ||
+        first.rasterization_samples != 1 ||
+        !first.local_reads.empty()) {
+        throw std::runtime_error(
+            "Vulkan physical dependency-safe scope fusion currently "
+            "requires materialized single-sample rendering scopes: " +
+            fragment.id);
+    }
+    for (const auto scope_index :
+         automatic_scope_indices) {
+        const auto &candidate =
+            plan.scopes[scope_index];
+        if (candidate.kind != first.kind ||
+            candidate.rasterization_samples !=
+                first.rasterization_samples ||
+            candidate.view_execution !=
+                first.view_execution ||
+            candidate.view_count != first.view_count ||
+            candidate.execution_count !=
+                first.execution_count ||
+            candidate.view_mask != first.view_mask ||
+            !candidate.local_reads.empty()) {
+            throw std::runtime_error(
+                "Vulkan physical dependency-safe scope fusion has "
+                "incompatible kind/sample/view contracts: " +
+                fragment.id);
+        }
+    }
+
+    ScopeAttachmentContract expected;
+    bool first_node = true;
+    std::map<std::string,
+             const VulkanPhysicalResourcePlan *,
+             std::less<>>
+        resources;
+    for (const auto &resource : plan.resources) {
+        resources.emplace(
+            resource.logical_resource, &resource);
+    }
+    for (const auto &node : fragment.nodes) {
+        const auto contract =
+            scopeAttachmentContract(plan, node);
+        if (contract.empty()) {
+            throw std::runtime_error(
+                "Vulkan physical dependency-safe rendering-scope "
+                "fusion requires at least one attachment per node: " +
+                node);
+        }
+        if (first_node) {
+            expected = contract;
+            first_node = false;
+        } else if (contract != expected) {
+            throw std::runtime_error(
+                "Vulkan physical dependency-safe rendering-scope "
+                "fusion requires identical ordered attachments: " +
+                fragment.id);
+        }
+        for (const auto &[resource, aspect] : contract) {
+            (void)aspect;
+            const auto found = resources.find(resource);
+            if (found == resources.end() ||
+                found->second->representation !=
+                    VulkanResourceRepresentation::
+                        materialized_image) {
+                throw std::runtime_error(
+                    "Vulkan physical dependency-safe rendering-scope "
+                    "fusion requires internal materialized images: " +
+                    resource);
+            }
+        }
+    }
+}
+
+void recomputePhysicalResourceLifetimes(
+    VulkanTargetPlan &plan) {
+    std::map<std::string,
+             TargetLoweringResource *,
+             std::less<>>
+        resources;
+    for (auto &resource :
+         plan.lowering_graph.resources) {
+        resource.lifetime = {};
+        resources.emplace(
+            resource.logical.name, &resource);
+    }
+    const auto include =
+        [&](std::string_view name,
+            std::size_t position) {
+            const auto found = resources.find(name);
+            if (found == resources.end()) return;
+            auto &lifetime =
+                found->second->lifetime;
+            if (!lifetime.used) {
+                lifetime = {
+                    true, position, position};
+            } else {
+                lifetime.first_use =
+                    std::min(
+                        lifetime.first_use,
+                        position);
+                lifetime.last_use =
+                    std::max(
+                        lifetime.last_use,
+                        position);
+            }
+        };
+    for (std::size_t node_index = 0;
+         node_index <
+         plan.lowering_graph.nodes.size();
+         ++node_index) {
+        for (const auto &use :
+             plan.lowering_graph.nodes[node_index]
+                 .logical.uses) {
+            if (use.input_value) {
+                include(
+                    use.input_value->resource,
+                    node_index);
+            }
+            if (use.output_value) {
+                include(
+                    use.output_value->resource,
+                    node_index);
+            }
+        }
+    }
+    if (!plan.lowering_graph.nodes.empty()) {
+        const auto terminal =
+            plan.lowering_graph.nodes.size() - 1;
+        for (auto &[name, resource] :
+             resources) {
+            (void)name;
+            if (!resource->lifetime.used) continue;
+            if (resource->logical.materialization ==
+                    LogicalMaterializationRequirement::
+                        required ||
+                resource->logical.materialization ==
+                    LogicalMaterializationRequirement::
+                        external ||
+                resource->pattern.require_store) {
+                resource->lifetime.last_use =
+                    terminal;
+            }
+        }
+    }
+    for (auto &physical : plan.resources) {
+        const auto found =
+            resources.find(
+                physical.logical_resource);
+        if (found != resources.end()) {
+            physical.lifetime =
+                found->second->lifetime;
+        }
+    }
+}
+
 void applyScopePartition(
+    const CompiledLogicalRenderGraph &canonical_graph,
     VulkanTargetPlan &plan,
     const std::vector<VulkanPhysicalScopeFragment>
-        &fragments) {
+        &fragments,
+    VulkanPhysicalScopeEditMode edit_mode) {
     std::vector<std::string> canonical_nodes;
     canonical_nodes.reserve(plan.lowering_graph.nodes.size());
     std::map<std::string,
-             const TargetLoweringNode *, std::less<>>
-        lowering_nodes;
+             std::size_t, std::less<>>
+        lowering_node_indices;
     for (const auto &node : plan.lowering_graph.nodes) {
         canonical_nodes.push_back(node.logical.name);
-        lowering_nodes.emplace(
-            node.logical.name, &node);
+        lowering_node_indices.emplace(
+            node.logical.name,
+            canonical_nodes.size() - 1);
     }
 
     std::map<std::string, std::size_t, std::less<>>
@@ -952,6 +1225,8 @@ void applyScopePartition(
                 "node: " +
                 fragment.nodes.front());
         }
+        std::set<std::size_t>
+            source_scope_indices;
         for (const auto &node : fragment.nodes) {
             const auto found =
                 automatic_scope_by_node.find(node);
@@ -961,7 +1236,12 @@ void applyScopePartition(
                     "unknown node: " +
                     node);
             }
-            if (found->second != first->second) {
+            source_scope_indices.insert(
+                found->second);
+            if (edit_mode ==
+                    VulkanPhysicalScopeEditMode::
+                        split_only &&
+                found->second != first->second) {
                 throw std::runtime_error(
                     "Vulkan physical fragments may split an "
                     "automatic scope but cannot fuse nodes from "
@@ -969,16 +1249,26 @@ void applyScopePartition(
                     fragment.id);
             }
         }
+        if (source_scope_indices.size() > 1) {
+            validateCompatibleRenderingScopeFusion(
+                plan, fragment,
+                source_scope_indices);
+        }
 
         auto scope = plan.scopes[first->second];
         scope.id = fragment.id;
         scope.nodes = fragment.nodes;
+        scope.single_rendering_instance =
+            fragment.nodes.size() > 1 &&
+            (source_scope_indices.size() > 1 ||
+             scope.single_rendering_instance);
         scope.local_reads.clear();
         scope.region_tags.clear();
         for (const auto &node : fragment.nodes) {
             const auto lowering =
-                lowering_nodes.find(node);
-            if (lowering == lowering_nodes.end()) {
+                lowering_node_indices.find(node);
+            if (lowering ==
+                lowering_node_indices.end()) {
                 throw std::runtime_error(
                     "Vulkan physical scope fragment node is absent "
                     "from lowering graph: " +
@@ -986,8 +1276,12 @@ void applyScopePartition(
             }
             scope.region_tags.insert(
                 scope.region_tags.end(),
-                lowering->second->logical.region_tags.begin(),
-                lowering->second->logical.region_tags.end());
+                plan.lowering_graph
+                    .nodes[lowering->second]
+                    .logical.region_tags.begin(),
+                plan.lowering_graph
+                    .nodes[lowering->second]
+                    .logical.region_tags.end());
         }
         std::sort(
             scope.region_tags.begin(),
@@ -999,13 +1293,65 @@ void applyScopePartition(
             scope.region_tags.end());
         scopes.push_back(std::move(scope));
     }
-    if (authored_nodes != canonical_nodes) {
+    std::map<std::string, std::size_t, std::less<>>
+        authored_position;
+    for (std::size_t index = 0;
+         index < authored_nodes.size(); ++index) {
+        if (!lowering_node_indices.contains(
+                authored_nodes[index])) {
+            throw std::runtime_error(
+                "Vulkan physical scope fragment names an unknown "
+                "node: " +
+                authored_nodes[index]);
+        }
+        if (!authored_position
+                 .emplace(authored_nodes[index], index)
+                 .second) {
+            throw std::runtime_error(
+                "Vulkan physical scope fragments contain a node "
+                "more than once: " +
+                authored_nodes[index]);
+        }
+    }
+    if (authored_nodes.size() !=
+            canonical_nodes.size() ||
+        authored_position.size() !=
+            canonical_nodes.size()) {
         throw std::runtime_error(
-            "Vulkan physical scope fragments must form an exact, "
-            "ordered partition of the lowered graph nodes");
+            "Vulkan physical scope fragments must form an exact "
+            "partition of the lowered graph nodes");
+    }
+    if (edit_mode ==
+        VulkanPhysicalScopeEditMode::split_only) {
+        if (authored_nodes != canonical_nodes) {
+            throw std::runtime_error(
+                "Vulkan physical split-only scope fragments must "
+                "preserve lowered graph node order");
+        }
+    } else {
+        validateDependencySafeNodeOrder(
+            canonical_graph,
+            authored_position);
     }
 
     plan.scopes = std::move(scopes);
+    if (authored_nodes != canonical_nodes) {
+        std::vector<TargetLoweringNode>
+            reordered_nodes;
+        reordered_nodes.reserve(
+            authored_nodes.size());
+        for (const auto &node :
+             authored_nodes) {
+            reordered_nodes.push_back(
+                std::move(
+                    plan.lowering_graph.nodes[
+                        lowering_node_indices.at(
+                            node)]));
+        }
+        plan.lowering_graph.nodes =
+            std::move(reordered_nodes);
+    }
+    recomputePhysicalResourceLifetimes(plan);
 }
 
 void validateScopeResourceBoundaries(
@@ -1133,6 +1479,67 @@ void validateScopeResourceBoundaries(
     }
 }
 
+void validateMaterializedRenderingScopeOperations(
+    const VulkanTargetPlan &plan) {
+    if (plan.attachments.empty()) return;
+
+    for (const auto &scope : plan.scopes) {
+        if (!scope.single_rendering_instance ||
+            !scope.local_reads.empty()) {
+            continue;
+        }
+        ScopeAttachmentContract expected;
+        for (std::size_t node_index = 0;
+             node_index < scope.nodes.size();
+             ++node_index) {
+            const auto &node =
+                scope.nodes[node_index];
+            const auto contract =
+                scopeAttachmentContract(
+                    plan, node);
+            if (contract.empty()) {
+                throw std::runtime_error(
+                    "Vulkan physical materialized rendering scope "
+                    "has a node without attachments: " +
+                    node);
+            }
+            if (node_index == 0) {
+                expected = contract;
+            } else if (contract != expected) {
+                throw std::runtime_error(
+                    "Vulkan physical materialized rendering scope "
+                    "requires identical ordered attachments: " +
+                    scope.id);
+            }
+            for (const auto &attachment :
+                 plan.attachments) {
+                if (attachment.node != node) continue;
+                if (node_index > 0 &&
+                    attachment.load_op !=
+                        VulkanPhysicalAttachmentLoadOp::
+                            load) {
+                    throw std::runtime_error(
+                        "Vulkan physical fused rendering scope "
+                        "requires every later attachment to Load: " +
+                        node + " -> " +
+                        attachment.logical_resource);
+                }
+                if (node_index + 1 <
+                        scope.nodes.size() &&
+                    attachment.store_op !=
+                        VulkanPhysicalAttachmentStoreOp::
+                            store) {
+                    throw std::runtime_error(
+                        "Vulkan physical fused rendering scope "
+                        "requires every non-final attachment to Store: " +
+                        node + " -> " +
+                        attachment.logical_resource);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 void validateVulkanPhysicalAttachmentPlans(
@@ -1211,19 +1618,30 @@ void validateVulkanPhysicalAttachmentPlans(
                 attachment.node + " -> " +
                 attachment.logical_resource);
         }
-        const auto reads_existing =
+        const auto loads_existing_attachment =
             std::any_of(
                 found_node->second->uses.begin(),
                 found_node->second->uses.end(),
                 [&](const LogicalResourceUse &use) {
-                    return use.input_value &&
+                    return use.access ==
+                               LogicalAccessMode::read_write &&
+                           use.input_value &&
+                           use.output_value &&
                            use.input_value->resource ==
-                               attachment.logical_resource;
+                               attachment.logical_resource &&
+                           use.output_value->resource ==
+                               attachment.logical_resource &&
+                           use.footprint.kind ==
+                               LogicalReadFootprintKind::same_pixel &&
+                           (use.intent ==
+                                LogicalAccessIntent::automatic ||
+                            use.intent ==
+                                LogicalAccessIntent::attachment);
                 });
         const auto physically_loads =
             attachment.load_op ==
             VulkanPhysicalAttachmentLoadOp::load;
-        if (reads_existing != physically_loads) {
+        if (loads_existing_attachment != physically_loads) {
             throw std::runtime_error(
                 physically_loads
                     ? "Vulkan physical attachment Load has no "
@@ -1261,10 +1679,9 @@ ejectVulkanPhysicalFragmentPackage(
         "Vulkan target plan selected backend candidate");
 
     VulkanPhysicalFragmentPackage package{
-        .schema_version =
-            plan.attachments.empty()
-                ? kFragmentVersionV1
-                : kFragmentVersionV2,
+        .schema_version = kFragmentVersionV3,
+        .scope_edit_mode =
+            VulkanPhysicalScopeEditMode::dependency_safe,
         .graph = plan.graph,
         .logical_graph_fingerprint =
             plan.logical_graph_fingerprint,
@@ -1351,6 +1768,11 @@ vulkanPhysicalFragmentPackageToJson(
          package.backend_candidate},
         {"resources", nlohmann::ordered_json::array()},
     };
+    if (package.schema_version >= kFragmentVersionV3) {
+        result["scope_edit_mode"] =
+            vulkanPhysicalScopeEditModeName(
+                package.scope_edit_mode);
+    }
     for (const auto &resource : package.resources) {
         nlohmann::ordered_json entry{
             {"logical_resource",
@@ -1438,15 +1860,16 @@ vulkanPhysicalFragmentPackageFromJson(
         !version->is_number_integer()) {
         throw std::runtime_error(
             std::string{context} +
-            " version must be 1 or 2");
+            " version must be 1, 2, or 3");
     }
     const auto schema_version =
         version->get<std::int64_t>();
     if (schema_version != kFragmentVersionV1 &&
-        schema_version != kFragmentVersionV2) {
+        schema_version != kFragmentVersionV2 &&
+        schema_version != kFragmentVersionV3) {
         throw std::runtime_error(
             std::string{context} +
-            " version must be 1 or 2");
+            " version must be 1, 2, or 3");
     }
     if (schema_version == kFragmentVersionV1) {
         requireOnlyKeys(
@@ -1463,12 +1886,29 @@ vulkanPhysicalFragmentPackageFromJson(
                 "alias_groups",
             },
             context);
+    } else if (schema_version == kFragmentVersionV2) {
+        requireOnlyKeys(
+            document,
+            {
+                "schema",
+                "version",
+                "graph",
+                "logical_graph_fingerprint",
+                "automatic_plan_fingerprint",
+                "backend_candidate",
+                "resources",
+                "scopes",
+                "alias_groups",
+                "attachments",
+            },
+            context);
     } else {
         requireOnlyKeys(
             document,
             {
                 "schema",
                 "version",
+                "scope_edit_mode",
                 "graph",
                 "logical_graph_fingerprint",
                 "automatic_plan_fingerprint",
@@ -1485,6 +1925,15 @@ vulkanPhysicalFragmentPackageFromJson(
         .schema_version =
             static_cast<std::uint32_t>(
                 schema_version),
+        .scope_edit_mode =
+            schema_version >= kFragmentVersionV3
+                ? parseScopeEditMode(
+                      requireJsonString(
+                          document,
+                          "scope_edit_mode",
+                          context))
+                : VulkanPhysicalScopeEditMode::
+                      split_only,
         .graph =
             requireJsonString(
                 document, "graph", context),
@@ -1999,15 +2448,26 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
 
     if (package.scopes) {
         applyScopePartition(
-            automatic_plan, *package.scopes);
+            canonical_graph, automatic_plan,
+            *package.scopes,
+            package.scope_edit_mode);
         automatic_plan.decisions.push_back(
             PlanningDecision{
-                "pelican.plan.physical_scope_fragment@1",
+                package.scope_edit_mode ==
+                        VulkanPhysicalScopeEditMode::
+                            dependency_safe
+                    ? "pelican.plan.physical_scope_dependency_safe@1"
+                    : "pelican.plan.physical_scope_fragment@1",
                 automatic_plan.graph,
                 std::to_string(
                     automatic_plan.scopes.size()),
-                "same-layer fragment supplied a verified split-only "
-                "scope partition",
+                package.scope_edit_mode ==
+                        VulkanPhysicalScopeEditMode::
+                            dependency_safe
+                    ? "same-layer fragment supplied a dependency-safe "
+                      "scope order with compatible rendering fusion"
+                    : "same-layer fragment supplied a verified split-only "
+                      "scope partition",
             });
     }
     validateScopeResourceBoundaries(
@@ -2173,6 +2633,9 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                 });
         }
     }
+
+    validateMaterializedRenderingScopeOperations(
+        automatic_plan);
 
     automatic_plan.required_physical_features.clear();
     for (const auto &resource :

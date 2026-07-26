@@ -1173,6 +1173,7 @@ TEST_CASE(
         {
             .id = "geometry_lighting",
             .nodes = {"geometry", "lighting"},
+            .single_rendering_instance = true,
             .local_reads = {"gbuffer"},
         },
     };
@@ -1277,6 +1278,8 @@ TEST_CASE(
         geometry_contract.scope_color_clear_values);
 
     plan.scopes.front().local_reads.clear();
+    plan.scopes.front()
+        .single_rendering_instance = false;
     REQUIRE_THROWS_WITH(
         compileRenderingPassRuntime(
             definition,
@@ -1286,6 +1289,145 @@ TEST_CASE(
             }),
         Catch::Matchers::ContainsSubstring(
             "tile-local pass input is not declared"));
+}
+
+TEST_CASE(
+    "rendering pass runtime compiler materializes one dynamic-rendering instance for fused scopes",
+    "[renderingpass][physical-scope][materialized][fusion]") {
+    const GlobalRenderTargetId color{0};
+    const RenderTargetMetadataResolver metadata{
+        [=](GlobalRenderTargetId id) {
+            if (id != color) {
+                throw std::runtime_error(
+                    "unknown test render target");
+            }
+            return RenderTargetMetadata{
+                .name = "scene_color",
+                .usage =
+                    vk::ImageUsageFlagBits::
+                        eColorAttachment,
+                .format =
+                    vk::Format::eR8G8B8A8Unorm,
+                .extent = {64, 64},
+            };
+        }};
+
+    PassDefinition base;
+    base.name = "base";
+    base.pass_info = MaterialPassInfo{};
+    base.output_color = {color};
+
+    PassDefinition overlay;
+    overlay.name = "overlay";
+    overlay.pass_info = MaterialPassInfo{};
+    overlay.output_color = {color};
+    overlay.color_load_op =
+        vk::AttachmentLoadOp::eLoad;
+
+    const RenderingPassDefinition definition{
+        .name = "main",
+        .passes = {base, overlay},
+    };
+    VulkanTargetPlan plan;
+    plan.scopes = {
+        {
+            .id = "base_overlay",
+            .nodes = {"base", "overlay"},
+            .single_rendering_instance = true,
+        },
+    };
+    plan.attachments = {
+        {
+            .node = "base",
+            .logical_resource =
+                "scene_color",
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::
+                    clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::
+                    store,
+        },
+        {
+            .node = "overlay",
+            .logical_resource =
+                "scene_color",
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::
+                    load,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::
+                    store,
+        },
+    };
+
+    const auto compiled =
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata =
+                    &metadata,
+                .target_plan = &plan,
+            });
+    REQUIRE(compiled.passes.size() == 2);
+    REQUIRE(
+        compiled.passes[0].rendering
+            .fused_rendering_scope);
+    REQUIRE(
+        compiled.passes[1].rendering
+            .fused_rendering_scope);
+    REQUIRE_FALSE(
+        compiled.passes[0].rendering
+            .local_read_scope);
+    REQUIRE(
+        compiled.passes[0].rendering
+            .scope_color_attachment_operations ==
+        std::vector<PassAttachmentOperations>{
+            {
+                vk::AttachmentLoadOp::eClear,
+                vk::AttachmentStoreOp::eStore,
+            }});
+
+    auto multiview_plan = plan;
+    multiview_plan.view_execution_plan
+        .view_count = 2;
+    multiview_plan.view_execution_plan
+        .uses_multiview = true;
+    multiview_plan.scopes.front()
+        .view_execution =
+        VulkanScopeViewExecution::multiview;
+    multiview_plan.scopes.front()
+        .view_count = 2;
+    multiview_plan.scopes.front()
+        .execution_count = 1;
+    multiview_plan.scopes.front()
+        .view_mask = 0b11;
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata =
+                    &metadata,
+                .target_plan =
+                    &multiview_plan,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "unsupported production pass implementation: base"));
+
+    auto invalid = plan;
+    invalid.attachments[1].load_op =
+        VulkanPhysicalAttachmentLoadOp::
+            clear;
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata =
+                    &metadata,
+                .target_plan = &invalid,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "must Load every attachment"));
 }
 
 TEST_CASE(
@@ -1402,6 +1544,55 @@ TEST_CASE(
     REQUIRE(schedule[3].node_index == 1);
     REQUIRE(schedule[3].view_index == 1);
     REQUIRE(schedule[3].endsScopeExecution());
+}
+
+TEST_CASE(
+    "view-family scheduler follows dependency-verified physical order",
+    "[renderingpass][view-execution][schedule][reorder]") {
+    const std::vector<FrameGraphExecutionNode> nodes{
+        {.name = "A"},
+        {.name = "B"},
+        {.name = "C"},
+        {.name = "D"},
+    };
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 1;
+    plan.scopes = {
+        {
+            .id = "reordered",
+            .nodes = {"C"},
+        },
+        {
+            .id = "non_contiguous_fused",
+            .nodes = {"A", "D"},
+            .single_rendering_instance = true,
+        },
+        {
+            .id = "tail",
+            .nodes = {"B"},
+        },
+    };
+
+    const auto schedule =
+        buildLogicalFrameViewFamilySchedule(
+            nodes, plan, 1);
+    REQUIRE(schedule.size() == 4);
+    REQUIRE(
+        std::vector<std::size_t>{
+            schedule[0].node_index,
+            schedule[1].node_index,
+            schedule[2].node_index,
+            schedule[3].node_index} ==
+        std::vector<std::size_t>{2, 0, 3, 1});
+    REQUIRE(
+        schedule[1].beginsScopeExecution());
+    REQUIRE_FALSE(
+        schedule[1].endsScopeExecution());
+    REQUIRE(
+        schedule[2].endsScopeExecution());
+    REQUIRE(
+        schedule[1].scope_index ==
+        schedule[2].scope_index);
 }
 
 TEST_CASE(

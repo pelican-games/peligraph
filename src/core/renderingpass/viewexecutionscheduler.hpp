@@ -167,7 +167,8 @@ buildLogicalFrameViewFamilySchedule(
     }
 
     std::vector<LogicalFrameNodeInvocation> result;
-    std::size_t expected_node_index = 0;
+    std::vector<bool> scheduled_nodes(
+        nodes.size(), false);
     for (std::size_t scope_index = 0;
          scope_index < target_plan.scopes.size();
          ++scope_index) {
@@ -183,14 +184,14 @@ buildLogicalFrameViewFamilySchedule(
                     "is absent from the compiled frame graph: " +
                     name);
             }
-            if (found->second != expected_node_index) {
+            if (scheduled_nodes[found->second]) {
                 throw std::runtime_error(
-                    "physical target-plan scopes are not an exact "
-                    "ordered partition of the compiled frame graph at: " +
+                    "physical target-plan scopes schedule a compiled "
+                    "frame-graph node more than once: " +
                     name);
             }
+            scheduled_nodes[found->second] = true;
             scope_nodes.push_back(found->second);
-            ++expected_node_index;
         }
         const auto execution_count =
             scope.view_execution ==
@@ -231,18 +232,14 @@ buildLogicalFrameViewFamilySchedule(
             }
         }
     }
-    if (expected_node_index != nodes.size()) {
-        const auto &node =
-            nodes[expected_node_index];
-        if (!scope_by_node.contains(node.name)) {
+    for (std::size_t node_index = 0;
+         node_index < nodes.size(); ++node_index) {
+        if (!scheduled_nodes[node_index]) {
             throw std::runtime_error(
                 "physical target plan has no scope for frame-graph "
                 "node: " +
-                node.name);
+                nodes[node_index].name);
         }
-        throw std::runtime_error(
-            "physical target-plan scopes are not an exact ordered "
-            "partition of the compiled frame graph");
     }
     return result;
 }

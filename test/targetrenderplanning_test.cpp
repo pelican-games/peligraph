@@ -772,7 +772,10 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
             ejected);
     REQUIRE(document.at("schema") ==
             "pelican.vulkan_physical_fragment");
-    REQUIRE(document.at("version") == 1);
+    REQUIRE(document.at("version") == 3);
+    REQUIRE(
+        document.at("scope_edit_mode") ==
+        "dependency_safe");
     REQUIRE(document.at("automatic_plan_fingerprint")
                 .get<std::string>()
                 .starts_with("fnv1a64:"));
@@ -863,16 +866,68 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         std::nullopt, std::nullopt,
         std::nullopt, {},
         attachment_contract());
+
+    auto temporal_self_read = graph;
+    const auto temporal_node = std::find_if(
+        temporal_self_read.nodes.begin(),
+        temporal_self_read.nodes.end(),
+        [](const auto &node) {
+            return node.name == "GBuffer";
+        });
+    REQUIRE(
+        temporal_node !=
+        temporal_self_read.nodes.end());
+    const auto &temporal_resource =
+        resource(
+            temporal_self_read,
+            "gbuffer_0");
+    temporal_node->ports.push_back(
+        port(
+            types,
+            "history_gbuffer_0",
+            LogicalPortDirection::input,
+            temporal_resource.type));
+    temporal_node->uses.push_back(
+        makeLogicalReadUse(
+            "history_gbuffer_0",
+            LogicalValueId{
+                temporal_resource.name, 0},
+            LogicalReadFootprint{
+                LogicalReadFootprintKind::temporal,
+                std::nullopt},
+            LogicalAccessIntent::sampled));
+    temporal_self_read.imports.push_back(
+        LogicalValueImport{
+            LogicalValueId{
+                temporal_resource.name, 0},
+            LogicalValueImportKind::previous_epoch});
+    validateCompiledLogicalRenderGraph(
+        types, temporal_self_read);
+    REQUIRE_NOTHROW(
+        compile(
+            types, temporal_self_read,
+            topology(false),
+            bindingsFor(
+                types, temporal_self_read),
+            std::nullopt, std::nullopt,
+            std::nullopt, std::nullopt,
+            std::nullopt, {},
+            attachment_contract()));
+
     const auto ejected =
         ejectVulkanPhysicalFragmentPackage(
             automatic);
-    REQUIRE(ejected.schema_version == 2);
+    REQUIRE(ejected.schema_version == 3);
+    REQUIRE(
+        ejected.scope_edit_mode ==
+        VulkanPhysicalScopeEditMode::
+            dependency_safe);
     REQUIRE(ejected.attachments.has_value());
     REQUIRE(ejected.attachments->size() == 4);
     const auto document =
         vulkanPhysicalFragmentPackageToJson(
             ejected);
-    REQUIRE(document.at("version") == 2);
+    REQUIRE(document.at("version") == 3);
     REQUIRE(document.at("attachments").size() == 4);
     REQUIRE(
         vulkanPhysicalFragmentPackageFromJson(
@@ -1042,6 +1097,8 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
 
     auto v1_with_attachments = document;
     v1_with_attachments["version"] = 1;
+    v1_with_attachments.erase(
+        "scope_edit_mode");
     requireThrowsContaining(
         [&] {
             (void)vulkanPhysicalFragmentPackageFromJson(
@@ -1115,8 +1172,455 @@ TEST_CASE("physical fragments conservatively materialize tile data before splitt
         linked.decisions.end(),
         [](const PlanningDecision &decision) {
             return decision.id ==
-                   "pelican.plan.physical_scope_fragment@1";
+                   "pelican.plan.physical_scope_dependency_safe@1";
+    }));
+}
+
+TEST_CASE(
+    "version 3 physical fragments fuse compatible materialized rendering scopes",
+    "[target-render-planning][physical-fragment][scope][fusion]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 3, false);
+    const std::vector<VulkanPhysicalAttachmentPlan>
+        attachments{
+            {
+                .node = "Lighting",
+                .logical_resource =
+                    "scene_color",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::
+                        color,
+                .load_op =
+                    VulkanPhysicalAttachmentLoadOp::
+                        clear,
+                .store_op =
+                    VulkanPhysicalAttachmentStoreOp::
+                        store,
+            },
+            {
+                .node = "Forward",
+                .logical_resource =
+                    "scene_color",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::
+                        color,
+                .load_op =
+                    VulkanPhysicalAttachmentLoadOp::
+                        load,
+                .store_op =
+                    VulkanPhysicalAttachmentStoreOp::
+                        store,
+            },
+        };
+    const auto automatic = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        std::nullopt, {}, attachments);
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    REQUIRE(fragment.schema_version == 3);
+    REQUIRE(
+        fragment.scope_edit_mode ==
+        VulkanPhysicalScopeEditMode::
+            dependency_safe);
+
+    std::vector<VulkanPhysicalScopeFragment>
+        fused_scopes;
+    for (const auto &scope :
+         *fragment.scopes) {
+        if (std::find(
+                scope.nodes.begin(),
+                scope.nodes.end(),
+                "Lighting") !=
+            scope.nodes.end()) {
+            fused_scopes.push_back({
+                .id = "manual:lighting_forward",
+                .nodes =
+                    {"Lighting", "Forward"},
+            });
+        } else if (std::find(
+                       scope.nodes.begin(),
+                       scope.nodes.end(),
+                       "Forward") ==
+                   scope.nodes.end()) {
+            fused_scopes.push_back(scope);
+        }
+    }
+    fragment.scopes =
+        std::move(fused_scopes);
+    fragment.alias_groups =
+        std::vector<
+            VulkanPhysicalAliasGroupFragment>{};
+
+    const auto linked = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        fragment, {}, attachments);
+    const auto &scope =
+        scopeForNode(linked, "Lighting");
+    REQUIRE(
+        scope.nodes ==
+        std::vector<std::string>{
+            "Lighting", "Forward"});
+    REQUIRE(scope.single_rendering_instance);
+    REQUIRE(scope.local_reads.empty());
+    REQUIRE(std::any_of(
+        linked.decisions.begin(),
+        linked.decisions.end(),
+        [](const PlanningDecision &decision) {
+            return decision.id ==
+                   "pelican.plan.physical_scope_dependency_safe@1";
         }));
+
+    auto non_final_discard = fragment;
+    const auto lighting =
+        std::find_if(
+            non_final_discard
+                .attachments->begin(),
+            non_final_discard
+                .attachments->end(),
+            [](const auto &attachment) {
+                return attachment.node ==
+                       "Lighting";
+            });
+    REQUIRE(
+        lighting !=
+        non_final_discard
+            .attachments->end());
+    lighting->store_op =
+        VulkanPhysicalAttachmentStoreOp::
+            discard;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph,
+                topology(false),
+                bindingsFor(types, graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                non_final_discard, {},
+                attachments);
+        },
+        "separate multisample resolve");
+}
+
+TEST_CASE(
+    "dependency-safe physical scopes reorder independent work and recompute lifetimes",
+    "[target-render-planning][physical-fragment][scope][reorder][lifetime]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        graphWithWriteOnlyAttachment(types);
+    const auto automatic = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph));
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    fragment.alias_groups =
+        std::vector<
+            VulkanPhysicalAliasGroupFragment>{};
+
+    const auto scratch =
+        std::find_if(
+            fragment.scopes->begin(),
+            fragment.scopes->end(),
+            [](const auto &scope) {
+                return std::find(
+                           scope.nodes.begin(),
+                           scope.nodes.end(),
+                           "Scratch") !=
+                       scope.nodes.end();
+            });
+    REQUIRE(scratch != fragment.scopes->end());
+    auto scratch_scope = *scratch;
+    const auto scratch_was_first =
+        scratch == fragment.scopes->begin();
+    fragment.scopes->erase(scratch);
+    if (scratch_was_first) {
+        fragment.scopes->push_back(
+            std::move(scratch_scope));
+    } else {
+        fragment.scopes->insert(
+            fragment.scopes->begin(),
+            std::move(scratch_scope));
+    }
+
+    const auto linked = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        fragment);
+    std::vector<std::string> authored_order;
+    for (const auto &scope :
+         *fragment.scopes) {
+        authored_order.insert(
+            authored_order.end(),
+            scope.nodes.begin(),
+            scope.nodes.end());
+    }
+    std::vector<std::string> linked_order;
+    for (const auto &node :
+         linked.lowering_graph.nodes) {
+        linked_order.push_back(
+            node.logical.name);
+    }
+    REQUIRE(linked_order == authored_order);
+    const auto scratch_position =
+        static_cast<std::size_t>(
+            std::find(
+                authored_order.begin(),
+                authored_order.end(),
+                "Scratch") -
+            authored_order.begin());
+    const TargetResourceLifetime
+        expected_scratch_lifetime{
+            true,
+            scratch_position,
+            scratch_position};
+    REQUIRE(
+        physicalResource(
+            linked,
+            "write_only_scratch")
+            .lifetime ==
+        expected_scratch_lifetime);
+
+    auto reversed = ejectVulkanPhysicalFragmentPackage(
+        automatic);
+    reversed.alias_groups =
+        std::vector<
+            VulkanPhysicalAliasGroupFragment>{};
+    const auto scope_index =
+        [&](std::string_view node) {
+            const auto found =
+                std::find_if(
+                    reversed.scopes->begin(),
+                    reversed.scopes->end(),
+                    [&](const auto &scope) {
+                        return std::find(
+                                   scope.nodes.begin(),
+                                   scope.nodes.end(),
+                                   node) !=
+                               scope.nodes.end();
+                    });
+            REQUIRE(
+                found !=
+                reversed.scopes->end());
+            return static_cast<std::size_t>(
+                found -
+                reversed.scopes->begin());
+        };
+    const auto gbuffer_scope =
+        scope_index("GBuffer");
+    const auto lighting_scope =
+        scope_index("Lighting");
+    std::iter_swap(
+        reversed.scopes->begin() +
+            static_cast<std::ptrdiff_t>(
+                gbuffer_scope),
+        reversed.scopes->begin() +
+            static_cast<std::ptrdiff_t>(
+                lighting_scope));
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph,
+                topology(false),
+                bindingsFor(types, graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                reversed);
+        },
+        "reverses data dependency: GBuffer -> Lighting");
+}
+
+TEST_CASE(
+    "dependency-safe physical scopes preserve explicit before and after dependencies",
+    "[target-render-planning][physical-fragment][scope][reorder][explicit-dependency]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto move_scope =
+        [](VulkanPhysicalFragmentPackage &fragment,
+           std::string_view node,
+           bool to_front) {
+        const auto found =
+            std::find_if(
+                fragment.scopes->begin(),
+                fragment.scopes->end(),
+                [&](const auto &scope) {
+                    return std::find(
+                               scope.nodes.begin(),
+                               scope.nodes.end(),
+                               node) !=
+                           scope.nodes.end();
+                });
+        REQUIRE(
+            found != fragment.scopes->end());
+        auto scope = *found;
+        fragment.scopes->erase(found);
+        if (to_front) {
+            fragment.scopes->insert(
+                fragment.scopes->begin(),
+                std::move(scope));
+        } else {
+            fragment.scopes->push_back(
+                std::move(scope));
+        }
+        fragment.alias_groups =
+            std::vector<
+                VulkanPhysicalAliasGroupFragment>{};
+    };
+
+    auto after_graph =
+        graphWithWriteOnlyAttachment(types);
+    const auto after_node =
+        std::find_if(
+            after_graph.nodes.begin(),
+            after_graph.nodes.end(),
+            [](const auto &node) {
+                return node.name == "Scratch";
+            });
+    REQUIRE(
+        after_node != after_graph.nodes.end());
+    after_node->after = {"ToneMap"};
+    validateCompiledLogicalRenderGraph(
+        types, after_graph);
+    const auto after_automatic = compile(
+        types, after_graph, topology(false),
+        bindingsFor(types, after_graph));
+    auto after_fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            after_automatic);
+    move_scope(
+        after_fragment, "Scratch", true);
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, after_graph,
+                topology(false),
+                bindingsFor(
+                    types, after_graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                after_fragment);
+        },
+        "reverses after dependency: ToneMap -> Scratch");
+
+    auto before_graph =
+        graphWithWriteOnlyAttachment(types);
+    const auto before_node =
+        std::find_if(
+            before_graph.nodes.begin(),
+            before_graph.nodes.end(),
+            [](const auto &node) {
+                return node.name == "Scratch";
+            });
+    REQUIRE(
+        before_node != before_graph.nodes.end());
+    before_node->before = {"GBuffer"};
+    validateCompiledLogicalRenderGraph(
+        types, before_graph);
+    const auto before_automatic = compile(
+        types, before_graph,
+        topology(false),
+        bindingsFor(types, before_graph));
+    auto before_fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            before_automatic);
+    move_scope(
+        before_fragment, "Scratch", false);
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, before_graph,
+                topology(false),
+                bindingsFor(
+                    types, before_graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                before_fragment);
+        },
+        "reverses before dependency: Scratch -> GBuffer");
+}
+
+TEST_CASE(
+    "dependency-safe physical fusion rejects mismatched attachment contracts",
+    "[target-render-planning][physical-fragment][scope][fusion][reject]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 3, false);
+    const std::vector<VulkanPhysicalAttachmentPlan>
+        attachments{
+            {
+                .node = "GBuffer",
+                .logical_resource = "gbuffer_0",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::
+                        color,
+            },
+            {
+                .node = "Lighting",
+                .logical_resource =
+                    "scene_color",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::
+                        color,
+            },
+        };
+    const auto automatic = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        std::nullopt, {}, attachments);
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    std::vector<VulkanPhysicalScopeFragment>
+        scopes;
+    scopes.push_back({
+        .id = "invalid:attachments",
+        .nodes = {"GBuffer", "Lighting"},
+    });
+    for (const auto &scope :
+         *fragment.scopes) {
+        if (std::find(
+                scope.nodes.begin(),
+                scope.nodes.end(),
+                "GBuffer") ==
+                scope.nodes.end() &&
+            std::find(
+                scope.nodes.begin(),
+                scope.nodes.end(),
+                "Lighting") ==
+                scope.nodes.end()) {
+            scopes.push_back(scope);
+        }
+    }
+    fragment.scopes = std::move(scopes);
+    fragment.alias_groups =
+        std::vector<
+            VulkanPhysicalAliasGroupFragment>{};
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph,
+                topology(false),
+                bindingsFor(types, graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                fragment, {}, attachments);
+        },
+        "requires identical ordered attachments");
 }
 
 TEST_CASE("physical fragments select declared alternate formats with target capability evidence",
@@ -1369,6 +1873,9 @@ TEST_CASE("physical fragment verifier rejects stale, aggressive, open-scope, and
 
     auto fused = ejectVulkanPhysicalFragmentPackage(
         desktop);
+    fused.schema_version = 2;
+    fused.scope_edit_mode =
+        VulkanPhysicalScopeEditMode::split_only;
     REQUIRE(fused.scopes->size() >= 2);
     auto fused_scopes =
         std::vector<VulkanPhysicalScopeFragment>{};

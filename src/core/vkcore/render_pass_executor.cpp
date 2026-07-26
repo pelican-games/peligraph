@@ -126,37 +126,41 @@ bool sameScopeAttachmentContract(
                right.scope_depth_clear_value &&
            left.scope_stencil_clear_value ==
                right.scope_stencil_clear_value &&
-           left.local_read_scope &&
-           right.local_read_scope;
+           left.fused_rendering_scope &&
+           right.fused_rendering_scope &&
+           left.local_read_scope ==
+               right.local_read_scope;
 }
 
-void validateLocalReadScope(
+void validateRenderingScope(
     std::span<const CompiledPass *const> passes,
     const RenderTargetContainer &targets,
     RenderPassViewInvocation invocation) {
     if (passes.empty() || passes.front() == nullptr) {
         throw std::invalid_argument(
-            "tile-local physical scope has no passes");
+            "fused physical rendering scope has no passes");
     }
-    if (!GET_MODULE(VulkanManageCore)
+    const auto &first = *passes.front();
+    if (!first.rendering
+             .fused_rendering_scope) {
+        throw std::runtime_error(
+            "fused rendering execution was requested for a "
+            "non-fused physical scope");
+    }
+    if (first.rendering.local_read_scope &&
+        !GET_MODULE(VulkanManageCore)
              .getRuntimeCapabilities()
              .dynamic_rendering_local_read) {
         throw std::runtime_error(
             "tile-local physical scope requires the enabled "
             "dynamic-rendering-local-read feature");
     }
-    const auto &first = *passes.front();
-    if (!first.rendering.local_read_scope) {
-        throw std::runtime_error(
-            "tile-local execution was requested for a materialized "
-            "physical scope");
-    }
     for (std::size_t pass_index = 0;
          pass_index < passes.size(); ++pass_index) {
         const auto *pass = passes[pass_index];
         if (pass == nullptr) {
             throw std::invalid_argument(
-                "tile-local physical scope contains a null pass");
+                "fused physical rendering scope contains a null pass");
         }
         validateViewExecution(
             *pass, targets, invocation);
@@ -165,7 +169,7 @@ void validateLocalReadScope(
                 pass->rendering,
                 first.rendering)) {
             throw std::runtime_error(
-                "tile-local passes disagree on their physical "
+                "fused rendering passes disagree on their physical "
                 "scope contract: " +
                 pass->definition.name);
         }
@@ -180,7 +184,7 @@ void validateLocalReadScope(
                 first.rendering
                     .color_attachments.size()) {
             throw std::runtime_error(
-                "tile-local pass mappings do not match the "
+                "fused rendering pass mappings do not match the "
                 "physical attachment union: " +
                 pass->definition.name);
         }
@@ -191,7 +195,7 @@ void validateLocalReadScope(
         ) {
             throw std::runtime_error(
                 "UI pass implementation cannot execute inside a "
-                "tile-local physical scope: " +
+                "fused physical rendering scope: " +
                 pass->definition.name);
         }
         if (pass->definition
@@ -199,7 +203,7 @@ void validateLocalReadScope(
             pass->definition
                 .input_targets.size()) {
             throw std::runtime_error(
-                "tile-local pass input history metadata is "
+                "fused rendering pass input history metadata is "
                 "incomplete: " +
                 pass->definition.name);
         }
@@ -236,7 +240,7 @@ void validateLocalReadScope(
                          .depth_attachment);
             if (same_frame_attachment && !local) {
                 throw std::runtime_error(
-                    "tile-local scope contains a same-frame "
+                    "fused rendering scope contains a same-frame "
                     "attachment read that was not lowered to an "
                     "input attachment: " +
                     pass->definition.name);
@@ -330,7 +334,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     cmd_buf.endRendering();
 }
 
-void RenderPassExecutor::beginLocalReadScope(
+void RenderPassExecutor::beginRenderingScope(
     const FrameRenderContext &frame,
     std::span<const CompiledPass *const> passes,
     const RenderPassExecutorDependencies &dependencies,
@@ -338,7 +342,7 @@ void RenderPassExecutor::beginLocalReadScope(
     RenderPassViewInvocation invocation) const {
     auto &targets =
         dependencies.render_target_container;
-    validateLocalReadScope(
+    validateRenderingScope(
         passes, targets, invocation);
     const auto &first = *passes.front();
     const auto extent =
@@ -393,7 +397,7 @@ void RenderPassExecutor::beginLocalReadScope(
         frame.cmd_buf, extent);
 }
 
-void RenderPassExecutor::executeLocalReadPass(
+void RenderPassExecutor::executeRenderingScopePass(
     const FrameRenderContext &frame,
     const CompiledPass &pass,
     const RenderPassExecutorDependencies &dependencies,
@@ -402,14 +406,16 @@ void RenderPassExecutor::executeLocalReadPass(
         pass,
         dependencies.render_target_container,
         invocation);
-    if (!pass.rendering.local_read_scope) {
+    if (!pass.rendering.fused_rendering_scope) {
         throw std::runtime_error(
-            "local-read draw requested for a pass outside a "
-            "tile-local physical scope: " +
+            "fused rendering draw requested for a pass outside a "
+            "single-instance physical scope: " +
             pass.definition.name);
     }
-    setLocalReadMappings(
-        frame.cmd_buf, pass.rendering);
+    if (pass.rendering.local_read_scope) {
+        setLocalReadMappings(
+            frame.cmd_buf, pass.rendering);
+    }
     const auto extent =
         getLocalReadScopeTargetExtent(
             frame, pass.rendering,
@@ -420,7 +426,7 @@ void RenderPassExecutor::executeLocalReadPass(
         dependencies.dispatch, invocation);
 }
 
-void RenderPassExecutor::localReadDependency(
+void RenderPassExecutor::renderingScopeDependency(
     vk::CommandBuffer cmd_buf) const {
     vk::MemoryBarrier barrier;
     barrier.srcAccessMask =
@@ -428,7 +434,11 @@ void RenderPassExecutor::localReadDependency(
         vk::AccessFlagBits::
             eDepthStencilAttachmentWrite;
     barrier.dstAccessMask =
-        vk::AccessFlagBits::eInputAttachmentRead;
+        vk::AccessFlagBits::eInputAttachmentRead |
+        vk::AccessFlagBits::eColorAttachmentRead |
+        vk::AccessFlagBits::eColorAttachmentWrite |
+        vk::AccessFlagBits::eDepthStencilAttachmentRead |
+        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
     cmd_buf.pipelineBarrier(
         vk::PipelineStageFlagBits::
                 eColorAttachmentOutput |
@@ -436,12 +446,18 @@ void RenderPassExecutor::localReadDependency(
                 eEarlyFragmentTests |
             vk::PipelineStageFlagBits::
                 eLateFragmentTests,
-        vk::PipelineStageFlagBits::eFragmentShader,
+        vk::PipelineStageFlagBits::eFragmentShader |
+            vk::PipelineStageFlagBits::
+                eColorAttachmentOutput |
+            vk::PipelineStageFlagBits::
+                eEarlyFragmentTests |
+            vk::PipelineStageFlagBits::
+                eLateFragmentTests,
         vk::DependencyFlagBits::eByRegion,
         {barrier}, {}, {});
 }
 
-void RenderPassExecutor::endLocalReadScope(
+void RenderPassExecutor::endRenderingScope(
     vk::CommandBuffer cmd_buf) const {
     cmd_buf.endRendering();
 }

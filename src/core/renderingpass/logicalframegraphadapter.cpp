@@ -261,15 +261,45 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                     declaration.resource);
             }
         }
+        std::set<std::string, std::less<>>
+            loaded_attachment_resources;
+        for (const auto &attachment :
+             source.attachments) {
+            if (attachment.load_op ==
+                FrameGraphAttachmentLoadOp::load) {
+                loaded_attachment_resources.insert(
+                    attachment.resource);
+            }
+        }
+        std::set<std::string, std::less<>>
+            merged_attachment_resources;
         for (const auto &resource : source.reads) {
             const auto type = resource_types.find(resource);
             if (type == resource_types.end()) {
                 throw std::runtime_error("logical shadow graph node '" + source.name +
                                          "' reads undeclared resource '" + resource + "'");
             }
-            auto port = "in." + resource;
-            node.ports.push_back(makePort(types, port, LogicalPortDirection::input,
-                                          type->second));
+            const auto attachment_read_write =
+                loaded_attachment_resources.contains(
+                    resource) &&
+                std::find(
+                    source.writes.begin(),
+                    source.writes.end(),
+                    resource) !=
+                    source.writes.end();
+            auto port =
+                std::string{
+                    attachment_read_write
+                        ? "inout."
+                        : "in."} +
+                resource;
+            node.ports.push_back(makePort(
+                types, port,
+                attachment_read_write
+                    ? LogicalPortDirection::
+                          input_output
+                    : LogicalPortDirection::input,
+                type->second));
             const auto version = current_versions.at(resource);
             if (version == 0 && !imported_resources.contains(resource)) {
                 add_import(resource, LogicalValueImportKind::legacy_implicit);
@@ -280,18 +310,57 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             const auto declared =
                 declared_footprints.find(resource);
             const auto footprint =
-                declared == declared_footprints.end()
+                declared != declared_footprints.end()
+                    ? declared->second
+                : loaded_attachment_resources.contains(
+                      resource)
                     ? LogicalReadFootprint{
-                          LogicalReadFootprintKind::arbitrary,
+                          LogicalReadFootprintKind::
+                              same_pixel,
                           std::nullopt}
-                    : declared->second;
-            node.uses.push_back(makeLogicalReadUse(
-                std::move(port),
-                LogicalValueId{resource, version},
-                footprint));
+                    :
+                    LogicalReadFootprint{
+                        LogicalReadFootprintKind::arbitrary,
+                        std::nullopt};
+            if (attachment_read_write) {
+                auto &output_version =
+                    current_versions.at(resource);
+                if (output_version ==
+                    std::numeric_limits<
+                        std::uint32_t>::max()) {
+                    throw std::runtime_error(
+                        "logical shadow graph resource "
+                        "version overflow: " +
+                        resource);
+                }
+                ++output_version;
+                node.uses.push_back(
+                    makeLogicalReadWriteUse(
+                        std::move(port),
+                        LogicalValueId{
+                            resource, version},
+                        LogicalValueId{
+                            resource,
+                            output_version},
+                        footprint,
+                        LogicalAccessIntent::
+                            attachment));
+                merged_attachment_resources
+                    .insert(resource);
+            } else {
+                node.uses.push_back(
+                    makeLogicalReadUse(
+                        std::move(port),
+                        LogicalValueId{
+                            resource, version},
+                        footprint));
+            }
             used_conservative_footprint =
                 used_conservative_footprint ||
-                declared == declared_footprints.end();
+                (declared ==
+                     declared_footprints.end() &&
+                 !loaded_attachment_resources
+                      .contains(resource));
         }
         for (const auto &resource : source.reads_history) {
             const auto type = resource_types.find(resource);
@@ -309,6 +378,10 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                                      std::nullopt}));
         }
         for (const auto &resource : source.writes) {
+            if (merged_attachment_resources.contains(
+                    resource)) {
+                continue;
+            }
             const auto type = resource_types.find(resource);
             if (type == resource_types.end()) {
                 throw std::runtime_error("logical shadow graph node '" + source.name +

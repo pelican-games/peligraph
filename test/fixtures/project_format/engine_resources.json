@@ -42,6 +42,7 @@
     "output_transform.frag.spv",
     "shaders/include/pelican_features.glsl",
     "shaders/include/pelican_frame.glsl",
+    "shaders/include/pelican_view.glsl",
     "shaders/include/pelican_material.glsl",
     "shaders/include/pelican_material_instance.glsl",
     "shaders/include/pelican_sets.glsl",

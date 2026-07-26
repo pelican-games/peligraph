@@ -757,7 +757,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "d467f2e1dca8c2dfcbf1e867e7591a2ab5b4a7121718ba650e15bb7d44a380c4",
+      "expected_png_sha256": "22de60b7f78d03a92ea3c03aed28735cdb4631f09666fff127e9076f5f763132",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [

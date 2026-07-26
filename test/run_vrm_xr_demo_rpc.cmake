@@ -65,7 +65,9 @@ function(run_demo label result_prefix)
 
     string(REPLACE "\r\n" "\n" normalized "${stdout}")
     string(REGEX REPLACE "\n$" "" normalized "${normalized}")
-    string(REPLACE "\n" ";" lines "${normalized}")
+    # Keep semicolons inside a JSON response from becoming CMake list separators.
+    string(REPLACE ";" "\\;" list_safe "${normalized}")
+    string(REPLACE "\n" ";" lines "${list_safe}")
     list(LENGTH lines line_count)
     if(NOT line_count EQUAL expected_lines)
         message(FATAL_ERROR "${label}: expected ${expected_lines} RPC responses, got ${line_count}\n${stdout}")

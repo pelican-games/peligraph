@@ -424,8 +424,17 @@ compilePassRenderingContract(
     CompiledPassRenderingContract result;
     result.scope_index = scope_index;
     result.scope_id = scope.id;
+    result.fused_rendering_scope =
+        scope.single_rendering_instance;
     result.local_read_scope =
         !scope.local_reads.empty();
+    if (result.local_read_scope &&
+        !result.fused_rendering_scope) {
+        throw std::runtime_error(
+            "physical local-read scope is not marked as one "
+            "rendering instance: " +
+            scope.id);
+    }
 
     std::vector<const PassDefinition *>
         scope_passes;
@@ -471,6 +480,112 @@ compilePassRenderingContract(
             } else {
                 result.depth_attachment =
                     node->output_depth;
+            }
+        }
+    }
+
+    if (result.fused_rendering_scope) {
+        if (scope_passes.size() < 2) {
+            throw std::runtime_error(
+                "physical fused rendering scope requires at least "
+                "two passes: " +
+                scope.id);
+        }
+        for (const auto *scope_pass : scope_passes) {
+            if (scope_pass->isUi()
+#if PELICAN_WITH_IMGUI
+                || scope_pass->isImGui()
+#endif
+            ) {
+                throw std::runtime_error(
+                    "UI pass implementation cannot execute inside "
+                    "a fused physical rendering scope: " +
+                    scope_pass->name);
+            }
+        }
+        if (!result.local_read_scope) {
+            if (std::any_of(
+                    result.color_attachments.begin(),
+                    result.color_attachments.end(),
+                    [](GlobalRenderTargetId target) {
+                        return !isConcreteRenderTarget(
+                            target);
+                    }) ||
+                (isSwapchainRenderTarget(
+                    result.depth_attachment))) {
+                throw std::runtime_error(
+                    "materialized fused rendering scope currently "
+                    "requires internal concrete attachments: " +
+                    scope.id);
+            }
+            for (std::size_t pass_index = 0;
+                 pass_index < scope_passes.size();
+                 ++pass_index) {
+                const auto &scope_pass =
+                    *scope_passes[pass_index];
+                if (scope_pass.output_color !=
+                        result.color_attachments ||
+                    scope_pass.output_depth !=
+                        result.depth_attachment) {
+                    throw std::runtime_error(
+                        "materialized fused rendering passes require "
+                        "identical ordered attachments: " +
+                        scope.id);
+                }
+                for (std::size_t color_index = 0;
+                     color_index <
+                     scope_pass.output_color.size();
+                     ++color_index) {
+                    const auto operations =
+                        scopeColorAttachmentOperations(
+                            scope_pass, color_index,
+                            *plan, metadata);
+                    if (pass_index > 0 &&
+                        operations.load_op !=
+                            vk::AttachmentLoadOp::eLoad) {
+                        throw std::runtime_error(
+                            "materialized fused rendering pass must "
+                            "Load every attachment after the first "
+                            "pass: " +
+                            scope_pass.name);
+                    }
+                    if (pass_index + 1 <
+                            scope_passes.size() &&
+                        operations.store_op !=
+                            vk::AttachmentStoreOp::eStore) {
+                        throw std::runtime_error(
+                            "materialized fused rendering pass must "
+                            "Store every attachment before the final "
+                            "pass: " +
+                            scope_pass.name);
+                    }
+                }
+                if (isConcreteRenderTarget(
+                        scope_pass.output_depth) ||
+                    isSwapchainRenderTarget(
+                        scope_pass.output_depth)) {
+                    const auto operations =
+                        scopeDepthAttachmentOperations(
+                            scope_pass, *plan,
+                            metadata);
+                    if (pass_index > 0 &&
+                        operations.load_op !=
+                            vk::AttachmentLoadOp::eLoad) {
+                        throw std::runtime_error(
+                            "materialized fused rendering pass must "
+                            "Load depth after the first pass: " +
+                            scope_pass.name);
+                    }
+                    if (pass_index + 1 <
+                            scope_passes.size() &&
+                        operations.store_op !=
+                            vk::AttachmentStoreOp::eStore) {
+                        throw std::runtime_error(
+                            "materialized fused rendering pass must "
+                            "Store depth before the final pass: " +
+                            scope_pass.name);
+                    }
+                }
             }
         }
     }

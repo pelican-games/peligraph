@@ -1209,6 +1209,7 @@ void main() {
 }
 )glsl");
     writeTextFile(root / "passes" / "main.json", R"json({
+      "xr":{"view_execution":"sequential"},
       "render_targets":[],
       "rendering_passes":[{"name":"main","passes":[{
         "name":"stereo_probe","type":"fullscreen",
@@ -3694,7 +3695,7 @@ void GoldenHarness::runGoldenImages() {
 }
 
 void GoldenHarness::runLogicalFrameStereo() {
-#if PELICAN_RUNTIME_SHADER_COMPILER
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
     setupLogger();
     requireGoldenVulkanDevice();
     FastModuleContainer modules;
@@ -3709,6 +3710,13 @@ void GoldenHarness::runLogicalFrameStereo() {
     launch.headless = true;
     launch.shader_hot_reload = false;
     launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    // Multi-view execution belongs to the compiled XR graph variant. Keep this
+    // synthetic target sequential so the fixture continues to validate the
+    // per-view command path independently of the multiview GPU regression.
+    // Initialize ordinary Vulkan first; this is a renderer contract fixture,
+    // not an OpenXR runtime/bootstrap fixture.
+    (void)GET_MODULE(VulkanManageCore);
+    launch.xr_active = true;
 
     auto &time = GET_MODULE(EngineTime);
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
@@ -3732,6 +3740,7 @@ void GoldenHarness::runLogicalFrameStereo() {
         make_view(0.5f, 1.4f, 1.5f),
     };
     auto &renderer = GET_MODULE(Renderer);
+    renderer.selectGraphVariant(RenderGraphVariant::xr);
     auto &flat_target = GET_MODULE(RenderTarget);
     Test::VulkanSyntheticStereoTarget stereo_target{
         launch.headless_extent, flat_target.getSwapchainFormat()};
@@ -3858,7 +3867,7 @@ void GoldenHarness::runLogicalFrameStereo() {
     GET_MODULE(VulkanManageCore).waitIdle();
     std::filesystem::remove_all(root);
 #else
-    SKIP("logical-frame stereo fixture requires the runtime shader compiler");
+    SKIP("logical-frame stereo fixture requires the runtime shader compiler and OpenXR");
 #endif
 }
 
@@ -3879,6 +3888,13 @@ void GoldenHarness::runOpenXrTaaTransition() {
             {"opaque", {{"provider", "state_batched_v1"}}},
             {"transparent", {{"provider", "back_to_front_v1"}}},
             {"xr_view_policy", "per_view"},
+        };
+        // This fixture validates flat/XR graph transitions with a deliberately
+        // sequential synthetic target. Multiview execution has its own
+        // array-image GPU regression, so keep this target/plan contract
+        // explicit instead of letting the device-dependent auto policy choose.
+        config["xr"] = {
+            {"view_execution", "sequential"},
         };
         writeTextFile(root / "passes" / "main.json", config.dump(2));
     }
@@ -3986,8 +4002,28 @@ void GoldenHarness::runOpenXrTaaTransition() {
             ++unsupported_anchor_bodies;
         }
     }
-    REQUIRE(timing_samples_per_view.at(0) == xr_plan.size() * 2);
-    REQUIRE(timing_samples_per_view.at(1) == xr_plan.size() * 2);
+    const auto &xr_execution_trace =
+        renderer.lastExecutionTraceForTesting();
+    REQUIRE(xr_execution_trace.at("views").size() == 2);
+    const auto timed_node_count =
+        [](const nlohmann::json &view_trace) {
+            return static_cast<std::size_t>(
+                std::count_if(
+                    view_trace.at("nodes").begin(),
+                    view_trace.at("nodes").end(),
+                    [](const nlohmann::json &node) {
+                        return node.at("kind") !=
+                               "engine_owned_copy";
+                    }));
+        };
+    REQUIRE(timing_samples_per_view.at(0) ==
+            timed_node_count(
+                xr_execution_trace.at("views").at(0)) *
+                2);
+    REQUIRE(timing_samples_per_view.at(1) ==
+            timed_node_count(
+                xr_execution_trace.at("views").at(1)) *
+                2);
     REQUIRE(timing_samples_per_view.at(2) == 2);
     REQUIRE(unsupported_anchor_bodies > 0);
 

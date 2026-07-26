@@ -756,18 +756,44 @@ nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
     return result;
 }
 
+GpuTimingNodeDescriptor plannedTimingNode(
+    const CompiledFrameGraphExecution &frame_graph,
+    const SpriteRenderModules &sprite,
+    std::size_t ordinal) {
+    const auto &node = frame_graph.nodes.at(ordinal);
+    const bool anchor_has_work =
+        node.kind != FramePlanNodeKind::anchor ||
+        (node.name == "__anchor_sprite" &&
+         sprite.scene != nullptr);
+    return GpuTimingNodeDescriptor{
+        ordinal,
+        std::string{framePlanNodeKindName(node.kind)},
+        node.name,
+        anchor_has_work};
+}
+
 std::vector<GpuTimingNodeDescriptor> plannedTimingNodes(
-    const CompiledFrameGraphExecution &frame_graph, const SpriteRenderModules &sprite) {
+    const CompiledFrameGraphExecution &frame_graph,
+    const SpriteRenderModules &sprite,
+    std::span<const LogicalFrameNodeInvocation> schedule) {
     std::vector<GpuTimingNodeDescriptor> nodes;
-    nodes.reserve(frame_graph.nodes.size());
-    for (std::size_t ordinal = 0; ordinal < frame_graph.nodes.size(); ++ordinal) {
-        const auto &node = frame_graph.nodes[ordinal];
-        const bool anchor_has_work = node.kind != FramePlanNodeKind::anchor ||
-                                     (node.name == "__anchor_sprite" &&
-                                      sprite.scene != nullptr);
-        nodes.push_back(GpuTimingNodeDescriptor{
-            ordinal, std::string{framePlanNodeKindName(node.kind)}, node.name,
-            anchor_has_work});
+    nodes.reserve(schedule.size());
+    std::vector<std::uint8_t> included(
+        frame_graph.nodes.size(), 0);
+    for (const auto &invocation : schedule) {
+        if (invocation.node_index >=
+            frame_graph.nodes.size()) {
+            throw std::runtime_error(
+                "GPU timing schedule references an invalid frame-graph node");
+        }
+        if (included[invocation.node_index]) {
+            continue;
+        }
+        included[invocation.node_index] = 1;
+        nodes.push_back(
+            plannedTimingNode(
+                frame_graph, sprite,
+                invocation.node_index));
     }
     return nodes;
 }
@@ -812,9 +838,13 @@ void executeCompiledFrameGraphBarrier(
     RenderFrameModules &modules,
     RenderTargetLayoutTracker &layout_tracker,
     std::size_t consumer_node_index,
-    const CompiledFrameGraphBarrier &barrier) {
+    const CompiledFrameGraphBarrier &barrier,
+    std::span<const std::uint8_t> completed_nodes) {
+    (void)consumer_node_index;
     if (barrier.from_node_index >=
-        consumer_node_index) {
+            completed_nodes.size() ||
+        !completed_nodes[
+            barrier.from_node_index]) {
         throw std::runtime_error(
             "Compiled frame graph barrier source was not executed "
             "before target");
@@ -974,18 +1004,62 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         }
         authored_schedule = fallback_schedule;
     }
+    constexpr auto invalid_timing_query_index =
+        std::numeric_limits<std::size_t>::max();
+    std::vector<std::size_t>
+        timing_query_index_by_node(
+            frame_graph.nodes.size(),
+            invalid_timing_query_index);
+    std::vector<std::size_t>
+        timing_first_schedule_position(
+            frame_graph.nodes.size(),
+            invalid_timing_query_index);
+    std::vector<std::size_t>
+        timing_last_schedule_position(
+            frame_graph.nodes.size(),
+            invalid_timing_query_index);
+    std::size_t next_timing_query_index = 0;
+    for (std::size_t schedule_position = 0;
+         schedule_position < authored_schedule.size();
+         ++schedule_position) {
+        const auto node_index =
+            authored_schedule[schedule_position]
+                .node_index;
+        if (node_index >=
+            frame_graph.nodes.size()) {
+            throw std::runtime_error(
+                "logical-frame view schedule references an invalid node");
+        }
+        if (timing_query_index_by_node[node_index] ==
+            invalid_timing_query_index) {
+            timing_query_index_by_node[node_index] =
+                next_timing_query_index++;
+            timing_first_schedule_position[node_index] =
+                schedule_position;
+        }
+        timing_last_schedule_position[node_index] =
+            schedule_position;
+    }
     if (modules.render_timing != nullptr) {
         modules.render_timing->beginGpuRange(
             render_ctx.cmd_buf, render_ctx.in_flight_frame_index, view_index,
             GpuTimingRangeIdentity{logical_frame, std::string{graph_variant}, view_index},
-            plannedTimingNodes(frame_graph, modules.sprite));
+            plannedTimingNodes(
+                frame_graph, modules.sprite,
+                authored_schedule));
     }
     const auto paired_storage_edges = pairedSrgbStorageEdges(
         rendering_pass, frame_graph, modules.render_target_container);
 
-    bool local_read_scope_active = false;
-    std::size_t active_local_read_scope =
+    bool rendering_scope_active = false;
+    std::size_t active_rendering_scope =
         std::numeric_limits<std::size_t>::max();
+    std::vector<std::uint8_t> completed_nodes(
+        frame_graph.nodes.size(), 0);
+    GlobalRenderTargetId latest_scene_color =
+        noRenderTargetId();
+    GlobalRenderTargetId latest_scene_depth =
+        noRenderTargetId();
 
     for (std::size_t schedule_position = 0;
          schedule_position < authored_schedule.size();
@@ -1000,6 +1074,20 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         const auto node_index =
             static_cast<std::uint32_t>(
                 scheduled.node_index);
+        const auto timing_query_index =
+            timing_query_index_by_node[node_index];
+        const bool begins_recorded_node =
+            schedule_position ==
+            timing_first_schedule_position[node_index];
+        const bool ends_recorded_node =
+            schedule_position ==
+            timing_last_schedule_position[node_index];
+        if (modules.render_timing != nullptr &&
+            timing_query_index ==
+                invalid_timing_query_index) {
+            throw std::logic_error(
+                "scheduled frame-graph node has no GPU timing query slot");
+        }
         if (prepare_invocation) {
             prepare_invocation(scheduled);
         }
@@ -1015,24 +1103,28 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 ? &rendering_pass.passes.at(
                       execution_node.index)
                 : nullptr;
-        const bool local_read_scope =
+        const bool fused_rendering_scope =
             render_pass != nullptr &&
             render_pass->rendering
-                .local_read_scope;
+                .fused_rendering_scope;
         std::vector<const CompiledPass *>
             starting_scope_passes;
-        if (local_read_scope &&
+        std::vector<std::uint8_t>
+            starting_scope_nodes(
+                frame_graph.nodes.size(),
+                0);
+        if (fused_rendering_scope &&
             scheduled.beginsScopeExecution()) {
-            if (local_read_scope_active) {
+            if (rendering_scope_active) {
                 throw std::logic_error(
-                    "tile-local physical scopes overlap");
+                    "fused physical rendering scopes overlap");
             }
             if (scheduled.scope_node_count < 2 ||
                 schedule_position +
                         scheduled.scope_node_count >
                     authored_schedule.size()) {
                 throw std::runtime_error(
-                    "tile-local physical scope schedule is "
+                    "fused physical rendering scope schedule is "
                     "incomplete");
             }
             starting_scope_passes.reserve(
@@ -1053,12 +1145,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     candidate.execution_index !=
                         scheduled.execution_index ||
                     candidate.view_index !=
-                        scheduled.view_index ||
-                    candidate.node_index !=
-                        scheduled.node_index +
-                            offset) {
+                        scheduled.view_index) {
                     throw std::runtime_error(
-                        "tile-local physical scope schedule is not "
+                        "fused physical rendering scope schedule is not "
                         "contiguous");
                 }
                 const auto &candidate_node =
@@ -1067,7 +1156,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 if (candidate_node.kind !=
                     FramePlanNodeKind::render) {
                     throw std::runtime_error(
-                        "tile-local physical scope contains a "
+                        "fused physical rendering scope contains a "
                         "non-render node: " +
                         candidate_node.name);
                 }
@@ -1075,29 +1164,31 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     rendering_pass.passes.at(
                         candidate_node.index);
                 if (!candidate_pass.rendering
-                         .local_read_scope ||
+                         .fused_rendering_scope ||
                     candidate_pass.rendering
                             .scope_index !=
                         scheduled.scope_index) {
                     throw std::runtime_error(
-                        "tile-local scheduled pass disagrees with "
+                        "fused scheduled pass disagrees with "
                         "its physical scope: " +
                         candidate_node.name);
                 }
                 starting_scope_passes.push_back(
                     &candidate_pass);
+                starting_scope_nodes[
+                    candidate.node_index] = 1;
             }
-        } else if (local_read_scope) {
-            if (!local_read_scope_active ||
-                active_local_read_scope !=
+        } else if (fused_rendering_scope) {
+            if (!rendering_scope_active ||
+                active_rendering_scope !=
                     scheduled.scope_index) {
                 throw std::runtime_error(
-                    "tile-local physical scope continuation has no "
+                    "fused physical rendering scope continuation has no "
                     "active rendering instance");
             }
-        } else if (local_read_scope_active) {
+        } else if (rendering_scope_active) {
             throw std::runtime_error(
-                "tile-local physical scope ended before its "
+                "fused physical rendering scope ended before its "
                 "scheduled boundary");
         }
 
@@ -1111,20 +1202,24 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         ScopedCommandDebugLabel node_label{modules.debug_utils, render_ctx.cmd_buf,
                                            node_debug_name.c_str()};
         if (modules.render_timing != nullptr &&
-            scheduled.firstExecution()) {
+            begins_recorded_node) {
             modules.render_timing->writeNodeSubrangeStart(
-                render_ctx.cmd_buf, node_index, GpuTimingSubrange::barriers);
+                render_ctx.cmd_buf,
+                static_cast<std::uint32_t>(
+                    timing_query_index),
+                GpuTimingSubrange::barriers);
         }
         {
             ScopedCommandDebugLabel barrier_label{
                 modules.debug_utils,
                 render_ctx.cmd_buf, "barriers"};
-            if (local_read_scope &&
+            if (fused_rendering_scope &&
                 scheduled.beginsScopeExecution()) {
-                if (scheduled.firstExecution()) {
-                    const auto scope_end =
-                        scheduled.node_index +
-                        scheduled.scope_node_count;
+                if (begins_recorded_node) {
+                    std::vector<std::uint8_t>
+                        prior_scope_nodes(
+                            frame_graph.nodes.size(),
+                            0);
                     for (std::size_t offset = 0;
                          offset <
                          scheduled.scope_node_count;
@@ -1143,18 +1238,24 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                              consumer_node
                                  .incoming_barriers) {
                             if (barrier.from_node_index >=
-                                consumer.node_index) {
+                                frame_graph.nodes.size()) {
                                 throw std::runtime_error(
                                     "Compiled frame graph barrier "
-                                    "source was not executed before "
-                                    "target");
+                                    "source is out of range");
                             }
                             const auto internal =
-                                barrier.from_node_index >=
-                                    scheduled.node_index &&
-                                barrier.from_node_index <
-                                    scope_end;
+                                starting_scope_nodes[
+                                    barrier.from_node_index] !=
+                                0;
                             if (internal) {
+                                if (!prior_scope_nodes[
+                                        barrier
+                                            .from_node_index]) {
+                                    throw std::runtime_error(
+                                        "fused physical rendering "
+                                        "scope reverses an internal "
+                                        "dependency");
+                                }
                                 if (passReadsBarrierAsLocalAttachment(
                                         consumer_pass,
                                         frame_graph,
@@ -1167,7 +1268,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                     continue;
                                 }
                                 throw std::runtime_error(
-                                    "tile-local physical scope has "
+                                    "fused physical rendering scope has "
                                     "an internal dependency that "
                                     "cannot execute inside dynamic "
                                     "rendering: " +
@@ -1177,12 +1278,15 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                 render_ctx, frame_graph,
                                 modules, layout_tracker,
                                 consumer.node_index,
-                                barrier);
+                                barrier,
+                                completed_nodes);
                         }
+                        prior_scope_nodes[
+                            consumer.node_index] = 1;
                     }
                 }
                 modules.pass_executor
-                    .beginLocalReadScope(
+                    .beginRenderingScope(
                         render_ctx,
                         starting_scope_passes,
                         pass_executor_dependencies,
@@ -1191,56 +1295,47 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                             scheduled
                                 .logical_view_count,
                             scheduled.view_index});
-                local_read_scope_active = true;
-                active_local_read_scope =
+                rendering_scope_active = true;
+                active_rendering_scope =
                     scheduled.scope_index;
-            } else if (local_read_scope) {
-                if (std::any_of(
-                        render_pass->rendering
-                            .color_attachment_input_indices
-                            .begin(),
-                        render_pass->rendering
-                            .color_attachment_input_indices
-                            .end(),
-                        [](std::uint32_t input) {
-                            return input !=
-                                   unusedPhysicalAttachmentMapping;
-                        }) ||
-                    render_pass->rendering
-                            .depth_attachment_input_index !=
-                        unusedPhysicalAttachmentMapping) {
-                    modules.pass_executor
-                        .localReadDependency(
-                            render_ctx.cmd_buf);
-                }
-            } else if (scheduled.firstExecution()) {
+            } else if (fused_rendering_scope) {
+                modules.pass_executor
+                    .renderingScopeDependency(
+                        render_ctx.cmd_buf);
+            } else if (begins_recorded_node) {
                 for (const auto &barrier :
                      execution_node.incoming_barriers) {
                     executeCompiledFrameGraphBarrier(
                         render_ctx, frame_graph, modules,
                         layout_tracker, node_index,
-                        barrier);
+                        barrier, completed_nodes);
                 }
             }
         }
         if (modules.render_timing != nullptr &&
-            scheduled.firstExecution()) {
+            begins_recorded_node) {
             modules.render_timing->writeNodeSubrangeEnd(
-                render_ctx.cmd_buf, node_index, GpuTimingSubrange::barriers);
+                render_ctx.cmd_buf,
+                static_cast<std::uint32_t>(
+                    timing_query_index),
+                GpuTimingSubrange::barriers);
         }
         ScopedCommandDebugLabel body_label{modules.debug_utils, render_ctx.cmd_buf, "body"};
 
         if (modules.render_timing != nullptr &&
-            scheduled.firstExecution()) {
+            begins_recorded_node) {
             modules.render_timing->writeNodeSubrangeStart(
-                render_ctx.cmd_buf, node_index, GpuTimingSubrange::body);
+                render_ctx.cmd_buf,
+                static_cast<std::uint32_t>(
+                    timing_query_index),
+                GpuTimingSubrange::body);
         }
 
         if (execution_node.kind == FramePlanNodeKind::render) {
             const auto &pass = *render_pass;
-            if (local_read_scope) {
+            if (fused_rendering_scope) {
                 modules.pass_executor
-                    .executeLocalReadPass(
+                    .executeRenderingScopePass(
                         render_ctx, pass,
                         pass_executor_dependencies,
                         RenderPassViewInvocation{
@@ -1250,10 +1345,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 if (scheduled
                         .endsScopeExecution()) {
                     modules.pass_executor
-                        .endLocalReadScope(
+                        .endRenderingScope(
                             render_ctx.cmd_buf);
-                    local_read_scope_active = false;
-                    active_local_read_scope =
+                    rendering_scope_active = false;
+                    active_rendering_scope =
                         std::numeric_limits<
                             std::size_t>::max();
                 }
@@ -1265,6 +1360,16 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     RenderPassViewInvocation{
                         scheduled.logical_view_count,
                         scheduled.view_index});
+            }
+            if (!pass.definition.output_color.empty()) {
+                latest_scene_color =
+                    pass.definition
+                        .output_color.front();
+            }
+            if (isConcreteRenderTarget(
+                    pass.definition.output_depth)) {
+                latest_scene_depth =
+                    pass.definition.output_depth;
             }
             if (node_trace != nullptr) {
                 node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
@@ -1286,19 +1391,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 node_trace->push_back(anchorNodeTrace(execution_node.name, node_index));
             }
             if (execution_node.name == "__anchor_sprite" && modules.sprite.scene != nullptr) {
-                GlobalRenderTargetId color_id = noRenderTargetId();
-                GlobalRenderTargetId depth_id = noRenderTargetId();
-                for (std::size_t previous = node_index; previous-- > 0;) {
-                    const auto &candidate = frame_graph.nodes[previous];
-                    if (candidate.kind != FramePlanNodeKind::render) continue;
-                    const auto &definition = rendering_pass.passes.at(candidate.index).definition;
-                    if (!isConcreteRenderTarget(color_id) && !isSwapchainRenderTarget(color_id) &&
-                        !definition.output_color.empty()) color_id = definition.output_color.front();
-                    if (!isConcreteRenderTarget(depth_id) && isConcreteRenderTarget(definition.output_depth))
-                        depth_id = definition.output_depth;
-                    if ((isConcreteRenderTarget(color_id) || isSwapchainRenderTarget(color_id)) &&
-                        isConcreteRenderTarget(depth_id)) break;
-                }
+                const auto color_id =
+                    latest_scene_color;
+                const auto depth_id =
+                    latest_scene_depth;
                 if ((!isConcreteRenderTarget(color_id) && !isSwapchainRenderTarget(color_id)) ||
                     !isConcreteRenderTarget(depth_id))
                     throw std::runtime_error("sprite feature requires a scene color and depth attachment before sprite anchor");
@@ -1503,15 +1599,23 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         }
 
         if (modules.render_timing != nullptr &&
-            scheduled.lastExecution()) {
+            ends_recorded_node) {
             modules.render_timing->writeNodeSubrangeEnd(
-                render_ctx.cmd_buf, node_index, GpuTimingSubrange::body);
+                render_ctx.cmd_buf,
+                static_cast<std::uint32_t>(
+                    timing_query_index),
+                GpuTimingSubrange::body);
         }
+        // Completion is local to this command-recording call. A sequential
+        // XR schedule may be filtered to one view, so waiting for the final
+        // logical-view invocation would leave valid same-view dependencies
+        // falsely incomplete.
+        completed_nodes[node_index] = 1;
     }
 
-    if (local_read_scope_active) {
+    if (rendering_scope_active) {
         throw std::runtime_error(
-            "tile-local physical scope remained open after the "
+            "fused physical rendering scope remained open after the "
             "logical frame schedule");
     }
     if (modules.render_timing != nullptr) modules.render_timing->endGpuRange();

@@ -129,7 +129,9 @@ if(trimmed STREQUAL "")
     message(FATAL_ERROR "rpc inject_event stdout was empty")
 endif()
 
-string(REPLACE "\n" ";" lines "${trimmed}")
+# Keep semicolons inside a JSON response from becoming CMake list separators.
+string(REPLACE ";" "\\;" list_safe "${trimmed}")
+string(REPLACE "\n" ";" lines "${list_safe}")
 list(LENGTH lines line_count)
 if(NOT line_count EQUAL 10)
     message(FATAL_ERROR "expected 10 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")

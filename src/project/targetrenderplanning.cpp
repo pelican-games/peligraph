@@ -1444,10 +1444,81 @@ std::string_view vulkanPhysicalAttachmentStoreOpName(
 
 namespace {
 
+using PhysicalScopeAttachmentContract =
+    std::vector<std::pair<
+        std::string,
+        VulkanPhysicalAttachmentAspect>>;
+
+PhysicalScopeAttachmentContract
+physicalScopeAttachmentContract(
+    std::span<const VulkanPhysicalAttachmentPlan>
+        attachments,
+    std::string_view node) {
+    PhysicalScopeAttachmentContract result;
+    for (const auto &attachment : attachments) {
+        if (attachment.node == node) {
+            result.emplace_back(
+                attachment.logical_resource,
+                attachment.aspect);
+        }
+    }
+    return result;
+}
+
+bool canAppendMaterializedRenderingScope(
+    const VulkanPhysicalScopePlan &scope,
+    std::string_view node,
+    std::span<const VulkanPhysicalResourcePlan>
+        resources,
+    std::span<const VulkanPhysicalAttachmentPlan>
+        attachments) {
+    if (scope.nodes.empty()) return false;
+    const auto expected =
+        physicalScopeAttachmentContract(
+            attachments,
+            scope.nodes.front());
+    const auto appended =
+        physicalScopeAttachmentContract(
+            attachments, node);
+    if (expected.empty() || appended != expected) {
+        return false;
+    }
+    for (const auto &[resource, aspect] : expected) {
+        (void)aspect;
+        const auto *physical =
+            findPhysicalResource(
+                resources, resource);
+        if (physical == nullptr ||
+            physical->representation !=
+                VulkanResourceRepresentation::
+                    materialized_image) {
+            return false;
+        }
+    }
+    const auto &previous = scope.nodes.back();
+    for (const auto &attachment : attachments) {
+        if (attachment.node == previous &&
+            attachment.store_op !=
+                VulkanPhysicalAttachmentStoreOp::
+                    store) {
+            return false;
+        }
+        if (attachment.node == node &&
+            attachment.load_op !=
+                VulkanPhysicalAttachmentLoadOp::
+                    load) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetLoweringGraph &workspace,
     std::span<const VulkanPhysicalResourcePlan> resources,
+    std::span<const VulkanPhysicalAttachmentPlan>
+        attachments,
     const ResolvedVulkanViewExecutionPlan &view_plan,
     bool tile_candidate, const PlanningProfile &profile,
     std::span<const PlanningNodeConstraint> node_constraints,
@@ -1553,10 +1624,19 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                 }
             }
         }
+        if (fuse &&
+            result.back().local_reads.empty() &&
+            local_reads.empty() &&
+            !canAppendMaterializedRenderingScope(
+                result.back(), node.name,
+                resources, attachments)) {
+            fuse = false;
+        }
 
         if (fuse) {
             auto &scope = result.back();
             scope.nodes.push_back(node.name);
+            scope.single_rendering_instance = true;
             scope.local_reads.insert(scope.local_reads.end(),
                                      local_reads.begin(),
                                      local_reads.end());
@@ -2158,6 +2238,7 @@ CandidateDraft buildCandidateDraft(
         "target candidate physical feature");
     result.scopes = buildPhysicalScopes(
         canonical_graph, workspace, result.resources,
+        request.automatic_attachments,
         view_plan,
         tile_candidate, request.profile,
         request.node_constraints, result.decisions);
@@ -3340,6 +3421,8 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"kind",
                  vulkanPhysicalScopeKindName(scope.kind)},
                 {"nodes", scope.nodes},
+                {"single_rendering_instance",
+                 scope.single_rendering_instance},
                 {"local_reads", scope.local_reads},
                 {"regions", scope.region_tags},
                 {"view_execution",

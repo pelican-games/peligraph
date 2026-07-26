@@ -1274,13 +1274,17 @@ gate:
 ### RPE12b — verified Vulkan physical fragment
 
 状態: **WP204 Phase B v1 + verified alternate-format / attachment-operation /
-transient-runtime sliceで実装済み
+transient / tile-local / alias / dependency-safe-scope runtime sliceで実装済み
 (2026-07-26)**。自動target compilerを通常経路に残したまま、同じphysical層の一部だけを
 編集して自動planへ戻す境界を実装した。
+dependency-safe scopeの実装・検証台帳は
+[`design_reviews/2026-07-26_wp204_scope_execution_report.md`](design_reviews/2026-07-26_wp204_scope_execution_report.md)
+を参照する。
 
 `VulkanPhysicalFragmentPackage`のschemaは
-`pelican.vulkan_physical_fragment` version 1 / 2である。version 1は次を持ち、
-version 2はさらにsparse attachment operation overrideを持つ。
+`pelican.vulkan_physical_fragment` version 1 / 2 / 3である。version 1は次を持ち、
+version 2はさらにsparse attachment operation override、version 3は明示的な
+`scope_edit_mode`を持つ。現在のejectはversion 3 / `dependency_safe`を生成する。
 
 - graphとcompiled logical graph fingerprint
 - canonical target/device/provider環境を含むautomatic plan fingerprint
@@ -1288,7 +1292,8 @@ version 2はさらにsparse attachment operation overrideを持つ。
 - sparse resource override
 - 任意のcomplete scope partition
 - 任意のalias group集合
-- version 2では`(node, logical_resource)`ごとの任意の`load_op` / `store_op`
+- version 2以降では`(node, logical_resource)`ごとの任意の`load_op` / `store_op`
+- version 3では`split_only | dependency_safe`のscope編集mode
 
 自動plan dumpは全resource/scope/aliasと、契約を持つ全attachmentを含む
 `ejectable_physical_fragment`を出す。
@@ -1303,7 +1308,7 @@ sample/view execution、external depth contractを束縛する。logical graph�
 device factsやprovider generationが変わったpackageはstaleとしてrejectし、別planへ
 黙ってfallbackしない。
 
-v1/v2が共通して受理する編集は意図的に狭い。
+全versionが共通して受理するresource / alias編集は意図的に狭い。
 
 - resource representationはautomatic値の維持、またはautomatic
   transient/tile-local imageの`materialized_image`化だけ
@@ -1311,24 +1316,37 @@ v1/v2が共通して受理する編集は意図的に狭い。
   `format_candidates`で宣言済みの`materialized_image` format。alternate formatは
   target固有のrequired image usage、sample count、array layer上限、external depth
   transfer-source capability evidenceをすべて満たす場合だけ
-- scopeは全nodeのexact ordered partitionで、単一automatic scopeのsplitだけ。
-  異なるautomatic scopeのfusion/reorderはreject
 - alias groupはaliasable resource、単一所属、同一representation/format/sample/view/
   extent、lifetime非重複をすべて満たす場合だけ
 
-version 2のattachment overrideはlogical readとLoadの一致を維持し、対象を
+v1/v2のscopeは従来どおり全nodeのexact ordered partitionかつ単一automatic scopeのsplitだけ
+である。version 3の`split_only`も同じ意味を保つ。`dependency_safe`はdata edgeと明示
+`after` / `before`をすべて保つexact partitionに限ってscope/node順を変更し、編集後の
+resource lifetimeを再計算してalias groupを再検証する。schedulerとrendererは元node index
+ではなく、この検証済みphysical scope orderを実行する。
+
+version 3で異なるautomatic scopeを融合できるのは、internal materialized imageだけを使う
+single-sample rendering scopeで、kind/sample/view contractとordered attachment集合が一致する
+場合に限る。2 pass目以降はLoad、非終端passはStoreでなければならず、UI/ImGui、swapchain、
+MSAA、sampled/storage/transfer依存は拒否する。成立したscopeには
+`single_rendering_instance`を付け、runtimeはscope全体で一度だけdynamic renderingを開始する。
+`local_read_scope`は同じ実行機構のうちinput-attachment mappingも必要な狭いsubsetになった。
+
+version 2以降のattachment overrideはlogical readとLoadの一致を維持し、対象を
 materialized/external resourceへ限定する。StoreからDiscardへの手動変更は、別MSAA resolveが
 論理値を保存し、同じmultisample surfaceを後続attachmentがLoadしない場合だけ許可する。
 automatic transient loweringによるDiscardはこの手動overrideとは別に、write-only
 resourceの候補選択時に証明する。
 
-linkerは編集後にscope-resource boundaryを再計算し、tile/transient resourceのscope越境、
+linkerは編集後にdependency order、scope-resource boundary、resource lifetimeを再計算し、
+tile/transient resourceのscope越境、
 不正なsampled dependency、未知resource/node、node重複/欠落を拒否する。resourceごとの
 format、sample plan、required feature、external-depth contractを同期し、selected endpoint
 capabilityと同じbackend candidateのfeature closureを再検証してから`VulkanTargetPlan`を
 返す。runtime bridgeは同じdevice capability snapshotからformat assignmentを作り、
 同名targetを共有するgraphおよびflat/XR variant間のformat競合をGPU登録前に拒否する。
-runtime adapterはtile-local / alias結果のうち、後述する検証済みsubsetだけを受理する。
+runtime adapterはtile-local / alias / materialized scope fusion結果のうち、後述する
+検証済みsubsetだけを受理する。
 それ以外はparser成功と実行可能性を混同せず、runtime capability gateでrejectする。
 
 automatic planningにはmaterialized/tile-localと独立した
@@ -1373,12 +1391,16 @@ gate:
 - write-only transientのdevice/format gate、Store elision、実allocation、hot reloadを検証する
 - tile-localのscope fusion、shader ABI、single-view/multiview実行とfallbackを検証する
 - aliasのvariant合意、実allocation共有、memory dependency、generation/rollback/recreateを検証する
+- dependency-safe reorderのdata/after/before維持、lifetime再計算、非連続node index scheduleを検証する
+- headless hot reloadで独立compute scopeのreorder、materialized rendering scopeの単一instance化、
+  Load保持pixelを実描画し、synthetic Vulkan multiview回帰を維持する
 
 次の候補:
 
 1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
-2. WP204 後続 — 一般のload-store / scope fusion・queue・barrierのaggressive physical
-   verifier、MSAA/history/depth/storage/transfer/bufferを含むalias範囲拡張、対象GPU実測gate
+2. WP204 後続 — MSAA/external/異種attachmentを含む広いscope fusion、一般のload-store /
+   queue / barrierのaggressive physical verifier、MSAA/history/depth/storage/transfer/bufferを
+   含むalias範囲拡張、対象GPU実測gate
 3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装

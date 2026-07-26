@@ -340,6 +340,10 @@ struct CompiledPassRenderingContract {
         scope_depth_attachment_operations;
     float scope_depth_clear_value = 1.0f;
     std::uint32_t scope_stencil_clear_value = 0;
+    // A multi-node rendering scope is one Vulkan dynamic-rendering instance.
+    // local_read_scope is the stricter subset that also needs the
+    // dynamic-rendering-local-read mappings and feature.
+    bool fused_rendering_scope = false;
     bool local_read_scope = false;
 
     bool operator==(

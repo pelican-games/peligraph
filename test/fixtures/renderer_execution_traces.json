@@ -13,23 +13,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -53,18 +65,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -82,18 +103,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -109,6 +139,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -148,7 +179,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -166,29 +199,44 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "compute",
+        "logical_view_count": 1,
         "name": "write_color",
         "order": 4,
         "reads": [],
+        "view_execution": "single_view",
+        "view_index": 0,
         "writes": [
           {
             "kind": "buffer",
@@ -220,28 +268,43 @@
         ],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -257,6 +320,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -296,7 +360,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -314,23 +380,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -354,18 +432,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -383,18 +470,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -410,6 +506,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -449,7 +546,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -467,23 +566,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -507,23 +618,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -541,13 +664,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -563,6 +692,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -602,7 +732,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -620,23 +752,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -660,8 +804,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "blue_first",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -685,28 +832,43 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "red_after_blue",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -722,6 +884,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -761,7 +924,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -779,23 +944,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -819,8 +996,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -844,28 +1024,43 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "feature_present",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -881,6 +1076,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -920,7 +1116,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -966,28 +1164,43 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "hdr_source",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1016,8 +1229,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1050,23 +1266,35 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1084,13 +1312,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "debug_text",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -1106,6 +1340,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 12,
@@ -1148,7 +1383,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -1198,18 +1435,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "hdr_source",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1238,8 +1484,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1272,13 +1521,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1301,28 +1556,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "hdr_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1340,13 +1610,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "debug_text",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -1362,6 +1638,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 13,
@@ -1401,7 +1678,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -1535,8 +1814,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1560,8 +1842,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1610,48 +1895,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -1667,6 +1979,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -1708,7 +2021,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -1842,8 +2157,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1867,8 +2185,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -1917,48 +2238,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -1974,6 +2322,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -2015,7 +2364,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -2153,8 +2504,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2178,8 +2532,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2196,8 +2553,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "shadow_depth",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2250,48 +2610,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -2307,6 +2694,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 12,
@@ -2348,7 +2736,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -2366,23 +2756,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2406,28 +2808,43 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "orbit_camera",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -2443,6 +2860,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
@@ -2482,7 +2900,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -2500,23 +2920,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2540,28 +2972,43 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ortho_camera",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -2577,6 +3024,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
@@ -2616,7 +3064,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -2634,23 +3084,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2674,18 +3136,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2703,18 +3174,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -2730,6 +3210,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -2769,7 +3250,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -2903,8 +3386,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2928,8 +3414,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -2978,48 +3467,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -3035,6 +3551,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -3076,7 +3593,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -3214,8 +3733,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3239,8 +3761,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3257,8 +3782,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "shadow_depth",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3311,48 +3839,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -3368,6 +3923,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 12,
@@ -3409,7 +3965,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -3456,7 +4014,7 @@
         "resource": "display"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "g_emissive"
       },
       {
@@ -3587,8 +4145,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3621,8 +4182,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_pass",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3651,8 +4215,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_blur_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3701,28 +4268,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3751,8 +4333,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3781,8 +4366,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_0",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3811,8 +4399,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_0",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3841,8 +4432,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_1",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3871,8 +4465,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_1",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3901,8 +4498,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_2",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3931,8 +4531,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_2",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3961,8 +4564,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_3",
-        "order": 15
+        "order": 15,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -3991,8 +4597,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_3",
-        "order": 16
+        "order": 16,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4019,8 +4628,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_3",
-        "order": 17
+        "order": 17,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4047,8 +4659,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_2",
-        "order": 18
+        "order": 18,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4075,8 +4690,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_1",
-        "order": 19
+        "order": 19,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4103,13 +4721,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 20
+        "order": 20,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 21
+        "order": 21,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4127,23 +4751,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 22
+        "order": 22,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 23
+        "order": 23,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 24
+        "order": 24,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 25
+        "order": 25,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -4159,6 +4795,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 26,
@@ -4217,7 +4854,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -4239,23 +4878,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4279,8 +4930,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "opaque",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "aspect": "color",
@@ -4292,6 +4946,7 @@
         ],
         "format": "B8G8R8A8_SRGB",
         "kind": "snapshot_copy",
+        "logical_view_count": 1,
         "name": "__snapshot_opaque_color",
         "order": 5,
         "semantics": "fixed_once_before_transparency",
@@ -4312,7 +4967,9 @@
             "new_layout": "shader_read_only_optimal",
             "resource": "opaque_color"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4341,28 +4998,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "refract",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -4378,6 +5050,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -4418,7 +5091,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -4552,8 +5227,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4577,8 +5255,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4627,11 +5308,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -4679,42 +5364,65 @@
             "sort": "z",
             "visible_count": 1
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -4730,6 +5438,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -4771,7 +5480,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -4905,8 +5616,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4930,8 +5644,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -4980,11 +5697,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -5030,42 +5751,65 @@
             "sort": "z",
             "visible_count": 2
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -5081,6 +5825,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -5122,7 +5867,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -5256,8 +6003,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -5281,8 +6031,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -5331,11 +6084,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -5381,42 +6138,65 @@
             "sort": "z",
             "visible_count": 2
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -5432,6 +6212,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -5473,7 +6254,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -5607,8 +6390,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -5632,8 +6418,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -5682,11 +6471,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -5732,42 +6525,65 @@
             "sort": "z",
             "visible_count": 3
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -5783,6 +6599,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -5824,7 +6641,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -5958,8 +6777,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -5983,8 +6805,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -6033,11 +6858,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -6083,27 +6912,41 @@
             "sort": "z",
             "visible_count": 1
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -6121,23 +6964,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -6153,6 +7008,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 12,
@@ -6194,7 +7050,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -6328,8 +7186,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -6353,8 +7214,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -6403,11 +7267,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -6453,42 +7321,65 @@
             "sort": "z",
             "visible_count": 1
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -6504,6 +7395,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -6545,7 +7437,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -6679,8 +7573,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -6704,8 +7601,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -6754,11 +7654,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -6804,42 +7708,65 @@
             "sort": "declaration",
             "visible_count": 2
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -6855,6 +7782,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -6896,7 +7824,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -7030,8 +7960,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7055,8 +7988,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7105,11 +8041,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -7155,42 +8095,65 @@
             "sort": "y_down",
             "visible_count": 1
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -7206,6 +8169,7 @@
           17
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -7247,7 +8211,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -7381,8 +8347,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7406,8 +8375,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7456,11 +8428,15 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
         "order": 3,
         "sprite_draw": {
@@ -7509,42 +8485,65 @@
             "sort": "z",
             "visible_count": 3
           }
-        }
+        },
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -7560,6 +8559,7 @@
           15
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -7601,7 +8601,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -7619,23 +8621,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7659,28 +8673,43 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "solid",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -7696,6 +8725,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
@@ -7735,7 +8765,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -7885,8 +8917,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7910,8 +8945,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7960,13 +8998,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -7998,13 +9042,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8045,8 +9095,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8075,18 +9128,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8115,28 +9177,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -8152,6 +9229,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -8195,7 +9273,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -8345,8 +9425,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8370,8 +9453,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8420,13 +9506,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8458,13 +9550,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8505,8 +9603,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8535,18 +9636,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8575,28 +9685,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -8612,6 +9737,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -8655,7 +9781,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -8805,8 +9933,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8830,8 +9961,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8880,13 +10014,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8918,13 +10058,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8965,8 +10111,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -8995,18 +10144,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9035,28 +10193,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -9072,6 +10245,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -9115,7 +10289,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -9265,8 +10441,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9290,8 +10469,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9340,13 +10522,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9378,13 +10566,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9425,8 +10619,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9455,18 +10652,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9495,28 +10701,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -9532,6 +10753,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -9575,7 +10797,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -9725,8 +10949,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9750,8 +10977,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9800,13 +11030,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9838,13 +11074,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9885,8 +11127,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9915,18 +11160,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -9955,28 +11209,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -9992,6 +11261,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -10035,7 +11305,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -10185,8 +11457,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10210,8 +11485,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10260,13 +11538,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10298,13 +11582,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10345,8 +11635,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10375,18 +11668,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10415,28 +11717,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -10452,6 +11769,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -10495,7 +11813,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -10645,8 +11965,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10670,8 +11993,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10720,13 +12046,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10758,13 +12090,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "velocity_pass",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10805,8 +12143,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10835,18 +12176,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -10875,28 +12225,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "taa_present",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -10912,6 +12277,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 15,
@@ -10955,7 +12321,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -11001,18 +12369,27 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "current_frame",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11045,18 +12422,27 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "temporal_accumulate",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11085,28 +12471,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "temporal_present",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -11122,6 +12523,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -11161,7 +12563,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -11179,23 +12583,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11219,13 +12635,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11243,23 +12665,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -11275,6 +12709,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -11314,7 +12749,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -11332,23 +12769,35 @@
     "nodes": [
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11372,13 +12821,19 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "present",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11396,23 +12851,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -11428,6 +12895,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
@@ -11467,7 +12935,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -11514,7 +12984,7 @@
         "resource": "display"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "g_emissive"
       },
       {
@@ -11645,8 +13115,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11679,8 +13152,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_pass",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11709,8 +13185,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_blur_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11759,28 +13238,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11809,8 +13303,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11839,8 +13336,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_0",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11869,8 +13369,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_0",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11899,8 +13402,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_1",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11929,8 +13435,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_1",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11959,8 +13468,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_2",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -11989,8 +13501,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_2",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12019,8 +13534,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_3",
-        "order": 15
+        "order": 15,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12049,8 +13567,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_3",
-        "order": 16
+        "order": 16,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12077,8 +13598,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_3",
-        "order": 17
+        "order": 17,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12105,8 +13629,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_2",
-        "order": 18
+        "order": 18,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12133,8 +13660,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_1",
-        "order": 19
+        "order": 19,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12161,13 +13691,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 20
+        "order": 20,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 21
+        "order": 21,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12185,23 +13721,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 22
+        "order": 22,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 23
+        "order": 23,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 24
+        "order": 24,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 25
+        "order": 25,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -12217,6 +13765,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 26,
@@ -12275,7 +13824,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -12322,7 +13873,7 @@
         "resource": "display"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "g_emissive"
       },
       {
@@ -12453,8 +14004,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12487,8 +14041,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_pass",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12517,8 +14074,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_blur_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12567,28 +14127,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12617,8 +14192,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12647,8 +14225,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_0",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12677,8 +14258,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_0",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12707,8 +14291,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_1",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12737,8 +14324,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_1",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12767,8 +14357,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_2",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12797,8 +14390,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_2",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12827,8 +14423,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_3",
-        "order": 15
+        "order": 15,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12857,8 +14456,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_3",
-        "order": 16
+        "order": 16,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12885,8 +14487,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_3",
-        "order": 17
+        "order": 17,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12913,8 +14518,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_2",
-        "order": 18
+        "order": 18,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12941,8 +14549,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_1",
-        "order": 19
+        "order": 19,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12969,13 +14580,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 20
+        "order": 20,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 21
+        "order": 21,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -12993,23 +14610,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 22
+        "order": 22,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 23
+        "order": 23,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 24
+        "order": 24,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 25
+        "order": 25,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -13025,6 +14654,7 @@
           64
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 26,
@@ -13083,7 +14713,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -13130,7 +14762,7 @@
         "resource": "display"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "g_emissive"
       },
       {
@@ -13261,8 +14893,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13295,8 +14930,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_pass",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13325,8 +14963,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_blur_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13375,28 +15016,43 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13425,8 +15081,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13455,8 +15114,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_0",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13485,8 +15147,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_0",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13515,8 +15180,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_1",
-        "order": 11
+        "order": 11,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13545,8 +15213,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_1",
-        "order": 12
+        "order": 12,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13575,8 +15246,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_2",
-        "order": 13
+        "order": 13,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13605,8 +15279,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_2",
-        "order": 14
+        "order": 14,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13635,8 +15312,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "HorizontalBlur_3",
-        "order": 15
+        "order": 15,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13665,8 +15345,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "VerticalBlur_3",
-        "order": 16
+        "order": 16,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13693,8 +15376,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_3",
-        "order": 17
+        "order": 17,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13721,8 +15407,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_2",
-        "order": 18
+        "order": 18,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13749,8 +15438,11 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "UpsampleBlend_1",
-        "order": 19
+        "order": 19,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13777,13 +15469,19 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 20
+        "order": 20,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 21
+        "order": 21,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -13801,23 +15499,35 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 22
+        "order": 22,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 23
+        "order": 23,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 24
+        "order": 24,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 25
+        "order": 25,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -13833,6 +15543,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 26,
@@ -13891,7 +15602,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -14025,8 +15738,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -14050,8 +15766,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -14100,48 +15819,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -14157,6 +15903,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -14198,7 +15945,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -14332,8 +16081,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -14357,8 +16109,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -14407,48 +16162,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -14464,6 +16246,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -14505,7 +16288,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   },
@@ -14639,8 +16424,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -14664,8 +16452,11 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1
+        "order": 1,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "attachments": [
@@ -14714,48 +16505,75 @@
           }
         ],
         "kind": "render",
+        "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2
+        "order": 2,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 3
+        "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 4
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 5
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 6
+        "order": 6,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 7
+        "order": 7,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 8
+        "order": 8,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 9
+        "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "kind": "anchor",
+        "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 10,
+        "view_execution": "single_view",
+        "view_index": 0
       },
       {
         "color_counters": {
@@ -14771,6 +16589,7 @@
           16
         ],
         "kind": "output_transform",
+        "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
@@ -14812,7 +16631,9 @@
             "src_access": "color_attachment_write",
             "src_stage": "color_attachment_output"
           }
-        ]
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
       }
     ]
   }

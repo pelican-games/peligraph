@@ -7,8 +7,10 @@
 `FrameGraphDefinition` / `FramePlan`、RPE6b0のversioned logical value / producer edgeを持つ
 diagnostic shadow graph、RPE6b1のtyped material screen-input縦切りに加え、RPE6c0/1の
 topology/probe、immutable/disposable lowering seam、desktop/tile physical plan fixtureまで
-実装済みである。汎用CPU task scheduler、異種execution linker、動画encode/decodeは未実装で
-あり、必要性と計測を確認してから個別WPにする。
+実装済みである。WP204では既存Vulkan render/compute nodeを同じdependency-safe physical
+scope orderへloweringし、version 3 fragmentのreorderと限定rendering-scope fusionを実行時まで
+接続した。これは既存GPU domain内の合流であり、汎用CPU task scheduler、異種execution
+linker、動画encode/decodeは未実装である。後者は必要性と計測を確認してから個別WPにする。
 
 本書は、renderer 固有の [`design_render_graph_compiler.md`](design_render_graph_compiler.md)
 と、現行 render / GPU compute 依存グラフの
@@ -939,6 +941,16 @@ non-history・single-sample・materializedで同一image契約を持つ部分集
 alias切替memory dependencyとgeneration固有tokenでexecution/hot-reload境界を保つ。
 これはHEG全dialect共通allocatorではなく、Vulkan physical loweringが所有する有限backend実装である。
 
+dependency-safe physical scope sliceではversion 3 fragmentへ`scope_edit_mode`を追加した。
+`dependency_safe`はdata edgeと明示`after` / `before`を保つforestの線形化だけを受理し、
+編集後のVulkan physical順からresource lifetimeとalias legalityを再計算する。既存compute nodeと
+render nodeは同じschedulerへ合流するが、融合できるのは互換なrendering nodeだけである。
+single-sample internal materialized attachmentのordered contractとLoad/Storeが一致する場合は
+`single_rendering_instance`へloweringし、tile-local local-readと同じexecutorの広い契約で実行する。
+headless fixtureは独立compute scopeを先頭へ移動し、その後の融合render scopeとpresentを実Vulkanで
+実行する。これはHEG3のCPU/GPU domain partitionを先取りせず、GPU physical schedulerが
+異なるVulkan node kindを正しい順序で扱えることだけを証明する。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -998,8 +1010,12 @@ alias切替memory dependencyとgeneration固有tokenでexecution/hot-reload境�
   transient allocation、single-view/sequential/multiview実行を接続
 - WP204 alias-runtime sliceでmaterialized imageのlifetime group、VMA allocation共有、
   alias memory dependency、generation/rollback/recreateを接続
+- WP204 dependency-safe-scope sliceでversion 3 fragment、data/after/beforeを保つreorder、
+  lifetime再計算、既存compute/render nodeのphysical-order execution、限定materialized
+  dynamic-rendering fusionを接続
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
-  physical control、NativeScope、CPU・external・video runtime workはまだ追加しない
+  physical control、MSAA/external scope fusion、NativeScope、CPU・external・video runtime
+  workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain
 

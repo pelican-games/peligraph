@@ -48,14 +48,6 @@ bool hasOutputTransform(
                FramePlanNodeKind::output_transform;
 }
 
-vk::Extent2D baseExtentFromConfig(const ProjectBasicConfig &config) {
-    const auto window_size = config.initialWindowSize();
-    return vk::Extent2D{
-        static_cast<uint32_t>(window_size.width),
-        static_cast<uint32_t>(window_size.height),
-    };
-}
-
 RenderingPassConfigRegistrationDependencies registrationDependencies(
     RenderingPassConfigRegistrationDependencies::Options options = {}) {
     auto &rt_module = GET_MODULE(RenderTarget);
@@ -231,6 +223,13 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     ScopedLogTimer timer{"load default rendering pass from config"};
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
+    // The launch target owns the effective output extent. In particular,
+    // headless runs may intentionally override project.json's initial window
+    // size, so using the project value here would register output-relative
+    // intermediates against a different base than the compiled/runtime
+    // resolution contract.
+    const auto base_extent =
+        GET_MODULE(RenderTarget).getExtent();
     const auto default_pass_name = config.defaultRenderingPass();
     // Compose and validate the third graph before runtime modules are frozen.
     // It remains a data program and intentionally performs no shared render
@@ -268,7 +267,6 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
             std::move(flat_options)));
 #if PELICAN_WITH_OPENXR
     if (xr_active) {
-        const auto base_extent = baseExtentFromConfig(config);
         RenderingPassConfigRegistrationDependencies::Options xr_options;
         xr_options.graph_variant = RenderPipelineGraphVariant::xr;
         // The OpenXR composition target owns one two-layer color swapchain
@@ -301,7 +299,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         auto registrations =
             registerRenderingPassConfigVariantsFromJsonData(
                 rendering_config_json,
-                baseExtentFromConfig(config),
+                base_extent,
                 std::move(variant_dependencies));
         RenderGraphVariantConfig variants{
             .flat = requireDefaultPass(
