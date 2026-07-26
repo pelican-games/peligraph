@@ -118,6 +118,9 @@ TEST_CASE("import manifest requires version 1 for versioned Pelican outputs",
             CHECK_THROWS_WITH(parseImportManifestJson(versionedManifest({})),
                               Catch::Matchers::ContainsSubstring(std::string{schema} +
                                                                  " requires version 1"));
+            CHECK_THROWS_WITH(
+                parseImportManifestJson(versionedManifest({{"version", 2}})),
+                Catch::Matchers::ContainsSubstring("expected=1, actual=2"));
             CHECK(parseImportManifestJson(versionedManifest({{"version", 1}})).outputs.size() == 1);
         }
     }

@@ -131,6 +131,20 @@ void validateOutputFileReference(std::string_view file) {
     }
 }
 
+void requireOutputVersion(const std::string &schema, const std::optional<int> &version,
+                          int expected_version) {
+    if (!version) {
+        throw std::runtime_error("import manifest output " + schema + " requires version " +
+                                 std::to_string(expected_version));
+    }
+    if (*version != expected_version) {
+        throw std::runtime_error("import manifest output " + schema +
+                                 " version is not supported (expected=" +
+                                 std::to_string(expected_version) + ", actual=" +
+                                 std::to_string(*version) + ")");
+    }
+}
+
 void validateOutputSchema(const std::string &schema, const std::optional<int> &version) {
     if (schema == "gltf" || schema == "png") {
         if (version) {
@@ -139,37 +153,15 @@ void validateOutputSchema(const std::string &schema, const std::optional<int> &v
         return;
     }
     if (schema == "pelican.transform_seq" || schema == "pelican.scene" ||
-        schema == "pelican.layout" || schema == "pelican.atlas") {
-        if (!version) {
-            throw std::runtime_error("import manifest output " + schema + " requires version 1");
-        }
-        if (*version != 1) {
-            throw std::runtime_error("import manifest output " + schema + " version is not supported");
-        }
-        return;
-    }
-    if (schema == "pelican.material") {
-        if (!version) {
-            throw std::runtime_error("import manifest output pelican.material requires version 1");
-        }
-        if (*version != 1) {
-            throw std::runtime_error("import manifest output pelican.material version is not supported"
-                                     " (expected=1, actual=" +
-                                     std::to_string(*version) + ")");
-        }
+        schema == "pelican.layout" || schema == "pelican.atlas" ||
+        schema == "pelican.material") {
+        requireOutputVersion(schema, version, 1);
         return;
     }
     // pelican-import-tools の ktx2 レシピが出力する schema(KTX2 container
     // version 2)。エンジン側の読取サブセットは WP92 のとおり。
     if (schema == "khronos.ktx2") {
-        if (!version) {
-            throw std::runtime_error("import manifest output khronos.ktx2 requires version 2");
-        }
-        if (*version != 2) {
-            throw std::runtime_error("import manifest output khronos.ktx2 version is not supported"
-                                     " (expected=2, actual=" +
-                                     std::to_string(*version) + ")");
-        }
+        requireOutputVersion(schema, version, 2);
         return;
     }
     throw std::runtime_error("import manifest output schema is not supported: " + schema);

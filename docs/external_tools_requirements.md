@@ -101,6 +101,13 @@ Pelican2 が公開予定のコマンド(ツール側はこれを呼ぶクライ�
 
 **R10: バージョニング。** 出力ファイルには必ず schema 名 + version + 生成ツール名 + ツールバージョンを埋め込む(glTF は `asset.generator`、JSONL はヘッダ行)。後方互換を壊す変更は version を上げ、読み手(Blender アドオン・Pelican2)の対応を待ってからデフォルト化する。
 
+`pelican.import` manifest は version 1 とし、`outputs[]` でも形式ごとの版を
+明示する。`pelican.transform_seq` / `pelican.scene` / `pelican.layout` /
+`pelican.atlas` / `pelican.material` は `version: 1`、`khronos.ktx2` は
+コンテナ版の `version: 2` が必須である。省略や非現行版は受理されない。
+非versioned形式の `gltf` / `png` は `outputs[]` に version を書かない。
+`tool.version` は互換判定用ではなく、生成元を示す自由文字列である。
+
 ## 6. エージェント向け補足
 
 - 本書の R 番号要求と矛盾する実装を行わないこと。矛盾が必要だと判断した場合は実装せず、理由を添えて人間に確認する

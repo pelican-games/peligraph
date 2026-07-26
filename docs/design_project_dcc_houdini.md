@@ -104,13 +104,16 @@ imports/
    エンジンは解決しない。[PF] の絶対パス禁止は「エンジンが解決する参照」の
    規則なので競合しない)
 2. `outputs[].file` は manifest からの相対パスのみ(ディレクトリ内に閉じる)
-3. sha256 は必須。これが**保留中の assets.manifest.json(検証)と
+3. versionedな`outputs[].schema`は現行版を明示する。Pelicanの
+   `transform_seq` / `scene` / `layout` / `atlas` / `material`はversion 1、
+   `khronos.ktx2`はversion 2。`gltf` / `png`にはversionを書かない
+4. sha256 は必須。これが**保留中の assets.manifest.json(検証)と
    web キャッシュ検証の供給源**になる — 手書きの README 一覧表([PF] §5-6)を
    ツール納品分について自動化する位置づけ
-4. manifest は**ツールが書く**(R10 の埋め込みバージョンと同源)。
+5. manifest は**ツールが書く**(R10 の埋め込みバージョンと同源)。
    手置きのアセット(ストアで買った glb 等)には要らない — imports/ 外の
    assets/ に普通に置く
-5. エンジン本体は manifest を**読まなくても動く**(参照は従来どおり
+6. エンジン本体は manifest を**読まなくても動く**(参照は従来どおり
    scene/asset JSON が張る)。manifest を読むのは周辺ツール:
    - `pelican_cli import <delivery_dir>`: outputs を検証(sha256・スキーマ)し、
      asset_data_json への登録を対話または自動で行う([PF] §6 で「需要が
