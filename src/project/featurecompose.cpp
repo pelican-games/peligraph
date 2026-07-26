@@ -1,5 +1,6 @@
 #include "featurecompose.hpp"
 #include "featurejitter.hpp"
+#include "materialscreeninput.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1159,6 +1160,21 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
             }
         }
     }
+    if (feature.contains("surface_resources")) {
+        for (auto &resource :
+             feature.at("surface_resources")) {
+            if (resource.is_object() &&
+                resource.contains("resource") &&
+                resource.at("resource").is_string()) {
+                const auto value =
+                    resource.at("resource")
+                        .get<std::string>();
+                resource["resource"] =
+                    replaceBoundTargetReference(
+                        value, bindings, feature_name);
+            }
+        }
+    }
     if (feature.contains("render_target_overrides")) {
         nlohmann::json replaced = nlohmann::json::object();
         for (auto override_it = feature.at("render_target_overrides").begin();
@@ -1381,6 +1397,20 @@ void insertPassAtEnd(nlohmann::json &config, const nlohmann::json &pass) {
     passes.push_back(pass);
 }
 
+void insertPassAtBeginning(
+    nlohmann::json &config, const nlohmann::json &pass) {
+    auto &rendering_passes =
+        ensureArray(config, "rendering_passes");
+    if (rendering_passes.size() != 1) {
+        throw std::runtime_error(
+            "render feature insert:begin requires exactly one "
+            "rendering pass");
+    }
+    auto &passes =
+        rendering_passes.at(0).at("passes");
+    passes.insert(passes.begin(), pass);
+}
+
 void appendStringListValue(nlohmann::json &json, const std::string &field_name,
                            const std::string &value) {
     if (!json.contains(field_name)) {
@@ -1411,7 +1441,9 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
         after = true;
         anchor = insert.substr(after_prefix.size());
     } else {
-        throw std::runtime_error("render feature pass insert must be before:<pass>, after:<pass>, or end");
+        throw std::runtime_error(
+            "render feature pass insert must be begin, "
+            "before:<pass>, after:<pass>, or end");
     }
     if (anchor.empty()) {
         throw std::runtime_error("render feature pass insert anchor must not be empty");
@@ -1463,7 +1495,9 @@ void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
             throw std::runtime_error("Render feature pass name collides: " + pass_name);
         }
 
-        if (insert == "end") {
+        if (insert == "begin") {
+            insertPassAtBeginning(config, *pass_it);
+        } else if (insert == "end") {
             insertPassAtEnd(config, *pass_it);
         } else {
             insertPassByAnchor(config, insert, *pass_it);
@@ -1487,6 +1521,372 @@ nlohmann::json *findPass(nlohmann::json &config, const std::string &pass_name) {
         }
     }
     return found_pass;
+}
+
+bool passWritesResource(
+    const nlohmann::json &pass,
+    std::string_view resource) {
+    if (!pass.contains("output") ||
+        !pass.at("output").is_object()) {
+        return false;
+    }
+    const auto &output = pass.at("output");
+    return (output.contains("color") &&
+            stringListContains(
+                output.at("color"), resource)) ||
+           (output.contains("depth") &&
+            output.at("depth").is_string() &&
+            output.at("depth").get<std::string>() ==
+                resource);
+}
+
+std::size_t stringListSize(
+    const nlohmann::json &object,
+    std::string_view field_name,
+    std::string_view context) {
+    const auto field = std::string{field_name};
+    if (!object.contains(field)) return 0;
+    const auto &value = object.at(field);
+    if (value.is_string()) return 1;
+    if (!value.is_array() ||
+        !std::all_of(
+            value.begin(), value.end(),
+            [](const auto &entry) {
+                return entry.is_string();
+            })) {
+        throw std::runtime_error(
+            std::string{context} + " " + field +
+            " must be a string or string array");
+    }
+    return value.size();
+}
+
+void appendFullscreenSurfaceResource(
+    nlohmann::json &pass, const std::string &resource,
+    const MaterialPassInputContract &contract) {
+    const auto input_count =
+        stringListSize(pass, "input",
+                       "fullscreen surface-resource consumer");
+    const auto already_bound =
+        pass.contains("input") &&
+        stringListContains(pass.at("input"), resource);
+    if (already_bound) {
+        throw std::runtime_error(
+            "fullscreen surface-resource consumer already binds "
+            "resource '" +
+            resource + "': " +
+            pass.value("name", std::string{"<unnamed>"}));
+    }
+
+    if (!pass.contains("input_sampling")) {
+        pass["input_sampling"] =
+            nlohmann::json::array();
+        for (std::size_t index = 0;
+             index < input_count; ++index) {
+            pass["input_sampling"].push_back({
+                {"filter", "linear"},
+                {"address", "repeat"},
+            });
+        }
+    } else if (!pass.at("input_sampling").is_array() ||
+               pass.at("input_sampling").size() !=
+                   input_count) {
+        throw std::runtime_error(
+            "fullscreen surface-resource consumer has "
+            "inconsistent input_sampling: " +
+            pass.value("name", std::string{"<unnamed>"}));
+    }
+
+    appendStringListValue(pass, "input", resource);
+    switch (contract.sampling) {
+    case MaterialPassInputSampling::linear_repeat:
+        pass["input_sampling"].push_back({
+            {"filter", "linear"},
+            {"address", "repeat"},
+        });
+        break;
+    case MaterialPassInputSampling::nearest_clamp_to_edge:
+        pass["input_sampling"].push_back({
+            {"filter", "nearest"},
+            {"address", "clamp_to_edge"},
+        });
+        break;
+    }
+}
+
+void requireOnlySurfaceResourceFields(
+    const nlohmann::json &object,
+    std::initializer_list<std::string_view> allowed,
+    std::string_view context) {
+    for (auto field = object.begin();
+         field != object.end(); ++field) {
+        const auto known =
+            std::find(
+                allowed.begin(), allowed.end(),
+                field.key()) != allowed.end();
+        if (!known) {
+            throw std::runtime_error(
+                std::string{context} +
+                " has unknown field: " + field.key());
+        }
+    }
+}
+
+void validateFullscreenConsumerSelector(
+    const nlohmann::json &selector,
+    std::string_view context) {
+    if (!selector.is_object()) {
+        throw std::runtime_error(
+            std::string{context} + " must be an object");
+    }
+    requireOnlySurfaceResourceFields(
+        selector, {"fragment", "uses_light_data"},
+        context);
+    if (requireStringField(
+            selector, "fragment", context)
+            .empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " fragment must not be empty");
+    }
+    if (!selector.contains("uses_light_data") ||
+        !selector.at("uses_light_data").is_boolean()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires boolean field: uses_light_data");
+    }
+}
+
+bool fullscreenConsumerMatches(
+    const nlohmann::json &pass,
+    const nlohmann::json &selector) {
+    if (pass.value("type", std::string{}) !=
+        "fullscreen") {
+        return false;
+    }
+    if (pass.value("uses_light_data", false) !=
+        selector.at("uses_light_data").get<bool>()) {
+        return false;
+    }
+    return pass.contains("shader") &&
+           pass.at("shader").is_object() &&
+           pass.at("shader").value(
+               "fragment", std::string{}) ==
+               selector.at("fragment").get_ref<
+                   const std::string &>();
+}
+
+void applySurfaceResourceContracts(
+    nlohmann::json &config,
+    const nlohmann::json &feature,
+    const std::string &feature_name,
+    const std::string &feature_ref,
+    nlohmann::json &compiled_declarations) {
+    if (!feature.contains("surface_resources")) {
+        return;
+    }
+    const auto &declarations =
+        requireArrayField(
+            feature, "surface_resources",
+            "render feature");
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    for (std::size_t declaration_index = 0;
+         declaration_index < declarations.size();
+         ++declaration_index) {
+        const auto &declaration =
+            declarations.at(declaration_index);
+        const auto context =
+            "render feature '" + feature_name +
+            "' surface_resources[" +
+            std::to_string(declaration_index) + "]";
+        if (!declaration.is_object()) {
+            throw std::runtime_error(
+                context + " must be an object");
+        }
+        requireOnlySurfaceResourceFields(
+            declaration,
+            {"contract", "resource", "producer",
+             "material_contracts",
+             "fullscreen_consumers"},
+            context);
+        const auto contract_name =
+            requireStringField(
+                declaration, "contract", context);
+        const auto resource =
+            requireStringField(
+                declaration, "resource", context);
+        const auto producer =
+            requireStringField(
+                declaration, "producer", context);
+        const auto contract =
+            makeBuiltinMaterialPassInputContract(
+                types, contract_name);
+        if (contract.name !=
+            directionalShadowInputContractName) {
+            throw std::runtime_error(
+                context +
+                " does not name a public feature-owned "
+                "material input contract");
+        }
+        if (findRenderTarget(config, resource) == nullptr) {
+            throw std::runtime_error(
+                context + " resource target was not found: " +
+                resource);
+        }
+        auto *producer_pass =
+            findPass(config, producer);
+        if (producer_pass == nullptr ||
+            !passWritesResource(
+                *producer_pass, resource)) {
+            throw std::runtime_error(
+                context + " producer '" + producer +
+                "' does not write resource '" + resource +
+                "'");
+        }
+
+        std::vector<std::string> material_contracts;
+        if (declaration.contains("material_contracts")) {
+            material_contracts = parseStringArray(
+                declaration, "material_contracts",
+                context);
+            for (const auto &name : material_contracts) {
+                const auto parsed =
+                    materialPassContractFromName(name);
+                if (!parsed ||
+                    materialPassShaderContract(*parsed) !=
+                        MaterialShaderContract::
+                            forward_scene_color_v1) {
+                    throw std::runtime_error(
+                        context +
+                        " material_contracts must name forward "
+                        "material contracts: " +
+                        name);
+                }
+            }
+        }
+
+        nlohmann::json fullscreen_selectors =
+            nlohmann::json::array();
+        if (declaration.contains(
+                "fullscreen_consumers")) {
+            fullscreen_selectors =
+                declaration.at(
+                    "fullscreen_consumers");
+            if (!fullscreen_selectors.is_array()) {
+                throw std::runtime_error(
+                    context +
+                    " fullscreen_consumers must be an array");
+            }
+            for (std::size_t selector_index = 0;
+                 selector_index <
+                 fullscreen_selectors.size();
+                 ++selector_index) {
+                validateFullscreenConsumerSelector(
+                    fullscreen_selectors.at(
+                        selector_index),
+                    context +
+                        " fullscreen_consumers[" +
+                        std::to_string(selector_index) +
+                        "]");
+            }
+        }
+
+        nlohmann::json material_consumers =
+            nlohmann::json::array();
+        nlohmann::json fullscreen_consumers =
+            nlohmann::json::array();
+        for (auto &pass_set :
+             ensureArray(config, "rendering_passes")) {
+            auto &passes =
+                pass_set.at("passes");
+            for (auto &pass : passes) {
+                const auto pass_name =
+                    pass.value("name", std::string{});
+                const auto material_contract =
+                    pass.value(
+                        "material_contract",
+                        std::string{});
+                if (pass.value("type", std::string{}) ==
+                        "material" &&
+                    std::find(
+                        material_contracts.begin(),
+                        material_contracts.end(),
+                        material_contract) !=
+                        material_contracts.end()) {
+                    if (!pass.contains(
+                            "surface_resources")) {
+                        pass["surface_resources"] =
+                            nlohmann::json::object();
+                    }
+                    if (!pass.at(
+                             "surface_resources")
+                             .is_object()) {
+                        throw std::runtime_error(
+                            context +
+                            " consumer surface_resources must "
+                            "be an object: " +
+                            pass_name);
+                    }
+                    auto &resources =
+                        pass.at("surface_resources");
+                    if (resources.contains(contract.name)) {
+                        throw std::runtime_error(
+                            context +
+                            " duplicates material contract '" +
+                            contract.name + "' in pass '" +
+                            pass_name + "'");
+                    }
+                    resources[contract.name] = resource;
+                    material_consumers.push_back(
+                        pass_name);
+                }
+
+                for (std::size_t selector_index = 0;
+                     selector_index <
+                     fullscreen_selectors.size();
+                     ++selector_index) {
+                    const auto &selector =
+                        fullscreen_selectors.at(
+                            selector_index);
+                    if (!fullscreenConsumerMatches(
+                            pass, selector)) {
+                        continue;
+                    }
+                    if (std::find(
+                            fullscreen_consumers.begin(),
+                            fullscreen_consumers.end(),
+                            pass_name) !=
+                        fullscreen_consumers.end()) {
+                        continue;
+                    }
+                    appendFullscreenSurfaceResource(
+                        pass, resource, contract);
+                    fullscreen_consumers.push_back(
+                        pass_name);
+                }
+            }
+        }
+        if (material_consumers.empty() &&
+            fullscreen_consumers.empty()) {
+            throw std::runtime_error(
+                context +
+                " did not match any material or fullscreen "
+                "consumer");
+        }
+
+        compiled_declarations.push_back({
+            {"contract", contract.name},
+            {"resource", resource},
+            {"producer", producer},
+            {"provider_feature", feature_name},
+            {"provider_ref", feature_ref},
+            {"material_consumers",
+             std::move(material_consumers)},
+            {"fullscreen_consumers",
+             std::move(fullscreen_consumers)},
+        });
+    }
 }
 
 void applyPassOverrides(nlohmann::json &config, const nlohmann::json &feature) {
@@ -1591,6 +1991,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     std::vector<std::string> feature_names;
     std::vector<std::string> excluded_feature_names;
     std::optional<nlohmann::json> projection_jitter;
+    nlohmann::json surface_resource_contracts =
+        nlohmann::json::array();
     bool hdr_enabled = false;
     loaded_features.reserve(feature_instances.size());
     for (const auto &instance : feature_instances) {
@@ -1634,6 +2036,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(composed, feature, pass_names);
+        applySurfaceResourceContracts(
+            composed, feature, loaded.name,
+            loaded.instance.ref,
+            surface_resource_contracts);
         applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
         appendShaderDefines(shader_defines, feature, "render feature");
@@ -1674,6 +2080,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.excluded_feature_names = std::move(excluded_feature_names);
     result.projection_jitter = std::move(projection_jitter);
     result.feature_instances = std::move(resolved_instances);
+    result.surface_resource_contracts =
+        std::move(surface_resource_contracts);
     result.material_routing = std::move(material_routing);
     result.draw_sort = std::move(draw_sort);
     result.pipeline_preset = preset_resolution.preset;

@@ -38,6 +38,12 @@ namespace Pelican {
 
 namespace {
 
+#if PELICAN_RUNTIME_SHADER_COMPILER
+constexpr bool runtimeShaderCompilerEnabled = true;
+#else
+constexpr bool runtimeShaderCompilerEnabled = false;
+#endif
+
 bool hasOutputTransform(
     const RenderPipelineRuntimeGeneration &generation,
     RenderingPassId rendering_pass_id) {
@@ -238,7 +244,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     auto preview = precompilePreviewGraph(
         rendering_config_json,
         [&path_resolver](std::string_view ref) { return path_resolver.loadText(ref); },
-        config.usesProjectSource());
+        runtimeShaderCompilerEnabled);
     std::vector<RenderingPassConfigRegistrationDependencies>
         variant_dependencies;
     RenderingPassConfigRegistrationDependencies::Options

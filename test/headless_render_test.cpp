@@ -2244,6 +2244,13 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             scene_path,
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(asset_path, R"json({"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "features");
+        writeTextFile(
+            temp_dir / "features" /
+                "shadow_directional.json",
+            engineResourceOrThrow(
+                "features/shadow_directional.json"));
         writeTextFile(
             temp_dir / "hybrid.json",
             nlohmann::json{
@@ -2254,7 +2261,10 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                    {{"msaa",
                      {{"samples", 4},
                       {"fallback", "lower_supported"},
-                      {"scope", "geometry"}}}}}}},
+                       {"scope", "geometry"}}}}}}},
+                {"features",
+                 nlohmann::json::array(
+                     {"project://features/shadow_directional.json"})},
                 {"render_strategy",
                  {{"name",
                    "headless.hybrid_authored"}}},
@@ -2306,6 +2316,27 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(execution->target_plan != nullptr);
         REQUIRE(execution->sample_count_plan != nullptr);
         REQUIRE(execution->render_pipeline != nullptr);
+        REQUIRE(
+            execution->render_pipeline
+                ->surface_resource_contracts.size() == 1);
+        REQUIRE(
+            execution->render_pipeline
+                ->surface_resource_contracts.front()
+                .contract.name == "directional_shadow");
+        REQUIRE(
+            execution->render_pipeline
+                ->surface_resource_contracts.front()
+                .provider_reference ==
+            "project://features/shadow_directional.json");
+        REQUIRE(
+            std::find(
+                execution->render_pipeline
+                    ->shader_defines.begin(),
+                execution->render_pipeline
+                    ->shader_defines.end(),
+                "PELICAN_FEATURE_SHADOW") !=
+            execution->render_pipeline
+                ->shader_defines.end());
         REQUIRE(
             execution->render_pipeline
                 ->render_strategy.has_value());
@@ -2427,7 +2458,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         const auto lowered = lowerMaterial(material_document.materials.front(), surface);
         REQUIRE(lowered.route == MaterialRouteClass::forward_opaque);
         const auto shaders = GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
-            surface, surface_reference, lowered);
+            surface, surface_reference, lowered,
+            execution->render_pipeline->shader_defines);
         MaterialInfo material{
             .vert_shader = shaders.vertex,
             .frag_shader = shaders.fragment,
@@ -2467,7 +2499,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
                 refraction_surface,
                 "project://shaders/headless_refraction.surface",
-                refraction_lowered);
+                refraction_lowered,
+                execution->render_pipeline->shader_defines);
         MaterialInfo refraction_material{
             .vert_shader = refraction_shaders.vertex,
             .frag_shader = refraction_shaders.fragment,
@@ -2496,27 +2529,65 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 return pass.definition.name == "forward_transparent";
             });
         REQUIRE(transparent != compiled.passes.end());
+        const auto opaque = std::find_if(
+            compiled.passes.begin(), compiled.passes.end(),
+            [](const auto &pass) {
+                return pass.definition.name == "forward_opaque";
+            });
+        REQUIRE(opaque != compiled.passes.end());
+        REQUIRE(
+            opaque->definition.materialInfo()
+                .surface_resources.size() == 1);
+        REQUIRE(
+            transparent->definition.materialInfo()
+                .surface_resources.size() == 1);
         const auto first_revision = materials.screenInputBindingRevisionForTesting(
             refraction_id, transparent->definition);
         REQUIRE(first_revision != 0);
+        const auto opaque_revision =
+            materials.screenInputBindingRevisionForTesting(
+                material_id, opaque->definition);
+        REQUIRE(opaque_revision != 0);
         const auto opaque_color = GET_MODULE(RenderTargetContainer)
                                       .getRenderTargetIdByName("opaque_color");
         const auto opaque_depth = GET_MODULE(RenderTargetContainer)
                                       .getRenderTargetIdByName("opaque_depth");
+        const auto shadow_map =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName("shadow_map");
+        REQUIRE(isConcreteRenderTarget(shadow_map));
+        REQUIRE(
+            materials.boundScreenInputImageViewsForTesting(
+                material_id, opaque->definition) ==
+            std::vector<vk::ImageView>{
+                GET_MODULE(RenderTargetContainer)
+                    .getImageView(shadow_map)});
         const auto first_views = materials.boundScreenInputImageViewsForTesting(
             refraction_id, transparent->definition);
         REQUIRE(first_views ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
-                    GET_MODULE(RenderTargetContainer).getImageView(opaque_depth)});
+                    GET_MODULE(RenderTargetContainer).getImageView(opaque_depth),
+                    GET_MODULE(RenderTargetContainer).getImageView(shadow_map)});
         renderer.recreateRenderTargetsAndRebindForTesting({32, 32});
         REQUIRE(materials.screenInputBindingRevisionForTesting(
                     refraction_id, transparent->definition) > first_revision);
+        REQUIRE(
+            materials.screenInputBindingRevisionForTesting(
+                material_id, opaque->definition) >
+            opaque_revision);
+        REQUIRE(
+            materials.boundScreenInputImageViewsForTesting(
+                material_id, opaque->definition) ==
+            std::vector<vk::ImageView>{
+                GET_MODULE(RenderTargetContainer)
+                    .getImageView(shadow_map)});
         REQUIRE(materials.boundScreenInputImageViewsForTesting(
                     refraction_id, transparent->definition) ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
-                    GET_MODULE(RenderTargetContainer).getImageView(opaque_depth)});
+                    GET_MODULE(RenderTargetContainer).getImageView(opaque_depth),
+                    GET_MODULE(RenderTargetContainer).getImageView(shadow_map)});
 
         auto &geometry = GET_MODULE(VertBufContainer);
         ModelTemplate model;
@@ -2583,6 +2654,165 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                     return scope.at("owner_scope") ==
                            "render_pipeline/flat";
                 }));
+
+        auto &runtime =
+            GET_MODULE(FrameGraphRuntimeContainer);
+        auto previous_generation = runtime.snapshot();
+        REQUIRE(previous_generation != nullptr);
+        const auto previous_generation_number =
+            previous_generation->generation;
+        REQUIRE(previous_generation->find(
+                    main_render_id) != nullptr);
+        REQUIRE(previous_generation->gpu_arena !=
+                nullptr);
+        const auto previous_gpu_resource_count =
+            previous_generation->gpu_arena
+                ->resourceCount();
+        REQUIRE(previous_gpu_resource_count > 0);
+        const auto resized_opaque_revision =
+            materials.screenInputBindingRevisionForTesting(
+                material_id, opaque->definition);
+        const auto previous_shadow_views =
+            materials.boundScreenInputImageViewsForTesting(
+                material_id, opaque->definition);
+        REQUIRE(previous_shadow_views ==
+                std::vector<vk::ImageView>{
+                    GET_MODULE(RenderTargetContainer)
+                        .getImageView(shadow_map)});
+
+        auto reloaded_shadow_feature =
+            nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "features/shadow_directional.json"));
+        reloaded_shadow_feature["name"] =
+            "shadow_directional_reloaded";
+        writeTextFile(
+            temp_dir / "features" /
+                "shadow_directional.json",
+            reloaded_shadow_feature.dump(2));
+        REQUIRE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "features/shadow_directional.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+
+        auto reloaded_generation = runtime.snapshot();
+        REQUIRE(reloaded_generation != nullptr);
+        REQUIRE(reloaded_generation !=
+                previous_generation);
+        REQUIRE(reloaded_generation->generation ==
+                previous_generation_number + 1);
+        REQUIRE(previous_generation->generation ==
+                previous_generation_number);
+        REQUIRE(previous_generation->find(
+                    main_render_id) != nullptr);
+        REQUIRE(previous_generation->gpu_arena
+                    ->resourceCount() ==
+                previous_gpu_resource_count);
+
+        const auto reloaded_main_id =
+            reloaded_generation->name_to_id.at(
+                "main_render");
+        const auto *reloaded_program =
+            reloaded_generation->find(
+                reloaded_main_id);
+        REQUIRE(reloaded_program != nullptr);
+        REQUIRE(
+            reloaded_program->frame_graph
+                .render_pipeline != nullptr);
+        REQUIRE(
+            reloaded_program->frame_graph
+                .render_pipeline
+                ->surface_resource_contracts
+                .size() == 1);
+        REQUIRE(
+            reloaded_program->frame_graph
+                .render_pipeline
+                ->surface_resource_contracts.front()
+                .provider_reference ==
+            "project://features/shadow_directional.json");
+        const auto reloaded_opaque = std::find_if(
+            reloaded_program->rendering_pass.passes.begin(),
+            reloaded_program->rendering_pass.passes.end(),
+            [](const auto &pass) {
+                return pass.definition.name ==
+                       "forward_opaque";
+            });
+        REQUIRE(
+            reloaded_opaque !=
+            reloaded_program->rendering_pass.passes.end());
+        const auto reloaded_shadow_map =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName("shadow_map");
+        REQUIRE(isConcreteRenderTarget(
+            reloaded_shadow_map));
+        const auto reloaded_opaque_revision =
+            materials.screenInputBindingRevisionForTesting(
+                material_id,
+                reloaded_opaque->definition);
+        REQUIRE(reloaded_opaque_revision >
+                resized_opaque_revision);
+        const auto reloaded_shadow_views =
+            materials.boundScreenInputImageViewsForTesting(
+                material_id,
+                reloaded_opaque->definition);
+        REQUIRE(reloaded_shadow_views ==
+                std::vector<vk::ImageView>{
+                    GET_MODULE(RenderTargetContainer)
+                        .getImageView(
+                            reloaded_shadow_map)});
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto reloaded_pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(reloaded_pixels == pixels);
+
+        auto invalid_shadow_feature =
+            reloaded_shadow_feature;
+        invalid_shadow_feature["surface_resources"]
+                              [0]["resource"] =
+            "missing_shadow_map";
+        writeTextFile(
+            temp_dir / "features" /
+                "shadow_directional.json",
+            invalid_shadow_feature.dump(2));
+        REQUIRE_FALSE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "features/shadow_directional.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(runtime.snapshot() ==
+                reloaded_generation);
+        REQUIRE(previous_generation->find(
+                    main_render_id) != nullptr);
+        REQUIRE(previous_generation->gpu_arena
+                    ->resourceCount() ==
+                previous_gpu_resource_count);
+        REQUIRE(
+            materials.screenInputBindingRevisionForTesting(
+                material_id,
+                reloaded_opaque->definition) ==
+            reloaded_opaque_revision);
+        REQUIRE(
+            materials.boundScreenInputImageViewsForTesting(
+                material_id,
+                reloaded_opaque->definition) ==
+            reloaded_shadow_views);
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        REQUIRE(
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8() ==
+            reloaded_pixels);
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &ex) {

@@ -110,7 +110,7 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<std::string> exact_pass;
-        std::vector<MaterialScreenInputContract> screen_inputs;
+        std::vector<MaterialPassInputContract> pass_inputs;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;

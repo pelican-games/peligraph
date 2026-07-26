@@ -21,9 +21,11 @@ void validatePassInputs(const PassDefinition &pass_def) {
                 pass_def.name);
         }
         if (!pass_def.input_targets.empty() &&
-            pass_def.materialInfo().screen_inputs.empty()) {
+            pass_def.materialInfo().screen_inputs.empty() &&
+            pass_def.materialInfo().surface_resources.empty()) {
             throw std::runtime_error(
-                "Material pass inputs must use named screen_inputs: " +
+                "Material pass inputs must use named screen_inputs or "
+                "surface_resources: " +
                 pass_def.name);
         }
     }
@@ -282,6 +284,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
     if (!pass_def.isMaterial() && pass_json.contains("screen_inputs")) {
         throw std::runtime_error("Only material passes support screen_inputs: " +
                                  pass_def.name);
+    }
+    if (!pass_def.isMaterial() &&
+        pass_json.contains("surface_resources")) {
+        throw std::runtime_error(
+            "Only material passes support surface_resources: " +
+            pass_def.name);
     }
     if (!pass_def.isFullscreen() &&
         pass_json.contains("input_sampling")) {

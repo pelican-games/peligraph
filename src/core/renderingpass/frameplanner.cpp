@@ -282,6 +282,38 @@ void appendMaterialScreenInputReads(
     }
 }
 
+void appendMaterialSurfaceResourceReads(
+    const nlohmann::json &pass_json,
+    FrameGraphNodeDefinition &node) {
+    if (!pass_json.contains("surface_resources")) {
+        return;
+    }
+    const auto &resources =
+        pass_json.at("surface_resources");
+    if (!resources.is_object()) {
+        throw std::runtime_error(
+            "Frame graph pass.surface_resources must be an object");
+    }
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    for (auto entry = resources.begin();
+         entry != resources.end(); ++entry) {
+        if (!entry.value().is_string()) {
+            throw std::runtime_error(
+                "Frame graph pass.surface_resources entries must "
+                "name resources");
+        }
+        const auto resource =
+            entry.value().get<std::string>();
+        appendUnique(node.reads, resource);
+        appendReadFootprint(
+            node, resource,
+            makeBuiltinMaterialPassInputContract(
+                types, entry.key())
+                .footprint);
+    }
+}
+
 void splitHistoryReads(const std::vector<std::string> &authored,
                        std::vector<std::string> &reads,
                        std::vector<std::string> &reads_history) {
@@ -403,6 +435,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     parseReadFootprintOverrides(
         pass_json, "input_footprints", node);
     appendMaterialScreenInputReads(pass_json, node);
+    appendMaterialSurfaceResourceReads(pass_json, node);
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
     node.raster_geometry =
@@ -716,6 +749,13 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     if (pass.isMaterial()) {
         for (const auto &input :
              pass.materialInfo().screen_inputs) {
+            appendReadFootprint(
+                node,
+                renderTargetResourceName(input.target),
+                input.contract.footprint);
+        }
+        for (const auto &input :
+             pass.materialInfo().surface_resources) {
             appendReadFootprint(
                 node,
                 renderTargetResourceName(input.target),

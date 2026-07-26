@@ -65,17 +65,22 @@ inline constexpr bool isSwapchainRenderTarget(GlobalRenderTargetId rt_id) {
     return rt_id.value == swapchainRenderTargetIdValue;
 }
 
-struct MaterialPassScreenInputBinding {
-    MaterialScreenInputContract contract;
+struct MaterialPassInputBinding {
+    MaterialPassInputContract contract;
     GlobalRenderTargetId target = noRenderTargetId();
     bool history = false;
 };
+
+using MaterialPassScreenInputBinding = MaterialPassInputBinding;
 
 struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
     MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
     std::vector<MaterialPassScreenInputBinding> screen_inputs;
+    // Feature-owned public resources share the material pass-input descriptor
+    // ABI but are not authored by individual .surface files.
+    std::vector<MaterialPassInputBinding> surface_resources;
 };
 
 enum class FullscreenPushConstantData {

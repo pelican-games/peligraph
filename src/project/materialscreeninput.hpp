@@ -8,23 +8,82 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
-// A public surface names a screen input, while the compiler carries the
-// semantic source/result types and sampling footprint independently of the
-// Vulkan image chosen later.  The fixed aliases below are the hybrid_v1 ABI;
-// a future registry may add names without changing this data shape.
-struct MaterialScreenInputContract {
+enum class MaterialPassInputSampling : std::uint8_t {
+    linear_repeat,
+    nearest_clamp_to_edge,
+};
+
+std::string_view materialPassInputSamplingName(
+    MaterialPassInputSampling sampling);
+
+enum class MaterialPassInputViewPolicy : std::uint8_t {
+    consumer_view,
+    shared_2d,
+};
+
+std::string_view materialPassInputViewPolicyName(
+    MaterialPassInputViewPolicy policy);
+
+enum class MaterialPassInputFallback : std::uint8_t {
+    required,
+    fully_lit,
+};
+
+std::string_view materialPassInputFallbackName(
+    MaterialPassInputFallback fallback);
+
+enum class MaterialPassInputRelationKind : std::uint8_t {
+    directional_light_shadow_v1,
+};
+
+std::string_view materialPassInputRelationKindName(
+    MaterialPassInputRelationKind kind);
+
+struct MaterialPassInputRelation {
+    MaterialPassInputRelationKind kind =
+        MaterialPassInputRelationKind::directional_light_shadow_v1;
+    std::uint32_t light_index = 0;
+    std::string transform;
+
+    bool operator==(const MaterialPassInputRelation &) const = default;
+};
+
+// A public surface or feature names a pass input, while the compiler carries
+// its semantic source/result types and relation independently of the Vulkan
+// image chosen later. screen_inputs are the user-authored subset of this
+// contract; feature-owned inputs use the same set=1 ABI.
+struct MaterialPassInputContract {
     std::string name;
     LogicalType source_type;
     LogicalType sampled_type;
     LogicalReadFootprint footprint;
     std::optional<std::string> conversion;
+    MaterialPassInputSampling sampling =
+        MaterialPassInputSampling::linear_repeat;
+    MaterialPassInputViewPolicy view_policy =
+        MaterialPassInputViewPolicy::consumer_view;
+    MaterialPassInputFallback fallback =
+        MaterialPassInputFallback::required;
+    std::optional<MaterialPassInputRelation> relation;
 
-    bool operator==(const MaterialScreenInputContract &) const = default;
+    bool operator==(const MaterialPassInputContract &) const = default;
 };
 
+using MaterialScreenInputContract = MaterialPassInputContract;
+
+inline constexpr std::string_view directionalShadowInputContractName =
+    "directional_shadow";
+inline constexpr std::string_view directionalShadowSamplerName =
+    "pelican_directional_shadow_texture";
+
+MaterialPassInputContract makeBuiltinMaterialPassInputContract(
+    const LogicalTypeRegistry &types, std::string_view name);
+
+// Public .surface screen_inputs deliberately exclude feature-owned contracts.
 MaterialScreenInputContract makeBuiltinMaterialScreenInputContract(
     const LogicalTypeRegistry &types, std::string_view name);
 
@@ -49,6 +108,7 @@ struct MaterialScreenInputReflectionBinding {
     std::uint32_t binding = 0;
     MaterialScreenInputReflectionKind kind =
         MaterialScreenInputReflectionKind::unsupported;
+    std::string name;
 
     bool operator==(const MaterialScreenInputReflectionBinding &) const =
         default;
@@ -59,6 +119,17 @@ struct MaterialScreenInputReflectionBinding {
 // bind a declaration to a different set/binding layout.
 void validateMaterialScreenInputInterfaceReflection(
     std::size_t declared_input_count,
+    std::span<const MaterialScreenInputReflectionBinding> reflection,
+    std::uint32_t expected_set = 1);
+
+// Resolves the actual set=1 order from backend reflection. The declared
+// screen inputs remain first and feature-owned stable sampler names may append
+// typed contracts. Unknown or reordered bindings are rejected before a
+// descriptor set is allocated.
+std::vector<MaterialPassInputContract>
+resolveMaterialPassInputInterfaceReflection(
+    const LogicalTypeRegistry &types,
+    std::span<const MaterialScreenInputContract> declared_screen_inputs,
     std::span<const MaterialScreenInputReflectionBinding> reflection,
     std::uint32_t expected_set = 1);
 

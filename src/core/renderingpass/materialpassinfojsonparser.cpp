@@ -58,61 +58,131 @@ LogicalType logicalSourceTypeForTarget(
     }
 }
 
+using MaterialInputContractFactory =
+    MaterialPassInputContract (*)(
+        const LogicalTypeRegistry &, std::string_view);
+
+void parseNamedMaterialPassInputsFromJson(
+    PassDefinition &pass_def, const nlohmann::json &pass_json,
+    std::string_view field_name, std::string_view display_name,
+    MaterialInputContractFactory make_contract,
+    std::vector<MaterialPassInputBinding> &material_inputs,
+    const RenderTargetNameResolver &rt_resolver,
+    const RenderTargetMetadataResolver &rt_metadata) {
+    const auto field = std::string{field_name};
+    if (!pass_json.contains(field)) return;
+    if (!pass_def.isMaterial()) {
+        throw std::runtime_error(
+            "Only material passes support " + field + ": " +
+            pass_def.name);
+    }
+    if (pass_json.contains("input")) {
+        throw std::runtime_error(
+            "Material pass " + field +
+            " replace positional input: " + pass_def.name);
+    }
+
+    const auto &declaration = pass_json.at(field);
+    if (!declaration.is_object()) {
+        throw std::runtime_error(
+            "Material pass " + field +
+            " must be an object: " + pass_def.name);
+    }
+
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto conversions =
+        makeBuiltinLogicalTypeConversionRegistry(types);
+    material_inputs.reserve(
+        material_inputs.size() + declaration.size());
+    for (auto entry = declaration.begin();
+         entry != declaration.end(); ++entry) {
+        validateName(
+            entry.key(), std::string{display_name});
+        if (!entry.value().is_string()) {
+            throw std::runtime_error(
+                std::string{display_name} + " '" + entry.key() +
+                "' must name a render target: " +
+                pass_def.name);
+        }
+        const auto target_name =
+            entry.value().get<std::string>();
+        validateName(
+            target_name,
+            std::string{display_name} + " target");
+        const auto target = rt_resolver.resolve(target_name);
+        if (!isConcreteRenderTarget(target)) {
+            throw std::runtime_error(
+                std::string{display_name} +
+                " target not found: " + target_name +
+                " in pass: " + pass_def.name);
+        }
+
+        auto contract = make_contract(types, entry.key());
+        const auto metadata = rt_metadata.get(target);
+        auto resolved = resolveMaterialScreenInputContract(
+            types, conversions, std::move(contract),
+            logicalSourceTypeForTarget(types, metadata));
+        material_inputs.push_back(MaterialPassInputBinding{
+            std::move(resolved.contract), target, false});
+
+        if (std::find(
+                pass_def.input_targets.begin(),
+                pass_def.input_targets.end(),
+                target) == pass_def.input_targets.end()) {
+            pass_def.input_targets.push_back(target);
+            pass_def.input_target_history.push_back(false);
+        }
+    }
+}
+
 } // namespace
 
 void parseMaterialPassScreenInputsFromJson(
     PassDefinition &pass_def, const nlohmann::json &pass_json,
     const RenderTargetNameResolver &rt_resolver,
     const RenderTargetMetadataResolver &rt_metadata) {
-    if (!pass_json.contains("screen_inputs")) return;
+    if (!pass_json.contains("screen_inputs")) {
+        return;
+    }
     if (!pass_def.isMaterial()) {
         throw std::runtime_error(
-            "Only material passes support screen_inputs: " + pass_def.name);
-    }
-    if (pass_json.contains("input")) {
-        throw std::runtime_error(
-            "Material pass screen_inputs replace positional input: " +
+            "Only material passes support screen_inputs: " +
             pass_def.name);
     }
+    parseNamedMaterialPassInputsFromJson(
+        pass_def, pass_json, "screen_inputs",
+        "Material screen input",
+        makeBuiltinMaterialScreenInputContract,
+        pass_def.materialInfo().screen_inputs,
+        rt_resolver, rt_metadata);
+}
 
-    const auto &declaration = pass_json.at("screen_inputs");
-    if (!declaration.is_object()) {
-        throw std::runtime_error("Material pass screen_inputs must be an object: " +
-                                 pass_def.name);
+void parseMaterialPassSurfaceResourcesFromJson(
+    PassDefinition &pass_def, const nlohmann::json &pass_json,
+    const RenderTargetNameResolver &rt_resolver,
+    const RenderTargetMetadataResolver &rt_metadata) {
+    if (!pass_json.contains("surface_resources")) {
+        return;
     }
-
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto conversions = makeBuiltinLogicalTypeConversionRegistry(types);
-    auto &material_inputs = pass_def.materialInfo().screen_inputs;
-    material_inputs.reserve(declaration.size());
-    for (auto entry = declaration.begin(); entry != declaration.end(); ++entry) {
-        validateName(entry.key(), "Material screen input");
-        if (!entry.value().is_string()) {
+    if (!pass_def.isMaterial()) {
+        throw std::runtime_error(
+            "Only material passes support surface_resources: " +
+            pass_def.name);
+    }
+    parseNamedMaterialPassInputsFromJson(
+        pass_def, pass_json, "surface_resources",
+        "Material surface resource",
+        makeBuiltinMaterialPassInputContract,
+        pass_def.materialInfo().surface_resources,
+        rt_resolver, rt_metadata);
+    for (const auto &binding :
+         pass_def.materialInfo().surface_resources) {
+        if (binding.contract.name !=
+            directionalShadowInputContractName) {
             throw std::runtime_error(
-                "Material pass screen input '" + entry.key() +
-                "' must name a render target: " + pass_def.name);
-        }
-        const auto target_name = entry.value().get<std::string>();
-        validateName(target_name, "Material screen input target");
-        const auto target = rt_resolver.resolve(target_name);
-        if (!isConcreteRenderTarget(target)) {
-            throw std::runtime_error(
-                "Material pass screen input target not found: " + target_name +
-                " in pass: " + pass_def.name);
-        }
-
-        auto contract = makeBuiltinMaterialScreenInputContract(types, entry.key());
-        const auto metadata = rt_metadata.get(target);
-        auto resolved = resolveMaterialScreenInputContract(
-            types, conversions, std::move(contract),
-            logicalSourceTypeForTarget(types, metadata));
-        material_inputs.push_back(MaterialPassScreenInputBinding{
-            std::move(resolved.contract), target, false});
-
-        if (std::find(pass_def.input_targets.begin(), pass_def.input_targets.end(),
-                      target) == pass_def.input_targets.end()) {
-            pass_def.input_targets.push_back(target);
-            pass_def.input_target_history.push_back(false);
+                "material surface resource '" +
+                binding.contract.name +
+                "' is not feature-owned");
         }
     }
 }

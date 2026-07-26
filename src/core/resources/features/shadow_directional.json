@@ -15,7 +15,7 @@
   ],
   "passes": [
     {
-      "insert": "before:lighting_pass",
+      "insert": "begin",
       "pass": {
         "name": "shadow_depth",
         "type": "shadow_depth",
@@ -30,10 +30,22 @@
       }
     }
   ],
-  "pass_overrides": {
-    "lighting_pass": {
-      "input": ["shadow_map"]
+  "surface_resources": [
+    {
+      "contract": "directional_shadow",
+      "resource": "shadow_map",
+      "producer": "shadow_depth",
+      "material_contracts": [
+        "forward_opaque_v1",
+        "forward_transparent_v1"
+      ],
+      "fullscreen_consumers": [
+        {
+          "fragment": "engine://fullscreen",
+          "uses_light_data": true
+        }
+      ]
     }
-  },
+  ],
   "shader_defines": ["PELICAN_FEATURE_SHADOW"]
 }

@@ -2,6 +2,7 @@
 
 #include "graphvariantpolicy.hpp"
 #include "logicalrendergraph.hpp"
+#include "materialscreeninput.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 #include "targetrenderplanning.hpp"
@@ -164,6 +165,8 @@ struct ResolvedRenderPipeline {
     std::vector<std::string> excluded_feature_names;
     std::optional<nlohmann::json> projection_jitter;
     nlohmann::json feature_instances = nlohmann::json::array();
+    nlohmann::json surface_resource_contracts =
+        nlohmann::json::array();
     nlohmann::json material_routing;
     nlohmann::json draw_sort;
     SampleCountPolicy sample_count_policy;
@@ -220,6 +223,19 @@ struct CompiledRenderFeatureInstance {
     std::vector<CompiledRenderFeatureParameter> parameters;
 };
 
+struct CompiledSurfaceResourceContract {
+    MaterialPassInputContract contract;
+    std::string resource;
+    std::string producer;
+    std::string provider_feature;
+    std::string provider_reference;
+    std::vector<std::string> material_consumers;
+    std::vector<std::string> fullscreen_consumers;
+
+    bool operator==(
+        const CompiledSurfaceResourceContract &) const = default;
+};
+
 enum class MaterialRoutingPolicy {
     hybrid_auto_v1,
 };
@@ -267,6 +283,8 @@ struct CompiledRenderPipeline {
     std::vector<std::string> excluded_feature_names;
     std::optional<CompiledProjectionJitter> projection_jitter;
     std::vector<CompiledRenderFeatureInstance> feature_instances;
+    std::vector<CompiledSurfaceResourceContract>
+        surface_resource_contracts;
     std::optional<CompiledMaterialRouting> material_routing;
     CompiledDrawSorting draw_sorting;
     SampleCountPolicy sample_count_policy;

@@ -832,6 +832,97 @@ TEST_CASE("material pass screen inputs resolve named typed targets and reject mi
         Catch::Matchers::ContainsSubstring("history_magic"));
 }
 
+TEST_CASE("material pass surface resources resolve the feature-owned directional shadow contract",
+          "[renderingpass][material-surface-resource][wp205]") {
+    const RenderTargetNameResolver names{[](const std::string &name) {
+        if (name == "shadow_map") return GlobalRenderTargetId{20};
+        if (name == "scene_color") return GlobalRenderTargetId{21};
+        return noRenderTargetId();
+    }};
+    const RenderTargetMetadataResolver metadata{
+        [](GlobalRenderTargetId target) {
+            if (target == GlobalRenderTargetId{20}) {
+                return RenderTargetMetadata{
+                    "shadow_map",
+                    vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eD32Sfloat,
+                    vk::Extent2D{2048, 2048}};
+            }
+            if (target == GlobalRenderTargetId{21}) {
+                return RenderTargetMetadata{
+                    "scene_color",
+                    vk::ImageUsageFlagBits::eColorAttachment |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eR16G16B16A16Sfloat,
+                    vk::Extent2D{1280, 720}};
+            }
+            throw std::runtime_error("unexpected target");
+        }};
+
+    PassDefinition pass;
+    pass.name = "forward_opaque";
+    pass.pass_info = MaterialPassInfo{};
+    parseMaterialPassSurfaceResourcesFromJson(
+        pass,
+        nlohmann::json{
+            {"surface_resources",
+             {{"directional_shadow", "shadow_map"}}}},
+        names, metadata);
+
+    REQUIRE(pass.materialInfo().surface_resources.size() == 1);
+    const auto &binding =
+        pass.materialInfo().surface_resources.front();
+    REQUIRE(binding.target == GlobalRenderTargetId{20});
+    REQUIRE(binding.contract.name == "directional_shadow");
+    REQUIRE(binding.contract.source_type ==
+            deviceDepthV1(makeBuiltinLogicalTypeRegistry()));
+    REQUIRE(binding.contract.sampled_type ==
+            deviceDepthV1(makeBuiltinLogicalTypeRegistry()));
+    REQUIRE(binding.contract.footprint.kind ==
+            LogicalReadFootprintKind::arbitrary);
+    REQUIRE(binding.contract.sampling ==
+            MaterialPassInputSampling::nearest_clamp_to_edge);
+    REQUIRE(binding.contract.view_policy ==
+            MaterialPassInputViewPolicy::shared_2d);
+    REQUIRE(binding.contract.fallback ==
+            MaterialPassInputFallback::fully_lit);
+    REQUIRE(binding.contract.relation);
+    REQUIRE(binding.contract.relation->light_index == 0);
+    REQUIRE(binding.contract.relation->transform ==
+            "pelican.light.shadow_view_projection@1");
+    REQUIRE(pass.input_targets ==
+            std::vector<GlobalRenderTargetId>{
+                GlobalRenderTargetId{20}});
+
+    PassDefinition wrong_type;
+    wrong_type.name = "bad_forward";
+    wrong_type.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassSurfaceResourcesFromJson(
+            wrong_type,
+            nlohmann::json{
+                {"surface_resources",
+                 {{"directional_shadow", "scene_color"}}}},
+            names, metadata),
+        Catch::Matchers::ContainsSubstring(
+            "directional_shadow") &&
+            Catch::Matchers::ContainsSubstring("source type"));
+
+    PassDefinition user_owned;
+    user_owned.name = "bad_forward";
+    user_owned.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassSurfaceResourcesFromJson(
+            user_owned,
+            nlohmann::json{
+                {"surface_resources",
+                 {{"opaque_depth", "shadow_map"}}}},
+            names, metadata),
+        Catch::Matchers::ContainsSubstring("opaque_depth") &&
+            Catch::Matchers::ContainsSubstring("not feature-owned"));
+}
+
 TEST_CASE("material pass contracts parse and filter independently of local pass ids",
           "[renderingpass][material-routing]") {
     REQUIRE(forwardMaterialPassColorAttachmentFormat ==

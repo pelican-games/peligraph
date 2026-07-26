@@ -845,7 +845,8 @@ TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]")
           "type": "fullscreen",
           "output": {"color": "lit_color", "depth": null},
           "input": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive", "ssao_blur"],
-          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
+          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"},
+          "uses_light_data": true
         }
       ]
     }

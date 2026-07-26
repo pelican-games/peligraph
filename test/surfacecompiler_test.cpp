@@ -179,6 +179,140 @@ TEST_CASE("surface source composition compiles routed main depth and velocity va
 #endif
 }
 
+TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves feature-off stable",
+          "[surface-compiler][shadow][wp205]") {
+    const auto source =
+        readText(fixtureRoot() / "valid" / "wp78.surface");
+    const auto surface =
+        parseSurfaceFormat(source, "wp78.surface");
+    const auto feature_define =
+        std::string{"PELICAN_FEATURE_SHADOW"};
+    const auto binding_define =
+        std::string{"PELICAN_DIRECTIONAL_SHADOW_BINDING=0"};
+
+    const auto plain = composeSurfaceShaders(
+        surface, "wp78.surface", SurfacePass::forward);
+    const auto shadow = composeSurfaceShaders(
+        surface, "wp78.surface", SurfacePass::forward,
+        {feature_define});
+    const auto deferred_shadow = composeSurfaceShaders(
+        surface, "wp78.surface",
+        SurfacePass::deferred_geometry, {feature_define});
+    const auto depth_shadow = composeSurfaceShaders(
+        surface, "wp78.surface", SurfacePass::depth,
+        {feature_define});
+
+    REQUIRE(std::find(
+                plain.defines.begin(), plain.defines.end(),
+                binding_define) == plain.defines.end());
+    REQUIRE(std::find(
+                shadow.defines.begin(), shadow.defines.end(),
+                binding_define) != shadow.defines.end());
+    REQUIRE(std::find(
+                deferred_shadow.defines.begin(),
+                deferred_shadow.defines.end(),
+                binding_define) == deferred_shadow.defines.end());
+    REQUIRE(std::find(
+                depth_shadow.defines.begin(),
+                depth_shadow.defines.end(),
+                binding_define) == depth_shadow.defines.end());
+    REQUIRE(plain.vertex_source == shadow.vertex_source);
+    REQUIRE(plain.fragment_source == shadow.fragment_source);
+    REQUIRE(plain.virtual_includes == shadow.virtual_includes);
+
+    const auto refract_path =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "projects" / "example" / "shaders" /
+        "refract.surface";
+    const auto refract = parseSurfaceFormat(
+        readText(refract_path),
+        "project://shaders/refract.surface");
+    const auto refract_shadow = composeSurfaceShaders(
+        refract, "project://shaders/refract.surface",
+        SurfacePass::forward, {feature_define});
+    REQUIRE(std::find(
+                refract_shadow.defines.begin(),
+                refract_shadow.defines.end(),
+                "PELICAN_DIRECTIONAL_SHADOW_BINDING=1") !=
+            refract_shadow.defines.end());
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto feature_off_before = compileSurfaceShaders(
+        compiler, surface, "wp78.surface",
+        SurfacePass::forward);
+    requireCompiled(feature_off_before);
+    const auto feature_on = compileSurfaceShaders(
+        compiler, surface, "wp78.surface",
+        SurfacePass::forward, {feature_define});
+    requireCompiled(feature_on);
+    const auto feature_off_after = compileSurfaceShaders(
+        compiler, surface, "wp78.surface",
+        SurfacePass::forward);
+    requireCompiled(feature_off_after);
+    REQUIRE(feature_off_before.vertex.spirv ==
+            feature_off_after.vertex.spirv);
+    REQUIRE(feature_off_before.fragment.spirv ==
+            feature_off_after.fragment.spirv);
+
+    ShaderLibrary library{
+        ShaderLibraryModuleMode::reflection_only};
+    const auto plain_bundles = library.loadFromSurface(
+        surface, "wp78.surface", SurfacePass::forward);
+    const auto shadow_bundles = library.loadFromSurface(
+        surface, "wp78.surface", SurfacePass::forward,
+        {feature_define});
+    const auto refract_bundles = library.loadFromSurface(
+        refract, "project://shaders/refract.surface",
+        SurfacePass::forward, {feature_define});
+
+    const auto find_set_one =
+        [](const ShaderReflection &reflection,
+           std::uint32_t binding,
+           std::string_view name) {
+            return std::find_if(
+                reflection.bindings.begin(),
+                reflection.bindings.end(),
+                [binding, name](const auto &item) {
+                    return item.set == 1 &&
+                           item.binding == binding &&
+                           item.type ==
+                               vk::DescriptorType::
+                                   eCombinedImageSampler &&
+                           item.name == name;
+                });
+        };
+    const auto &plain_reflection =
+        library.get(plain_bundles.fragment).reflection;
+    REQUIRE(std::none_of(
+        plain_reflection.bindings.begin(),
+        plain_reflection.bindings.end(),
+        [](const auto &item) {
+            return item.set == 1 &&
+                   item.name ==
+                       directionalShadowSamplerName;
+        }));
+
+    const auto &shadow_reflection =
+        library.get(shadow_bundles.fragment).reflection;
+    REQUIRE(find_set_one(
+                shadow_reflection, 0,
+                directionalShadowSamplerName) !=
+            shadow_reflection.bindings.end());
+
+    const auto &refract_reflection =
+        library.get(refract_bundles.fragment).reflection;
+    REQUIRE(find_set_one(
+                refract_reflection, 0,
+                "pelican_screen_opaque_color_texture") !=
+            refract_reflection.bindings.end());
+    REQUIRE(find_set_one(
+                refract_reflection, 1,
+                directionalShadowSamplerName) !=
+            refract_reflection.bindings.end());
+#endif
+}
+
 TEST_CASE("standard and toon lighting dogfood only the public surface library",
           "[surface-compiler][dogfood]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

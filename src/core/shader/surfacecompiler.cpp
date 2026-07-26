@@ -110,6 +110,19 @@ void appendUnique(std::vector<std::string> &defines, std::string define) {
     }
 }
 
+bool hasDefine(
+    const std::vector<std::string> &defines,
+    std::string_view name) {
+    return std::any_of(
+        defines.begin(), defines.end(),
+        [name](const auto &define) {
+            return define == name ||
+                   (define.size() > name.size() &&
+                    define.starts_with(name) &&
+                    define[name.size()] == '=');
+        });
+}
+
 SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &surface,
                                                     std::string_view source_name, SurfacePass pass,
                                                     std::vector<std::string> defines,
@@ -129,6 +142,13 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
     if (pass == SurfacePass::forward) appendUnique(defines, "PELICAN_PASS_FORWARD");
     if (pass == SurfacePass::depth) appendUnique(defines, "PELICAN_PASS_DEPTH");
     if (pass == SurfacePass::velocity) appendUnique(defines, "PELICAN_PASS_VELOCITY");
+    if (pass == SurfacePass::forward &&
+        hasDefine(defines, "PELICAN_FEATURE_SHADOW")) {
+        appendUnique(
+            defines,
+            "PELICAN_DIRECTIONAL_SHADOW_BINDING=" +
+                std::to_string(surface.screen_inputs.size()));
+    }
 
     SurfaceShaderComposition composition;
     composition.vertex_source = engineResourceOrThrow("shaders/material/surface_v1.vert");
@@ -346,7 +366,10 @@ ShaderCompileResult compileExperimentalStage(ShaderCompiler &compiler,
         request.cache_salts.emplace_back("surface-abi=v1");
         request.cache_salts.emplace_back(stage == vk::ShaderStageFlagBits::eVertex
                                              ? "stage=vertex" : "stage=fragment");
-        request.preserved_descriptor_names = {"pelicanMaterials"};
+        request.preserved_descriptor_names = {
+            "pelicanMaterials",
+            "pelican_directional_shadow_texture",
+        };
         auto linked = linkSpirvModules(request);
         bindings = std::move(linked.bindings);
         cache_key = std::move(linked.cache_key);

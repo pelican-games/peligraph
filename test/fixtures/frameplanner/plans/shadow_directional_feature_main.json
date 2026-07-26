@@ -40,10 +40,10 @@
   "graph": "main",
   "levels": [
     [
-      "gbuffer_pass"
+      "shadow_depth"
     ],
     [
-      "shadow_depth"
+      "gbuffer_pass"
     ],
     [
       "lighting_pass"
@@ -81,8 +81,20 @@
       "declaration_index": 0,
       "kind": "render",
       "level": 0,
-      "name": "gbuffer_pass",
+      "name": "shadow_depth",
       "order": 0,
+      "reads": [],
+      "reads_history": [],
+      "writes": [
+        "shadow_map"
+      ]
+    },
+    {
+      "declaration_index": 1,
+      "kind": "render",
+      "level": 1,
+      "name": "gbuffer_pass",
+      "order": 1,
       "reads": [],
       "reads_history": [],
       "writes": [
@@ -92,18 +104,6 @@
         "gbuffer_worldpos",
         "g_emissive",
         "offscreen_depth"
-      ]
-    },
-    {
-      "declaration_index": 1,
-      "kind": "render",
-      "level": 1,
-      "name": "shadow_depth",
-      "order": 1,
-      "reads": [],
-      "reads_history": [],
-      "writes": [
-        "shadow_map"
       ]
     },
     {

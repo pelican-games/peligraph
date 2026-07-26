@@ -299,6 +299,40 @@ CompiledLogicalRenderGraph hybridGraph(
     return graph;
 }
 
+CompiledLogicalRenderGraph hybridGraphWithSharedShadow(
+    const LogicalTypeRegistry &types) {
+    auto graph = hybridGraph(types, 3, false);
+    graph.name = "hybrid_shared_shadow";
+    graph.resources.push_back(LogicalResourceDesc{
+        .name = "directional_shadow",
+        .type = deviceDepthV1(types),
+    });
+
+    LogicalGraphNode shadow;
+    shadow.name = "ShadowDepth";
+    shadow.kind = LogicalGraphNodeKind::render;
+    shadow.region_tags = {"region.shadow"};
+    addWrite(
+        types, shadow,
+        resource(graph, "directional_shadow"), 1,
+        "shadow_depth");
+
+    for (auto &node : graph.nodes) {
+        if (node.name != "Lighting" &&
+            node.name != "Forward") {
+            continue;
+        }
+        addRead(
+            types, node,
+            resource(graph, "directional_shadow"), 1,
+            "directional_shadow",
+            LogicalReadFootprintKind::arbitrary);
+    }
+    graph.nodes.push_back(std::move(shadow));
+    validateCompiledLogicalRenderGraph(types, graph);
+    return graph;
+}
+
 ResourcePattern patternFor(const LogicalTypeRegistry &types,
                            const LogicalResourceDesc &resource) {
     const auto display =
@@ -1998,7 +2032,109 @@ TEST_CASE("view execution planning keeps mono and sequential stereo as explicit 
                 sequential.required_physical_features.begin(),
                 sequential.required_physical_features.end(),
                 "pelican.vulkan.multiview@1") ==
-            sequential.required_physical_features.end());
+                sequential.required_physical_features.end());
+}
+
+TEST_CASE("directional shadow remains one shared image for flat preview sequential XR and multiview",
+          "[target-render-planning][view-execution][shadow][wp205]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraphWithSharedShadow(types);
+    const auto independent =
+        std::vector<std::string>{"ShadowDepth"};
+    const auto multiview_capable =
+        std::vector<std::string>{
+            "GBuffer", "Lighting", "Forward",
+            "ToneMap"};
+
+    const auto flat = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 1,
+            .view_independent_nodes = independent,
+        });
+    auto preview_graph = graph;
+    preview_graph.name = "preview";
+    const auto preview = compile(
+        types, preview_graph, topology(false),
+        bindingsFor(types, preview_graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 1,
+            .view_independent_nodes = independent,
+        });
+    for (const auto *plan : {&flat, &preview}) {
+        REQUIRE(scopeForNode(*plan, "ShadowDepth")
+                    .view_execution ==
+                VulkanScopeViewExecution::single_view);
+        REQUIRE(scopeForNode(*plan, "Lighting")
+                    .view_execution ==
+                VulkanScopeViewExecution::single_view);
+        REQUIRE(physicalResource(
+                    *plan, "directional_shadow")
+                    .view_layout ==
+                VulkanResourceViewLayout::shared_2d);
+        REQUIRE(physicalResource(
+                    *plan, "directional_shadow")
+                    .array_layers == 1);
+    }
+
+    const auto sequential = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::sequential,
+            .view_independent_nodes = independent,
+            .multiview_capable_nodes =
+                multiview_capable,
+        });
+    const auto &sequential_shadow =
+        scopeForNode(sequential, "ShadowDepth");
+    REQUIRE(sequential_shadow.view_execution ==
+            VulkanScopeViewExecution::single_view);
+    REQUIRE(sequential_shadow.execution_count == 1);
+    REQUIRE(scopeForNode(sequential, "Lighting")
+                .view_execution ==
+            VulkanScopeViewExecution::sequential);
+    REQUIRE(scopeForNode(sequential, "Forward")
+                .execution_count == 2);
+    REQUIRE(physicalResource(
+                sequential, "directional_shadow")
+                .view_layout ==
+            VulkanResourceViewLayout::shared_2d);
+    REQUIRE(physicalResource(
+                sequential, "directional_shadow")
+                .array_layers == 1);
+
+    const auto multiview = compile(
+        types, graph, topology(false, 8, 2),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .view_independent_nodes = independent,
+            .multiview_capable_nodes =
+                multiview_capable,
+        });
+    REQUIRE(multiview.view_execution_plan.uses_multiview);
+    REQUIRE(scopeForNode(multiview, "ShadowDepth")
+                .view_execution ==
+            VulkanScopeViewExecution::single_view);
+    REQUIRE(scopeForNode(multiview, "Lighting")
+                .view_execution ==
+            VulkanScopeViewExecution::multiview);
+    REQUIRE(scopeForNode(multiview, "Forward")
+                .view_mask == 0b11u);
+    REQUIRE(physicalResource(
+                multiview, "directional_shadow")
+                .view_layout ==
+            VulkanResourceViewLayout::shared_2d);
+    REQUIRE(physicalResource(
+                multiview, "directional_shadow")
+                .array_layers == 1);
 }
 
 TEST_CASE("view execution planning selects layered multiview and exposes its Vulkan scope contract",

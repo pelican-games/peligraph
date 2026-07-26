@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Pelican {
@@ -909,6 +910,8 @@ ResolvedRenderPipeline resolveRenderPipeline(
         std::move(composed.excluded_feature_names);
     result.projection_jitter = std::move(composed.projection_jitter);
     result.feature_instances = std::move(composed.feature_instances);
+    result.surface_resource_contracts =
+        std::move(composed.surface_resource_contracts);
     result.material_routing = std::move(composed.material_routing);
     result.draw_sort = std::move(composed.draw_sort);
     result.pipeline_preset = std::move(composed.pipeline_preset);
@@ -1155,6 +1158,249 @@ std::vector<CompiledRenderFeatureInstance> compileFeatureInstances(
     return result;
 }
 
+std::vector<std::string> compileStringArray(
+    const nlohmann::json &object, std::string_view field,
+    std::string_view context) {
+    const auto found = object.find(field);
+    if (found == object.end() || !found->is_array()) {
+        throw std::runtime_error(
+            std::string{context} + " requires array " +
+            std::string{field});
+    }
+    std::vector<std::string> result;
+    result.reserve(found->size());
+    for (const auto &entry : *found) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                std::string{context} + " " +
+                std::string{field} +
+                " entries must be non-empty strings");
+        }
+        result.push_back(entry.get<std::string>());
+    }
+    return result;
+}
+
+bool jsonStringListContains(
+    const nlohmann::json &value,
+    std::string_view needle) {
+    if (value.is_string()) {
+        return value.get_ref<const std::string &>() ==
+               needle;
+    }
+    return value.is_array() &&
+           std::any_of(
+               value.begin(), value.end(),
+               [&](const auto &entry) {
+                   return entry.is_string() &&
+                          entry.get_ref<
+                              const std::string &>() ==
+                              needle;
+               });
+}
+
+bool compiledPassWritesResource(
+    const nlohmann::json &pass,
+    std::string_view resource) {
+    if (!pass.contains("output") ||
+        !pass.at("output").is_object()) {
+        return false;
+    }
+    const auto &output = pass.at("output");
+    return (output.contains("color") &&
+            jsonStringListContains(
+                output.at("color"), resource)) ||
+           (output.contains("depth") &&
+            output.at("depth").is_string() &&
+            output.at("depth")
+                    .get_ref<const std::string &>() ==
+                resource);
+}
+
+std::vector<CompiledSurfaceResourceContract>
+compileSurfaceResourceContracts(
+    const nlohmann::json &declarations,
+    const nlohmann::json &config) {
+    if (!declarations.is_array()) {
+        throw std::runtime_error(
+            "resolved surface_resource_contracts must be an array");
+    }
+
+    std::unordered_map<
+        std::string, const nlohmann::json *>
+        passes;
+    if (!config.contains("rendering_passes") ||
+        !config.at("rendering_passes").is_array()) {
+        if (!declarations.empty()) {
+            throw std::runtime_error(
+                "surface resource contracts require rendering_passes");
+        }
+        return {};
+    }
+    for (const auto &pass_set :
+         config.at("rendering_passes")) {
+        if (!pass_set.is_object() ||
+            !pass_set.contains("passes") ||
+            !pass_set.at("passes").is_array()) {
+            throw std::runtime_error(
+                "surface resource contract validation requires "
+                "rendering pass arrays");
+        }
+        for (const auto &pass :
+             pass_set.at("passes")) {
+            if (!pass.is_object()) continue;
+            const auto name =
+                pass.value("name", std::string{});
+            if (!name.empty() &&
+                !passes.emplace(name, &pass).second) {
+                throw std::runtime_error(
+                    "surface resource contract pass name is "
+                    "ambiguous: " +
+                    name);
+            }
+        }
+    }
+
+    std::unordered_set<std::string> targets;
+    if (config.contains("render_targets") &&
+        config.at("render_targets").is_array()) {
+        for (const auto &target :
+             config.at("render_targets")) {
+            if (target.is_object()) {
+                targets.insert(
+                    target.value("name", std::string{}));
+            }
+        }
+    }
+
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    std::unordered_set<std::string> contracts;
+    std::vector<CompiledSurfaceResourceContract> result;
+    result.reserve(declarations.size());
+    for (std::size_t index = 0;
+         index < declarations.size(); ++index) {
+        const auto &declaration =
+            declarations.at(index);
+        const auto context =
+            "resolved surface_resource_contracts[" +
+            std::to_string(index) + "]";
+        if (!declaration.is_object()) {
+            throw std::runtime_error(
+                context + " must be an object");
+        }
+        requireOnlyKeys(
+            declaration,
+            {"contract", "resource", "producer",
+             "provider_feature", "provider_ref",
+             "material_consumers",
+             "fullscreen_consumers"},
+            context);
+
+        CompiledSurfaceResourceContract compiled;
+        const auto contract_name =
+            requireString(
+                declaration, "contract", context);
+        if (!contracts.insert(contract_name).second) {
+            throw std::runtime_error(
+                context + " duplicates contract '" +
+                contract_name + "'");
+        }
+        compiled.contract =
+            makeBuiltinMaterialPassInputContract(
+                types, contract_name);
+        compiled.resource =
+            requireString(
+                declaration, "resource", context);
+        compiled.producer =
+            requireString(
+                declaration, "producer", context);
+        compiled.provider_feature =
+            requireString(
+                declaration, "provider_feature", context);
+        compiled.provider_reference =
+            requireString(
+                declaration, "provider_ref", context);
+        compiled.material_consumers =
+            compileStringArray(
+                declaration, "material_consumers",
+                context);
+        compiled.fullscreen_consumers =
+            compileStringArray(
+                declaration, "fullscreen_consumers",
+                context);
+
+        if (!targets.contains(compiled.resource)) {
+            throw std::runtime_error(
+                context + " resource target is missing: " +
+                compiled.resource);
+        }
+        const auto producer =
+            passes.find(compiled.producer);
+        if (producer == passes.end() ||
+            !compiledPassWritesResource(
+                *producer->second,
+                compiled.resource)) {
+            throw std::runtime_error(
+                context + " producer '" +
+                compiled.producer +
+                "' no longer writes resource '" +
+                compiled.resource + "'");
+        }
+        for (const auto &consumer :
+             compiled.material_consumers) {
+            const auto found = passes.find(consumer);
+            if (found == passes.end() ||
+                found->second->value(
+                    "type", std::string{}) !=
+                    "material" ||
+                !found->second->contains(
+                    "surface_resources") ||
+                !found->second->at(
+                    "surface_resources")
+                     .is_object() ||
+                found->second->at(
+                    "surface_resources")
+                     .value(
+                         compiled.contract.name,
+                         std::string{}) !=
+                    compiled.resource) {
+                throw std::runtime_error(
+                    context + " material consumer '" +
+                    consumer +
+                    "' no longer binds contract '" +
+                    compiled.contract.name + "'");
+            }
+        }
+        for (const auto &consumer :
+             compiled.fullscreen_consumers) {
+            const auto found = passes.find(consumer);
+            if (found == passes.end() ||
+                found->second->value(
+                    "type", std::string{}) !=
+                    "fullscreen" ||
+                !found->second->contains("input") ||
+                !jsonStringListContains(
+                    found->second->at("input"),
+                    compiled.resource)) {
+                throw std::runtime_error(
+                    context + " fullscreen consumer '" +
+                    consumer +
+                    "' no longer reads resource '" +
+                    compiled.resource + "'");
+            }
+        }
+        if (compiled.material_consumers.empty() &&
+            compiled.fullscreen_consumers.empty()) {
+            throw std::runtime_error(
+                context + " has no consumers");
+        }
+        result.push_back(std::move(compiled));
+    }
+    return result;
+}
+
 CompiledMaterialRouting compileMaterialRouting(
     const nlohmann::json &routing) {
     constexpr std::string_view context = "resolved material_routing";
@@ -1365,6 +1611,10 @@ CompiledRenderPipeline compileRenderPipeline(
     }
     result.feature_instances =
         compileFeatureInstances(pipeline.feature_instances);
+    result.surface_resource_contracts =
+        compileSurfaceResourceContracts(
+            pipeline.surface_resource_contracts,
+            pipeline.normalized_config);
     if (!pipeline.material_routing.is_null()) {
         result.material_routing =
             compileMaterialRouting(pipeline.material_routing);
@@ -1494,6 +1744,64 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
     }
     if (!bound_instances.empty()) {
         metadata["feature_instances"] = std::move(bound_instances);
+    }
+    if (!pipeline.surface_resource_contracts.empty()) {
+        auto resources = nlohmann::json::array();
+        for (const auto &resource :
+             pipeline.surface_resource_contracts) {
+            nlohmann::json declaration{
+                {"contract", resource.contract.name},
+                {"resource", resource.resource},
+                {"producer", resource.producer},
+                {"provider_feature",
+                 resource.provider_feature},
+                {"provider_ref",
+                 resource.provider_reference},
+                {"material_consumers",
+                 resource.material_consumers},
+                {"fullscreen_consumers",
+                 resource.fullscreen_consumers},
+                {"source_type",
+                 logicalTypeToJson(
+                     resource.contract.source_type)},
+                {"sampled_type",
+                 logicalTypeToJson(
+                     resource.contract.sampled_type)},
+                {"footprint",
+                 logicalReadFootprintKindName(
+                     resource.contract.footprint.kind)},
+                {"sampling",
+                 materialPassInputSamplingName(
+                     resource.contract.sampling)},
+                {"view_policy",
+                 materialPassInputViewPolicyName(
+                     resource.contract.view_policy)},
+                {"fallback",
+                 materialPassInputFallbackName(
+                     resource.contract.fallback)},
+                {"fallback_reason",
+                 resource.contract.fallback ==
+                         MaterialPassInputFallback::
+                             fully_lit
+                     ? "provider_feature_absent"
+                     : "none"},
+            };
+            if (resource.contract.relation) {
+                declaration["relation"] = {
+                    {"kind",
+                     materialPassInputRelationKindName(
+                         resource.contract.relation->kind)},
+                    {"light_index",
+                     resource.contract.relation->light_index},
+                    {"transform",
+                     resource.contract.relation->transform},
+                };
+            }
+            resources.push_back(
+                std::move(declaration));
+        }
+        metadata["surface_resource_contracts"] =
+            std::move(resources);
     }
     if (pipeline.material_routing) {
         nlohmann::json routes = nlohmann::json::object();

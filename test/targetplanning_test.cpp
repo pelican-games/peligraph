@@ -500,4 +500,70 @@ TEST_CASE("screen input declaration must match reflected set shape",
         "consecutive combined image samplers");
 }
 
+TEST_CASE(
+    "material pass reflection appends the typed directional shadow contract",
+    "[target-planning][shader-interface][shadow][wp205]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const std::vector<MaterialScreenInputContract>
+        declared{
+            makeBuiltinMaterialScreenInputContract(
+                types, "opaque_color"),
+        };
+    const std::vector<
+        MaterialScreenInputReflectionBinding>
+        reflected{
+            {
+                .set = 1,
+                .binding = 0,
+                .kind =
+                    MaterialScreenInputReflectionKind::
+                        combined_image_sampler,
+                .name =
+                    "pelican_screen_opaque_color_texture",
+            },
+            {
+                .set = 1,
+                .binding = 1,
+                .kind =
+                    MaterialScreenInputReflectionKind::
+                        combined_image_sampler,
+                .name =
+                    "pelican_directional_shadow_texture",
+            },
+        };
+
+    const auto resolved =
+        resolveMaterialPassInputInterfaceReflection(
+            types, declared, reflected);
+    REQUIRE(resolved.size() == 2);
+    REQUIRE(resolved.front() == declared.front());
+    REQUIRE(resolved.back().name ==
+            "directional_shadow");
+    REQUIRE(resolved.back().view_policy ==
+            MaterialPassInputViewPolicy::shared_2d);
+
+    auto unknown = reflected;
+    unknown.back().name =
+        "project_unknown_pass_texture";
+    requireThrowsContaining(
+        [&] {
+            (void)
+                resolveMaterialPassInputInterfaceReflection(
+                    types, declared, unknown);
+        },
+        "unknown feature pass input");
+
+    auto reordered = reflected;
+    reordered.front().name =
+        "pelican_screen_scene_depth_texture";
+    requireThrowsContaining(
+        [&] {
+            (void)
+                resolveMaterialPassInputInterfaceReflection(
+                    types, declared, reordered);
+        },
+        "unexpected sampler");
+}
+
 } // namespace Pelican

@@ -5,6 +5,7 @@ namespace Pelican::GoldenHarness {
 void runProjectionJitterEquivalence();
 void runProjectionJitterShadow();
 void runTaaDeterminism();
+void runBLayerShadowEquivalence();
 void runGoldenImages();
 void runLogicalFrameStereo();
 void runOpenXrTaaTransition();

@@ -13,5 +13,9 @@ void parseMaterialPassScreenInputsFromJson(
     PassDefinition &pass_def, const nlohmann::json &pass_json,
     const RenderTargetNameResolver &rt_resolver,
     const RenderTargetMetadataResolver &rt_metadata);
+void parseMaterialPassSurfaceResourcesFromJson(
+    PassDefinition &pass_def, const nlohmann::json &pass_json,
+    const RenderTargetNameResolver &rt_resolver,
+    const RenderTargetMetadataResolver &rt_metadata);
 
 } // namespace Pelican

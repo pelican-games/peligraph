@@ -37,7 +37,7 @@ constexpr uint32_t materialBufferBinding = PELICAN_MATERIAL_BUFFER_BINDING;
 constexpr uint32_t baseMaterialTextureBindingCount = 4;
 constexpr uint32_t vatMaterialTextureBindingCount = 6;
 constexpr size_t maxMaterials = 1024;
-constexpr uint32_t maxMaterialScreenInputs = 4;
+constexpr uint32_t maxMaterialPassInputs = 8;
 
 struct MaterialPipelineRenderingContract {
     std::vector<vk::Format> color_formats;
@@ -364,6 +364,45 @@ static void validateMaterialCapabilities(
     }
 }
 
+static std::vector<MaterialPassInputContract>
+resolveReflectedMaterialPassInputs(
+    PipelineHandle pipeline,
+    std::span<const MaterialScreenInputContract>
+        declared_screen_inputs) {
+    const auto &reflection =
+        GET_MODULE(PipelineFactory)
+            .reflection(pipeline);
+    std::vector<MaterialScreenInputReflectionBinding>
+        bindings;
+    bindings.reserve(reflection.bindings.size());
+    for (const auto &binding :
+         reflection.bindings) {
+        bindings.push_back({
+            .set = binding.set,
+            .binding = binding.binding,
+            .kind =
+                binding.type ==
+                        vk::DescriptorType::
+                            eCombinedImageSampler
+                    ? MaterialScreenInputReflectionKind::
+                          combined_image_sampler
+                    : MaterialScreenInputReflectionKind::
+                          unsupported,
+            .name = binding.name,
+        });
+    }
+    auto resolved =
+        resolveMaterialPassInputInterfaceReflection(
+            makeBuiltinLogicalTypeRegistry(),
+            declared_screen_inputs, bindings,
+            PELICAN_SET_PASS_INPUT);
+    if (resolved.size() > maxMaterialPassInputs) {
+        throw std::runtime_error(
+            "material has too many pass inputs");
+    }
+    return resolved;
+}
+
 MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
     MaterialGpuData data;
     data.base_color_factor = info.base_color_factor;
@@ -410,7 +449,7 @@ static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
     vk::Device device, uint32_t max_sets = maxMaterials * 8) {
     const vk::DescriptorPoolSize pool_size{
         vk::DescriptorType::eCombinedImageSampler,
-        max_sets * maxMaterialScreenInputs};
+        max_sets * maxMaterialPassInputs};
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     create_info.maxSets = max_sets;
@@ -663,6 +702,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         }
     }
     const auto pipeline = pipeline_it->second;
+    auto pass_inputs =
+        resolveReflectedMaterialPassInputs(
+            pipeline, info.screen_inputs);
 
     vk::DescriptorSetAllocateInfo desc_alloc_info;
     desc_alloc_info.descriptorPool = desc_pool.get();
@@ -772,7 +814,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .route = info.route,
         .shader_contract = info.shader_contract,
         .exact_pass = std::move(info.exact_pass),
-        .screen_inputs = std::move(info.screen_inputs),
+        .pass_inputs = std::move(pass_inputs),
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
@@ -1269,15 +1311,16 @@ static std::string makeScreenInputPassKey(const PassDefinition &pass) {
         key << ':' << input.contract.name << '=' << input.target.value
             << (input.history ? "@history" : "");
     }
+    for (const auto &input :
+         pass.materialInfo().surface_resources) {
+        key << ":surface:" << input.contract.name << '='
+            << input.target.value
+            << (input.history ? "@history" : "");
+    }
     for (const auto view : pass.input_target_views) {
         key << ":view=" << static_cast<int>(view);
     }
     return key.str();
-}
-
-static bool isDepthScreenInput(const MaterialScreenInputContract &contract) {
-    return contract.source_type.semantic ==
-           parseSemanticTypeId("pelican.render.depth@1");
 }
 
 static void requireScreenInputReflection(const ShaderReflection &reflection,
@@ -1286,10 +1329,18 @@ static void requireScreenInputReflection(const ShaderReflection &reflection,
     bindings.reserve(reflection.bindings.size());
     for (const auto &binding : reflection.bindings) {
         bindings.push_back(MaterialScreenInputReflectionBinding{
-            binding.set, binding.binding,
-            binding.type == vk::DescriptorType::eCombinedImageSampler
-                ? MaterialScreenInputReflectionKind::combined_image_sampler
-                : MaterialScreenInputReflectionKind::unsupported});
+            .set = binding.set,
+            .binding = binding.binding,
+            .kind =
+                binding.type ==
+                        vk::DescriptorType::
+                            eCombinedImageSampler
+                    ? MaterialScreenInputReflectionKind::
+                          combined_image_sampler
+                    : MaterialScreenInputReflectionKind::
+                          unsupported,
+            .name = binding.name,
+        });
     }
     validateMaterialScreenInputInterfaceReflection(
         input_count, bindings, PELICAN_SET_PASS_INPUT);
@@ -1301,8 +1352,9 @@ MaterialContainer::buildScreenInputDescriptor(
     std::vector<InternalMaterialInfo::ScreenInputResource> resources,
     const RenderTargetImageViewResolver &rt_views) const {
     if (resources.empty()) return {};
-    if (resources.size() > maxMaterialScreenInputs) {
-        throw std::runtime_error("material has too many screen inputs");
+    if (resources.size() > maxMaterialPassInputs) {
+        throw std::runtime_error(
+            "material has too many pass inputs");
     }
 
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
@@ -1369,7 +1421,9 @@ MaterialContainer::buildScreenInputDescriptor(
                               resource.target, variant,
                               resource.history, parity);
                 image_infos.push_back(vk::DescriptorImageInfo{
-                    isDepthScreenInput(resource.contract)
+                    resource.contract.sampling ==
+                            MaterialPassInputSampling::
+                                nearest_clamp_to_edge
                         ? screen_nearest_sampler.get()
                         : screen_linear_sampler.get(),
                     image_view, vk::ImageLayout::eShaderReadOnlyOptimal});
@@ -1392,7 +1446,7 @@ const MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor *
 MaterialContainer::ensureScreenInputDescriptor(
     GlobalMaterialId material_id, const PassDefinition &pass) const {
     const auto &material = materials.get(material_id);
-    if (material.screen_inputs.empty()) return nullptr;
+    if (material.pass_inputs.empty()) return nullptr;
     if (!pass.isMaterial() ||
         !materialPassAcceptsMaterial(pass.materialInfo().contract, pass.name,
                                      material.route, material.shader_contract,
@@ -1409,21 +1463,42 @@ MaterialContainer::ensureScreenInputDescriptor(
     }
 
     std::vector<InternalMaterialInfo::ScreenInputResource> resources;
-    resources.reserve(material.screen_inputs.size());
-    for (const auto &required : material.screen_inputs) {
-        const auto binding = std::find_if(
-            pass.materialInfo().screen_inputs.begin(),
-            pass.materialInfo().screen_inputs.end(), [&](const auto &candidate) {
-                return candidate.contract.name == required.name;
-            });
-        if (binding == pass.materialInfo().screen_inputs.end()) {
+    resources.reserve(material.pass_inputs.size());
+    for (const auto &required : material.pass_inputs) {
+        const auto find_binding =
+            [&](const auto &bindings)
+            -> const MaterialPassInputBinding * {
+            const auto found = std::find_if(
+                bindings.begin(), bindings.end(),
+                [&](const auto &candidate) {
+                    return candidate.contract.name ==
+                           required.name;
+                });
+            return found == bindings.end()
+                       ? nullptr
+                       : &*found;
+        };
+        const auto *binding =
+            find_binding(
+                pass.materialInfo().screen_inputs);
+        if (binding == nullptr) {
+            binding = find_binding(
+                pass.materialInfo()
+                    .surface_resources);
+        }
+        if (binding == nullptr) {
             throw std::runtime_error(
-                "material screen input '" + required.name +
-                "' is not provided by pass '" + pass.name + "'");
+                "material pass input '" + required.name +
+                "' is not provided by pass '" + pass.name +
+                "' (fallback=" +
+                std::string{
+                    materialPassInputFallbackName(
+                        required.fallback)} +
+                ")");
         }
         if (binding->contract != required) {
             throw std::runtime_error(
-                "material screen input '" + required.name +
+                "material pass input '" + required.name +
                 "' type or footprint does not match pass '" + pass.name +
                 "'");
         }
@@ -1442,8 +1517,18 @@ MaterialContainer::ensureScreenInputDescriptor(
                         target_position -
                         pass.input_targets.begin()));
         }
+        if (required.view_policy ==
+                MaterialPassInputViewPolicy::shared_2d &&
+            view_dimension !=
+                PassInputViewDimension::shared_2d) {
+            throw std::runtime_error(
+                "material pass input '" + required.name +
+                "' requires shared_2d view policy in pass '" +
+                pass.name + "'");
+        }
         resources.push_back(
-            {required, binding->target, binding->history,
+            {required, binding->target,
+             binding->history,
              view_dimension});
     }
 

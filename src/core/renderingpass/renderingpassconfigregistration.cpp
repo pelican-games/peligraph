@@ -137,12 +137,6 @@ targetViewExecutionRequest(
         .automatic_policy =
             pipeline.xr_target_policy.multiview_auto,
     };
-    if (!enable_multiview_runtime) {
-        // Preserve the typed XR request while an embedding target or device
-        // profile keeps production execution sequential.
-        return request;
-    }
-
     std::set<std::string, std::less<>> capable_candidates;
     std::set<std::string, std::less<>> independent_candidates;
     const auto builtin_fragment =
@@ -200,7 +194,8 @@ targetViewExecutionRequest(
                     shader.at("vertex").get<std::string>();
                 const auto fragment =
                     shader.at("fragment").get<std::string>();
-                if (vertex == "engine://fullscreen" &&
+                if (enable_multiview_runtime &&
+                    vertex == "engine://fullscreen" &&
                     builtin_fragment(fragment)) {
                     capable_candidates.insert(name);
                 }

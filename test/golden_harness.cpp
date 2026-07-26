@@ -28,6 +28,7 @@
 #include "../src/core/renderer/uicontainer.hpp"
 #include "../src/core/renderer/uirenderer.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
@@ -1903,6 +1904,24 @@ nlohmann::json makeShadowRenderingConfig(bool shadow_enabled) {
     return config;
 }
 
+nlohmann::json makeBLayerShadowRenderingConfig(
+    std::string_view feature_reference) {
+    auto config = nlohmann::json{
+        {"pipeline",
+         {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"render_strategy",
+         {{"name", "golden.shadow_b_layer"}}},
+        {"graph_transforms",
+         nlohmann::json::array(
+             {{{"name", "golden.shadow_b_layer.identity"}}})},
+    };
+    if (!feature_reference.empty()) {
+        config["features"] =
+            nlohmann::json::array({std::string{feature_reference}});
+    }
+    return config;
+}
+
 nlohmann::json makeTaaRenderingConfig() {
     auto config = makeShadowRenderingConfig(false);
     config["render_targets"].push_back({
@@ -2000,6 +2019,32 @@ void main() {
     std::filesystem::copy_file(sourceRoot() / "test" / "fixtures" / "ground.glb",
                                root / "assets" / "ground.glb",
                                std::filesystem::copy_options::overwrite_existing);
+}
+
+void writeBLayerShadowProject(const std::filesystem::path &root,
+                              std::string_view mode) {
+    writeShadowProject(root, false);
+
+    std::string feature_reference;
+    if (mode == "shadow_b_layer_engine") {
+        feature_reference =
+            "engine://features/shadow_directional.json";
+    } else if (mode == "shadow_b_layer_project") {
+        feature_reference =
+            "project://features/shadow_directional.json";
+        writeTextFile(
+            root / "features" / "shadow_directional.json",
+            engineResourceOrThrow(
+                "features/shadow_directional.json"));
+    } else if (mode != "shadow_b_layer_off") {
+        throw std::runtime_error(
+            "unknown B-layer shadow golden mode: " +
+            std::string{mode});
+    }
+
+    writeTextFile(
+        root / "passes" / "main.json",
+        makeBLayerShadowRenderingConfig(feature_reference).dump(2));
 }
 
 void writeMorphSkinnedShadowProject(const std::filesystem::path &root) {
@@ -2617,6 +2662,147 @@ void renderShadowFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderBLayerShadowFrame(RenderTarget &render_target,
+                             std::string_view mode) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const bool shadow_enabled =
+        mode != "shadow_b_layer_off";
+    const auto expected_provider =
+        mode == "shadow_b_layer_project"
+            ? std::string{
+                  "project://features/shadow_directional.json"}
+            : std::string{
+                  "engine://features/shadow_directional.json"};
+
+    const auto rendering_pass_id =
+        GET_MODULE(RenderingPassContainer)
+            .getRenderingPassIdByName("main_render");
+    const auto execution =
+        GET_MODULE(FrameGraphRuntimeContainer).find(
+            rendering_pass_id);
+    if (execution == nullptr ||
+        execution->render_pipeline == nullptr) {
+        throw std::runtime_error(
+            "B-layer shadow golden requires a compiled render pipeline");
+    }
+
+    const auto &pipeline = *execution->render_pipeline;
+    const bool has_shadow_define =
+        std::find(pipeline.shader_defines.begin(),
+                  pipeline.shader_defines.end(),
+                  "PELICAN_FEATURE_SHADOW") !=
+        pipeline.shader_defines.end();
+    if (has_shadow_define != shadow_enabled) {
+        throw std::runtime_error(
+            "B-layer shadow feature define does not match the golden mode");
+    }
+    if (!shadow_enabled) {
+        if (!pipeline.surface_resource_contracts.empty()) {
+            throw std::runtime_error(
+                "feature-off B-layer shadow golden unexpectedly "
+                "compiled a surface resource");
+        }
+    } else {
+        if (pipeline.surface_resource_contracts.size() != 1) {
+            throw std::runtime_error(
+                "B-layer shadow golden requires exactly one typed "
+                "surface resource");
+        }
+        const auto &resource =
+            pipeline.surface_resource_contracts.front();
+        if (resource.contract.name !=
+                "directional_shadow" ||
+            resource.provider_reference !=
+                expected_provider) {
+            throw std::runtime_error(
+                "B-layer shadow golden compiled the wrong typed "
+                "surface resource provider");
+        }
+    }
+
+    const auto surface_reference = std::string{
+        "engine://surfaces/openpbr/opaque_single.surface"};
+    const auto surface = parseSurfaceFormat(
+        engineResourceOrThrow(
+            "surfaces/openpbr/opaque_single.surface"),
+        surface_reference);
+    MaterialSurfaceCatalog surfaces{
+        {surface_reference, surface}};
+    const auto material_document =
+        parseMaterialFormatJson(
+            nlohmann::json::parse(R"json({
+              "schema":"pelican.material",
+              "version":1,
+              "materials":[{
+                "name":"shadow_receiver",
+                "surface":"engine://surfaces/openpbr/opaque_single.surface",
+                "values":{
+                  "base_color":[0.62,0.68,0.78,1.0],
+                  "base_diffuse_roughness":0.72,
+                  "coat_weight":0.35
+                },
+                "routing":{
+                  "alpha_mode":"opaque",
+                  "double_sided":false
+                }
+              }]
+            })json"),
+            surfaces);
+    const auto lowered = lowerMaterial(
+        material_document.materials.front(), surface);
+    if (lowered.route !=
+        MaterialRouteClass::forward_opaque) {
+        throw std::runtime_error(
+            "B-layer shadow golden material did not route to "
+            "forward_opaque");
+    }
+
+    const auto shaders =
+        GET_MODULE(ShaderLibrary)
+            .loadFromSurfaceForMaterial(
+                surface, surface_reference, lowered,
+                pipeline.shader_defines);
+    auto &standard =
+        GET_MODULE(StandardMaterialResource);
+    MaterialInfo material{
+        .vert_shader = shaders.vertex,
+        .frag_shader = shaders.fragment,
+        .base_color_texture = standard.whiteTexture(),
+        .metallic_roughness_texture =
+            standard.metallicRoughnessDefaultTexture(),
+        .normal_texture = standard.normalDefaultTexture(),
+        .emissive_texture =
+            standard.emissiveDefaultTexture(),
+    };
+    applyLoweredMaterialForRoute(material, lowered);
+    const auto material_id =
+        GET_MODULE(MaterialContainer).registerMaterial(
+            std::move(material));
+    if (!isValidMaterialId(material_id)) {
+        throw std::runtime_error(
+            "failed to register B-layer shadow golden material");
+    }
+
+    auto &model =
+        GET_MODULE(ModelAssetContainer)
+            .getModelTemplateByName("ground");
+    if (model.material_primitives.empty()) {
+        throw std::runtime_error(
+            "B-layer shadow golden model has no material primitives");
+    }
+    for (auto &group : model.material_primitives) {
+        group.material = material_id;
+    }
+
+    renderShadowFrame(render_target);
+#else
+    (void)render_target;
+    (void)mode;
+    throw std::runtime_error(
+        "runtime shader compiler disabled");
+#endif
+}
+
 void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
@@ -2934,6 +3120,13 @@ bool isShadowGoldenMode(const std::string &mode) {
     return mode == "shadow_off" || mode == "shadow_on";
 }
 
+bool isBLayerShadowGoldenMode(
+    const std::string &mode) {
+    return mode == "shadow_b_layer_off" ||
+           mode == "shadow_b_layer_engine" ||
+           mode == "shadow_b_layer_project";
+}
+
 bool isTaaGoldenMode(const std::string &mode) {
     return mode == "taa_static" || mode == "taa_camera_motion" ||
            mode == "taa_object_motion" || mode == "taa_disocclusion" ||
@@ -3149,6 +3342,17 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         writeHdrProject(temp_dir, golden_case.mode == "hdr_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
+    } else if (isBLayerShadowGoldenMode(
+                   golden_case.mode)) {
+        writeBLayerShadowProject(temp_dir,
+                                 golden_case.mode);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeShadowProjectJson();
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource).setProjectData(
+            project.dump());
     } else if (isShadowGoldenMode(golden_case.mode)) {
         writeShadowProject(temp_dir, golden_case.mode == "shadow_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -3246,6 +3450,10 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         renderColliderDebugDrawFrame(render_target);
     } else if (isHdrGoldenMode(golden_case.mode)) {
         renderDebugTextFrame(render_target);
+    } else if (isBLayerShadowGoldenMode(
+                   golden_case.mode)) {
+        renderBLayerShadowFrame(render_target,
+                                golden_case.mode);
     } else if (isShadowGoldenMode(golden_case.mode)) {
         renderShadowFrame(render_target);
     } else if (isTaaGoldenMode(golden_case.mode)) {
@@ -3595,6 +3803,54 @@ void GoldenHarness::runTaaDeterminism() {
     REQUIRE(first.plan_order == second.plan_order);
 #else
     SKIP("TAA deterministic capture requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runBLayerShadowEquivalence() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto golden_root =
+        sourceRoot() / "test/golden";
+    const auto off = renderCase(GoldenCase{
+        "shadow_b_layer_equivalence_off",
+        "shadow_b_layer_off",
+        golden_root / "shadow_b_layer_off",
+        goldenWidth,
+        goldenHeight});
+    const auto engine = renderCase(GoldenCase{
+        "shadow_b_layer_equivalence_engine",
+        "shadow_b_layer_engine",
+        golden_root / "shadow_b_layer_engine",
+        goldenWidth,
+        goldenHeight});
+    const auto project = renderCase(GoldenCase{
+        "shadow_b_layer_equivalence_project",
+        "shadow_b_layer_project",
+        golden_root / "shadow_b_layer_project",
+        goldenWidth,
+        goldenHeight});
+
+    REQUIRE(engine.image.width == project.image.width);
+    REQUIRE(engine.image.height == project.image.height);
+    REQUIRE(engine.image.pixels ==
+            project.image.pixels);
+    REQUIRE(engine.image.pixels.size() ==
+            off.image.pixels.size());
+    REQUIRE(engine.image.pixels != off.image.pixels);
+
+    std::size_t changed_bytes = 0;
+    for (std::size_t index = 0;
+         index < engine.image.pixels.size();
+         ++index) {
+        changed_bytes +=
+            engine.image.pixels[index] !=
+            off.image.pixels[index];
+    }
+    REQUIRE(changed_bytes > 0);
+#else
+    SKIP("B-layer directional-shadow golden requires "
+         "the runtime shader compiler");
 #endif
 }
 

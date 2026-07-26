@@ -295,6 +295,57 @@
       ]
     },
     {
+      "name": "shadow_b_layer_engine",
+      "mode": "shadow_b_layer_engine",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "f052edd5ca62b34f07e575b3d49cec8e098bb01d56df07c2b641c7d060b678e0",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "shadow_b_layer_off",
+      "mode": "shadow_b_layer_off",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "208f691090865d35a6893d55ca1fb178c6855ff6db98ee5652f56d55c8ca80c0",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "shadow_b_layer_project",
+      "mode": "shadow_b_layer_project",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "f052edd5ca62b34f07e575b3d49cec8e098bb01d56df07c2b641c7d060b678e0",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
       "name": "shadow_off",
       "mode": "shadow_off",
       "files": [
@@ -319,7 +370,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "4966608cc48cd78f76c7f9cd4f10c8551b6490d51cb1f88b3af4094b2343652e",
+      "expected_png_sha256": "6afbbee62ee590655231485f54b5466e0dc68d2f6b81b388ed3f58e05ee29805",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [

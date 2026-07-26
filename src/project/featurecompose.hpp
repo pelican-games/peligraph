@@ -36,6 +36,8 @@ struct RenderFeatureComposeResult {
     std::vector<std::string> excluded_feature_names;
     std::optional<nlohmann::json> projection_jitter;
     nlohmann::json feature_instances = nlohmann::json::array();
+    nlohmann::json surface_resource_contracts =
+        nlohmann::json::array();
     nlohmann::json material_routing;
     nlohmann::json draw_sort;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;

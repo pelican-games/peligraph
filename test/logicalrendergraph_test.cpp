@@ -410,6 +410,33 @@ TEST_CASE("builtin hybrid screen inputs carry typed footprints and explicit disp
     REQUIRE(resolved_depth.conversion_path ==
             std::vector<std::string>{"pelican.render.depth_linearize@1"});
 
+    const auto shadow =
+        makeBuiltinMaterialPassInputContract(
+            types, directionalShadowInputContractName);
+    REQUIRE(shadow.source_type == deviceDepthV1(types));
+    REQUIRE(shadow.sampled_type == deviceDepthV1(types));
+    REQUIRE(shadow.footprint.kind ==
+            LogicalReadFootprintKind::arbitrary);
+    REQUIRE(shadow.sampling ==
+            MaterialPassInputSampling::
+                nearest_clamp_to_edge);
+    REQUIRE(shadow.view_policy ==
+            MaterialPassInputViewPolicy::shared_2d);
+    REQUIRE(shadow.fallback ==
+            MaterialPassInputFallback::fully_lit);
+    REQUIRE(shadow.relation.has_value());
+    REQUIRE(shadow.relation->kind ==
+            MaterialPassInputRelationKind::
+                directional_light_shadow_v1);
+    REQUIRE(shadow.relation->light_index == 0);
+    REQUIRE(shadow.relation->transform ==
+            "pelican.light.shadow_view_projection@1");
+    REQUIRE_THROWS_WITH(
+        makeBuiltinMaterialScreenInputContract(
+            types, directionalShadowInputContractName),
+        Catch::Matchers::ContainsSubstring(
+            "feature-owned"));
+
     const auto tone_pattern =
         exactLogicalTypePattern(types, displayLinearV1(types));
     const auto implicit_tone =

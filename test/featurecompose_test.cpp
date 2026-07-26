@@ -177,11 +177,14 @@ TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[re
 CompiledRenderPipeline compileComposition(
     const RenderFeatureComposeResult &composition) {
     ResolvedRenderPipeline resolved;
+    resolved.normalized_config = composition.config;
     resolved.shader_defines = composition.shader_defines;
     resolved.feature_names = composition.feature_names;
     resolved.excluded_feature_names = composition.excluded_feature_names;
     resolved.projection_jitter = composition.projection_jitter;
     resolved.feature_instances = composition.feature_instances;
+    resolved.surface_resource_contracts =
+        composition.surface_resource_contracts;
     resolved.material_routing = composition.material_routing;
     resolved.draw_sort = composition.draw_sort;
     resolved.sample_count_policy =
@@ -189,6 +192,138 @@ CompiledRenderPipeline compileComposition(
     resolved.pipeline_preset = composition.pipeline_preset;
     resolved.used_features = composition.used_features;
     return compileRenderPipeline(resolved);
+}
+
+TEST_CASE(
+    "directional shadow contract binds hybrid deferred and forward consumers",
+    "[render-feature][shadow][hybrid][wp205]") {
+    const auto compose = [](std::string feature_ref) {
+        return composeRenderFeatureConfig(
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features",
+                 nlohmann::json::array(
+                     {std::move(feature_ref)})},
+            },
+            RenderFeatureComposeDependencies{
+                [](std::string_view ref) {
+                    if (ref ==
+                        "project://features/shadow_copy.json") {
+                        return engineResourceOrThrow(
+                            "features/shadow_directional.json");
+                    }
+                    return loadEngineFeature(ref);
+                },
+                true,
+            });
+    };
+
+    const auto engine = compose(
+        "engine://features/shadow_directional.json");
+    REQUIRE(passNames(engine.config).front() ==
+            "shadow_depth");
+    REQUIRE(passByName(engine.config, "forward_opaque")
+                .at("surface_resources")
+                .at("directional_shadow") ==
+            "shadow_map");
+    REQUIRE(passByName(engine.config, "forward_transparent")
+                .at("surface_resources")
+                .at("directional_shadow") ==
+            "shadow_map");
+    REQUIRE(passByName(engine.config, "deferred_lighting")
+                .at("input")
+                .back() ==
+            "shadow_map");
+
+    const auto &declaration =
+        engine.surface_resource_contracts.front();
+    REQUIRE(declaration.at("material_consumers") ==
+            nlohmann::json::array(
+                {"forward_opaque",
+                 "forward_transparent"}));
+    REQUIRE(declaration.at("fullscreen_consumers") ==
+            nlohmann::json::array(
+                {"deferred_lighting"}));
+
+    const auto compiled =
+        compileComposition(engine);
+    REQUIRE(compiled.surface_resource_contracts.size() ==
+            1);
+    const auto metadata =
+        serializeCompiledRenderPipelineMetadata(
+            compiled)
+            .at("surface_resource_contracts")
+            .front();
+    REQUIRE(metadata.at("producer") == "shadow_depth");
+    REQUIRE(metadata.at("view_policy") == "shared_2d");
+    REQUIRE(metadata.at("fallback") == "fully_lit");
+    REQUIRE(metadata.at("fallback_reason") ==
+            "provider_feature_absent");
+    REQUIRE(metadata.at("relation").at("kind") ==
+            "pelican.light.directional_shadow@1");
+    REQUIRE(metadata.at("relation").at("light_index") ==
+            0);
+    REQUIRE(metadata.at("relation").at("transform") ==
+            "pelican.light.shadow_view_projection@1");
+
+    const auto copied = compose(
+        "project://features/shadow_copy.json");
+    REQUIRE(copied.config == engine.config);
+    REQUIRE(copied.shader_defines ==
+            engine.shader_defines);
+    auto copied_contract =
+        copied.surface_resource_contracts.front();
+    auto engine_contract =
+        engine.surface_resource_contracts.front();
+    copied_contract.erase("provider_ref");
+    engine_contract.erase("provider_ref");
+    REQUIRE(copied_contract == engine_contract);
+}
+
+TEST_CASE(
+    "surface resource selectors validate even without fullscreen passes",
+    "[render-feature][shadow][validation][wp205]") {
+    auto feature = nlohmann::json::parse(
+        engineResourceOrThrow(
+            "features/shadow_directional.json"));
+    feature["surface_resources"][0]
+           ["fullscreen_consumers"] =
+        nlohmann::json::array(
+            {{{"unknown_selector_field", true}}});
+
+    const auto authored = nlohmann::json{
+        {"features",
+         nlohmann::json::array(
+             {"fixture://invalid_shadow_selector"})},
+        {"render_targets", nlohmann::json::array()},
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "main_render"},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "forward_opaque"},
+                      {"type", "material"},
+                      {"material_contract",
+                       "forward_opaque_v1"},
+                      {"output",
+                       {{"color", "swapchain"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+
+    REQUIRE_THROWS_WITH(
+        composeRenderFeatureConfig(
+            authored,
+            RenderFeatureComposeDependencies{
+                [text = feature.dump()](
+                    std::string_view) {
+                    return text;
+                },
+                true,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "unknown_selector_field"));
 }
 
 TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes",
@@ -632,7 +767,8 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
           "type": "fullscreen",
           "output": {"color": "lit_color", "depth": null},
           "input": ["gbuffer_albedo"],
-          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
+          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"},
+          "uses_light_data": true
         }
       ]
     }
@@ -648,7 +784,10 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
 
     REQUIRE(result.feature_names == std::vector<std::string>{"shadow_directional"});
     REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_FEATURE_SHADOW"});
-    REQUIRE(passNames(result.config) == std::vector<std::string>{"gbuffer_pass", "shadow_depth", "lighting_pass"});
+    REQUIRE(passNames(result.config) ==
+            std::vector<std::string>{
+                "shadow_depth", "gbuffer_pass",
+                "lighting_pass"});
 
     const auto &shadow_map = result.config.at("render_targets").back();
     REQUIRE(shadow_map.at("name").get<std::string>() == "shadow_map");
@@ -656,14 +795,25 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
     REQUIRE(shadow_map.at("height").get<int>() == 2048);
 
     const auto &shadow_pass = passByName(result.config, "shadow_depth");
-    REQUIRE(shadow_pass.at("before").get<std::vector<std::string>>() ==
-            std::vector<std::string>{"lighting_pass"});
     REQUIRE(shadow_pass.at("output").at("depth").get<std::string>() == "shadow_map");
     REQUIRE(shadow_pass.at("depth_store_op").get<std::string>() == "store");
 
     const auto &lighting_pass = passByName(result.config, "lighting_pass");
     REQUIRE(lighting_pass.at("input").get<std::vector<std::string>>() ==
             std::vector<std::string>{"gbuffer_albedo", "shadow_map"});
+    REQUIRE(lighting_pass.at("input_sampling").back() ==
+            (nlohmann::json{
+                {"filter", "nearest"},
+                {"address", "clamp_to_edge"}}));
+    REQUIRE(result.surface_resource_contracts.size() == 1);
+    const auto &contract =
+        result.surface_resource_contracts.front();
+    REQUIRE(contract.at("contract") ==
+            "directional_shadow");
+    REQUIRE(contract.at("producer") == "shadow_depth");
+    REQUIRE(contract.at("material_consumers").empty());
+    REQUIRE(contract.at("fullscreen_consumers") ==
+            nlohmann::json::array({"lighting_pass"}));
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {
