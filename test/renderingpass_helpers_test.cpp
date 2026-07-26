@@ -2063,6 +2063,40 @@ TEST_CASE(
         lighting_contract.scope_color_clear_values ==
         geometry_contract.scope_color_clear_values);
 
+    auto repeated_definition = definition;
+    repeated_definition.passes.front()
+        .output_color.push_back(lit);
+    auto repeated_plan = plan;
+    repeated_plan.attachments.insert(
+        repeated_plan.attachments.begin() + 1,
+        VulkanPhysicalAttachmentPlan{
+            .node = "geometry",
+            .logical_resource = "lit",
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        });
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            repeated_definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata = &metadata,
+                .target_plan = &repeated_plan,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "cannot preserve intermediate materialized color "
+            "attachment operations"));
+    repeated_plan.attachments.back().load_op =
+        VulkanPhysicalAttachmentLoadOp::load;
+    REQUIRE_NOTHROW(
+        compileRenderingPassRuntime(
+            repeated_definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata = &metadata,
+                .target_plan = &repeated_plan,
+            }));
+
     plan.scopes.front().local_reads.clear();
     plan.scopes.front()
         .single_rendering_instance = false;

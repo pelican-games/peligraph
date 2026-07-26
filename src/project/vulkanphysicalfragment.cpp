@@ -987,6 +987,32 @@ ScopeAttachmentContract scopeAttachmentContract(
     return result;
 }
 
+bool hasMaterializedAttachmentOperations(
+    VulkanResourceRepresentation representation) {
+    return representation ==
+               VulkanResourceRepresentation::materialized_image ||
+           representation ==
+               VulkanResourceRepresentation::external;
+}
+
+const VulkanPhysicalResourcePlan &
+requireScopeAttachmentResource(
+    const VulkanTargetPlan &plan,
+    std::string_view name) {
+    const auto found = std::find_if(
+        plan.resources.begin(), plan.resources.end(),
+        [&](const auto &resource) {
+            return resource.logical_resource == name;
+        });
+    if (found == plan.resources.end()) {
+        throw std::runtime_error(
+            "Vulkan physical attachment references an unknown "
+            "resource: " +
+            std::string{name});
+    }
+    return *found;
+}
+
 void validateDependencySafeNodeOrder(
     const CompiledLogicalRenderGraph &canonical_graph,
     const std::map<std::string, std::size_t, std::less<>>
@@ -1512,10 +1538,57 @@ void validateMaterializedRenderingScopeOperations(
     if (plan.attachments.empty()) return;
 
     for (const auto &scope : plan.scopes) {
-        if (!scope.single_rendering_instance ||
-            !scope.local_reads.empty()) {
+        if (!scope.single_rendering_instance) {
             continue;
         }
+        const auto local_read_scope =
+            !scope.local_reads.empty();
+        if (local_read_scope) {
+            std::map<
+                std::pair<
+                    std::string,
+                    VulkanPhysicalAttachmentAspect>,
+                const VulkanPhysicalAttachmentPlan *>
+                previous_writers;
+            for (const auto &node : scope.nodes) {
+                for (const auto &attachment :
+                     plan.attachments) {
+                    if (attachment.node != node) continue;
+                    if (!hasMaterializedAttachmentOperations(
+                            requireScopeAttachmentResource(
+                                plan,
+                                attachment.logical_resource)
+                                .representation)) {
+                        continue;
+                    }
+                    const auto key = std::pair{
+                        attachment.logical_resource,
+                        attachment.aspect};
+                    const auto previous =
+                        previous_writers.find(key);
+                    if (previous !=
+                        previous_writers.end()) {
+                        if (previous->second->store_op !=
+                                VulkanPhysicalAttachmentStoreOp::
+                                    store ||
+                            attachment.load_op !=
+                                VulkanPhysicalAttachmentLoadOp::
+                                    load) {
+                            throw std::runtime_error(
+                                "Vulkan physical local-read scope "
+                                "cannot preserve intermediate "
+                                "materialized attachment operations: " +
+                                scope.id + " -> " +
+                                attachment.logical_resource);
+                        }
+                    }
+                    previous_writers[key] =
+                        &attachment;
+                }
+            }
+            continue;
+        }
+
         ScopeAttachmentContract expected;
         for (std::size_t node_index = 0;
              node_index < scope.nodes.size();

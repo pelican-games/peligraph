@@ -435,6 +435,14 @@ requirePhysicalPassResource(
     return *found;
 }
 
+bool hasMaterializedAttachmentOperations(
+    const VulkanPhysicalResourcePlan &resource) {
+    return resource.representation ==
+               VulkanResourceRepresentation::materialized_image ||
+           resource.representation ==
+               VulkanResourceRepresentation::external;
+}
+
 CompiledPassRenderingContract
 compilePassRenderingContract(
     const RenderingPassDefinition &definition,
@@ -542,7 +550,85 @@ compilePassRenderingContract(
                     scope_pass->name);
             }
         }
-        if (!result.local_read_scope) {
+        if (result.local_read_scope) {
+            std::map<int, PassAttachmentOperations>
+                previous_color_operations;
+            std::optional<PassAttachmentOperations>
+                previous_depth_operations;
+            for (const auto *scope_pass_ptr :
+                 scope_passes) {
+                const auto &scope_pass =
+                    *scope_pass_ptr;
+                for (std::size_t color_index = 0;
+                     color_index <
+                     scope_pass.output_color.size();
+                     ++color_index) {
+                    const auto target =
+                        scope_pass
+                            .output_color[color_index];
+                    if (!hasMaterializedAttachmentOperations(
+                            requirePhysicalPassResource(
+                                *plan, target,
+                            metadata))) {
+                        continue;
+                    }
+                    const auto operations =
+                        scopeColorAttachmentOperations(
+                            scope_pass, color_index,
+                            *plan, metadata);
+                    const auto previous =
+                        previous_color_operations.find(
+                            target.value);
+                    if (previous !=
+                            previous_color_operations.end() &&
+                        (previous->second.store_op !=
+                             vk::AttachmentStoreOp::eStore ||
+                         operations.load_op !=
+                             vk::AttachmentLoadOp::eLoad)) {
+                        throw std::runtime_error(
+                            "local-read fused rendering scope cannot "
+                            "preserve intermediate materialized "
+                            "color attachment operations: " +
+                            scope.id + " -> " +
+                            physicalTargetName(
+                                target, metadata));
+                    }
+                    previous_color_operations[
+                        target.value] = operations;
+                }
+
+                if (isConcreteRenderTarget(
+                        scope_pass.output_depth) ||
+                    isSwapchainRenderTarget(
+                        scope_pass.output_depth)) {
+                    if (!hasMaterializedAttachmentOperations(
+                            requirePhysicalPassResource(
+                                *plan,
+                                scope_pass.output_depth,
+                                metadata))) {
+                        continue;
+                    }
+                    const auto operations =
+                        scopeDepthAttachmentOperations(
+                            scope_pass, *plan,
+                            metadata);
+                    if (previous_depth_operations &&
+                        (previous_depth_operations
+                                 ->store_op !=
+                             vk::AttachmentStoreOp::eStore ||
+                         operations.load_op !=
+                             vk::AttachmentLoadOp::eLoad)) {
+                        throw std::runtime_error(
+                            "local-read fused rendering scope cannot "
+                            "preserve intermediate materialized "
+                            "depth attachment operations: " +
+                            scope.id);
+                    }
+                    previous_depth_operations =
+                        operations;
+                }
+            }
+        } else {
             if (std::any_of(
                     result.color_attachments.begin(),
                     result.color_attachments.end(),

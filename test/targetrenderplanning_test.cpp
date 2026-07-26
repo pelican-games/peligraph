@@ -463,6 +463,134 @@ CompiledLogicalRenderGraph graphWithWriteOnlyAttachment(
     return graph;
 }
 
+CompiledLogicalRenderGraph
+graphWithTileLinkAndMaterializedOverwrite(
+    const LogicalTypeRegistry &types,
+    bool preserve_materialized_contents) {
+    CompiledLogicalRenderGraph graph;
+    graph.name =
+        preserve_materialized_contents
+            ? "tile_link_materialized_load"
+            : "tile_link_materialized_clear";
+    const auto scene = sceneLinearHdrV1(types);
+    graph.resources = {
+        LogicalResourceDesc{
+            .name = "tile_link",
+            .type = scene,
+        },
+        LogicalResourceDesc{
+            .name = "persistent_color",
+            .type = scene,
+            .materialization =
+                LogicalMaterializationRequirement::required,
+        },
+        LogicalResourceDesc{
+            .name = "display_output",
+            .type = displayEncodedV1(types),
+            .materialization =
+                LogicalMaterializationRequirement::required,
+        },
+    };
+
+    LogicalGraphNode producer;
+    producer.name = "Producer";
+    producer.kind = LogicalGraphNodeKind::render;
+    addWrite(types, producer, resource(graph, "tile_link"),
+             1, "tile");
+    addWrite(types, producer,
+             resource(graph, "persistent_color"),
+             1, "color");
+
+    LogicalGraphNode consumer;
+    consumer.name = "Consumer";
+    consumer.kind = LogicalGraphNodeKind::render;
+    addRead(types, consumer, resource(graph, "tile_link"),
+            1, "tile", LogicalReadFootprintKind::same_pixel,
+            LogicalAccessIntent::attachment);
+    if (preserve_materialized_contents) {
+        addReadWrite(
+            types, consumer,
+            resource(graph, "persistent_color"),
+            1, 2, "color");
+    } else {
+        addWrite(
+            types, consumer,
+            resource(graph, "persistent_color"),
+            2, "color");
+    }
+
+    LogicalGraphNode output;
+    output.name = "Output";
+    output.kind =
+        LogicalGraphNodeKind::output_transform;
+    addRead(types, output,
+            resource(graph, "persistent_color"),
+            2, "color",
+            LogicalReadFootprintKind::same_pixel);
+    addWrite(types, output,
+             resource(graph, "display_output"),
+             1, "display");
+
+    graph.nodes = {
+        std::move(consumer),
+        std::move(output),
+        std::move(producer),
+    };
+    validateCompiledLogicalRenderGraph(types, graph);
+    return graph;
+}
+
+std::vector<VulkanPhysicalAttachmentPlan>
+tileLinkAttachmentOperations(
+    bool preserve_materialized_contents) {
+    return {
+        VulkanPhysicalAttachmentPlan{
+            .node = "Producer",
+            .logical_resource = "tile_link",
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        },
+        VulkanPhysicalAttachmentPlan{
+            .node = "Producer",
+            .logical_resource = "persistent_color",
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                preserve_materialized_contents
+                    ? VulkanPhysicalAttachmentStoreOp::store
+                    : VulkanPhysicalAttachmentStoreOp::discard,
+        },
+        VulkanPhysicalAttachmentPlan{
+            .node = "Consumer",
+            .logical_resource = "persistent_color",
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                preserve_materialized_contents
+                    ? VulkanPhysicalAttachmentLoadOp::load
+                    : VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        },
+        VulkanPhysicalAttachmentPlan{
+            .node = "Output",
+            .logical_resource = "display_output",
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        },
+    };
+}
+
 VulkanSampleCountPlanRequest sampleCountRequest(
     const CompiledLogicalRenderGraph &graph,
     SampleCountPolicy policy,
@@ -585,6 +713,56 @@ TEST_CASE("desktop materializes arbitrary G-buffer attachments while tile keeps 
         compile(types, graph, topology(true), std::move(bindings));
     REQUIRE(vulkanTargetPlanToJson(tile).dump() ==
             vulkanTargetPlanToJson(reordered).dump());
+}
+
+TEST_CASE(
+    "tile-local fusion preserves materialized attachment operations",
+    "[target-render-planning][tile][attachment][synchronization]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+
+    const auto preserving_graph =
+        graphWithTileLinkAndMaterializedOverwrite(
+            types, true);
+    const auto preserving = compile(
+        types, preserving_graph, topology(true),
+        bindingsFor(types, preserving_graph),
+        std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt, {},
+        tileLinkAttachmentOperations(true));
+    REQUIRE(
+        preserving.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.tile_local_plan@1");
+    REQUIRE(oneScopeContains(
+        preserving, "Producer", "Consumer"));
+    REQUIRE(
+        physicalResource(
+            preserving, "tile_link")
+            .representation ==
+        VulkanResourceRepresentation::
+            tile_local_attachment);
+
+    const auto clearing_graph =
+        graphWithTileLinkAndMaterializedOverwrite(
+            types, false);
+    const auto clearing = compile(
+        types, clearing_graph, topology(true),
+        bindingsFor(types, clearing_graph),
+        std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt, {},
+        tileLinkAttachmentOperations(false));
+    REQUIRE(
+        clearing.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE_FALSE(oneScopeContains(
+        clearing, "Producer", "Consumer"));
+    REQUIRE(
+        physicalResource(
+            clearing, "tile_link")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
 }
 
 TEST_CASE(

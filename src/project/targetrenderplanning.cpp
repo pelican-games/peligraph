@@ -1515,27 +1515,6 @@ std::string_view vulkanPhysicalAttachmentStoreOpName(
 
 namespace {
 
-using PhysicalScopeAttachmentContract =
-    std::vector<std::pair<
-        std::string,
-        VulkanPhysicalAttachmentAspect>>;
-
-PhysicalScopeAttachmentContract
-physicalScopeAttachmentContract(
-    std::span<const VulkanPhysicalAttachmentPlan>
-        attachments,
-    std::string_view node) {
-    PhysicalScopeAttachmentContract result;
-    for (const auto &attachment : attachments) {
-        if (attachment.node == node) {
-            result.emplace_back(
-                attachment.logical_resource,
-                attachment.aspect);
-        }
-    }
-    return result;
-}
-
 bool canAppendMaterializedRenderingScope(
     const VulkanPhysicalScopePlan &scope,
     std::string_view node,
@@ -1544,41 +1523,48 @@ bool canAppendMaterializedRenderingScope(
     std::span<const VulkanPhysicalAttachmentPlan>
         attachments) {
     if (scope.nodes.empty()) return false;
-    const auto expected =
-        physicalScopeAttachmentContract(
-            attachments,
-            scope.nodes.front());
-    const auto appended =
-        physicalScopeAttachmentContract(
-            attachments, node);
-    if (expected.empty() || appended != expected) {
-        return false;
-    }
-    for (const auto &[resource, aspect] : expected) {
-        (void)aspect;
-        const auto *physical =
-            findPhysicalResource(
-                resources, resource);
-        if (physical == nullptr ||
-            physical->representation !=
-                VulkanResourceRepresentation::
-                    materialized_image) {
-            return false;
-        }
-    }
-    const auto &previous = scope.nodes.back();
     for (const auto &attachment : attachments) {
-        if (attachment.node == previous &&
-            attachment.store_op !=
-                VulkanPhysicalAttachmentStoreOp::
-                    store) {
-            return false;
+        if (attachment.node != node) continue;
+        const auto *physical = findPhysicalResource(
+            resources, attachment.logical_resource);
+        if (physical == nullptr) return false;
+        if (physical->representation !=
+                VulkanResourceRepresentation::
+                    materialized_image &&
+            physical->representation !=
+                VulkanResourceRepresentation::external) {
+            continue;
         }
-        if (attachment.node == node &&
-            attachment.load_op !=
-                VulkanPhysicalAttachmentLoadOp::
-                    load) {
-            return false;
+
+        for (auto previous_node =
+                 scope.nodes.rbegin();
+             previous_node != scope.nodes.rend();
+             ++previous_node) {
+            const auto previous_attachment =
+                std::find_if(
+                    attachments.begin(),
+                    attachments.end(),
+                    [&](const auto &candidate) {
+                        return candidate.node ==
+                                   *previous_node &&
+                               candidate.logical_resource ==
+                                   attachment.logical_resource &&
+                               candidate.aspect ==
+                                   attachment.aspect;
+                    });
+            if (previous_attachment ==
+                attachments.end()) {
+                continue;
+            }
+            if (previous_attachment->store_op !=
+                    VulkanPhysicalAttachmentStoreOp::
+                        store ||
+                attachment.load_op !=
+                    VulkanPhysicalAttachmentLoadOp::
+                        load) {
+                return false;
+            }
+            break;
         }
     }
     return true;
@@ -1696,8 +1682,6 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
             }
         }
         if (fuse &&
-            result.back().local_reads.empty() &&
-            local_reads.empty() &&
             !canAppendMaterializedRenderingScope(
                 result.back(), node.name,
                 resources, attachments)) {
