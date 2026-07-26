@@ -256,9 +256,11 @@ class Audio::Backend {
   public:
     virtual ~Backend() = default;
     virtual std::uint64_t play(std::shared_ptr<const DecodedSound> sound, float volume) = 0;
-    virtual void stop(std::uint64_t voice_id) = 0;
+    virtual void destroy(std::uint64_t voice_id) = 0;
+    virtual bool isFinished(std::uint64_t voice_id) const = 0;
     virtual bool isPlaying(std::uint64_t voice_id) const = 0;
     virtual void setVolume(std::uint64_t voice_id, float volume) = 0;
+    virtual std::size_t voiceCount() const noexcept = 0;
 };
 
 class NullAudioBackend final : public Audio::Backend {
@@ -274,10 +276,12 @@ class NullAudioBackend final : public Audio::Backend {
         return id;
     }
 
-    void stop(std::uint64_t voice_id) override {
-        if (auto it = playing.find(voice_id); it != playing.end()) {
-            it->second = false;
-        }
+    void destroy(std::uint64_t voice_id) override {
+        playing.erase(voice_id);
+    }
+
+    bool isFinished(std::uint64_t voice_id) const override {
+        return !playing.contains(voice_id);
     }
 
     bool isPlaying(std::uint64_t voice_id) const override {
@@ -288,6 +292,10 @@ class NullAudioBackend final : public Audio::Backend {
     void setVolume(std::uint64_t voice_id, float volume) override {
         (void)voice_id;
         (void)volume;
+    }
+
+    std::size_t voiceCount() const noexcept override {
+        return playing.size();
     }
 };
 
@@ -373,12 +381,14 @@ class MiniaudioBackend final : public Audio::Backend {
         return id;
     }
 
-    void stop(std::uint64_t voice_id) override {
+    void destroy(std::uint64_t voice_id) override {
+        voices.erase(voice_id);
+    }
+
+    bool isFinished(std::uint64_t voice_id) const override {
         const auto it = voices.find(voice_id);
-        if (it == voices.end()) {
-            return;
-        }
-        ma_sound_stop(&it->second->sound);
+        return it == voices.end() ||
+               ma_sound_at_end(&it->second->sound) == MA_TRUE;
     }
 
     bool isPlaying(std::uint64_t voice_id) const override {
@@ -391,6 +401,10 @@ class MiniaudioBackend final : public Audio::Backend {
         if (it != voices.end()) {
             ma_sound_set_volume(&it->second->sound, volume);
         }
+    }
+
+    std::size_t voiceCount() const noexcept override {
+        return voices.size();
     }
 };
 
@@ -438,7 +452,20 @@ SoundHandle Audio::playSound(std::string_view path) {
 
     const auto handle = SoundHandle{next_handle++};
     const auto backend_id = backend->play(decoded, effectiveVolume(AudioBus::Se));
-    voices.emplace(handle, Voice{AudioBus::Se, backend_id});
+    try {
+        const auto [it, inserted] =
+            voices.emplace(handle, Voice{AudioBus::Se, backend_id});
+        (void)it;
+        if (!inserted) {
+            throw std::runtime_error("Audio sound handle space exhausted");
+        }
+    } catch (...) {
+        // Once backend playback has started, publishing the public handle is
+        // the ownership transfer. Roll it back if map allocation/publication
+        // fails so the backend cannot retain an unreachable voice.
+        backend->destroy(backend_id);
+        throw;
+    }
     return handle;
 }
 
@@ -447,7 +474,8 @@ void Audio::stopSound(SoundHandle handle) {
     if (it == voices.end()) {
         return;
     }
-    backend->stop(it->second.backend_id);
+    backend->destroy(it->second.backend_id);
+    voices.erase(it);
 }
 
 void Audio::setBusVolume(std::string_view bus, float volume) {
@@ -465,6 +493,26 @@ float Audio::busVolume(std::string_view bus) const {
 bool Audio::isPlaying(SoundHandle handle) const {
     const auto it = voices.find(handle);
     return it != voices.end() && backend->isPlaying(it->second.backend_id);
+}
+
+void Audio::update() {
+    for (auto it = voices.begin(); it != voices.end();) {
+        if (!backend->isFinished(it->second.backend_id)) {
+            ++it;
+            continue;
+        }
+
+        backend->destroy(it->second.backend_id);
+        it = voices.erase(it);
+    }
+}
+
+std::size_t Audio::voiceCountForTesting() const noexcept {
+    return voices.size();
+}
+
+std::size_t Audio::backendVoiceCountForTesting() const noexcept {
+    return backend->voiceCount();
 }
 
 } // namespace Pelican

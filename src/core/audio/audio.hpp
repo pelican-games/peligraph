@@ -4,6 +4,7 @@
 #include "../handle.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -46,6 +47,13 @@ DECLARE_MODULE(Audio) {
     void setBusVolume(std::string_view bus, float volume);
     float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
+
+    // Called at the shared logical-frame boundary. Completed backend voices
+    // are destroyed here rather than accumulating until Audio teardown.
+    void update();
+
+    std::size_t voiceCountForTesting() const noexcept;
+    std::size_t backendVoiceCountForTesting() const noexcept;
 };
 
 } // namespace Pelican

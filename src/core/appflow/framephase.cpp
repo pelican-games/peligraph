@@ -1,5 +1,8 @@
 #include "framephase.hpp"
 
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 #include "../ecs/core.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../loader/scene.hpp"
@@ -34,6 +37,9 @@ EditorCommitQueueHook editor_commit_queue_hook = nullptr;
 
 struct FrameStateModules {
     watch::ReloadService *reload_service;
+#if PELICAN_WITH_AUDIO
+    Audio *audio;
+#endif
     InputSequenceRuntime &input_sequence;
     InputState &input_state;
     ui::UiModule *ui_module;
@@ -72,6 +78,9 @@ FrameStateModules resolveFrameStateModules() {
 #endif
     return {
         FastModuleContainer::tryGet<watch::ReloadService>(),
+#if PELICAN_WITH_AUDIO
+        FastModuleContainer::tryGet<Audio>(),
+#endif
         GET_MODULE(InputSequenceRuntime),
         GET_MODULE(InputState),
         ui_module,
@@ -118,6 +127,11 @@ void invokeEditorCommitQueueHook() noexcept {
 
 void updateFrameState() {
     auto modules = resolveFrameStateModules();
+    // Audio completion happens asynchronously. Reap it at the common frame
+    // boundary before game code can observe this frame's state.
+#if PELICAN_WITH_AUDIO
+    if (modules.audio != nullptr) modules.audio->update();
+#endif
     // Reload publication is a frame-boundary operation and happens before any
     // phase can observe game/runtime state.
     if (modules.reload_service != nullptr) modules.reload_service->applyFrame();

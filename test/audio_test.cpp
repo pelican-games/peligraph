@@ -1,3 +1,4 @@
+#include "../src/core/audio/audio.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -114,6 +115,8 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     REQUIRE(first != second);
     REQUIRE(context.isPlaying(first));
     REQUIRE(context.isPlaying(second));
+    REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 2);
+    REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 2);
 
     REQUIRE_NOTHROW(context.setBusVolume("master", 0.75f));
     REQUIRE_NOTHROW(context.setBusVolume("se", 0.5f));
@@ -121,9 +124,32 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     context.stopSound(first);
     REQUIRE_FALSE(context.isPlaying(first));
     REQUIRE(context.isPlaying(second));
+    REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 1);
+    REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 1);
 
     context.stopSound(second);
     REQUIRE_FALSE(context.isPlaying(second));
+    REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 0);
+    REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 0);
+}
+
+TEST_CASE("Stopped audio voices do not accumulate in either registry", "[audio]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeTinyPcmWav(sandbox.root / "tone.wav");
+
+    FastModuleContainer modules;
+    configureNullAudioProject(sandbox);
+
+    GameContext context;
+    for (std::size_t i = 0; i < 256; ++i) {
+        const auto handle = context.playSound("project://tone.wav");
+        context.stopSound(handle);
+    }
+
+    auto &audio = GET_MODULE(Audio);
+    REQUIRE(audio.voiceCountForTesting() == 0);
+    REQUIRE(audio.backendVoiceCountForTesting() == 0);
 }
 
 TEST_CASE("GameContext audio reports invalid inputs", "[audio]") {
