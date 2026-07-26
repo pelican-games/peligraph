@@ -9,6 +9,8 @@
 追補(2026-07-23): M1〜M3.5、`hybrid_v1` 基盤、typed material screen input
 (WP187)は実装済み。renderer 全体の
 拡張境界と後続順序は `design_render_pipeline_extensibility.md` を正とする。
+追補(2026-07-26): WP206aでmaterial-owned stable tag/filterをadditive契約として
+実装した。instance/draw-owned layerとpass-local variantは後続とする。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
 `design_render_pipeline_extensibility.md`、`design_scene_format.md`、
 [PF] シェーダ stem 規約、[PFW] サブセット原則。
@@ -90,6 +92,32 @@ stem 規約なので native/web が同じ記述で成立する)。
   「params UBO」表記は誤りとして削除)。GLSL 宣言はコンテナのヘッダから
   エンジンが生成しシム注入(手書きレイアウト一致という概念を廃止)。
   64B の shader push constant は「毎フレーム変わる少量」用として残す
+
+### 3-0. additive stable selection contract（2026-07-26、WP206a）
+
+`pelican.material`の各material entryは任意の`tags: string[]`を持てる。
+material passは`material_filter: { include?: string[], exclude?: string[] }`で
+参加materialを選ぶ。これはshader variantやmaterial routeではなく、
+**logical selection identity**である。
+
+- tag/listはload時にsort・uniqueされたcanonical formへ落とす。空tag、255 byte超、
+  重複、include/exclude重複はfail-fastする
+- includeはOR、空ならall。excludeはORでincludeより優先する。未知tagは合法で、
+  解決metadataにunmatchedとして残す
+- filter identityはcanonical include/excludeと
+  `pelican.draw_queue_builder.material_tag_filter@1`からstable fingerprintを作る。
+  authoring順、material登録順、draw sort順に依存させない
+- material tagは毎frameのimmutable `DrawItemSnapshot`へコピーし、
+  `DrawQueueBuilder`がvisibility別のcompact indirect rangeへ解決する。
+  Vulkan executorへstringを渡さない
+- values-only reloadはtag変更を受理しない。構造変更transactionがpublishされるまで
+  旧material/tag selectionを維持する
+- `material_range`はlegacy low-level draw ordinalとしてのみ残す。両方を指定した場合は
+  tag filter後のrangeに対して適用する
+
+このv1はmaterial-owned tagまでを安定契約とする。instance/draw-owned layer、
+pass-local surface/render-state variant、同一materialのmultipass routeはそれぞれ
+後続拡張であり、tag文字列へshader/stateの意味を埋め込まない。
 
 ### 3-1. 供給の 3 段(A/B/C 梯子 — 2026-07-08 合意)
 

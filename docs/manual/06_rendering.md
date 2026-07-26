@@ -521,6 +521,54 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 s
 
 (実物: [../../projects/example/materials/toon.material.json](../../projects/example/materials/toon.material.json))
 
+### 安定した描画対象の選択（✅WP206a）
+
+特定のマテリアルだけを追加の material pass へ参加させる場合は、マテリアルに
+`tags`、パスに`material_filter`を書きます。material ID や描画順を指定する必要はありません。
+
+```json
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [{
+    "name": "hero_coat",
+    "surface": "project://shaders/coat.surface",
+    "tags": ["character", "outline"],
+    "values": {}
+  }]
+}
+```
+
+```json
+{
+  "name": "outline_geometry",
+  "type": "material",
+  "material_filter": {
+    "include": ["outline", "selected"],
+    "exclude": ["hidden"]
+  },
+  "output": { "color": "display", "depth": "offscreen_depth" }
+}
+```
+
+- `include`は any-match（OR）です。省略または空配列なら全マテリアルを候補にします。
+- `exclude`も any-match で、該当時は`include`より優先して除外します。
+- tag は空文字不可、最大255 byte、同一リスト内の重複不可です。同じtagを
+  include/excludeの両方へ書くこともエラーです。宣言順は意味を持ちません。
+- 未知tagは設定エラーにはしません。includeにしかない未知tagは0件を選び、
+  excludeの未知tagは何も除外しません。現在のframe-plan dumpには
+  `resolved_draw_count`、`unmatched_include` / `unmatched_exclude`、
+  `pelican.draw_queue_builder.material_tag_filter@1` provenanceが残ります。
+- 文字列照合はフレームのimmutable draw queueをcompileするときに終わります。
+  Vulkan描画ループは解決済みの連続rangeだけを受け取るため、drawごとの文字列比較は行いません。
+- 選択はmaterial登録順、draw sort、visibilityによるordinal変化に依存しません。
+  previewとXRも同じlogical filterを使います。values-only hot reloadではtag変更を拒否し、
+  構造reload側のtransactionに委ねます。
+
+旧`material_range`は低レベルfixture・再現試験用のdraw-call ordinalとして互換維持しています。
+通常authoringでは使用しません。`material_filter`と併記した場合だけは、tagでcompact化した
+rangeへ`material_range`を後段適用します。
+
 GPU への経路は params 宣言順の std140 レイアウト → set 2 binding 6 の `MaterialBuffer` SSBO です。値の同レイアウト・ホットリロードも効きます(✅WP105)。`pelican_cli dump-lowered-material <surface>` で生成物(lowered GLSL・レイアウト)を確認できます。
 
 ### OpenPBR — 第 3 の標準サーフェス(✅WP116/117)

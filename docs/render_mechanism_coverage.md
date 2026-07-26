@@ -1,10 +1,11 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v3)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v4)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v3(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v4(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
 v2 の件数不整合、G2/G13、material screen input、sampler/texture dimension、
-raster tiled lighting の誤判定を訂正した。監査記録は
+raster tiled lighting の誤判定を訂正した。v4ではWP206aのmaterial-owned stable tag
+selectionを反映し、instance/draw-owned layerだけをG14の残件とした。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
 ## 0. 判定規則
@@ -35,6 +36,7 @@ raster tiled lighting の誤判定を訂正した。監査記録は
 | fullscreen input | image **および storage buffer**、image は filter/address 指定 | [fullscreenpasscontainer.cpp:281](../src/core/fullscreenpass/fullscreenpasscontainer.cpp) |
 | material surface | `displace` / `surface` / `brdf` / `lighting`、custom params/texture、generated accessor | [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp) |
 | material render state | opaque/blend/**additive**、none/**front**/back cull、depth test/write/compare | [surfaceformat.cpp:530](../src/project/surfaceformat.cpp) |
+| material selection | material `tags` + pass `material_filter.include/exclude`。compile済みcompact range、flat/preview/XR共通 | [drawqueuebuilder.cpp](../src/core/renderer/drawqueuebuilder.cpp) |
 | material screen input | `opaque_color` / depth / linearized depth、opaque snapshot、XR layered binding | [headless_render_test.cpp:2444](../test/headless_render_test.cpp) |
 | compute | fixed dispatch、storage buffer/image、reads/writes/after/before | [computetask.cpp](../src/core/renderingpass/computetask.cpp) |
 | temporal | history、velocity、projection jitter、reset epoch、解像度分離 | [taa.json](../src/core/resources/features/taa.json) |
@@ -50,7 +52,7 @@ raster tiled lighting の誤判定を訂正した。監査記録は
 | texture dimension | XR 内部 array は存在。project authored static cube/array/3D と RT mip/layer/subresource view が未公開(G4/G10) |
 | render state | surface 単位は対応済み。同一 material を別 pass で別 state/surface として描く pass-local variant が未公開(G13) |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
-| object selection | `material_range` は material ID でなく draw-call ordinal。安定した tag/layer filter が無い(G14) |
+| object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
 
 ## 2. 技法別判定(84 行)
 
@@ -68,7 +70,7 @@ raster tiled lighting の誤判定を訂正した。監査記録は
 | A8 | vertex animation(wind/sway) | **○** | `displace` + Frame UBO time |
 | A9 | thin-film interference | **○** | `brdf` hook |
 | A10 | eye shading(cornea/parallax) | **○** | `surface` + `brdf` |
-| A11 | skin SSS analytic approximation | **△** | BRDF 近似は可。screen-space diffusion の対象選別は G14 |
+| A11 | skin SSS analytic approximation | **△** | BRDF 近似とmaterial単位のtag選別は可。screen-space diffusion用variant/outputとinstance単位選別はG13/G15/G14 |
 | A12 | wetness / snow accumulation | **○** | `surface` mask composition |
 | A13 | virtual texture / texture streaming | **✕** | feedback、material resource port、GPU draw/residency、descriptor table(G2/G8/G9) |
 
@@ -141,12 +143,12 @@ raster tiled lighting の誤判定を訂正した。監査記録は
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | G1t | sorted transparency | **○** | `forward_transparent_v1` + draw sort provider |
-| G2t | inverted-hull outline | **△** | front cull/displace は既存。mesh/material複製なら可。一般のpass-local variant/tag routeは G13/G14/G15 |
+| G2t | inverted-hull outline | **△** | front cull/displaceとmaterial tag選別は既存。複製なしのpass-local variantがG13、custom geometry contractはG15 |
 | G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式もmultipass/MRT routeのdogfoodが必要。PPLLはfragment storage/atomic contract不足(G2/G9/G15) |
 | G4t | stochastic transparency | **△** | dither/mask は可。TAA integration の品質調整が必要 |
 | G5t | refraction/glass | **○** | material screen input 実配線・描画済み |
 | G6t | additive effect | **○** | `.surface render_state.blend: additive` 実装・test済み |
-| G7t | deferred decal | **△** | ping-pong/fullscreenは可。geometry選択やG-buffer更新方式にG14/G15 |
+| G7t | deferred decal | **△** | ping-pong/fullscreenとmaterial tag選別は可。instance単位選別とG-buffer更新方式にG14/G15 |
 
 ### H. geometry / performance
 
@@ -213,7 +215,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G11** | VRS/fragment density/foveation backend contractが無い | XR foveation |
 | **G12** | material samplerのaddress/filter/compare/anisotropy authoringが無い | hardware PCF、special filtering |
 | **G13** | pass-local surface/render-state variantが無い | duplicate-free inverted hull、special overlay |
-| **G14** | stable draw tag/layer filterが無く`material_range`はdraw ordinal | selective SSS/outline/decal/reflection |
+| **G14** | material-owned stable tag/filterは実装済みだが、instance/draw-owned tag/layerが未公開 | 同じmaterialを共有するinstanceの個別SSS/outline/decal/reflection |
 | **G15** | material/geometry pass contractがv1閉集合 | custom geometry stage/output |
 | **G16** | stencil state/resource semanticsが未公開 | stencil mask/portal |
 
@@ -233,7 +235,7 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 次の dogfood は以下を推奨する。
 
 1. public directional shadow reception
-2. tag選択 + pass-local variantによる inverted-hull outline
+2. 実装済みtag選択 + pass-local variantによる inverted-hull outline
 3. compute result → material vertex displacement
 4. scalable light inventoryを使う raster/compute clustered lighting
 5. authored mip/layer viewを使う depth pyramid
@@ -248,7 +250,7 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 
 1. 現在の WP204 runtime slice を閉じる
 2. G6a public shadow contract
-3. G14 → G13/G15 の順で stable selection / multipass material route
+3. material-owned G14はWP206aで完了。次はG13、必要なdogfoodでG15。instance/draw-owned G14は実需要時に拡張
 4. G1 → G2 の順で compute / geometry typed resource port
 5. G5 lighting data v2 + clustered dogfood
 6. G4/G10/G12 texture dimension/subresource/sampler

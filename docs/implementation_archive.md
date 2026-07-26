@@ -6324,4 +6324,56 @@ rendering、OpenXR array swapchain、depth composition、GPU性能gate。
 
 ---
 
+### WP206a（済 2026-07-26）: stable draw tag/filter
+
+**目的**: draw-call ordinalである`material_range`を通常authoringの選別手段から外し、
+material/draw identityに追従する安定tagを導入する。
+
+**実装範囲**:
+
+1. material側のtag宣言とmaterial pass側のinclude/exclude filterをadditive v1語彙として
+   定義する。
+2. string照合はDrawQueueBuilder/compile段で解決し、runtime Vulkan loopはcompactな
+   resolved filterだけを消費する。
+3. sort、visibility、material登録順、hot reloadで選択結果を安定させる。
+4. `material_range`は既存fixture/low-level制御として維持できるが、manual/cookbookの
+   推奨経路から外す。
+
+**受け入れ条件**:
+
+- material登録順とdraw sortを変えてもtag選択が不変
+- include/exclude、unknown/empty tag、複数tagのfixture
+- flat/XR/previewで同じlogical selection
+- plan dumpにauthored tagとresolved draw count/provenance
+- feature off既存golden不変
+
+依存: なし。ただしWP204 closure後に着手。見積: 中。
+
+**完了内容（2026-07-26）**:
+
+- `pelican.material` entryへcanonical `tags`を追加した。material passは
+  `material_filter.include/exclude`を持ち、includeはOR/空ならall、excludeはORかつ優先とした。
+  空tag、255 byte超、重複、include/exclude重複は名前付きで拒否する。
+- canonical filterと版付きprovenanceからstable IDを作り、active passのfilterをframeごとに
+  deduplicateする。material登録順、authored tag順、queue sort順をidentityへ含めない。
+- 現在のmaterial tagをimmutable `DrawItemSnapshot`へコピーし、`DrawQueueBuilder`が
+  opaque/transparent、flat/two-view、visibility別のcompact indirect rangeへ解決する。
+  Vulkan material loopはnumeric filter IDだけを使い、string比較を行わない。
+- plan dumpへauthored include/exclude、filter ID、resolved draw count、unmatched tag、
+  `pelican.draw_queue_builder.material_tag_filter@1` provenanceを追加した。
+  preview precompileも同じlogical filterを保持する。
+- values-only material reloadでtag変更をfailure-atomicに拒否する。構造reloadがpublishされるまで
+  旧tag selectionを維持する。
+- `material_range`はlow-level互換経路として残し、tag filterと併記した場合はcompact rangeへ
+  後段適用する。通常authoringはmanualからtag/filterを案内する。
+- material-owned selectionまでをv1として閉じた。instance/draw-owned layerはG14残件、
+  pass-local surface/state variantはWP206bへ分離した。
+- Debug全build、全899 CTest、feature-off golden、`git diff --check`を通過した。
+  Windows symlink権限依存のPathResolver 1件だけは従来どおりskip。
+
+完了レポート:
+[`design_reviews/2026-07-26_wp206a_report.md`](design_reviews/2026-07-26_wp206a_report.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

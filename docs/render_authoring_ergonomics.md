@@ -1,11 +1,11 @@
-# 描画 authoring の使い勝手と回りくどさの棚卸し(v2)
+# 描画 authoring の使い勝手と回りくどさの棚卸し(v3)
 
 対象読者: feature / material / shader をユーザー空間で書く人、およびその公開面を
 実装するエンジン担当。
 
-ステータス: **v2(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
+ステータス: **v3(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
 再照合し、`extent_scale`、custom texture binding、graphics buffer input の事実誤認を
-訂正した。機構カバレッジは
+訂正した。v3ではWP206aによるU2解消を反映した。機構カバレッジは
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md)、監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
@@ -23,7 +23,7 @@
 
 機構不足そのものはカバレッジ文書で扱い、本書では重複して「使いにくい」と数えない。
 
-## 1. 現在も有効な問題
+## 1. 現在の問題と解消記録
 
 ### U1. feature 使用 project の shaderc OFF 配布が未完成
 
@@ -38,23 +38,24 @@ composer は起動を拒否する。
 PC開発をshaderc ONで続ける回避策はあるが、Quest/cross-buildや小さい配布物へ進む前に
 解消が必要になる。
 
-### U2. `material_range` は安定したmaterial identityではなくdraw ordinal
+### U2. 安定したmaterial selection（解消済み、WP206a）
 
-parser名はmaterial rangeだが、実行時はdraw callを走査しながら増やした
-`draw_index`にstart/countを適用する。
+旧`material_range`はdraw-call ordinalであり、scene、sort、visibility、material routeの
+変化へ追従できない。この問題に対する通常authoring経路として、materialの`tags`と
+material passの`material_filter.include/exclude`を実装した。
 
-- [materialpassinfojsonparser.cpp:30](../src/core/renderingpass/materialpassinfojsonparser.cpp:30)
-- [materialrender.cpp:50](../src/core/renderer/materialrender.cpp:50)
+- [materialformat.cpp](../src/project/materialformat.cpp)
+- [materialpassinfojsonparser.cpp](../src/core/renderingpass/materialpassinfojsonparser.cpp)
+- [drawqueuebuilder.cpp](../src/core/renderer/drawqueuebuilder.cpp)
+- [materialrender.cpp](../src/core/renderer/materialrender.cpp)
 
-scene、sort、visibility、material routeの変化でordinalが変わるため、ユーザーが
-選択的SSS、outline、decal等の対象を安定指定するAPIとして使えない。
+tag membershipは登録順・sort順から独立し、DrawQueueBuilderでcompact rangeへ解決される。
+Vulkan executorは文字列を扱わない。preview/XRも同じlogical filterを保持し、plan dumpは
+stable filter ID、resolved draw count、unmatched tag、provenanceを表示する。
+`material_range`は互換用の低レベルfixtureだけに残し、manualの推奨経路から外した。
 
-**改善方針**:
-
-- material/drawにstring tagを宣言する
-- passはinclude/exclude tagを宣言する
-- `material_range`は低レベルfixture/内部制御として残しても、通常のmanual/cookbookから外す
-- tag filterはDrawQueueBuilder側で解決し、Vulkan executorへ文字列を持ち込まない
+残る使い勝手は、同じmaterialを別surface/stateで再描画するpass-local variant（G13）と、
+material全体ではなくinstance/draw単位で選ぶlayer拡張である。前者はWP206bが所有する。
 
 ### U3. raw fullscreen/compute inputはbinding順を人が合わせる
 

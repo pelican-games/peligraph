@@ -253,7 +253,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_ecs_lifecycle.md](../design_ecs_lifecycle.md) | ✅ WP62 | [第4章](04_scene_ecs.md) |
 | [design_render_feature_modules.md](../design_render_feature_modules.md) | ✅ WP28〜31(feature = ユーザー空間ポリシーは §11.1 方針参照) | [第6章](06_rendering.md) |
 | [design_compute_task_graph.md](../design_compute_task_graph.md) | ✅ WP33〜35 + WP64(実行一本化済み) | [第6章](06_rendering.md) |
-| [design_material_shading.md](../design_material_shading.md) | ✅ M1〜M3.5(WP58/68/70/76/78/80/83)。spv-link は experimental | [第6章](06_rendering.md) |
+| [design_material_shading.md](../design_material_shading.md) | ✅ M1〜M3.5(WP58/68/70/76/78/80/83) + stable material tag selection(WP206a)。spv-link は experimental | [第6章](06_rendering.md) |
 | [design_color_pipeline.md](../design_color_pipeline.md) | ✅ v4 Accept・WP72〜74 で実装完了 | [第6章](06_rendering.md) |
 | [design_postprocess_temporal.md](../design_postprocess_temporal.md) | ✅ T1/T2(WP88/95)。TAA は [design_taa_jitter.md](../design_taa_jitter.md) へ | [第6章](06_rendering.md) |
 | [design_taa_jitter.md](../design_taa_jitter.md) | ✅ v2.1(条件付き受理)・J1/J1b/J1c/T-TAA すべて実装済み(WP112〜115) | [第6章](06_rendering.md) |
