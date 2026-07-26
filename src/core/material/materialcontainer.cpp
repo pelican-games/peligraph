@@ -1,5 +1,6 @@
 #include "materialcontainer.hpp"
 #include "../loader/imageloader.hpp"
+#include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
@@ -38,6 +39,7 @@ constexpr uint32_t baseMaterialTextureBindingCount = 4;
 constexpr uint32_t vatMaterialTextureBindingCount = 6;
 constexpr size_t maxMaterials = 1024;
 constexpr uint32_t maxMaterialPassInputs = 8;
+constexpr uint32_t maxMaterialPassDescriptors = 32;
 
 struct MaterialPipelineRenderingContract {
     std::vector<vk::Format> color_formats;
@@ -290,10 +292,129 @@ static vk::CullModeFlags toVkCull(SurfaceCullMode cull) {
     throw std::runtime_error("unknown material cull state");
 }
 
+static vk::ShaderStageFlags materialResourceStages(
+    SurfaceResourcePortStage stage) {
+    switch (stage) {
+    case SurfaceResourcePortStage::vertex:
+        return vk::ShaderStageFlagBits::eVertex;
+    case SurfaceResourcePortStage::fragment:
+        return vk::ShaderStageFlagBits::eFragment;
+    case SurfaceResourcePortStage::vertex_fragment:
+        return vk::ShaderStageFlagBits::eVertex |
+               vk::ShaderStageFlagBits::eFragment;
+    }
+    throw std::runtime_error(
+        "unknown material resource port stage");
+}
+
+static std::vector<ShaderResourceInterfaceBinding>
+resolveMaterialResourceInterface(
+    const MaterialInfo &info) {
+    const auto &shader_library =
+        GET_MODULE(ShaderLibrary);
+    const std::array reflections{
+        shader_library.get(info.vert_shader).reflection,
+        shader_library.get(info.frag_shader).reflection,
+    };
+    const auto reflection = merge(reflections);
+
+    std::vector<ShaderResourceInterfaceBinding>
+        result;
+    result.reserve(info.resource_ports.size());
+    std::unordered_set<std::string> declared_names;
+    for (const auto &port : info.resource_ports) {
+        if (!declared_names.insert(port.name).second) {
+            throw std::runtime_error(
+                "material resource port is declared more than once: " +
+                port.name);
+        }
+        const auto descriptor_name =
+            shaderResourcePortVariableName(port.name);
+        const auto found = std::find_if(
+            reflection.bindings.begin(),
+            reflection.bindings.end(),
+            [&](const auto &binding) {
+                return binding.set ==
+                           PELICAN_SET_PASS_INPUT &&
+                       binding.name == descriptor_name;
+            });
+        if (found == reflection.bindings.end()) {
+            throw std::runtime_error(
+                "material resource port '" +
+                port.name +
+                "' is absent from shader reflection");
+        }
+        const auto image =
+            port.kind ==
+            SurfaceResourcePortKind::image;
+        result.push_back(
+            ShaderResourceInterfaceBinding{
+                .port =
+                    ShaderResourcePortDefinition{
+                        .name = port.name,
+                        .resource = port.name,
+                        .access =
+                            image
+                                ? ShaderResourcePortAccess::
+                                      sampled
+                                : ShaderResourcePortAccess::
+                                      storage,
+                    },
+                .binding = found->binding,
+                .descriptor =
+                    image
+                        ? ShaderResourceDescriptorKind::
+                              combined_image_sampler
+                        : ShaderResourceDescriptorKind::
+                              storage_buffer,
+                .image_view_dimension =
+                    image
+                        ? ReflectedImageViewDimension::
+                              two_d
+                        : ReflectedImageViewDimension::
+                              none,
+                .buffer_element = port.element,
+                .expected_stages =
+                    materialResourceStages(port.stage),
+                .readable = true,
+                .writable = false,
+            });
+    }
+
+    for (const auto &binding : reflection.bindings) {
+        constexpr std::string_view prefix =
+            "pelican_resource_";
+        if (binding.set != PELICAN_SET_PASS_INPUT ||
+            !binding.name.starts_with(prefix)) {
+            continue;
+        }
+        const auto declared = std::any_of(
+            result.begin(), result.end(),
+            [&](const auto &candidate) {
+                return candidate.binding ==
+                           binding.binding &&
+                       shaderResourcePortVariableName(
+                           candidate.port.name) ==
+                           binding.name;
+            });
+        if (!declared) {
+            throw std::runtime_error(
+                "material shader reflects undeclared resource port '" +
+                binding.name + "'");
+        }
+    }
+    validateShaderResourceInterfaceReflection(
+        result, reflection,
+        PELICAN_SET_PASS_INPUT);
+    return result;
+}
+
 static GraphicsPipelineDesc makeMaterialPipelineDesc(
     const MaterialInfo &info,
     const MaterialPipelineRenderingContract
-        &rendering) {
+        &rendering,
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface) {
     GraphicsPipelineDesc desc;
     desc.vert = info.vert_shader;
     desc.frag = info.frag_shader;
@@ -309,6 +430,8 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     desc.rasterization_samples =
         rendering.rasterization_samples;
     desc.local_read = rendering.local_read;
+    desc.resource_interface =
+        std::move(resource_interface);
     if (info.render_state.blend == SurfaceBlendMode::blend) {
         desc.blend = true;
         desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
@@ -368,7 +491,9 @@ static std::vector<MaterialPassInputContract>
 resolveReflectedMaterialPassInputs(
     PipelineHandle pipeline,
     std::span<const MaterialScreenInputContract>
-        declared_screen_inputs) {
+        declared_screen_inputs,
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface) {
     const auto &reflection =
         GET_MODULE(PipelineFactory)
             .reflection(pipeline);
@@ -377,6 +502,17 @@ resolveReflectedMaterialPassInputs(
     bindings.reserve(reflection.bindings.size());
     for (const auto &binding :
          reflection.bindings) {
+        if (std::any_of(
+                resource_interface.begin(),
+                resource_interface.end(),
+                [&](const auto &resource) {
+                    return binding.set ==
+                               PELICAN_SET_PASS_INPUT &&
+                           binding.binding ==
+                               resource.binding;
+                })) {
+            continue;
+        }
         bindings.push_back({
             .set = binding.set,
             .binding = binding.binding,
@@ -451,9 +587,32 @@ static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
         vk::DescriptorType::eCombinedImageSampler,
         max_sets * maxMaterialPassInputs};
     vk::DescriptorPoolCreateInfo create_info;
-    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    create_info.flags =
+        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     create_info.maxSets = max_sets;
     create_info.setPoolSizes(pool_size);
+    return device.createDescriptorPoolUnique(create_info);
+}
+
+static vk::UniqueDescriptorPool
+createMaterialResourceDescriptorPool(
+    vk::Device device,
+    uint32_t max_sets = maxMaterials * 8) {
+    const std::array pool_sizes{
+        vk::DescriptorPoolSize{
+            vk::DescriptorType::
+                eCombinedImageSampler,
+            max_sets *
+                maxMaterialPassDescriptors},
+        vk::DescriptorPoolSize{
+            vk::DescriptorType::eStorageBuffer,
+            max_sets *
+                maxMaterialPassDescriptors},
+    };
+    vk::DescriptorPoolCreateInfo create_info;
+    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    create_info.maxSets = max_sets;
+    create_info.setPoolSizes(pool_sizes);
     return device.createDescriptorPoolUnique(create_info);
 }
 
@@ -491,6 +650,70 @@ static vk::UniqueSampler createScreenSampler(vk::Device device,
     return device.createSamplerUnique(create_info);
 }
 
+static vk::SamplerAddressMode materialResourceAddressMode(
+    ShaderResourcePortAddressMode mode) {
+    switch (mode) {
+    case ShaderResourcePortAddressMode::repeat:
+        return vk::SamplerAddressMode::eRepeat;
+    case ShaderResourcePortAddressMode::mirrored_repeat:
+        return vk::SamplerAddressMode::
+            eMirroredRepeat;
+    case ShaderResourcePortAddressMode::clamp_to_edge:
+        return vk::SamplerAddressMode::eClampToEdge;
+    }
+    throw std::runtime_error(
+        "unknown material resource sampler address mode");
+}
+
+static std::size_t materialResourceSamplerIndex(
+    ShaderResourcePortSampling sampling) {
+    const auto filter =
+        sampling.filter ==
+                ShaderResourcePortFilter::nearest
+            ? std::size_t{1}
+            : std::size_t{0};
+    std::size_t address = 0;
+    switch (sampling.address_mode) {
+    case ShaderResourcePortAddressMode::repeat:
+        address = 0;
+        break;
+    case ShaderResourcePortAddressMode::mirrored_repeat:
+        address = 1;
+        break;
+    case ShaderResourcePortAddressMode::clamp_to_edge:
+        address = 2;
+        break;
+    }
+    return filter * 3 + address;
+}
+
+static vk::UniqueSampler
+createMaterialResourceSampler(
+    vk::Device device,
+    ShaderResourcePortSampling sampling) {
+    vk::SamplerCreateInfo create_info;
+    create_info.magFilter =
+        sampling.filter ==
+                ShaderResourcePortFilter::nearest
+            ? vk::Filter::eNearest
+            : vk::Filter::eLinear;
+    create_info.minFilter =
+        create_info.magFilter;
+    create_info.mipmapMode =
+        vk::SamplerMipmapMode::eNearest;
+    create_info.addressModeU =
+        materialResourceAddressMode(
+            sampling.address_mode);
+    create_info.addressModeV =
+        create_info.addressModeU;
+    create_info.addressModeW =
+        create_info.addressModeU;
+    create_info.minLod = 0.0f;
+    create_info.maxLod = 0.0f;
+    return device.createSamplerUnique(
+        create_info);
+}
+
 static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image, vk::Format format) {
     vk::ImageViewCreateInfo create_info;
     create_info.image = image.image.get();
@@ -523,6 +746,20 @@ MaterialContainer::MaterialContainer()
           vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite)} {}
 MaterialContainer::~MaterialContainer() {
     deferred_callbacks.closeAndWait();
+}
+
+vk::Sampler MaterialContainer::materialResourceSampler(
+    ShaderResourcePortSampling sampling) const {
+    auto &sampler =
+        material_resource_samplers.at(
+            materialResourceSamplerIndex(
+                sampling));
+    if (!sampler) {
+        sampler =
+            createMaterialResourceSampler(
+                device, sampling);
+    }
+    return sampler.get();
 }
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
@@ -690,6 +927,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto rendering =
         resolveMaterialPipelineRenderingContract(info);
     validateMaterialCapabilities(info, rendering);
+    auto resource_interface =
+        resolveMaterialResourceInterface(info);
     const auto pipeline_key =
         makePipelineKey(info, rendering);
     auto pipeline_it = pipelines.find(pipeline_key);
@@ -697,16 +936,23 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         const auto pipeline_handle =
             GET_MODULE(PipelineFactory)
                 .create(makeMaterialPipelineDesc(
-                    info, rendering));
+                    info, rendering,
+                    resource_interface));
         pipeline_it = pipelines.emplace(pipeline_key, pipeline_handle).first;
         if (!default_pipeline) {
             default_pipeline = pipeline_handle;
         }
     }
     const auto pipeline = pipeline_it->second;
+    validateShaderResourceInterfaceReflection(
+        resource_interface,
+        GET_MODULE(PipelineFactory)
+            .reflection(pipeline),
+        PELICAN_SET_PASS_INPUT);
     auto pass_inputs =
         resolveReflectedMaterialPassInputs(
-            pipeline, info.screen_inputs);
+            pipeline, info.screen_inputs,
+            resource_interface);
 
     vk::DescriptorSetAllocateInfo desc_alloc_info;
     desc_alloc_info.descriptorPool = desc_pool.get();
@@ -818,6 +1064,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .shader_contract = info.shader_contract,
         .exact_pass = std::move(info.exact_pass),
         .pass_inputs = std::move(pass_inputs),
+        .resource_interface =
+            std::move(resource_interface),
         .skinned = info.skinned,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
@@ -1572,33 +1820,34 @@ static std::string makeScreenInputPassKey(const PassDefinition &pass) {
             << input.target.value
             << (input.history ? "@history" : "");
     }
+    for (const auto &resource :
+         pass.materialInfo().material_resources) {
+        key << ":resource:" << resource.port.name
+            << '=';
+        if (resource.isBuffer()) {
+            key << "buffer:" << resource.buffer
+                << '#' << resource.buffer_id.value;
+        } else {
+            key << "image:" << resource.target.value
+                << (resource.history ? "@history"
+                                     : "");
+        }
+        key << ":access="
+            << static_cast<int>(
+                   resource.port.access)
+            << ":view="
+            << static_cast<int>(resource.port.view)
+            << ":filter="
+            << static_cast<int>(
+                   resource.port.sampling.filter)
+            << ":address="
+            << static_cast<int>(
+                   resource.port.sampling.address_mode);
+    }
     for (const auto view : pass.input_target_views) {
         key << ":view=" << static_cast<int>(view);
     }
     return key.str();
-}
-
-static void requireScreenInputReflection(const ShaderReflection &reflection,
-                                         std::size_t input_count) {
-    std::vector<MaterialScreenInputReflectionBinding> bindings;
-    bindings.reserve(reflection.bindings.size());
-    for (const auto &binding : reflection.bindings) {
-        bindings.push_back(MaterialScreenInputReflectionBinding{
-            .set = binding.set,
-            .binding = binding.binding,
-            .kind =
-                binding.type ==
-                        vk::DescriptorType::
-                            eCombinedImageSampler
-                    ? MaterialScreenInputReflectionKind::
-                          combined_image_sampler
-                    : MaterialScreenInputReflectionKind::
-                          unsupported,
-            .name = binding.name,
-        });
-    }
-    validateMaterialScreenInputInterfaceReflection(
-        input_count, bindings, PELICAN_SET_PASS_INPUT);
 }
 
 MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor
@@ -1607,14 +1856,47 @@ MaterialContainer::buildScreenInputDescriptor(
     std::vector<InternalMaterialInfo::ScreenInputResource> resources,
     const RenderTargetImageViewResolver &rt_views) const {
     if (resources.empty()) return {};
-    if (resources.size() > maxMaterialPassInputs) {
+    if (resources.size() >
+        maxMaterialPassDescriptors) {
         throw std::runtime_error(
-            "material has too many pass inputs");
+            "material has too many pass input descriptors");
     }
 
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    requireScreenInputReflection(pipeline_factory.reflection(pipeline),
-                                 resources.size());
+    const auto &reflection =
+        pipeline_factory.reflection(pipeline);
+    const auto reflected_count =
+        std::count_if(
+            reflection.bindings.begin(),
+            reflection.bindings.end(),
+            [](const auto &binding) {
+                return binding.set ==
+                       PELICAN_SET_PASS_INPUT;
+            });
+    if (reflected_count != resources.size()) {
+        throw std::runtime_error(
+            "material pass input resources do not cover shader reflection");
+    }
+    for (const auto &resource : resources) {
+        const auto found = std::find_if(
+            reflection.bindings.begin(),
+            reflection.bindings.end(),
+            [&](const auto &binding) {
+                return binding.set ==
+                           PELICAN_SET_PASS_INPUT &&
+                       binding.binding ==
+                           resource.binding;
+            });
+        if (found == reflection.bindings.end() ||
+            found->count != 1 ||
+            found->type !=
+                resource.descriptor_type) {
+            throw std::runtime_error(
+                "material pass input resource '" +
+                resource.name +
+                "' does not match shader reflection");
+        }
+    }
     const auto layout = pipeline_factory.descriptorSetLayout(
         pipeline, PELICAN_SET_PASS_INPUT);
 
@@ -1623,12 +1905,21 @@ MaterialContainer::buildScreenInputDescriptor(
     result.binding_revision = next_screen_input_binding_revision++;
     std::uint32_t variant_count = 1;
     for (const auto &resource : result.resources) {
-        if (!isConcreteRenderTarget(resource.target)) {
+        if (resource.isImage() &&
+            !isConcreteRenderTarget(resource.target)) {
             throw std::runtime_error(
-                "material screen input must resolve to a render target: " +
-                resource.contract.name);
+                "material image input must resolve to a render target: " +
+                resource.name);
         }
-        if (resource.view_dimension !=
+        if (resource.isBuffer() &&
+            !GET_MODULE(FrameGraphResourceContainer)
+                 .hasBuffer(resource.buffer)) {
+            throw std::runtime_error(
+                "material buffer input is absent from its GPU generation: " +
+                resource.name);
+        }
+        if (resource.isImage() &&
+            resource.view_dimension !=
             PassInputViewDimension::shared_2d) {
             variant_count = std::max(
                 variant_count,
@@ -1636,7 +1927,8 @@ MaterialContainer::buildScreenInputDescriptor(
         }
     }
     for (const auto &resource : result.resources) {
-        if (resource.view_dimension !=
+        if (resource.isImage() &&
+            resource.view_dimension !=
                 PassInputViewDimension::shared_2d &&
             rt_views.arrayLayers(resource.target) !=
                 variant_count) {
@@ -1646,26 +1938,64 @@ MaterialContainer::buildScreenInputDescriptor(
         }
     }
     result.variants.resize(variant_count);
+    const auto has_material_resource =
+        std::any_of(
+            result.resources.begin(),
+            result.resources.end(),
+            [](const auto &resource) {
+                return resource.material_resource;
+            });
+    if (has_material_resource &&
+        !material_resource_desc_pool) {
+        material_resource_desc_pool =
+            createMaterialResourceDescriptorPool(
+                device);
+    }
+    const auto descriptor_pool =
+        has_material_resource
+            ? material_resource_desc_pool.get()
+            : screen_input_desc_pool.get();
     for (std::uint32_t variant = 0;
          variant < variant_count; ++variant) {
         for (uint32_t parity = 0; parity < 2; ++parity) {
             auto &descriptor_variant =
                 result.variants[variant];
             vk::DescriptorSetAllocateInfo allocation;
-            allocation.descriptorPool = screen_input_desc_pool.get();
+            allocation.descriptorPool =
+                descriptor_pool;
             allocation.descriptorSetCount = 1;
             allocation.pSetLayouts = &layout;
             descriptor_variant.descsets[parity] =
                 std::move(device.allocateDescriptorSetsUnique(allocation).front());
 
             std::vector<vk::DescriptorImageInfo> image_infos;
+            std::vector<vk::DescriptorBufferInfo> buffer_infos;
             std::vector<vk::WriteDescriptorSet> writes;
             image_infos.reserve(result.resources.size());
+            buffer_infos.reserve(result.resources.size());
             writes.reserve(result.resources.size());
             descriptor_variant.bound_image_views[parity]
                 .reserve(result.resources.size());
-            for (uint32_t binding = 0; binding < result.resources.size(); ++binding) {
-                const auto &resource = result.resources[binding];
+            for (const auto &resource :
+                 result.resources) {
+                if (resource.isBuffer()) {
+                    buffer_infos.push_back(
+                        GET_MODULE(
+                            FrameGraphResourceContainer)
+                            .descriptorInfo(
+                                resource.buffer));
+                    vk::WriteDescriptorSet write{
+                        descriptor_variant
+                            .descsets[parity]
+                            .get(),
+                        resource.binding, 0, 1,
+                        vk::DescriptorType::
+                            eStorageBuffer};
+                    write.pBufferInfo =
+                        &buffer_infos.back();
+                    writes.push_back(write);
+                    continue;
+                }
                 const auto image_view =
                     resource.view_dimension ==
                             PassInputViewDimension::shared_2d
@@ -1675,18 +2005,25 @@ MaterialContainer::buildScreenInputDescriptor(
                         : rt_views.getImageLayerViewForFrame(
                               resource.target, variant,
                               resource.history, parity);
+                const auto sampler =
+                    resource.sampling.address_mode ==
+                            ShaderResourcePortAddressMode::
+                                clamp_to_edge
+                        ? resource.sampling.filter ==
+                                  ShaderResourcePortFilter::
+                                      nearest
+                              ? screen_nearest_sampler.get()
+                              : screen_linear_sampler.get()
+                        : materialResourceSampler(
+                              resource.sampling);
                 image_infos.push_back(vk::DescriptorImageInfo{
-                    resource.contract.sampling ==
-                            MaterialPassInputSampling::
-                                nearest_clamp_to_edge
-                        ? screen_nearest_sampler.get()
-                        : screen_linear_sampler.get(),
+                    sampler,
                     image_view, vk::ImageLayout::eShaderReadOnlyOptimal});
                 descriptor_variant.bound_image_views[parity]
                     .push_back(image_view);
                 vk::WriteDescriptorSet write{
                     descriptor_variant.descsets[parity].get(),
-                    binding, 0, 1,
+                    resource.binding, 0, 1,
                     vk::DescriptorType::eCombinedImageSampler};
                 write.pImageInfo = &image_infos.back();
                 writes.push_back(write);
@@ -1701,7 +2038,10 @@ const MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor *
 MaterialContainer::ensureScreenInputDescriptor(
     GlobalMaterialId material_id, const PassDefinition &pass) const {
     const auto &material = materials.get(material_id);
-    if (material.pass_inputs.empty()) return nullptr;
+    if (material.pass_inputs.empty() &&
+        material.resource_interface.empty()) {
+        return nullptr;
+    }
     if (!pass.isMaterial() ||
         !materialPassAcceptsMaterial(pass.materialInfo().contract, pass.name,
                                      material.route, material.shader_contract,
@@ -1718,7 +2058,10 @@ MaterialContainer::ensureScreenInputDescriptor(
     }
 
     std::vector<InternalMaterialInfo::ScreenInputResource> resources;
-    resources.reserve(material.pass_inputs.size());
+    resources.reserve(
+        material.pass_inputs.size() +
+        material.resource_interface.size());
+    std::uint32_t screen_binding = 0;
     for (const auto &required : material.pass_inputs) {
         const auto find_binding =
             [&](const auto &bindings)
@@ -1782,9 +2125,161 @@ MaterialContainer::ensureScreenInputDescriptor(
                 pass.name + "'");
         }
         resources.push_back(
-            {required, binding->target,
-             binding->history,
-             view_dimension});
+            InternalMaterialInfo::ScreenInputResource{
+                .name = required.name,
+                .binding = screen_binding++,
+                .descriptor_type =
+                    vk::DescriptorType::
+                        eCombinedImageSampler,
+                .target = binding->target,
+                .history = binding->history,
+                .view_dimension =
+                    view_dimension,
+                // Preserve the established screen-input sampler
+                // behavior. The historical linear_repeat label used
+                // the clamp sampler at runtime.
+                .sampling =
+                    ShaderResourcePortSampling{
+                        required.sampling ==
+                                MaterialPassInputSampling::
+                                    nearest_clamp_to_edge
+                            ? ShaderResourcePortFilter::
+                                  nearest
+                            : ShaderResourcePortFilter::
+                                  linear,
+                        ShaderResourcePortAddressMode::
+                            clamp_to_edge,
+                    },
+            });
+    }
+
+    for (const auto &required :
+         material.resource_interface) {
+        const auto binding = std::find_if(
+            pass.materialInfo()
+                .material_resources.begin(),
+            pass.materialInfo()
+                .material_resources.end(),
+            [&](const auto &candidate) {
+                return candidate.port.name ==
+                       required.port.name;
+            });
+        if (binding ==
+            pass.materialInfo()
+                .material_resources.end()) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' is not provided by pass '" +
+                pass.name + "'");
+        }
+
+        if (required.descriptor ==
+            ShaderResourceDescriptorKind::
+                storage_buffer) {
+            if (!binding->isBuffer() ||
+                !isValidFrameGraphBufferId(
+                    binding->buffer_id)) {
+                throw std::runtime_error(
+                    "material resource port '" +
+                    required.port.name +
+                    "' requires a generation-pinned buffer in pass '" +
+                    pass.name + "'");
+            }
+            resources.push_back(
+                InternalMaterialInfo::
+                    ScreenInputResource{
+                        .name =
+                            required.port.name,
+                        .binding =
+                            required.binding,
+                        .descriptor_type =
+                            vk::DescriptorType::
+                                eStorageBuffer,
+                        .buffer =
+                            binding->buffer_id,
+                        .material_resource =
+                            true,
+                    });
+            continue;
+        }
+        if (required.descriptor !=
+                ShaderResourceDescriptorKind::
+                    combined_image_sampler ||
+            !binding->isImage()) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' requires a sampled image in pass '" +
+                pass.name + "'");
+        }
+
+        auto view_dimension =
+            PassInputViewDimension::shared_2d;
+        const auto target_position = std::find(
+            pass.input_targets.begin(),
+            pass.input_targets.end(),
+            binding->target);
+        if (target_position !=
+                pass.input_targets.end() &&
+            pass.input_target_views.size() ==
+                pass.input_targets.size()) {
+            view_dimension =
+                pass.input_target_views.at(
+                    static_cast<std::size_t>(
+                        target_position -
+                        pass.input_targets.begin()));
+        }
+        if (binding->port.view ==
+                ShaderResourcePortView::shared_2d &&
+            view_dimension !=
+                PassInputViewDimension::shared_2d) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' requires shared_2d in pass '" +
+                pass.name + "'");
+        }
+        if (binding->port.view ==
+                ShaderResourcePortView::per_view &&
+            view_dimension ==
+                PassInputViewDimension::shared_2d) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' requires per_view in pass '" +
+                pass.name + "'");
+        }
+        if (view_dimension ==
+            PassInputViewDimension::
+                layered_2d_array) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' currently requires sequential or shared 2D views; "
+                "layered multiview needs an array accessor");
+        }
+        resources.push_back(
+            InternalMaterialInfo::
+                ScreenInputResource{
+                    .name =
+                        required.port.name,
+                    .binding =
+                        required.binding,
+                    .descriptor_type =
+                        vk::DescriptorType::
+                            eCombinedImageSampler,
+                    .target =
+                        binding->target,
+                    .history =
+                        binding->history,
+                    .view_dimension =
+                        view_dimension,
+                    .sampling =
+                        binding->port.sampling,
+                    .material_resource =
+                        true,
+                });
     }
 
     const RenderTargetImageViewResolver rt_views{
@@ -1856,10 +2351,33 @@ void MaterialContainer::rebindScreenInputs(
         const auto material_id = GlobalMaterialId{value};
         if (!materials.contains(material_id)) continue;
         const auto &material = materials.get(material_id);
-        for (auto &[key, descriptor] : material.screen_input_descriptors) {
-            (void)key;
-            descriptor = buildScreenInputDescriptor(
-                material.pipeline, descriptor.resources, rt_views);
+        auto descriptor =
+            material.screen_input_descriptors.begin();
+        while (descriptor !=
+               material.screen_input_descriptors.end()) {
+            const auto stale_buffer =
+                std::any_of(
+                    descriptor->second.resources.begin(),
+                    descriptor->second.resources.end(),
+                    [](const auto &resource) {
+                        return resource.isBuffer() &&
+                               !GET_MODULE(
+                                    FrameGraphResourceContainer)
+                                    .hasBuffer(
+                                        resource.buffer);
+                    });
+            if (stale_buffer) {
+                descriptor =
+                    material.screen_input_descriptors.erase(
+                        descriptor);
+                continue;
+            }
+            descriptor->second =
+                buildScreenInputDescriptor(
+                    material.pipeline,
+                    descriptor->second.resources,
+                    rt_views);
+            ++descriptor;
         }
     }
 }

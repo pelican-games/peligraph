@@ -70,6 +70,7 @@ struct MaterialInfo {
     MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
     std::optional<std::string> exact_pass;
     std::vector<MaterialScreenInputContract> screen_inputs;
+    std::vector<SurfaceResourcePortDefinition> resource_ports;
 };
 
 struct alignas(16) MaterialGpuData {

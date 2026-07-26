@@ -196,6 +196,40 @@ std::string_view shaderResourcePortViewName(
         "unknown shader resource port view");
 }
 
+std::string_view shaderResourceBufferElementName(
+    ShaderResourceBufferElement element) {
+    switch (element) {
+    case ShaderResourceBufferElement::floating:
+        return "float";
+    case ShaderResourceBufferElement::vec2:
+        return "vec2";
+    case ShaderResourceBufferElement::vec3:
+        return "vec3";
+    case ShaderResourceBufferElement::vec4:
+        return "vec4";
+    case ShaderResourceBufferElement::integer:
+        return "int";
+    case ShaderResourceBufferElement::ivec2:
+        return "ivec2";
+    case ShaderResourceBufferElement::ivec3:
+        return "ivec3";
+    case ShaderResourceBufferElement::ivec4:
+        return "ivec4";
+    case ShaderResourceBufferElement::unsigned_integer:
+        return "uint";
+    case ShaderResourceBufferElement::uvec2:
+        return "uvec2";
+    case ShaderResourceBufferElement::uvec3:
+        return "uvec3";
+    case ShaderResourceBufferElement::uvec4:
+        return "uvec4";
+    case ShaderResourceBufferElement::mat4:
+        return "mat4";
+    }
+    throw std::runtime_error(
+        "unknown shader resource buffer element");
+}
+
 std::vector<ShaderResourcePortDefinition>
 parseShaderResourcePortDefinitions(
     const nlohmann::json &owner,

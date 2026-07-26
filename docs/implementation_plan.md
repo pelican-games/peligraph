@@ -102,7 +102,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 | 候補 | 内容 | 状態 |
 |---|---|---|
 | WP207a | compute Frame/Light + sampled resource port | ✅ 完了（2026-07-26、archive） |
-| WP207b | material/geometry typed frame-graph resource port | 計画済み・WP207a依存 |
+| WP207b | material/geometry typed frame-graph resource port | ✅ 完了（2026-07-26、archive） |
 | WP208 | lighting data contract v2 + clustered dogfood | 計画済み・WP207b依存 |
 | WP209a | static texture dimension + material sampler authoring | 計画済み |
 | WP209b | RT mip/layer/subresource view | 計画済み・WP204/WP209a依存 |
@@ -112,7 +112,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP206b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP207b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -384,8 +384,8 @@ XR2b最終gateを満たす。
 
 正本:
 
-- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v6
-- [`render_authoring_ergonomics.md`](render_authoring_ergonomics.md) v5
+- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v7
+- [`render_authoring_ergonomics.md`](render_authoring_ergonomics.md) v6
 - [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)
 
 共通方針:
@@ -399,33 +399,11 @@ XR2b最終gateを満たす。
 5. physical指定はWP204 fragmentへlinkし、logical configへVulkan fieldを漏らさない。
 6. feature未参照時に追加pass/resource/variantを持たない。
 
-WP207aは2026-07-26に完了した。実装内容と受け入れ結果は
+WP207a/WP207bは2026-07-26に完了した。実装内容と受け入れ結果は
 [`implementation_archive.md`](implementation_archive.md)および
-[`design_reviews/2026-07-26_wp207a_resource_ports.md`](design_reviews/2026-07-26_wp207a_resource_ports.md)
+[`design_reviews/2026-07-26_wp207a_resource_ports.md`](design_reviews/2026-07-26_wp207a_resource_ports.md)、
+[`design_reviews/2026-07-26_wp207b_material_resource_ports.md`](design_reviews/2026-07-26_wp207b_material_resource_ports.md)
 を参照する。
-
-#### WP207b: material/geometry typed frame-graph resource port
-
-**目的**: material vertex/fragmentがcomputeや別passのbuffer/imageをlogical nameで読み、
-GPU simulation結果をgeometryへ接続できるようにする。
-
-**実装範囲**:
-
-1. material screen imageのbuiltin semanticだけでなく、typed buffer/image portを追加する。
-2. vertex/fragment visibility、read footprint、view dimension、history、producer edgeを
-   logical contractへ運ぶ。
-3. generated surface accessorを拡張し、binding番号とdescriptor形を隠す。
-4. physical buffer/image usageとbarrierはtarget/Vulkan loweringで導出する。
-
-**受け入れ条件**:
-
-- compute write → material vertex displacementのproject-owned dogfood
-- same-frame edge、barrier、history/view mismatch、missing producerのfixture
-- deferred/forwardのroute双方で必要なconsumerだけがresourceをbind
-- hot reload/recreate/rollbackでdescriptorがactive generationへ再bind
-- 既存refraction screen inputとsurface byte golden不変
-
-依存: WP207a。見積: 大。
 
 #### WP208: lighting data contract v2 + clustered dogfood
 

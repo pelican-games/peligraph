@@ -21,6 +21,7 @@ enum class HeaderSection {
     params,
     textures,
     screen_inputs,
+    resource_ports,
     unknown,
 };
 
@@ -498,6 +499,151 @@ SurfaceTextureDefinition parseTextureDefinition(std::string_view mapping,
     return SurfaceTextureDefinition{name, default_reference, color_space, role};
 }
 
+ShaderResourceBufferElement parseResourceBufferElement(
+    std::string_view token, std::string_view context) {
+    const auto element = parseStringToken(token, context);
+    if (element == "float") {
+        return ShaderResourceBufferElement::floating;
+    }
+    if (element == "vec2") {
+        return ShaderResourceBufferElement::vec2;
+    }
+    if (element == "vec3") {
+        return ShaderResourceBufferElement::vec3;
+    }
+    if (element == "vec4") {
+        return ShaderResourceBufferElement::vec4;
+    }
+    if (element == "int") {
+        return ShaderResourceBufferElement::integer;
+    }
+    if (element == "ivec2") {
+        return ShaderResourceBufferElement::ivec2;
+    }
+    if (element == "ivec3") {
+        return ShaderResourceBufferElement::ivec3;
+    }
+    if (element == "ivec4") {
+        return ShaderResourceBufferElement::ivec4;
+    }
+    if (element == "uint") {
+        return ShaderResourceBufferElement::unsigned_integer;
+    }
+    if (element == "uvec2") {
+        return ShaderResourceBufferElement::uvec2;
+    }
+    if (element == "uvec3") {
+        return ShaderResourceBufferElement::uvec3;
+    }
+    if (element == "uvec4") {
+        return ShaderResourceBufferElement::uvec4;
+    }
+    if (element == "mat4") {
+        return ShaderResourceBufferElement::mat4;
+    }
+    throw std::runtime_error(
+        std::string{context} + " has unknown element '" +
+        element +
+        "'; expected float/vec2/vec3/vec4/int/ivec2/ivec3/"
+        "ivec4/uint/uvec2/uvec3/uvec4/mat4");
+}
+
+SurfaceResourcePortDefinition parseResourcePortDefinition(
+    std::string_view mapping, std::string_view source_name,
+    std::size_t line_number,
+    std::vector<std::string> &warnings) {
+    const auto base_context =
+        lineContext(source_name, line_number) + " resource port";
+    const auto fields =
+        parseInlineFields(mapping, base_context);
+    const auto *name_field = findField(fields, "name");
+    const auto name =
+        name_field == nullptr
+            ? std::string{"<unnamed>"}
+            : parseStringToken(
+                  *name_field, base_context + " name");
+    const auto context =
+        surfaceContext(source_name) + " resource port '" +
+        name + "'";
+    appendUnknownFieldWarnings(
+        fields, {"name", "kind", "stage", "element"},
+        context, warnings);
+
+    if (name_field == nullptr) {
+        throw std::runtime_error(context + " requires name");
+    }
+    if (!isIdentifier(name)) {
+        throw std::runtime_error(
+            context + " name must be a shader identifier");
+    }
+    const auto *kind_field = findField(fields, "kind");
+    if (kind_field == nullptr) {
+        throw std::runtime_error(
+            context + " requires explicit kind");
+    }
+    const auto kind_name =
+        parseStringToken(*kind_field, context + " kind");
+    SurfaceResourcePortKind kind;
+    if (kind_name == "image") {
+        kind = SurfaceResourcePortKind::image;
+    } else if (kind_name == "buffer") {
+        kind = SurfaceResourcePortKind::buffer;
+    } else {
+        throw std::runtime_error(
+            context + " has unknown kind '" + kind_name +
+            "'; expected image or buffer");
+    }
+
+    auto stage = SurfaceResourcePortStage::fragment;
+    if (const auto *stage_field =
+            findField(fields, "stage")) {
+        const auto stage_name =
+            parseStringToken(
+                *stage_field, context + " stage");
+        if (stage_name == "vertex") {
+            stage = SurfaceResourcePortStage::vertex;
+        } else if (stage_name == "fragment") {
+            stage = SurfaceResourcePortStage::fragment;
+        } else if (stage_name == "vertex_fragment") {
+            stage =
+                SurfaceResourcePortStage::vertex_fragment;
+        } else {
+            throw std::runtime_error(
+                context + " has unknown stage '" +
+                stage_name +
+                "'; expected vertex, fragment, or vertex_fragment");
+        }
+    }
+
+    const auto *element_field =
+        findField(fields, "element");
+    if (kind == SurfaceResourcePortKind::image &&
+        element_field != nullptr) {
+        throw std::runtime_error(
+            context +
+            " element is valid only for buffer ports");
+    }
+    if (kind == SurfaceResourcePortKind::buffer &&
+        element_field == nullptr) {
+        throw std::runtime_error(
+            context +
+            " buffer requires explicit element");
+    }
+
+    return SurfaceResourcePortDefinition{
+        .name = name,
+        .kind = kind,
+        .stage = stage,
+        .element =
+            element_field != nullptr
+                ? parseResourceBufferElement(
+                      *element_field,
+                      context + " element")
+                : ShaderResourceBufferElement::
+                      unsigned_integer,
+    };
+}
+
 std::vector<std::string> parseStringArray(std::string_view value, std::string_view context) {
     const auto array = trim(value);
     if (array.size() < 2 || array.front() != '[' || array.back() != ']') {
@@ -630,6 +776,13 @@ void validateUniqueResourceNames(const SurfaceFormatDocument &document,
                                      texture.name + "'");
         }
     }
+    for (const auto &port : document.resource_ports) {
+        if (!names.insert(port.name).second) {
+            throw std::runtime_error(
+                surfaceContext(source_name) +
+                " has duplicate name '" + port.name + "'");
+        }
+    }
 }
 
 std::string stripCommentsAndStrings(std::string_view code) {
@@ -677,9 +830,16 @@ std::string stripCommentsAndStrings(std::string_view code) {
     return cleaned;
 }
 
-std::vector<std::string> definedPelicanFunctions(std::string_view code) {
+struct DefinedPelicanFunction {
+    std::string name;
+    std::size_t begin = 0;
+    std::size_t end = 0;
+};
+
+std::vector<DefinedPelicanFunction>
+definedPelicanFunctionRanges(std::string_view code) {
     const auto cleaned = stripCommentsAndStrings(code);
-    std::vector<std::string> functions;
+    std::vector<DefinedPelicanFunction> functions;
     std::size_t cursor = 0;
     while ((cursor = cleaned.find("pelican_", cursor)) != std::string::npos) {
         if (cursor > 0 && (std::isalnum(static_cast<unsigned char>(cleaned[cursor - 1])) ||
@@ -709,11 +869,124 @@ std::vector<std::string> definedPelicanFunctions(std::string_view code) {
         }
         while (close < cleaned.size() && std::isspace(static_cast<unsigned char>(cleaned[close]))) ++close;
         if (close < cleaned.size() && cleaned[close] == '{') {
-            functions.emplace_back(cleaned.substr(cursor, end - cursor));
+            auto function_end = close;
+            int body_depth = 0;
+            for (; function_end < cleaned.size();
+                 ++function_end) {
+                if (cleaned[function_end] == '{') {
+                    ++body_depth;
+                } else if (cleaned[function_end] == '}' &&
+                           --body_depth == 0) {
+                    ++function_end;
+                    break;
+                }
+            }
+            functions.push_back(
+                DefinedPelicanFunction{
+                    std::string{
+                        cleaned.substr(
+                            cursor, end - cursor)},
+                    cursor,
+                    function_end,
+                });
         }
         cursor = end;
     }
     return functions;
+}
+
+std::vector<std::string> definedPelicanFunctions(
+    std::string_view code) {
+    auto ranges = definedPelicanFunctionRanges(code);
+    std::vector<std::string> functions;
+    functions.reserve(ranges.size());
+    for (auto &range : ranges) {
+        functions.push_back(std::move(range.name));
+    }
+    return functions;
+}
+
+bool isVertexHook(std::string_view name) {
+    return name == "pelican_vertex_displace_v1";
+}
+
+void validateResourcePortStageUses(
+    const SurfaceFormatDocument &document,
+    std::string_view source_name) {
+    const auto cleaned =
+        stripCommentsAndStrings(document.code);
+    const auto functions =
+        definedPelicanFunctionRanges(document.code);
+    const auto function_at =
+        [&](std::size_t position)
+        -> const DefinedPelicanFunction * {
+        const auto found = std::find_if(
+            functions.begin(), functions.end(),
+            [position](const auto &function) {
+                return position >= function.begin &&
+                       position < function.end;
+            });
+        return found == functions.end()
+                   ? nullptr
+                   : &*found;
+    };
+
+    for (const auto &port : document.resource_ports) {
+        if (port.stage ==
+            SurfaceResourcePortStage::vertex_fragment) {
+            continue;
+        }
+        const std::array prefixes{
+            port.kind == SurfaceResourcePortKind::image
+                ? std::string{"pelican_sample_"}
+                : std::string{"pelican_load_"},
+            port.kind == SurfaceResourcePortKind::image
+                ? std::string{"pelican_size_"}
+                : std::string{"pelican_count_"},
+        };
+        for (const auto &prefix : prefixes) {
+            const auto accessor = prefix + port.name;
+            std::size_t cursor = 0;
+            while ((cursor = cleaned.find(accessor, cursor)) !=
+                   std::string::npos) {
+                const auto *function = function_at(cursor);
+                if (function == nullptr) {
+                    throw std::runtime_error(
+                        surfaceContext(source_name) +
+                        " resource port '" + port.name +
+                        "' with stage '" +
+                        std::string{
+                            surfaceResourcePortStageName(
+                                port.stage)} +
+                        "' uses accessor '" + accessor +
+                        "' outside a stage-owned pelican hook; move the "
+                        "access into that hook or declare "
+                        "stage: vertex_fragment");
+                }
+                const auto used_in_vertex =
+                    isVertexHook(function->name);
+                const auto allowed =
+                    (port.stage ==
+                         SurfaceResourcePortStage::vertex &&
+                     used_in_vertex) ||
+                    (port.stage ==
+                         SurfaceResourcePortStage::fragment &&
+                     !used_in_vertex);
+                if (!allowed) {
+                    throw std::runtime_error(
+                        surfaceContext(source_name) +
+                        " resource port '" + port.name +
+                        "' stage '" +
+                        std::string{
+                            surfaceResourcePortStageName(
+                                port.stage)} +
+                        "' is used by incompatible hook '" +
+                        function->name + "'");
+                }
+                cursor += accessor.size();
+            }
+        }
+    }
 }
 
 SurfaceHookSet validateSurfaceHooks(std::string_view code, std::string_view source_name) {
@@ -767,6 +1040,30 @@ std::string_view surfaceParamTypeName(SurfaceParamType type) {
         return "int";
     case SurfaceParamType::color:
         return "color";
+    }
+    return "unknown";
+}
+
+std::string_view surfaceResourcePortKindName(
+    SurfaceResourcePortKind kind) {
+    switch (kind) {
+    case SurfaceResourcePortKind::image:
+        return "image";
+    case SurfaceResourcePortKind::buffer:
+        return "buffer";
+    }
+    return "unknown";
+}
+
+std::string_view surfaceResourcePortStageName(
+    SurfaceResourcePortStage stage) {
+    switch (stage) {
+    case SurfaceResourcePortStage::vertex:
+        return "vertex";
+    case SurfaceResourcePortStage::fragment:
+        return "fragment";
+    case SurfaceResourcePortStage::vertex_fragment:
+        return "vertex_fragment";
     }
     return "unknown";
 }
@@ -828,6 +1125,12 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
             } else if (section == HeaderSection::screen_inputs) {
                 appendScreenInput(document, parseStringToken(item, lineContext(source_name, line.number)),
                                   source_name);
+            } else if (section ==
+                       HeaderSection::resource_ports) {
+                document.resource_ports.push_back(
+                    parseResourcePortDefinition(
+                        item, source_name, line.number,
+                        document.warnings));
             } else if (section != HeaderSection::unknown) {
                 throw std::runtime_error(lineContext(source_name, line.number) +
                                          " has a list item outside a known section");
@@ -846,8 +1149,12 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
             throw std::runtime_error(lineContext(source_name, line.number) + " has an empty key");
         }
 
-        const bool known_key = key == "language" || key == "params" || key == "textures" ||
-                               key == "screen_inputs" || key == "render_state";
+        const bool known_key =
+            key == "language" || key == "params" ||
+            key == "textures" ||
+            key == "screen_inputs" ||
+            key == "resource_ports" ||
+            key == "render_state";
         if (known_key && !known_top_level_fields.insert(key).second) {
             throw std::runtime_error(context + " has duplicate header key '" + key + "'");
         }
@@ -859,13 +1166,19 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
             }
             document.language = parseLanguage(value, context);
             has_language = true;
-        } else if (key == "params" || key == "textures") {
+        } else if (key == "params" || key == "textures" ||
+                   key == "resource_ports") {
             if (!value.empty() && value != "[]") {
                 throw std::runtime_error(context + " " + key +
                                          " must be [] or a block list of inline mappings");
             }
             if (value.empty()) {
-                section = key == "params" ? HeaderSection::params : HeaderSection::textures;
+                section =
+                    key == "params"
+                        ? HeaderSection::params
+                    : key == "textures"
+                        ? HeaderSection::textures
+                        : HeaderSection::resource_ports;
             }
         } else if (key == "screen_inputs") {
             if (value.empty()) {
@@ -896,6 +1209,7 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
     document.code_line = line_number;
     document.code = std::string{source.substr(offset)};
     document.hooks = validateSurfaceHooks(document.code, source_name);
+    validateResourcePortStageUses(document, source_name);
     return document;
 }
 

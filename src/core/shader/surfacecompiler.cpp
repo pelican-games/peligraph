@@ -52,7 +52,71 @@ std::string accessorFunction(SurfaceParamType type) {
     throw std::runtime_error("unknown surface parameter type while generating GLSL shim");
 }
 
-std::string makeParamsInclude(const SurfaceFormatDocument &surface, bool split_samplers = false) {
+vk::ShaderStageFlags resourceStages(
+    SurfaceResourcePortStage stage) {
+    switch (stage) {
+    case SurfaceResourcePortStage::vertex:
+        return vk::ShaderStageFlagBits::eVertex;
+    case SurfaceResourcePortStage::fragment:
+        return vk::ShaderStageFlagBits::eFragment;
+    case SurfaceResourcePortStage::vertex_fragment:
+        return vk::ShaderStageFlagBits::eVertex |
+               vk::ShaderStageFlagBits::eFragment;
+    }
+    throw std::runtime_error(
+        "unknown surface resource port stage");
+}
+
+std::vector<ShaderResourceInterfaceBinding>
+makeSurfaceResourceInterface(
+    const SurfaceFormatDocument &surface,
+    std::uint32_t first_binding) {
+    std::vector<ShaderResourceInterfaceBinding> result;
+    result.reserve(surface.resource_ports.size());
+    for (std::size_t index = 0;
+         index < surface.resource_ports.size(); ++index) {
+        const auto &port = surface.resource_ports[index];
+        const auto image =
+            port.kind == SurfaceResourcePortKind::image;
+        result.push_back(
+            ShaderResourceInterfaceBinding{
+                .port =
+                    ShaderResourcePortDefinition{
+                        .name = port.name,
+                        .resource = port.name,
+                        .access =
+                            image
+                                ? ShaderResourcePortAccess::sampled
+                                : ShaderResourcePortAccess::storage,
+                    },
+                .binding =
+                    first_binding +
+                    static_cast<std::uint32_t>(index),
+                .descriptor =
+                    image
+                        ? ShaderResourceDescriptorKind::
+                              combined_image_sampler
+                        : ShaderResourceDescriptorKind::
+                              storage_buffer,
+                .image_view_dimension =
+                    image
+                        ? ReflectedImageViewDimension::two_d
+                        : ReflectedImageViewDimension::none,
+                .buffer_element = port.element,
+                .expected_stages =
+                    resourceStages(port.stage),
+                .readable = true,
+                .writable = false,
+            });
+    }
+    return result;
+}
+
+std::string makeParamsInclude(
+    const SurfaceFormatDocument &surface,
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface,
+    bool split_samplers = false) {
     const auto layout = makeSurfaceStd140Layout(surface);
     std::ostringstream source;
     source << "// Generated public C-layer accessors for this .surface.\n";
@@ -100,6 +164,10 @@ std::string makeParamsInclude(const SurfaceFormatDocument &surface, bool split_s
                    << "(vec2 uv) { return texture(pelican_screen_" << input
                    << "_texture, uv); }\n";
         }
+    }
+    if (!resource_interface.empty()) {
+        source << generateShaderResourcePortInclude(
+            resource_interface);
     }
     return source.str();
 }
@@ -149,13 +217,31 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
             "PELICAN_DIRECTIONAL_SHADOW_BINDING=" +
                 std::to_string(surface.screen_inputs.size()));
     }
+    const auto feature_input_count =
+        pass == SurfacePass::forward &&
+                hasDefine(
+                    defines, "PELICAN_FEATURE_SHADOW")
+            ? 1u
+            : 0u;
+    auto resource_interface =
+        makeSurfaceResourceInterface(
+            surface,
+            static_cast<std::uint32_t>(
+                surface.screen_inputs.size()) +
+                feature_input_count);
 
     SurfaceShaderComposition composition;
     composition.vertex_source = engineResourceOrThrow("shaders/material/surface_v1.vert");
     composition.fragment_source = engineResourceOrThrow("shaders/material/surface_v1.frag");
     composition.virtual_includes.emplace_back(userIncludeName, makeUserInclude(surface, source_name));
-    composition.virtual_includes.emplace_back(paramsIncludeName, makeParamsInclude(surface, split_samplers));
+    composition.virtual_includes.emplace_back(
+        paramsIncludeName,
+        makeParamsInclude(
+            surface, resource_interface,
+            split_samplers));
     composition.defines = std::move(defines);
+    composition.resource_interface =
+        std::move(resource_interface);
     return composition;
 }
 
@@ -164,6 +250,23 @@ std::string makeTemplateHookStubs(const SurfaceFormatDocument &surface, vk::Shad
     for (const auto &param : surface.params) keep_alive << "pelican_param_" << param.name << "();";
     for (const auto &texture : surface.textures) {
         keep_alive << "pelican_sample_" << texture.name << "(vec2(0.0));";
+    }
+    for (const auto &resource : surface.resource_ports) {
+        const auto stages =
+            resourceStages(resource.stage);
+        if (!(stages & stage)) continue;
+        if (resource.kind ==
+            SurfaceResourcePortKind::image) {
+            keep_alive << "pelican_sample_"
+                       << resource.name
+                       << "(vec2(0.0));pelican_size_"
+                       << resource.name << "();";
+        } else {
+            keep_alive << "pelican_load_"
+                       << resource.name
+                       << "(0u);pelican_count_"
+                       << resource.name << "();";
+        }
     }
     if (stage == vk::ShaderStageFlagBits::eFragment) {
         for (const auto &input : surface.screen_inputs) {
@@ -226,11 +329,63 @@ std::string defaultValueForAccessor(SurfaceParamType type) {
     throw std::runtime_error("unknown surface parameter type while generating SPIR-V stub");
 }
 
+std::string defaultValueForResourceAccessor(
+    ShaderResourceBufferElement element) {
+    switch (element) {
+    case ShaderResourceBufferElement::floating:
+        return "0.0";
+    case ShaderResourceBufferElement::vec2:
+        return "vec2(0.0)";
+    case ShaderResourceBufferElement::vec3:
+        return "vec3(0.0)";
+    case ShaderResourceBufferElement::vec4:
+        return "vec4(0.0)";
+    case ShaderResourceBufferElement::integer:
+        return "0";
+    case ShaderResourceBufferElement::ivec2:
+        return "ivec2(0)";
+    case ShaderResourceBufferElement::ivec3:
+        return "ivec3(0)";
+    case ShaderResourceBufferElement::ivec4:
+        return "ivec4(0)";
+    case ShaderResourceBufferElement::unsigned_integer:
+        return "0u";
+    case ShaderResourceBufferElement::uvec2:
+        return "uvec2(0u)";
+    case ShaderResourceBufferElement::uvec3:
+        return "uvec3(0u)";
+    case ShaderResourceBufferElement::uvec4:
+        return "uvec4(0u)";
+    case ShaderResourceBufferElement::mat4:
+        return "mat4(0.0)";
+    }
+    throw std::runtime_error(
+        "unknown surface resource element while generating SPIR-V stub");
+}
+
 std::vector<std::string> generatedAccessorNames(const SurfaceFormatDocument &surface) {
     std::vector<std::string> names;
     for (const auto &param : surface.params) names.push_back("pelican_param_" + param.name);
     for (const auto &texture : surface.textures) names.push_back("pelican_sample_" + texture.name);
     for (const auto &input : surface.screen_inputs) names.push_back("pelican_screen_" + input);
+    for (const auto &resource : surface.resource_ports) {
+        if (resource.kind ==
+            SurfaceResourcePortKind::image) {
+            names.push_back(
+                "pelican_sample_" +
+                resource.name);
+            names.push_back(
+                "pelican_size_" +
+                resource.name);
+        } else {
+            names.push_back(
+                "pelican_load_" +
+                resource.name);
+            names.push_back(
+                "pelican_count_" +
+                resource.name);
+        }
+    }
     return names;
 }
 
@@ -252,6 +407,30 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     for (const auto &input : surface.screen_inputs) {
         source << "vec4 pelican_screen_" << input
                << "(vec2 uv) { return vec4(0.0); }\n";
+    }
+    for (const auto &resource : surface.resource_ports) {
+        if (resource.kind ==
+            SurfaceResourcePortKind::image) {
+            source << "vec4 pelican_sample_"
+                   << resource.name
+                   << "(vec2 uv) { return vec4(0.0); }\n"
+                   << "ivec2 pelican_size_"
+                   << resource.name
+                   << "() { return ivec2(0); }\n";
+        } else {
+            const auto type =
+                shaderResourceBufferElementName(
+                    resource.element);
+            source << type << " pelican_load_"
+                   << resource.name
+                   << "(uint index) { return "
+                   << defaultValueForResourceAccessor(
+                          resource.element)
+                   << "; }\n"
+                   << "uint pelican_count_"
+                   << resource.name
+                   << "() { return 0u; }\n";
+        }
     }
     if (stage == vk::ShaderStageFlagBits::eFragment) {
         source << "uint pelican_light_count() { return 0u; }\n"
@@ -285,6 +464,20 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     }
     for (const auto &input : surface.screen_inputs) {
         source << "pelican_screen_" << input << "(vec2(0.0));\n";
+    }
+    for (const auto &resource : surface.resource_ports) {
+        if (resource.kind ==
+            SurfaceResourcePortKind::image) {
+            source << "pelican_sample_"
+                   << resource.name
+                   << "(vec2(0.0));pelican_size_"
+                   << resource.name << "();\n";
+        } else {
+            source << "pelican_load_"
+                   << resource.name
+                   << "(0u);pelican_count_"
+                   << resource.name << "();\n";
+        }
     }
     if (stage == vk::ShaderStageFlagBits::eFragment) {
         source << "pelican_light_count(); pelican_light(0u, vec3(0.0)); "
@@ -370,6 +563,16 @@ ShaderCompileResult compileExperimentalStage(ShaderCompiler &compiler,
             "pelicanMaterials",
             "pelican_directional_shadow_texture",
         };
+        for (const auto &resource :
+             composition.resource_interface) {
+            if (resource.expected_stages &&
+                !(resource.expected_stages & stage)) {
+                continue;
+            }
+            request.preserved_descriptor_names.push_back(
+                shaderResourcePortVariableName(
+                    resource.port.name));
+        }
         auto linked = linkSpirvModules(request);
         bindings = std::move(linked.bindings);
         cache_key = std::move(linked.cache_key);

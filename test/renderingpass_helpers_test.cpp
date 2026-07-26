@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -1103,6 +1104,190 @@ TEST_CASE("material pass surface resources resolve the feature-owned directional
             names, metadata),
         Catch::Matchers::ContainsSubstring("opaque_depth") &&
             Catch::Matchers::ContainsSubstring("not feature-owned"));
+}
+
+TEST_CASE(
+    "material pass resource ports resolve named image and buffer reads",
+    "[renderingpass][material-resource][wp207b]") {
+    const RenderTargetNameResolver names{
+        [](const std::string &name) {
+            if (name == "simulation_color") {
+                return GlobalRenderTargetId{30};
+            }
+            if (name == "history_color") {
+                return GlobalRenderTargetId{31};
+            }
+            return noRenderTargetId();
+        }};
+    const std::unordered_set<std::string> buffers{
+        "deformed_positions"};
+
+    PassDefinition pass;
+    pass.name = "geometry";
+    pass.pass_info = MaterialPassInfo{};
+    parseMaterialPassResourcesFromJson(
+        pass,
+        nlohmann::json{
+            {"material_resources",
+             {
+                 {"displacement",
+                  {
+                      {"resource",
+                       "deformed_positions"},
+                      {"access", "storage"},
+                  }},
+                 {"simulation_color",
+                  {
+                      {"resource",
+                       "simulation_color"},
+                      {"access", "sampled"},
+                      {"view", "per_view"},
+                      {"sampling",
+                       {
+                           {"filter", "nearest"},
+                           {"address",
+                            "clamp_to_edge"},
+                       }},
+                      {"footprint",
+                       {
+                           {"kind",
+                            "neighborhood"},
+                           {"radius", 2u},
+                       }},
+                  }},
+                 {"previous_color",
+                  {
+                      {"resource",
+                       "history_color@history"},
+                      {"access", "sampled"},
+                  }},
+             }}},
+        names, buffers);
+
+    REQUIRE(
+        pass.materialInfo().material_resources.size() ==
+        3);
+    REQUIRE(
+        pass.input_buffers ==
+        std::vector<std::string>{
+            "deformed_positions"});
+    REQUIRE(pass.input_targets.size() == 2);
+    REQUIRE(
+        pass.input_target_history.size() == 2);
+    const auto current_target = std::find(
+        pass.input_targets.begin(),
+        pass.input_targets.end(),
+        GlobalRenderTargetId{30});
+    const auto history_target = std::find(
+        pass.input_targets.begin(),
+        pass.input_targets.end(),
+        GlobalRenderTargetId{31});
+    REQUIRE(current_target != pass.input_targets.end());
+    REQUIRE(history_target != pass.input_targets.end());
+    REQUIRE_FALSE(pass.input_target_history.at(
+        static_cast<std::size_t>(std::distance(
+            pass.input_targets.begin(),
+            current_target))));
+    REQUIRE(pass.input_target_history.at(
+        static_cast<std::size_t>(std::distance(
+            pass.input_targets.begin(),
+            history_target))));
+
+    const auto find_binding =
+        [&](std::string_view name)
+        -> const MaterialPassResourceBinding & {
+        const auto found = std::find_if(
+            pass.materialInfo()
+                .material_resources.begin(),
+            pass.materialInfo()
+                .material_resources.end(),
+            [&](const auto &binding) {
+                return binding.port.name == name;
+            });
+        REQUIRE(
+            found !=
+            pass.materialInfo()
+                .material_resources.end());
+        return *found;
+    };
+    const auto &displacement =
+        find_binding("displacement");
+    REQUIRE(displacement.isBuffer());
+    REQUIRE_FALSE(displacement.isImage());
+    REQUIRE(
+        displacement.port.access ==
+        ShaderResourcePortAccess::storage);
+
+    const auto &simulation =
+        find_binding("simulation_color");
+    REQUIRE(simulation.isImage());
+    REQUIRE(
+        simulation.port.view ==
+        ShaderResourcePortView::per_view);
+    REQUIRE(
+        simulation.port.sampling.filter ==
+        ShaderResourcePortFilter::nearest);
+    REQUIRE(
+        simulation.port.sampling.address_mode ==
+        ShaderResourcePortAddressMode::
+            clamp_to_edge);
+    REQUIRE(
+        simulation.footprint.kind ==
+        LogicalReadFootprintKind::neighborhood);
+    REQUIRE(simulation.footprint.radius == 2u);
+
+    const auto &history =
+        find_binding("previous_color");
+    REQUIRE(history.isImage());
+    REQUIRE(history.history);
+    REQUIRE(
+        history.footprint.kind ==
+        LogicalReadFootprintKind::temporal);
+
+    PassDefinition missing;
+    missing.name = "missing";
+    missing.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassResourcesFromJson(
+            missing,
+            nlohmann::json{
+                {"material_resources",
+                 {{"unknown", "missing_target"}}}},
+            names, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "resource not found"));
+
+    PassDefinition buffer_history;
+    buffer_history.name = "buffer_history";
+    buffer_history.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassResourcesFromJson(
+            buffer_history,
+            nlohmann::json{
+                {"material_resources",
+                 {{"previous",
+                   "deformed_positions@history"}}}},
+            names, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "buffer history is not supported"));
+
+    PassDefinition mixed_history;
+    mixed_history.name = "mixed_history";
+    mixed_history.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassResourcesFromJson(
+            mixed_history,
+            nlohmann::json{
+                {"material_resources",
+                 {
+                     {"current",
+                      "simulation_color"},
+                     {"previous",
+                      "simulation_color@history"},
+                 }}},
+            names, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "both current and history"));
 }
 
 TEST_CASE("material pass contracts parse and filter independently of local pass ids",

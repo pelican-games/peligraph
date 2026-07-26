@@ -1,6 +1,7 @@
 #include "renderingpassvalidation.hpp"
 #include "materialpassattachments.hpp"
 #include "rendertargetmetadataresolver.hpp"
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <stdexcept>
@@ -16,16 +17,33 @@ void validatePassInputs(const PassDefinition &pass_def) {
     }
     if (pass_def.isMaterial()) {
         if (!pass_def.input_buffers.empty()) {
-            throw std::runtime_error(
-                "Material pass screen inputs do not support buffers: " +
-                pass_def.name);
+            for (const auto &buffer :
+                 pass_def.input_buffers) {
+                const auto named = std::find_if(
+                    pass_def.materialInfo()
+                        .material_resources.begin(),
+                    pass_def.materialInfo()
+                        .material_resources.end(),
+                    [&](const auto &resource) {
+                        return resource.buffer == buffer;
+                    });
+                if (named ==
+                    pass_def.materialInfo()
+                        .material_resources.end()) {
+                    throw std::runtime_error(
+                        "Material pass buffer inputs must use named "
+                        "material_resources: " +
+                        pass_def.name);
+                }
+            }
         }
         if (!pass_def.input_targets.empty() &&
             pass_def.materialInfo().screen_inputs.empty() &&
-            pass_def.materialInfo().surface_resources.empty()) {
+            pass_def.materialInfo().surface_resources.empty() &&
+            pass_def.materialInfo().material_resources.empty()) {
             throw std::runtime_error(
                 "Material pass inputs must use named screen_inputs or "
-                "surface_resources: " +
+                "surface_resources/material_resources: " +
                 pass_def.name);
         }
     }
@@ -301,6 +319,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         pass_json.contains("surface_resources")) {
         throw std::runtime_error(
             "Only material passes support surface_resources: " +
+            pass_def.name);
+    }
+    if (!pass_def.isMaterial() &&
+        pass_json.contains("material_resources")) {
+        throw std::runtime_error(
+            "Only material passes support material_resources: " +
             pass_def.name);
     }
     if (!pass_def.isFullscreen() &&

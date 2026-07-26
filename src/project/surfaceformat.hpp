@@ -1,5 +1,7 @@
 #pragma once
 
+#include "shaderresourceport.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +58,39 @@ struct SurfaceTextureDefinition {
     SurfaceTextureRole role = SurfaceTextureRole::data;
 };
 
+enum class SurfaceResourcePortKind : std::uint8_t {
+    image,
+    buffer,
+};
+
+std::string_view surfaceResourcePortKindName(
+    SurfaceResourcePortKind kind);
+
+enum class SurfaceResourcePortStage : std::uint8_t {
+    vertex,
+    fragment,
+    vertex_fragment,
+};
+
+std::string_view surfaceResourcePortStageName(
+    SurfaceResourcePortStage stage);
+
+// The reusable surface declares only its shader-facing interface. A material
+// pass maps this semantic name to a graph image/buffer and owns footprint,
+// history, view, and sampling policy.
+struct SurfaceResourcePortDefinition {
+    std::string name;
+    SurfaceResourcePortKind kind =
+        SurfaceResourcePortKind::image;
+    SurfaceResourcePortStage stage =
+        SurfaceResourcePortStage::fragment;
+    ShaderResourceBufferElement element =
+        ShaderResourceBufferElement::unsigned_integer;
+
+    bool operator==(
+        const SurfaceResourcePortDefinition &) const = default;
+};
+
 enum class SurfaceBlendMode {
     opaque,
     blend,
@@ -100,6 +135,7 @@ struct SurfaceFormatDocument {
     std::vector<SurfaceParamDefinition> params;
     std::vector<SurfaceTextureDefinition> textures;
     std::vector<std::string> screen_inputs;
+    std::vector<SurfaceResourcePortDefinition> resource_ports;
     SurfaceRenderState render_state;
     std::size_t code_offset = 0;
     std::size_t code_line = 1;

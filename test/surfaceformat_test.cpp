@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -173,6 +174,55 @@ TEST_CASE("surface format reflects versioned hooks without changing code identit
     REQUIRE(hooks.size() == 2);
     REQUIRE(static_cast<bool>(hooks[0] == "pelican_vertex_displace_v1"));
     REQUIRE(static_cast<bool>(hooks[1] == "pelican_surface_v1"));
+}
+
+TEST_CASE("surface format declares typed material resource ports",
+          "[surface-format][resource-port][wp207b]") {
+    constexpr std::string_view source = R"surface(//! pelican.surface v1
+//! language: glsl
+//! resource_ports:
+//!   - { name: displacement, kind: buffer, element: vec4, stage: vertex }
+//!   - { name: simulation_color, kind: image, stage: fragment }
+
+void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
+    vertex.position += vec3(0.0);
+}
+)surface";
+
+    const auto document =
+        parseSurfaceFormat(source, "resource_ports.surface");
+    REQUIRE(document.resource_ports.size() == 2);
+    REQUIRE(document.resource_ports[0].name == "displacement");
+    REQUIRE(document.resource_ports[0].kind ==
+            SurfaceResourcePortKind::buffer);
+    REQUIRE(document.resource_ports[0].stage ==
+            SurfaceResourcePortStage::vertex);
+    REQUIRE(document.resource_ports[0].element ==
+            ShaderResourceBufferElement::vec4);
+    REQUIRE(document.resource_ports[1].name ==
+            "simulation_color");
+    REQUIRE(document.resource_ports[1].kind ==
+            SurfaceResourcePortKind::image);
+    REQUIRE(document.resource_ports[1].stage ==
+            SurfaceResourcePortStage::fragment);
+}
+
+TEST_CASE("surface buffer resource ports require an explicit element",
+          "[surface-format][resource-port][wp207b]") {
+    constexpr std::string_view source = R"surface(//! pelican.surface v1
+//! language: glsl
+//! resource_ports:
+//!   - { name: displacement, kind: buffer, stage: vertex }
+
+void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
+    vertex.position += vec3(0.0);
+}
+)surface";
+
+    REQUIRE_THROWS_WITH(
+        parseSurfaceFormat(source, "bad_resource_port.surface"),
+        Catch::Matchers::ContainsSubstring(
+            "buffer requires explicit element"));
 }
 
 TEST_CASE("OpenPBR wrapper-B variants preserve one declaration ABI",

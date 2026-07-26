@@ -8,6 +8,7 @@
 #include "pelican_material_instance.glsl"
 #include "pelican_surface_v1.glsl"
 #include "pelican_morph.glsl"
+#define PELICAN_SURFACE_STAGE_VERTEX 1
 #include "__pelican_surface_params.glsl"
 #ifdef PELICAN_SKINNED
 #include "pelican_skinning.glsl"

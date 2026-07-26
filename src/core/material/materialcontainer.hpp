@@ -62,8 +62,12 @@ DECLARE_MODULE(MaterialContainer) {
 
     vk::UniqueSampler nearest_sampler, linear_sampler;
     vk::UniqueSampler screen_nearest_sampler, screen_linear_sampler;
+    mutable std::array<vk::UniqueSampler, 6>
+        material_resource_samplers;
     vk::UniqueDescriptorPool desc_pool;
     vk::UniqueDescriptorPool screen_input_desc_pool;
+    mutable vk::UniqueDescriptorPool
+        material_resource_desc_pool;
 
     struct InternalTextureResource {
         ImageWrapper image;
@@ -90,11 +94,30 @@ DECLARE_MODULE(MaterialContainer) {
         };
 
         struct ScreenInputResource {
-            MaterialScreenInputContract contract;
+            std::string name;
+            std::uint32_t binding = 0;
+            vk::DescriptorType descriptor_type =
+                vk::DescriptorType::
+                    eCombinedImageSampler;
             GlobalRenderTargetId target = noRenderTargetId();
+            FrameGraphBufferId buffer =
+                noFrameGraphBufferId();
             bool history = false;
             PassInputViewDimension view_dimension =
                 PassInputViewDimension::shared_2d;
+            ShaderResourcePortSampling sampling;
+            bool material_resource = false;
+
+            bool isImage() const {
+                return descriptor_type ==
+                       vk::DescriptorType::
+                           eCombinedImageSampler;
+            }
+            bool isBuffer() const {
+                return descriptor_type ==
+                       vk::DescriptorType::
+                           eStorageBuffer;
+            }
         };
         struct ScreenInputDescriptor {
             struct DescriptorVariant {
@@ -113,6 +136,8 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<std::string> exact_pass;
         std::vector<MaterialPassInputContract> pass_inputs;
+        std::vector<ShaderResourceInterfaceBinding>
+            resource_interface;
         bool skinned = false;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
@@ -168,6 +193,8 @@ DECLARE_MODULE(MaterialContainer) {
         PipelineHandle pipeline,
         std::vector<InternalMaterialInfo::ScreenInputResource> resources,
         const RenderTargetImageViewResolver &rt_views) const;
+    vk::Sampler materialResourceSampler(
+        ShaderResourcePortSampling sampling) const;
     const InternalMaterialInfo::ScreenInputDescriptor *ensureScreenInputDescriptor(
         GlobalMaterialId material, const PassDefinition &pass) const;
 

@@ -346,6 +346,121 @@ void appendMaterialSurfaceResourceReads(
     }
 }
 
+void appendMaterialResourceReads(
+    const nlohmann::json &pass_json,
+    FrameGraphNodeDefinition &node) {
+    if (!pass_json.contains("material_resources")) {
+        return;
+    }
+    const auto &encoded =
+        pass_json.at("material_resources");
+    if (!encoded.is_object()) {
+        throw std::runtime_error(
+            "Frame graph pass.material_resources must be an object");
+    }
+
+    nlohmann::json sanitized =
+        nlohmann::json::object();
+    std::vector<std::string> reads;
+    reads.reserve(encoded.size());
+    for (auto entry = encoded.begin();
+         entry != encoded.end(); ++entry) {
+        if (entry.value().is_string()) {
+            sanitized[entry.key()] = entry.value();
+            reads.push_back(
+                entry.value().get<std::string>());
+            continue;
+        }
+        if (!entry.value().is_object()) {
+            throw std::runtime_error(
+                "Frame graph pass.material_resources." +
+                entry.key() +
+                " must be a resource string or object");
+        }
+        auto object = entry.value();
+        object.erase("footprint");
+        sanitized[entry.key()] = std::move(object);
+        if (entry.value().contains("resource")) {
+            if (!entry.value().at("resource").is_string()) {
+                throw std::runtime_error(
+                    "Frame graph pass.material_resources." +
+                    entry.key() +
+                    ".resource must be a string");
+            }
+            reads.push_back(
+                entry.value().at("resource")
+                    .get<std::string>());
+        } else {
+            reads.push_back(entry.key());
+        }
+    }
+    const nlohmann::json owner{
+        {"resource_ports", std::move(sanitized)}};
+    const auto ports =
+        parseShaderResourcePortDefinitions(
+            owner, reads, std::span<const std::string>{},
+            "frame graph material pass '" + node.name + "'");
+    constexpr std::string_view history_suffix =
+        "@history";
+    for (const auto &port : ports) {
+        const auto history =
+            port.resource.ends_with(history_suffix);
+        auto resource = history
+                            ? port.resource.substr(
+                                  0,
+                                  port.resource.size() -
+                                      history_suffix.size())
+                            : port.resource;
+        if (resource.empty() ||
+            resource.find('@') != std::string::npos) {
+            throw std::runtime_error(
+                "Frame graph material resource has invalid qualifier: " +
+                port.resource);
+        }
+        if (history) {
+            appendUnique(
+                node.reads_history, resource);
+        } else {
+            appendUnique(node.reads, resource);
+            const auto &source =
+                encoded.at(port.name);
+            appendReadFootprint(
+                node, resource,
+                source.is_object() &&
+                        source.contains("footprint")
+                    ? parseReadFootprint(
+                          source.at("footprint"),
+                          "Frame graph pass.material_resources." +
+                              port.name + ".footprint")
+                    : LogicalReadFootprint{
+                          LogicalReadFootprintKind::arbitrary,
+                          std::nullopt});
+        }
+        if (history &&
+            encoded.at(port.name).is_object() &&
+            encoded.at(port.name)
+                .contains("footprint")) {
+            throw std::runtime_error(
+                "Frame graph material resource '" +
+                port.name +
+                "' @history derives temporal footprint");
+        }
+        const auto intent =
+            port.access ==
+                    ShaderResourcePortAccess::sampled
+                ? LogicalAccessIntent::sampled
+            : port.access ==
+                    ShaderResourcePortAccess::storage
+                ? LogicalAccessIntent::storage
+                : LogicalAccessIntent::automatic;
+        node.resource_accesses.push_back(
+            FrameGraphResourceAccessDefinition{
+                .resource = port.resource,
+                .intent = intent,
+            });
+    }
+}
+
 void splitHistoryReads(const std::vector<std::string> &authored,
                        std::vector<std::string> &reads,
                        std::vector<std::string> &reads_history) {
@@ -524,6 +639,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         pass_json, "input_footprints", node);
     appendMaterialScreenInputReads(pass_json, node);
     appendMaterialSurfaceResourceReads(pass_json, node);
+    appendMaterialResourceReads(pass_json, node);
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
     node.raster_geometry =
@@ -865,6 +981,31 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
                 node,
                 renderTargetResourceName(input.target),
                 input.contract.footprint);
+        }
+        for (const auto &input :
+             pass.materialInfo().material_resources) {
+            const auto resource =
+                input.isBuffer()
+                    ? input.buffer
+                    : renderTargetResourceName(
+                          input.target);
+            if (!input.history) {
+                appendReadFootprint(
+                    node, resource,
+                    input.footprint);
+            }
+            node.resource_accesses.push_back(
+                FrameGraphResourceAccessDefinition{
+                    .resource =
+                        resource +
+                        (input.history
+                             ? "@history"
+                             : ""),
+                    .intent =
+                        input.isBuffer()
+                            ? LogicalAccessIntent::storage
+                            : LogicalAccessIntent::sampled,
+                });
         }
     }
     const auto depth_resource =

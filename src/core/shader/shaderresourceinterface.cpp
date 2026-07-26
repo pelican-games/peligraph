@@ -51,6 +51,8 @@ std::string descriptorName(
         return "combined image sampler";
     case ShaderResourceDescriptorKind::storage_image:
         return "storage image";
+    case ShaderResourceDescriptorKind::storage_buffer:
+        return "storage buffer";
     }
     throw std::runtime_error(
         "unknown shader resource descriptor kind");
@@ -65,6 +67,8 @@ vk::DescriptorType descriptorType(
             eCombinedImageSampler;
     case ShaderResourceDescriptorKind::storage_image:
         return vk::DescriptorType::eStorageImage;
+    case ShaderResourceDescriptorKind::storage_buffer:
+        return vk::DescriptorType::eStorageBuffer;
     }
     throw std::runtime_error(
         "unknown shader resource descriptor kind");
@@ -162,6 +166,121 @@ void writeStorageAccessors(
     }
 }
 
+void writeBufferAccessors(
+    std::ostringstream &stream,
+    const ShaderResourceInterfaceBinding &binding,
+    std::string_view variable) {
+    const auto &name = binding.port.name;
+    const auto element =
+        shaderResourceBufferElementName(
+            binding.buffer_element);
+    if (binding.readable) {
+        stream << element << " pelican_load_" << name
+               << "(uint index) { return " << variable
+               << ".values[index]; }\n";
+    }
+    if (binding.writable) {
+        stream << "void pelican_store_" << name
+               << "(uint index, " << element
+               << " value) { " << variable
+               << ".values[index] = value; }\n";
+    }
+    stream << "uint pelican_count_" << name
+           << "() { return uint(" << variable
+           << ".values.length()); }\n";
+}
+
+bool writeStageGuardBegin(
+    std::ostringstream &stream,
+    vk::ShaderStageFlags stages) {
+    const auto vertex =
+        vk::ShaderStageFlagBits::eVertex;
+    const auto fragment =
+        vk::ShaderStageFlagBits::eFragment;
+    if (stages == vertex) {
+        stream
+            << "#if defined(PELICAN_SURFACE_STAGE_VERTEX)\n";
+        return true;
+    }
+    if (stages == fragment) {
+        stream
+            << "#if defined(PELICAN_SURFACE_STAGE_FRAGMENT)\n";
+        return true;
+    }
+    if (stages == (vertex | fragment)) {
+        stream
+            << "#if defined(PELICAN_SURFACE_STAGE_VERTEX) || "
+               "defined(PELICAN_SURFACE_STAGE_FRAGMENT)\n";
+        return true;
+    }
+    return false;
+}
+
+bool singleSurfaceStage(
+    vk::ShaderStageFlags stages) {
+    return stages == vk::ShaderStageFlagBits::eVertex ||
+           stages == vk::ShaderStageFlagBits::eFragment;
+}
+
+void writeInactiveStageAccessors(
+    std::ostringstream &stream,
+    const ShaderResourceInterfaceBinding &binding) {
+    const auto &name = binding.port.name;
+    if (binding.descriptor ==
+        ShaderResourceDescriptorKind::storage_buffer) {
+        const auto element =
+            shaderResourceBufferElementName(
+                binding.buffer_element);
+        if (binding.readable) {
+            stream << element << " pelican_load_" << name
+                   << "(uint index) { return " << element
+                   << "(0); }\n";
+        }
+        stream << "uint pelican_count_" << name
+               << "() { return 0u; }\n";
+        return;
+    }
+    if (binding.descriptor ==
+        ShaderResourceDescriptorKind::
+            combined_image_sampler) {
+        if (binding.image_view_dimension ==
+            ReflectedImageViewDimension::two_d) {
+            stream << "vec4 pelican_sample_" << name
+                   << "(vec2 uv) { return vec4(0.0); }\n";
+        } else {
+            stream << "vec4 pelican_sample_" << name
+                   << "(vec2 uv, uint view_index) { return vec4(0.0); }\n"
+                   << "uint pelican_view_count_" << name
+                   << "() { return 0u; }\n";
+        }
+        stream << "ivec2 pelican_size_" << name
+               << "() { return ivec2(0); }\n";
+        return;
+    }
+    const auto value_type =
+        storageImageFormat(
+            binding.storage_format, binding.port)
+            .value_type;
+    const auto array =
+        binding.image_view_dimension ==
+        ReflectedImageViewDimension::two_d_array;
+    if (binding.readable) {
+        stream << value_type << " pelican_load_" << name
+               << "("
+               << (array
+                       ? "ivec2 coordinate, uint view_index"
+                       : "ivec2 coordinate")
+               << ") { return " << value_type
+               << "(0); }\n";
+    }
+    stream << "ivec2 pelican_size_" << name
+           << "() { return ivec2(0); }\n";
+    if (array) {
+        stream << "uint pelican_view_count_" << name
+               << "() { return 0u; }\n";
+    }
+}
+
 } // namespace
 
 ReflectedImageViewDimension
@@ -217,9 +336,44 @@ std::string generateShaderResourcePortInclude(
         << "#define PELICAN_RESOURCE_PORTS_GLSL\n"
         << "#include \"pelican_sets.glsl\"\n";
     for (const auto &binding : bindings) {
+        const auto guarded =
+            writeStageGuardBegin(
+                stream, binding.expected_stages);
         const auto variable =
             shaderResourcePortVariableName(
                 binding.port.name);
+        if (binding.descriptor ==
+            ShaderResourceDescriptorKind::
+                storage_buffer) {
+            stream
+                << "layout(std430, set = PELICAN_SET_PASS_INPUT, binding = "
+                << binding.binding << ") ";
+            if (binding.readable && !binding.writable) {
+                stream << "readonly ";
+            } else if (!binding.readable &&
+                       binding.writable) {
+                stream << "writeonly ";
+            }
+            stream << "buffer PelicanResource_"
+                   << binding.port.name
+                   << "_Block { "
+                   << shaderResourceBufferElementName(
+                          binding.buffer_element)
+                   << " values[]; } " << variable
+                   << ";\n";
+            writeBufferAccessors(
+                stream, binding, variable);
+            if (guarded) {
+                if (singleSurfaceStage(
+                        binding.expected_stages)) {
+                    stream << "#else\n";
+                    writeInactiveStageAccessors(
+                        stream, binding);
+                }
+                stream << "#endif\n";
+            }
+            continue;
+        }
         if (binding.descriptor ==
             ShaderResourceDescriptorKind::
                 combined_image_sampler) {
@@ -232,6 +386,15 @@ std::string generateShaderResourcePortInclude(
                 << " " << variable << ";\n";
             writeSampledAccessors(
                 stream, binding, variable);
+            if (guarded) {
+                if (singleSurfaceStage(
+                        binding.expected_stages)) {
+                    stream << "#else\n";
+                    writeInactiveStageAccessors(
+                        stream, binding);
+                }
+                stream << "#endif\n";
+            }
             continue;
         }
 
@@ -255,6 +418,15 @@ std::string generateShaderResourcePortInclude(
         writeStorageAccessors(
             stream, binding, variable,
             format.value_type);
+        if (guarded) {
+            if (singleSurfaceStage(
+                    binding.expected_stages)) {
+                stream << "#else\n";
+                writeInactiveStageAccessors(
+                    stream, binding);
+            }
+            stream << "#endif\n";
+        }
     }
     stream << "#endif\n";
     return stream.str();
@@ -345,6 +517,12 @@ void validateShaderResourceInterfaceReflection(
                 std::string{
                     reflectedImageViewDimensionName(
                         found->image_view_dimension)});
+        }
+        if (expected.expected_stages &&
+            found->stages != expected.expected_stages) {
+            throw std::runtime_error(
+                prefix +
+                " stage visibility does not match the declared interface");
         }
     }
 }

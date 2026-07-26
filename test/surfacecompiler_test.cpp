@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -176,6 +177,79 @@ TEST_CASE("surface source composition compiles routed main depth and velocity va
                                                     {"PELICAN_FEATURE_SHADOW"});
     REQUIRE(std::find(shadow_depth.defines.begin(), shadow_depth.defines.end(),
                       "PELICAN_FEATURE_SHADOW") != shadow_depth.defines.end());
+#endif
+}
+
+TEST_CASE("surface resource ports generate vertex buffer and fragment image accessors",
+          "[surface-compiler][resource-port][wp207b]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr std::string_view source = R"surface(//! pelican.surface v1
+//! language: glsl
+//! resource_ports:
+//!   - { name: displacement, kind: buffer, element: vec4, stage: vertex }
+//!   - { name: simulation_color, kind: image, stage: fragment }
+
+void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
+    vertex.position += pelican_load_displacement(0u).xyz;
+}
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
+                        inout PelicanSurfaceV1 surface) {
+    surface.base_color *= pelican_sample_simulation_color(input_data.uv);
+}
+)surface";
+    const auto surface =
+        parseSurfaceFormat(source, "typed_material.surface");
+    const auto composition = composeSurfaceShaders(
+        surface, "typed_material.surface",
+        SurfacePass::deferred_geometry);
+    REQUIRE(composition.resource_interface.size() == 2);
+    REQUIRE(composition.resource_interface[0].binding == 0);
+    REQUIRE(composition.resource_interface[0].descriptor ==
+            ShaderResourceDescriptorKind::storage_buffer);
+    REQUIRE(composition.resource_interface[0].buffer_element ==
+            ShaderResourceBufferElement::vec4);
+    REQUIRE(composition.resource_interface[0].expected_stages ==
+            vk::ShaderStageFlagBits::eVertex);
+    REQUIRE(composition.resource_interface[1].binding == 1);
+    REQUIRE(composition.resource_interface[1].descriptor ==
+            ShaderResourceDescriptorKind::combined_image_sampler);
+    REQUIRE(composition.resource_interface[1].expected_stages ==
+            vk::ShaderStageFlagBits::eFragment);
+
+    ShaderCompiler compiler;
+    const auto compiled = compileSurfaceShaders(
+        compiler, surface, "typed_material.surface",
+        SurfacePass::deferred_geometry);
+    requireCompiled(compiled);
+    const auto reflection = merge(std::array{
+        reflect(compiled.vertex.spirv),
+        reflect(compiled.fragment.spirv),
+    });
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            composition.resource_interface, reflection));
+#if PELICAN_WITH_SPIRV_LINK
+    {
+        ScopedSpvLinkEnvironment environment{
+            "experimental"};
+        const auto linked = compileSurfaceShaders(
+            compiler, surface,
+            "typed_material.surface",
+            SurfacePass::deferred_geometry);
+        requireCompiled(linked);
+        REQUIRE(linked.experimental_spv_link);
+        const auto linked_reflection = merge(
+            std::array{
+                reflect(linked.vertex.spirv),
+                reflect(linked.fragment.spirv),
+            });
+        REQUIRE_NOTHROW(
+            validateShaderResourceInterfaceReflection(
+                composition.resource_interface,
+                linked_reflection));
+    }
+#endif
 #endif
 }
 

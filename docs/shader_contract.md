@@ -9,7 +9,7 @@
 | set | 名前 | 現行の使い方 |
 |-----|------|--------------|
 | 0 | `PELICAN_SET_FRAME` | 全 pipeline 共通の固定 layout。binding 0 `FrameUBO`、1 `ObjectBuffer` SSBO、2 `LightUBO`、3 `PreviousObjectBuffer` SSBO、4 `FrameResolutionUBO`。エンジン管理・読み取り専用。 |
-| 1 | `PELICAN_SET_PASS_INPUT` | fullscreen / UI / compute の入力。fullscreen は pass input の texture/buffer を binding 0 から順に割り当てる。UI texture もこの set を使う。 |
+| 1 | `PELICAN_SET_PASS_INPUT` | fullscreen / UI / compute / material pass の入力。通常の fullscreen/compute/material resource は logical name から generated binding へ解決する。UI texture と raw escape hatch もこの set を使う。 |
 | 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
 | 3 | `PELICAN_SET_FREE` | variant ごとの補助枠。debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture、`PELICAN_SKINNED` は binding 2 の `SkinPalette` SSBO を使う。binding 2 はスキン variant だけエンジン所有。 |
 
@@ -61,7 +61,61 @@ sampled port に `pelican_sample_<port>()` / `pelican_size_<port>()`、storage p
 reflection は port の set、binding、descriptor kind、count、生成変数名、2D/2D-array 次元を
 照合する。hot reload も同じ interface を保存して再検証する。`resource_ports` を持たない
 既存 shader の raw set 1 ABI は不変であり、buffer や特殊 descriptor の escape hatch として
-利用できる。typed buffer port と material vertex/fragment consumer は WP207b の範囲である。
+利用できる。
+
+### material/geometry resource port(WP207b)
+
+`.surface` は shader-facing port を `resource_ports` で宣言する。current
+`pelican.surface v1` への additive field であり、別版や旧版互換分岐はない。
+
+```glsl
+//! resource_ports:
+//!   - { name: displacement, kind: buffer, element: vec4, stage: vertex }
+//!   - { name: simulation_color, kind: image, stage: fragment }
+
+void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
+    vertex.position += pelican_load_displacement(0u).xyz;
+}
+```
+
+`kind: buffer` は `element` 必須の readonly std430 array で、
+`pelican_load_<port>(uint)` / `pelican_count_<port>()` を生成する。element は
+`float|vec2|vec3|vec4`、対応する signed/unsigned vector、`mat4`。
+`kind: image` は sampled `sampler2D` で、
+`pelican_sample_<port>(vec2)` / `pelican_size_<port>()` を生成する。
+`stage` は `vertex|fragment|vertex_fragment`、省略時 fragment。reflection は
+descriptor kind/nameだけでなく実 stage visibilityも一致させる。
+
+material pass は同名 port を graph resource へ割り当てる。
+
+```json
+"material_resources": {
+  "displacement": {
+    "resource": "simulation_positions",
+    "access": "storage",
+    "footprint": "arbitrary"
+  },
+  "simulation_color": {
+    "resource": "simulation_color",
+    "access": "sampled",
+    "view": "shared_2d",
+    "sampling": {"filter": "linear", "address": "clamp_to_edge"}
+  }
+}
+```
+
+この map が producer/read edge、footprint、current/history、physical view、sampler policy の
+authorityであり、surface は特定の graph resource 名を持たない。buffer は history/per-view/
+sampling不可、imageは現在 sampled-only。image history は `<name>@history` で指定する。
+shared 2D と sequential per-view 2D は利用できるが、material accessor がまだ
+`sampler2DArray` を公開しないため layered multiview は名前付きで拒否する。
+
+runtime compile は buffer を active generation の `FrameGraphBufferId` へ固定し、
+target recreate/pipeline reloadではdescriptorを新しいimage view/IDへ再生成する。
+typed portを使わないmaterialでは追加のstorage descriptor pool/samplerを生成しない。
+詳細と制限は
+[`design_reviews/2026-07-26_wp207b_material_resource_ports.md`](design_reviews/2026-07-26_wp207b_material_resource_ports.md)
+を参照する。
 
 ### 名前付きスクリーンスナップショット(M3.5 / WP83)
 

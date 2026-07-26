@@ -1,13 +1,14 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v5)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v7)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v6(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v7(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
 v2 の件数不整合、G2/G13、material screen input、sampler/texture dimension、
 raster tiled lighting の誤判定を訂正した。v4のWP206a stable tag selectionに続き、
 v5ではWP206bのpass-local named variantとinverted-hull dogfood、v6ではWP207aの
-compute Frame/Lightとfullscreen/compute named image portを反映した。instance/draw-owned
-layerとopaque/transparent phaseを跨ぐvariant queue、material consumer portは後続である。監査記録は
+compute Frame/Lightとfullscreen/compute named image port、v7ではWP207bのmaterial
+vertex/fragment typed buffer/image consumerとcompute→vertex displacement dogfoodを反映した。
+instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
 ## 0. 判定規則
@@ -40,6 +41,7 @@ layerとopaque/transparent phaseを跨ぐvariant queue、material consumer port�
 | material render state | opaque/blend/**additive**、none/**front**/back cull、depth test/write/compare | [surfaceformat.cpp:530](../src/project/surfaceformat.cpp) |
 | material selection | material `tags` + pass `material_filter.include/exclude`。compile済みcompact range、flat/preview/XR共通 | [drawqueuebuilder.cpp](../src/core/renderer/drawqueuebuilder.cpp) |
 | material screen input | `opaque_color` / depth / linearized depth、opaque snapshot、XR layered binding | [headless_render_test.cpp:2444](../test/headless_render_test.cpp) |
+| material graph resource | `.surface`のvertex/fragment typed readonly buffer・sampled image port、generated accessor、pass mapping、世代固定descriptor | [surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp) |
 | compute | fixed dispatch、storage buffer/image、reads/writes/after/before | [computetask.cpp](../src/core/renderingpass/computetask.cpp) |
 | temporal | history、velocity、projection jitter、reset epoch、解像度分離 | [taa.json](../src/core/resources/features/taa.json) |
 | graph/compiler | logical type/value、target planning、physical fragment、transient/tile-local/alias runtime | [design_render_graph_compiler.md](design_render_graph_compiler.md) |
@@ -49,7 +51,7 @@ layerとopaque/transparent phaseを跨ぐvariant queue、material consumer port�
 
 | 項目 | 現在の境界 |
 |---|---|
-| graphics buffer input | fullscreen は対応済み。material/geometry pass は未対応(G2) |
+| graphics buffer input | fullscreen はraw storage buffer、material/geometryはtyped readonly storage bufferに対応。material write/atomicは未公開 |
 | sampler | fullscreen/compute named image port は filter/address 指定可。material custom texture は固定 sampler、compare/anisotropy 未公開(G12) |
 | texture dimension | XR 内部 array は存在。project authored static cube/array/3D と RT mip/layer/subresource view が未公開(G4/G10) |
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
@@ -74,14 +76,14 @@ layerとopaque/transparent phaseを跨ぐvariant queue、material consumer port�
 | A10 | eye shading(cornea/parallax) | **○** | `surface` + `brdf` |
 | A11 | skin SSS analytic approximation | **△** | BRDF近似とmaterial単位のtag/variant overlayは可。screen-space diffusionのtyped contractとinstance単位選別はG15/G14 |
 | A12 | wetness / snow accumulation | **○** | `surface` mask composition |
-| A13 | virtual texture / texture streaming | **✕** | feedback、material resource port、GPU draw/residency、descriptor table(G2/G8/G9) |
+| A13 | virtual texture / texture streaming | **✕** | feedback write、GPU draw/residency、descriptor table(G8/G9) |
 
 ### B. lighting
 
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | B1 | tiled/clustered lighting(raster) | **△** | fullscreen raster 自体は可。標準 light 32灯、format/consumer の実 dogfood 未完(G5) |
-| B2 | tiled/clustered lighting(compute) | **△** | compute Frame/Light + sampled/storage image portは実装済み。material consumer portとscalable light inventoryが不足(G2/G5) |
+| B2 | tiled/clustered lighting(compute) | **△** | compute→material typed consumerは実装済み。scalable light inventoryとclustered dogfoodが不足(G5) |
 | B3 | area light(LTC) | **△** | LUT 評価は可。light schema に shape/orientation/size が無い(G5) |
 | B4 | light cookie / IES | **△** | texture は可。lightごとのresource indexが無い(G5/G9) |
 | B5 | custom non-shadow attenuation | **○** | `lighting` hook |
@@ -146,7 +148,7 @@ layerとopaque/transparent phaseを跨ぐvariant queue、material consumer port�
 |---|---|---|---|
 | G1t | sorted transparency | **○** | `forward_transparent_v1` + draw sort provider |
 | G2t | inverted-hull outline | **○** | WP206bのproject-owned surface/pass dogfoodで、entity/mesh/base material/draw複製なしにfront-cull forward overlayを実GPU描画 |
-| G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式もmultipass/MRT routeのdogfoodが必要。PPLLはfragment storage/atomic contract不足(G2/G9/G15) |
+| G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式もmultipass/MRT routeのdogfoodが必要。PPLLはfragment write/atomic、descriptor table、custom geometry contract不足(G9/G15) |
 | G4t | stochastic transparency | **△** | dither/mask は可。TAA integration の品質調整が必要 |
 | G5t | refraction/glass | **○** | material screen input 実配線・描画済み |
 | G6t | additive effect | **○** | `.surface render_state.blend: additive` 実装・test済み |
@@ -172,7 +174,7 @@ layerとopaque/transparent phaseを跨ぐvariant queue、material consumer port�
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | I1 | Gerstner wave | **○** | `displace` hook |
-| I2 | FFT ocean | **✕** | compute結果をmaterial vertex/fragmentへ渡すtyped resource portが無い(G2) |
+| I2 | FFT ocean | **○** | compute buffer→material vertex displacementとfragment sampled imageを実GPU dogfood済み。FFT実装自体はproject shader |
 | I3 | water refraction | **○** | material screen input |
 | I4 | water reflection | **△** | SSRなら可能。planar reflectionはG6b |
 | I5 | foam / shoreline | **○** | depth差分 + material/fullscreen |
@@ -204,7 +206,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | ID | 正確なギャップ | 主な対象 |
 |---|---|---|
 | **G1（解消済み、WP207a）** | compute pipelineへFrame/Light setとnamed sampled/storage image portを実装。fullscreenも同じgenerated interfaceを使う | clustered compute、DDGI、runtime LUTの入力境界 |
-| **G2** | material vertex/fragmentがtyped frame-graph buffer/imageを読めない | FFT ocean、GPU simulation consumer、PPLL |
+| **G2（解消済み、WP207b）** | material vertex/fragmentへtyped readonly buffer/sampled image port、element/stage schema、generated accessor、世代固定descriptorを実装 | FFT ocean、GPU simulation consumer。PPLL write/storage imageは別拡張 |
 | **G3** | authored dispatchが定数、indirect dispatchが無い | GPU culling、adaptive work |
 | **G4** | static cube/array/3D texture dimensionをprojectから宣言できない | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
@@ -253,8 +255,8 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 1. 現在の WP204 runtime slice を閉じる
 2. G6a public shadow contract
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
-4. G1はWP207aで完了。次はG2 material/geometry typed resource port
-5. G5 lighting data v2 + clustered dogfood
+4. G1はWP207a、G2はWP207bで完了
+5. 次はG5 lighting data v2 + clustered dogfood
 6. G4/G10/G12 texture dimension/subresource/sampler
 7. G3/G8 GPU-driven execution。G9 bindlessは実測需要時
 8. delivery laneとして`dist-bake`

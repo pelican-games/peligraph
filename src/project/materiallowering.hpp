@@ -72,6 +72,7 @@ struct LoweredMaterial {
     std::vector<LoweredTextureBinding> textures;
     std::vector<std::string> screen_inputs;
     std::vector<MaterialScreenInputContract> screen_input_contracts;
+    std::vector<SurfaceResourcePortDefinition> resource_ports;
     MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
     MaterialRouteReason route_reason = MaterialRouteReason::automatic_deferred_compatible;
     DeferredEligibility deferred_eligibility;

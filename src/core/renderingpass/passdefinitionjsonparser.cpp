@@ -79,6 +79,9 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
                                           rt_metadata);
     parseMaterialPassSurfaceResourcesFromJson(
         pass_def, pass_json, rt_resolver, rt_metadata);
+    parseMaterialPassResourcesFromJson(
+        pass_def, pass_json, rt_resolver,
+        buffer_names);
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_metadata);
     validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_metadata);

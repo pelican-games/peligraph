@@ -278,7 +278,8 @@ PassAttachmentOperations physicalAttachmentOperations(
 PassDefinition applyPhysicalPassContract(
     const PassDefinition &source,
     const VulkanTargetPlan *plan,
-    const RenderTargetMetadataResolver *metadata) {
+    const RenderTargetMetadataResolver *metadata,
+    FrameGraphResourceContainer *frame_graph_resources) {
     auto result = source;
     result.physical_color_attachment_operations
         .clear();
@@ -297,6 +298,29 @@ PassDefinition applyPhysicalPassContract(
         result.input_target_views.push_back(
             inputViewDimension(
                 plan, metadata->get(target).name));
+    }
+    if (result.isMaterial()) {
+        for (auto &resource :
+             result.materialInfo().material_resources) {
+            if (!resource.isBuffer()) continue;
+            if (frame_graph_resources == nullptr) {
+                throw std::runtime_error(
+                    "material resource '" +
+                    resource.port.name +
+                    "' requires frame-graph buffer runtime dependencies");
+            }
+            resource.buffer_id =
+                frame_graph_resources->getBufferIdByName(
+                    resource.buffer);
+            if (!isValidFrameGraphBufferId(
+                    resource.buffer_id)) {
+                throw std::runtime_error(
+                    "material resource '" +
+                    resource.port.name +
+                    "' buffer is absent from the active GPU generation: " +
+                    resource.buffer);
+            }
+        }
     }
     if (plan == nullptr ||
         plan->attachments.empty()) {
@@ -1435,7 +1459,8 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
         auto pass_def = applyPhysicalPassContract(
             definition.passes[i],
             dependencies.target_plan,
-            dependencies.render_target_metadata);
+            dependencies.render_target_metadata,
+            dependencies.frame_graph_resources);
         const auto view =
             passViewContract(
                 dependencies.target_plan, pass_def);

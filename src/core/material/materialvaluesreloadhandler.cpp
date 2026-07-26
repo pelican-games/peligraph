@@ -203,6 +203,7 @@ bool sameTextureContract(const SurfaceTextureDefinition &left,
 bool materialBindingContractMatches(const SurfaceFormatDocument &left,
                                     const SurfaceFormatDocument &right) {
     if (left.language != right.language || left.screen_inputs != right.screen_inputs ||
+        left.resource_ports != right.resource_ports ||
         left.textures.size() != right.textures.size()) return false;
     for (std::size_t index = 0; index < left.textures.size(); ++index) {
         if (!sameTextureContract(left.textures[index], right.textures[index])) return false;

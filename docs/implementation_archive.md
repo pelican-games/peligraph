@@ -6487,4 +6487,62 @@ typed sampled resourceを消費できるdomainへ拡張する。
 
 ---
 
+### WP207b（済 2026-07-26）: material/geometry typed frame-graph resource port
+
+**目的**: material vertex/fragmentがcomputeや別passのbuffer/imageをlogical nameで読み、
+GPU simulation結果をgeometryへ接続できるようにする。
+
+**実装範囲**:
+
+1. material screen imageのbuiltin semanticだけでなく、typed readonly buffer/sampled image
+   portを追加する。
+2. vertex/fragment visibility、buffer element、read footprint、view dimension、history、
+   producer edgeをlogical contractへ運ぶ。
+3. generated surface accessorを拡張し、binding番号とdescriptor形を隠す。
+4. physical buffer/image usageとbarrierをtarget/Vulkan loweringで導出する。
+
+**受け入れ条件**:
+
+- compute write → material vertex displacementのproject-owned dogfood
+- same-frame edge、barrier、history/view mismatch、missing producerのfixture
+- deferred/forwardのrouteで必要なconsumerだけがresourceをbind
+- hot reload/recreate/rollbackでdescriptorがactive generationへ再bind
+- 既存refraction screen inputとsurface byte golden不変
+
+依存: WP207a。見積: 大。
+
+**完了内容（2026-07-26）**:
+
+- current `pelican.surface v1`へoptional `resource_ports`をadditiveに追加した。
+  image/buffer kind、bufferのstd430 element、vertex/fragment visibilityを宣言し、
+  `pelican_sample/size_*`または`pelican_load/count_*`を生成する。版分岐は追加していない。
+- material passへ`material_resources` mapを追加した。logical resource、sampled/storage、
+  current/history、shared/per-view、filter/address、read footprintをport名で割り当て、
+  既存frame graphのread edge/access intentへloweringする。
+- reflectionはgenerated descriptorのset/binding/kind/count/nameに加えstage visibilityを
+  照合する。surface portとpass mappingが一致するmaterial/passの組だけdescriptorを作る。
+- frame-graph bufferはruntime compile時のgeneration-owned `FrameGraphBufferId`へ固定した。
+  target recreateではimage view、pipeline reloadではimage/buffer IDを再bindし、失敗candidateは
+  active generationとdescriptor revisionを維持する。
+- typed portを使わないmaterialではstorage-capable descriptor poolと追加samplerを作らず、
+  既存screen-input経路とraw set 1 escape hatchを維持した。
+- project-owned headless Vulkan scenarioでfullscreen image producerとcompute buffer producerを
+  material fragment/vertexが同時に消費し、色とvertex displacementを実画像で確認した。
+  resize、正常reload、missing producer rollbackも同じscenarioで回帰した。
+- parser/compiler/planner/runtime/GPU tests、Debug全build、全CTest、`git diff --check`を通過した。
+  Windows symlink権限依存のPathResolver 1件だけは従来どおりskip。
+
+意図的制限:
+
+- material bufferはreadonly、imageはsampled-only。
+- image accessorはshared 2D / sequential per-view 2Dまで。layered multiviewは
+  `sampler2DArray` accessor未実装のため明示reject。
+- texture dimension/subresource/samplerはWP209a/b、indirect executionはWP210、
+  scalable light inventoryはWP208。
+
+設計・完了証跡:
+[`design_reviews/2026-07-26_wp207b_material_resource_ports.md`](design_reviews/2026-07-26_wp207b_material_resource_ports.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

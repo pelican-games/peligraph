@@ -75,6 +75,27 @@ struct MaterialPassInputBinding {
 
 using MaterialPassScreenInputBinding = MaterialPassInputBinding;
 
+struct MaterialPassResourceBinding {
+    ShaderResourcePortDefinition port;
+    GlobalRenderTargetId target = noRenderTargetId();
+    std::string buffer;
+    // Runtime compilation pins a concrete generation-owned buffer handle.
+    // Authored/pass-parser definitions retain the logical name above.
+    FrameGraphBufferId buffer_id = noFrameGraphBufferId();
+    bool history = false;
+    LogicalReadFootprint footprint{
+        LogicalReadFootprintKind::arbitrary,
+        std::nullopt,
+    };
+
+    bool isImage() const {
+        return isConcreteRenderTarget(target);
+    }
+    bool isBuffer() const {
+        return !buffer.empty();
+    }
+};
+
 struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
@@ -87,6 +108,10 @@ struct MaterialPassInfo {
     // Feature-owned public resources share the material pass-input descriptor
     // ABI but are not authored by individual .surface files.
     std::vector<MaterialPassInputBinding> surface_resources;
+    // Project-authored semantic ports are matched against each surface's
+    // typed resource_ports. These named bindings create graph read edges;
+    // materials that declare no matching port allocate no descriptor.
+    std::vector<MaterialPassResourceBinding> material_resources;
 };
 
 enum class FullscreenPushConstantData {

@@ -21,6 +21,7 @@ inline constexpr std::string_view
 enum class ShaderResourceDescriptorKind : std::uint8_t {
     combined_image_sampler,
     storage_image,
+    storage_buffer,
 };
 
 enum class ShaderResourceConsumerView : std::uint8_t {
@@ -42,6 +43,12 @@ struct ShaderResourceInterfaceBinding {
     ReflectedImageViewDimension image_view_dimension =
         ReflectedImageViewDimension::two_d;
     vk::Format storage_format = vk::Format::eUndefined;
+    ShaderResourceBufferElement buffer_element =
+        ShaderResourceBufferElement::unsigned_integer;
+    // Empty keeps the established fullscreen/compute behavior. Material
+    // ports set this explicitly so a vertex-only contract cannot silently
+    // migrate to fragment (or vice versa) during reload.
+    vk::ShaderStageFlags expected_stages;
     bool readable = true;
     bool writable = false;
 

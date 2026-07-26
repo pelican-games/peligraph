@@ -183,6 +183,29 @@ void main() {
 )glsl";
 }
 
+const char *materialDisplacementComputeShader() {
+    return R"glsl(
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 1, binding = 0) buffer Displacement {
+    vec4 values[];
+} displacement;
+void main() {
+    displacement.values[0] = vec4(0.55, 0.0, 0.0, 0.0);
+}
+)glsl";
+}
+
+const char *materialResourceTintFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(1.0, 0.01, 0.01, 1.0);
+}
+)glsl";
+}
+
 const char *gpuArenaBufferFragmentShader() {
     return R"glsl(
 #version 450
@@ -521,6 +544,119 @@ nlohmann::json gpuArenaRenderingConfig() {
       "writes": ["gpu_arena_buffer"],
       "before": ["gpu_arena_present"],
       "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    }
+  ]
+}
+)json");
+}
+
+nlohmann::json materialResourceRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [
+    {
+      "name": "material_tint",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "material_lit",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "material_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    }
+  ],
+  "buffers": [
+    {
+      "name": "material_displacement",
+      "size": 16,
+      "lifetime": "persistent"
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "material_resource_main",
+      "passes": [
+        {
+          "name": "material_tint_source",
+          "type": "fullscreen",
+          "output": {
+            "color": "material_tint",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/material_resource_fullscreen",
+            "fragment": "shaders/material_resource_tint"
+          }
+        },
+        {
+          "name": "material_geometry",
+          "type": "material",
+          "material_contract": "forward_opaque_v1",
+          "material_resources": {
+            "displacement": {
+              "resource": "material_displacement",
+              "access": "storage",
+              "footprint": "arbitrary"
+            },
+            "simulation_color": {
+              "resource": "material_tint",
+              "access": "sampled",
+              "sampling": {
+                "filter": "nearest",
+                "address": "clamp_to_edge"
+              },
+              "footprint": "arbitrary"
+            }
+          },
+          "output": {
+            "color": "material_lit",
+            "depth": "material_depth"
+          },
+          "depth_store_op": "store"
+        },
+        {
+          "name": "material_present",
+          "type": "fullscreen",
+          "input": ["material_lit"],
+          "input_sampling": [
+            {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          ],
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/material_resource_fullscreen",
+            "fragment": "shaders/material_resource_present"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "material_deform",
+      "shader": "shaders/material_resource_deform",
+      "writes": ["material_displacement"],
+      "before": ["material_geometry"],
+      "dispatch": {
+        "groups": [1, 1, 1]
+      },
       "schedule": "per_frame"
     }
   ]
@@ -923,6 +1059,526 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         }
         SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
     }
+}
+
+TEST_CASE(
+    "compute output displaces material vertices through typed resource ports",
+    "[headless][render][material-resource][wp207b]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_resource_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_resource_tint.frag",
+            materialResourceTintFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_resource_present.frag",
+            gpuArenaCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_resource_deform.comp",
+            materialDisplacementComputeShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            materialResourceRenderingConfig().dump(2));
+
+        const auto surface_source = std::string{
+            "//! pelican.surface v1\n"
+            "//! language: glsl\n"
+            "//! resource_ports:\n"
+            "//!   - { name: displacement, kind: buffer, element: vec4, stage: vertex }\n"
+            "//!   - { name: simulation_color, kind: image, stage: fragment }\n\n"
+            "void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {\n"
+            "    vertex.position += pelican_load_displacement(0u).xyz;\n"
+            "}\n"
+            "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
+            "inout PelicanSurfaceV1 surface) {\n"
+            "    surface.base_color = pelican_sample_simulation_color(input_data.uv);\n"
+            "    surface.roughness = 1.0;\n"
+            "}\n"
+            "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+            "in PelicanSurfaceInputV1 input_data) {\n"
+            "    return surface.base_color.rgb;\n"
+            "}\n"};
+        const auto surface_reference =
+            std::string{
+                "project://shaders/material_resource.surface"};
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_resource.surface",
+            surface_source);
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "material_resource_main";
+        GET_MODULE(ProjectSource)
+            .setSourceByData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 3;
+        auto &engine_time =
+            GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &runtime =
+            GET_MODULE(FrameGraphRuntimeContainer);
+        const auto initial_generation =
+            runtime.snapshot();
+        REQUIRE(initial_generation != nullptr);
+        const auto pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "material_resource_main");
+        const auto program =
+            initial_generation->find(pass_id);
+        REQUIRE(program != nullptr);
+        REQUIRE(std::any_of(
+            program->frame_graph.plan.barriers.begin(),
+            program->frame_graph.plan.barriers.end(),
+            [](const auto &barrier) {
+                return barrier.resource ==
+                           "material_displacement" &&
+                       barrier.from ==
+                           "material_deform" &&
+                       barrier.to ==
+                           "material_geometry";
+            }));
+
+        const auto geometry_pass = std::find_if(
+            program->rendering_pass.passes.begin(),
+            program->rendering_pass.passes.end(),
+            [](const auto &pass) {
+                return pass.definition.name ==
+                       "material_geometry";
+            });
+        REQUIRE(
+            geometry_pass !=
+            program->rendering_pass.passes.end());
+        REQUIRE(
+            geometry_pass->definition.materialInfo()
+                .material_resources.size() == 2);
+        const auto displacement_binding =
+            std::find_if(
+                geometry_pass->definition.materialInfo()
+                    .material_resources.begin(),
+                geometry_pass->definition.materialInfo()
+                    .material_resources.end(),
+                [](const auto &binding) {
+                    return binding.port.name ==
+                           "displacement";
+                });
+        REQUIRE(
+            displacement_binding !=
+            geometry_pass->definition.materialInfo()
+                .material_resources.end());
+        REQUIRE(isValidFrameGraphBufferId(
+            displacement_binding->buffer_id));
+        const auto initial_displacement_buffer =
+            displacement_binding->buffer_id;
+
+        const auto surface =
+            parseSurfaceFormat(
+                surface_source,
+                surface_reference);
+        MaterialDefinition definition;
+        definition.name =
+            "material_resource_quad";
+        definition.surface =
+            surface_reference;
+        definition.render_path =
+            MaterialRenderPath::forward;
+        const auto lowered =
+            lowerMaterial(definition, surface);
+        REQUIRE(
+            lowered.route ==
+            MaterialRouteClass::forward_opaque);
+        const auto shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    surface, surface_reference,
+                    lowered,
+                    program->frame_graph
+                        .render_pipeline
+                        ->shader_defines);
+        auto &materials =
+            GET_MODULE(MaterialContainer);
+        const std::array<std::uint8_t, 4>
+            white_pixel{255, 255, 255, 255};
+        const std::array<std::uint8_t, 4>
+            normal_pixel{128, 128, 255, 255};
+        const std::array<std::uint8_t, 4>
+            black_pixel{0, 0, 0, 255};
+        const auto white_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                white_pixel.data());
+        const auto normal_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                normal_pixel.data());
+        const auto black_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                black_pixel.data());
+        MaterialInfo material{
+            .vert_shader = shaders.vertex,
+            .frag_shader = shaders.fragment,
+            .base_color_texture =
+                white_texture,
+            .metallic_roughness_texture =
+                white_texture,
+            .normal_texture =
+                normal_texture,
+            .emissive_texture =
+                black_texture,
+        };
+        applyLoweredMaterialForRoute(
+            material, lowered);
+        const auto material_id =
+            materials.registerMaterial(
+                std::move(material));
+        REQUIRE(isValidMaterialId(material_id));
+        const auto initial_binding_revision =
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    geometry_pass->definition);
+        REQUIRE(initial_binding_revision != 0);
+        auto non_consumer_pass =
+            geometry_pass->definition;
+        non_consumer_pass.materialInfo().contract =
+            MaterialPassContract::
+                deferred_geometry_v1;
+        REQUIRE_THROWS_WITH(
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    non_consumer_pass),
+            Catch::Matchers::ContainsSubstring(
+                "incompatible pass"));
+        const auto tint =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "material_tint");
+        const auto initial_tint_view =
+            GET_MODULE(RenderTargetContainer)
+                .getImageView(tint);
+        REQUIRE(
+            materials
+                .boundScreenInputImageViewsForTesting(
+                    material_id,
+                    geometry_pass->definition) ==
+            std::vector<vk::ImageView>{
+                initial_tint_view});
+
+        auto mismatched_view_pass =
+            geometry_pass->definition;
+        const auto mismatched_view_binding =
+            std::find_if(
+                mismatched_view_pass.materialInfo()
+                    .material_resources.begin(),
+                mismatched_view_pass.materialInfo()
+                    .material_resources.end(),
+                [](const auto &binding) {
+                    return binding.port.name ==
+                           "simulation_color";
+                });
+        REQUIRE(
+            mismatched_view_binding !=
+            mismatched_view_pass.materialInfo()
+                .material_resources.end());
+        mismatched_view_binding->port.view =
+            ShaderResourcePortView::per_view;
+        REQUIRE_THROWS_WITH(
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    mismatched_view_pass),
+            Catch::Matchers::ContainsSubstring(
+                "requires per_view"));
+
+        auto missing_port_pass =
+            geometry_pass->definition;
+        std::erase_if(
+            missing_port_pass.materialInfo()
+                .material_resources,
+            [](const auto &binding) {
+                return binding.port.name ==
+                       "displacement";
+            });
+        REQUIRE_THROWS_WITH(
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    missing_port_pass),
+            Catch::Matchers::ContainsSubstring(
+                "is not provided"));
+
+        renderer.recreateRenderTargetsAndRebindForTesting(
+            {32, 32});
+        REQUIRE(
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    geometry_pass->definition) >
+            initial_binding_revision);
+        const auto recreated_tint =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "material_tint");
+        REQUIRE(
+            materials
+                .boundScreenInputImageViewsForTesting(
+                    material_id,
+                    geometry_pass->definition) ==
+            std::vector<vk::ImageView>{
+                GET_MODULE(RenderTargetContainer)
+                    .getImageView(
+                        recreated_tint)});
+
+        auto &geometry =
+            GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{207};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material_id,
+                .primitives = {
+                    geometry.addPrimitiveEntry(
+                        makeScreenQuad(
+                            0.25f, 0.0f))},
+                .source_material_index = 0,
+            },
+        };
+        const auto instance =
+            GET_MODULE(PolygonInstanceContainer)
+                .placeModelInstance(model);
+        REQUIRE(
+            GET_MODULE(PolygonInstanceContainer)
+                .isModelInstanceAlive(instance));
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos(
+            {0.0f, 0.0f, 2.0f});
+        camera.setDir(
+            {0.0f, 0.0f, -1.0f});
+        camera.setUp(
+            {0.0f, 1.0f, 0.0f});
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            pixels.size() ==
+            32u * 32u * 4u);
+        std::size_t red_pixels = 0;
+        std::size_t red_x_sum = 0;
+        for (std::size_t pixel = 0;
+             pixel < 32u * 32u; ++pixel) {
+            const auto offset = pixel * 4u;
+            if (pixels[offset] >
+                    pixels[offset + 1] + 40 &&
+                pixels[offset] >
+                    pixels[offset + 2] + 40) {
+                ++red_pixels;
+                red_x_sum += pixel % 32u;
+            }
+        }
+        REQUIRE(red_pixels > 0);
+        const auto red_centroid_x =
+            static_cast<double>(red_x_sum) /
+            static_cast<double>(red_pixels);
+        INFO(
+            "displaced red centroid x = " <<
+            red_centroid_x);
+        REQUIRE(red_centroid_x > 18.0);
+
+        const auto resized_binding_revision =
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    geometry_pass->definition);
+        auto replacement =
+            materialResourceRenderingConfig();
+        replacement["buffers"][0]["size"] =
+            32;
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            replacement.dump(2));
+        REQUIRE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "pipeline.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        const auto reloaded_generation =
+            runtime.snapshot();
+        REQUIRE(reloaded_generation != nullptr);
+        REQUIRE(
+            reloaded_generation->generation ==
+            initial_generation->generation + 1);
+        const auto reloaded_pass_id =
+            reloaded_generation->name_to_id.at(
+                "material_resource_main");
+        const auto reloaded_program =
+            reloaded_generation->find(
+                reloaded_pass_id);
+        REQUIRE(reloaded_program != nullptr);
+        const auto reloaded_geometry_pass =
+            std::find_if(
+                reloaded_program
+                    ->rendering_pass.passes.begin(),
+                reloaded_program
+                    ->rendering_pass.passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.name ==
+                           "material_geometry";
+                });
+        REQUIRE(
+            reloaded_geometry_pass !=
+            reloaded_program
+                ->rendering_pass.passes.end());
+        const auto reloaded_displacement =
+            std::find_if(
+                reloaded_geometry_pass->definition
+                    .materialInfo()
+                    .material_resources.begin(),
+                reloaded_geometry_pass->definition
+                    .materialInfo()
+                    .material_resources.end(),
+                [](const auto &binding) {
+                    return binding.port.name ==
+                           "displacement";
+                });
+        REQUIRE(
+            reloaded_displacement !=
+            reloaded_geometry_pass->definition
+                .materialInfo()
+                .material_resources.end());
+        REQUIRE(isValidFrameGraphBufferId(
+            reloaded_displacement->buffer_id));
+        REQUIRE(
+            reloaded_displacement->buffer_id !=
+            initial_displacement_buffer);
+        const auto reloaded_binding_revision =
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    reloaded_geometry_pass
+                        ->definition);
+        REQUIRE(
+            reloaded_binding_revision >
+            resized_binding_revision);
+        const auto reloaded_tint =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "material_tint");
+        REQUIRE(
+            materials
+                .boundScreenInputImageViewsForTesting(
+                    material_id,
+                    reloaded_geometry_pass
+                        ->definition) ==
+            std::vector<vk::ImageView>{
+                GET_MODULE(RenderTargetContainer)
+                    .getImageView(
+                        reloaded_tint)});
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto reloaded_pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(reloaded_pixels == pixels);
+
+        auto invalid_replacement = replacement;
+        invalid_replacement
+            ["rendering_passes"][0]["passes"][1]
+            ["material_resources"]["displacement"]
+            ["resource"] =
+                "missing_material_displacement";
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            invalid_replacement.dump(2));
+        REQUIRE_FALSE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "pipeline.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(
+            runtime.snapshot() ==
+            reloaded_generation);
+        REQUIRE(
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    reloaded_geometry_pass
+                        ->definition) ==
+            reloaded_binding_revision);
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        REQUIRE(
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8() ==
+            reloaded_pixels);
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(
+            temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan material resource rendering unavailable: "} +
+            error.what());
+    }
+#endif
 }
 
 TEST_CASE(

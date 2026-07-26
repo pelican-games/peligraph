@@ -77,6 +77,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `output` | ✔ | — | `color`(null / 名前 / 名前配列)と `depth`(null / 名前)の**両キー必須**。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
 | `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address で注釈し、generated shader accessorを作る。依存edgeは増やさない |
+| `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、read footprintから依存とbarrierを導出する |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
 | `clear_color` | 任意 | `[0,0,0,1]` | 4 要素固定 |
@@ -139,7 +140,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 | set | 定数 | 用途(✅WP70 で統一済み) |
 |---|---|---|
 | 0 | `PELICAN_SET_FRAME` | **全パイプライン共通の固定 layout**: binding 0 `FrameUBO` / 1 `ObjectBuffer` SSBO / 2 `LightUBO` / 3 `PreviousObjectBuffer`(velocity 用) / 4 `FrameResolutionUBO`。graphics/computeの両方でbindされ、シェーダが宣言する場合は一致必須 |
-| 1 | `PELICAN_SET_PASS_INPUT` | パス入力。fullscreen の `input` 配列順に binding 0..、compute の reads/writes も set 1 |
+| 1 | `PELICAN_SET_PASS_INPUT` | パス入力。fullscreen/compute/materialの通常経路はlogical nameからgenerated bindingへ解決。raw set 1は低レベルescape hatch |
 | 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 以降 = `.surface` の custom texture(宣言順) |
 | 3 | `PELICAN_SET_FREE` | 名前に反して**大半はエンジンが所有**します: binding 0/1 = debug_draw / debug_text、2/3 = スキンパレット(現 / 前フレーム)、4-8 = morph(instance / weight / previous weight / metadata / delta)、9-11 = per-instance マテリアルオーバーライド(§6.8) |
 
@@ -521,10 +522,51 @@ void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input, inout PelicanSur
 vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 surface_input) { ... }
 ```
 
-- ヘッダ語彙: `language` / 順序付き `params[]`(型 `float|vec2|vec3|vec4|int|color`、**`default` 必須**、min/max/hint 任意)/ `textures[]`(`name` / `default` / `color_space: srgb|linear` が**必須** — SRGB/UNORM view を決めるのは `color_space` で、`role: color|data` は任意の整合チェック)/ `screen_inputs[]`(§6.8)/ `render_state`。網羅例は `test/fixtures/surface_format/valid/full.surface`。
+- ヘッダ語彙: `language` / 順序付き `params[]`(型 `float|vec2|vec3|vec4|int|color`、**`default` 必須**、min/max/hint 任意)/ `textures[]`(`name` / `default` / `color_space: srgb|linear` が**必須** — SRGB/UNORM view を決めるのは `color_space` で、`role: color|data` は任意の整合チェック)/ `screen_inputs[]`(§6.8)/ `resource_ports[]`(下記)/ `render_state`。網羅例は `test/fixtures/surface_format/valid/full.surface`。
 - **フック梯子 v1(凍結)**: `pelican_vertex_displace_v1` / `pelican_surface_v1` / `pelican_brdf_v1` / `pelican_ambient_v1` / `pelican_lighting_v1`。書いた関数がそのまま宣言になります。`brdf` と `lighting` は排他、未知の `pelican_` 関数定義やフックゼロはロードエラー。
 - スニペットはエンジン所有テンプレート(`engine://shaders/material/surface_v1.{vert,frag}`)へ逆 include され、エラーは `#line` で元ファイル名・行番号に翻訳されます。パラメータへは自動生成アクセサ `pelican_param_<name>()` / `pelican_sample_<name>(uv)` でアクセスします。
 - 同梱の standard / toon ライティングも**同じ公開経路**で書かれています(特権なし standard library。dogfooding)。
+
+### compute/別passのresourceをmaterialから読む（✅WP207b）
+
+`.surface` はgraph固有名ではなく、再利用可能なsemantic portを宣言します。
+
+```glsl
+//! resource_ports:
+//!   - { name: displacement, kind: buffer, element: vec4, stage: vertex }
+//!   - { name: simulation_color, kind: image, stage: fragment }
+
+void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
+    vertex.position += pelican_load_displacement(0u).xyz;
+}
+```
+
+material pass側で同名portをframe-graph resourceへ割り当てます。
+
+```json
+"material_resources": {
+  "displacement": {
+    "resource": "simulation_positions",
+    "access": "storage",
+    "footprint": "arbitrary"
+  },
+  "simulation_color": {
+    "resource": "simulation_color",
+    "access": "sampled",
+    "view": "shared_2d",
+    "sampling": {"filter": "linear", "address": "clamp_to_edge"}
+  }
+}
+```
+
+bufferはreadonly std430 arrayで`pelican_load_<name>()` /
+`pelican_count_<name>()`、imageは`pelican_sample_<name>()` /
+`pelican_size_<name>()`を生成します。binding番号は書きません。
+`stage`は`vertex|fragment|vertex_fragment`、bufferの`element`は
+`float/vec*/int/ivec*/uint/uvec*/mat4`。image historyはresource名の
+`@history`で指定します。現在のimage accessorは`sampler2D`なのでshared 2Dと
+sequential per-view 2Dに対応し、layered multiviewは明示エラーです。
+完全な契約は[シェーダ契約](../shader_contract.md)を参照してください。
 
 ### pelican.material — 値だけの JSON
 

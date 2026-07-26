@@ -1,13 +1,14 @@
-# 描画 authoring の使い勝手と回りくどさの棚卸し(v5)
+# 描画 authoring の使い勝手と回りくどさの棚卸し(v6)
 
 対象読者: feature / material / shader をユーザー空間で書く人、およびその公開面を
 実装するエンジン担当。
 
-ステータス: **v5(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
+ステータス: **v6(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
 再照合し、`extent_scale`、custom texture binding、graphics buffer input の事実誤認を
 訂正した。v3のWP206a stable selectionに続き、v4ではWP206bのnamed material variantと
 project-owned inverted-hull dogfoodによるU2解消、v5ではWP207aのnamed fullscreen/compute
-image portによるU3解消を反映した。機構カバレッジは
+image portによるU3解消、v6ではWP207bのmaterial vertex/fragment resource portによる
+U5解消を反映した。機構カバレッジは
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md)、監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
@@ -101,25 +102,31 @@ feature単体から見えない点である。
 
 これはlogical authoringへ過剰な安全宣言を要求せず、既定を自動・高速に保つ。
 
-### U5. material/geometryだけresource portの表現力が狭い
+### U5. material/geometryだけresource portの表現力が狭い（解消済み、WP207b）
 
 computeとgraphicsはframe planner内部で同じreads/writes graphへ正規化され、
 fullscreenはcompute bufferを読め、fullscreen/compute imageは同じtyped port IRと
 generated interfaceを使う。文法が違うこと自体は各domainの自然な糖衣であり、全面改名の
 理由にはならない。
 
-残る非対称はmaterial passである。
+この非対称を、`.surface` のshader-facing `resource_ports`とmaterial passの
+`material_resources` mappingで解消した。
 
-- buffer inputは明示reject:
-  [renderingpassvalidation.cpp:17](../src/core/renderingpass/renderingpassvalidation.cpp:17)
-- image inputはbuiltin screen semanticsだけ:
-  [materialscreeninput.cpp:10](../src/project/materialscreeninput.cpp:10)
+- surface schema: [surfaceformat.cpp](../src/project/surfaceformat.cpp)
+- generated accessor/reflection: [surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp)
+- pass mapping: [materialpassinfojsonparser.cpp](../src/core/renderingpass/materialpassinfojsonparser.cpp)
+- runtime binding: [materialcontainer.cpp](../src/core/material/materialcontainer.cpp)
 
-**改善方針**:
+surface作者はbuffer/image、buffer element、vertex/fragment visibilityだけを宣言し、
+pass作者がlogical resource、history、view、sampling、footprintを割り当てる。
+binding番号やdescriptor blockはgenerated interfaceが隠す。compute writeからmaterial
+vertex displacementへ通常のproducer edge/barrierが導出され、headless Vulkanで実描画済み。
 
-- `input/output`と`reads/writes`のschema名を無理に統一しない
-- WP207aのcompiler IRとnamed generated includeを再利用し、material vertex/fragment向けportを追加する
-- typed bufferはelement schemaとstage visibilityを同じWPで設計する
+`input/output`と`reads/writes`のschema名は各domainの自然な糖衣として維持した。
+raw set 1もC-layer escape hatchとして残る。typed portがないmaterialは追加descriptor
+pool/samplerを生成しない。現時点の制限はlayered multiview image accessorが未実装であること
+（shared/sequential 2Dは対応）と、material側がreadonly buffer/sampled image consumerに
+限られることであり、U5の旧「graph resourceへ接続できない」問題とは分離する。
 
 ### U6. errorとcapability discoveryに候補一覧が不足
 
@@ -227,7 +234,7 @@ inverted-hullは既存material kindのpass-local variantで実GPU検証済みで
 | 1 | public shadow contract | resource名、feature provenance、失敗段のdiagnostic |
 | 2 | draw tag + multipass material route | ✅ WP206a/WP206bでU2とpass-local surface/stateの発見性を解消 |
 | 3a | ✅ WP207a compute/fullscreen typed image port | U3、named generated include |
-| 3b | WP207b material/geometry typed resource port | U5、typed buffer |
+| 3b | ✅ WP207b material/geometry typed resource port | U5、typed buffer |
 | 4 | lighting data v2 + clustered dogfood | fixed light cap、format/capability diagnostic |
 | 5 | texture dimension/subresource/sampler | sampler default、合法format/view候補 |
 | 6 | indirect dispatch/draw | plan dumpのexecution provenance |

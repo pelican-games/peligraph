@@ -1,6 +1,7 @@
 #pragma once
 
 #include "shadercompiler.hpp"
+#include "shaderresourceinterface.hpp"
 #include "spvlink.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/surfaceformat.hpp"
@@ -25,6 +26,8 @@ struct SurfaceShaderComposition {
     std::string fragment_source;
     std::vector<std::pair<std::string, std::string>> virtual_includes;
     std::vector<std::string> defines;
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface;
 };
 
 struct SurfaceCompileResult {

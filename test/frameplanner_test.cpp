@@ -540,6 +540,108 @@ TEST_CASE("frame planner emits barriers for explicit compute to render resource 
 }
 
 TEST_CASE(
+    "material resource ports create typed compute to geometry reads",
+    "[frameplanner][material-resource][wp207b]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+              "name": "compute_vertex_displacement",
+              "buffers": [
+                {"name": "deformed_positions"}
+              ],
+              "passes": [{
+                "name": "geometry",
+                "type": "material",
+                "material_resources": {
+                  "displacement": {
+                    "resource": "deformed_positions",
+                    "access": "storage",
+                    "footprint": "arbitrary"
+                  }
+                },
+                "output": {
+                  "color": "scene_color",
+                  "depth": "scene_depth"
+                }
+              }],
+              "compute_tasks": [{
+                "name": "deform",
+                "writes": ["deformed_positions"],
+                "before": ["geometry"]
+              }]
+            })json"));
+
+    const auto geometry = std::find_if(
+        graph.nodes.begin(), graph.nodes.end(),
+        [](const auto &node) {
+            return node.name == "geometry";
+        });
+    REQUIRE(geometry != graph.nodes.end());
+    REQUIRE(
+        geometry->reads ==
+        std::vector<std::string>{
+            "deformed_positions"});
+    REQUIRE(
+        geometry->read_footprints ==
+        std::vector<FrameGraphReadFootprintDefinition>{
+            {
+                "deformed_positions",
+                {
+                    LogicalReadFootprintKind::
+                        arbitrary,
+                    std::nullopt,
+                },
+            }});
+    REQUIRE(
+        geometry->resource_accesses ==
+        std::vector<FrameGraphResourceAccessDefinition>{
+            {
+                "deformed_positions",
+                LogicalAccessIntent::storage,
+            }});
+
+    const auto plan = planFrameGraph(graph);
+    REQUIRE(
+        framePlanOrder(plan) ==
+        std::vector<std::string>{
+            "deform", "geometry"});
+    REQUIRE(
+        std::any_of(
+            plan.barriers.begin(), plan.barriers.end(),
+            [](const auto &barrier) {
+                return barrier.resource ==
+                           "deformed_positions" &&
+                       barrier.from == "deform" &&
+                       barrier.to == "geometry";
+            }));
+
+    const auto logical =
+        compileLogicalFrameGraphShadow(
+            graph, makeBuiltinLogicalTypeRegistry());
+    const auto logical_geometry = std::find_if(
+        logical.nodes.begin(), logical.nodes.end(),
+        [](const auto &node) {
+            return node.name == "geometry";
+        });
+    REQUIRE(
+        logical_geometry != logical.nodes.end());
+    const auto displacement = std::find_if(
+        logical_geometry->uses.begin(),
+        logical_geometry->uses.end(),
+        [](const auto &use) {
+            return use.input_value &&
+                   use.input_value->resource ==
+                       "deformed_positions";
+        });
+    REQUIRE(
+        displacement !=
+        logical_geometry->uses.end());
+    REQUIRE(
+        displacement->intent ==
+        LogicalAccessIntent::storage);
+}
+
+TEST_CASE(
     "shader resource ports lower sampled and storage intent without "
     "creating graph edges",
     "[frameplanner][logical][resource-port][wp207a]") {

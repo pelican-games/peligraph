@@ -37,6 +37,29 @@ enum class ShaderResourcePortAddressMode : std::uint8_t {
     clamp_to_edge,
 };
 
+// Storage-buffer element types deliberately describe the shader-visible
+// std430 array element rather than a Vulkan format. The producer and consumer
+// can therefore share one generated accessor contract without exposing a raw
+// descriptor declaration or binding number.
+enum class ShaderResourceBufferElement : std::uint8_t {
+    floating,
+    vec2,
+    vec3,
+    vec4,
+    integer,
+    ivec2,
+    ivec3,
+    ivec4,
+    unsigned_integer,
+    uvec2,
+    uvec3,
+    uvec4,
+    mat4,
+};
+
+std::string_view shaderResourceBufferElementName(
+    ShaderResourceBufferElement element);
+
 struct ShaderResourcePortSampling {
     ShaderResourcePortFilter filter =
         ShaderResourcePortFilter::linear;

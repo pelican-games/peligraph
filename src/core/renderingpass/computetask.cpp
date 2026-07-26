@@ -465,8 +465,13 @@ std::vector<ReflectedBinding> passInputBindings(const ShaderReflection &reflecti
 }
 
 vk::PipelineStageFlags shaderStage(FramePlanNodeKind kind) {
-    return kind == FramePlanNodeKind::compute ? vk::PipelineStageFlagBits::eComputeShader
-                                              : vk::PipelineStageFlagBits::eFragmentShader;
+    return kind == FramePlanNodeKind::compute
+               ? vk::PipelineStageFlagBits::
+                     eComputeShader
+               : vk::PipelineStageFlagBits::
+                         eVertexShader |
+                     vk::PipelineStageFlagBits::
+                         eFragmentShader;
 }
 
 ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const std::string &name) {

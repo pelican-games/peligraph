@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string_view>
+#include <unordered_set>
 
 namespace Pelican {
 
@@ -24,5 +25,9 @@ void parseMaterialPassSurfaceResourcesFromJson(
     PassDefinition &pass_def, const nlohmann::json &pass_json,
     const RenderTargetNameResolver &rt_resolver,
     const RenderTargetMetadataResolver &rt_metadata);
+void parseMaterialPassResourcesFromJson(
+    PassDefinition &pass_def, const nlohmann::json &pass_json,
+    const RenderTargetNameResolver &rt_resolver,
+    const std::unordered_set<std::string> &buffer_names);
 
 } // namespace Pelican

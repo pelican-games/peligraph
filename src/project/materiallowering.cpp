@@ -445,6 +445,7 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     lowered.hooks = surface.hooks;
     lowered.routing = material.routing;
     lowered.screen_inputs = surface.screen_inputs;
+    lowered.resource_ports = surface.resource_ports;
     if (!surface.screen_inputs.empty()) {
         const auto logical_types = makeBuiltinLogicalTypeRegistry();
         const auto logical_conversions =
@@ -631,6 +632,23 @@ std::string dumpLoweredMaterial(const LoweredMaterial &material) {
     else {
         out << '\n';
         for (const auto &input : material.screen_inputs) out << "  - " << input << '\n';
+    }
+    if (!material.resource_ports.empty()) {
+        out << "resource_ports:\n";
+        for (const auto &port : material.resource_ports) {
+            out << "  - name=" << port.name
+                << " kind="
+                << surfaceResourcePortKindName(port.kind)
+                << " stage="
+                << surfaceResourcePortStageName(port.stage);
+            if (port.kind ==
+                SurfaceResourcePortKind::buffer) {
+                out << " element="
+                    << shaderResourceBufferElementName(
+                           port.element);
+            }
+            out << '\n';
+        }
     }
     out << "target_pass: " << material.target_pass << '\n';
     out << "route: " << materialRouteClassName(material.route)

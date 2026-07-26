@@ -16,6 +16,7 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
     destination.shader_contract = MaterialShaderContract::legacy_gbuffer_v1;
     destination.exact_pass = lowered.exact_pass;
     destination.screen_inputs = lowered.screen_input_contracts;
+    destination.resource_ports = lowered.resource_ports;
     destination.custom_textures.clear();
     destination.custom_textures.reserve(lowered.textures.size());
     for (const auto &texture : lowered.textures) {
