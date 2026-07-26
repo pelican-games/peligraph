@@ -93,8 +93,8 @@ ctest --test-dir ./build -C Debug --output-on-failure
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
 | WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias + dependency-safe reorder/fusion runtime実装済み・general scope/queueと実機GPU gate待ち |
-| WP213 | 版の単一化 A — import manifest の version 必須化 | 新規登録(2026-07-26) |
-| WP214 | 版の単一化 B — physics service V1 の削除 | 新規登録(2026-07-26) |
+| WP213 | 版の単一化 A — import manifest の version 必須化 | ✅ 完了（2026-07-26、archive） |
+| WP214 | 版の単一化 B — physics service V1 の削除 | ✅ 完了（2026-07-26、archive） |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -112,70 +112,18 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP209b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP214、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
 
-### WP213: 版の単一化 A — import manifest の version 必須化
+### WP213 / WP214: 版の単一化
 
-前提: §0「版の扱い」(2026-07-26 ユーザー決定)。**版フィールドは残し、受理を
-現行版ちょうど 1 つに絞る。** 省略許容は版システムを弱めているので必須化する。
+両 WP は2026-07-26に完了した。実装内容・移行判断・全受け入れ結果は
+[`implementation_archive.md`](implementation_archive.md) と次の完了レポートを参照:
 
-現状(センサス実測):
-
-- `src/project/importmanifest.cpp:134-166` — `pelican.transform_seq` /
-  `.scene` / `.layout` / `.atlas` は **version キーが無くても通る**。あれば 1 必須
-- `pelican.material` は required ==1、`khronos.ktx2` は required ==2(こちらは
-  KTX2 コンテナ版なので現状維持)
-- `tool.version`(`:181`)は自由文字列で比較しない — 現状維持
-
-実装:
-
-1. 上記 4 形式の version を**必須化**し、欠落は名前入りエラーで reject
-2. `projects/` 配下の既存 manifest に version を追記(欠落しているもの)
-3. `test/importmanifest_test.cpp` の「省略しても通る」ケースを**負例へ反転**
-4. `docs/design_asset_format_policy.md` の該当規則(R10)と実装を一致させる
-
-依存: なし(WP204 の領域外)。見積: 小。
-排他: `src/project/importmanifest.cpp` + `projects/` の manifest + 該当テスト +
-docs。**`src/core/` に触らない**。
-
-受け入れ = 4 形式の version 必須化 + 負例テスト + 既存全テスト green +
-golden byte 不変 + player 8 秒 + CI green
-
-### WP214: 版の単一化 B — physics service V1 の削除
-
-前提: §0「版の扱い」。**V2 が現行であり、V1 は旧版受理にあたる。**
-ただし**版一致チェック自体は残す**(`client_version != serviceVersionV2` で
-`unsupported_version` を返す形は保持)。
-
-現状(センサス実測):
-
-- `src/core/phys/physicsservice.cpp:306-322` が `getService`(V1)、
-  `:331-348` が `getServiceV2`。**両方 export されている**
-- 本体実装は V2。V1 を使っているのは**テスト fixture のみ**:
-  `test/fixtures/physics_provider_dll/provider.cpp:102`、
-  `test/fixtures/public_api_link/flipbook_client.cpp:39`、
-  `test/physics_feature_probe.cpp`
-- WP107 記録: 「Builtin と Jolt を同じ Provider V2 へ実装」
-
-実装:
-
-1. 上記 3 つのテスト fixture を V2 へ移行
-2. `getService`(V1)・`serviceVersionV1`・`abiVersionV1` 系の**受理経路**を削除。
-   `physicsservice_stub.cpp:11` も同様
-3. **`getServiceV2` の版一致チェックは残す**(食い違い検出のため)
-4. 公開ヘッダ(`src/core/userpublic/physics/abi_v1.hpp` / `abi_v2.hpp`)の
-   扱いを判断: v1 ヘッダを削除するか、宣言だけ残して実装を落とすか。
-   **削除する場合は SDK 配置(`src/core/CMakeLists.txt:144`)からも外す**
-
-依存: なし(WP204 の領域外)。見積: 小〜中。
-排他: `src/core/phys/` の service 面 + `src/core/userpublic/physics/` +
-該当テスト fixture。**renderingpass / vkcore / project に触らない**。
-
-受け入れ = V1 経路の削除 + V2 の版一致チェック保持 + 3 fixture の移行 +
-既存全テスト green + golden byte 不変 + player 8 秒 + CI green
+- [`design_reviews/2026-07-26_wp213_report.md`](design_reviews/2026-07-26_wp213_report.md)
+- [`design_reviews/2026-07-26_wp214_report.md`](design_reviews/2026-07-26_wp214_report.md)
 
 ### XR2b 分割 WP の逐語条件と所有権
 

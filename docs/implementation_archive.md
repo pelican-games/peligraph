@@ -6637,4 +6637,69 @@ subresource viewを追加し、logical resourceからVulkan image/viewまで同�
 
 ---
 
+### WP213（済 2026-07-26）: import manifest の version 必須化
+
+前提: §0「版の扱い」(2026-07-26 ユーザー決定)。**版フィールドは残し、受理を
+現行版ちょうど 1 つに絞る。** 省略許容は版システムを弱めているので必須化する。
+
+着手時センサス:
+
+- `src/project/importmanifest.cpp:134-166` — `pelican.transform_seq` /
+  `.scene` / `.layout` / `.atlas` は **version キーが無くても通る**。あれば 1 必須
+- `pelican.material` は required ==1、`khronos.ktx2` は required ==2
+  （KTX2コンテナ版なので現状維持）
+- `tool.version`は自由文字列で比較しない — 現状維持
+
+実装条件:
+
+1. 上記4形式のversionを**必須化**し、欠落は名前入りエラーでreject
+2. `projects/`配下の既存manifestにversionを追記（欠落しているもの）
+3. `test/importmanifest_test.cpp`の省略ケースを負例へ反転
+4. `docs/design_asset_format_policy.md`のR10と実装を一致させる
+
+依存: なし（WP204の領域外）。排他: `src/project/importmanifest.cpp` +
+`projects/`のmanifest + 該当テスト + docs。**`src/core/`に触らない**。
+
+`pelican.import.outputs[]` の versioned Pelican 形式
+（`pelican.transform_seq` / `pelican.scene` / `pelican.layout` / `pelican.atlas`）を
+現行版1の明示必須へ統一した。version 欠落と非現行版を名前入りで拒否し、
+`pelican.material`、`khronos.ktx2`、非versionedな`gltf` / `png`、
+自由文字列の`tool.version`は既存契約を維持する。
+
+実装・既存manifest監査・全受け入れ結果:
+[`design_reviews/2026-07-26_wp213_report.md`](design_reviews/2026-07-26_wp213_report.md)。
+
+### WP214（済 2026-07-26）: physics service V1 の削除
+
+前提: §0「版の扱い」。**V2が現行であり、V1は旧版受理にあたる。**
+ただし版一致チェック自体は残し、非現行版には`unsupported_version`を返す。
+
+着手時センサス:
+
+- productionはV1とV2のservice/API/provider受理経路を両方exportしていた
+- 本体backendはV2。V1利用者はテストfixtureだけだった
+- WP107でBuiltinとJoltは同じProvider V2へ実装済みだった
+
+実装条件:
+
+1. physics provider DLL、public API link、feature probeをV2へ移行
+2. V1 service/API/provider受理経路とphysics-off stubを削除
+3. V2のABI/service version一致チェックを保持
+4. V1公開ヘッダを削除する場合は、V2が使う安定payload型を独立面へ移す
+
+依存: なし（WP204の領域外）。排他: `src/core/phys/`のservice面 +
+`src/core/userpublic/physics/` + 該当テストfixture。
+**renderingpass / vkcore / projectに触らない**。
+
+physics service/API/providerの受理面をV2だけへ統一した。V1のexport・登録経路・
+physics-off stubを削除し、既存DLL fixtureをV2 revisionとして移行した。
+現行V2のABI/service version一致チェックは残し、食い違いを
+`unsupported_version`でfail-fastする。V2が使用する安定query payload型は
+`physics/query_types.hpp`へ分離した。
+
+実装・ABI判断・全受け入れ結果:
+[`design_reviews/2026-07-26_wp214_report.md`](design_reviews/2026-07-26_wp214_report.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。
