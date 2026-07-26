@@ -1,6 +1,7 @@
 #include "imguisystem.hpp"
 
 #include "assetbrowser.hpp"
+#include "compiledplanviewer.hpp"
 #include "inspector.hpp"
 #include "imguiruntime.hpp"
 #include "planviewer.hpp"
@@ -253,10 +254,12 @@ struct ImGuiSystem::Impl {
     bool show_demo = false;
     bool show_stats = true;
     bool show_plan_viewer = true;
+    bool show_compiled_plan_viewer = false;
     bool show_asset_browser = true;
     bool show_object_tree = true;
     bool show_inspector = true;
     PlanViewer plan_viewer;
+    CompiledPlanViewer compiled_plan_viewer;
     std::unique_ptr<EditorCommandService> editor_service;
     AssetBrowserPanelTrace asset_browser_trace;
     AssetBrowserPanel asset_browser;
@@ -381,6 +384,8 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
                 ImGui::MenuItem("Object Tree", nullptr, &impl->show_object_tree);
                 ImGui::MenuItem("Inspector", nullptr, &impl->show_inspector);
                 ImGui::MenuItem("Frame Plan Viewer", nullptr, &impl->show_plan_viewer);
+                ImGui::MenuItem("Compiled Passes", nullptr,
+                                &impl->show_compiled_plan_viewer);
                 ImGui::MenuItem("Frame Stats", nullptr, &impl->show_stats);
                 ImGui::MenuItem("Dear ImGui Demo", nullptr, &impl->show_demo);
                 ImGui::Separator();
@@ -405,6 +410,9 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
             ImGui::End();
         }
         if (impl->show_plan_viewer) impl->plan_viewer.draw(&impl->show_plan_viewer);
+        if (impl->show_compiled_plan_viewer) {
+            impl->compiled_plan_viewer.draw(&impl->show_compiled_plan_viewer);
+        }
         if (impl->show_asset_browser) {
             invokeAssetBrowserPanelCallback(GET_MODULE(EngineLaunchConfig),
                                             impl->asset_browser_trace, [&] {
