@@ -74,12 +74,11 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
 | WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias + dependency-safe reorder/fusion runtime実装済み・general scope/queueと実機GPU gate待ち |
 
-WP204 の dependency-safe scope execution slice を閉じた後の描画候補は次。番号は実装順を固定するための
+WP205 の public shadow contract slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
 
 | 候補 | 内容 | 状態 |
 |---|---|---|
-| WP205 | public shadow contract + B-layer shadow reception | 次着手・計画済み |
 | WP206a | stable draw tag/filter | 計画済み |
 | WP206b | pass-local material variant / multipass route | 計画済み・WP206a依存 |
 | WP207a | compute Frame/Light + sampled resource port | 計画済み |
@@ -93,7 +92,7 @@ WP204 の dependency-safe scope execution slice を閉じた後の描画候補�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP203b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP205、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -301,7 +300,7 @@ XR2b最終gateを満たす。
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 
-### WP205〜212候補: 描画 mechanism / authoring / delivery
+### WP206〜212候補: 描画 mechanism / authoring / delivery
 
 正本:
 
@@ -319,32 +318,6 @@ XR2b最終gateを満たす。
    hatchとして残す。
 5. physical指定はWP204 fragmentへlinkし、logical configへVulkan fieldを漏らさない。
 6. feature未参照時に追加pass/resource/variantを持たない。
-
-#### WP205: public shadow contract + B-layer shadow reception
-
-**目的**: 現在常に`1.0`を返す`pelican_shadow()`を、特権のない
-`shadow_directional` featureが供給するtyped shadow resource/light relationへ接続する。
-
-**実装範囲**:
-
-1. shadow image、light-space transform、light index/relationをlogical contractとして定義する。
-2. standard surface libraryへ同contractをbindし、feature未参照時はwork/resourceを増やさず
-   unshadowed `1.0`へ解決する。
-3. 最初はmanual depth compareでよい。comparison sampler一般化はWP209aへ分離できる。
-4. copied project featureもengine同梱featureと同じcontractを使い、shader/atlas policyを
-   project側で変更できる。
-5. failure messageとplan dumpにproducer、consumer、view policy、fallback理由を残す。
-
-**受け入れ条件**:
-
-- B-layer materialがdirectional shadowを受けるheadless Vulkan golden
-- feature off byte不変
-- projectへcopyしたfeatureで同じgolden
-- flat / preview / sequential XR / multiviewのcontract test
-- resize、pipeline hot reload、candidate rollbackで旧generationを破壊しない
-- validation error 0、全CTest、`git diff --check`
-
-非目標: CSM、point/cube shadow、VSM、VRS。依存: WP204 closure。見積: 中。
 
 #### WP206a: stable draw tag/filter
 
@@ -635,6 +608,14 @@ same-pixel fullscreen readのtile-local scope fusion、lifetime非重複imageの
 aggressive controlと、現runtime subsetの範囲拡張を具体的なGPU gate付きで進める。
 `NativeScope`は具体的な
 Vulkan-only利用例を得てから進める。
+
+WP205でfeature-owned `directional_shadow` contractをstandard surfaceのpass-input ABIへ
+接続した。shadow image、shared 2D view policy、manual depth compare、light indexと
+light-space transform relationをtyped metadataとして保持し、同梱featureとprojectへ
+コピーしたfeatureを同じ契約で実行する。feature未参照時は追加pass/resource/descriptorを
+持たず、`pelican_shadow()`は従来どおり`1.0`へ解決する。B-layer Vulkan golden、
+feature-off shader byte、flat/preview/XR view contract、resize/hot reload/rollback、
+全894 CTestとvalidation error 0を確認済みである。
 
 ## 3. トラック現況(WP 化待ちを含む)
 

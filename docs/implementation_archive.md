@@ -6278,4 +6278,50 @@ rendering、OpenXR array swapchain、depth composition、GPU性能gate。
 
 ---
 
+### WP205（済 2026-07-26）: public shadow contract + B-layer shadow reception
+
+**目的**: 現在常に`1.0`を返す`pelican_shadow()`を、特権のない
+`shadow_directional` featureが供給するtyped shadow resource/light relationへ接続する。
+
+**実装範囲**:
+
+1. shadow image、light-space transform、light index/relationをlogical contractとして定義する。
+2. standard surface libraryへ同contractをbindし、feature未参照時はwork/resourceを増やさず
+   unshadowed `1.0`へ解決する。
+3. 最初はmanual depth compareでよい。comparison sampler一般化はWP209aへ分離できる。
+4. copied project featureもengine同梱featureと同じcontractを使い、shader/atlas policyを
+   project側で変更できる。
+5. failure messageとplan dumpにproducer、consumer、view policy、fallback理由を残す。
+
+**受け入れ条件**:
+
+- B-layer materialがdirectional shadowを受けるheadless Vulkan golden
+- feature off byte不変
+- projectへcopyしたfeatureで同じgolden
+- flat / preview / sequential XR / multiviewのcontract test
+- resize、pipeline hot reload、candidate rollbackで旧generationを破壊しない
+- validation error 0、全CTest、`git diff --check`
+
+非目標: CSM、point/cube shadow、VSM、VRS。依存: WP204 closure。見積: 中。
+
+**完了内容（2026-07-26）**:
+
+- `directional_shadow`をdevice-depth source/sample、arbitrary footprint、
+  nearest clamp、shared 2D、fully-lit fallbackとして型定義し、directional light index 0と
+  `pelican.light.shadow_view_projection@1` relationをcompiled metadataへ残した。
+- feature compositionがproducer、material/fullscreen consumer、target、samplingを検証して
+  normalized passへbindする。`shadow_directional`はgraph先頭の一回のshadow passとして
+  deferred lightingとforward opaque/transparentの両方へ供給される。
+- standard surfaceのforward variantだけがstable set-1 shadow samplerを反映し、
+  feature未参照時とdeferred/depth variantは追加bindingを持たない。
+- runtime reflection、descriptor sampler/view policy、resize rebindをtyped contractへ接続した。
+  pipeline hot reload成功時は新generationへ切り替え、無効candidateは旧generationと
+  GPU arena/descriptorを維持する。
+- engine feature、projectへコピーしたfeature、feature-offの3ケースをheadless Vulkan
+  goldenへ追加した。engine/projectはbyte一致し、feature-on/offは実際のshadow pixel差を持つ。
+- Debug全build、全894 CTest、golden inventory、Vulkan validation marker 0、
+  `git diff --check`を通過した。symlink権限依存の1件だけは従来どおりskip。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。
