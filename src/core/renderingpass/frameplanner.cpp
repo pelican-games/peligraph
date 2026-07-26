@@ -210,6 +210,36 @@ void parseReadFootprintOverrides(
     }
 }
 
+void appendShaderResourcePortAccesses(
+    const nlohmann::json &source,
+    std::span<const std::string> authored_reads,
+    std::span<const std::string> writes,
+    std::string_view context,
+    FrameGraphNodeDefinition &node) {
+    const auto ports =
+        parseShaderResourcePortDefinitions(
+            source, authored_reads, writes, context);
+    for (const auto &port : ports) {
+        const auto written =
+            std::find(
+                writes.begin(), writes.end(),
+                port.resource) != writes.end();
+        const auto access =
+            effectiveShaderResourcePortAccess(
+                port, true, written);
+        node.resource_accesses.push_back(
+            FrameGraphResourceAccessDefinition{
+                .resource = port.resource,
+                .intent =
+                    access ==
+                            ShaderResourcePortAccess::
+                                sampled
+                        ? LogicalAccessIntent::sampled
+                        : LogicalAccessIntent::storage,
+            });
+    }
+}
+
 void appendNodes(std::vector<FrameGraphNodeDefinition> &nodes,
                  std::vector<FrameGraphNodeDefinition> more_nodes) {
     for (auto &node : more_nodes) {
@@ -480,8 +510,16 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     if (!pass_json.contains("output") || !pass_json.at("output").is_object()) {
         throw std::runtime_error("Frame graph pass requires output object");
     }
-    splitHistoryReads(parseOptionalStringList(pass_json, "input", "pass"),
-                      node.reads, node.reads_history);
+    const auto authored_inputs =
+        parseOptionalStringList(
+            pass_json, "input", "pass");
+    splitHistoryReads(
+        authored_inputs,
+        node.reads, node.reads_history);
+    appendShaderResourcePortAccesses(
+        pass_json, authored_inputs,
+        std::span<const std::string>{},
+        "frame graph pass '" + node.name + "'", node);
     parseReadFootprintOverrides(
         pass_json, "input_footprints", node);
     appendMaterialScreenInputReads(pass_json, node);
@@ -576,11 +614,22 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     node.name = requireString(task_json, "name", "compute task");
     node.kind = FramePlanNodeKind::compute;
     node.declaration_index = declaration_index;
-    splitHistoryReads(parseOptionalStringList(task_json, "reads", "compute task"),
-                      node.reads, node.reads_history);
+    const auto authored_reads =
+        parseOptionalStringList(
+            task_json, "reads", "compute task");
+    const auto writes =
+        parseOptionalStringList(
+            task_json, "writes", "compute task");
+    splitHistoryReads(
+        authored_reads,
+        node.reads, node.reads_history);
+    appendShaderResourcePortAccesses(
+        task_json, authored_reads, writes,
+        "frame graph compute task '" + node.name + "'",
+        node);
     parseReadFootprintOverrides(
         task_json, "read_footprints", node);
-    node.writes = parseOptionalStringList(task_json, "writes", "compute task");
+    node.writes = writes;
     node.after = parseOptionalStringList(task_json, "after", "compute task");
     node.before = parseOptionalStringList(task_json, "before", "compute task");
     node.region_tags =

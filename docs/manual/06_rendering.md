@@ -76,6 +76,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `type` | ✔ | — | `material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / 名前 / 名前配列)と `depth`(null / 名前)の**両キー必須**。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
+| `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address で注釈し、generated shader accessorを作る。依存edgeは増やさない |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
 | `clear_color` | 任意 | `[0,0,0,1]` | 4 要素固定 |
@@ -86,7 +87,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 ### type 別の要点
 
 - **`material`** — シーン内の全モデルを描く G-buffer パス。**color 出力はちょうど 5 枚**。カラーパイプライン移行後の契約は SDR 時 `B8G8R8A8_SRGB(albedo), R16G16B16A16F(normal), R8G8B8A8_UNORM(material), R16G16B16A16F(worldpos), B8G8R8A8_SRGB(emissive)`、depth は `D32_SFLOAT` 固定(HDR 時は albedo/emissive が float16 変種)。`shader` は書けません。
-- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の RT はシェーダの set 1 に**配列順**でバインド(最大 8 入力)。`uses_light_data: true` でライト UBO。`push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
+- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む(最大 8 入力)。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
 - **`ui`** — UI オーバーレイ([第7章](07_input_ui.md))。WP87 以降は `engine://features/ui.json` 経由の挿入が標準です。
@@ -137,7 +138,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 
 | set | 定数 | 用途(✅WP70 で統一済み) |
 |---|---|---|
-| 0 | `PELICAN_SET_FRAME` | **全パイプライン共通の固定 layout**: binding 0 `FrameUBO` / 1 `ObjectBuffer` SSBO / 2 `LightUBO` / 3 `PreviousObjectBuffer`(velocity 用)。シェーダが set 0 を宣言する場合は一致必須、宣言しなくても PipelineFactory が挿入 |
+| 0 | `PELICAN_SET_FRAME` | **全パイプライン共通の固定 layout**: binding 0 `FrameUBO` / 1 `ObjectBuffer` SSBO / 2 `LightUBO` / 3 `PreviousObjectBuffer`(velocity 用) / 4 `FrameResolutionUBO`。graphics/computeの両方でbindされ、シェーダが宣言する場合は一致必須 |
 | 1 | `PELICAN_SET_PASS_INPUT` | パス入力。fullscreen の `input` 配列順に binding 0..、compute の reads/writes も set 1 |
 | 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 以降 = `.surface` の custom texture(宣言順) |
 | 3 | `PELICAN_SET_FREE` | 名前に反して**大半はエンジンが所有**します: binding 0/1 = debug_draw / debug_text、2/3 = スキンパレット(現 / 前フレーム)、4-8 = morph(instance / weight / previous weight / metadata / delta)、9-11 = per-instance マテリアルオーバーライド(§6.8) |
@@ -220,7 +221,21 @@ sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → 
 
 ### compute タスク
 
-(スキーマは前版から不変)compute シェーダは `<stem>.comp`、リソースは set 1、`reads` / `writes` の宣言だけで並びます。`schedule` は `per_frame` のみ、`dispatch.groups_from` は予約。最小の実例は `test/run_compute_headless.cmake`。
+compute シェーダは `<stem>.comp`、`reads` / `writes` の宣言だけでframe graphへ並びます。
+画像の通常経路はoptional `resource_ports`で、read-only imageは`sampled`、write imageは
+`storage`として名前を付けます。shaderは
+`#include "pelican_resource_ports.glsl"`から`pelican_sample_<port>()` /
+`pelican_store_<port>()`を使い、set/binding番号を書きません。computeでも
+`#include "pelican_frame.glsl"`からtime/camera/resolution/lightを読めます。
+portは既存の`reads` / `writes`を注釈するだけで、新しいedgeや順序を作りません。
+
+`view`は既定`shared_2d`、eyeごとのtargetは`per_view`です。sampled portの
+`sampling.filter`は`linear|nearest`、`sampling.address`は
+`repeat|mirrored_repeat|clamp_to_edge`です。raw storage buffer/image layoutは
+typed buffer未実装時や特殊descriptor用のescape hatchとして維持されます。
+`schedule` は `per_frame` のみ、`dispatch.groups_from` は予約。設定とshaderの最小例は
+[`adding_features.md`のレシピ4](../adding_features.md)と
+`test/run_compute_headless.cmake`です。
 
 ### プランダンプ(実行計画の可視化)
 

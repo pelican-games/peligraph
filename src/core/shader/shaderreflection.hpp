@@ -4,10 +4,21 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+enum class ReflectedImageViewDimension {
+    none,
+    two_d,
+    two_d_array,
+    other,
+};
+
+std::string_view reflectedImageViewDimensionName(
+    ReflectedImageViewDimension dimension);
 
 struct ReflectedBinding {
     uint32_t set = 0;
@@ -16,6 +27,8 @@ struct ReflectedBinding {
     uint32_t count = 1;
     vk::ShaderStageFlags stages;
     std::string name;
+    ReflectedImageViewDimension image_view_dimension =
+        ReflectedImageViewDimension::none;
 };
 
 struct ShaderReflection {

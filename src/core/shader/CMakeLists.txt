@@ -5,6 +5,7 @@ target_sources(pelican_core PRIVATE
     shaderlibrary.cpp
     shaderreference.cpp
     shaderreflection.cpp
+    shaderresourceinterface.cpp
     surfacecompiler.cpp
 )
 if(PELICAN_WITH_SPIRV_LINK)

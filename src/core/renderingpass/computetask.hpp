@@ -2,12 +2,14 @@
 
 #include "frameplanner.hpp"
 #include "renderingpass.hpp"
+#include "../../project/targetrenderplanning.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include <array>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -20,6 +22,7 @@ namespace Pelican {
 
 class PathResolver;
 class FrameGraphResourceContainer;
+class FrameResources;
 class RenderTargetContainer;
 class RenderTargetLayoutTracker;
 class ShaderLibrary;
@@ -36,13 +39,19 @@ struct ComputeTaskRuntimeDependencies {
     const PathResolver &path_resolver;
     RenderTargetContainer &render_target_container;
     FrameGraphResourceContainer &frame_graph_resources;
+    const std::unordered_map<
+        std::string, VulkanResourceViewLayout>
+        *resource_views = nullptr;
 };
 
 struct ResolvedComputeResourceBinding {
+    std::string authored_name;
     std::string name;
     bool history_read = false;
     GlobalRenderTargetId render_target = noRenderTargetId();
     FrameGraphBufferId buffer = noFrameGraphBufferId();
+    VulkanResourceViewLayout physical_view =
+        VulkanResourceViewLayout::shared_2d;
 };
 
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json);
@@ -102,6 +111,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
     struct TaskRecord {
         ComputeTaskDefinition definition;
         std::vector<ResolvedComputeResourceBinding> resource_bindings;
+        std::vector<ShaderResourceInterfaceBinding>
+            resource_interface;
         PipelineHandle pipeline;
         std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
         std::array<std::vector<vk::ImageView>, 2> bound_image_views;
@@ -118,6 +129,7 @@ DECLARE_MODULE(ComputeTaskContainer) {
     std::vector<ComputeTaskId> registration_order;
     int next_task_id = 0;
     std::uint64_t next_binding_revision = 1;
+    std::array<vk::UniqueSampler, 6> sampled_image_samplers;
 
     struct DescriptorSetRecord {
         vk::UniqueDescriptorSet descriptor_set;
@@ -126,9 +138,13 @@ DECLARE_MODULE(ComputeTaskContainer) {
     DescriptorSetRecord createDescriptorSet(
         vk::DescriptorPool pool, PipelineHandle pipeline,
         const std::vector<ResolvedComputeResourceBinding> &resources,
+        const std::vector<ShaderResourceInterfaceBinding>
+            &resource_interface,
         RenderTargetContainer &render_target_container,
         const FrameGraphResourceContainer &frame_graph_resources,
-        std::uint32_t frame_index) const;
+        std::uint32_t frame_index);
+    vk::Sampler samplerFor(
+        ShaderResourcePortSampling sampling);
 
   public:
     struct RegistrationCheckpoint {
@@ -155,7 +171,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
                                         RenderTargetContainer &render_target_container,
                                         VulkanUtils &vk_utils,
                                         RenderTargetLayoutTracker &layout_tracker) const;
-    void dispatch(vk::CommandBuffer cmd_buf, ComputeTaskId task_id) const;
+    void dispatch(vk::CommandBuffer cmd_buf, ComputeTaskId task_id,
+                  const FrameResources &frame_resources) const;
     void bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf,
                                      FrameGraphBufferId resource,
                                      FramePlanNodeKind from_kind,

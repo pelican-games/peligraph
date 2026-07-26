@@ -274,6 +274,74 @@ TEST_CASE(
         std::runtime_error);
 }
 
+TEST_CASE(
+    "fullscreen pass JSON parser keeps named resource ports independent "
+    "from graph edges",
+    "[renderingpass][resource-port][wp207a]") {
+    const auto pass_json =
+        nlohmann::json::parse(R"json({
+          "input": ["scene_color", "scene_depth@history"],
+          "resource_ports": {
+            "color": {
+              "resource": "scene_color",
+              "access": "sampled",
+              "sampling": {
+                "filter": "nearest",
+                "address": "clamp_to_edge"
+              }
+            },
+            "previous_depth": {
+              "resource": "scene_depth@history",
+              "view": "per_view"
+            }
+          },
+          "shader": {
+            "vertex": "fullscreen",
+            "fragment": "resolve"
+          }
+        })json");
+
+    const auto info =
+        parseFullscreenPassInfoFromJson(
+            pass_json, "resolve");
+    REQUIRE(info.resource_ports.size() == 2);
+    REQUIRE(
+        info.resource_ports.at(0).name == "color");
+    REQUIRE(
+        info.resource_ports.at(0).resource ==
+        "scene_color");
+    REQUIRE(
+        info.resource_ports.at(0).sampling.filter ==
+        ShaderResourcePortFilter::nearest);
+    REQUIRE(
+        info.resource_ports.at(0)
+            .sampling.address_mode ==
+        ShaderResourcePortAddressMode::
+            clamp_to_edge);
+    REQUIRE(
+        info.resource_ports.at(1).view ==
+        ShaderResourcePortView::per_view);
+
+    auto conflicting = pass_json;
+    conflicting["input_sampling"] =
+        nlohmann::json::array(
+            {{{"filter", "linear"}}});
+    REQUIRE_THROWS_WITH(
+        parseFullscreenPassInfoFromJson(
+            conflicting, "resolve"),
+        Catch::Matchers::ContainsSubstring(
+            "resource_ports sampling replaces input_sampling"));
+
+    auto unknown = pass_json;
+    unknown["resource_ports"]["color"]["resource"] =
+        "not_an_input";
+    REQUIRE_THROWS_WITH(
+        parseFullscreenPassInfoFromJson(
+            unknown, "resolve"),
+        Catch::Matchers::ContainsSubstring(
+            "absent from reads/writes/input"));
+}
+
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {
     const nlohmann::json pass_json{
         {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting"}}},

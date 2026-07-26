@@ -539,6 +539,79 @@ TEST_CASE("frame planner emits barriers for explicit compute to render resource 
     REQUIRE(plan.barriers.front().to == "present");
 }
 
+TEST_CASE(
+    "shader resource ports lower sampled and storage intent without "
+    "creating graph edges",
+    "[frameplanner][logical][resource-port][wp207a]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+              "name": "typed_resource_access",
+              "render_targets": [
+                {"name": "scene_color"},
+                {"name": "filtered_color"}
+              ],
+              "compute_tasks": [{
+                "name": "filter",
+                "reads": ["scene_color"],
+                "writes": ["filtered_color"],
+                "resource_ports": {
+                  "source": {
+                    "resource": "scene_color",
+                    "access": "sampled"
+                  },
+                  "destination": {
+                    "resource": "filtered_color",
+                    "access": "storage"
+                  }
+                }
+              }]
+            })json"));
+
+    REQUIRE(graph.nodes.size() == 1);
+    REQUIRE(
+        graph.nodes.front().reads ==
+        std::vector<std::string>{"scene_color"});
+    REQUIRE(
+        graph.nodes.front().writes ==
+        std::vector<std::string>{"filtered_color"});
+    REQUIRE((
+        graph.nodes.front().resource_accesses ==
+        std::vector<FrameGraphResourceAccessDefinition>{
+            {"filtered_color",
+             LogicalAccessIntent::storage},
+            {"scene_color",
+             LogicalAccessIntent::sampled}}));
+
+    const auto logical =
+        compileLogicalFrameGraphShadow(
+            graph, makeBuiltinLogicalTypeRegistry());
+    REQUIRE(logical.nodes.size() == 1);
+    const auto &uses = logical.nodes.front().uses;
+    const auto sampled = std::find_if(
+        uses.begin(), uses.end(),
+        [](const LogicalResourceUse &use) {
+            return use.input_value &&
+                   use.input_value->resource ==
+                       "scene_color";
+        });
+    const auto storage = std::find_if(
+        uses.begin(), uses.end(),
+        [](const LogicalResourceUse &use) {
+            return use.output_value &&
+                   use.output_value->resource ==
+                       "filtered_color";
+        });
+    REQUIRE(sampled != uses.end());
+    REQUIRE(
+        sampled->intent ==
+        LogicalAccessIntent::sampled);
+    REQUIRE(storage != uses.end());
+    REQUIRE(
+        storage->intent ==
+        LogicalAccessIntent::storage);
+}
+
 TEST_CASE("frame planner reports invalid graph fixtures", "[frameplanner]") {
     const auto expectations = readJson(fixtureRoot() / "errors" / "expectations.json");
     for (const auto &entry : expectations) {

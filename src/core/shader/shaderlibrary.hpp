@@ -32,6 +32,8 @@ struct ShaderBundle {
     ShaderReflection reflection;
     std::filesystem::path source_path;
     std::vector<std::string> defines;
+    std::vector<std::pair<std::string, std::string>>
+        virtual_includes;
     uint64_t version = 1;
     std::string log;
     std::vector<SpvLinkBinding> binding_table;
@@ -79,6 +81,8 @@ DECLARE_MODULE(ShaderLibrary) {
     struct FileReloadRecipe {
         std::filesystem::path path;
         std::vector<std::string> defines;
+        std::vector<std::pair<std::string, std::string>>
+            virtual_includes;
     };
     struct SurfaceReloadRecipe {
         std::filesystem::path path;
@@ -104,18 +108,26 @@ DECLARE_MODULE(ShaderLibrary) {
     mutable ShaderCompiler compiler;
 
     ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version,
-                               std::vector<std::string> defines = {}) const;
+                               std::vector<std::string> defines = {},
+                               std::vector<std::pair<std::string, std::string>>
+                                   virtual_includes = {}) const;
     ShaderBundle buildFromSpirv(std::span<const uint32_t> spirv, std::filesystem::path source_path,
                                 uint64_t version, std::string log, std::vector<std::string> defines = {}) const;
     ShaderBundle buildFromEngineSource(std::string_view source, ShaderStage stage,
                                        std::string_view name, uint64_t version,
-                                       std::vector<std::string> defines = {}) const;
+                                       std::vector<std::string> defines = {},
+                                       std::vector<std::pair<std::string, std::string>>
+                                           virtual_includes = {}) const;
     vk::UniqueShaderModule createShaderModule(std::span<const uint32_t> spirv) const;
     ShaderBundleId loadResolvedReference(const ResolvedRef &resolved, const ShaderReference &reference,
                                          std::string_view display_name,
-                                         const std::vector<std::string> &defines);
+                                         const std::vector<std::string> &defines,
+                                         const std::vector<std::pair<std::string, std::string>>
+                                             &virtual_includes);
     ShaderBundleId loadFromStemReference(const ShaderReference &reference, const PathResolver &resolver,
-                                         const std::vector<std::string> &defines = {});
+                                         const std::vector<std::string> &defines = {},
+                                         const std::vector<std::pair<std::string, std::string>>
+                                             &virtual_includes = {});
     std::optional<watch::AssetKey> logicalKeyForPath(const std::filesystem::path &path) const;
     std::optional<std::pair<std::filesystem::path, watch::AssetKey>>
     resolveReloadableSurface(std::string_view source_name) const;
@@ -123,7 +135,9 @@ DECLARE_MODULE(ShaderLibrary) {
     logicalDependencies(const ShaderBundle &bundle,
                         std::optional<watch::AssetKey> primary = std::nullopt) const;
     void registerFileReloadUnit(ShaderBundleId id, const ShaderBundle &bundle,
-                                std::vector<std::string> defines);
+                                std::vector<std::string> defines,
+                                std::vector<std::pair<std::string, std::string>>
+                                    virtual_includes);
     void registerSurfaceReloadUnit(SurfaceShaderBundleIds ids,
                                    const ShaderBundle &vertex_bundle,
                                    const ShaderBundle &fragment_bundle,
@@ -153,9 +167,15 @@ DECLARE_MODULE(ShaderLibrary) {
 
     explicit ShaderLibrary(ShaderLibraryModuleMode mode = ShaderLibraryModuleMode::create_modules);
 
-    ShaderBundleId loadFromFile(const std::filesystem::path &path, std::vector<std::string> defines = {});
+    ShaderBundleId loadFromFile(
+        const std::filesystem::path &path,
+        std::vector<std::string> defines = {},
+        std::vector<std::pair<std::string, std::string>>
+            virtual_includes = {});
     ShaderBundleId loadFromReference(const ShaderReference &reference, const PathResolver &resolver,
-                                     bool project_context, std::vector<std::string> defines = {});
+                                     bool project_context, std::vector<std::string> defines = {},
+                                     std::vector<std::pair<std::string, std::string>>
+                                         virtual_includes = {});
     ShaderBundleId loadFromBytes(size_t len, const char *data, std::string_view name);
     ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name);
     SurfaceShaderBundleIds loadFromSurface(const SurfaceFormatDocument &surface,

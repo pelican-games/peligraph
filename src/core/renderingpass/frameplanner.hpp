@@ -64,6 +64,18 @@ struct FrameGraphReadFootprintDefinition {
         default;
 };
 
+struct FrameGraphResourceAccessDefinition {
+    // History reads retain the authored @history suffix so a current and
+    // previous-epoch view of the same resource can carry distinct ports.
+    std::string resource;
+    LogicalAccessIntent intent =
+        LogicalAccessIntent::automatic;
+
+    bool operator==(
+        const FrameGraphResourceAccessDefinition &) const =
+        default;
+};
+
 struct FrameGraphNodeDefinition {
     std::string name;
     FramePlanNodeKind kind = FramePlanNodeKind::render;
@@ -72,6 +84,8 @@ struct FrameGraphNodeDefinition {
     std::vector<std::string> reads_history;
     std::vector<FrameGraphReadFootprintDefinition>
         read_footprints;
+    std::vector<FrameGraphResourceAccessDefinition>
+        resource_accesses;
     std::vector<std::string> writes;
     std::vector<std::string> after;
     std::vector<std::string> before;

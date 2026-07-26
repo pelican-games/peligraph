@@ -115,6 +115,8 @@ DECLARE_MODULE(FrameResources) {
     void updateMultiviewResolutions(
         std::span<const FrameResolutionUniformData> data);
     void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
+    void bindCompute(vk::CommandBuffer cmd_buf,
+                     vk::PipelineLayout pipeline_layout) const;
 
     std::uint32_t viewCountForTesting() const { return view_count; }
     std::size_t slotCountForTesting() const { return frame_slots.size(); }

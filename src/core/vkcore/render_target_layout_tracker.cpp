@@ -16,7 +16,9 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
     };
 
     if (old_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-        info.src_stage = vk::PipelineStageFlagBits::eFragmentShader;
+        info.src_stage =
+            vk::PipelineStageFlagBits::eFragmentShader |
+            vk::PipelineStageFlagBits::eComputeShader;
         info.src_access = vk::AccessFlagBits::eShaderRead;
     } else if (old_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
@@ -63,7 +65,9 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
     }
 
     if (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-        info.dst_stage = vk::PipelineStageFlagBits::eFragmentShader;
+        info.dst_stage =
+            vk::PipelineStageFlagBits::eFragmentShader |
+            vk::PipelineStageFlagBits::eComputeShader;
         info.dst_access = vk::AccessFlagBits::eShaderRead;
     } else if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;

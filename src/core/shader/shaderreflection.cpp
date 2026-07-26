@@ -43,6 +43,34 @@ uint32_t descriptorCount(const SpvReflectDescriptorBinding &binding) {
 
 bool hasLocalSize(const glm::uvec3 &value) { return value.x != 0 || value.y != 0 || value.z != 0; }
 
+bool isImageDescriptor(vk::DescriptorType type) {
+    switch (type) {
+    case vk::DescriptorType::eCombinedImageSampler:
+    case vk::DescriptorType::eSampledImage:
+    case vk::DescriptorType::eStorageImage:
+    case vk::DescriptorType::eInputAttachment:
+        return true;
+    default:
+        return false;
+    }
+}
+
+ReflectedImageViewDimension imageViewDimension(
+    const SpvReflectDescriptorBinding &binding) {
+    const auto type =
+        static_cast<vk::DescriptorType>(
+            binding.descriptor_type);
+    if (!isImageDescriptor(type)) {
+        return ReflectedImageViewDimension::none;
+    }
+    if (binding.image.dim != SpvDim2D) {
+        return ReflectedImageViewDimension::other;
+    }
+    return binding.image.arrayed != 0
+               ? ReflectedImageViewDimension::two_d_array
+               : ReflectedImageViewDimension::two_d;
+}
+
 void sortReflection(ShaderReflection &reflection) {
     std::sort(reflection.bindings.begin(), reflection.bindings.end(), [](const auto &lhs, const auto &rhs) {
         if (lhs.set != rhs.set) {
@@ -56,6 +84,22 @@ void sortReflection(ShaderReflection &reflection) {
 }
 
 } // namespace
+
+std::string_view reflectedImageViewDimensionName(
+    ReflectedImageViewDimension dimension) {
+    switch (dimension) {
+    case ReflectedImageViewDimension::none:
+        return "none";
+    case ReflectedImageViewDimension::two_d:
+        return "2d";
+    case ReflectedImageViewDimension::two_d_array:
+        return "2d_array";
+    case ReflectedImageViewDimension::other:
+        return "other";
+    }
+    throw std::runtime_error(
+        "unknown reflected image view dimension");
+}
 
 ShaderReflection reflect(std::span<const uint32_t> spirv) {
     ReflectedModule module{spirv};
@@ -81,6 +125,7 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
             descriptorCount(*binding),
             stageFlags(module->shader_stage),
             binding->name != nullptr ? binding->name : "",
+            imageViewDimension(*binding),
         });
     }
 
@@ -167,6 +212,11 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
             auto &existing = merged.bindings[found->second];
             if (existing.type != binding.type || existing.count != binding.count) {
                 throw std::runtime_error("Shader descriptor binding mismatch");
+            }
+            if (existing.image_view_dimension !=
+                binding.image_view_dimension) {
+                throw std::runtime_error(
+                    "Shader descriptor image view dimension mismatch");
             }
             existing.stages |= binding.stages;
             if (existing.name.empty()) {

@@ -71,7 +71,9 @@ DECLARE_MODULE(FullscreenPassContainer) {
         vk::SampleCountFlagBits samples,
         GraphicsPipelineViewContract view,
         GraphicsPipelineRenderingLocalReadContract
-            local_read);
+            local_read,
+        std::vector<ShaderResourceInterfaceBinding>
+            resource_interface = {});
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                       RenderPassViewInvocation invocation = {});
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,

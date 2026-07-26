@@ -1380,7 +1380,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             modules.compute_task_container.transitionResourcesForDispatch(
                 render_ctx.cmd_buf, task.task_id, modules.render_target_container, modules.vk_utils,
                 layout_tracker);
-            modules.compute_task_container.dispatch(render_ctx.cmd_buf, task.task_id);
+            modules.compute_task_container.dispatch(
+                render_ctx.cmd_buf, task.task_id,
+                modules.frame_resources);
             if (node_trace != nullptr) {
                 node_trace->push_back(computeNodeTrace(task, node_index, frame_graph,
                                                        modules.render_target_container,

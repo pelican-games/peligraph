@@ -285,10 +285,88 @@ targetPlansByName(
 
 std::vector<CompiledComputeTask> compileComputeTasks(
     const std::vector<ComputeTaskDefinition> &definitions,
+    const std::unordered_map<
+        std::string,
+        std::shared_ptr<const VulkanTargetPlan>>
+        &target_plans,
     RenderingPassConfigRegistrationDependencies &dependencies) {
     std::vector<CompiledComputeTask> compiled;
     compiled.reserve(definitions.size());
     for (const auto &definition : definitions) {
+        std::unordered_map<
+            std::string, VulkanResourceViewLayout>
+            resource_views;
+        bool task_has_physical_plan = false;
+        for (const auto &[graph, plan] :
+             target_plans) {
+            (void)graph;
+            if (plan == nullptr) continue;
+            const auto contains_task =
+                std::find_if(
+                    plan->scopes.begin(),
+                    plan->scopes.end(),
+                    [&](const VulkanPhysicalScopePlan
+                            &scope) {
+                        return std::find(
+                                   scope.nodes.begin(),
+                                   scope.nodes.end(),
+                                   definition.name) !=
+                               scope.nodes.end();
+                    }) != plan->scopes.end();
+            if (!contains_task) continue;
+            task_has_physical_plan = true;
+            for (const auto &port :
+                 definition.resource_ports) {
+                constexpr std::string_view
+                    history_suffix = "@history";
+                auto resource = port.resource;
+                if (resource.ends_with(
+                        history_suffix)) {
+                    resource.resize(
+                        resource.size() -
+                        history_suffix.size());
+                }
+                const auto physical =
+                    std::find_if(
+                        plan->resources.begin(),
+                        plan->resources.end(),
+                        [&](const VulkanPhysicalResourcePlan
+                                &candidate) {
+                            return candidate
+                                       .logical_resource ==
+                                   resource;
+                        });
+                if (physical ==
+                    plan->resources.end()) {
+                    throw std::runtime_error(
+                        "Compute resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') is absent from physical target plan '" +
+                        plan->graph + "'");
+                }
+                const auto [found, inserted] =
+                    resource_views.emplace(
+                        resource,
+                        physical->view_layout);
+                if (!inserted &&
+                    found->second !=
+                        physical->view_layout) {
+                    throw std::runtime_error(
+                        "Compute resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') has incompatible physical views across "
+                        "target plans");
+                }
+            }
+        }
+        if (!definition.resource_ports.empty() &&
+            !task_has_physical_plan) {
+            throw std::runtime_error(
+                "Typed compute task has no physical target plan: " +
+                definition.name);
+        }
         const auto task_id = dependencies.compute_task_container.registerComputeTask(
             definition,
             ComputeTaskRuntimeDependencies{
@@ -296,6 +374,7 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 dependencies.runtime.path_resolver,
                 dependencies.render_targets.render_target_container,
                 dependencies.frame_graph_resources,
+                &resource_views,
             });
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
@@ -597,7 +676,9 @@ registerPreparedRenderingPassConfigVariant(
             pass_implementation_providers);
     }
     auto compiled_compute_tasks =
-        compileComputeTasks(prepared.compute_task_definitions,
+        compileComputeTasks(
+                            prepared.compute_task_definitions,
+                            prepared.target_plans,
                             dependencies);
     injectGpuRegistrationFault(
         dependencies.options,

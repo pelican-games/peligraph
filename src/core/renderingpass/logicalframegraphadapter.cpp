@@ -261,6 +261,69 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                     declaration.resource);
             }
         }
+        std::map<std::string, LogicalAccessIntent,
+                 std::less<>>
+            declared_accesses;
+        for (const auto &declaration :
+             source.resource_accesses) {
+            const auto current_read =
+                std::find(
+                    source.reads.begin(),
+                    source.reads.end(),
+                    declaration.resource) !=
+                source.reads.end();
+            const auto current_write =
+                std::find(
+                    source.writes.begin(),
+                    source.writes.end(),
+                    declaration.resource) !=
+                source.writes.end();
+            const auto history_suffix =
+                std::string_view{"@history"};
+            const auto history_read =
+                declaration.resource.ends_with(
+                    history_suffix) &&
+                std::find(
+                    source.reads_history.begin(),
+                    source.reads_history.end(),
+                    declaration.resource.substr(
+                        0,
+                        declaration.resource.size() -
+                            history_suffix.size())) !=
+                    source.reads_history.end();
+            if (declaration.resource.empty() ||
+                (!current_read && !current_write &&
+                 !history_read)) {
+                throw std::runtime_error(
+                    "logical shadow graph node '" +
+                    source.name +
+                    "' declares access for an unused resource: " +
+                    declaration.resource);
+            }
+            if (!declared_accesses
+                     .emplace(declaration.resource,
+                              declaration.intent)
+                     .second) {
+                throw std::runtime_error(
+                    "logical shadow graph node '" +
+                    source.name +
+                    "' declares duplicate access for: " +
+                    declaration.resource);
+            }
+        }
+        const auto access_intent =
+            [&](std::string_view resource,
+                bool history = false) {
+                auto key = std::string{resource};
+                if (history) key += "@history";
+                const auto found =
+                    declared_accesses.find(key);
+                return found !=
+                               declared_accesses.end()
+                           ? found->second
+                           : LogicalAccessIntent::
+                                 automatic;
+            };
         std::set<std::string, std::less<>>
             loaded_attachment_resources;
         for (const auto &attachment :
@@ -353,7 +416,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                         std::move(port),
                         LogicalValueId{
                             resource, version},
-                        footprint));
+                        footprint,
+                        access_intent(resource)));
             }
             used_conservative_footprint =
                 used_conservative_footprint ||
@@ -375,7 +439,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             node.uses.push_back(makeLogicalReadUse(
                 std::move(port), LogicalValueId{resource, 0},
                 LogicalReadFootprint{LogicalReadFootprintKind::temporal,
-                                     std::nullopt}));
+                                     std::nullopt},
+                access_intent(resource, true)));
         }
         for (const auto &resource : source.writes) {
             if (merged_attachment_resources.contains(
@@ -397,7 +462,9 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             }
             ++version;
             node.uses.push_back(makeLogicalWriteUse(
-                std::move(port), LogicalValueId{resource, version}));
+                std::move(port),
+                LogicalValueId{resource, version},
+                access_intent(resource)));
         }
         result.nodes.push_back(std::move(node));
     }

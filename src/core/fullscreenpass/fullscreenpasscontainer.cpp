@@ -197,7 +197,9 @@ FullscreenPassContainer::registerFullscreenPass(
     vk::SampleCountFlagBits samples,
     GraphicsPipelineViewContract view,
     GraphicsPipelineRenderingLocalReadContract
-        local_read) {
+        local_read,
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface) {
     registration_order.reserve(registration_order.size() + 1);
     if (next_pipeline_id >
         static_cast<uint32_t>(
@@ -220,6 +222,8 @@ FullscreenPassContainer::registerFullscreenPass(
     desc.view = view;
     desc.local_read =
         std::move(local_read);
+    desc.resource_interface =
+        std::move(resource_interface);
     const auto pipeline_handle = pipeline_factory.create(desc);
     if (!pipelines.insert({pipeline_id, pipeline_handle}).second) {
         throw std::runtime_error(

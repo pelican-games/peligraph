@@ -6433,4 +6433,58 @@ material/draw identityに追従する安定tagを導入する。
 
 ---
 
+### WP207a（済 2026-07-26）: compute Frame/Light + sampled resource port
+
+**目的**: computeをstorage-onlyの孤立した実行器から、graphicsと同じpublic frame factsと
+typed sampled resourceを消費できるdomainへ拡張する。
+
+**実装範囲**:
+
+1. compute pipelineへgraphicsと同じFrame/Light setをbindする。
+2. declared image inputをsampled image + sampler、storage imageのどちらで使うかtyped port/
+   reflectionで照合する。
+3. fullscreen/computeのlogical resource名からvirtual generated includeを作り、通常shaderから
+   set/binding番号を除く。raw layoutはescape hatchとして維持する。
+4. dispatch groupは本WPでは定数のまま。indirectはWP210。
+5. plannerは既存reads/writes/after/beforeをそのまま共通IRへloweringし、schema名の全面改名を
+   行わない。
+
+**受け入れ条件**:
+
+- computeがcamera/light/timeとsampled depth/colorを読みstorage buffer/imageへ書くGPU test
+- generated includeとreflectionのdescriptor kind/view dimension不一致をresource名付きreject
+- fullscreen buffer inputの既存GPU test不変
+- sequential/multiviewでper-view/shared inputの契約を検証
+- feature off追加descriptor更新なし
+
+依存: WP204 closure。見積: 中。
+
+**完了内容（2026-07-26）**:
+
+- fullscreen passとcompute taskへ共通のoptional `resource_ports`を追加した。既存の
+  `input` / `reads` / `writes`を名前、sampled/storage access、shared/per-view view、
+  filter/addressで注釈し、graph edge自体は増やさない。
+- logical target名とphysical shared/sequential/layered viewから
+  `pelican_resource_ports.glsl`を生成する。sample/load/store/size/view-count accessorを公開し、
+  通常shaderからset/binding番号と2D/array descriptor形を除いた。
+- reflectionはset、binding、descriptor kind/count、生成変数名、2D/2D-array dimensionを
+  resource名付きで照合する。virtual includeとtyped interfaceはhot reload recipeへ保存し、
+  rebuild/recreateでも同じ検証とdescriptor rebindを行う。
+- compute dispatchへactive `FrameResources` set 0をbindした。project compute sourceは
+  `pelican_frame.glsl`からtime/camera/resolution/lightを読み、sampled imageを
+  combined sampler + shader-read-only layout、storage imageをgeneral layoutで利用できる。
+- raw fullscreen bufferとraw compute buffer/image ABIはescape hatchとして不変にした。
+  port無し構成はtyped descriptor updateやsampled-compute samplerを追加しない。
+- project-owned headless Vulkan scenarioで
+  graphics color → typed fullscreen sample → typed compute sampled image + Frame/Light →
+  typed storage image →既存raw buffer chain→presentationを実行し、validation errorが無いことを
+  確認した。shared/sequential/multiview、reflection mismatch、hot reloadをCPU/GPU回帰した。
+- Debug全build、全911 CTest、`git diff --check`を通過した。Windows symlink権限依存の
+  PathResolver 1件だけは従来どおりskip。
+
+設計・完了証跡:
+[`design_reviews/2026-07-26_wp207a_resource_ports.md`](design_reviews/2026-07-26_wp207a_resource_ports.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

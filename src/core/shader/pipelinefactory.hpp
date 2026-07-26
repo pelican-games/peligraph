@@ -3,6 +3,7 @@
 #include "graphicsviewcontract.hpp"
 #include "shaderlibrary.hpp"
 #include "shaderreflection.hpp"
+#include "shaderresourceinterface.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include <cstdint>
@@ -69,11 +70,17 @@ struct GraphicsPipelineDesc {
     GraphicsPipelineViewContract view;
     GraphicsPipelineRenderingLocalReadContract
         local_read;
+    // Empty is the raw-layout escape hatch. Generated resource ports carry
+    // their reflected ABI here so every hot-reload rebuild revalidates it.
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface;
 };
 
 struct ComputePipelineDesc {
     ShaderBundleId shader;
     std::vector<std::string> shader_defines;
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface;
 };
 
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);

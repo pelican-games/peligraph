@@ -7,6 +7,7 @@
 #include "../../project/materialdrawtag.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
+#include "../../project/shaderresourceport.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -121,6 +122,9 @@ struct FullscreenPassInfo {
     // Empty preserves the legacy linear/repeat policy for every image input.
     // When authored, entries map one-to-one to PassDefinition::input_targets.
     std::vector<FullscreenInputSampling> input_sampling;
+    // Optional typed annotations over input/input@history. Inputs without an
+    // entry keep the existing raw set/binding shader ABI.
+    std::vector<ShaderResourcePortDefinition> resource_ports;
 };
 
 struct DebugDrawPassInfo {
@@ -302,6 +306,9 @@ struct ComputeTaskDefinition {
     std::vector<std::string> writes;
     std::vector<std::string> after;
     std::vector<std::string> before;
+    // Optional typed annotations over reads/writes. The dependency lists
+    // remain authoritative and are not synthesized from these declarations.
+    std::vector<ShaderResourcePortDefinition> resource_ports;
     ComputeDispatchDefinition dispatch;
     std::string schedule = "per_frame";
 };

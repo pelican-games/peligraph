@@ -101,7 +101,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 | 候補 | 内容 | 状態 |
 |---|---|---|
-| WP207a | compute Frame/Light + sampled resource port | 計画済み |
+| WP207a | compute Frame/Light + sampled resource port | ✅ 完了（2026-07-26、archive） |
 | WP207b | material/geometry typed frame-graph resource port | 計画済み・WP207a依存 |
 | WP208 | lighting data contract v2 + clustered dogfood | 計画済み・WP207b依存 |
 | WP209a | static texture dimension + material sampler authoring | 計画済み |
@@ -384,8 +384,8 @@ XR2b最終gateを満たす。
 
 正本:
 
-- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v3
-- [`render_authoring_ergonomics.md`](render_authoring_ergonomics.md) v2
+- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v6
+- [`render_authoring_ergonomics.md`](render_authoring_ergonomics.md) v5
 - [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)
 
 共通方針:
@@ -399,31 +399,10 @@ XR2b最終gateを満たす。
 5. physical指定はWP204 fragmentへlinkし、logical configへVulkan fieldを漏らさない。
 6. feature未参照時に追加pass/resource/variantを持たない。
 
-#### WP207a: compute Frame/Light + sampled resource port
-
-**目的**: computeをstorage-onlyの孤立した実行器から、graphicsと同じpublic frame factsと
-typed sampled resourceを消費できるdomainへ拡張する。
-
-**実装範囲**:
-
-1. compute pipelineへgraphicsと同じFrame/Light setをbindする。
-2. declared image inputをsampled image + sampler、storage imageのどちらで使うかtyped port/
-   reflectionで照合する。
-3. fullscreen/computeのlogical resource名からvirtual generated includeを作り、通常shaderから
-   set/binding番号を除く。raw layoutはescape hatchとして維持する。
-4. dispatch groupは本WPでは定数のまま。indirectはWP210。
-5. plannerは既存reads/writes/after/beforeをそのまま共通IRへloweringし、schema名の全面改名を
-   行わない。
-
-**受け入れ条件**:
-
-- computeがcamera/light/timeとsampled depth/colorを読みstorage buffer/imageへ書くGPU test
-- generated includeとreflectionのdescriptor kind/view dimension不一致をresource名付きreject
-- fullscreen buffer inputの既存GPU test不変
-- sequential/multiviewでper-view/shared inputの契約を検証
-- feature off追加descriptor更新なし
-
-依存: WP204 closure。見積: 中。
+WP207aは2026-07-26に完了した。実装内容と受け入れ結果は
+[`implementation_archive.md`](implementation_archive.md)および
+[`design_reviews/2026-07-26_wp207a_resource_ports.md`](design_reviews/2026-07-26_wp207a_resource_ports.md)
+を参照する。
 
 #### WP207b: material/geometry typed frame-graph resource port
 

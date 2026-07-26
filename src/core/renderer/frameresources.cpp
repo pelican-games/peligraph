@@ -412,6 +412,21 @@ void FrameResources::bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout 
                                descriptor_set, {});
 }
 
+void FrameResources::bindCompute(
+    vk::CommandBuffer cmd_buf,
+    vk::PipelineLayout pipeline_layout) const {
+    const auto descriptor_set =
+        active_multiview_slot
+            ? multiview_frame_slots.at(active_slot)
+                  .descriptor_set.get()
+            : frame_slots.at(active_slot)
+                  .descriptor_set.get();
+    cmd_buf.bindDescriptorSets(
+        vk::PipelineBindPoint::eCompute,
+        pipeline_layout, PELICAN_SET_FRAME,
+        descriptor_set, {});
+}
+
 vk::Buffer FrameResources::slotBufferForTesting(std::uint32_t in_flight_frame_index,
                                                 std::uint32_t view_index) const {
     if (in_flight_frame_index >= in_flight_frames_num || view_index >= view_count) {

@@ -2,11 +2,12 @@
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v5(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v6(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
 v2 の件数不整合、G2/G13、material screen input、sampler/texture dimension、
 raster tiled lighting の誤判定を訂正した。v4のWP206a stable tag selectionに続き、
-v5ではWP206bのpass-local named variantとinverted-hull dogfoodを反映した。
-instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後続である。監査記録は
+v5ではWP206bのpass-local named variantとinverted-hull dogfood、v6ではWP207aの
+compute Frame/Lightとfullscreen/compute named image portを反映した。instance/draw-owned
+layerとopaque/transparent phaseを跨ぐvariant queue、material consumer portは後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
 ## 0. 判定規則
@@ -21,7 +22,7 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 |---|---|
 | **○** | 実装済み、または既存の直接的な public hook/input だけで完結する |
 | **△** | 回避策、固定上限、外部 bake、未 dogfood の組み合わせが必要 |
-| **✕** | 下記 G1〜G16 の具体的な機構不足がある |
+| **✕** | 下記 G1〜G16 のうち未解消の具体的な機構不足がある |
 
 単に「GLSL なら計算式を書ける」は ○ の根拠にしない。複数技法を一行にまとめた項目は
 個別判定を併記するため、○/△/✕の単純合計を優先順位に使わない。
@@ -49,7 +50,7 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 | 項目 | 現在の境界 |
 |---|---|
 | graphics buffer input | fullscreen は対応済み。material/geometry pass は未対応(G2) |
-| sampler | fullscreen input は filter/address 指定可。material custom texture は固定 sampler、compare/anisotropy 未公開(G12) |
+| sampler | fullscreen/compute named image port は filter/address 指定可。material custom texture は固定 sampler、compare/anisotropy 未公開(G12) |
 | texture dimension | XR 内部 array は存在。project authored static cube/array/3D と RT mip/layer/subresource view が未公開(G4/G10) |
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
@@ -80,13 +81,13 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | B1 | tiled/clustered lighting(raster) | **△** | fullscreen raster 自体は可。標準 light 32灯、format/consumer の実 dogfood 未完(G5) |
-| B2 | tiled/clustered lighting(compute) | **✕** | compute Frame/Light + sampled input、material consumer port が不足(G1/G2/G5) |
+| B2 | tiled/clustered lighting(compute) | **△** | compute Frame/Light + sampled/storage image portは実装済み。material consumer portとscalable light inventoryが不足(G2/G5) |
 | B3 | area light(LTC) | **△** | LUT 評価は可。light schema に shape/orientation/size が無い(G5) |
 | B4 | light cookie / IES | **△** | texture は可。lightごとのresource indexが無い(G5/G9) |
 | B5 | custom non-shadow attenuation | **○** | `lighting` hook |
 | B6 | auto exposure / histogram | **△** | downsample は可。storage image/buffer histogram は構成可能だが実 feature 未検証 |
 | B7 | prebaked light probe(SH) | **△** | texture/params 持込み可。placement/bake は外部 |
-| B8 | dynamic GI(DDGI / SSGI) | **SSGI △ / DDGI ✕** | SSGI は fullscreen 候補。DDGI は compute input、3D/array、probe inventory が不足(G1/G4/G5) |
+| B8 | dynamic GI(DDGI / SSGI) | **SSGI △ / DDGI ✕** | SSGI は fullscreen 候補。DDGIのcompute image inputは解消したが、3D/static arrayとprobe inventoryが不足(G4/G5) |
 | B9 | lightmap | **△** | texture は可。標準 geometry の第2 UV 契約を dogfood する必要あり |
 
 ### C. shadow
@@ -121,7 +122,7 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 | E2 | radial god ray | **○** | fullscreen chain |
 | E3 | froxel volumetric fog | **△** | 2D atlasなら可能。native 3D image path は G4/G10 |
 | E4 | ray-marched cloud | **△** | fullscreen 可。3D noise は 2D atlas/外部 bake |
-| E5 | physical atmosphere(Bruneton) | **△** | LUT 持込み可。runtime 3D LUT update は G1/G4 |
+| E5 | physical atmosphere(Bruneton) | **△** | LUT 持込み可。compute image inputは解消したがruntime 3D LUTはG4 |
 
 ### F. post process
 
@@ -202,7 +203,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 
 | ID | 正確なギャップ | 主な対象 |
 |---|---|---|
-| **G1** | compute pipelineにFrame/Light setとsampled image/sampler入力が無い | clustered compute、DDGI、runtime LUT |
+| **G1（解消済み、WP207a）** | compute pipelineへFrame/Light setとnamed sampled/storage image portを実装。fullscreenも同じgenerated interfaceを使う | clustered compute、DDGI、runtime LUTの入力境界 |
 | **G2** | material vertex/fragmentがtyped frame-graph buffer/imageを読めない | FFT ocean、GPU simulation consumer、PPLL |
 | **G3** | authored dispatchが定数、indirect dispatchが無い | GPU culling、adaptive work |
 | **G4** | static cube/array/3D texture dimensionをprojectから宣言できない | native IBL、3D noise/LUT |
@@ -252,7 +253,7 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 1. 現在の WP204 runtime slice を閉じる
 2. G6a public shadow contract
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
-4. G1 → G2 の順で compute / geometry typed resource port
+4. G1はWP207aで完了。次はG2 material/geometry typed resource port
 5. G5 lighting data v2 + clustered dogfood
 6. G4/G10/G12 texture dimension/subresource/sampler
 7. G3/G8 GPU-driven execution。G9 bindlessは実測需要時

@@ -8,7 +8,7 @@
 
 | set | 名前 | 現行の使い方 |
 |-----|------|--------------|
-| 0 | `PELICAN_SET_FRAME` | 全 pipeline 共通の固定 layout。binding 0 `FrameUBO`、1 `ObjectBuffer` SSBO、2 `LightUBO`。エンジン管理・読み取り専用。 |
+| 0 | `PELICAN_SET_FRAME` | 全 pipeline 共通の固定 layout。binding 0 `FrameUBO`、1 `ObjectBuffer` SSBO、2 `LightUBO`、3 `PreviousObjectBuffer` SSBO、4 `FrameResolutionUBO`。エンジン管理・読み取り専用。 |
 | 1 | `PELICAN_SET_PASS_INPUT` | fullscreen / UI / compute の入力。fullscreen は pass input の texture/buffer を binding 0 から順に割り当てる。UI texture もこの set を使う。 |
 | 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
 | 3 | `PELICAN_SET_FREE` | variant ごとの補助枠。debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture、`PELICAN_SKINNED` は binding 2 の `SkinPalette` SSBO を使う。binding 2 はスキン variant だけエンジン所有。 |
@@ -22,8 +22,46 @@ SRGB/UNORM の両 view を持つ。binding 6 の `MaterialBuffer` は既存 96 b
 params の宣言順で計算した std140 layout が正であり、JSON object の列挙順には依存しない。
 
 set 0 layout は reflection の有無にかかわらず `PipelineFactory` が全 pipeline に挿入する。
-reflection が set 0 を宣言する場合は上記 3 binding の型・個数と一致しなければ pipeline 作成を拒否する。
+reflection が set 0 を宣言する場合は上記 5 binding の型・個数と一致しなければ pipeline 作成を拒否する。
 set 1 以降は従来どおり reflection から生成し、高い set だけを使う場合も途中に空 layout を置く。
+
+### 名前付き fullscreen / compute resource port(WP207a)
+
+fullscreen pass の `input`、compute task の `reads` / `writes` は frame graph の
+依存関係を定義する。任意の `resource_ports` は、その既存 resource を shader でどう読むかを
+名前付きで注釈する。port は edge、producer、lifetime、実行順を追加しない。
+
+```json
+"resource_ports": {
+  "source": {
+    "resource": "scene_color",
+    "access": "sampled",
+    "view": "shared_2d",
+    "sampling": {"filter": "linear", "address": "clamp_to_edge"}
+  },
+  "destination": {
+    "resource": "filtered_color",
+    "access": "storage"
+  }
+}
+```
+
+port 名は GLSL identifier であり、shader は
+`#include "pelican_resource_ports.glsl"` を宣言する。generated interface は
+sampled port に `pelican_sample_<port>()` / `pelican_size_<port>()`、storage port に
+`pelican_load_<port>()` / `pelican_store_<port>()` / `pelican_size_<port>()` を作る。
+実 descriptor 変数は generated include の内部詳細であり、shader は set/binding を書かない。
+
+`view: "shared_2d"` は全 view 共通の `sampler2D` / `image2D` である。
+`view: "per_view"` は sequential graphics では当該 eye の 2D view、multiview graphics と
+1回 dispatch の compute では 2D array になる。後者の accessor は `view_index` を受け、
+`pelican_view_count_<port>()` も生成する。logical view と physical target plan が一致しない
+構成は pipeline 登録前に拒否する。
+
+reflection は port の set、binding、descriptor kind、count、生成変数名、2D/2D-array 次元を
+照合する。hot reload も同じ interface を保存して再検証する。`resource_ports` を持たない
+既存 shader の raw set 1 ABI は不変であり、buffer や特殊 descriptor の escape hatch として
+利用できる。typed buffer port と material vertex/fragment consumer は WP207b の範囲である。
 
 ### 名前付きスクリーンスナップショット(M3.5 / WP83)
 

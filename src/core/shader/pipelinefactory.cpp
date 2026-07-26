@@ -503,6 +503,8 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     }
     auto merged_reflection = merge(stage_reflections);
     validateGraphicsReflection(desc, merged_reflection);
+    validateShaderResourceInterfaceReflection(
+        desc.resource_interface, merged_reflection);
 
     auto set_layouts = descriptorSetLayoutsFor(merged_reflection);
     auto pipeline_layout = createPipelineLayout(merged_reflection, set_layouts);
@@ -521,6 +523,8 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
     auto reflection = shader_library.get(desc.shader).reflection;
     validateFrameBindings(reflection);
     validatePushConstantContract(reflection);
+    validateShaderResourceInterfaceReflection(
+        desc.resource_interface, reflection);
     auto set_layouts = descriptorSetLayoutsFor(reflection);
     auto pipeline_layout = createPipelineLayout(reflection, set_layouts);
     auto pipeline_object = createComputePipeline(desc, pipeline_layout.get());

@@ -71,21 +71,32 @@ void main() {
 
 file(WRITE "${OUT_DIR}/shaders/transform_image.comp" [=[
 #version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout(rgba8, set = 1, binding = 0) uniform readonly image2D seed_image;
-layout(rgba8, set = 1, binding = 1) uniform writeonly image2D result_image;
 void main() {
-    imageStore(result_image, ivec2(0, 0), imageLoad(seed_image, ivec2(0, 0)));
+    vec2 uv = vec2(0.5) / vec2(pelican_size_seed_image());
+    vec4 value = pelican_sample_seed_image(uv);
+    float frame_light_probe =
+        pelicanFrame.time_delta.x +
+        pelicanFrame.camera_position.x +
+        float(pelicanLights.directionalLightCount);
+    if (isnan(frame_light_probe)) {
+        value = vec4(1.0, 0.0, 1.0, 1.0);
+    }
+    pelican_store_result_image(ivec2(0, 0), value);
 }
 ]=])
 
 file(WRITE "${OUT_DIR}/shaders/sample_image.frag" [=[
 #version 450
-layout(set = 1, binding = 0) uniform sampler2D result_image;
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
 layout(location = 0) in vec2 outUV;
 layout(location = 0) out vec4 outColor;
 void main() {
-    outColor = texture(result_image, outUV);
+    outColor = pelican_sample_source_image(outUV);
 }
 ]=])
 
@@ -159,6 +170,12 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
           "name": "initialize_result",
           "type": "fullscreen",
           "input": ["seed_image"],
+          "resource_ports": {
+            "source_image": {
+              "resource": "seed_image",
+              "access": "sampled"
+            }
+          },
           "output": {"color": "result_image", "depth": null},
           "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/sample_image"}
         },
@@ -167,6 +184,12 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
           "type": "fullscreen",
           "after": ["transform_image"],
           "input": ["result_image"],
+          "resource_ports": {
+            "source_image": {
+              "resource": "result_image",
+              "access": "sampled"
+            }
+          },
           "output": {"color": "sampled_color", "depth": null},
           "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/sample_image"}
         },
@@ -189,6 +212,18 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
       "shader": "shaders/transform_image",
       "reads": ["seed_image"],
       "writes": ["result_image"],
+      "resource_ports": {
+        "seed_image": {
+          "access": "sampled",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        },
+        "result_image": {
+          "access": "storage"
+        }
+      },
       "after": ["initialize_result"],
       "dispatch": {"groups": [1, 1, 1]},
       "schedule": "per_frame"

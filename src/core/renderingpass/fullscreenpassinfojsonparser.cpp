@@ -1,11 +1,41 @@
 #include "fullscreenpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <set>
+#include <span>
 #include <stdexcept>
 
 namespace Pelican {
 
 namespace {
+
+std::vector<std::string> parseAuthoredInputs(
+    const nlohmann::json &pass_json,
+    const std::string &pass_name) {
+    if (!pass_json.contains("input") ||
+        pass_json.at("input").is_null()) {
+        return {};
+    }
+    const auto &encoded = pass_json.at("input");
+    if (encoded.is_string()) {
+        return {encoded.get<std::string>()};
+    }
+    if (!encoded.is_array()) {
+        throw std::runtime_error(
+            "Fullscreen pass input must be a string or array: " +
+            pass_name);
+    }
+    std::vector<std::string> result;
+    result.reserve(encoded.size());
+    for (const auto &entry : encoded) {
+        if (!entry.is_string()) {
+            throw std::runtime_error(
+                "Fullscreen pass input entries must be strings: " +
+                pass_name);
+        }
+        result.push_back(entry.get<std::string>());
+    }
+    return result;
+}
 
 FullscreenInputFilter parseInputFilter(
     const nlohmann::json &sampling, const std::string &pass_name,
@@ -97,6 +127,30 @@ std::vector<FullscreenInputSampling> parseInputSampling(
 FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_json,
                                                    const std::string &pass_name) {
     FullscreenPassInfo fullscreen_info;
+    const auto authored_inputs =
+        parseAuthoredInputs(pass_json, pass_name);
+    fullscreen_info.resource_ports =
+        parseShaderResourcePortDefinitions(
+            pass_json, authored_inputs,
+            std::span<const std::string>{},
+            "fullscreen pass '" + pass_name + "'");
+    for (const auto &port :
+         fullscreen_info.resource_ports) {
+        if (effectiveShaderResourcePortAccess(
+                port, true, false) !=
+            ShaderResourcePortAccess::sampled) {
+            throw std::runtime_error(
+                "Fullscreen resource port '" + port.name +
+                "' must use sampled access: " + pass_name);
+        }
+    }
+    if (!fullscreen_info.resource_ports.empty() &&
+        pass_json.contains("input_sampling")) {
+        throw std::runtime_error(
+            "Fullscreen resource_ports sampling replaces "
+            "input_sampling: " +
+            pass_name);
+    }
     fullscreen_info.input_sampling =
         parseInputSampling(pass_json, pass_name);
 

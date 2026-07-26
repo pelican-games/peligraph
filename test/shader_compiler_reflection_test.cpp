@@ -1,7 +1,9 @@
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
+#include "../src/core/shader/shaderresourceinterface.hpp"
 #include "../src/core/ui/gpuabi.hpp"
+#include "../src/project/targetrenderplanning.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
@@ -170,6 +172,186 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(push_ranges[0].size ==
             PELICAN_PUSH_ENGINE_BYTES + sizeof(uint32_t) * 2);
 #endif
+}
+
+TEST_CASE(
+    "generated shader resource ports preserve descriptor names and image "
+    "view dimensions",
+    "[shader][reflection][resource-port][wp207a]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const std::array bindings{
+        ShaderResourceInterfaceBinding{
+            .port =
+                ShaderResourcePortDefinition{
+                    .name = "scene_color",
+                    .resource = "scene",
+                    .access =
+                        ShaderResourcePortAccess::
+                            sampled,
+                },
+            .binding = 0,
+            .descriptor =
+                ShaderResourceDescriptorKind::
+                    combined_image_sampler,
+            .image_view_dimension =
+                ReflectedImageViewDimension::two_d,
+        },
+        ShaderResourceInterfaceBinding{
+            .port =
+                ShaderResourcePortDefinition{
+                    .name = "result",
+                    .resource = "output",
+                    .access =
+                        ShaderResourcePortAccess::
+                            storage,
+                    .view =
+                        ShaderResourcePortView::
+                            per_view,
+                },
+            .binding = 1,
+            .descriptor =
+                ShaderResourceDescriptorKind::
+                    storage_image,
+            .image_view_dimension =
+                ReflectedImageViewDimension::
+                    two_d_array,
+            .storage_format =
+                vk::Format::eR8G8B8A8Unorm,
+            .readable = false,
+            .writable = true,
+        },
+    };
+    ShaderCompiler compiler;
+    compiler.addIncludeDir(
+        sourceRoot() /
+        "src/core/resources/shaders/include");
+    ShaderCompileOptions options;
+    options.virtual_includes.push_back(
+        makeShaderResourcePortVirtualInclude(
+            bindings));
+    const auto compiled =
+        compiler.compileSource(
+            R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 1, local_size_y = 1) in;
+void main() {
+    vec4 value = pelican_sample_scene_color(vec2(0.5));
+    pelican_store_result(ivec2(0), 0u, value);
+}
+)glsl",
+            vk::ShaderStageFlagBits::eCompute,
+            "typed_resource_ports.comp", options);
+    INFO(compiled.log);
+    REQUIRE(compiled.ok);
+    const auto reflection =
+        reflect(compiled.spirv);
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            bindings, reflection));
+
+    const auto *sampled =
+        findBinding(
+            reflection, PELICAN_SET_PASS_INPUT, 0);
+    const auto *storage =
+        findBinding(
+            reflection, PELICAN_SET_PASS_INPUT, 1);
+    REQUIRE(sampled != nullptr);
+    REQUIRE(
+        sampled->image_view_dimension ==
+        ReflectedImageViewDimension::two_d);
+    REQUIRE(storage != nullptr);
+    REQUIRE(
+        storage->image_view_dimension ==
+        ReflectedImageViewDimension::
+            two_d_array);
+
+    auto wrong_dimension = reflection;
+    wrong_dimension.bindings.at(1)
+        .image_view_dimension =
+        ReflectedImageViewDimension::two_d;
+    REQUIRE_THROWS_WITH(
+        validateShaderResourceInterfaceReflection(
+            bindings, wrong_dimension),
+        Catch::Matchers::ContainsSubstring(
+            "resource 'output'"));
+
+    auto wrong_descriptor = reflection;
+    wrong_descriptor.bindings.at(0).type =
+        vk::DescriptorType::eStorageImage;
+    REQUIRE_THROWS_WITH(
+        validateShaderResourceInterfaceReflection(
+            bindings, wrong_descriptor),
+        Catch::Matchers::ContainsSubstring(
+            "resource 'scene'"));
+
+    auto wrong_name = reflection;
+    wrong_name.bindings.at(0).name =
+        "pelican_resource_wrong";
+    REQUIRE_THROWS_WITH(
+        validateShaderResourceInterfaceReflection(
+            bindings, wrong_name),
+        Catch::Matchers::ContainsSubstring(
+            "resource 'scene'"));
+#endif
+}
+
+TEST_CASE(
+    "resource port view resolver separates shared sequential and multiview "
+    "contracts",
+    "[shader][resource-port][multiview][wp207a]") {
+    ShaderResourcePortDefinition shared{
+        .name = "shared",
+        .resource = "shadow",
+    };
+    ShaderResourcePortDefinition per_view{
+        .name = "eyes",
+        .resource = "eye_color",
+        .view = ShaderResourcePortView::per_view,
+    };
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            shared,
+            VulkanResourceViewLayout::shared_2d,
+            ShaderResourceConsumerView::
+                graphics_sequential) ==
+        ReflectedImageViewDimension::two_d);
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                sequential_2d,
+            ShaderResourceConsumerView::
+                graphics_sequential) ==
+        ReflectedImageViewDimension::two_d);
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                layered_2d_array,
+            ShaderResourceConsumerView::
+                graphics_multiview) ==
+        ReflectedImageViewDimension::
+            two_d_array);
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                sequential_2d,
+            ShaderResourceConsumerView::
+                compute_once) ==
+        ReflectedImageViewDimension::
+            two_d_array);
+    REQUIRE_THROWS_WITH(
+        resolveShaderResourceImageViewDimension(
+            shared,
+            VulkanResourceViewLayout::
+                layered_2d_array,
+            ShaderResourceConsumerView::
+                graphics_multiview),
+        Catch::Matchers::ContainsSubstring(
+            "resource 'shadow'"));
 }
 
 TEST_CASE("UI shader reflection and QuadVertex pipeline layout preserve the 20-byte ABI", "[shader][ui][u1]") {

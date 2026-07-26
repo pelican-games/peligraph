@@ -12,6 +12,7 @@
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
+#include "../shader/shaderresourceinterface.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <algorithm>
 #include <limits>
@@ -1074,13 +1075,192 @@ void warnBackendSpecificShaderReference(const ShaderReference &reference, bool e
 
 ShaderBundleId registerShaderReference(ShaderLibrary &shader_library, const PathResolver &path_resolver,
                                        const ShaderReference &reference, bool warn_backend_specific,
-                                       const std::vector<std::string> &shader_defines) {
+                                       const std::vector<std::string> &shader_defines,
+                                       std::vector<std::pair<std::string, std::string>>
+                                           virtual_includes = {}) {
     warnBackendSpecificShaderReference(reference, warn_backend_specific);
-    return shader_library.loadFromReference(reference, path_resolver, warn_backend_specific, shader_defines);
+    return shader_library.loadFromReference(
+        reference, path_resolver,
+        warn_backend_specific, shader_defines,
+        std::move(virtual_includes));
 }
 
-FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &fullscreen_info,
-                                                  FullscreenRuntimeDependencies dependencies) {
+struct CompiledFullscreenResourceInterface {
+    std::vector<ShaderResourceInterfaceBinding> bindings;
+    std::vector<FullscreenInputSampling> sampling;
+};
+
+VulkanResourceViewLayout physicalViewLayout(
+    PassInputViewDimension view) {
+    switch (view) {
+    case PassInputViewDimension::shared_2d:
+        return VulkanResourceViewLayout::shared_2d;
+    case PassInputViewDimension::sequential_2d:
+        return VulkanResourceViewLayout::sequential_2d;
+    case PassInputViewDimension::layered_2d_array:
+        return VulkanResourceViewLayout::layered_2d_array;
+    }
+    throw std::runtime_error(
+        "unknown fullscreen input view dimension");
+}
+
+FullscreenInputSampling fullscreenSampling(
+    ShaderResourcePortSampling sampling) {
+    return {
+        sampling.filter ==
+                ShaderResourcePortFilter::nearest
+            ? FullscreenInputFilter::nearest
+            : FullscreenInputFilter::linear,
+        sampling.address_mode ==
+                ShaderResourcePortAddressMode::repeat
+            ? FullscreenInputAddressMode::repeat
+        : sampling.address_mode ==
+                ShaderResourcePortAddressMode::
+                    mirrored_repeat
+            ? FullscreenInputAddressMode::
+                  mirrored_repeat
+            : FullscreenInputAddressMode::
+                  clamp_to_edge,
+    };
+}
+
+CompiledFullscreenResourceInterface
+compileFullscreenResourceInterface(
+    const PassDefinition &pass,
+    const FullscreenRuntimeDependencies &dependencies,
+    GraphicsPipelineViewContract view,
+    const CompiledPassRenderingContract &rendering) {
+    CompiledFullscreenResourceInterface result;
+    const auto &ports =
+        pass.fullscreenInfo().resource_ports;
+    if (ports.empty()) {
+        result.sampling =
+            pass.fullscreenInfo().input_sampling;
+        return result;
+    }
+
+    result.bindings.reserve(ports.size());
+    result.sampling.resize(
+        pass.input_targets.size());
+    const auto local_reads =
+        localReadInputMask(pass, rendering);
+    std::size_t matched_ports = 0;
+    for (std::size_t input = 0;
+         input < pass.input_targets.size(); ++input) {
+        const auto metadata =
+            dependencies.render_target_metadata.get(
+                pass.input_targets[input]);
+        auto authored_resource = metadata.name;
+        if (pass.input_target_history[input]) {
+            authored_resource += "@history";
+        }
+        const auto port = std::find_if(
+            ports.begin(), ports.end(),
+            [&](const ShaderResourcePortDefinition
+                    &candidate) {
+                return candidate.resource ==
+                       authored_resource;
+            });
+        if (port == ports.end()) continue;
+        ++matched_ports;
+        if (local_reads[input]) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') cannot bind a tile-local input attachment as a "
+                "sampled image");
+        }
+        if (!(metadata.usage &
+              vk::ImageUsageFlagBits::eSampled)) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') requires sampled render-target usage");
+        }
+        const auto physical =
+            input < pass.input_target_views.size()
+                ? physicalViewLayout(
+                      pass.input_target_views[input])
+                : VulkanResourceViewLayout::
+                      shared_2d;
+        const auto consumer =
+            view.execution ==
+                    GraphicsPipelineViewExecution::
+                        multiview
+                ? ShaderResourceConsumerView::
+                      graphics_multiview
+                : ShaderResourceConsumerView::
+                      graphics_sequential;
+        const auto dimension =
+            resolveShaderResourceImageViewDimension(
+                *port, physical, consumer);
+        if (dimension ==
+                ReflectedImageViewDimension::
+                    two_d_array &&
+            metadata.array_layers < view.view_count) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') has too few physical array layers");
+        }
+        result.bindings.push_back(
+            ShaderResourceInterfaceBinding{
+                .port = *port,
+                .binding =
+                    static_cast<std::uint32_t>(
+                        input),
+                .descriptor =
+                    ShaderResourceDescriptorKind::
+                        combined_image_sampler,
+                .image_view_dimension = dimension,
+                .readable = true,
+                .writable = false,
+            });
+        result.sampling[input] =
+            fullscreenSampling(port->sampling);
+    }
+    if (matched_ports != ports.size()) {
+        const auto unmatched = std::find_if(
+            ports.begin(), ports.end(),
+            [&](const ShaderResourcePortDefinition &port) {
+                for (std::size_t input = 0;
+                     input < pass.input_targets.size();
+                     ++input) {
+                    auto resource =
+                        dependencies
+                            .render_target_metadata
+                            .get(pass.input_targets[input])
+                            .name;
+                    if (pass.input_target_history[input]) {
+                        resource += "@history";
+                    }
+                    if (resource == port.resource) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+        throw std::runtime_error(
+            "Shader resource port '" + unmatched->name +
+            "' (resource '" + unmatched->resource +
+            "') is not an image input; typed frame-graph buffers are "
+            "not available yet");
+    }
+    return result;
+}
+
+FullscreenShaderModules registerFullscreenShaders(
+    const FullscreenPassInfo &fullscreen_info,
+    FullscreenRuntimeDependencies dependencies,
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface) {
+    std::vector<std::pair<std::string, std::string>>
+        virtual_includes;
+    if (!resource_interface.empty()) {
+        virtual_includes =
+            makeShaderResourcePortVirtualIncludes(
+                resource_interface);
+    }
     return FullscreenShaderModules{
         registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
                                 fullscreen_info.vert_shader,
@@ -1089,7 +1269,8 @@ FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &full
         registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
                                 fullscreen_info.frag_shader,
                                 dependencies.warn_backend_specific_shader_refs,
-                                dependencies.shader_defines),
+                                dependencies.shader_defines,
+                                std::move(virtual_includes)),
     };
 }
 
@@ -1098,7 +1279,9 @@ PassId registerFullscreenPipeline(
     FullscreenRuntimeDependencies dependencies,
     GraphicsPipelineViewContract view,
     const CompiledPassRenderingContract
-        &rendering) {
+        &rendering,
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface) {
     const auto color_formats =
         resolvePhysicalColorFormats(
             pass_def, rendering,
@@ -1121,14 +1304,19 @@ PassId registerFullscreenPipeline(
     appendLocalReadShaderDefines(
         dependencies.shader_defines, pass_def,
         rendering);
-    const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
+    const auto shaders = registerFullscreenShaders(
+        pass_def.fullscreenInfo(), dependencies,
+        resource_interface);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
         color_formats, depth_format,
         shaders.vert_shader, shaders.frag_shader,
         dependencies.shader_defines,
         pass_def.rasterization_samples,
         view,
-        graphicsLocalReadContract(rendering));
+        graphicsLocalReadContract(rendering),
+        std::vector<ShaderResourceInterfaceBinding>{
+            resource_interface.begin(),
+            resource_interface.end()});
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
@@ -1138,17 +1326,22 @@ PassId compileFullscreenPass(
     GraphicsPipelineViewContract view,
     const CompiledPassRenderingContract
         &rendering) {
+    const auto resource_interface =
+        compileFullscreenResourceInterface(
+            pass_def, dependencies, view,
+            rendering);
     const auto pass_id =
         registerFullscreenPipeline(
             pass_def, dependencies, view,
-            rendering);
+            rendering,
+            resource_interface.bindings);
 
     if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
         dependencies.fullscreen_pass_container.setInputResources(
             pass_id, pass_def.input_targets, pass_def.input_target_history, pass_def.input_buffers,
             dependencies.render_target_views,
             dependencies.frame_graph_resources,
-            pass_def.fullscreenInfo().input_sampling,
+            resource_interface.sampling,
             pass_def.input_target_views,
             view,
             localReadInputMask(

@@ -1,12 +1,13 @@
-# 描画 authoring の使い勝手と回りくどさの棚卸し(v4)
+# 描画 authoring の使い勝手と回りくどさの棚卸し(v5)
 
 対象読者: feature / material / shader をユーザー空間で書く人、およびその公開面を
 実装するエンジン担当。
 
-ステータス: **v4(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
+ステータス: **v5(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
 再照合し、`extent_scale`、custom texture binding、graphics buffer input の事実誤認を
 訂正した。v3のWP206a stable selectionに続き、v4ではWP206bのnamed material variantと
-project-owned inverted-hull dogfoodによるU2解消を反映した。機構カバレッジは
+project-owned inverted-hull dogfoodによるU2解消、v5ではWP207aのnamed fullscreen/compute
+image portによるU3解消を反映した。機構カバレッジは
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md)、監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
@@ -63,23 +64,21 @@ stable filter ID、resolved draw count、unmatched tag、provenanceを表示す�
 残る使い勝手は、material全体ではなくinstance/draw単位で選ぶlayer拡張と、
 phaseを跨ぐ必要が実際に出た場合のvariant-aware draw queueである。
 
-### U3. raw fullscreen/compute inputはbinding順を人が合わせる
+### U3. fullscreen/compute image inputのbinding順（解消済み、WP207a）
 
 `.surface`のparams/custom texture/screen inputはgenerated includeが宣言とaccessorを作る。
-一方、raw fullscreen/compute shaderはJSONのinput/reads順とset 1 bindingを人が一致させる。
+fullscreen/compute imageも、`resource_ports`のlogical名から
+`pelican_resource_ports.glsl`と`pelican_sample_<name>()` /
+`pelican_store_<name>()`を生成する通常経路を実装した。
 
-- `.surface`生成: [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp:55)
-- fullscreen binding: [fullscreenpasscontainer.cpp:451](../src/core/fullscreenpass/fullscreenpasscontainer.cpp:451)
-- 現manual: [manual/06_rendering.md](manual/06_rendering.md)
+- port schema: [shaderresourceport.cpp](../src/project/shaderresourceport.cpp)
+- generated interface: [shaderresourceinterface.cpp](../src/core/shader/shaderresourceinterface.cpp)
+- runtime lowering: [renderingpassruntimecompiler.cpp](../src/core/renderingpass/renderingpassruntimecompiler.cpp)
 
-順番を挿し替えるとshader compileは通ってもresourceの意味が入れ替わり得る。
-
-**改善方針**:
-
-- logical resource name、descriptor kind、view dimensionからvirtual generated includeを作る
-- 通常shaderはnamed accessorを使う
-- raw `layout(set=1,binding=N)`はC-layer escape hatchとして維持する
-- reflectionとauthoring manifestが不一致ならpipeline作成前にresource名付きでrejectする
+reflectionはlogical resource名とdescriptor kind、2D/2D-array view dimension、
+生成変数名までpipeline作成前に照合する。reorderで意味が黙って入れ替わらない。
+raw `layout(set=1,binding=N)`はbuffer、特殊descriptor、低レベル実験用の
+C-layer escape hatchとして意図的に維持する。typed bufferとmaterial consumerはU5/WP207bで扱う。
 
 ### U4. 同じanchorへ挿すfeature間の関係が発見しにくい
 
@@ -105,8 +104,9 @@ feature単体から見えない点である。
 ### U5. material/geometryだけresource portの表現力が狭い
 
 computeとgraphicsはframe planner内部で同じreads/writes graphへ正規化され、
-fullscreenはcompute bufferを読める。文法が違うこと自体は各domainの自然な糖衣であり、
-全面改名の理由にはならない。
+fullscreenはcompute bufferを読め、fullscreen/compute imageは同じtyped port IRと
+generated interfaceを使う。文法が違うこと自体は各domainの自然な糖衣であり、全面改名の
+理由にはならない。
 
 残る非対称はmaterial passである。
 
@@ -118,8 +118,8 @@ fullscreenはcompute bufferを読める。文法が違うこと自体は各domai
 **改善方針**:
 
 - `input/output`と`reads/writes`のschema名を無理に統一しない
-- compiler IRのtyped portは共通化したまま、material vertex/fragment向けportを追加する
-- U3のnamed generated includeと同じWPで縦切りする
+- WP207aのcompiler IRとnamed generated includeを再利用し、material vertex/fragment向けportを追加する
+- typed bufferはelement schemaとstage visibilityを同じWPで設計する
 
 ### U6. errorとcapability discoveryに候補一覧が不足
 
@@ -156,7 +156,8 @@ v1が参照した`frameplanner.cpp:580`はsnapshotのestimated byte-sizeを計�
 
 - [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp:55)
 
-手計算が残るのはU3のraw fullscreen/compute escape hatchである。
+手計算が残るのは意図してraw ABIを選んだfullscreen/compute escape hatchであり、
+通常のimage portではない。
 
 ### R3. computeとgraphicsが互いに接続できない
 
@@ -225,7 +226,8 @@ inverted-hullは既存material kindのpass-local variantで実GPU検証済みで
 |---|---|---|
 | 1 | public shadow contract | resource名、feature provenance、失敗段のdiagnostic |
 | 2 | draw tag + multipass material route | ✅ WP206a/WP206bでU2とpass-local surface/stateの発見性を解消 |
-| 3 | compute/material typed resource port | U3、U5、named generated include |
+| 3a | ✅ WP207a compute/fullscreen typed image port | U3、named generated include |
+| 3b | WP207b material/geometry typed resource port | U5、typed buffer |
 | 4 | lighting data v2 + clustered dogfood | fixed light cap、format/capability diagnostic |
 | 5 | texture dimension/subresource/sampler | sampler default、合法format/view候補 |
 | 6 | indirect dispatch/draw | plan dumpのexecution provenance |

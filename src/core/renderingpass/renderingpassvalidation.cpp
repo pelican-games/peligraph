@@ -309,6 +309,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             "Only fullscreen passes support input_sampling: " +
             pass_def.name);
     }
+    if (!pass_def.isFullscreen() &&
+        pass_json.contains("resource_ports")) {
+        throw std::runtime_error(
+            "Only fullscreen passes support resource_ports: " +
+            pass_def.name);
+    }
 
     if (pass_json.contains("needs_projection_matrix")) {
         throw std::runtime_error(

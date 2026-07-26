@@ -60,10 +60,66 @@
 
 ## レシピ 4: compute タスク
 
-コード不要。rendering config に `buffers` / `compute_tasks`(reads/writes 宣言、
-順序は書かない)+ `.comp` シェーダ(stem)。順序・バリアはプランナが導出し、
-導出不能な writes-writes は hard error(解消は明示エッジ or 中間リソース)。
-確認は `--dump-frame-plan` / rpc `get_frame_plan`。
+コード不要。rendering config に `buffers` / `render_targets` と
+`compute_tasks`(reads/writes 宣言、順序は書かない)+ `.comp` シェーダ(stem)を書く。
+順序・バリアはプランナが導出し、導出不能な writes-writes は hard error
+(解消は明示エッジ or 中間リソース)。確認は `--dump-frame-plan` /
+rpc `get_frame_plan`。
+
+画像を読む通常経路は `resource_ports` で論理名へ名前付き shader port を与える。
+port は既存の `reads` / `writes` を注釈するだけで、依存 edge を新設しない。
+read-only image の `access` は既定で `sampled`、write image は `storage` になるが、
+公開契約を明確にする場合は次のように明記する。
+
+```json
+{
+  "compute_tasks": [{
+    "name": "filter",
+    "shader": "shaders/filter",
+    "reads": ["scene_color"],
+    "writes": ["filtered_color"],
+    "resource_ports": {
+      "source": {
+        "resource": "scene_color",
+        "access": "sampled",
+        "sampling": {
+          "filter": "linear",
+          "address": "clamp_to_edge"
+        }
+      },
+      "destination": {
+        "resource": "filtered_color",
+        "access": "storage"
+      }
+    },
+    "dispatch": {"groups": [8, 8, 1]}
+  }]
+}
+```
+
+GLSL は generated include を読み、set/binding 番号を持たない。
+compute でも同じ `pelican_frame.glsl` から camera/time/resolution/light を読める。
+
+```glsl
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = (vec2(p) + 0.5) / vec2(pelican_size_source());
+    vec4 color = pelican_sample_source(uv);
+    pelican_store_destination(p, color);
+}
+```
+
+`view: "shared_2d"` が既定で、XR の eye ごとの target には
+`view: "per_view"` を指定する。fullscreen pass でも同じ `resource_ports` と
+`pelican_sample_<port>()` を使える。既存の raw
+`layout(set=1,binding=N)` は buffer、特殊 descriptor、低レベル実験用の
+escape hatch として残る。
 
 ## レシピ 5: プロジェクト内C++コード(静的リンク)
 
@@ -138,12 +194,13 @@ does not add projection jitter.
 }
 ```
 
-Inputs become set 1 bindings in declaration order, so a raw fragment shader declares
-bindings 0/1/2 for current color, history, and velocity. `.surface` keeps using its
-generated `pelican_screen_<name>(uv)` accessors; temporal post-process passes normally
-use a raw fullscreen shader because `.surface` describes geometry materials. Copy a
-bundled feature JSON into the project before modifying it; bundled features are not
-privileged.
+For a normal fullscreen shader, add named `resource_ports` for current color, history,
+and velocity and use the generated `pelican_sample_<port>(uv)` accessors. A deliberately
+raw fragment shader may still declare set 1 bindings 0/1/2 in `input` declaration order.
+`.surface` keeps using its generated `pelican_screen_<name>(uv)` accessors; temporal
+post-process passes normally use a fullscreen shader because `.surface` describes
+geometry materials. Copy a bundled feature JSON into the project before modifying it;
+bundled features are not privileged.
 
 `@history` appears as `reads_history` in `pelican.frame_plan` and creates no same-frame
 edge or barrier. A normal `velocity` read is an ordinary dependency. TAA, camera jitter,

@@ -243,6 +243,47 @@ TEST_CASE("shader library accepts GLSL source files when runtime compiler is ena
 #endif
 }
 
+TEST_CASE(
+    "shader library preserves generated virtual includes across reload",
+    "[shader][hot-reload][resource-port][wp207a]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto work_dir =
+        sourceRoot() /
+        "build/test_artifacts/"
+        "pelican_shader_virtual_include_test";
+    std::filesystem::remove_all(work_dir);
+    REQUIRE(
+        std::filesystem::create_directories(
+            work_dir));
+    const auto shader_path =
+        work_dir / "generated.frag";
+    writeText(
+        shader_path,
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include \"generated_color.glsl\"\n"
+        "layout(location = 0) out vec4 outColor;\n"
+        "void main() { outColor = generatedColor(); }\n");
+
+    ShaderLibrary library{
+        ShaderLibraryModuleMode::reflection_only};
+    const auto id = library.loadFromFile(
+        shader_path, {},
+        {{"generated_color.glsl",
+          "vec4 generatedColor() { return vec4(0.25); }\n"}});
+    REQUIRE(
+        library.get(id).virtual_includes.size() == 1);
+    REQUIRE(library.reload(id));
+    REQUIRE(library.get(id).version == 2);
+    REQUIRE((
+        library.get(id).virtual_includes ==
+        std::vector<
+            std::pair<std::string, std::string>>{
+            {"generated_color.glsl",
+             "vec4 generatedColor() { return vec4(0.25); }\n"}}));
+#endif
+}
+
 TEST_CASE("shader library tracks watcher keys and reloads every include and surface variant atomically",
           "[shader][hot-reload][hr2-s]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

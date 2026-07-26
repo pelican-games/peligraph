@@ -15,6 +15,7 @@ add_library(pelican_project
     renderpipeline.cpp
     samplecountplanning.cpp
     sceneformat.cpp
+    shaderresourceport.cpp
     surfaceformat.cpp
     targetplanning.cpp
     targetrenderplanning.cpp
