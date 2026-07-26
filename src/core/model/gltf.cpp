@@ -1526,14 +1526,36 @@ struct InternalGltfLoader {
     }
 
     void loadTexture(int texture_index) {
-        const auto &image = model.images.at(model.textures.at(texture_index).source);
+        if (texture_index < 0 ||
+            texture_index >=
+                static_cast<int>(model.textures.size())) {
+            throw std::runtime_error(
+                "glTF material references an invalid texture index in '" +
+                source_path + "'");
+        }
+        const auto &texture =
+            model.textures[static_cast<std::size_t>(texture_index)];
+        if (texture.source < 0 ||
+            texture.source >=
+                static_cast<int>(model.images.size())) {
+            throw std::runtime_error(
+                "glTF texture " + std::to_string(texture_index) +
+                " has a missing, unsupported, or out-of-range image source in '" +
+                source_path + "'");
+        }
+        const auto &image =
+            model.images[static_cast<std::size_t>(texture.source)];
+        GltfInternal::validateRgba8Image(
+            image, source_path + "#image/" +
+                       std::to_string(texture.source));
         texture_map.at(texture_index) = resources.registerTexture(
             vk::Extent3D{
                 static_cast<uint32_t>(image.width),
                 static_cast<uint32_t>(image.height),
                 1,
             },
-            image.image.data(), vk::Format::eR8G8B8A8Unorm, image.image.size());
+            image.image.data(), vk::Format::eR8G8B8A8Unorm,
+            image.image.size());
     }
 
     void loadMaterial(int material_index) {

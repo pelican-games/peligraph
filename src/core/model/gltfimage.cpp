@@ -4,6 +4,7 @@
 #include <stb_image.h>
 
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -15,44 +16,44 @@ struct DecodedImage {
     int width = 0;
     int height = 0;
     int component = 4;
-    int bits = 8;
-    int pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
 };
 
 DecodedImage decodeImage(const EncodedImage &encoded) {
+    if (encoded.bytes.empty() ||
+        encoded.bytes.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error(
+            "encoded glTF image is empty or exceeds stb_image input limits");
+    }
+
     DecodedImage decoded;
     int source_components = 0;
     const auto *data = encoded.bytes.data();
     const auto size = static_cast<int>(encoded.bytes.size());
-    if (stbi_is_16_bit_from_memory(data, size)) {
-        auto *pixels = stbi_load_16_from_memory(
-            data, size, &decoded.width, &decoded.height, &source_components, 4);
-        if (pixels == nullptr) {
-            throw std::runtime_error(
-                std::string{"failed to decode 16-bit glTF image: "} +
-                stbi_failure_reason());
-        }
-        const auto bytes = static_cast<std::size_t>(decoded.width) *
-                           decoded.height * 4 * sizeof(stbi_us);
-        const auto *begin = reinterpret_cast<const unsigned char *>(pixels);
-        decoded.pixels.assign(begin, begin + bytes);
-        stbi_image_free(pixels);
-        decoded.bits = 16;
-        decoded.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
-    } else {
-        auto *pixels = stbi_load_from_memory(data, size, &decoded.width,
-                                             &decoded.height,
-                                             &source_components, 4);
-        if (pixels == nullptr) {
-            throw std::runtime_error(
-                std::string{"failed to decode glTF image: "} +
-                stbi_failure_reason());
-        }
-        const auto bytes = static_cast<std::size_t>(decoded.width) *
-                           decoded.height * 4;
-        decoded.pixels.assign(pixels, pixels + bytes);
-        stbi_image_free(pixels);
+    // Material storage has paired RGBA8 UNORM/SRGB views. stbi_load performs
+    // the deliberate 16-bit PNG -> 8-bit conversion here, before the bytes
+    // cross into the fixed RGBA8 Vulkan upload path.
+    auto *pixels = stbi_load_from_memory(data, size, &decoded.width,
+                                         &decoded.height,
+                                         &source_components, 4);
+    if (pixels == nullptr) {
+        throw std::runtime_error(
+            std::string{"failed to decode glTF image: "} +
+            stbi_failure_reason());
     }
+    if (decoded.width <= 0 || decoded.height <= 0 ||
+        static_cast<std::size_t>(decoded.width) >
+            std::numeric_limits<std::size_t>::max() /
+                static_cast<std::size_t>(decoded.height) / 4) {
+        stbi_image_free(pixels);
+        throw std::runtime_error(
+            "decoded glTF image dimensions exceed RGBA8 storage limits");
+    }
+    const auto bytes = static_cast<std::size_t>(decoded.width) *
+                       static_cast<std::size_t>(decoded.height) * 4;
+    decoded.pixels.assign(pixels, pixels + bytes);
+    stbi_image_free(pixels);
+
     if ((encoded.requested_width != 0 &&
          decoded.width != encoded.requested_width) ||
         (encoded.requested_height != 0 &&
@@ -102,8 +103,41 @@ void decodeImagesInParallel(tinygltf::Model &model,
         image.width = decoded[slot].width;
         image.height = decoded[slot].height;
         image.component = decoded[slot].component;
-        image.bits = decoded[slot].bits;
-        image.pixel_type = decoded[slot].pixel_type;
+        image.bits = 8;
+        image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+    }
+}
+
+void validateRgba8Image(const tinygltf::Image &image,
+                        std::string_view source_name) {
+    const auto label = source_name.empty()
+                           ? std::string{"glTF image"}
+                           : "glTF image '" + std::string{source_name} + "'";
+    if (image.width <= 0 || image.height <= 0) {
+        throw std::runtime_error(label +
+                                 " has invalid decoded dimensions");
+    }
+    if (image.component != 4 || image.bits != 8 ||
+        image.pixel_type !=
+            TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+        throw std::runtime_error(
+            label +
+            " is not decoded as the required RGBA8 unsigned-byte format");
+    }
+
+    const auto width = static_cast<std::size_t>(image.width);
+    const auto height = static_cast<std::size_t>(image.height);
+    if (width >
+        std::numeric_limits<std::size_t>::max() / height / 4) {
+        throw std::runtime_error(label +
+                                 " dimensions overflow RGBA8 byte size");
+    }
+    const auto expected_bytes = width * height * 4;
+    if (image.image.size() != expected_bytes) {
+        throw std::runtime_error(
+            label + " RGBA8 byte size mismatch: expected " +
+            std::to_string(expected_bytes) + ", got " +
+            std::to_string(image.image.size()));
     }
 }
 

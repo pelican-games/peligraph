@@ -598,6 +598,7 @@ pelican_define_test(gltf_fragment_test GPU pelican_core pelican_project VulkanMe
 target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+pelican_define_test(gltfimage_test pelican_core tinygltf)
 pelican_define_test(modelhotreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(drawqueuebuilder_test pelican_core)
 pelican_define_test(renderpolicyregistry_test pelican_core)

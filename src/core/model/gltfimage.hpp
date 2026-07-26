@@ -4,6 +4,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican::GltfInternal {
@@ -24,5 +25,11 @@ bool retainEncodedImage(tinygltf::Image *image, int image_index,
 
 void decodeImagesInParallel(tinygltf::Model &model,
                             const EncodedImages &encoded);
+
+// The material texture path uses RGBA8 images so it can expose linear and
+// sRGB views of the same storage. This validates the decoder/upload boundary,
+// including the exact byte count expected by the Vulkan format.
+void validateRgba8Image(const tinygltf::Image &image,
+                        std::string_view source_name);
 
 } // namespace Pelican::GltfInternal
