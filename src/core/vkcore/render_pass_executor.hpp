@@ -5,6 +5,7 @@
 #include "render_target_layout_tracker.hpp"
 #include "render_pass_frame_setup.hpp"
 #include "rendertarget.hpp"
+#include <span>
 
 namespace Pelican {
 
@@ -24,6 +25,21 @@ DECLARE_MODULE(RenderPassExecutor) {
                  const RenderPassExecutorDependencies &dependencies,
                  RenderTargetLayoutTracker &layout_tracker,
                  RenderPassViewInvocation invocation = {}) const;
+    void beginLocalReadScope(
+        const FrameRenderContext &frame,
+        std::span<const CompiledPass *const> passes,
+        const RenderPassExecutorDependencies &dependencies,
+        RenderTargetLayoutTracker &layout_tracker,
+        RenderPassViewInvocation invocation = {}) const;
+    void executeLocalReadPass(
+        const FrameRenderContext &frame,
+        const CompiledPass &pass,
+        const RenderPassExecutorDependencies &dependencies,
+        RenderPassViewInvocation invocation = {}) const;
+    void localReadDependency(
+        vk::CommandBuffer cmd_buf) const;
+    void endLocalReadScope(
+        vk::CommandBuffer cmd_buf) const;
 };
 
 } // namespace Pelican

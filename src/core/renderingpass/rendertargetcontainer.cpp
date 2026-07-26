@@ -221,8 +221,11 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
     const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
     const auto preferred_memory =
         storage_mode ==
-                RenderTargetStorageMode::
-                    transient_attachment
+                    RenderTargetStorageMode::
+                        transient_attachment ||
+                storage_mode ==
+                    RenderTargetStorageMode::
+                        tile_local_attachment
             ? vk::MemoryPropertyFlags{
                   vk::MemoryPropertyFlagBits::
                       eLazilyAllocated}
@@ -294,13 +297,13 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
             "Render target array_layers must be greater than zero: " +
             name);
     }
+    const auto attachment_usage =
+        vk::ImageUsageFlagBits::eColorAttachment |
+        vk::ImageUsageFlagBits::
+            eDepthStencilAttachment;
     if (storage_mode ==
         RenderTargetStorageMode::
             transient_attachment) {
-        const auto attachment_usage =
-            vk::ImageUsageFlagBits::eColorAttachment |
-            vk::ImageUsageFlagBits::
-                eDepthStencilAttachment;
         if (!(usage & attachment_usage) ||
             bool(usage & ~vk::ImageUsageFlags{
                               attachment_usage})) {
@@ -317,6 +320,43 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         }
         usage |= vk::ImageUsageFlagBits::
             eTransientAttachment;
+    } else if (
+        storage_mode ==
+        RenderTargetStorageMode::
+            tile_local_attachment) {
+        const auto allowed_usage =
+            attachment_usage |
+            vk::ImageUsageFlagBits::eSampled |
+            vk::ImageUsageFlagBits::
+                eInputAttachment;
+        if (!(usage & attachment_usage) ||
+            bool(usage & ~vk::ImageUsageFlags{
+                              allowed_usage})) {
+            throw std::runtime_error(
+                "Tile-local render target may only declare "
+                "color/depth attachment, sampled, and input "
+                "attachment usage: " +
+                name);
+        }
+        if (history || samples != 1) {
+            throw std::runtime_error(
+                "Tile-local render target must be non-history and "
+                "single-sample: " +
+                name);
+        }
+        if (!GET_MODULE(VulkanManageCore)
+                 .getRuntimeCapabilities()
+                 .dynamic_rendering_local_read) {
+            throw std::runtime_error(
+                "Tile-local render target requires enabled Vulkan "
+                "dynamic rendering local read: " +
+                name);
+        }
+        usage =
+            (usage & attachment_usage) |
+            vk::ImageUsageFlagBits::eInputAttachment |
+            vk::ImageUsageFlagBits::
+                eTransientAttachment;
     }
     if (history && !(usage & vk::ImageUsageFlagBits::eSampled)) {
         throw std::runtime_error("History render target requires SAMPLED usage: " + name);

@@ -47,12 +47,30 @@ struct FrameGraphAttachmentDefinition {
         const FrameGraphAttachmentDefinition &) const = default;
 };
 
+// A shader-visible read can state how far from the current invocation it
+// accesses an image. The resource list remains separate so the legacy frame
+// scheduler does not depend on target-planning semantics; this typed contract
+// is consumed by the logical shadow graph and physical target compiler.
+struct FrameGraphReadFootprintDefinition {
+    std::string resource;
+    LogicalReadFootprint footprint{
+        LogicalReadFootprintKind::arbitrary,
+        std::nullopt,
+    };
+
+    bool operator==(
+        const FrameGraphReadFootprintDefinition &) const =
+        default;
+};
+
 struct FrameGraphNodeDefinition {
     std::string name;
     FramePlanNodeKind kind = FramePlanNodeKind::render;
     size_t declaration_index = 0;
     std::vector<std::string> reads;
     std::vector<std::string> reads_history;
+    std::vector<FrameGraphReadFootprintDefinition>
+        read_footprints;
     std::vector<std::string> writes;
     std::vector<std::string> after;
     std::vector<std::string> before;

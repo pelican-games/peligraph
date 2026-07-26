@@ -925,6 +925,14 @@ backend候補を与え、device/format gate後にStore discard、transient image
 preferenceへloweringした。一般のmaterialized Store elision、scope fusion、queue/barrier、
 native/external boundaryは対応verifierができるまで受理しない。
 
+続くtile-local runtime sliceでは、`same_pixel` readを持つnon-raster render consumerだけを
+producerと同じphysical rendering scopeへ融合した。graph固有のread/extent条件と、
+device/format固有のdynamic-rendering-local-read条件を両方満たした場合だけ
+`tile_local_attachment`を選び、input attachment shader ABI、location/index mapping、
+BY_REGION dependency、transient/lazy allocation、per-view/multiview executionまでを接続した。
+この実装は「logical graphがVulkan scopeそのものを記述する」のではなく、logical
+footprintから有限physical候補を導出してdevice compilerが選ぶ二段階境界の実例である。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -980,7 +988,9 @@ native/external boundaryは対応verifierができるまで受理しない。
 - WP204 alternate-format sliceで宣言済み候補、device capability evidence、
   runtime format assignmentとhot-reload世代交換を同じ経路へ接続
 - WP204 attachment/transient sliceでverified load/storeとwrite-only transient imageを接続
-- tile-local / aliasのruntime実行、一般のload/store等のaggressive physical control、NativeScope、
+- WP204 tile-local sliceでsame-pixel fullscreen read、scope fusion、shader/runtime local read、
+  transient allocation、single-view/sequential/multiview実行を接続
+- aliasのruntime実行、一般のload/store等のaggressive physical control、NativeScope、
   CPU・external・video runtime workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain

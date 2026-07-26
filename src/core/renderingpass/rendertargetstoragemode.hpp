@@ -10,6 +10,7 @@ namespace Pelican {
 enum class RenderTargetStorageMode : std::uint8_t {
     materialized,
     transient_attachment,
+    tile_local_attachment,
 };
 
 } // namespace Pelican

@@ -221,6 +221,46 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                     " bytes remain owned by the existing FramePlan"});
         }
 
+        std::map<std::string, LogicalReadFootprint,
+                 std::less<>>
+            declared_footprints;
+        for (const auto &declaration :
+             source.read_footprints) {
+            if (declaration.resource.empty() ||
+                std::find(
+                    source.reads.begin(),
+                    source.reads.end(),
+                    declaration.resource) ==
+                    source.reads.end()) {
+                throw std::runtime_error(
+                    "logical shadow graph node '" +
+                    source.name +
+                    "' declares a footprint for a non-current "
+                    "read resource: " +
+                    declaration.resource);
+            }
+            if (declaration.footprint.kind ==
+                    LogicalReadFootprintKind::none ||
+                declaration.footprint.kind ==
+                    LogicalReadFootprintKind::temporal) {
+                throw std::runtime_error(
+                    "logical shadow graph node '" +
+                    source.name +
+                    "' declares an invalid current-read "
+                    "footprint for: " +
+                    declaration.resource);
+            }
+            if (!declared_footprints
+                     .emplace(declaration.resource,
+                              declaration.footprint)
+                     .second) {
+                throw std::runtime_error(
+                    "logical shadow graph node '" +
+                    source.name +
+                    "' declares duplicate read footprints for: " +
+                    declaration.resource);
+            }
+        }
         for (const auto &resource : source.reads) {
             const auto type = resource_types.find(resource);
             if (type == resource_types.end()) {
@@ -237,11 +277,21 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                     "legacy_unproduced_value_import", resource,
                     "legacy declaration order reads the resource before its first write"});
             }
+            const auto declared =
+                declared_footprints.find(resource);
+            const auto footprint =
+                declared == declared_footprints.end()
+                    ? LogicalReadFootprint{
+                          LogicalReadFootprintKind::arbitrary,
+                          std::nullopt}
+                    : declared->second;
             node.uses.push_back(makeLogicalReadUse(
-                std::move(port), LogicalValueId{resource, version},
-                LogicalReadFootprint{LogicalReadFootprintKind::arbitrary,
-                                     std::nullopt}));
-            used_conservative_footprint = true;
+                std::move(port),
+                LogicalValueId{resource, version},
+                footprint));
+            used_conservative_footprint =
+                used_conservative_footprint ||
+                declared == declared_footprints.end();
         }
         for (const auto &resource : source.reads_history) {
             const auto type = resource_types.find(resource);

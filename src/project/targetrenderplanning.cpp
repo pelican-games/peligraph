@@ -904,6 +904,22 @@ void applyResolvedSampleCounts(
     }
 }
 
+bool resolvesToSingleSample(
+    std::string_view resource,
+    const ResolvedSampleCountPlan *sample_count_plan) {
+    if (sample_count_plan == nullptr) {
+        return true;
+    }
+    const auto found = std::find_if(
+        sample_count_plan->resources.begin(),
+        sample_count_plan->resources.end(),
+        [&](const auto &resolved) {
+            return resolved.resource == resource;
+        });
+    return found == sample_count_plan->resources.end() ||
+           found->samples == 1;
+}
+
 std::uint32_t nodeRasterizationSamples(
     const LogicalGraphNode &node,
     const std::map<std::string, const LogicalResourceDesc *,
@@ -1568,6 +1584,167 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
     return result;
 }
 
+void appendScopeLocalityFailures(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    CandidateDraft &candidate) {
+    std::map<std::string, std::size_t, std::less<>>
+        scope_by_node;
+    for (std::size_t scope_index = 0;
+         scope_index < candidate.scopes.size();
+         ++scope_index) {
+        for (const auto &node :
+             candidate.scopes[scope_index].nodes) {
+            scope_by_node.emplace(node, scope_index);
+        }
+    }
+
+    std::map<std::string,
+             const VulkanPhysicalResourcePlan *,
+             std::less<>>
+        resources;
+    for (const auto &resource :
+         candidate.resources) {
+        resources.emplace(
+            resource.logical_resource, &resource);
+    }
+
+    std::map<std::string, std::size_t, std::less<>>
+        tile_read_uses;
+    for (const auto &node : canonical_graph.nodes) {
+        for (const auto &use : node.uses) {
+            if (!use.input_value) continue;
+            const auto resource =
+                resources.find(
+                    use.input_value->resource);
+            if (resource == resources.end() ||
+                resource->second->representation !=
+                    VulkanResourceRepresentation::
+                        tile_local_attachment) {
+                continue;
+            }
+            ++tile_read_uses[
+                resource->first];
+        }
+    }
+
+    std::map<std::string, std::size_t, std::less<>>
+        tile_read_edges;
+    std::set<std::string, std::less<>>
+        invalid_resources;
+    for (const auto &edge :
+         deriveLogicalDataEdges(canonical_graph)) {
+        const auto resource =
+            resources.find(edge.value.resource);
+        if (resource == resources.end()) continue;
+        const auto representation =
+            resource->second->representation;
+        if (representation !=
+                VulkanResourceRepresentation::
+                    tile_local_attachment &&
+            representation !=
+                VulkanResourceRepresentation::
+                    transient_attachment) {
+            continue;
+        }
+        const auto producer =
+            scope_by_node.find(edge.producer_node);
+        const auto consumer =
+            scope_by_node.find(edge.consumer_node);
+        if (producer == scope_by_node.end() ||
+            consumer == scope_by_node.end() ||
+            producer->second != consumer->second) {
+            invalid_resources.insert(
+                edge.value.resource);
+            continue;
+        }
+        if (representation ==
+            VulkanResourceRepresentation::
+                tile_local_attachment) {
+            ++tile_read_edges[edge.value.resource];
+            const auto &scope =
+                candidate.scopes[consumer->second];
+            if (std::find(
+                    scope.local_reads.begin(),
+                    scope.local_reads.end(),
+                    edge.value.resource) ==
+                scope.local_reads.end()) {
+                invalid_resources.insert(
+                    edge.value.resource);
+            }
+        }
+    }
+    for (const auto &[resource, read_count] :
+         tile_read_uses) {
+        if (tile_read_edges[resource] !=
+            read_count) {
+            invalid_resources.insert(resource);
+        }
+    }
+    for (const auto &resource :
+         invalid_resources) {
+        candidate.failures.push_back(
+            BackendConstraintFailure{
+                "pelican.plan.scope_local_resource_escape@1",
+                resource,
+                "scope-local attachment has a read outside the "
+                "fused producer/consumer rendering scope",
+            });
+    }
+
+    std::map<std::string,
+             const LogicalGraphNode *, std::less<>>
+        nodes;
+    for (const auto &node :
+         canonical_graph.nodes) {
+        nodes.emplace(node.name, &node);
+    }
+    for (const auto &scope : candidate.scopes) {
+        if (scope.local_reads.empty()) continue;
+        std::optional<ResourceExtentPlan>
+            attachment_extent;
+        bool incompatible = false;
+        for (const auto &node_name : scope.nodes) {
+            const auto node = nodes.find(node_name);
+            if (node == nodes.end()) continue;
+            for (const auto &use :
+                 node->second->uses) {
+                if (!use.output_value ||
+                    (use.intent !=
+                         LogicalAccessIntent::automatic &&
+                     use.intent !=
+                         LogicalAccessIntent::attachment)) {
+                    continue;
+                }
+                const auto resource =
+                    resources.find(
+                        use.output_value->resource);
+                if (resource == resources.end() ||
+                    !resource->second->extent) {
+                    continue;
+                }
+                if (attachment_extent &&
+                    *attachment_extent !=
+                        *resource->second->extent) {
+                    incompatible = true;
+                    break;
+                }
+                attachment_extent =
+                    *resource->second->extent;
+            }
+            if (incompatible) break;
+        }
+        if (incompatible) {
+            candidate.failures.push_back(
+                BackendConstraintFailure{
+                    "pelican.plan.scope_attachment_extent_mismatch@1",
+                    scope.id,
+                    "fused rendering scope attachments have "
+                    "different physical extent contracts",
+                });
+        }
+    }
+}
+
 void applyResourceViewLayouts(
     const TargetLoweringGraph &workspace,
     const ResolvedVulkanViewExecutionPlan &view_plan,
@@ -1720,6 +1897,9 @@ CandidateDraft buildCandidateDraft(
         const auto tile_local_eligible =
             tile_candidate && image &&
             resource.pattern.allow_tile_local &&
+            resolvesToSingleSample(
+                resource.logical.name,
+                sample_count_plan) &&
             resource.uses.read && resource.uses.written &&
             resource.uses.widest_read ==
                 LogicalReadFootprintKind::same_pixel &&
@@ -1974,6 +2154,8 @@ CandidateDraft buildCandidateDraft(
         view_plan,
         tile_candidate, request.profile,
         request.node_constraints, result.decisions);
+    appendScopeLocalityFailures(
+        canonical_graph, result);
     applyResourceViewLayouts(
         workspace, view_plan, result);
     if (external_depth_export &&
@@ -2052,6 +2234,15 @@ CandidateDraft buildCandidateDraft(
                 return scope.kind ==
                        VulkanPhysicalScopeKind::rendering;
             }));
+    const auto uses_tile_local =
+        std::any_of(
+            result.resources.begin(),
+            result.resources.end(),
+            [](const auto &resource) {
+                return resource.representation ==
+                       VulkanResourceRepresentation::
+                           tile_local_attachment;
+            });
     const auto uses_transient =
         std::any_of(
             result.resources.begin(),
@@ -2062,41 +2253,54 @@ CandidateDraft buildCandidateDraft(
                            transient_attachment;
             });
     result.cost.bandwidth_class =
-        tile_candidate ? 1
+        uses_tile_local ? 1
         : uses_transient ? 2
                          : 3;
     return result;
 }
 
 std::uint32_t maximumColorAttachmentCount(
-    const CompiledLogicalRenderGraph &graph) {
+    const CompiledLogicalRenderGraph &graph,
+    std::span<const VulkanPhysicalScopePlan> scopes) {
     std::map<std::string, const LogicalResourceDesc *, std::less<>>
         resources;
     for (const auto &resource : graph.resources) {
         resources.emplace(resource.name, &resource);
     }
-    std::uint32_t maximum = 0;
+    std::map<std::string,
+             const LogicalGraphNode *, std::less<>>
+        nodes;
     for (const auto &node : graph.nodes) {
-        if (node.kind != LogicalGraphNodeKind::render) continue;
+        nodes.emplace(node.name, &node);
+    }
+    std::uint32_t maximum = 0;
+    for (const auto &scope : scopes) {
         std::set<std::string, std::less<>> attachments;
-        for (const auto &use : node.uses) {
-            if (!use.output_value) continue;
-            const auto resource =
-                resources.find(use.output_value->resource);
-            if (resource == resources.end() ||
-                resource->second->type.constructor !=
-                    LogicalTypeConstructor::image) {
-                continue;
-            }
-            if (semanticTypeIdName(
-                    resource->second->type.semantic) ==
-                "pelican.render.depth@1") {
-                continue;
-            }
-            if (use.intent == LogicalAccessIntent::automatic ||
-                use.intent == LogicalAccessIntent::attachment) {
-                attachments.insert(
-                    use.output_value->resource);
+        for (const auto &node_name : scope.nodes) {
+            const auto node = nodes.find(node_name);
+            if (node == nodes.end()) continue;
+            for (const auto &use : node->second->uses) {
+                if (!use.output_value) continue;
+                const auto resource =
+                    resources.find(
+                        use.output_value->resource);
+                if (resource == resources.end() ||
+                    resource->second->type.constructor !=
+                        LogicalTypeConstructor::image) {
+                    continue;
+                }
+                if (semanticTypeIdName(
+                        resource->second->type.semantic) ==
+                    "pelican.render.depth@1") {
+                    continue;
+                }
+                if (use.intent ==
+                        LogicalAccessIntent::automatic ||
+                    use.intent ==
+                        LogicalAccessIntent::attachment) {
+                    attachments.insert(
+                        use.output_value->resource);
+                }
             }
         }
         maximum = std::max(
@@ -2115,7 +2319,8 @@ void applyAttachmentBudget(
         endpoint, kColorAttachmentBudgetFact);
     if (!budget) return;
     const auto required =
-        maximumColorAttachmentCount(graph);
+        maximumColorAttachmentCount(
+            graph, candidate.scopes);
     if (required > *budget) {
         candidate.failures.push_back(
             BackendConstraintFailure{
@@ -2330,23 +2535,31 @@ const BackendProbeResult &selectedProbe(
     return *found;
 }
 
-void lowerTransientAttachmentStores(
+void lowerScopeLocalAttachmentStores(
     std::span<const VulkanPhysicalResourcePlan> resources,
     std::span<VulkanPhysicalAttachmentPlan> attachments,
     std::vector<PlanningDecision> &decisions) {
-    std::set<std::string, std::less<>>
-        transient_resources;
+    std::map<std::string, VulkanResourceRepresentation,
+             std::less<>>
+        virtual_attachments;
     for (const auto &resource : resources) {
         if (resource.representation ==
-            VulkanResourceRepresentation::
-                transient_attachment) {
-            transient_resources.insert(
-                resource.logical_resource);
+                VulkanResourceRepresentation::
+                    transient_attachment ||
+            resource.representation ==
+                VulkanResourceRepresentation::
+                    tile_local_attachment) {
+            virtual_attachments.emplace(
+                resource.logical_resource,
+                resource.representation);
         }
     }
     for (auto &attachment : attachments) {
-        if (!transient_resources.contains(
-                attachment.logical_resource) ||
+        const auto resource =
+            virtual_attachments.find(
+                attachment.logical_resource);
+        if (resource ==
+                virtual_attachments.end() ||
             attachment.store_op ==
                 VulkanPhysicalAttachmentStoreOp::
                     discard) {
@@ -2354,14 +2567,24 @@ void lowerTransientAttachmentStores(
         }
         attachment.store_op =
             VulkanPhysicalAttachmentStoreOp::discard;
+        const auto tile_local =
+            resource->second ==
+            VulkanResourceRepresentation::
+                tile_local_attachment;
         decisions.push_back(PlanningDecision{
-            "pelican.plan.transient_attachment_store_elided@1",
+            tile_local
+                ? "pelican.plan.tile_local_attachment_store_elided@1"
+                : "pelican.plan.transient_attachment_store_elided@1",
             attachment.node + " -> " +
                 attachment.logical_resource,
             "discard",
-            "write-only virtual attachment has no logical "
-            "consumer, so the selected transient backend does not "
-            "store its contents",
+            tile_local
+                ? "scope-local attachment contents are consumed "
+                  "inside the fused rendering scope, so no external "
+                  "store is required"
+                : "write-only virtual attachment has no logical "
+                  "consumer, so the selected transient backend does "
+                  "not store its contents",
         });
     }
 }
@@ -2808,7 +3031,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .applied_pin_package =
             std::move(request.pin_package),
     };
-    lowerTransientAttachmentStores(
+    lowerScopeLocalAttachmentStores(
         result.resources, result.attachments,
         result.decisions);
     validateVulkanPhysicalAttachmentPlans(

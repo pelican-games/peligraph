@@ -174,6 +174,33 @@ void main() {
 )glsl";
 }
 
+const char *localReadProducerFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.2, 0.4, 0.8, 1.0);
+}
+)glsl";
+}
+
+const char *localReadCopyFragmentShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+PELICAN_DECLARE_INPUT_0(inputColor);
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 value =
+        PELICAN_TEXTURE_2D_0(inputColor, inUV);
+    outColor = vec4(value.b, value.g, value.r, 1.0);
+}
+)glsl";
+}
+
 const char *upscaleContractGeneratorFragmentShader() {
     return R"glsl(
 #version 450
@@ -433,6 +460,68 @@ nlohmann::json pipelineReloadRenderingConfig() {
           "output": {
             "color": "swapchain",
             "depth": null
+          }
+        }
+      ]
+    }
+  ]
+}
+)json");
+}
+
+nlohmann::json localReadRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [
+    {
+      "name": "local_source",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "local_output",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "local_read_main",
+      "passes": [
+        {
+          "name": "local_producer",
+          "type": "fullscreen",
+          "output": {"color": "local_source", "depth": null},
+          "shader": {
+            "vertex": "shaders/local_read_fullscreen",
+            "fragment": "shaders/local_read_producer"
+          }
+        },
+        {
+          "name": "local_consumer",
+          "type": "fullscreen",
+          "input": ["local_source"],
+          "input_footprints": {
+            "local_source": "same_pixel"
+          },
+          "output": {"color": "local_output", "depth": null},
+          "shader": {
+            "vertex": "shaders/local_read_fullscreen",
+            "fragment": "shaders/local_read_copy"
+          }
+        },
+        {
+          "name": "local_present",
+          "type": "fullscreen",
+          "input": ["local_output"],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/local_read_fullscreen",
+            "fragment": "shaders/local_read_present"
           }
         }
       ]
@@ -1052,6 +1141,197 @@ TEST_CASE(
         SKIP(
             std::string{
                 "Vulkan upscale rendering unavailable: "} +
+            error.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "runtime target planner executes a fused tile-local scope",
+    "[headless][render][tile-local][dynamic-rendering]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "local_read_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "local_read_producer.frag",
+            localReadProducerFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "local_read_copy.frag",
+            localReadCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "local_read_present.frag",
+            gpuArenaCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            localReadRenderingConfig().dump(2));
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "local_read_main";
+        project["schema"] = "pelican.project";
+        project["version"] = 1;
+        project["name"] =
+            "tile-local-runtime";
+        GET_MODULE(ProjectSource)
+            .setProjectData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false, project.dump());
+
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        auto &engine_time =
+            GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &vkcore =
+            GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities()
+                 .dynamic_rendering_local_read) {
+            SKIP(
+                "Vulkan device has no dynamic rendering local "
+                "read support");
+        }
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto source =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "local_source");
+        const auto source_metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(source);
+        REQUIRE(
+            source_metadata.storage_mode ==
+            RenderTargetStorageMode::
+                tile_local_attachment);
+        REQUIRE(
+            source_metadata.usage &
+            vk::ImageUsageFlagBits::
+                eInputAttachment);
+        REQUIRE(
+            source_metadata.usage &
+            vk::ImageUsageFlagBits::
+                eTransientAttachment);
+        REQUIRE_FALSE(
+            source_metadata.usage &
+            vk::ImageUsageFlagBits::eSampled);
+
+        const auto pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "local_read_main");
+        const auto program =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .findProgram(pass_id);
+        REQUIRE(program != nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan !=
+            nullptr);
+        const auto &plan =
+            *program->frame_graph.target_plan;
+        REQUIRE(
+            plan.backend_selection
+                .selected_candidate ==
+            "pelican.vulkan.tile_local_plan@1");
+        REQUIRE(std::any_of(
+            plan.scopes.begin(),
+            plan.scopes.end(),
+            [](const auto &scope) {
+                return scope.nodes ==
+                           std::vector<std::string>{
+                               "local_producer",
+                               "local_consumer"} &&
+                       scope.local_reads ==
+                           std::vector<std::string>{
+                               "local_source"};
+            }));
+        REQUIRE(
+            program->rendering_pass
+                .passes.at(0)
+                .rendering.local_read_scope);
+        REQUIRE(
+            program->rendering_pass
+                .passes.at(1)
+                .rendering.local_read_scope);
+        REQUIRE_FALSE(
+            program->rendering_pass
+                .passes.at(2)
+                .rendering.local_read_scope);
+
+        engine_time.advance();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            pixels.size() ==
+            32u * 32u * 4u);
+        std::size_t mismatches = 0;
+        for (std::size_t offset = 0;
+             offset < pixels.size();
+             offset += 4) {
+            // The offscreen frame target is sRGB: the linear
+            // (0.8, 0.4, 0.2) local-read result is encoded on the
+            // final attachment write.
+            if (pixels[offset] != 231 ||
+                pixels[offset + 1] != 170 ||
+                pixels[offset + 2] != 124 ||
+                pixels[offset + 3] != 255) {
+                ++mismatches;
+            }
+        }
+        INFO(
+            "first pixel = (" <<
+            static_cast<unsigned>(pixels[0]) << ", " <<
+            static_cast<unsigned>(pixels[1]) << ", " <<
+            static_cast<unsigned>(pixels[2]) << ", " <<
+            static_cast<unsigned>(pixels[3]) << ")");
+        REQUIRE(mismatches == 0);
+
+        vkcore.waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan tile-local rendering unavailable: "} +
             error.what());
     }
 #endif

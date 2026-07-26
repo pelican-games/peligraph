@@ -27,6 +27,7 @@ struct RenderingImageFormatCapability {
     std::uint32_t max_array_layers = 1;
     bool external_depth_export_supported = false;
     bool transient_attachment_supported = false;
+    bool local_read_attachment_supported = false;
 
     bool operator==(
         const RenderingImageFormatCapability &) const =
@@ -86,6 +87,7 @@ struct RenderingTargetPlanDeviceFacts {
     ImageFormatCapabilityQuery
         query_image_format_capability;
     bool transient_attachments = false;
+    bool dynamic_rendering_local_read = false;
 };
 
 struct RenderingTargetPlanCompilation {

@@ -15,6 +15,7 @@
 #include "../vkcore/rendertarget.hpp"
 #include <algorithm>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 
@@ -94,6 +95,34 @@ const VulkanPhysicalScopePlan &requirePassScope(
         result = &scope;
     }
     if (result == nullptr) {
+        throw std::runtime_error(
+            "render pass has no physical target-plan scope: " +
+            std::string{pass_name});
+    }
+    return *result;
+}
+
+std::size_t requirePassScopeIndex(
+    const VulkanTargetPlan &plan,
+    std::string_view pass_name) {
+    std::optional<std::size_t> result;
+    for (std::size_t index = 0;
+         index < plan.scopes.size(); ++index) {
+        const auto &scope = plan.scopes[index];
+        if (std::find(scope.nodes.begin(),
+                      scope.nodes.end(),
+                      pass_name) ==
+            scope.nodes.end()) {
+            continue;
+        }
+        if (result) {
+            throw std::runtime_error(
+                "render pass belongs to more than one physical scope: " +
+                std::string{pass_name});
+        }
+        result = index;
+    }
+    if (!result) {
         throw std::runtime_error(
             "render pass has no physical target-plan scope: " +
             std::string{pass_name});
@@ -301,6 +330,323 @@ PassDefinition applyPhysicalPassContract(
     return result;
 }
 
+bool containsTarget(
+    std::span<const GlobalRenderTargetId> targets,
+    GlobalRenderTargetId target) {
+    return std::find(
+               targets.begin(), targets.end(),
+               target) != targets.end();
+}
+
+PassAttachmentOperations scopeColorAttachmentOperations(
+    const PassDefinition &pass, std::size_t color_index,
+    const VulkanTargetPlan &plan,
+    const RenderTargetMetadataResolver *metadata) {
+    if (plan.attachments.empty()) {
+        return pass.colorAttachmentOperations(
+            color_index);
+    }
+    return physicalAttachmentOperations(
+        plan, pass.name,
+        physicalTargetName(
+            pass.output_color.at(color_index),
+            metadata),
+        VulkanPhysicalAttachmentAspect::color);
+}
+
+PassAttachmentOperations scopeDepthAttachmentOperations(
+    const PassDefinition &pass,
+    const VulkanTargetPlan &plan,
+    const RenderTargetMetadataResolver *metadata) {
+    if (plan.attachments.empty()) {
+        return pass.depthAttachmentOperations();
+    }
+    return physicalAttachmentOperations(
+        plan, pass.name,
+        physicalTargetName(
+            pass.output_depth, metadata),
+        VulkanPhysicalAttachmentAspect::depth);
+}
+
+std::array<float, 4> clearColorFloats(
+    const vk::ClearColorValue &value) {
+    return {
+        value.float32[0], value.float32[1],
+        value.float32[2], value.float32[3]};
+}
+
+const VulkanPhysicalResourcePlan &
+requirePhysicalPassResource(
+    const VulkanTargetPlan &plan,
+    GlobalRenderTargetId target,
+    const RenderTargetMetadataResolver *metadata) {
+    const auto name =
+        physicalTargetName(target, metadata);
+    const auto found = std::find_if(
+        plan.resources.begin(), plan.resources.end(),
+        [&](const auto &resource) {
+            return resource.logical_resource == name;
+        });
+    if (found == plan.resources.end()) {
+        throw std::runtime_error(
+            "render-pass resource is absent from the physical "
+            "target plan: " +
+            name);
+    }
+    return *found;
+}
+
+CompiledPassRenderingContract
+compilePassRenderingContract(
+    const RenderingPassDefinition &definition,
+    const PassDefinition &pass,
+    const VulkanTargetPlan *plan,
+    const RenderTargetMetadataResolver *metadata) {
+    if (plan == nullptr) {
+        return {};
+    }
+    const auto scope_index =
+        requirePassScopeIndex(*plan, pass.name);
+    const auto &scope = plan->scopes[scope_index];
+    // output_transform is a graphics pass whose logical/physical kind marks
+    // the terminal presentation boundary. It still owns dynamic-rendering
+    // attachments and therefore uses the same concrete attachment contract
+    // as an ordinary rendering scope.
+    if (scope.kind !=
+            VulkanPhysicalScopeKind::rendering &&
+        scope.kind !=
+            VulkanPhysicalScopeKind::output) {
+        throw std::runtime_error(
+            "render pass belongs to a non-rendering physical scope: " +
+            pass.name);
+    }
+
+    CompiledPassRenderingContract result;
+    result.scope_index = scope_index;
+    result.scope_id = scope.id;
+    result.local_read_scope =
+        !scope.local_reads.empty();
+
+    std::vector<const PassDefinition *>
+        scope_passes;
+    scope_passes.reserve(scope.nodes.size());
+    for (const auto &node_name : scope.nodes) {
+        const auto node = std::find_if(
+            definition.passes.begin(),
+            definition.passes.end(),
+            [&](const auto &candidate) {
+                return candidate.name == node_name;
+            });
+        if (node == definition.passes.end()) {
+            throw std::runtime_error(
+                "physical rendering scope references a node absent "
+                "from its rendering-pass definition: " +
+                node_name);
+        }
+        scope_passes.push_back(&*node);
+        for (const auto target :
+             node->output_color) {
+            if (!containsTarget(
+                    result.color_attachments,
+                    target)) {
+                result.color_attachments.push_back(
+                    target);
+            }
+        }
+        if (isConcreteRenderTarget(
+                node->output_depth) ||
+            isSwapchainRenderTarget(
+                node->output_depth)) {
+            if (isConcreteRenderTarget(
+                    result.depth_attachment) ||
+                isSwapchainRenderTarget(
+                    result.depth_attachment)) {
+                if (result.depth_attachment !=
+                    node->output_depth) {
+                    throw std::runtime_error(
+                        "physical rendering scope uses more than one "
+                        "depth attachment: " +
+                        scope.id);
+                }
+            } else {
+                result.depth_attachment =
+                    node->output_depth;
+            }
+        }
+    }
+
+    result.scope_color_attachment_operations
+        .reserve(result.color_attachments.size());
+    result.scope_color_clear_values.reserve(
+        result.color_attachments.size());
+    for (const auto target :
+         result.color_attachments) {
+        const PassDefinition *first_writer =
+            nullptr;
+        const PassDefinition *last_writer =
+            nullptr;
+        std::size_t first_color_index = 0;
+        std::size_t last_color_index = 0;
+        for (const auto *scope_pass :
+             scope_passes) {
+            for (std::size_t color_index = 0;
+                 color_index <
+                 scope_pass->output_color.size();
+                 ++color_index) {
+                if (scope_pass
+                        ->output_color[color_index] !=
+                    target) {
+                    continue;
+                }
+                if (first_writer == nullptr) {
+                    first_writer = scope_pass;
+                    first_color_index = color_index;
+                }
+                last_writer = scope_pass;
+                last_color_index = color_index;
+            }
+        }
+        if (first_writer == nullptr ||
+            last_writer == nullptr) {
+            throw std::logic_error(
+                "physical scope color attachment union has no "
+                "writer");
+        }
+        const auto first_operations =
+            scopeColorAttachmentOperations(
+                *first_writer, first_color_index,
+                *plan, metadata);
+        const auto last_operations =
+            scopeColorAttachmentOperations(
+                *last_writer, last_color_index,
+                *plan, metadata);
+        result.scope_color_attachment_operations
+            .push_back(PassAttachmentOperations{
+                first_operations.load_op,
+                last_operations.store_op});
+        result.scope_color_clear_values.push_back(
+            clearColorFloats(
+                first_writer->clear_color));
+    }
+
+    if (isConcreteRenderTarget(
+            result.depth_attachment) ||
+        isSwapchainRenderTarget(
+            result.depth_attachment)) {
+        const PassDefinition *first_writer =
+            nullptr;
+        const PassDefinition *last_writer =
+            nullptr;
+        for (const auto *scope_pass :
+             scope_passes) {
+            if (scope_pass->output_depth !=
+                result.depth_attachment) {
+                continue;
+            }
+            if (first_writer == nullptr) {
+                first_writer = scope_pass;
+            }
+            last_writer = scope_pass;
+        }
+        if (first_writer == nullptr ||
+            last_writer == nullptr) {
+            throw std::logic_error(
+                "physical scope depth attachment union has no "
+                "writer");
+        }
+        const auto first_operations =
+            scopeDepthAttachmentOperations(
+                *first_writer, *plan, metadata);
+        const auto last_operations =
+            scopeDepthAttachmentOperations(
+                *last_writer, *plan, metadata);
+        result.scope_depth_attachment_operations =
+            PassAttachmentOperations{
+                first_operations.load_op,
+                last_operations.store_op};
+    }
+
+    result.color_attachment_locations.assign(
+        result.color_attachments.size(),
+        unusedPhysicalAttachmentMapping);
+    result.color_attachment_input_indices.assign(
+        result.color_attachments.size(),
+        unusedPhysicalAttachmentMapping);
+    for (std::size_t location = 0;
+         location < pass.output_color.size();
+         ++location) {
+        const auto found = std::find(
+            result.color_attachments.begin(),
+            result.color_attachments.end(),
+            pass.output_color[location]);
+        if (found ==
+            result.color_attachments.end()) {
+            throw std::runtime_error(
+                "pass color output is absent from its physical "
+                "scope attachment union: " +
+                pass.name);
+        }
+        result.color_attachment_locations[
+            static_cast<std::size_t>(
+                found -
+                result.color_attachments.begin())] =
+            static_cast<std::uint32_t>(location);
+    }
+
+    for (std::size_t input_index = 0;
+         input_index < pass.input_targets.size();
+         ++input_index) {
+        const auto target =
+            pass.input_targets[input_index];
+        const auto &resource =
+            requirePhysicalPassResource(
+                *plan, target, metadata);
+        if (resource.representation !=
+            VulkanResourceRepresentation::
+                tile_local_attachment) {
+            continue;
+        }
+        if (std::find(
+                scope.local_reads.begin(),
+                scope.local_reads.end(),
+                resource.logical_resource) ==
+            scope.local_reads.end()) {
+            throw std::runtime_error(
+                "tile-local pass input is not declared by its "
+                "physical rendering scope: " +
+                pass.name + " -> " +
+                resource.logical_resource);
+        }
+        const auto color = std::find(
+            result.color_attachments.begin(),
+            result.color_attachments.end(),
+            target);
+        if (color !=
+            result.color_attachments.end()) {
+            result.color_attachment_input_indices[
+                static_cast<std::size_t>(
+                    color -
+                    result.color_attachments.begin())] =
+                static_cast<std::uint32_t>(
+                    input_index);
+            continue;
+        }
+        if (target ==
+            result.depth_attachment) {
+            result.depth_attachment_input_index =
+                static_cast<std::uint32_t>(
+                    input_index);
+            continue;
+        }
+        throw std::runtime_error(
+            "tile-local pass input is absent from its physical "
+            "scope attachment union: " +
+            pass.name + " -> " +
+            resource.logical_resource);
+    }
+    return result;
+}
+
 void appendMultiviewShaderDefines(
     std::vector<std::string> &defines,
     const PassDefinition &pass,
@@ -322,6 +668,54 @@ void appendMultiviewShaderDefines(
                 "PELICAN_INPUT_" +
                 std::to_string(binding) +
                 "_LAYERED=1");
+        }
+    }
+}
+
+std::vector<bool> localReadInputMask(
+    const PassDefinition &pass,
+    const CompiledPassRenderingContract
+        &rendering) {
+    std::vector<bool> result(
+        pass.input_targets.size(), false);
+    const auto mark =
+        [&](std::uint32_t input_index) {
+            if (input_index ==
+                unusedPhysicalAttachmentMapping) {
+                return;
+            }
+            if (input_index >= result.size()) {
+                throw std::runtime_error(
+                    "physical local-read input index is outside the "
+                    "pass input contract: " +
+                    pass.name);
+            }
+            result[input_index] = true;
+        };
+    for (const auto input_index :
+         rendering
+             .color_attachment_input_indices) {
+        mark(input_index);
+    }
+    mark(rendering
+             .depth_attachment_input_index);
+    return result;
+}
+
+void appendLocalReadShaderDefines(
+    std::vector<std::string> &defines,
+    const PassDefinition &pass,
+    const CompiledPassRenderingContract
+        &rendering) {
+    const auto local_reads =
+        localReadInputMask(pass, rendering);
+    for (std::size_t input = 0;
+         input < local_reads.size(); ++input) {
+        if (local_reads[input]) {
+            defines.push_back(
+                "PELICAN_INPUT_" +
+                std::to_string(input) +
+                "_LOCAL_READ=1");
         }
     }
 }
@@ -361,6 +755,82 @@ vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget 
         return rt_metadata.get(first_color).format;
     }
     return rt_module.getSwapchainFormat();
+}
+
+vk::Format resolvePhysicalColorFormat(
+    GlobalRenderTargetId target,
+    RenderTarget &render_target,
+    const RenderTargetMetadataResolver
+        &metadata) {
+    if (isConcreteRenderTarget(target)) {
+        return metadata.get(target).format;
+    }
+    if (isSwapchainRenderTarget(target)) {
+        return render_target
+            .getSwapchainFormat();
+    }
+    throw std::runtime_error(
+        "physical rendering scope has an invalid color target");
+}
+
+std::vector<vk::Format>
+resolvePhysicalColorFormats(
+    const PassDefinition &pass,
+    const CompiledPassRenderingContract
+        &rendering,
+    RenderTarget &render_target,
+    const RenderTargetMetadataResolver
+        &metadata) {
+    if (rendering.color_attachments.empty()) {
+        return {resolveFirstColorFormat(
+            pass, render_target, metadata)};
+    }
+    std::vector<vk::Format> result;
+    result.reserve(
+        rendering.color_attachments.size());
+    for (const auto target :
+         rendering.color_attachments) {
+        result.push_back(
+            resolvePhysicalColorFormat(
+                target, render_target,
+                metadata));
+    }
+    return result;
+}
+
+std::optional<vk::Format>
+resolvePhysicalDepthFormat(
+    const CompiledPassRenderingContract
+        &rendering,
+    const RenderTargetMetadataResolver
+        &metadata) {
+    if (!isConcreteRenderTarget(
+            rendering.depth_attachment)) {
+        return std::nullopt;
+    }
+    return metadata
+        .get(rendering.depth_attachment)
+        .format;
+}
+
+GraphicsPipelineRenderingLocalReadContract
+graphicsLocalReadContract(
+    const CompiledPassRenderingContract
+        &rendering) {
+    GraphicsPipelineRenderingLocalReadContract result;
+    result.enabled =
+        rendering.local_read_scope;
+    if (!result.enabled) {
+        return result;
+    }
+    result.color_attachment_locations =
+        rendering.color_attachment_locations;
+    result.color_attachment_input_indices =
+        rendering
+            .color_attachment_input_indices;
+    result.depth_attachment_input_index =
+        rendering.depth_attachment_input_index;
+    return result;
 }
 
 PassId passIndexToPassId(size_t pass_index) {
@@ -511,30 +981,52 @@ FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &full
 PassId registerFullscreenPipeline(
     const PassDefinition &pass_def,
     FullscreenRuntimeDependencies dependencies,
-    GraphicsPipelineViewContract view) {
+    GraphicsPipelineViewContract view,
+    const CompiledPassRenderingContract
+        &rendering) {
+    const auto color_formats =
+        resolvePhysicalColorFormats(
+            pass_def, rendering,
+            dependencies.render_target,
+            dependencies
+                .render_target_metadata);
+    const auto depth_format =
+        resolvePhysicalDepthFormat(
+            rendering,
+            dependencies
+                .render_target_metadata);
     const auto color_format =
-        resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
+        color_formats.front();
     if (pass_def.name == "output_transform" &&
         (color_format == vk::Format::eR8G8B8A8Unorm || color_format == vk::Format::eB8G8R8A8Unorm)) {
         dependencies.shader_defines.push_back("PELICAN_OUTPUT_UNORM_FALLBACK");
     }
     appendMultiviewShaderDefines(
         dependencies.shader_defines, pass_def, view);
+    appendLocalReadShaderDefines(
+        dependencies.shader_defines, pass_def,
+        rendering);
     const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
-        color_format, shaders.vert_shader, shaders.frag_shader,
-        dependencies.shader_defines, pass_def.rasterization_samples,
-        view);
+        color_formats, depth_format,
+        shaders.vert_shader, shaders.frag_shader,
+        dependencies.shader_defines,
+        pass_def.rasterization_samples,
+        view,
+        graphicsLocalReadContract(rendering));
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
 PassId compileFullscreenPass(
     const PassDefinition &pass_def,
     FullscreenRuntimeDependencies dependencies,
-    GraphicsPipelineViewContract view) {
+    GraphicsPipelineViewContract view,
+    const CompiledPassRenderingContract
+        &rendering) {
     const auto pass_id =
         registerFullscreenPipeline(
-            pass_def, dependencies, view);
+            pass_def, dependencies, view,
+            rendering);
 
     if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
         dependencies.fullscreen_pass_container.setInputResources(
@@ -543,7 +1035,9 @@ PassId compileFullscreenPass(
             dependencies.frame_graph_resources,
             pass_def.fullscreenInfo().input_sampling,
             pass_def.input_target_views,
-            view);
+            view,
+            localReadInputMask(
+                pass_def, rendering));
     }
 
     return pass_id;
@@ -639,6 +1133,11 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
                 dependencies.target_plan, pass_def);
         validatePassInputViewContract(
             pass_def, view);
+        const auto rendering =
+            compilePassRenderingContract(
+                definition, pass_def,
+                dependencies.target_plan,
+                dependencies.render_target_metadata);
         if (pass_def.isFullscreen()) {
             const auto fullscreen_dependencies = requireFullscreenDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
@@ -646,26 +1145,27 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
                     pass_def,
                     compileFullscreenPass(
                         pass_def, fullscreen_dependencies,
-                        view),
-                    view});
+                        view, rendering),
+                    view,
+                    rendering});
         } else if (pass_def.isDebugDraw()) {
             const auto debug_draw_dependencies = requireDebugDrawDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies), view});
+                CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies), view, rendering});
         } else if (pass_def.isDebugText()) {
             const auto debug_text_dependencies = requireDebugTextDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileDebugTextPass(pass_def, debug_text_dependencies), view});
+                CompiledPass{pass_def, compileDebugTextPass(pass_def, debug_text_dependencies), view, rendering});
         } else if (pass_def.isShadowDepth()) {
             const auto shadow_depth_dependencies = requireShadowDepthDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies), view});
+                CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies), view, rendering});
         } else if (pass_def.isVelocity()) {
             const auto velocity_dependencies = requireVelocityDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileVelocityPass(pass_def, velocity_dependencies), view});
+                CompiledPass{pass_def, compileVelocityPass(pass_def, velocity_dependencies), view, rendering});
         } else {
-            compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i), view});
+            compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i), view, rendering});
         }
     }
 

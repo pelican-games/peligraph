@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <variant>
@@ -305,10 +306,52 @@ struct RenderingPassDefinition {
     std::vector<PassDefinition> passes;
 };
 
+inline constexpr std::uint32_t
+    unusedPhysicalAttachmentMapping =
+        std::numeric_limits<std::uint32_t>::max();
+
+// Concrete attachment-slot contract for one pass inside a physical rendering
+// scope. Arrays are indexed by the scope-wide color attachment slot. Their
+// values are fragment output locations and input-attachment indices,
+// respectively, or unusedPhysicalAttachmentMapping.
+struct CompiledPassRenderingContract {
+    std::size_t scope_index =
+        std::numeric_limits<std::size_t>::max();
+    std::string scope_id;
+    std::vector<GlobalRenderTargetId>
+        color_attachments;
+    GlobalRenderTargetId depth_attachment =
+        noRenderTargetId();
+    std::vector<std::uint32_t>
+        color_attachment_locations;
+    std::vector<std::uint32_t>
+        color_attachment_input_indices;
+    std::uint32_t depth_attachment_input_index =
+        unusedPhysicalAttachmentMapping;
+    // Dynamic rendering begins once for the whole physical scope. The first
+    // writer determines each attachment's load/clear operation and the last
+    // writer determines its final store operation. These arrays are indexed
+    // by color_attachments and are identical on every pass in the scope.
+    std::vector<PassAttachmentOperations>
+        scope_color_attachment_operations;
+    std::vector<std::array<float, 4>>
+        scope_color_clear_values;
+    std::optional<PassAttachmentOperations>
+        scope_depth_attachment_operations;
+    float scope_depth_clear_value = 1.0f;
+    std::uint32_t scope_stencil_clear_value = 0;
+    bool local_read_scope = false;
+
+    bool operator==(
+        const CompiledPassRenderingContract &) const =
+        default;
+};
+
 struct CompiledPass {
     PassDefinition definition;
     PassId pass_id;
     GraphicsPipelineViewContract view;
+    CompiledPassRenderingContract rendering;
 };
 
 struct CompiledRenderingPass {

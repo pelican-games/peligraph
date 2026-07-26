@@ -8,8 +8,8 @@ layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
 // G-Buffer inputs
-layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform PELICAN_SAMPLER_2D_0 worldPosSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform PELICAN_SAMPLER_2D_1 normalSampler;
+PELICAN_DECLARE_INPUT_0(worldPosSampler);
+PELICAN_DECLARE_INPUT_1(normalSampler);
 
 // Parameters
 const int KERNEL_SIZE = 32;

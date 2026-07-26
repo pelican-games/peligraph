@@ -13,6 +13,7 @@
 #include <cstring>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -215,7 +216,11 @@ struct DeviceFeatureSupport {
     RequiredVulkanFeatureSupport required;
     bool timeline_semaphore = false;
     bool multiview = false;
+    bool dynamic_rendering_local_read = false;
 };
+
+static std::vector<std::string> supportedDeviceExtensions(
+    vk::PhysicalDevice physical_device);
 
 static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physical_device) {
     const auto chain =
@@ -227,7 +232,7 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
     const auto &vk11 = chain.get<vk::PhysicalDeviceVulkan11Features>();
     const auto &vk12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
     const auto &dynamic = chain.get<vk::PhysicalDeviceDynamicRenderingFeatures>();
-    return {
+    DeviceFeatureSupport result{
         .required =
             {
                 .multi_draw_indirect = core.multiDrawIndirect == VK_TRUE,
@@ -238,6 +243,21 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         .timeline_semaphore = vk12.timelineSemaphore == VK_TRUE,
         .multiview = vk11.multiview == VK_TRUE,
     };
+
+    const auto extensions = supportedDeviceExtensions(physical_device);
+    if (std::find(extensions.begin(), extensions.end(),
+                  VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME) !=
+        extensions.end()) {
+        const auto local_read_chain =
+            physical_device.getFeatures2<
+                vk::PhysicalDeviceFeatures2,
+                vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>();
+        result.dynamic_rendering_local_read =
+            local_read_chain
+                .get<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>()
+                .dynamicRenderingLocalRead == VK_TRUE;
+    }
+    return result;
 }
 
 static std::vector<std::string> supportedDeviceExtensions(vk::PhysicalDevice physical_device) {
@@ -295,6 +315,7 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
 
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
                                             bool headless, bool &memory_budget_enabled,
+                                            VulkanRuntimeCapabilities &runtime_capabilities,
                                             bool use_openxr = false) {
     LOG_INFO(logger, "initializing vulkan device...");
 
@@ -325,6 +346,10 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
                                       VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) != supported_extensions.end();
     auto enabled_extensions = required_extensions;
     if (memory_budget_enabled) enabled_extensions.emplace_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (feature_support.dynamic_rendering_local_read) {
+        enabled_extensions.emplace_back(
+            VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    }
     const auto exts = vulkanExtensionNamePointers(enabled_extensions);
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
@@ -366,6 +391,9 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 #endif
     vk::PhysicalDeviceVulkan12Features vk12features;
     vk12features.timelineSemaphore = feature_support.timeline_semaphore ? VK_TRUE : VK_FALSE;
+    vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR local_read_features;
+    local_read_features.dynamicRenderingLocalRead =
+        feature_support.dynamic_rendering_local_read ? VK_TRUE : VK_FALSE;
 
     vk::StructureChain create_info_chain{
         create_info,
@@ -373,6 +401,17 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         vk11features,
         vk12features,
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
+        local_read_features,
+    };
+    if (!feature_support.dynamic_rendering_local_read) {
+        create_info_chain
+            .unlink<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>();
+    }
+    runtime_capabilities = {
+        .timeline_semaphore = feature_support.timeline_semaphore,
+        .multiview = feature_support.multiview,
+        .dynamic_rendering_local_read =
+            feature_support.dynamic_rendering_local_read,
     };
 
 #if PELICAN_WITH_OPENXR
@@ -419,6 +458,7 @@ struct VulkanBootstrapState {
     QueueSet queues{};
     vk::UniqueDevice device;
     bool memory_budget_enabled = false;
+    VulkanRuntimeCapabilities runtime_capabilities;
 };
 
 static VulkanBootstrapState bootstrapFlatVulkan(
@@ -433,7 +473,8 @@ static VulkanBootstrapState bootstrapFlatVulkan(
     if (!queues) throw std::runtime_error("No suitable Vulkan queue families found");
     result.queues = *queues;
     result.device = createLogicalDevice(result.physical_device, result.queues, headless,
-                                        result.memory_budget_enabled);
+                                        result.memory_budget_enabled,
+                                        result.runtime_capabilities);
     return result;
 }
 
@@ -460,7 +501,8 @@ static VulkanBootstrapState bootstrapXrVulkan(
     LOG_INFO(logger, "OpenXR runtime selected Vulkan physical device: {} (vendor {}, device {})",
              properties.deviceName.data(), properties.vendorID, properties.deviceID);
     result.device = createLogicalDevice(result.physical_device, result.queues, headless,
-                                        result.memory_budget_enabled, true);
+                                        result.memory_budget_enabled,
+                                        result.runtime_capabilities, true);
     return result;
 }
 #endif
@@ -494,6 +536,33 @@ VulkanManageCore::VulkanManageCore() {
     queue_set = bootstrap.queues;
     device = std::move(bootstrap.device);
     memory_budget_enabled = bootstrap.memory_budget_enabled;
+    runtime_capabilities = bootstrap.runtime_capabilities;
+    if (runtime_capabilities
+            .dynamic_rendering_local_read) {
+        const auto raw_device =
+            static_cast<VkDevice>(device.get());
+        set_rendering_attachment_locations =
+            reinterpret_cast<
+                PFN_vkCmdSetRenderingAttachmentLocationsKHR>(
+                vkGetDeviceProcAddr(
+                    raw_device,
+                    "vkCmdSetRenderingAttachmentLocationsKHR"));
+        set_rendering_input_attachment_indices =
+            reinterpret_cast<
+                PFN_vkCmdSetRenderingInputAttachmentIndicesKHR>(
+                vkGetDeviceProcAddr(
+                    raw_device,
+                    "vkCmdSetRenderingInputAttachmentIndicesKHR"));
+        if (set_rendering_attachment_locations ==
+                nullptr ||
+            set_rendering_input_attachment_indices ==
+                nullptr) {
+            throw std::runtime_error(
+                "VK_KHR_dynamic_rendering_local_read was enabled "
+                "but its device command entry points are "
+                "unavailable");
+        }
+    }
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);
@@ -508,9 +577,51 @@ VulkanManageCore::VulkanManageCore() {
     LOG_INFO(logger, "Vulkan memory budget: available={}, reason={}", memory_budget_enabled,
              memory_budget_enabled ? "VK_EXT_memory_budget_enabled"
                                    : "VK_EXT_memory_budget_not_supported");
+    LOG_INFO(logger,
+             "Vulkan optional features: timeline_semaphore={}, multiview={}, "
+             "dynamic_rendering_local_read={}",
+             runtime_capabilities.timeline_semaphore,
+             runtime_capabilities.multiview,
+             runtime_capabilities.dynamic_rendering_local_read);
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
+
+void VulkanManageCore::setRenderingAttachmentLocations(
+    vk::CommandBuffer command_buffer,
+    const vk::RenderingAttachmentLocationInfoKHR
+        &locations) const {
+    if (!runtime_capabilities
+             .dynamic_rendering_local_read ||
+        set_rendering_attachment_locations == nullptr) {
+        throw std::runtime_error(
+            "dynamic rendering local-read attachment locations "
+            "are unavailable");
+    }
+    set_rendering_attachment_locations(
+        static_cast<VkCommandBuffer>(command_buffer),
+        reinterpret_cast<
+            const VkRenderingAttachmentLocationInfo *>(
+            &locations));
+}
+
+void VulkanManageCore::setRenderingInputAttachmentIndices(
+    vk::CommandBuffer command_buffer,
+    const vk::RenderingInputAttachmentIndexInfoKHR
+        &indices) const {
+    if (!runtime_capabilities
+             .dynamic_rendering_local_read ||
+        set_rendering_input_attachment_indices == nullptr) {
+        throw std::runtime_error(
+            "dynamic rendering local-read input indices are "
+            "unavailable");
+    }
+    set_rendering_input_attachment_indices(
+        static_cast<VkCommandBuffer>(command_buffer),
+        reinterpret_cast<
+            const VkRenderingInputAttachmentIndexInfo *>(
+            &indices));
+}
 
 DriverMemoryStatus VulkanManageCore::driverMemoryStatus() const {
     if (!memory_budget_enabled) {

@@ -8,14 +8,14 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
-layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform PELICAN_SAMPLER_2D_0 albedoSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform PELICAN_SAMPLER_2D_1 normalSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 2) uniform PELICAN_SAMPLER_2D_2 materialSampler; // R: roughness, G: metallic, B: AO
-layout(set = PELICAN_SET_PASS_INPUT, binding = 3) uniform PELICAN_SAMPLER_2D_3 worldPosSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 4) uniform PELICAN_SAMPLER_2D_4 emissiveSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 5) uniform PELICAN_SAMPLER_2D_5 ssaoSampler;
+PELICAN_DECLARE_INPUT_0(albedoSampler);
+PELICAN_DECLARE_INPUT_1(normalSampler);
+PELICAN_DECLARE_INPUT_2(materialSampler); // R: roughness, G: metallic, B: AO
+PELICAN_DECLARE_INPUT_3(worldPosSampler);
+PELICAN_DECLARE_INPUT_4(emissiveSampler);
+PELICAN_DECLARE_INPUT_5(ssaoSampler);
 #ifdef PELICAN_FEATURE_SHADOW
-layout(set = PELICAN_SET_PASS_INPUT, binding = 6) uniform PELICAN_SAMPLER_2D_6 shadowMapSampler;
+PELICAN_DECLARE_INPUT_6(shadowMapSampler);
 #endif
 
 const float PI = 3.14159265359;

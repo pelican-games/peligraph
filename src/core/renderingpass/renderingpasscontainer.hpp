@@ -17,6 +17,17 @@ namespace Pelican {
 struct RenderPipelineRuntimeGeneration;
 struct RenderPipelineRuntimePublication;
 
+struct MaterialPassRenderingBinding {
+    std::string pass_name;
+    vk::SampleCountFlagBits rasterization_samples =
+        vk::SampleCountFlagBits::e1;
+    CompiledPassRenderingContract rendering;
+
+    bool operator==(
+        const MaterialPassRenderingBinding &) const =
+        default;
+};
+
 DECLARE_MODULE(RenderingPassContainer) {
     ResourceContainer<RenderingPassId, CompiledRenderingPass> rendering_passes;
     std::unordered_map<std::string, RenderingPassId> name_to_id;
@@ -50,6 +61,12 @@ DECLARE_MODULE(RenderingPassContainer) {
     bool supportsMaterialPass(MaterialRouteClass route,
                               MaterialShaderContract shader_contract,
                               const std::optional<std::string> &exact_pass = std::nullopt) const;
+    std::vector<MaterialPassRenderingBinding>
+    materialPassRenderingBindings(
+        MaterialRouteClass route,
+        MaterialShaderContract shader_contract,
+        const std::optional<std::string> &exact_pass =
+            std::nullopt) const;
     vk::SampleCountFlagBits materialRasterizationSamples(
         MaterialShaderContract shader_contract) const;
 };

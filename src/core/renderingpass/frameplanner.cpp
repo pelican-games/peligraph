@@ -1,6 +1,8 @@
 #include "frameplanner.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include "../../project/materialscreeninput.hpp"
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -33,6 +35,176 @@ void appendUnique(std::vector<std::string> &values, std::string value) {
 void appendUnique(std::vector<std::string> &values, const std::vector<std::string> &more_values) {
     for (const auto &value : more_values) {
         appendUnique(values, value);
+    }
+}
+
+int footprintRank(LogicalReadFootprintKind kind) {
+    switch (kind) {
+    case LogicalReadFootprintKind::none: return 0;
+    case LogicalReadFootprintKind::same_pixel: return 1;
+    case LogicalReadFootprintKind::neighborhood: return 2;
+    case LogicalReadFootprintKind::arbitrary: return 3;
+    case LogicalReadFootprintKind::temporal: return 4;
+    }
+    throw std::runtime_error(
+        "Unknown frame graph read footprint kind");
+}
+
+void appendReadFootprint(
+    FrameGraphNodeDefinition &node, std::string resource,
+    LogicalReadFootprint footprint) {
+    const auto found = std::find_if(
+        node.read_footprints.begin(),
+        node.read_footprints.end(),
+        [&](const auto &entry) {
+            return entry.resource == resource;
+        });
+    if (found == node.read_footprints.end()) {
+        node.read_footprints.push_back({
+            std::move(resource),
+            std::move(footprint),
+        });
+        return;
+    }
+    const auto existing_rank =
+        footprintRank(found->footprint.kind);
+    const auto incoming_rank =
+        footprintRank(footprint.kind);
+    if (incoming_rank > existing_rank) {
+        found->footprint = std::move(footprint);
+        return;
+    }
+    if (incoming_rank == existing_rank &&
+        footprint.kind ==
+            LogicalReadFootprintKind::neighborhood) {
+        if (!found->footprint.radius ||
+            !footprint.radius) {
+            found->footprint.radius = std::nullopt;
+        } else {
+            found->footprint.radius =
+                std::max(*found->footprint.radius,
+                         *footprint.radius);
+        }
+    }
+}
+
+LogicalReadFootprintKind parseReadFootprintKind(
+    std::string_view value, std::string_view context) {
+    if (value == "same_pixel") {
+        return LogicalReadFootprintKind::same_pixel;
+    }
+    if (value == "neighborhood") {
+        return LogicalReadFootprintKind::neighborhood;
+    }
+    if (value == "arbitrary") {
+        return LogicalReadFootprintKind::arbitrary;
+    }
+    if (value == "temporal") {
+        throw std::runtime_error(
+            std::string{context} +
+            " cannot declare temporal; use @history");
+    }
+    throw std::runtime_error(
+        std::string{context} +
+        " has unknown read footprint '" +
+        std::string{value} + "'");
+}
+
+LogicalReadFootprint parseReadFootprint(
+    const nlohmann::json &encoded,
+    std::string_view context) {
+    LogicalReadFootprint result;
+    if (encoded.is_string()) {
+        result.kind = parseReadFootprintKind(
+            encoded.get_ref<const std::string &>(),
+            context);
+        return result;
+    }
+    if (!encoded.is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " must be a footprint string or object");
+    }
+    for (auto entry = encoded.begin();
+         entry != encoded.end(); ++entry) {
+        if (entry.key() != "kind" &&
+            entry.key() != "radius") {
+            throw std::runtime_error(
+                std::string{context} +
+                " has unknown field '" +
+                entry.key() + "'");
+        }
+    }
+    if (!encoded.contains("kind") ||
+        !encoded.at("kind").is_string()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires string field: kind");
+    }
+    result.kind = parseReadFootprintKind(
+        encoded.at("kind")
+            .get_ref<const std::string &>(),
+        context);
+    if (!encoded.contains("radius")) {
+        return result;
+    }
+    const auto &radius = encoded.at("radius");
+    if (!radius.is_number_unsigned()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " radius must be a positive unsigned integer");
+    }
+    const auto value =
+        radius.get<std::uint64_t>();
+    if (value == 0 ||
+        value >
+            std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " radius is outside the uint32 range");
+    }
+    if (result.kind !=
+        LogicalReadFootprintKind::neighborhood) {
+        throw std::runtime_error(
+            std::string{context} +
+            " radius is valid only for neighborhood reads");
+    }
+    result.radius =
+        static_cast<std::uint32_t>(value);
+    return result;
+}
+
+void parseReadFootprintOverrides(
+    const nlohmann::json &source,
+    std::string_view field,
+    FrameGraphNodeDefinition &node) {
+    if (!source.contains(field)) {
+        return;
+    }
+    const auto &declaration = source.at(field);
+    if (!declaration.is_object()) {
+        throw std::runtime_error(
+            "Frame graph " + std::string{field} +
+            " must be an object");
+    }
+    for (auto entry = declaration.begin();
+         entry != declaration.end(); ++entry) {
+        if (std::find(node.reads.begin(),
+                      node.reads.end(),
+                      entry.key()) ==
+            node.reads.end()) {
+            throw std::runtime_error(
+                "Frame graph " + std::string{field} +
+                " names a non-current read resource: " +
+                entry.key());
+        }
+        appendReadFootprint(
+            node, entry.key(),
+            parseReadFootprint(
+                entry.value(),
+                "Frame graph " +
+                    std::string{field} + "." +
+                    entry.key()));
     }
 }
 
@@ -81,8 +253,9 @@ std::vector<std::string> parseOptionalStringList(const nlohmann::json &json, std
     return parseStringList(json.at(field), std::string{context} + "." + std::string{field});
 }
 
-void appendMaterialScreenInputReads(const nlohmann::json &pass_json,
-                                    std::vector<std::string> &reads) {
+void appendMaterialScreenInputReads(
+    const nlohmann::json &pass_json,
+    FrameGraphNodeDefinition &node) {
     if (!pass_json.contains("screen_inputs")) {
         return;
     }
@@ -91,12 +264,21 @@ void appendMaterialScreenInputReads(const nlohmann::json &pass_json,
         throw std::runtime_error(
             "Frame graph pass.screen_inputs must be an object");
     }
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
     for (auto entry = screen_inputs.begin(); entry != screen_inputs.end(); ++entry) {
         if (!entry.value().is_string()) {
             throw std::runtime_error(
                 "Frame graph pass.screen_inputs entries must name resources");
         }
-        appendUnique(reads, entry.value().get<std::string>());
+        const auto resource =
+            entry.value().get<std::string>();
+        appendUnique(node.reads, resource);
+        appendReadFootprint(
+            node, resource,
+            makeBuiltinMaterialScreenInputContract(
+                types, entry.key())
+                .footprint);
     }
 }
 
@@ -218,7 +400,9 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     splitHistoryReads(parseOptionalStringList(pass_json, "input", "pass"),
                       node.reads, node.reads_history);
-    appendMaterialScreenInputReads(pass_json, node.reads);
+    parseReadFootprintOverrides(
+        pass_json, "input_footprints", node);
+    appendMaterialScreenInputReads(pass_json, node);
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
     node.raster_geometry =
@@ -280,9 +464,21 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
 
     if (color_load == vk::AttachmentLoadOp::eLoad) {
         appendUnique(node.reads, color_outputs);
+        for (const auto &resource : color_outputs) {
+            appendReadFootprint(
+                node, resource,
+                {LogicalReadFootprintKind::same_pixel,
+                 std::nullopt});
+        }
     }
     if (depth_load == vk::AttachmentLoadOp::eLoad) {
         appendUnique(node.reads, depth_outputs);
+        for (const auto &resource : depth_outputs) {
+            appendReadFootprint(
+                node, resource,
+                {LogicalReadFootprintKind::same_pixel,
+                 std::nullopt});
+        }
     }
 
     return node;
@@ -299,6 +495,8 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     node.declaration_index = declaration_index;
     splitHistoryReads(parseOptionalStringList(task_json, "reads", "compute task"),
                       node.reads, node.reads_history);
+    parseReadFootprintOverrides(
+        task_json, "read_footprints", node);
     node.writes = parseOptionalStringList(task_json, "writes", "compute task");
     node.after = parseOptionalStringList(task_json, "after", "compute task");
     node.before = parseOptionalStringList(task_json, "before", "compute task");
@@ -515,6 +713,15 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
                 });
         }
     }
+    if (pass.isMaterial()) {
+        for (const auto &input :
+             pass.materialInfo().screen_inputs) {
+            appendReadFootprint(
+                node,
+                renderTargetResourceName(input.target),
+                input.contract.footprint);
+        }
+    }
     const auto depth_resource =
         renderTargetResourceName(pass.output_depth);
     appendUnique(node.writes, depth_resource);
@@ -535,11 +742,23 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
 
     if (pass.color_load_op == vk::AttachmentLoadOp::eLoad) {
         for (const auto target : pass.output_color) {
-            appendUnique(node.reads, renderTargetResourceName(target));
+            const auto resource =
+                renderTargetResourceName(target);
+            appendUnique(node.reads, resource);
+            appendReadFootprint(
+                node, resource,
+                {LogicalReadFootprintKind::same_pixel,
+                 std::nullopt});
         }
     }
     if (pass.depth_load_op == vk::AttachmentLoadOp::eLoad) {
-        appendUnique(node.reads, renderTargetResourceName(pass.output_depth));
+        const auto resource =
+            renderTargetResourceName(pass.output_depth);
+        appendUnique(node.reads, resource);
+        appendReadFootprint(
+            node, resource,
+            {LogicalReadFootprintKind::same_pixel,
+             std::nullopt});
     }
     return node;
 }

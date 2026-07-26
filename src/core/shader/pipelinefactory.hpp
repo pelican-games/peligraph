@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -16,6 +17,29 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+inline constexpr std::uint32_t
+    unusedGraphicsAttachmentMapping =
+        std::numeric_limits<std::uint32_t>::max();
+
+struct GraphicsPipelineRenderingLocalReadContract {
+    bool enabled = false;
+    // Both arrays are indexed by the color attachment slot declared in
+    // GraphicsPipelineDesc::color_formats. Values are shader locations/input
+    // indices or unusedGraphicsAttachmentMapping.
+    std::vector<std::uint32_t>
+        color_attachment_locations;
+    std::vector<std::uint32_t>
+        color_attachment_input_indices;
+    std::uint32_t depth_attachment_input_index =
+        unusedGraphicsAttachmentMapping;
+    std::uint32_t stencil_attachment_input_index =
+        unusedGraphicsAttachmentMapping;
+
+    bool operator==(
+        const GraphicsPipelineRenderingLocalReadContract &) const =
+        default;
+};
 
 struct GraphicsPipelineDesc {
     ShaderBundleId vert;
@@ -43,6 +67,8 @@ struct GraphicsPipelineDesc {
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
     GraphicsPipelineViewContract view;
+    GraphicsPipelineRenderingLocalReadContract
+        local_read;
 };
 
 struct ComputePipelineDesc {

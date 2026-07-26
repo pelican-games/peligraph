@@ -428,6 +428,87 @@ TEST_CASE("history reads are serialized without an intra-frame dependency",
     requirePlanFixture(framePlanToJson(plan), fixtureRoot() / "plans" / "history_read.json");
 }
 
+TEST_CASE("frame graph parses typed current-read footprints",
+          "[frameplanner][logical]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+              "name": "typed_reads",
+              "render_targets": [
+                {"name": "gbuffer"},
+                {"name": "ao"}
+              ],
+              "passes": [
+                {
+                  "name": "lighting",
+                  "type": "fullscreen",
+                  "input": ["gbuffer", "ao"],
+                  "input_footprints": {
+                    "gbuffer": "same_pixel",
+                    "ao": {
+                      "kind": "neighborhood",
+                      "radius": 2
+                    }
+                  },
+                  "output": {
+                    "color": "swapchain",
+                    "depth": null
+                  }
+                }
+              ]
+            })json"));
+
+    REQUIRE(graph.nodes.size() == 1);
+    const auto &footprints =
+        graph.nodes.front().read_footprints;
+    REQUIRE(footprints.size() == 2);
+    const auto gbuffer = std::find_if(
+        footprints.begin(), footprints.end(),
+        [](const auto &entry) {
+            return entry.resource == "gbuffer";
+        });
+    const auto ao = std::find_if(
+        footprints.begin(), footprints.end(),
+        [](const auto &entry) {
+            return entry.resource == "ao";
+        });
+    REQUIRE(gbuffer != footprints.end());
+    REQUIRE(
+        gbuffer->footprint ==
+        LogicalReadFootprint{
+            LogicalReadFootprintKind::same_pixel,
+            std::nullopt});
+    REQUIRE(ao != footprints.end());
+    REQUIRE(
+        ao->footprint ==
+        LogicalReadFootprint{
+            LogicalReadFootprintKind::neighborhood,
+            2});
+
+    auto invalid = nlohmann::json::parse(R"json({
+      "name": "invalid_typed_read",
+      "render_targets": [{"name": "source"}],
+      "passes": [{
+        "name": "present",
+        "type": "fullscreen",
+        "input": ["source"],
+        "input_footprints": {
+          "not_an_input": "same_pixel"
+        },
+        "output": {"color": "swapchain", "depth": null}
+      }]
+    })json");
+    REQUIRE_THROWS_AS(
+        parseFrameGraphDefinitionFromJson(invalid),
+        std::runtime_error);
+
+    invalid["passes"][0]["input_footprints"] = {
+        {"source", "temporal"}};
+    REQUIRE_THROWS_AS(
+        parseFrameGraphDefinitionFromJson(invalid),
+        std::runtime_error);
+}
+
 TEST_CASE("frame planner emits barriers for explicit compute to render resource edges", "[frameplanner]") {
     const auto graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
   "name": "compute_to_present",

@@ -70,9 +70,22 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
     for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
         const auto rt_id = pass_def.input_targets[i];
         const auto rt = rt_metadata.get(rt_id);
-        if (!(rt.usage & vk::ImageUsageFlagBits::eSampled)) {
-            throw std::runtime_error("Input target missing SAMPLED usage: " + rt.name + " in pass: " +
-                                     pass_def.name);
+        const auto local_read =
+            rt.storage_mode ==
+                RenderTargetStorageMode::
+                    tile_local_attachment &&
+            bool(
+                rt.usage &
+                vk::ImageUsageFlagBits::
+                    eInputAttachment);
+        if (!(rt.usage &
+              vk::ImageUsageFlagBits::eSampled) &&
+            !local_read) {
+            throw std::runtime_error(
+                "Input target missing SAMPLED or tile-local "
+                "INPUT_ATTACHMENT usage: " +
+                rt.name + " in pass: " +
+                pass_def.name);
         }
         if (pass_def.input_target_history.at(i) && !rt.history) {
             throw std::runtime_error("@history input requires a history render target: " + rt.name +

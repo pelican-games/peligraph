@@ -425,6 +425,8 @@ std::string layoutName(vk::ImageLayout layout) {
         return "depth_attachment_optimal";
     case vk::ImageLayout::eShaderReadOnlyOptimal:
         return "shader_read_only_optimal";
+    case vk::ImageLayout::eRenderingLocalReadKHR:
+        return "rendering_local_read";
     case vk::ImageLayout::eTransferSrcOptimal:
         return "transfer_src_optimal";
     case vk::ImageLayout::eTransferDstOptimal:
@@ -804,6 +806,132 @@ std::vector<std::string> pairedSrgbStorageEdges(
     return edges;
 }
 
+void executeCompiledFrameGraphBarrier(
+    const FrameRenderContext &render_ctx,
+    const CompiledFrameGraphExecution &frame_graph,
+    RenderFrameModules &modules,
+    RenderTargetLayoutTracker &layout_tracker,
+    std::size_t consumer_node_index,
+    const CompiledFrameGraphBarrier &barrier) {
+    if (barrier.from_node_index >=
+        consumer_node_index) {
+        throw std::runtime_error(
+            "Compiled frame graph barrier source was not executed "
+            "before target");
+    }
+    const auto buffer_id =
+        boundFrameGraphBuffer(
+            frame_graph, barrier.resource);
+    if (isValidFrameGraphBufferId(buffer_id)) {
+        modules.compute_task_container
+            .bufferReadAfterWriteBarrier(
+                render_ctx.cmd_buf, buffer_id,
+                barrier.from_kind,
+                barrier.to_kind);
+        return;
+    }
+    if (barrier.resource == "swapchain") {
+        if (!render_ctx.color_image) {
+            throw std::runtime_error(
+                "Compiled frame graph swapchain barrier has no "
+                "frame image");
+        }
+        vk::ImageMemoryBarrier image_barrier;
+        image_barrier.srcAccessMask =
+            vk::AccessFlagBits::
+                eColorAttachmentRead |
+            vk::AccessFlagBits::
+                eColorAttachmentWrite;
+        image_barrier.dstAccessMask =
+            vk::AccessFlagBits::
+                eColorAttachmentRead |
+            vk::AccessFlagBits::
+                eColorAttachmentWrite;
+        image_barrier.oldLayout =
+            vk::ImageLayout::
+                eColorAttachmentOptimal;
+        image_barrier.newLayout =
+            vk::ImageLayout::
+                eColorAttachmentOptimal;
+        image_barrier.srcQueueFamilyIndex =
+            VK_QUEUE_FAMILY_IGNORED;
+        image_barrier.dstQueueFamilyIndex =
+            VK_QUEUE_FAMILY_IGNORED;
+        image_barrier.image =
+            render_ctx.color_image;
+        image_barrier.subresourceRange = {
+            vk::ImageAspectFlagBits::eColor,
+            0,
+            1,
+            render_ctx.color_base_array_layer,
+            render_ctx.color_array_layers};
+        render_ctx.cmd_buf.pipelineBarrier(
+            vk::PipelineStageFlagBits::
+                eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::
+                eColorAttachmentOutput,
+            {}, {}, {}, {image_barrier});
+        return;
+    }
+    const auto target_id =
+        boundRenderTarget(
+            frame_graph, barrier.resource);
+    if (!isConcreteRenderTarget(target_id)) {
+        throw std::runtime_error(
+            "Compiled frame graph barrier references an unknown "
+            "resource: " +
+            barrier.resource);
+    }
+    layout_tracker.memoryDependency(
+        render_ctx.cmd_buf,
+        modules.render_target_container,
+        modules.vk_utils, target_id);
+}
+
+bool passReadsBarrierAsLocalAttachment(
+    const CompiledPass &pass,
+    const CompiledFrameGraphExecution &frame_graph,
+    const CompiledFrameGraphBarrier &barrier) {
+    const auto target =
+        boundRenderTarget(
+            frame_graph, barrier.resource);
+    if (!isConcreteRenderTarget(target)) {
+        return false;
+    }
+    for (std::size_t input_index = 0;
+         input_index <
+         pass.definition.input_targets.size();
+         ++input_index) {
+        if (pass.definition
+                    .input_targets[input_index] ==
+                target &&
+            !pass.definition
+                 .input_target_history.at(
+                     input_index) &&
+            passInputUsesLocalRead(
+                pass, input_index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isPhysicalScopeAttachment(
+    const CompiledPassRenderingContract &rendering,
+    const CompiledFrameGraphExecution &frame_graph,
+    std::string_view resource) {
+    const auto target =
+        boundRenderTarget(
+            frame_graph, std::string{resource});
+    return isConcreteRenderTarget(target) &&
+           (std::find(
+                rendering.color_attachments.begin(),
+                rendering.color_attachments.end(),
+                target) !=
+                rendering.color_attachments.end() ||
+            target == rendering.depth_attachment);
+}
+
 void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               const CompiledRenderingPass &rendering_pass,
                               const CompiledFrameGraphExecution &frame_graph,
@@ -823,7 +951,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                   &prepare_invocation = {}) {
     std::vector<LogicalFrameNodeInvocation>
         fallback_schedule;
-    if (authored_schedule.empty()) {
+    if (authored_schedule.empty() &&
+        frame_graph.target_plan == nullptr) {
         fallback_schedule.reserve(
             frame_graph.nodes.size());
         for (std::size_t node_index = 0;
@@ -854,8 +983,15 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
     const auto paired_storage_edges = pairedSrgbStorageEdges(
         rendering_pass, frame_graph, modules.render_target_container);
 
-    for (const auto &scheduled :
-         authored_schedule) {
+    bool local_read_scope_active = false;
+    std::size_t active_local_read_scope =
+        std::numeric_limits<std::size_t>::max();
+
+    for (std::size_t schedule_position = 0;
+         schedule_position < authored_schedule.size();
+         ++schedule_position) {
+        const auto &scheduled =
+            authored_schedule[schedule_position];
         if (scheduled.node_index >=
             frame_graph.nodes.size()) {
             throw std::runtime_error(
@@ -873,6 +1009,97 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             frame_graph.plan.nodes[node_index].kind != execution_node.kind) {
             throw std::runtime_error("Frame graph execution no longer matches frame plan");
         }
+        const CompiledPass *render_pass =
+            execution_node.kind ==
+                    FramePlanNodeKind::render
+                ? &rendering_pass.passes.at(
+                      execution_node.index)
+                : nullptr;
+        const bool local_read_scope =
+            render_pass != nullptr &&
+            render_pass->rendering
+                .local_read_scope;
+        std::vector<const CompiledPass *>
+            starting_scope_passes;
+        if (local_read_scope &&
+            scheduled.beginsScopeExecution()) {
+            if (local_read_scope_active) {
+                throw std::logic_error(
+                    "tile-local physical scopes overlap");
+            }
+            if (scheduled.scope_node_count < 2 ||
+                schedule_position +
+                        scheduled.scope_node_count >
+                    authored_schedule.size()) {
+                throw std::runtime_error(
+                    "tile-local physical scope schedule is "
+                    "incomplete");
+            }
+            starting_scope_passes.reserve(
+                scheduled.scope_node_count);
+            for (std::size_t offset = 0;
+                 offset <
+                 scheduled.scope_node_count;
+                 ++offset) {
+                const auto &candidate =
+                    authored_schedule[
+                        schedule_position + offset];
+                if (candidate.scope_index !=
+                        scheduled.scope_index ||
+                    candidate.scope_node_index !=
+                        offset ||
+                    candidate.scope_node_count !=
+                        scheduled.scope_node_count ||
+                    candidate.execution_index !=
+                        scheduled.execution_index ||
+                    candidate.view_index !=
+                        scheduled.view_index ||
+                    candidate.node_index !=
+                        scheduled.node_index +
+                            offset) {
+                    throw std::runtime_error(
+                        "tile-local physical scope schedule is not "
+                        "contiguous");
+                }
+                const auto &candidate_node =
+                    frame_graph.nodes.at(
+                        candidate.node_index);
+                if (candidate_node.kind !=
+                    FramePlanNodeKind::render) {
+                    throw std::runtime_error(
+                        "tile-local physical scope contains a "
+                        "non-render node: " +
+                        candidate_node.name);
+                }
+                const auto &candidate_pass =
+                    rendering_pass.passes.at(
+                        candidate_node.index);
+                if (!candidate_pass.rendering
+                         .local_read_scope ||
+                    candidate_pass.rendering
+                            .scope_index !=
+                        scheduled.scope_index) {
+                    throw std::runtime_error(
+                        "tile-local scheduled pass disagrees with "
+                        "its physical scope: " +
+                        candidate_node.name);
+                }
+                starting_scope_passes.push_back(
+                    &candidate_pass);
+            }
+        } else if (local_read_scope) {
+            if (!local_read_scope_active ||
+                active_local_read_scope !=
+                    scheduled.scope_index) {
+                throw std::runtime_error(
+                    "tile-local physical scope continuation has no "
+                    "active rendering instance");
+            }
+        } else if (local_read_scope_active) {
+            throw std::runtime_error(
+                "tile-local physical scope ended before its "
+                "scheduled boundary");
+        }
 
         std::string node_debug_name;
         if (modules.debug_utils.commandLabelsEnabled()) {
@@ -888,63 +1115,112 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             modules.render_timing->writeNodeSubrangeStart(
                 render_ctx.cmd_buf, node_index, GpuTimingSubrange::barriers);
         }
-        if (scheduled.firstExecution()) {
-            ScopedCommandDebugLabel barrier_label{modules.debug_utils, render_ctx.cmd_buf,
-                                                   "barriers"};
-            for (const auto &barrier : execution_node.incoming_barriers) {
-                if (barrier.from_node_index >= node_index) {
-                    throw std::runtime_error(
-                        "Compiled frame graph barrier source was not executed before target");
-                }
-                const auto buffer_id =
-                    boundFrameGraphBuffer(
-                        frame_graph, barrier.resource);
-                if (isValidFrameGraphBufferId(buffer_id)) {
-                    modules.compute_task_container.bufferReadAfterWriteBarrier(
-                        render_ctx.cmd_buf, buffer_id, barrier.from_kind,
-                        barrier.to_kind);
-                    continue;
-                }
-                if (barrier.resource == "swapchain") {
-                    if (!render_ctx.color_image) {
-                        throw std::runtime_error(
-                            "Compiled frame graph swapchain barrier has no frame image");
+        {
+            ScopedCommandDebugLabel barrier_label{
+                modules.debug_utils,
+                render_ctx.cmd_buf, "barriers"};
+            if (local_read_scope &&
+                scheduled.beginsScopeExecution()) {
+                if (scheduled.firstExecution()) {
+                    const auto scope_end =
+                        scheduled.node_index +
+                        scheduled.scope_node_count;
+                    for (std::size_t offset = 0;
+                         offset <
+                         scheduled.scope_node_count;
+                         ++offset) {
+                        const auto &consumer =
+                            authored_schedule[
+                                schedule_position +
+                                offset];
+                        const auto &consumer_node =
+                            frame_graph.nodes.at(
+                                consumer.node_index);
+                        const auto &consumer_pass =
+                            *starting_scope_passes[
+                                offset];
+                        for (const auto &barrier :
+                             consumer_node
+                                 .incoming_barriers) {
+                            if (barrier.from_node_index >=
+                                consumer.node_index) {
+                                throw std::runtime_error(
+                                    "Compiled frame graph barrier "
+                                    "source was not executed before "
+                                    "target");
+                            }
+                            const auto internal =
+                                barrier.from_node_index >=
+                                    scheduled.node_index &&
+                                barrier.from_node_index <
+                                    scope_end;
+                            if (internal) {
+                                if (passReadsBarrierAsLocalAttachment(
+                                        consumer_pass,
+                                        frame_graph,
+                                        barrier) ||
+                                    isPhysicalScopeAttachment(
+                                        consumer_pass
+                                            .rendering,
+                                        frame_graph,
+                                        barrier.resource)) {
+                                    continue;
+                                }
+                                throw std::runtime_error(
+                                    "tile-local physical scope has "
+                                    "an internal dependency that "
+                                    "cannot execute inside dynamic "
+                                    "rendering: " +
+                                    barrier.resource);
+                            }
+                            executeCompiledFrameGraphBarrier(
+                                render_ctx, frame_graph,
+                                modules, layout_tracker,
+                                consumer.node_index,
+                                barrier);
+                        }
                     }
-                    vk::ImageMemoryBarrier image_barrier;
-                    image_barrier.srcAccessMask =
-                        vk::AccessFlagBits::eColorAttachmentRead |
-                        vk::AccessFlagBits::eColorAttachmentWrite;
-                    image_barrier.dstAccessMask =
-                        vk::AccessFlagBits::eColorAttachmentRead |
-                        vk::AccessFlagBits::eColorAttachmentWrite;
-                    image_barrier.oldLayout =
-                        vk::ImageLayout::eColorAttachmentOptimal;
-                    image_barrier.newLayout =
-                        vk::ImageLayout::eColorAttachmentOptimal;
-                    image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    image_barrier.image = render_ctx.color_image;
-                    image_barrier.subresourceRange = {
-                        vk::ImageAspectFlagBits::eColor, 0, 1,
-                        render_ctx.color_base_array_layer,
-                        render_ctx.color_array_layers};
-                    render_ctx.cmd_buf.pipelineBarrier(
-                        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                        vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {},
-                        {image_barrier});
-                    continue;
                 }
-                const auto target_id =
-                    boundRenderTarget(
-                        frame_graph, barrier.resource);
-                if (!isConcreteRenderTarget(target_id)) {
-                    throw std::runtime_error(
-                        "Compiled frame graph barrier references an unknown resource: " +
-                        barrier.resource);
+                modules.pass_executor
+                    .beginLocalReadScope(
+                        render_ctx,
+                        starting_scope_passes,
+                        pass_executor_dependencies,
+                        layout_tracker,
+                        RenderPassViewInvocation{
+                            scheduled
+                                .logical_view_count,
+                            scheduled.view_index});
+                local_read_scope_active = true;
+                active_local_read_scope =
+                    scheduled.scope_index;
+            } else if (local_read_scope) {
+                if (std::any_of(
+                        render_pass->rendering
+                            .color_attachment_input_indices
+                            .begin(),
+                        render_pass->rendering
+                            .color_attachment_input_indices
+                            .end(),
+                        [](std::uint32_t input) {
+                            return input !=
+                                   unusedPhysicalAttachmentMapping;
+                        }) ||
+                    render_pass->rendering
+                            .depth_attachment_input_index !=
+                        unusedPhysicalAttachmentMapping) {
+                    modules.pass_executor
+                        .localReadDependency(
+                            render_ctx.cmd_buf);
                 }
-                layout_tracker.memoryDependency(
-                    render_ctx.cmd_buf, modules.render_target_container,
-                    modules.vk_utils, target_id);
+            } else if (scheduled.firstExecution()) {
+                for (const auto &barrier :
+                     execution_node.incoming_barriers) {
+                    executeCompiledFrameGraphBarrier(
+                        render_ctx, frame_graph, modules,
+                        layout_tracker, node_index,
+                        barrier);
+                }
             }
         }
         if (modules.render_timing != nullptr &&
@@ -961,12 +1237,35 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         }
 
         if (execution_node.kind == FramePlanNodeKind::render) {
-            const auto &pass = rendering_pass.passes.at(execution_node.index);
-            modules.pass_executor.execute(render_ctx, pass,
-                                          pass_executor_dependencies, layout_tracker,
-                                          RenderPassViewInvocation{
-                                              scheduled.logical_view_count,
-                                              scheduled.view_index});
+            const auto &pass = *render_pass;
+            if (local_read_scope) {
+                modules.pass_executor
+                    .executeLocalReadPass(
+                        render_ctx, pass,
+                        pass_executor_dependencies,
+                        RenderPassViewInvocation{
+                            scheduled
+                                .logical_view_count,
+                            scheduled.view_index});
+                if (scheduled
+                        .endsScopeExecution()) {
+                    modules.pass_executor
+                        .endLocalReadScope(
+                            render_ctx.cmd_buf);
+                    local_read_scope_active = false;
+                    active_local_read_scope =
+                        std::numeric_limits<
+                            std::size_t>::max();
+                }
+            } else {
+                modules.pass_executor.execute(
+                    render_ctx, pass,
+                    pass_executor_dependencies,
+                    layout_tracker,
+                    RenderPassViewInvocation{
+                        scheduled.logical_view_count,
+                        scheduled.view_index});
+            }
             if (node_trace != nullptr) {
                 node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
                                                       layout_tracker));
@@ -1210,6 +1509,11 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         }
     }
 
+    if (local_read_scope_active) {
+        throw std::runtime_error(
+            "tile-local physical scope remained open after the "
+            "logical frame schedule");
+    }
     if (modules.render_timing != nullptr) modules.render_timing->endGpuRange();
 }
 
@@ -2276,6 +2580,15 @@ void Renderer::renderLogicalFrame(
             "compiled frame graph requires multiview, but the logical-frame "
             "target does not expose a view-family command context");
     }
+    std::vector<LogicalFrameNodeInvocation>
+        logical_frame_schedule;
+    if (frame_graph.target_plan != nullptr) {
+        logical_frame_schedule =
+            buildLogicalFrameViewFamilySchedule(
+                frame_graph.nodes,
+                *frame_graph.target_plan,
+                view_count);
+    }
 
     const auto external_depth_export =
         resolveRuntimeExternalDepthExport(
@@ -2418,11 +2731,6 @@ void Renderer::renderLogicalFrame(
             .updateMultiviewResolutions(
                 frame_resolutions);
 
-        auto schedule =
-            buildLogicalFrameViewFamilySchedule(
-                frame_graph.nodes,
-                *frame_graph.target_plan,
-                view_count);
         nlohmann::json node_trace;
         nlohmann::json *node_trace_ptr =
             nullptr;
@@ -2441,7 +2749,7 @@ void Renderer::renderLogicalFrame(
             renderPipelineGraphVariantName(
                 graph_variant_policy.variant),
             0, view_count, per_view_sort,
-            schedule);
+            logical_frame_schedule);
         if (external_depth_submission_active) {
             recordExternalDepthExport(
                 render_ctx,
@@ -2480,6 +2788,14 @@ void Renderer::renderLogicalFrame(
         }
     } else {
     for (std::uint32_t view_index = 0; view_index < view_count; ++view_index) {
+        std::vector<LogicalFrameNodeInvocation>
+            per_view_schedule;
+        if (frame_graph.target_plan != nullptr) {
+            per_view_schedule =
+                selectLogicalFrameSequentialViewSchedule(
+                    logical_frame_schedule,
+                    view_index, view_count);
+        }
         const auto render_ctx = target.beginView(view_index);
         if (view_index == 0) {
             logical_in_flight_frame = render_ctx.in_flight_frame_index;
@@ -2556,7 +2872,8 @@ void Renderer::renderLogicalFrame(
                                    graph_variant_policy.variant),
                                view_index,
                                view_count,
-                               per_view_sort);
+                               per_view_sort,
+                               per_view_schedule);
         if (external_depth_submission_active) {
             recordExternalDepthExport(
                 render_ctx,

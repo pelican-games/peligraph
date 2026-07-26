@@ -10,6 +10,7 @@
 #include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include "../vkcore/rendertarget.hpp"
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
 #include "standardmaterialresource.hpp"
@@ -38,10 +39,190 @@ constexpr uint32_t vatMaterialTextureBindingCount = 6;
 constexpr size_t maxMaterials = 1024;
 constexpr uint32_t maxMaterialScreenInputs = 4;
 
-static std::string makePipelineKey(const MaterialInfo &info) {
-    const auto samples =
-        GET_MODULE(RenderingPassContainer)
-            .materialRasterizationSamples(info.shader_contract);
+struct MaterialPipelineRenderingContract {
+    std::vector<vk::Format> color_formats;
+    std::optional<vk::Format> depth_format;
+    vk::SampleCountFlagBits rasterization_samples =
+        vk::SampleCountFlagBits::e1;
+    GraphicsPipelineRenderingLocalReadContract local_read;
+
+    bool operator==(
+        const MaterialPipelineRenderingContract &) const =
+        default;
+};
+
+static MaterialPipelineRenderingContract
+defaultMaterialPipelineRenderingContract(
+    MaterialShaderContract shader_contract,
+    vk::SampleCountFlagBits samples) {
+    MaterialPipelineRenderingContract result;
+    if (shader_contract ==
+        MaterialShaderContract::forward_scene_color_v1) {
+        result.color_formats.push_back(
+            forwardMaterialPassColorAttachmentFormat);
+    } else {
+        const auto &formats =
+            materialPassColorAttachmentFormats(
+                GET_MODULE(RenderingPassContainer)
+                    .isFeatureEnabled("hdr"));
+        result.color_formats.assign(
+            formats.begin(), formats.end());
+    }
+    result.depth_format =
+        materialPassDepthAttachmentFormat;
+    result.rasterization_samples = samples;
+    return result;
+}
+
+static vk::Format resolveMaterialColorFormat(
+    GlobalRenderTargetId target) {
+    if (isConcreteRenderTarget(target)) {
+        return GET_MODULE(RenderTargetContainer)
+            .getMetadata(target)
+            .format;
+    }
+    if (isSwapchainRenderTarget(target)) {
+        return GET_MODULE(RenderTarget)
+            .getSwapchainFormat();
+    }
+    throw std::runtime_error(
+        "material physical rendering contract has an invalid "
+        "color target");
+}
+
+static MaterialPipelineRenderingContract
+resolveMaterialPassRenderingBinding(
+    const MaterialPassRenderingBinding &binding,
+    MaterialShaderContract shader_contract) {
+    if (binding.rendering.color_attachments.empty()) {
+        return defaultMaterialPipelineRenderingContract(
+            shader_contract,
+            binding.rasterization_samples);
+    }
+
+    MaterialPipelineRenderingContract result;
+    result.rasterization_samples =
+        binding.rasterization_samples;
+    result.color_formats.reserve(
+        binding.rendering.color_attachments.size());
+    for (const auto target :
+         binding.rendering.color_attachments) {
+        result.color_formats.push_back(
+            resolveMaterialColorFormat(target));
+    }
+    if (isConcreteRenderTarget(
+            binding.rendering.depth_attachment)) {
+        result.depth_format =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(
+                    binding.rendering.depth_attachment)
+                .format;
+    } else if (isSwapchainRenderTarget(
+                   binding.rendering.depth_attachment)) {
+        throw std::runtime_error(
+            "material physical rendering contract cannot use the "
+            "swapchain as a depth attachment: " +
+            binding.pass_name);
+    }
+
+    result.local_read.enabled =
+        binding.rendering.local_read_scope;
+    if (!result.local_read.enabled) {
+        return result;
+    }
+    result.local_read.color_attachment_locations =
+        binding.rendering.color_attachment_locations;
+    result.local_read.color_attachment_input_indices =
+        binding.rendering
+            .color_attachment_input_indices;
+    result.local_read.depth_attachment_input_index =
+        binding.rendering
+            .depth_attachment_input_index;
+
+    const auto consumes_local_color =
+        std::any_of(
+            result.local_read
+                .color_attachment_input_indices.begin(),
+            result.local_read
+                .color_attachment_input_indices.end(),
+            [](std::uint32_t index) {
+                return index !=
+                       unusedGraphicsAttachmentMapping;
+            });
+    if (consumes_local_color ||
+        result.local_read
+                .depth_attachment_input_index !=
+            unusedGraphicsAttachmentMapping) {
+        throw std::runtime_error(
+            "material pass consumes a tile-local attachment but "
+            "the surface-shader input-attachment ABI is not "
+            "available yet: " +
+            binding.pass_name);
+    }
+    return result;
+}
+
+static MaterialPipelineRenderingContract
+resolveMaterialPipelineRenderingContract(
+    const MaterialInfo &info) {
+    const auto &rendering_passes =
+        GET_MODULE(RenderingPassContainer);
+    const auto bindings =
+        rendering_passes
+            .materialPassRenderingBindings(
+                info.route, info.shader_contract,
+                info.exact_pass);
+    if (bindings.empty()) {
+        if (rendering_passes.hasMaterialPasses()) {
+            const auto selected =
+                info.exact_pass
+                    ? " exact pass '" +
+                          *info.exact_pass + "'"
+                    : std::string{};
+            throw std::runtime_error(
+                "material route '" +
+                std::string{
+                    materialRouteClassName(
+                        info.route)} +
+                "' with shader contract '" +
+                std::string{
+                    materialShaderContractName(
+                        info.shader_contract)} +
+                "' has no compatible registered material pass" +
+                selected);
+        }
+        return defaultMaterialPipelineRenderingContract(
+            info.shader_contract,
+            rendering_passes
+                .materialRasterizationSamples(
+                    info.shader_contract));
+    }
+
+    auto result =
+        resolveMaterialPassRenderingBinding(
+            bindings.front(),
+            info.shader_contract);
+    for (std::size_t index = 1;
+         index < bindings.size(); ++index) {
+        const auto candidate =
+            resolveMaterialPassRenderingBinding(
+                bindings[index],
+                info.shader_contract);
+        if (candidate != result) {
+            throw std::runtime_error(
+                "material route resolves to pipeline-incompatible "
+                "physical rendering contracts: " +
+                bindings.front().pass_name + " and " +
+                bindings[index].pass_name);
+        }
+    }
+    return result;
+}
+
+static std::string makePipelineKey(
+    const MaterialInfo &info,
+    const MaterialPipelineRenderingContract
+        &rendering) {
     std::ostringstream key;
     key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
         << info.skinned << ':'
@@ -49,8 +230,40 @@ static std::string makePipelineKey(const MaterialInfo &info) {
         << static_cast<int>(info.render_state.blend) << ':'
         << static_cast<int>(info.render_state.cull) << ':'
         << info.render_state.depth_test << ':' << info.render_state.depth_write << ':'
-        << static_cast<int>(info.render_state.depth_compare) << ':'
-        << static_cast<std::uint32_t>(samples);
+        << static_cast<int>(info.render_state.depth_compare)
+        << ":samples="
+        << static_cast<std::uint32_t>(
+               rendering.rasterization_samples)
+        << ":colors=";
+    for (const auto format :
+         rendering.color_formats) {
+        key << static_cast<std::uint32_t>(format)
+            << ',';
+    }
+    key << ":depth=";
+    if (rendering.depth_format) {
+        key << static_cast<std::uint32_t>(
+            *rendering.depth_format);
+    } else {
+        key << "none";
+    }
+    key << ":local="
+        << rendering.local_read.enabled
+        << ":locations=";
+    for (const auto location :
+         rendering.local_read
+             .color_attachment_locations) {
+        key << location << ',';
+    }
+    key << ":inputs=";
+    for (const auto input :
+         rendering.local_read
+             .color_attachment_input_indices) {
+        key << input << ',';
+    }
+    key << ":depth_input="
+        << rendering.local_read
+               .depth_attachment_input_index;
     return key.str();
 }
 
@@ -77,18 +290,15 @@ static vk::CullModeFlags toVkCull(SurfaceCullMode cull) {
     throw std::runtime_error("unknown material cull state");
 }
 
-static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
+static GraphicsPipelineDesc makeMaterialPipelineDesc(
+    const MaterialInfo &info,
+    const MaterialPipelineRenderingContract
+        &rendering) {
     GraphicsPipelineDesc desc;
     desc.vert = info.vert_shader;
     desc.frag = info.frag_shader;
-    const auto &formats = materialPassColorAttachmentFormats(
-        GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
-    if (info.shader_contract == MaterialShaderContract::forward_scene_color_v1) {
-        desc.color_formats.push_back(forwardMaterialPassColorAttachmentFormat);
-    } else {
-        desc.color_formats.assign(formats.begin(), formats.end());
-    }
-    desc.depth_format = materialPassDepthAttachmentFormat;
+    desc.color_formats = rendering.color_formats;
+    desc.depth_format = rendering.depth_format;
     desc.use_engine_vertex_layout = !info.skinned;
     desc.use_skinned_vertex_layout = info.skinned;
     desc.depth_test = info.render_state.depth_test;
@@ -97,8 +307,8 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     desc.cull_mode = toVkCull(info.render_state.cull);
     desc.front_face = vk::FrontFace::eClockwise;
     desc.rasterization_samples =
-        GET_MODULE(RenderingPassContainer)
-            .materialRasterizationSamples(info.shader_contract);
+        rendering.rasterization_samples;
+    desc.local_read = rendering.local_read;
     if (info.render_state.blend == SurfaceBlendMode::blend) {
         desc.blend = true;
         desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
@@ -115,7 +325,10 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     return desc;
 }
 
-static void validateMaterialCapabilities(const MaterialInfo &info) {
+static void validateMaterialCapabilities(
+    const MaterialInfo &info,
+    const MaterialPipelineRenderingContract
+        &rendering) {
     const auto physical_device = GET_MODULE(VulkanManageCore).getPhysDevice();
     const auto limits = physical_device.getProperties().limits;
     const auto reserved = info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
@@ -133,15 +346,8 @@ static void validateMaterialCapabilities(const MaterialInfo &info) {
             "material render_state requests depth_write while depth_test is disabled");
     }
     if (info.render_state.blend != SurfaceBlendMode::opaque) {
-        std::vector<vk::Format> formats;
-        if (info.shader_contract == MaterialShaderContract::forward_scene_color_v1) {
-            formats.push_back(forwardMaterialPassColorAttachmentFormat);
-        } else {
-            const auto &material_formats = materialPassColorAttachmentFormats(
-                GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
-            formats.assign(material_formats.begin(), material_formats.end());
-        }
-        for (const auto format : formats) {
+        for (const auto format :
+             rendering.color_formats) {
             const auto features = physical_device.getFormatProperties(format).optimalTilingFeatures;
             if (!(features & vk::FormatFeatureFlagBits::eColorAttachmentBlend)) {
                 throw std::runtime_error("material render_state blend lacks device capability for color format " +
@@ -440,24 +646,17 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     if (materials.size() >= maxMaterials) {
         throw std::runtime_error("Material capacity exceeded");
     }
-    validateMaterialCapabilities(info);
-    const auto &rendering_passes = GET_MODULE(RenderingPassContainer);
-    if (rendering_passes.hasMaterialPasses() &&
-        !rendering_passes.supportsMaterialPass(info.route, info.shader_contract,
-                                               info.exact_pass)) {
-        const auto selected = info.exact_pass
-                                  ? " exact pass '" + *info.exact_pass + "'"
-                                  : std::string{};
-        throw std::runtime_error("material route '" +
-                                 std::string{materialRouteClassName(info.route)} +
-                                 "' with shader contract '" +
-                                 std::string{materialShaderContractName(info.shader_contract)} +
-                                 "' has no compatible registered material pass" + selected);
-    }
-    const auto pipeline_key = makePipelineKey(info);
+    const auto rendering =
+        resolveMaterialPipelineRenderingContract(info);
+    validateMaterialCapabilities(info, rendering);
+    const auto pipeline_key =
+        makePipelineKey(info, rendering);
     auto pipeline_it = pipelines.find(pipeline_key);
     if (pipeline_it == pipelines.end()) {
-        const auto pipeline_handle = GET_MODULE(PipelineFactory).create(makeMaterialPipelineDesc(info));
+        const auto pipeline_handle =
+            GET_MODULE(PipelineFactory)
+                .create(makeMaterialPipelineDesc(
+                    info, rendering));
         pipeline_it = pipelines.emplace(pipeline_key, pipeline_handle).first;
         if (!default_pipeline) {
             default_pipeline = pipeline_handle;

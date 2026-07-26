@@ -42,6 +42,24 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
     } else if (old_layout == vk::ImageLayout::eTransferDstOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eTransfer;
         info.src_access = vk::AccessFlagBits::eTransferWrite;
+    } else if (old_layout ==
+               vk::ImageLayout::eRenderingLocalReadKHR) {
+        info.src_stage =
+            vk::PipelineStageFlagBits::eFragmentShader |
+            vk::PipelineStageFlagBits::
+                eColorAttachmentOutput |
+            vk::PipelineStageFlagBits::
+                eEarlyFragmentTests |
+            vk::PipelineStageFlagBits::
+                eLateFragmentTests;
+        info.src_access =
+            vk::AccessFlagBits::eInputAttachmentRead |
+            vk::AccessFlagBits::eColorAttachmentRead |
+            vk::AccessFlagBits::eColorAttachmentWrite |
+            vk::AccessFlagBits::
+                eDepthStencilAttachmentRead |
+            vk::AccessFlagBits::
+                eDepthStencilAttachmentWrite;
     }
 
     if (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
@@ -67,6 +85,24 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
     } else if (new_layout == vk::ImageLayout::eTransferDstOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eTransfer;
         info.dst_access = vk::AccessFlagBits::eTransferWrite;
+    } else if (new_layout ==
+               vk::ImageLayout::eRenderingLocalReadKHR) {
+        info.dst_stage =
+            vk::PipelineStageFlagBits::eFragmentShader |
+            vk::PipelineStageFlagBits::
+                eColorAttachmentOutput |
+            vk::PipelineStageFlagBits::
+                eEarlyFragmentTests |
+            vk::PipelineStageFlagBits::
+                eLateFragmentTests;
+        info.dst_access =
+            vk::AccessFlagBits::eInputAttachmentRead |
+            vk::AccessFlagBits::eColorAttachmentRead |
+            vk::AccessFlagBits::eColorAttachmentWrite |
+            vk::AccessFlagBits::
+                eDepthStencilAttachmentRead |
+            vk::AccessFlagBits::
+                eDepthStencilAttachmentWrite;
     }
 
     return info;

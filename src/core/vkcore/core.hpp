@@ -19,6 +19,15 @@ struct QueueSet {
     uint32_t compute_queue;
 };
 
+// Features that were both advertised by the selected physical device and
+// enabled on the logical device. Callers must use this runtime contract rather
+// than treating an extension name in the Vulkan headers as device support.
+struct VulkanRuntimeCapabilities {
+    bool timeline_semaphore = false;
+    bool multiview = false;
+    bool dynamic_rendering_local_read = false;
+};
+
 enum class VulkanProcessType {
     graphics,
     compute,
@@ -37,6 +46,11 @@ DECLARE_MODULE(VulkanManageCore) {
     vma::UniqueAllocator allocator;
     DebugUtilsDispatch debug_utils;
     bool memory_budget_enabled = false;
+    VulkanRuntimeCapabilities runtime_capabilities;
+    PFN_vkCmdSetRenderingAttachmentLocationsKHR
+        set_rendering_attachment_locations = nullptr;
+    PFN_vkCmdSetRenderingInputAttachmentIndicesKHR
+        set_rendering_input_attachment_indices = nullptr;
 
   public:
     VulkanManageCore();
@@ -51,6 +65,17 @@ DECLARE_MODULE(VulkanManageCore) {
     uint32_t getGraphicsQueueFamilyIndex() const { return queue_set.graphic_queue; }
     uint32_t getPresentationQueueFamilyIndex() const { return queue_set.presentation_queue; }
     const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
+    const VulkanRuntimeCapabilities &getRuntimeCapabilities() const noexcept {
+        return runtime_capabilities;
+    }
+    void setRenderingAttachmentLocations(
+        vk::CommandBuffer command_buffer,
+        const vk::RenderingAttachmentLocationInfoKHR
+            &locations) const;
+    void setRenderingInputAttachmentIndices(
+        vk::CommandBuffer command_buffer,
+        const vk::RenderingInputAttachmentIndexInfoKHR
+            &indices) const;
     DriverMemoryStatus driverMemoryStatus() const;
     void setCurrentFrameIndex(std::uint64_t logical_frame) const noexcept;
 

@@ -1,5 +1,7 @@
 #include "render_pass_frame_setup.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <stdexcept>
 
 namespace Pelican {
@@ -220,6 +222,389 @@ void setDynamicViewportAndScissor(vk::CommandBuffer cmd_buf, vk::Extent2D extent
 
     vk::Rect2D scissor{{0, 0}, extent};
     cmd_buf.setScissor(0, scissor);
+}
+
+bool passInputUsesLocalRead(
+    const CompiledPass &pass,
+    std::size_t input_index) {
+    if (input_index >=
+        pass.definition.input_targets.size()) {
+        throw std::out_of_range(
+            "render-pass input index is out of range");
+    }
+    const auto mapped =
+        [&](std::uint32_t candidate) {
+            return candidate !=
+                       unusedPhysicalAttachmentMapping &&
+                   candidate == input_index;
+        };
+    return std::any_of(
+               pass.rendering
+                   .color_attachment_input_indices
+                   .begin(),
+               pass.rendering
+                   .color_attachment_input_indices
+                   .end(),
+               mapped) ||
+           mapped(
+               pass.rendering
+                   .depth_attachment_input_index);
+}
+
+std::vector<std::uint8_t>
+localReadScopeColorAttachmentMask(
+    std::span<const CompiledPass *const> passes) {
+    if (passes.empty() ||
+        passes.front() == nullptr) {
+        throw std::invalid_argument(
+            "tile-local physical scope has no passes");
+    }
+    std::vector<std::uint8_t> result(
+        passes.front()
+            ->rendering.color_attachments.size(),
+        0);
+    for (const auto *pass : passes) {
+        if (pass == nullptr ||
+            pass->rendering
+                    .color_attachment_input_indices
+                    .size() != result.size()) {
+            throw std::runtime_error(
+                "tile-local pass input mappings do not match the "
+                "physical attachment union");
+        }
+        for (std::size_t index = 0;
+             index < result.size(); ++index) {
+            result[index] =
+                result[index] ||
+                pass->rendering
+                        .color_attachment_input_indices[index] !=
+                    unusedPhysicalAttachmentMapping;
+        }
+    }
+    return result;
+}
+
+bool localReadScopeUsesDepthInput(
+    std::span<const CompiledPass *const> passes) {
+    return std::any_of(
+        passes.begin(), passes.end(),
+        [](const auto *pass) {
+            if (pass == nullptr) {
+                throw std::invalid_argument(
+                    "tile-local physical scope contains a null pass");
+            }
+            return pass->rendering
+                       .depth_attachment_input_index !=
+                   unusedPhysicalAttachmentMapping;
+        });
+}
+
+vk::Extent2D getLocalReadScopeTargetExtent(
+    const FrameRenderContext &frame,
+    const CompiledPassRenderingContract &rendering,
+    RenderTargetContainer &rt_container) {
+    std::optional<vk::Extent2D> result;
+    const auto include =
+        [&](GlobalRenderTargetId target) {
+            if (isSwapchainRenderTarget(target)) {
+                throw std::runtime_error(
+                    "tile-local physical scopes do not yet support "
+                    "the frame target");
+            }
+            if (!isConcreteRenderTarget(target)) {
+                return;
+            }
+            const auto extent =
+                rt_container.getMetadata(target).extent;
+            if (result && *result != extent) {
+                throw std::runtime_error(
+                    "tile-local physical scope attachments have "
+                    "different extents");
+            }
+            result = extent;
+        };
+    for (const auto target :
+         rendering.color_attachments) {
+        include(target);
+    }
+    include(rendering.depth_attachment);
+    if (!result) {
+        throw std::runtime_error(
+            "tile-local physical scope has no concrete "
+            "attachment");
+    }
+    (void)frame;
+    return *result;
+}
+
+void transitionLocalReadScopeInputs(
+    vk::CommandBuffer cmd_buf,
+    std::span<const CompiledPass *const> passes,
+    RenderTargetContainer &rt_container,
+    VulkanUtils &vk_utils,
+    RenderTargetLayoutTracker &layout_tracker) {
+    for (const auto *pass : passes) {
+        if (pass == nullptr) {
+            throw std::invalid_argument(
+                "tile-local physical scope contains a null pass");
+        }
+        const auto &definition = pass->definition;
+        if (definition.input_target_history.size() !=
+            definition.input_targets.size()) {
+            throw std::runtime_error(
+                "tile-local pass input history metadata is "
+                "incomplete: " +
+                definition.name);
+        }
+        for (std::size_t input_index = 0;
+             input_index <
+             definition.input_targets.size();
+             ++input_index) {
+            if (passInputUsesLocalRead(
+                    *pass, input_index)) {
+                if (definition
+                        .input_target_history[input_index]) {
+                    throw std::runtime_error(
+                        "tile-local pass input cannot read history: " +
+                        definition.name);
+                }
+                continue;
+            }
+            layout_tracker.transition(
+                cmd_buf, rt_container, vk_utils,
+                definition.input_targets[input_index],
+                vk::ImageLayout::
+                    eShaderReadOnlyOptimal,
+                definition
+                    .input_target_history[input_index]);
+        }
+    }
+}
+
+void transitionLocalReadScopeAttachments(
+    vk::CommandBuffer cmd_buf,
+    const CompiledPassRenderingContract &rendering,
+    std::span<const std::uint8_t>
+        local_read_color_attachments,
+    bool local_read_depth_attachment,
+    RenderTargetContainer &rt_container,
+    VulkanUtils &vk_utils,
+    RenderTargetLayoutTracker &layout_tracker) {
+    if (rendering
+            .scope_color_attachment_operations
+            .size() !=
+            rendering.color_attachments.size() ||
+        local_read_color_attachments.size() !=
+            rendering.color_attachments.size()) {
+        throw std::runtime_error(
+            "tile-local color attachment operations do not match "
+            "the physical scope");
+    }
+    for (std::size_t index = 0;
+         index < rendering.color_attachments.size();
+         ++index) {
+        const auto target =
+            rendering.color_attachments[index];
+        if (isSwapchainRenderTarget(target)) {
+            throw std::runtime_error(
+                "tile-local physical scopes do not yet support "
+                "the frame target");
+        }
+        if (!isConcreteRenderTarget(target)) {
+            throw std::runtime_error(
+                "tile-local physical scope has an invalid color "
+                "attachment");
+        }
+        if (rt_container.hasSeparateAttachment(target)) {
+            throw std::runtime_error(
+                "tile-local physical scopes currently require "
+                "single-sample color attachments");
+        }
+        if (local_read_color_attachments[index] &&
+            !(rt_container.getMetadata(target).usage &
+              vk::ImageUsageFlagBits::
+                  eInputAttachment)) {
+            throw std::runtime_error(
+                "tile-local color attachment lacks Vulkan "
+                "INPUT_ATTACHMENT usage");
+        }
+        if (rendering
+                    .scope_color_attachment_operations[index]
+                    .load_op ==
+                vk::AttachmentLoadOp::eLoad &&
+            layout_tracker.currentLayout(
+                target, false, &rt_container) ==
+                vk::ImageLayout::eUndefined) {
+            throw std::runtime_error(
+                "tile-local color attachment Load has no "
+                "preceding image contents");
+        }
+        layout_tracker.transition(
+            cmd_buf, rt_container, vk_utils, target,
+            local_read_color_attachments[index]
+                ? vk::ImageLayout::
+                      eRenderingLocalReadKHR
+                : vk::ImageLayout::
+                      eColorAttachmentOptimal);
+    }
+
+    if (!isConcreteRenderTarget(
+            rendering.depth_attachment)) {
+        if (rendering
+                .scope_depth_attachment_operations) {
+            throw std::runtime_error(
+                "tile-local physical scope maps depth operations "
+                "without a depth attachment");
+        }
+        return;
+    }
+    const auto depth = rendering.depth_attachment;
+    if (rt_container.hasSeparateAttachment(depth)) {
+        throw std::runtime_error(
+            "tile-local physical scopes currently require a "
+            "single-sample depth attachment");
+    }
+    if (!rendering
+            .scope_depth_attachment_operations) {
+        throw std::runtime_error(
+            "tile-local depth attachment lacks physical "
+            "operations");
+    }
+    if (local_read_depth_attachment &&
+        !(rt_container.getMetadata(depth).usage &
+          vk::ImageUsageFlagBits::
+              eInputAttachment)) {
+        throw std::runtime_error(
+            "tile-local depth attachment lacks Vulkan "
+            "INPUT_ATTACHMENT usage");
+    }
+    if (rendering
+                .scope_depth_attachment_operations
+                ->load_op ==
+            vk::AttachmentLoadOp::eLoad &&
+        layout_tracker.currentLayout(
+            depth, false, &rt_container) ==
+            vk::ImageLayout::eUndefined) {
+        throw std::runtime_error(
+            "tile-local depth attachment Load has no preceding "
+            "image contents");
+    }
+    layout_tracker.transition(
+        cmd_buf, rt_container, vk_utils, depth,
+        local_read_depth_attachment
+            ? vk::ImageLayout::
+                  eRenderingLocalReadKHR
+            : vk::ImageLayout::
+                  eDepthAttachmentOptimal);
+}
+
+std::vector<vk::RenderingAttachmentInfo>
+createLocalReadScopeColorAttachments(
+    const FrameRenderContext &frame,
+    const CompiledPassRenderingContract &rendering,
+    std::span<const std::uint8_t>
+        local_read_color_attachments,
+    RenderTargetContainer &rt_container,
+    const GraphicsPipelineViewContract &view,
+    RenderPassViewInvocation invocation) {
+    if (rendering
+                .scope_color_attachment_operations
+                .size() !=
+            rendering.color_attachments.size() ||
+        rendering.scope_color_clear_values.size() !=
+            rendering.color_attachments.size() ||
+        local_read_color_attachments.size() !=
+            rendering.color_attachments.size()) {
+        throw std::runtime_error(
+            "tile-local color attachment state does not match "
+            "the physical scope");
+    }
+    std::vector<vk::RenderingAttachmentInfo> result;
+    result.reserve(rendering.color_attachments.size());
+    for (std::size_t index = 0;
+         index < rendering.color_attachments.size();
+         ++index) {
+        const auto target =
+            rendering.color_attachments[index];
+        if (isSwapchainRenderTarget(target)) {
+            throw std::runtime_error(
+                "tile-local physical scopes do not yet support "
+                "the frame target");
+        }
+        if (!isConcreteRenderTarget(target) ||
+            rt_container.hasSeparateAttachment(target)) {
+            throw std::runtime_error(
+                "tile-local color attachment must be a concrete "
+                "single-sample image");
+        }
+        vk::RenderingAttachmentInfo attachment;
+        attachment.imageView = colorAttachmentView(
+            target, rt_container, view, invocation,
+            false);
+        attachment.imageLayout =
+            local_read_color_attachments[index]
+                ? vk::ImageLayout::
+                      eRenderingLocalReadKHR
+                : vk::ImageLayout::
+                      eColorAttachmentOptimal;
+        const auto operations =
+            rendering
+                .scope_color_attachment_operations[index];
+        attachment.loadOp = operations.load_op;
+        attachment.storeOp = operations.store_op;
+        attachment.clearValue.color =
+            vk::ClearColorValue{
+                rendering
+                    .scope_color_clear_values[index]};
+        result.push_back(attachment);
+    }
+    (void)frame;
+    return result;
+}
+
+vk::RenderingAttachmentInfo
+createLocalReadScopeDepthAttachment(
+    const CompiledPassRenderingContract &rendering,
+    bool local_read_depth_attachment,
+    RenderTargetContainer &rt_container,
+    const GraphicsPipelineViewContract &view,
+    RenderPassViewInvocation invocation) {
+    if (!isConcreteRenderTarget(
+            rendering.depth_attachment) ||
+        !rendering
+             .scope_depth_attachment_operations) {
+        throw std::runtime_error(
+            "tile-local physical scope has no depth attachment "
+            "contract");
+    }
+    if (rt_container.hasSeparateAttachment(
+            rendering.depth_attachment)) {
+        throw std::runtime_error(
+            "tile-local depth attachment must be single-sample");
+    }
+    vk::RenderingAttachmentInfo result;
+    result.imageView = colorAttachmentView(
+        rendering.depth_attachment, rt_container,
+        view, invocation, false);
+    result.imageLayout =
+        local_read_depth_attachment
+            ? vk::ImageLayout::
+                  eRenderingLocalReadKHR
+            : vk::ImageLayout::
+                  eDepthAttachmentOptimal;
+    result.loadOp =
+        rendering
+            .scope_depth_attachment_operations
+            ->load_op;
+    result.storeOp =
+        rendering
+            .scope_depth_attachment_operations
+            ->store_op;
+    result.clearValue.depthStencil =
+        vk::ClearDepthStencilValue{
+            rendering.scope_depth_clear_value,
+            rendering.scope_stencil_clear_value};
+    return result;
 }
 
 } // namespace Pelican

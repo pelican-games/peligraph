@@ -16,9 +16,11 @@
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/render_pass_executor.hpp"
 #include "../src/core/vkcore/render_pass_frame_setup.hpp"
 #include "../src/core/vkcore/util.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -166,10 +168,36 @@ const char *layeredInputFragmentShader() {
 #extension GL_GOOGLE_include_directive : enable
 #include "pelican_sets.glsl"
 #include "pelican_view.glsl"
-layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform PELICAN_SAMPLER_2D_0 inputColor;
+PELICAN_DECLARE_INPUT_0(inputColor);
 layout(location = 0) out vec4 outColor;
 void main() {
     outColor = PELICAN_TEXTURE_2D_0(inputColor, vec2(0.5));
+}
+)glsl";
+}
+
+const char *localReadProducerFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.2, 0.4, 0.8, 1.0);
+}
+)glsl";
+}
+
+const char *localReadConsumerFragmentShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+PELICAN_DECLARE_INPUT_0(inputColor);
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 value = PELICAN_TEXTURE_2D_0(
+        inputColor, vec2(0.5));
+    outColor = vec4(value.b, value.g, value.r, 1.0);
 }
 )glsl";
 }
@@ -422,6 +450,29 @@ TEST_CASE(
         SKIP(
             "WP203b multiview test requires two-view Vulkan multiview");
     }
+    if (!vkcore.getRuntimeCapabilities()
+             .dynamic_rendering_local_read) {
+        SKIP(
+            "WP203b GPU test requires Vulkan dynamic rendering "
+            "local read");
+    }
+    try {
+        (void)vkcore.getPhysDevice()
+            .getImageFormatProperties(
+                test_format,
+                vk::ImageType::e2D,
+                vk::ImageTiling::eOptimal,
+                vk::ImageUsageFlagBits::
+                        eColorAttachment |
+                    vk::ImageUsageFlagBits::
+                        eInputAttachment |
+                    vk::ImageUsageFlagBits::
+                        eTransientAttachment);
+    } catch (const vk::SystemError &) {
+        SKIP(
+            "WP203b GPU test format cannot be a transient "
+            "local-read attachment");
+    }
 
     ShaderCompiler compiler;
     auto &library = GET_MODULE(ShaderLibrary);
@@ -454,6 +505,26 @@ TEST_CASE(
             {"PELICAN_MULTIVIEW=1",
              "PELICAN_VIEW_COUNT=2",
              "PELICAN_INPUT_0_LAYERED=1"});
+    const auto local_read_input_frag =
+        compileBundle(
+            library, compiler,
+            layeredInputFragmentShader(),
+            vk::ShaderStageFlagBits::eFragment,
+            "wp203b_local_read_input.frag",
+            {"PELICAN_INPUT_0_LOCAL_READ=1"});
+    const auto local_read_producer_frag =
+        compileBundle(
+            library, compiler,
+            localReadProducerFragmentShader(),
+            vk::ShaderStageFlagBits::eFragment,
+            "wp203b_local_read_producer.frag");
+    const auto local_read_consumer_frag =
+        compileBundle(
+            library, compiler,
+            localReadConsumerFragmentShader(),
+            vk::ShaderStageFlagBits::eFragment,
+            "wp203b_local_read_consumer.frag",
+            {"PELICAN_INPUT_0_LOCAL_READ=1"});
     REQUIRE_FALSE(
         library.get(sequential_frag)
             .reflection.uses_view_index);
@@ -466,6 +537,24 @@ TEST_CASE(
     REQUIRE(
         library.get(multiview_input_frag)
             .reflection.uses_view_index);
+    const auto &local_reflection =
+        library.get(local_read_input_frag)
+            .reflection;
+    const auto local_binding =
+        std::find_if(
+            local_reflection.bindings.begin(),
+            local_reflection.bindings.end(),
+            [](const auto &binding) {
+                return binding.set ==
+                           PELICAN_SET_PASS_INPUT &&
+                       binding.binding == 0;
+            });
+    REQUIRE(
+        local_binding !=
+        local_reflection.bindings.end());
+    REQUIRE(
+        local_binding->type ==
+        vk::DescriptorType::eInputAttachment);
 
     auto &factory = GET_MODULE(PipelineFactory);
     auto sequential_desc = GraphicsPipelineDesc{
@@ -595,6 +684,7 @@ TEST_CASE(
 
     const auto usage =
         vk::ImageUsageFlagBits::eColorAttachment |
+        vk::ImageUsageFlagBits::eInputAttachment |
         vk::ImageUsageFlagBits::eTransferSrc |
         vk::ImageUsageFlagBits::eSampled;
 
@@ -607,6 +697,47 @@ TEST_CASE(
             test_format, usage,
             vma::MemoryUsage::eAutoPreferDevice,
             false, {}, 1, stereo_view_count);
+    const auto local_source =
+        render_targets.registerRenderTarget(
+            "wp203b_tile_local_source",
+            test_extent, "data", "data", 1.0f,
+            std::nullopt, test_format,
+            vk::ImageUsageFlagBits::
+                    eColorAttachment |
+                vk::ImageUsageFlagBits::eSampled,
+            vma::MemoryUsage::eAutoPreferDevice,
+            false, {}, 1, stereo_view_count,
+            RenderTargetStorageMode::
+                tile_local_attachment);
+    const auto local_output =
+        render_targets.registerRenderTarget(
+            "wp203b_local_output",
+            test_extent, "data", "data", 1.0f,
+            std::nullopt, test_format,
+            vk::ImageUsageFlagBits::
+                    eColorAttachment |
+                vk::ImageUsageFlagBits::
+                    eTransferSrc,
+            vma::MemoryUsage::eAutoPreferDevice,
+            false, {}, 1, stereo_view_count);
+    const auto local_source_metadata =
+        render_targets.getMetadata(
+            local_source);
+    REQUIRE(
+        local_source_metadata.storage_mode ==
+        RenderTargetStorageMode::
+            tile_local_attachment);
+    REQUIRE(
+        local_source_metadata.usage &
+        vk::ImageUsageFlagBits::
+            eTransientAttachment);
+    REQUIRE(
+        local_source_metadata.usage &
+        vk::ImageUsageFlagBits::
+            eInputAttachment);
+    REQUIRE_FALSE(
+        local_source_metadata.usage &
+        vk::ImageUsageFlagBits::eSampled);
     REQUIRE(
         render_targets.getMetadata(managed_target)
             .array_layers ==
@@ -649,12 +780,65 @@ TEST_CASE(
             vk::SampleCountFlagBits::e1,
             GraphicsPipelineViewContract::multiview(
                 stereo_view_count));
+    const auto local_read_input_pipeline =
+        fullscreen_passes.registerFullscreenPass(
+            {test_format}, std::nullopt,
+            sequential_vert,
+            local_read_input_frag,
+            {"PELICAN_INPUT_0_LOCAL_READ=1"},
+            vk::SampleCountFlagBits::e1,
+            {},
+            GraphicsPipelineRenderingLocalReadContract{
+                .enabled = true,
+                .color_attachment_locations = {0},
+                .color_attachment_input_indices = {0},
+            });
+    const auto local_read_producer_pipeline =
+        fullscreen_passes.registerFullscreenPass(
+            {test_format, test_format}, std::nullopt,
+            sequential_vert,
+            local_read_producer_frag, {},
+            vk::SampleCountFlagBits::e1, {},
+            GraphicsPipelineRenderingLocalReadContract{
+                .enabled = true,
+                .color_attachment_locations = {
+                    0,
+                    unusedGraphicsAttachmentMapping},
+                .color_attachment_input_indices = {
+                    unusedGraphicsAttachmentMapping,
+                    unusedGraphicsAttachmentMapping},
+            });
+    const auto local_read_consumer_pipeline =
+        fullscreen_passes.registerFullscreenPass(
+            {test_format, test_format}, std::nullopt,
+            sequential_vert,
+            local_read_consumer_frag,
+            {"PELICAN_INPUT_0_LOCAL_READ=1"},
+            vk::SampleCountFlagBits::e1, {},
+            GraphicsPipelineRenderingLocalReadContract{
+                .enabled = true,
+                .color_attachment_locations = {
+                    unusedGraphicsAttachmentMapping,
+                    0},
+                .color_attachment_input_indices = {
+                    0,
+                    unusedGraphicsAttachmentMapping},
+            });
     const PassId sequential_input_pass{
         static_cast<int>(
             sequential_input_pipeline.value)};
     const PassId multiview_input_pass{
         static_cast<int>(
             multiview_input_pipeline.value)};
+    const PassId local_read_input_pass{
+        static_cast<int>(
+            local_read_input_pipeline.value)};
+    const PassId local_read_producer_pass{
+        static_cast<int>(
+            local_read_producer_pipeline.value)};
+    const PassId local_read_consumer_pass{
+        static_cast<int>(
+            local_read_consumer_pipeline.value)};
     const RenderTargetImageViewResolver
         target_views{render_targets};
     auto &frame_graph_resources =
@@ -671,6 +855,18 @@ TEST_CASE(
         {PassInputViewDimension::layered_2d_array},
         GraphicsPipelineViewContract::multiview(
             stereo_view_count));
+    fullscreen_passes.setInputResourcesById(
+        local_read_input_pass,
+        {managed_target}, {false}, {},
+        target_views, frame_graph_resources, {},
+        {PassInputViewDimension::shared_2d},
+        {}, {true});
+    fullscreen_passes.setInputResourcesById(
+        local_read_consumer_pass,
+        {local_source}, {false}, {},
+        target_views, frame_graph_resources, {},
+        {PassInputViewDimension::shared_2d},
+        {}, {true});
     REQUIRE(
         fullscreen_passes
             .boundInputImageViewsForTesting(
@@ -688,6 +884,150 @@ TEST_CASE(
             .front() ==
         render_targets.getLayeredImageView(
             managed_target));
+    REQUIRE(
+        fullscreen_passes
+            .inputLocalReadsForTesting(
+                local_read_input_pass) ==
+        std::vector<bool>{true});
+
+    CompiledPassRenderingContract
+        native_local_contract;
+    native_local_contract.scope_index = 0;
+    native_local_contract.scope_id =
+        "wp203b_native_local";
+    native_local_contract.color_attachments = {
+        local_source,
+        local_output};
+    native_local_contract
+        .scope_color_attachment_operations = {
+        {
+            vk::AttachmentLoadOp::eClear,
+            vk::AttachmentStoreOp::eDontCare,
+        },
+        {
+            vk::AttachmentLoadOp::eClear,
+            vk::AttachmentStoreOp::eStore,
+        }};
+    native_local_contract.scope_color_clear_values = {
+        {0.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}};
+    native_local_contract.local_read_scope = true;
+
+    auto local_commands = vkcore.allocCmdBufs(1);
+    auto &local_command = local_commands.front();
+    auto local_staging = vkcore.allocBuf(
+        static_cast<vk::DeviceSize>(
+            test_extent.width) *
+            test_extent.height * 4,
+        vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::
+            eHostAccessRandom);
+    RenderTargetLayoutTracker local_layouts;
+    local_command.recordBegin();
+    local_layouts.transition(
+        *local_command, render_targets,
+        GET_MODULE(VulkanUtils), local_source,
+        vk::ImageLayout::eRenderingLocalReadKHR);
+    local_layouts.transition(
+        *local_command, render_targets,
+        GET_MODULE(VulkanUtils), local_output,
+        vk::ImageLayout::eColorAttachmentOptimal);
+    const FrameRenderContext local_frame{
+        .cmd_buf = *local_command,
+        .extent = test_extent,
+    };
+    auto local_attachments =
+        createLocalReadScopeColorAttachments(
+            local_frame, native_local_contract,
+            std::array<std::uint8_t, 2>{1, 0},
+            render_targets, {},
+            RenderPassViewInvocation{
+                stereo_view_count, 0});
+    vk::RenderingInfo local_rendering;
+    local_rendering.renderArea =
+        vk::Rect2D{{0, 0}, test_extent};
+    local_rendering.layerCount = 1;
+    local_rendering.setColorAttachments(
+        local_attachments);
+    local_command->beginRendering(
+        local_rendering);
+    setDynamicViewportAndScissor(
+        *local_command, test_extent);
+
+    const auto set_local_mappings =
+        [&](std::array<std::uint32_t, 2>
+                location,
+            std::array<std::uint32_t, 2>
+                input) {
+            vk::RenderingAttachmentLocationInfoKHR
+                locations;
+            locations.setColorAttachmentLocations(
+                location);
+            vkcore.setRenderingAttachmentLocations(
+                *local_command, locations);
+            vk::RenderingInputAttachmentIndexInfoKHR
+                inputs;
+            inputs
+                .setColorAttachmentInputIndices(
+                    input);
+            vkcore.setRenderingInputAttachmentIndices(
+                *local_command, inputs);
+        };
+    set_local_mappings(
+        {0,
+         unusedPhysicalAttachmentMapping},
+        {unusedPhysicalAttachmentMapping,
+         unusedPhysicalAttachmentMapping});
+    fullscreen_passes.bindResource(
+        *local_command,
+        local_read_producer_pass);
+    local_command->draw(3, 1, 0, 0);
+
+    GET_MODULE(RenderPassExecutor)
+        .localReadDependency(*local_command);
+    set_local_mappings(
+        {unusedPhysicalAttachmentMapping, 0},
+        {0, unusedPhysicalAttachmentMapping});
+    fullscreen_passes.bindResource(
+        *local_command,
+        local_read_consumer_pass);
+    local_command->draw(3, 1, 0, 0);
+    local_command->endRendering();
+
+    local_layouts.transition(
+        *local_command, render_targets,
+        GET_MODULE(VulkanUtils), local_output,
+        vk::ImageLayout::eTransferSrcOptimal);
+    vk::BufferImageCopy local_copy;
+    local_copy.imageSubresource = {
+        vk::ImageAspectFlagBits::eColor,
+        0, 0, 1};
+    local_copy.imageExtent = vk::Extent3D{
+        test_extent.width,
+        test_extent.height, 1};
+    local_command->copyImageToBuffer(
+        render_targets.getImage(
+            local_output)
+            .image.get(),
+        vk::ImageLayout::eTransferSrcOptimal,
+        local_staging.buffer.get(), local_copy);
+    local_command.recordEndSubmit();
+    REQUIRE(
+        device.waitForFences(
+            {local_command.getFence()}, VK_TRUE,
+            UINT64_MAX) ==
+        vk::Result::eSuccess);
+    const auto local_pixels = vkcore.readBuf(
+        local_staging,
+        static_cast<vk::DeviceSize>(
+            test_extent.width) *
+            test_extent.height * 4);
+    REQUIRE(local_pixels.size() >= 4);
+    CHECK(local_pixels[0] == 204);
+    CHECK(local_pixels[1] == 102);
+    CHECK(local_pixels[2] == 51);
+    CHECK(local_pixels[3] == 255);
 
     PassDefinition runtime_pass;
     runtime_pass.name = "wp203b_runtime_multiview";

@@ -294,8 +294,45 @@ runtimeはimageへ`VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT`を付け、lazily al
 「毎frame VkImageを作り直す」という意味ではなく、attachment内容の永続化を要求しない契約です。
 
 format/usageが非対応、後段readがある、MSAAである、または`conservative_debug` profileなら、
-`pelican.vulkan.materialized_plan@1`へ安全側に戻りStoreを維持します。tile-local readを伴う
-scope fusionとは別機能であり、現在のtransient runtimeはwrite-only subsetだけを実行します。
+`pelican.vulkan.materialized_plan@1`へ安全側に戻りStoreを維持します。後段readをscope内に
+閉じ込めるtile-local loweringは別候補であり、次の条件を満たす場合だけ選ばれます。
+
+#### 自動 tile-local attachment / same-pixel local read
+
+`optimized` profileでは、producerがattachmentへ書いた値を直後のfullscreen passが
+`same_pixel`で読む区間を、自動的に一つのphysical rendering scopeへ融合できます。
+通常のrendering configへstorage modeやVulkan layoutを追加する必要はありません。
+
+自動選択には次の条件がすべて必要です。
+
+- resourceはnon-history、single-sampleのcolor/depth attachmentである
+- producerはそのresourceをattachmentとしてwriteする
+- すべてのconsumerは非rasterのrender passで、read footprintが`same_pixel`である
+- consumerの全attachmentとlocal-read resourceのphysical extentが一致し、scope内に
+  swapchain attachmentを含まない
+- deviceが`VK_KHR_dynamic_rendering_local_read`のextension/featureを有効化できる
+- 対象formatがattachment、input attachment、transient attachmentの組み合わせを受理する
+
+選択結果は`pelican.vulkan.tile_local_plan@1`です。対象resourceは
+`tile_local_attachment`となり、producerとconsumerは同じdynamic rendering instanceで
+実行されます。compilerはattachment locationとinput attachment indexを固定し、pass間に
+BY_REGIONのlocal-read dependencyを入れます。fullscreen shaderの
+`PELICAN_DECLARE_INPUT_N` / `PELICAN_SAMPLE_INPUT`は同じsourceのまま、選択されたpipelineだけ
+`subpassInput` variantへコンパイルされます。scope外へ値を残さないためproducerのStoreは
+Discardです。allocatorは`INPUT_ATTACHMENT | TRANSIENT_ATTACHMENT`を付け、lazy memoryを
+優先します。local-read対象だけを`RENDERING_LOCAL_READ_KHR` layoutへ置き、同じscopeの
+output-only attachmentは通常のcolor/depth attachment layoutを保ちます。
+
+extension/feature/format非対応、material/custom/raster consumer、`neighborhood` /
+`arbitrary` / `temporal` read、extent不一致、MSAAではmaterialized planへ自動fallbackします。
+同名targetを複数graphが共有し、一方がscope外materializationを必要とする場合も
+`materialized_image`を優先します。ただしtile-local graphが同じtargetをinput attachmentとして
+読む契約は失わないため、runtime image usageには`INPUT_ATTACHMENT`が残ります。
+
+XRの2-view planでは、融合scopeも他のscopeと同じtyped view contractを継承します。
+multiview選択時は2-layer image、`viewMask=0b11`、execution count 1となり、sequential選択時は
+同じlogical planをlayerごとに実行します。synthetic Vulkan fixtureはlayered local readの
+左右出力を検証しますが、Quest/Meta XR Simulatorでの帯域効果と実表示は外部gateです。
 
 さらに、現在の自動計画が選んだ Vulkan backend candidate を固定したい場合は、まず pin なしで起動し、`get_frame_plan.physical_target_plan.ejectable_pin_package` をそのままコピーします。コピー先は variant 別の `vulkan_plan_pins` 配列です。
 
@@ -417,12 +454,12 @@ prepare/publishされます。
 `discard`です。内容の保存が必要な特殊実験では、ejectした同じfragmentでresourceを
 `materialized_image`へ保守的に変更し、attachmentを`store`へ戻せます。
 
-まだ受理しないのは`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の
-融合/reorder、一般のmaterialized single-sample surfaceに対するstore elision、barrier、
-queue、任意Vulkan flagです。現在のproduction runtimeが実行する非materialized imageは上記の
-狭い`transient_attachment` subsetだけで、tile-local imageとalias groupはplanner上で有効でも
-runtime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加できる版で
-拡張します。
+まだ受理しないのはphysical fragmentによる`materialized_image`からtile-localへの攻めた変更、
+別の自動scope同士の融合/reorder、一般のmaterialized single-sample surfaceに対する
+store elision、barrier、queue、任意Vulkan flagです。production runtimeが実行する
+非materialized imageは、上記のwrite-only `transient_attachment`と、verified
+same-pixel fullscreen subsetの`tile_local_attachment`です。alias groupはplanner/verifier上の
+表現に留まり、runtime memory bindingはまだ受理しません。
 
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 

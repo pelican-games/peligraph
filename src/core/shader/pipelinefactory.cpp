@@ -365,6 +365,37 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
         rendering_info.depthAttachmentFormat = *desc.depth_format;
     }
 
+    vk::RenderingAttachmentLocationInfoKHR
+        attachment_locations;
+    attachment_locations
+        .setColorAttachmentLocations(
+            desc.local_read
+                .color_attachment_locations);
+    auto depth_input =
+        desc.local_read
+            .depth_attachment_input_index;
+    auto stencil_input =
+        desc.local_read
+            .stencil_attachment_input_index;
+    vk::RenderingInputAttachmentIndexInfoKHR
+        input_attachment_indices;
+    input_attachment_indices
+        .setColorAttachmentInputIndices(
+            desc.local_read
+                .color_attachment_input_indices);
+    if (depth_input !=
+        unusedGraphicsAttachmentMapping) {
+        input_attachment_indices
+            .pDepthInputAttachmentIndex =
+            &depth_input;
+    }
+    if (stencil_input !=
+        unusedGraphicsAttachmentMapping) {
+        input_attachment_indices
+            .pStencilInputAttachmentIndex =
+            &stencil_input;
+    }
+
     vk::GraphicsPipelineCreateInfo create_info;
     create_info.setStages(stages);
     create_info.pVertexInputState = &vertex_input_info;
@@ -381,7 +412,17 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     vk::StructureChain create_info_chain{
         create_info,
         rendering_info,
+        attachment_locations,
+        input_attachment_indices,
     };
+    if (!desc.local_read.enabled) {
+        create_info_chain
+            .unlink<
+                vk::RenderingAttachmentLocationInfoKHR>();
+        create_info_chain
+            .unlink<
+                vk::RenderingInputAttachmentIndexInfoKHR>();
+    }
 
     auto result = device.createGraphicsPipelineUnique(pipeline_cache.get(), create_info_chain.get());
     if (result.result != vk::Result::eSuccess) {
@@ -413,6 +454,46 @@ vk::UniquePipeline PipelineFactory::createComputePipeline(const ComputePipelineD
 PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const GraphicsPipelineDesc &desc) {
     if (desc.color_formats.empty() && !desc.depth_format) {
         throw std::runtime_error("GraphicsPipelineDesc requires at least one color or depth format");
+    }
+    if (desc.local_read.enabled) {
+        if (!GET_MODULE(VulkanManageCore)
+                 .getRuntimeCapabilities()
+                 .dynamic_rendering_local_read) {
+            throw std::runtime_error(
+                "GraphicsPipelineDesc local read requires the enabled "
+                "dynamic-rendering-local-read device feature");
+        }
+        if (desc.rasterization_samples !=
+            vk::SampleCountFlagBits::e1) {
+            throw std::runtime_error(
+                "GraphicsPipelineDesc local read currently requires "
+                "single-sample rasterization");
+        }
+        if (desc.local_read
+                    .color_attachment_locations
+                    .size() !=
+                desc.color_formats.size() ||
+            desc.local_read
+                    .color_attachment_input_indices
+                    .size() !=
+                desc.color_formats.size()) {
+            throw std::runtime_error(
+                "GraphicsPipelineDesc local-read mappings must match "
+                "the color attachment format count");
+        }
+        if (!desc.frag) {
+            throw std::runtime_error(
+                "GraphicsPipelineDesc local read requires a fragment "
+                "shader");
+        }
+        if (!desc.depth_format &&
+            desc.local_read
+                    .depth_attachment_input_index !=
+                unusedGraphicsAttachmentMapping) {
+            throw std::runtime_error(
+                "GraphicsPipelineDesc local read maps an absent depth "
+                "attachment");
+        }
     }
 
     std::vector<ShaderReflection> stage_reflections;

@@ -575,6 +575,70 @@ TEST_CASE("logical graph keeps nominal connections and fast-default independence
         "intent sampled rejects access write");
 }
 
+TEST_CASE("logical shadow adapter preserves declared read footprints",
+          "[logical-render-graph][shadow][footprint]") {
+    const auto registry =
+        makeBuiltinLogicalTypeRegistry();
+    FrameGraphDefinition source{
+        .name = "typed_shadow",
+        .declared_resources = {"gbuffer"},
+        .nodes = {
+            FrameGraphNodeDefinition{
+                .name = "geometry",
+                .kind = FramePlanNodeKind::render,
+                .declaration_index = 0,
+                .writes = {"gbuffer"},
+            },
+            FrameGraphNodeDefinition{
+                .name = "lighting",
+                .kind = FramePlanNodeKind::render,
+                .declaration_index = 1,
+                .reads = {"gbuffer"},
+                .read_footprints = {
+                    {"gbuffer",
+                     {LogicalReadFootprintKind::same_pixel,
+                      std::nullopt}},
+                },
+                .writes = {"swapchain"},
+            },
+        },
+    };
+
+    const auto graph =
+        compileLogicalFrameGraphShadow(
+            source, registry);
+    const auto &lighting = graph.nodes.at(1);
+    const auto read = std::find_if(
+        lighting.uses.begin(), lighting.uses.end(),
+        [](const auto &use) {
+            return use.input_value &&
+                   use.input_value->resource ==
+                       "gbuffer";
+        });
+    REQUIRE(read != lighting.uses.end());
+    REQUIRE(
+        read->footprint ==
+        LogicalReadFootprint{
+            LogicalReadFootprintKind::same_pixel,
+            std::nullopt});
+    REQUIRE(std::none_of(
+        graph.decisions.begin(),
+        graph.decisions.end(),
+        [](const auto &decision) {
+            return decision.code ==
+                   "legacy_read_footprint_conservative";
+        }));
+
+    source.nodes.at(1).read_footprints.push_back(
+        {"missing",
+         {LogicalReadFootprintKind::same_pixel,
+          std::nullopt}});
+    REQUIRE_THROWS_AS(
+        compileLogicalFrameGraphShadow(
+            source, registry),
+        std::runtime_error);
+}
+
 TEST_CASE("legacy frame graph compiles to a diagnostic-only logical shadow",
           "[logical-render-graph][shadow]") {
     const auto registry = makeBuiltinLogicalTypeRegistry();

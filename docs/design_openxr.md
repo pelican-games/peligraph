@@ -241,6 +241,13 @@ anchorは一回だけ実行する。synthetic Vulkan fixtureはruntime compiler�
 layered sampler/pipelineを生成する経路と、一回のmultiview描画がsequential referenceの
 左右layerとbyte一致することを検証する。
 
+WP204のtile-local runtime接続後は、`same_pixel` fullscreen consumerを持つ
+`tile_local_attachment`も同じview contractを使う。pure planner fixtureは融合scopeが
+2-layer、`viewMask=0b11`、一回実行のmultiview planを維持することを検証し、synthetic
+Vulkan fixtureは実際のlayered input attachment local readを検証する。OpenXR protocol fakeへ
+fake VkImageを渡さない三層規律は変えず、現composition targetとのMeta XR Simulator /
+物理HMD統合と対象tile GPUの帯域計測は外部gateに残す。
+
 WP203cでは OpenXR target を 2-layer color array swapchain へ移し、
 `imageArrayIndex=0/1` と一回の acquire/wait/release を view-family 経路へ接続した。
 `XR_KHR_composition_layer_depth` が利用でき、compiled graph の typed external depth

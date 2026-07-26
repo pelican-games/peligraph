@@ -14,11 +14,14 @@
 namespace Pelican {
 
 // One command-recording invocation produced from the physical scope plan.
-// A view-family target consumes these in node-major order so dependencies are
-// resolved once while sequential scopes still visit every array layer.
+// Scheduling is scope-execution-major: every node in a fused scope records for
+// one view before the next sequential view begins. This is required to keep a
+// native dynamic-rendering scope open across all of its nodes.
 struct LogicalFrameNodeInvocation {
     std::size_t node_index = 0;
     std::size_t scope_index = 0;
+    std::size_t scope_node_index = 0;
+    std::size_t scope_node_count = 1;
     VulkanScopeViewExecution execution =
         VulkanScopeViewExecution::single_view;
     std::uint32_t logical_view_count = 1;
@@ -31,6 +34,13 @@ struct LogicalFrameNodeInvocation {
     }
     bool lastExecution() const noexcept {
         return execution_index + 1 == execution_count;
+    }
+    bool beginsScopeExecution() const noexcept {
+        return scope_node_index == 0;
+    }
+    bool endsScopeExecution() const noexcept {
+        return scope_node_index + 1 ==
+               scope_node_count;
     }
 };
 
@@ -105,6 +115,20 @@ buildLogicalFrameViewFamilySchedule(
     }
 
     std::map<std::string_view, std::size_t, std::less<>>
+        node_by_name;
+    for (std::size_t node_index = 0;
+         node_index < nodes.size(); ++node_index) {
+        if (!node_by_name
+                 .emplace(nodes[node_index].name,
+                          node_index)
+                 .second) {
+            throw std::runtime_error(
+                "compiled frame graph contains a duplicate node: " +
+                nodes[node_index].name);
+        }
+    }
+
+    std::map<std::string_view, std::size_t, std::less<>>
         scope_by_node;
     for (std::size_t scope_index = 0;
          scope_index < target_plan.scopes.size();
@@ -143,18 +167,31 @@ buildLogicalFrameViewFamilySchedule(
     }
 
     std::vector<LogicalFrameNodeInvocation> result;
-    for (std::size_t node_index = 0;
-         node_index < nodes.size(); ++node_index) {
-        const auto &node = nodes[node_index];
-        const auto found = scope_by_node.find(node.name);
-        if (found == scope_by_node.end()) {
-            throw std::runtime_error(
-                "physical target plan has no scope for frame-graph "
-                "node: " +
-                node.name);
+    std::size_t expected_node_index = 0;
+    for (std::size_t scope_index = 0;
+         scope_index < target_plan.scopes.size();
+         ++scope_index) {
+        const auto &scope =
+            target_plan.scopes[scope_index];
+        std::vector<std::size_t> scope_nodes;
+        scope_nodes.reserve(scope.nodes.size());
+        for (const auto &name : scope.nodes) {
+            const auto found = node_by_name.find(name);
+            if (found == node_by_name.end()) {
+                throw std::runtime_error(
+                    "physical target plan contains a scope node that "
+                    "is absent from the compiled frame graph: " +
+                    name);
+            }
+            if (found->second != expected_node_index) {
+                throw std::runtime_error(
+                    "physical target-plan scopes are not an exact "
+                    "ordered partition of the compiled frame graph at: " +
+                    name);
+            }
+            scope_nodes.push_back(found->second);
+            ++expected_node_index;
         }
-        const auto scope_index = found->second;
-        const auto &scope = target_plan.scopes[scope_index];
         const auto execution_count =
             scope.view_execution ==
                     VulkanScopeViewExecution::sequential
@@ -163,25 +200,90 @@ buildLogicalFrameViewFamilySchedule(
         for (std::uint32_t execution_index = 0;
              execution_index < execution_count;
              ++execution_index) {
-            result.push_back(LogicalFrameNodeInvocation{
-                .node_index = node_index,
-                .scope_index = scope_index,
-                .execution = scope.view_execution,
-                .logical_view_count = logical_view_count,
-                .view_index =
-                    scope.view_execution ==
-                            VulkanScopeViewExecution::sequential
-                        ? execution_index
-                        : 0u,
-                .execution_index = execution_index,
-                .execution_count = execution_count,
-            });
+            for (std::size_t scope_node_index = 0;
+                 scope_node_index < scope_nodes.size();
+                 ++scope_node_index) {
+                result.push_back(
+                    LogicalFrameNodeInvocation{
+                        .node_index =
+                            scope_nodes[
+                                scope_node_index],
+                        .scope_index = scope_index,
+                        .scope_node_index =
+                            scope_node_index,
+                        .scope_node_count =
+                            scope_nodes.size(),
+                        .execution =
+                            scope.view_execution,
+                        .logical_view_count =
+                            logical_view_count,
+                        .view_index =
+                            scope.view_execution ==
+                                    VulkanScopeViewExecution::
+                                        sequential
+                                ? execution_index
+                                : 0u,
+                        .execution_index =
+                            execution_index,
+                        .execution_count =
+                            execution_count,
+                    });
+            }
         }
     }
-    if (scope_by_node.size() != nodes.size()) {
+    if (expected_node_index != nodes.size()) {
+        const auto &node =
+            nodes[expected_node_index];
+        if (!scope_by_node.contains(node.name)) {
+            throw std::runtime_error(
+                "physical target plan has no scope for frame-graph "
+                "node: " +
+                node.name);
+        }
         throw std::runtime_error(
-            "physical target plan contains a scope node that is absent "
-            "from the compiled frame graph");
+            "physical target-plan scopes are not an exact ordered "
+            "partition of the compiled frame graph");
+    }
+    return result;
+}
+
+// Selects the scope-complete command-recording work for one view when the
+// logical-frame target acquires and submits each view separately. Multiview
+// work cannot be represented by that target contract and must use the full
+// view-family schedule instead.
+inline std::vector<LogicalFrameNodeInvocation>
+selectLogicalFrameSequentialViewSchedule(
+    std::span<const LogicalFrameNodeInvocation> schedule,
+    std::uint32_t view_index,
+    std::uint32_t logical_view_count) {
+    if (logical_view_count == 0 ||
+        view_index >= logical_view_count) {
+        throw std::runtime_error(
+            "per-view schedule selected an invalid logical view");
+    }
+
+    std::vector<LogicalFrameNodeInvocation> result;
+    for (const auto &invocation : schedule) {
+        if (invocation.logical_view_count !=
+            logical_view_count) {
+            throw std::runtime_error(
+                "per-view schedule mixes logical-view cardinalities");
+        }
+        switch (invocation.execution) {
+        case VulkanScopeViewExecution::single_view:
+            if (view_index == 0) {
+                result.push_back(invocation);
+            }
+            break;
+        case VulkanScopeViewExecution::sequential:
+            if (invocation.view_index == view_index) {
+                result.push_back(invocation);
+            }
+            break;
+        case VulkanScopeViewExecution::multiview:
+            throw std::runtime_error(
+                "per-view target cannot execute a multiview scope");
+        }
     }
     return result;
 }

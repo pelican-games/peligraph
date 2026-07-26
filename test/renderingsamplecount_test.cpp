@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
+#include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -172,6 +173,90 @@ nlohmann::json writeOnlyAttachmentConfig() {
                       {"output",
                        {{"color", "scratch"},
                         {"depth", nullptr}}}}})}}})},
+    };
+}
+
+nlohmann::json localReadAttachmentConfig(
+    std::string consumer_type = "fullscreen",
+    float gbuffer_extent_scale = 1.0f) {
+    return {
+        {"render_targets",
+         nlohmann::json::array({
+             {
+                 {"name", "gbuffer"},
+                 {"format", "R8G8B8A8_UNORM"},
+                 {"usage",
+                  nlohmann::json::array(
+                      {"COLOR_ATTACHMENT",
+                       "SAMPLED"})},
+                 {"extent_scale",
+                  gbuffer_extent_scale},
+             },
+             {
+                 {"name", "lit"},
+                 {"extent_scale", 1.0},
+                 {"format", "R8G8B8A8_UNORM"},
+                 {"usage",
+                  nlohmann::json::array(
+                      {"COLOR_ATTACHMENT",
+                       "SAMPLED"})},
+             },
+             {
+                 {"name", "display"},
+                 {"extent_scale", 1.0},
+                 {"format", "R8G8B8A8_UNORM"},
+                 {"usage",
+                  nlohmann::json::array(
+                      {"COLOR_ATTACHMENT",
+                       "SAMPLED"})},
+             },
+         })},
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "local_read"},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "geometry"},
+                      {"type", "material"},
+                      {"output",
+                       {{"color", "gbuffer"},
+                        {"depth", nullptr}}}},
+                     {{"name", "lighting"},
+                      {"type", std::move(consumer_type)},
+                      {"input", "gbuffer"},
+                      {"input_footprints",
+                       {{"gbuffer", "same_pixel"}}},
+                      {"output",
+                       {{"color", "lit"},
+                        {"depth", nullptr}}}},
+                     {{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"input", "lit"},
+                      {"output",
+                       {{"color", "display"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+}
+
+RenderingTargetPlanDeviceFacts
+localReadDeviceFacts(bool feature = true,
+                     bool format = true) {
+    return {
+        .query_image_format_capability =
+            [format](
+                const RenderTargetDefinition &) {
+                return RenderingImageFormatCapability{
+                    .image_usage_supported = true,
+                    .supported_samples = {1, 2, 4},
+                    .max_array_layers = 4,
+                    .transient_attachment_supported =
+                        true,
+                    .local_read_attachment_supported =
+                        format,
+                };
+            },
+        .transient_attachments = true,
+        .dynamic_rendering_local_read = feature,
     };
 }
 
@@ -484,6 +569,328 @@ TEST_CASE(
                 {}, fragments);
         },
         "alternate format requires a materialized_image");
+}
+
+TEST_CASE(
+    "runtime target adapter selects supported fullscreen local reads and materializes every fallback",
+    "[target-planning][rendering][tile-local][runtime-adapter]") {
+    const auto config =
+        localReadAttachmentConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    const auto targets =
+        parseRenderTargetDefinitionsFromJson(
+            config);
+
+    const auto local =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            localReadDeviceFacts());
+    REQUIRE(local.plans.size() == 1);
+    const auto &plan = *local.plans.front();
+    REQUIRE(
+        plan.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.tile_local_plan@1");
+    REQUIRE(
+        physicalResource(plan, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            tile_local_attachment);
+    REQUIRE(
+        physicalResource(plan, "lit")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+    REQUIRE(std::any_of(
+        plan.scopes.begin(), plan.scopes.end(),
+        [](const auto &scope) {
+            return scope.nodes ==
+                       std::vector<std::string>{
+                           "geometry", "lighting"} &&
+                   scope.local_reads ==
+                       std::vector<std::string>{
+                           "gbuffer"};
+        }));
+    REQUIRE(
+        physicalAttachment(
+            plan, "geometry", "gbuffer")
+            .store_op ==
+        VulkanPhysicalAttachmentStoreOp::
+            discard);
+
+    auto applied = targets;
+    applyRenderingTargetPlan(applied, local);
+    const auto gbuffer = std::find_if(
+        applied.begin(), applied.end(),
+        [](const auto &target) {
+            return target.name == "gbuffer";
+        });
+    REQUIRE(gbuffer != applied.end());
+    REQUIRE(
+        gbuffer->storage_mode ==
+        RenderTargetStorageMode::
+            tile_local_attachment);
+    REQUIRE(
+        gbuffer->usage &
+        vk::ImageUsageFlagBits::
+            eInputAttachment);
+
+    const auto missing_feature =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            localReadDeviceFacts(false, true));
+    REQUIRE(
+        representationAssignment(
+            missing_feature, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+
+    const auto missing_format =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            localReadDeviceFacts(true, false));
+    REQUIRE(
+        representationAssignment(
+            missing_format, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+}
+
+TEST_CASE(
+    "runtime local-read eligibility rejects unsupported consumers extents and multisampling",
+    "[target-planning][rendering][tile-local][fallback]") {
+    const auto compile_config =
+        [](const nlohmann::json &config,
+           SampleCountPolicy samples = {}) {
+            const auto graphs =
+                parseFrameGraphDefinitionsFromConfigJson(
+                    config);
+            const auto targets =
+                parseRenderTargetDefinitionsFromJson(
+                    config);
+            return compileRenderingTargetPlans(
+                graphs, targets, samples,
+                vk::Format::eB8G8R8A8Unorm,
+                localReadDeviceFacts());
+        };
+
+    const auto material_consumer =
+        compile_config(
+            localReadAttachmentConfig("material"));
+    REQUIRE(
+        material_consumer.plans.front()
+            ->backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE(
+        representationAssignment(
+            material_consumer, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+
+    const auto mismatched_extent =
+        compile_config(
+            localReadAttachmentConfig(
+                "fullscreen", 0.5f));
+    REQUIRE(
+        mismatched_extent.plans.front()
+            ->backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE(
+        representationAssignment(
+            mismatched_extent, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+
+    auto multisampled_config =
+        localReadAttachmentConfig();
+    multisampled_config["multisampling"] = {
+        {"fallback", "error"},
+        {"samples", 4},
+        {"scope", "none"},
+        {"targets",
+         nlohmann::json::array({"gbuffer"})},
+    };
+    const auto multisampled =
+        compile_config(
+            multisampled_config,
+            compileSampleCountPolicy(
+                multisampled_config));
+    REQUIRE(
+        assignment(multisampled, "gbuffer")
+            .samples == 4);
+    REQUIRE(
+        representationAssignment(
+            multisampled, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+}
+
+TEST_CASE(
+    "XR multiview planning preserves a fused tile-local attachment scope",
+    "[wp203][wp204][target-planning][multiview][tile-local][xr]") {
+    const auto config =
+        localReadAttachmentConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    const auto targets =
+        parseRenderTargetDefinitionsFromJson(
+            config);
+    auto device_facts = localReadDeviceFacts();
+    device_facts.multiview = true;
+    device_facts.max_multiview_view_count = 2;
+
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            std::move(device_facts),
+            VulkanViewExecutionPlanRequest{
+                .view_count = 2,
+                .preference =
+                    XrViewExecutionPreference::
+                        require_multiview,
+                .multiview_capable_nodes =
+                    {"geometry", "lighting",
+                     "present"},
+            });
+
+    REQUIRE(compilation.plans.size() == 1);
+    const auto &plan = *compilation.plans.front();
+    REQUIRE(
+        plan.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.tile_local_plan@1");
+    REQUIRE(
+        plan.view_execution_plan.uses_multiview);
+    REQUIRE(
+        plan.view_execution_plan.view_count == 2);
+
+    const auto fused_scope = std::find_if(
+        plan.scopes.begin(), plan.scopes.end(),
+        [](const auto &scope) {
+            return scope.nodes ==
+                   std::vector<std::string>{
+                       "geometry", "lighting"};
+        });
+    REQUIRE(fused_scope != plan.scopes.end());
+    REQUIRE(
+        fused_scope->local_reads ==
+        std::vector<std::string>{"gbuffer"});
+    REQUIRE(
+        fused_scope->view_execution ==
+        VulkanScopeViewExecution::multiview);
+    REQUIRE(fused_scope->view_count == 2);
+    REQUIRE(fused_scope->execution_count == 1);
+    REQUIRE(fused_scope->view_mask == 0b11);
+
+    const auto &gbuffer =
+        physicalResource(plan, "gbuffer");
+    REQUIRE(
+        gbuffer.representation ==
+        VulkanResourceRepresentation::
+            tile_local_attachment);
+    REQUIRE(
+        gbuffer.view_layout ==
+        VulkanResourceViewLayout::
+            layered_2d_array);
+    REQUIRE(gbuffer.array_layers == 2);
+    REQUIRE(
+        layerAssignment(compilation, "gbuffer")
+            .array_layers == 2);
+
+    auto applied = targets;
+    applyRenderingTargetPlan(applied, compilation);
+    const auto target = std::find_if(
+        applied.begin(), applied.end(),
+        [](const auto &candidate) {
+            return candidate.name == "gbuffer";
+        });
+    REQUIRE(target != applied.end());
+    REQUIRE(
+        target->storage_mode ==
+        RenderTargetStorageMode::
+            tile_local_attachment);
+    REQUIRE(target->array_layers == 2);
+    REQUIRE(
+        target->usage &
+        vk::ImageUsageFlagBits::eInputAttachment);
+}
+
+TEST_CASE(
+    "runtime target bridge materializes a shared target without losing local-read usage",
+    "[target-planning][rendering][tile-local][multi-graph]") {
+    auto config = localReadAttachmentConfig();
+    auto material_graph =
+        config["rendering_passes"].front();
+    material_graph["name"] =
+        "material_fallback";
+    material_graph["passes"][1]["type"] =
+        "material";
+    config["rendering_passes"].push_back(
+        std::move(material_graph));
+
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    const auto targets =
+        parseRenderTargetDefinitionsFromJson(
+            config);
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            localReadDeviceFacts());
+
+    REQUIRE(compilation.plans.size() == 2);
+    REQUIRE(
+        compilation.plans[0]
+            ->backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.tile_local_plan@1");
+    REQUIRE(
+        compilation.plans[1]
+            ->backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE(
+        representationAssignment(
+            compilation, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+
+    auto applied = targets;
+    applyRenderingTargetPlan(
+        applied, compilation);
+    const auto gbuffer = std::find_if(
+        applied.begin(), applied.end(),
+        [](const auto &target) {
+            return target.name == "gbuffer";
+        });
+    REQUIRE(gbuffer != applied.end());
+    REQUIRE(
+        gbuffer->storage_mode ==
+        RenderTargetStorageMode::materialized);
+    REQUIRE(
+        gbuffer->usage &
+        vk::ImageUsageFlagBits::
+            eInputAttachment);
+    REQUIRE(
+        gbuffer->usage &
+        vk::ImageUsageFlagBits::eSampled);
 }
 
 TEST_CASE("rendering target bridge applies a verified alternate physical format",

@@ -890,12 +890,48 @@ TEST_CASE("material pass availability distinguishes fullscreen-only graphs",
     PassDefinition material;
     material.name = "geometry";
     material.pass_info = MaterialPassInfo{};
+    material.rasterization_samples =
+        vk::SampleCountFlagBits::e4;
+    CompiledPassRenderingContract rendering;
+    rendering.scope_index = 2;
+    rendering.scope_id = "gbuffer_lighting";
+    rendering.color_attachments = {
+        GlobalRenderTargetId{4},
+        GlobalRenderTargetId{5}};
+    rendering.color_attachment_locations = {
+        0, unusedPhysicalAttachmentMapping};
+    rendering.color_attachment_input_indices = {
+        unusedPhysicalAttachmentMapping,
+        unusedPhysicalAttachmentMapping};
+    rendering.local_read_scope = true;
     container.registerCompiledRenderingPass(CompiledRenderingPass{
-        "with_material", {{material, PassId{0}}}, {}});
+        "with_material",
+        {{material, PassId{0}, {}, rendering}},
+        {}});
     REQUIRE(container.hasMaterialPasses());
     REQUIRE(container.supportsMaterialPass(
         MaterialRouteClass::deferred_geometry,
         MaterialShaderContract::gbuffer_v1));
+    const auto bindings =
+        container.materialPassRenderingBindings(
+            MaterialRouteClass::deferred_geometry,
+            MaterialShaderContract::gbuffer_v1);
+    REQUIRE(bindings.size() == 1);
+    CHECK(bindings.front().pass_name == "geometry");
+    CHECK(bindings.front().rasterization_samples ==
+          vk::SampleCountFlagBits::e4);
+    CHECK(bindings.front().rendering == rendering);
+    CHECK(container.materialPassRenderingBindings(
+              MaterialRouteClass::forward_opaque,
+              MaterialShaderContract::
+                  forward_scene_color_v1)
+              .empty());
+    CHECK(container.materialPassRenderingBindings(
+              MaterialRouteClass::deferred_geometry,
+              MaterialShaderContract::gbuffer_v1,
+              std::optional<std::string>{
+                  "another_geometry"})
+              .empty());
 }
 
 TEST_CASE("material pass info parser preserves defaults when material range is omitted", "[renderingpass]") {
@@ -1063,7 +1099,197 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "view-family scheduler expands mixed physical scopes in node-major order",
+    "rendering pass runtime compiler expands fused attachment mappings",
+    "[renderingpass][physical-scope][local-read]") {
+    const GlobalRenderTargetId gbuffer{0};
+    const GlobalRenderTargetId lit{1};
+    const RenderTargetMetadataResolver metadata{
+        [=](GlobalRenderTargetId id) {
+            if (id == gbuffer) {
+                return RenderTargetMetadata{
+                    .name = "gbuffer",
+                    .usage =
+                        vk::ImageUsageFlagBits::
+                            eColorAttachment,
+                    .format =
+                        vk::Format::eR8G8B8A8Unorm,
+                    .extent = {64, 64},
+                };
+            }
+            if (id == lit) {
+                return RenderTargetMetadata{
+                    .name = "lit",
+                    .usage =
+                        vk::ImageUsageFlagBits::
+                            eColorAttachment,
+                    .format =
+                        vk::Format::
+                            eR16G16B16A16Sfloat,
+                    .extent = {64, 64},
+                };
+            }
+            throw std::runtime_error(
+                "unknown test render target");
+        }};
+
+    PassDefinition geometry;
+    geometry.name = "geometry";
+    geometry.pass_info = MaterialPassInfo{};
+    geometry.output_color = {gbuffer};
+    geometry.clear_color =
+        vk::ClearColorValue{
+            std::array{0.25f, 0.5f, 0.75f, 1.0f}};
+
+    PassDefinition lighting;
+    lighting.name = "lighting";
+    lighting.pass_info = MaterialPassInfo{};
+    lighting.input_targets = {gbuffer};
+    lighting.input_target_history = {false};
+    lighting.output_color = {lit};
+    lighting.clear_color =
+        vk::ClearColorValue{
+            std::array{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    const RenderingPassDefinition definition{
+        .name = "main",
+        .passes = {geometry, lighting},
+    };
+    VulkanTargetPlan plan;
+    plan.resources = {
+        {
+            .logical_resource = "gbuffer",
+            .representation =
+                VulkanResourceRepresentation::
+                    tile_local_attachment,
+        },
+        {
+            .logical_resource = "lit",
+            .representation =
+                VulkanResourceRepresentation::
+                    materialized_image,
+        },
+    };
+    plan.scopes = {
+        {
+            .id = "geometry_lighting",
+            .nodes = {"geometry", "lighting"},
+            .local_reads = {"gbuffer"},
+        },
+    };
+    plan.attachments = {
+        {
+            .node = "geometry",
+            .logical_resource = "gbuffer",
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::
+                    discard,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::
+                    discard,
+        },
+        {
+            .node = "lighting",
+            .logical_resource = "lit",
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::
+                    clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::
+                    store,
+        },
+    };
+
+    const auto compiled =
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata = &metadata,
+                .target_plan = &plan,
+            });
+    REQUIRE(compiled.passes.size() == 2);
+    const auto &geometry_contract =
+        compiled.passes.at(0).rendering;
+    const auto &lighting_contract =
+        compiled.passes.at(1).rendering;
+    REQUIRE(geometry_contract.scope_index == 0);
+    REQUIRE(
+        geometry_contract.scope_id ==
+        "geometry_lighting");
+    REQUIRE(
+        geometry_contract.color_attachments ==
+        std::vector<GlobalRenderTargetId>{
+            gbuffer, lit});
+    REQUIRE(
+        geometry_contract
+            .color_attachment_locations ==
+        std::vector<std::uint32_t>{
+            0,
+            unusedPhysicalAttachmentMapping});
+    REQUIRE(
+        geometry_contract
+            .color_attachment_input_indices ==
+        std::vector<std::uint32_t>{
+            unusedPhysicalAttachmentMapping,
+            unusedPhysicalAttachmentMapping});
+    REQUIRE(
+        lighting_contract
+            .color_attachment_locations ==
+        std::vector<std::uint32_t>{
+            unusedPhysicalAttachmentMapping,
+            0});
+    REQUIRE(
+        lighting_contract
+            .color_attachment_input_indices ==
+        std::vector<std::uint32_t>{
+            0,
+            unusedPhysicalAttachmentMapping});
+    REQUIRE(
+        lighting_contract.local_read_scope);
+    const auto expected_scope_operations =
+        std::vector<PassAttachmentOperations>{
+            {
+                vk::AttachmentLoadOp::eDontCare,
+                vk::AttachmentStoreOp::eDontCare,
+            },
+            {
+                vk::AttachmentLoadOp::eClear,
+                vk::AttachmentStoreOp::eStore,
+            },
+        };
+    REQUIRE(
+        geometry_contract
+            .scope_color_attachment_operations ==
+        expected_scope_operations);
+    REQUIRE(
+        lighting_contract
+            .scope_color_attachment_operations ==
+        expected_scope_operations);
+    const auto expected_scope_clear_values =
+        std::vector<std::array<float, 4>>{
+            {0.25f, 0.5f, 0.75f, 1.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f},
+        };
+    REQUIRE(
+        geometry_contract.scope_color_clear_values ==
+        expected_scope_clear_values);
+    REQUIRE(
+        lighting_contract.scope_color_clear_values ==
+        geometry_contract.scope_color_clear_values);
+
+    plan.scopes.front().local_reads.clear();
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata = &metadata,
+                .target_plan = &plan,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "tile-local pass input is not declared"));
+}
+
+TEST_CASE(
+    "view-family scheduler expands mixed physical scopes in scope order",
     "[renderingpass][view-execution][schedule]") {
     const std::vector<FrameGraphExecutionNode> nodes{
         {.name = "SharedShadow"},
@@ -1134,6 +1360,100 @@ TEST_CASE(
     REQUIRE(schedule[4].execution ==
             VulkanScopeViewExecution::multiview);
     REQUIRE(schedule[4].logical_view_count == 2);
+}
+
+TEST_CASE(
+    "view-family scheduler keeps fused sequential scopes together per view",
+    "[renderingpass][view-execution][schedule][scope]") {
+    const std::vector<FrameGraphExecutionNode> nodes{
+        {.name = "Geometry"},
+        {.name = "Lighting"},
+    };
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 2;
+    plan.scopes = {
+        {
+            .id = "fused",
+            .nodes = {"Geometry", "Lighting"},
+            .view_execution =
+                VulkanScopeViewExecution::sequential,
+            .view_count = 2,
+            .execution_count = 2,
+        },
+    };
+
+    const auto schedule =
+        buildLogicalFrameViewFamilySchedule(
+            nodes, plan, 2);
+    REQUIRE(schedule.size() == 4);
+    REQUIRE(schedule[0].node_index == 0);
+    REQUIRE(schedule[0].view_index == 0);
+    REQUIRE(schedule[0].beginsScopeExecution());
+    REQUIRE_FALSE(
+        schedule[0].endsScopeExecution());
+    REQUIRE(schedule[1].node_index == 1);
+    REQUIRE(schedule[1].view_index == 0);
+    REQUIRE_FALSE(
+        schedule[1].beginsScopeExecution());
+    REQUIRE(schedule[1].endsScopeExecution());
+    REQUIRE(schedule[2].node_index == 0);
+    REQUIRE(schedule[2].view_index == 1);
+    REQUIRE(schedule[2].beginsScopeExecution());
+    REQUIRE(schedule[3].node_index == 1);
+    REQUIRE(schedule[3].view_index == 1);
+    REQUIRE(schedule[3].endsScopeExecution());
+}
+
+TEST_CASE(
+    "per-view scheduler preserves complete physical scopes",
+    "[renderingpass][view-execution][schedule][scope]") {
+    const std::vector<FrameGraphExecutionNode> nodes{
+        {.name = "Shared"},
+        {.name = "Geometry"},
+        {.name = "Lighting"},
+    };
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 2;
+    plan.scopes = {
+        {
+            .id = "shared",
+            .nodes = {"Shared"},
+            .view_execution =
+                VulkanScopeViewExecution::single_view,
+            .view_count = 1,
+            .execution_count = 1,
+        },
+        {
+            .id = "fused",
+            .nodes = {"Geometry", "Lighting"},
+            .view_execution =
+                VulkanScopeViewExecution::sequential,
+            .view_count = 2,
+            .execution_count = 2,
+        },
+    };
+
+    const auto logical_frame_schedule =
+        buildLogicalFrameViewFamilySchedule(
+            nodes, plan, 2);
+    const auto first_view =
+        selectLogicalFrameSequentialViewSchedule(
+            logical_frame_schedule, 0, 2);
+    const auto second_view =
+        selectLogicalFrameSequentialViewSchedule(
+            logical_frame_schedule, 1, 2);
+
+    REQUIRE(first_view.size() == 3);
+    REQUIRE(first_view[0].node_index == 0);
+    REQUIRE(first_view[1].node_index == 1);
+    REQUIRE(first_view[1].beginsScopeExecution());
+    REQUIRE(first_view[2].node_index == 2);
+    REQUIRE(first_view[2].endsScopeExecution());
+    REQUIRE(second_view.size() == 2);
+    REQUIRE(second_view[0].node_index == 1);
+    REQUIRE(second_view[0].beginsScopeExecution());
+    REQUIRE(second_view[1].node_index == 2);
+    REQUIRE(second_view[1].endsScopeExecution());
 }
 
 TEST_CASE(

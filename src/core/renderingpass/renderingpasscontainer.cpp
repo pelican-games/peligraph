@@ -158,39 +158,53 @@ bool RenderingPassContainer::hasMaterialPasses() const {
 bool RenderingPassContainer::supportsMaterialPass(
     MaterialRouteClass route, MaterialShaderContract shader_contract,
     const std::optional<std::string> &exact_pass) const {
-    const auto accepts =
+    return !materialPassRenderingBindings(
+                 route, shader_contract, exact_pass)
+                 .empty();
+}
+
+std::vector<MaterialPassRenderingBinding>
+RenderingPassContainer::materialPassRenderingBindings(
+    MaterialRouteClass route,
+    MaterialShaderContract shader_contract,
+    const std::optional<std::string> &exact_pass) const {
+    std::vector<MaterialPassRenderingBinding> result;
+    const auto collect =
         [&](const CompiledRenderingPass &rendering_pass) {
             for (const auto &compiled :
                  rendering_pass.passes) {
                 const auto &pass = compiled.definition;
-                if (!pass.isMaterial()) continue;
-                if (exact_pass && pass.name != *exact_pass)
+                if (!pass.isMaterial() ||
+                    (exact_pass &&
+                     pass.name != *exact_pass) ||
+                    !materialPassAcceptsMaterial(
+                        pass.materialInfo().contract,
+                        pass.name, route,
+                        shader_contract,
+                        exact_pass)) {
                     continue;
-                if (materialPassAcceptsMaterial(
-                        pass.materialInfo().contract, pass.name,
-                        route, shader_contract, exact_pass)) {
-                    return true;
                 }
+                result.push_back(
+                    MaterialPassRenderingBinding{
+                        .pass_name = pass.name,
+                        .rasterization_samples =
+                            pass.rasterization_samples,
+                        .rendering =
+                            compiled.rendering,
+                    });
             }
-            return false;
         };
     if (const auto generation = snapshot()) {
-        bool found = false;
         visitPublishedRenderingPasses(
-            *generation,
-            [&found, &accepts](
-                const CompiledRenderingPass &rendering_pass) {
-                found = found || accepts(rendering_pass);
-            });
-        return found;
+            *generation, collect);
+    } else {
+        for (const auto rendering_pass_id :
+             registered_pass_ids) {
+            collect(rendering_passes.get(
+                rendering_pass_id));
+        }
     }
-    for (const auto rendering_pass_id :
-         registered_pass_ids) {
-        const auto &rendering_pass =
-            rendering_passes.get(rendering_pass_id);
-        if (accepts(rendering_pass)) return true;
-    }
-    return false;
+    return result;
 }
 
 vk::SampleCountFlagBits

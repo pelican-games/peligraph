@@ -4,7 +4,7 @@
 #include "pelican_sets.glsl"
 #include "pelican_view.glsl"
 
-layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform PELICAN_SAMPLER_2D_0 displaySampler;
+PELICAN_DECLARE_INPUT_0(displaySampler);
 layout(location = 0) in vec2 texUV;
 layout(location = 0) out vec4 outColor;
 
