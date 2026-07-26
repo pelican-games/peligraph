@@ -78,6 +78,13 @@ BVH / WAV ...)をプロジェクトでどう取り回すかを 1 枚で決める
   **`pelican-import-tools`**(Python)に置く。R1 構造(core/cli)・R2 決定性・
   R10 バージョン埋め込み・manifest 書き出しを守る。
   v1 の中身は `fbx2gltf.py`(Blender headless)1 本から始める。
+- R10 は `pelican.import.outputs[]` にも適用する。versioned schema である
+  `pelican.transform_seq` / `pelican.scene` / `pelican.layout` /
+  `pelican.atlas` / `pelican.material` は `version: 1` を必須とし、
+  `khronos.ktx2` はコンテナ版の `version: 2` を必須とする。いずれも現行版
+  ちょうど 1 つだけを受理し、省略は reject する。`gltf` / `png` は manifest
+  上で version を宣言せず、`tool.version` は比較対象でなく生成元を示す自由文字列
+  とする。
 - Blender headless を汎用コンバータに使う判断の理由: 無料・スクリプタブル・
   DCC bridge で既にエコシステム内・FBX/OBJ/ABC を一括カバー。専用 C++
   コンバータ(assimp 等)は品質問題が出た形式に限って個別導入を検討する。

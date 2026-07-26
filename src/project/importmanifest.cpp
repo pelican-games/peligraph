@@ -140,7 +140,10 @@ void validateOutputSchema(const std::string &schema, const std::optional<int> &v
     }
     if (schema == "pelican.transform_seq" || schema == "pelican.scene" ||
         schema == "pelican.layout" || schema == "pelican.atlas") {
-        if (version && *version != 1) {
+        if (!version) {
+            throw std::runtime_error("import manifest output " + schema + " requires version 1");
+        }
+        if (*version != 1) {
             throw std::runtime_error("import manifest output " + schema + " version is not supported");
         }
         return;
