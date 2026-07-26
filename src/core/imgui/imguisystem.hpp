@@ -10,6 +10,15 @@ namespace Pelican {
 
 class InputState;
 
+namespace internal {
+
+// Dear ImGui reports backend Vulkan failures through a callback. Keeping the
+// adapter visible here also lets its fail-fast contract be tested without
+// fault-injecting a live Vulkan device.
+void checkImGuiVulkanResult(VkResult result);
+
+} // namespace internal
+
 DECLARE_MODULE(ImGuiSystem) {
     struct Impl;
     std::unique_ptr<Impl> impl;

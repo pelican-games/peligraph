@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace Pelican {
@@ -240,6 +241,15 @@ void drawMemoryTables() {
 
 } // namespace
 
+void internal::checkImGuiVulkanResult(VkResult result) {
+    if (result == VK_SUCCESS) {
+        return;
+    }
+    throw std::runtime_error(
+        "ImGui Vulkan backend call failed: " +
+        vk::to_string(vk::Result{result}));
+}
+
 struct ImGuiSystem::Impl {
     Window &window;
     InputActionMap toggle_actions;
@@ -247,6 +257,7 @@ struct ImGuiSystem::Impl {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkFormat raw_color_format;
     VkPipelineRenderingCreateInfo pipeline_rendering_info{};
+    bool context_initialized = false;
     bool platform_initialized = false;
     bool renderer_initialized = false;
     bool frame_started = false;
@@ -267,6 +278,42 @@ struct ImGuiSystem::Impl {
     InspectorPanel inspector;
     std::uint64_t public_api_calls = 0;
 
+    void shutdown() noexcept {
+        if (!context_initialized) {
+            return;
+        }
+        if (frame_started) {
+            ImGui::EndFrame();
+            frame_started = false;
+        }
+
+        auto &io = ImGui::GetIO();
+        if (renderer_initialized || io.BackendRendererUserData != nullptr) {
+            ImGui_ImplVulkan_Shutdown();
+            renderer_initialized = false;
+        }
+        if (platform_initialized || io.BackendPlatformUserData != nullptr) {
+            ImGui_ImplGlfw_Shutdown();
+            platform_initialized = false;
+        }
+        ImGui::DestroyContext();
+        context_initialized = false;
+    }
+
+    struct InitializationRollback {
+        Impl *owner;
+
+        ~InitializationRollback() {
+            if (owner != nullptr) {
+                owner->shutdown();
+            }
+        }
+
+        void commit() noexcept {
+            owner = nullptr;
+        }
+    };
+
     Impl()
         : window(GET_MODULE(Window)),
           toggle_actions([] {
@@ -283,6 +330,8 @@ struct ImGuiSystem::Impl {
           inspector{*editor_service, inspector_trace} {
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
+        context_initialized = true;
+        InitializationRollback rollback{this};
         ++public_api_calls;
         auto &io = ImGui::GetIO();
         ++public_api_calls;
@@ -324,25 +373,16 @@ struct ImGuiSystem::Impl {
         init_info.UseDynamicRendering = true;
         init_info.PipelineRenderingCreateInfo = pipeline_rendering_info;
         init_info.MinAllocationSize = 1024 * 1024;
+        init_info.CheckVkResultFn = &internal::checkImGuiVulkanResult;
         if (!ImGui_ImplVulkan_Init(&init_info)) {
             throw std::runtime_error("ImGui Vulkan backend initialization failed");
         }
         renderer_initialized = true;
+        rollback.commit();
     }
 
     ~Impl() {
-        if (frame_started) {
-            ImGui::EndFrame();
-        }
-        if (renderer_initialized) {
-            ImGui_ImplVulkan_Shutdown();
-        }
-        if (platform_initialized) {
-            ImGui_ImplGlfw_Shutdown();
-        }
-        if (ImGui::GetCurrentContext() != nullptr) {
-            ImGui::DestroyContext();
-        }
+        shutdown();
     }
 };
 

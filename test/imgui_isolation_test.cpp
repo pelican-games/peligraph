@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "../src/core/imgui/imguiruntime.hpp"
+#include "../src/core/imgui/imguisystem.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 
 #include <algorithm>
@@ -42,6 +43,16 @@ std::vector<std::string> planOrder(const nlohmann::json &config) {
 }
 
 } // namespace
+
+TEST_CASE("ImGui Vulkan callback rejects every non-success result",
+          "[imgui][vulkan]") {
+    REQUIRE_NOTHROW(internal::checkImGuiVulkanResult(VK_SUCCESS));
+    REQUIRE_THROWS_AS(
+        internal::checkImGuiVulkanResult(VK_ERROR_OUT_OF_DEVICE_MEMORY),
+        std::runtime_error);
+    REQUIRE_THROWS_AS(internal::checkImGuiVulkanResult(VK_TIMEOUT),
+                      std::runtime_error);
+}
 
 TEST_CASE("deterministic drivers execute zero ImGui callbacks and keep input unchanged",
           "[imgui][isolation]") {
