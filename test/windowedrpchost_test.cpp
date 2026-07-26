@@ -93,7 +93,7 @@ TEST_CASE("windowed RPC queue overflow returns one stable busy error per rejecte
     std::istringstream input{
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_status\",\"params\":{}}\n"
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"get_status\",\"params\":{}}\n"
-        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"get_status\",\"params\":{}}\n"};
+        "{\"jsonrpc\":2.0,\"id\":3,\"method\":\"get_status\",\"params\":{}}\n"};
     std::ostringstream output;
     WindowedRpcHost host{
         input, output,

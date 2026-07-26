@@ -170,7 +170,10 @@ JsonRpcParseResult parseJsonRpcRequest(std::string_view line) {
         return errorResult(
             makeJsonRpcError(nullptr, JsonRpcErrorCodes::invalidRequest, "request id must be string, integer, or null"));
     }
-    if (document.value("jsonrpc", std::string{}) != jsonrpcVersion) {
+    if (!document.contains("jsonrpc") ||
+        !document.at("jsonrpc").is_string() ||
+        document.at("jsonrpc").get_ref<const std::string &>() !=
+            jsonrpcVersion) {
         return errorResult(makeJsonRpcError(id, JsonRpcErrorCodes::invalidRequest, "jsonrpc must be 2.0"));
     }
     if (!document.contains("method") || !document.at("method").is_string()) {

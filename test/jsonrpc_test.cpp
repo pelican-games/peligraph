@@ -58,6 +58,14 @@ TEST_CASE("JSON-RPC parser maps malformed protocol input to required error codes
     REQUIRE(version_error.error.has_value());
     REQUIRE(version_error.error->id == 1);
     REQUIRE(version_error.error->code == JsonRpcErrorCodes::invalidRequest);
+
+    const auto version_type_error =
+        parseJsonRpcRequest(
+            R"json({"jsonrpc":2.0,"id":2,"method":"step_frame"})json");
+    REQUIRE(version_type_error.error.has_value());
+    REQUIRE(version_type_error.error->id == 2);
+    REQUIRE(version_type_error.error->code ==
+            JsonRpcErrorCodes::invalidRequest);
 }
 
 TEST_CASE("JSON-RPC response serialization emits success and all required error codes", "[jsonrpc]") {
