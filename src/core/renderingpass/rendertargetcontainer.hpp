@@ -5,6 +5,8 @@
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "rendertargetmetadata.hpp"
+#include "../../project/imagesubresource.hpp"
+#include <map>
 #include <optional>
 #include <array>
 #include <cstdint>
@@ -33,6 +35,7 @@ DECLARE_MODULE(RenderTargetContainer) {
         bool history;
         vk::ClearColorValue history_clear_color;
         std::uint32_t samples;
+        ImageMipLevelCount mip_levels;
         std::uint32_t array_layers;
         RenderTargetStorageMode storage_mode;
         std::optional<std::string> alias_group;
@@ -42,6 +45,11 @@ DECLARE_MODULE(RenderTargetContainer) {
             image_layer_views;
         std::array<vk::UniqueImageView, 2>
             layered_image_views;
+        mutable std::array<
+            std::map<ImageSubresourceViewKey,
+                     vk::UniqueImageView>,
+            2>
+            subresource_image_views;
         std::array<ImageWrapper, 2> attachment_images;
         std::array<std::vector<vk::UniqueImageView>, 2>
             attachment_image_layer_views;
@@ -74,6 +82,7 @@ DECLARE_MODULE(RenderTargetContainer) {
                                               vk::ClearColorValue history_clear_color =
                                                   vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}},
                                               std::uint32_t samples = 1,
+                                              ImageMipLevelCount mip_levels = {},
                                               std::uint32_t array_layers = 1,
                                               RenderTargetStorageMode storage_mode =
                                                   RenderTargetStorageMode::materialized,
@@ -98,6 +107,16 @@ DECLARE_MODULE(RenderTargetContainer) {
     vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
                                        uint32_t frame_index) const;
+    vk::ImageView getImageSubresourceView(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        bool array_view,
+        bool history_read = false) const;
+    vk::ImageView getImageSubresourceViewForFrame(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        bool array_view, bool history_read,
+        std::uint32_t frame_index) const;
     vk::ImageView getImageLayerView(
         GlobalRenderTargetId id, std::uint32_t array_layer,
         bool history_read = false) const;

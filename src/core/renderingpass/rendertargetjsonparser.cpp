@@ -84,6 +84,64 @@ std::vector<vk::Format> parseFormatCandidates(
     return result;
 }
 
+ImageMipLevelCount parseMipLevels(
+    const nlohmann::json &rt_json,
+    const std::string &name) {
+    if (!rt_json.contains("mip_levels")) {
+        return {};
+    }
+    const auto &encoded = rt_json.at("mip_levels");
+    if (encoded.is_string()) {
+        if (encoded.get_ref<const std::string &>() !=
+            "full") {
+            throw std::runtime_error(
+                "Render target mip_levels string must be 'full': " +
+                name);
+        }
+        return {
+            ImageMipLevelMode::full_chain,
+            1,
+        };
+    }
+    if (!encoded.is_number_unsigned() &&
+        !encoded.is_number_integer()) {
+        throw std::runtime_error(
+            "Render target mip_levels must be a positive integer or 'full': " +
+            name);
+    }
+    const auto count =
+        parseUint32Field(
+            rt_json, "mip_levels",
+            "render target: " + name);
+    if (count == 0) {
+        throw std::runtime_error(
+            "Render target mip_levels must be positive: " +
+            name);
+    }
+    return {
+        ImageMipLevelMode::fixed,
+        count,
+    };
+}
+
+std::uint32_t parseArrayLayers(
+    const nlohmann::json &rt_json,
+    const std::string &name) {
+    if (!rt_json.contains("layers")) {
+        return 1;
+    }
+    const auto count =
+        parseUint32Field(
+            rt_json, "layers",
+            "render target: " + name);
+    if (count == 0) {
+        throw std::runtime_error(
+            "Render target layers must be positive: " +
+            name);
+    }
+    return count;
+}
+
 } // namespace
 
 nlohmann::json resolveRenderTargetFormatClassesV2(const nlohmann::json &data,
@@ -172,6 +230,10 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
         auto format_candidates =
             parseFormatCandidates(
                 rt_json, name, format);
+        const auto mip_levels =
+            parseMipLevels(rt_json, name);
+        const auto array_layers =
+            parseArrayLayers(rt_json, name);
 
         if (extent_scale <= 0.0f) {
             throw std::runtime_error("Render target extent_scale must be positive: " + name);
@@ -191,7 +253,8 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             .history_clear_color =
                 history_clear_color,
             .samples = 1,
-            .array_layers = 1,
+            .mip_levels = mip_levels,
+            .array_layers = array_layers,
         });
     }
 

@@ -24,6 +24,7 @@ using ExternalDepthTransferCapabilityQuery =
 struct RenderingImageFormatCapability {
     bool image_usage_supported = false;
     std::vector<std::uint32_t> supported_samples;
+    std::uint32_t max_mip_levels = 1;
     std::uint32_t max_array_layers = 1;
     bool external_depth_export_supported = false;
     bool transient_attachment_supported = false;

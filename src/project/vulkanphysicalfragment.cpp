@@ -425,6 +425,14 @@ nlohmann::ordered_json physicalResourceToJson(
         {"view_layout",
          vulkanResourceViewLayoutName(
              resource.view_layout)},
+        {"mip_levels",
+         nlohmann::ordered_json{
+             {"mode",
+              imageMipLevelModeName(
+                  resource.mip_levels.mode)},
+             {"count",
+              resource.mip_levels.count},
+         }},
         {"array_layers", resource.array_layers},
         {"extent", extentToJson(resource.extent)},
     };
@@ -654,6 +662,13 @@ indexFormatCapabilities(
         requireNonEmpty(
             capability.format,
             "Vulkan physical format capability format");
+        if (capability.max_mip_levels == 0) {
+            throw std::runtime_error(
+                "Vulkan physical format capability max mip "
+                "levels must be positive: " +
+                capability.logical_resource + " -> " +
+                capability.format);
+        }
         if (capability.max_array_layers == 0) {
             throw std::runtime_error(
                 "Vulkan physical format capability max array "
@@ -748,6 +763,18 @@ requireAlternateFormatCapability(
             resource.logical_resource + " -> " +
             std::string{format} + " -> " +
             std::to_string(resource.array_layers));
+    }
+    if (resource.mip_levels.mode ==
+            ImageMipLevelMode::fixed &&
+        resource.mip_levels.count >
+            capability.max_mip_levels) {
+        throw std::runtime_error(
+            "Vulkan physical fragment alternate format does not "
+            "support the selected mip-level count: " +
+            resource.logical_resource + " -> " +
+            std::string{format} + " -> " +
+            std::to_string(
+                resource.mip_levels.count));
     }
     if (exports_depth &&
         !capability.external_depth_export_supported) {
@@ -919,6 +946,7 @@ void validateAliasGroups(
                     a.rasterization_samples !=
                         b.rasterization_samples ||
                     a.view_layout != b.view_layout ||
+                    a.mip_levels != b.mip_levels ||
                     a.array_layers != b.array_layers ||
                     a.extent != b.extent) {
                     throw std::runtime_error(

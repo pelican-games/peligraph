@@ -794,9 +794,31 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto graph =
         hybridGraph(types, 4, false, true);
+    auto bindings =
+        bindingsFor(types, graph);
+    const auto scene_color =
+        std::find_if(
+            bindings.begin(), bindings.end(),
+            [](const auto &binding) {
+                return binding.resource ==
+                       "scene_color";
+            });
+    REQUIRE(scene_color != bindings.end());
+    scene_color->mip_levels = {
+        ImageMipLevelMode::full_chain, 1};
+    scene_color->array_layers = 3;
     const auto automatic = compile(
         types, graph, topology(true),
-        bindingsFor(types, graph));
+        bindings);
+    REQUIRE(
+        physicalResource(
+            automatic, "scene_color")
+            .mip_levels ==
+        scene_color->mip_levels);
+    REQUIRE(
+        physicalResource(
+            automatic, "scene_color")
+            .array_layers == 3);
 
     const auto ejected =
         ejectVulkanPhysicalFragmentPackage(
@@ -819,7 +841,7 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
 
     const auto linked = compile(
         types, graph, topology(true),
-        bindingsFor(types, graph), std::nullopt,
+        bindings, std::nullopt,
         std::nullopt, std::nullopt, std::nullopt,
         ejected);
     REQUIRE(linked.resources == automatic.resources);
@@ -836,6 +858,24 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
 
     const auto encoded =
         vulkanTargetPlanToJson(linked);
+    const auto encoded_scene_color =
+        std::find_if(
+            encoded.at("resources").begin(),
+            encoded.at("resources").end(),
+            [](const auto &resource_json) {
+                return resource_json.at(
+                           "logical_resource") ==
+                       "scene_color";
+            });
+    REQUIRE(
+        encoded_scene_color !=
+        encoded.at("resources").end());
+    REQUIRE(
+        encoded_scene_color->at("mip_levels")
+            .at("mode") == "full");
+    REQUIRE(
+        encoded_scene_color->at("array_layers") ==
+        3);
     REQUIRE(encoded.at(
                 "ejectable_physical_fragment") ==
             document);

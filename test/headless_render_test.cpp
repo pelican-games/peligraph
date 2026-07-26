@@ -294,6 +294,57 @@ void main() {
 )glsl";
 }
 
+const char *depthPyramidSeedComputeShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(
+            coordinate, pelican_size_seed_depth()))) {
+        return;
+    }
+    pelican_store_seed_depth(
+        coordinate, vec4(0.12, 0.75, 0.25, 1.0));
+}
+)glsl";
+}
+
+const char *depthPyramidReduceComputeShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 output_size = pelican_size_reduced_depth();
+    if (any(greaterThanEqual(coordinate, output_size))) {
+        return;
+    }
+    vec2 uv = (vec2(coordinate) + vec2(0.5)) /
+              vec2(output_size);
+    pelican_store_reduced_depth(
+        coordinate, pelican_sample_source_depth(uv));
+}
+)glsl";
+}
+
+const char *depthPyramidPresentFragmentShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = pelican_sample_pyramid(inUV);
+}
+)glsl";
+}
+
 const char *pipelineReloadFragmentShader() {
     return R"glsl(
 #version 450
@@ -607,6 +658,128 @@ nlohmann::json gpuArenaRenderingConfig() {
       "writes": ["gpu_arena_buffer"],
       "before": ["gpu_arena_present"],
       "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    }
+  ]
+}
+)json");
+}
+
+nlohmann::json depthPyramidRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [
+    {
+      "name": "depth_pyramid",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"],
+      "mip_levels": "full",
+      "layers": 2
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "depth_pyramid_main",
+      "passes": [
+        {
+          "name": "depth_initialize",
+          "type": "fullscreen",
+          "output": {
+            "color": "depth_pyramid",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/depth_pyramid_fullscreen",
+            "fragment": "shaders/depth_pyramid_initialize"
+          }
+        },
+        {
+          "name": "depth_present",
+          "type": "fullscreen",
+          "after": ["depth_reduce"],
+          "input": ["depth_pyramid"],
+          "resource_ports": {
+            "pyramid": {
+              "resource": "depth_pyramid",
+              "access": "sampled",
+              "sampling": {
+                "filter": "nearest",
+                "address": "clamp_to_edge"
+              },
+              "subresource": {
+                "mip": 1,
+                "layer": 1
+              }
+            }
+          },
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/depth_pyramid_fullscreen",
+            "fragment": "shaders/depth_pyramid_present"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "depth_seed",
+      "shader": "shaders/depth_pyramid_seed",
+      "writes": ["depth_pyramid"],
+      "after": ["depth_initialize"],
+      "before": ["depth_reduce"],
+      "resource_ports": {
+        "seed_depth": {
+          "resource": "depth_pyramid",
+          "access": "storage",
+          "subresource": {
+            "mip": 0,
+            "layer": 1
+          }
+        }
+      },
+      "dispatch": {
+        "groups": [4, 4, 1]
+      },
+      "schedule": "per_frame"
+    },
+    {
+      "name": "depth_reduce",
+      "shader": "shaders/depth_pyramid_reduce",
+      "reads": ["depth_pyramid"],
+      "writes": ["depth_pyramid"],
+      "after": ["depth_seed"],
+      "before": ["depth_present"],
+      "resource_ports": {
+        "source_depth": {
+          "resource": "depth_pyramid",
+          "access": "sampled",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 0,
+            "layer": 1
+          }
+        },
+        "reduced_depth": {
+          "resource": "depth_pyramid",
+          "access": "storage",
+          "subresource": {
+            "mip": 1,
+            "layer": 1
+          }
+        }
+      },
+      "dispatch": {
+        "groups": [2, 2, 1]
+      },
       "schedule": "per_frame"
     }
   ]
@@ -5144,6 +5317,374 @@ TEST_CASE(
         SKIP(std::string{
                  "Vulkan GPU arena transaction unavailable: "} +
              ex.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "typed image subresources execute a two-stage depth pyramid and "
+    "rebind after resize",
+    "[headless][render][compute][subresource][depth-pyramid][wp209b]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    bool runtime_ready = false;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "depth_pyramid_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "depth_pyramid_seed.comp",
+            depthPyramidSeedComputeShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "depth_pyramid_initialize.frag",
+            pipelineReloadFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "depth_pyramid_reduce.comp",
+            depthPyramidReduceComputeShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "depth_pyramid_present.frag",
+            depthPyramidPresentFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            depthPyramidRenderingConfig().dump(2));
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "depth_pyramid_main";
+        GET_MODULE(ProjectSource)
+            .setSourceByData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 3;
+        auto &engine_time =
+            GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &render_targets =
+            GET_MODULE(RenderTargetContainer);
+        auto &compute_tasks =
+            GET_MODULE(ComputeTaskContainer);
+        auto &fullscreen_passes =
+            GET_MODULE(FullscreenPassContainer);
+        const auto target =
+            render_targets.getRenderTargetIdByName(
+                "depth_pyramid");
+        REQUIRE(isConcreteRenderTarget(target));
+        REQUIRE(
+            render_targets.getMetadata(target)
+                .mip_levels == 6);
+        REQUIRE(
+            render_targets.getMetadata(target)
+                .array_layers == 2);
+
+        const auto mip_zero =
+            ImageSubresourceRange{
+                .base_mip_level = 0,
+                .base_array_layer = 1,
+            };
+        const auto mip_one =
+            ImageSubresourceRange{
+                .base_mip_level = 1,
+                .base_array_layer = 1,
+            };
+        const auto initial_mip_zero_view =
+            render_targets.getImageSubresourceView(
+                target, mip_zero, false);
+        const auto initial_mip_one_view =
+            render_targets.getImageSubresourceView(
+                target, mip_one, false);
+        REQUIRE(
+            initial_mip_zero_view !=
+            initial_mip_one_view);
+
+        const auto seed_task =
+            compute_tasks.getComputeTaskIdByName(
+                "depth_seed");
+        const auto reduce_task =
+            compute_tasks.getComputeTaskIdByName(
+                "depth_reduce");
+        REQUIRE(seed_task.value >= 0);
+        REQUIRE(reduce_task.value >= 0);
+        const auto initial_seed_views =
+            compute_tasks.boundImageViewsForTesting(
+                seed_task, 0);
+        const auto initial_reduce_views =
+            compute_tasks.boundImageViewsForTesting(
+                reduce_task, 0);
+        REQUIRE(
+            initial_seed_views ==
+            std::vector<vk::ImageView>{
+                initial_mip_zero_view});
+        REQUIRE(initial_reduce_views.size() == 2);
+        REQUIRE(
+            std::find(
+                initial_reduce_views.begin(),
+                initial_reduce_views.end(),
+                initial_mip_zero_view) !=
+            initial_reduce_views.end());
+        REQUIRE(
+            std::find(
+                initial_reduce_views.begin(),
+                initial_reduce_views.end(),
+                initial_mip_one_view) !=
+            initial_reduce_views.end());
+        const auto initial_seed_revision =
+            compute_tasks.bindingRevisionForTesting(
+                seed_task);
+        const auto initial_reduce_revision =
+            compute_tasks.bindingRevisionForTesting(
+                reduce_task);
+
+        const auto generation =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .snapshot();
+        REQUIRE(generation != nullptr);
+        const auto rendering_pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "depth_pyramid_main");
+        const auto *program =
+            generation->find(rendering_pass_id);
+        REQUIRE(program != nullptr);
+        const auto present =
+            std::find_if(
+                program->rendering_pass.passes.begin(),
+                program->rendering_pass.passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.name ==
+                           "depth_present";
+                });
+        REQUIRE(
+            present !=
+            program->rendering_pass.passes.end());
+        const auto initial_present_revision =
+            fullscreen_passes
+                .inputBindingRevisionForTesting(
+                    present->pass_id);
+        REQUIRE(
+            fullscreen_passes
+                .boundInputImageViewsForTesting(
+                    present->pass_id) ==
+            std::vector<vk::ImageView>{
+                initial_mip_one_view});
+        runtime_ready = true;
+
+        const auto render_and_require_green =
+            [&] {
+                engine_time.advance();
+                renderer.render();
+                GET_MODULE(VulkanManageCore)
+                    .waitIdle();
+                const auto pixels =
+                    GET_MODULE(RenderTarget)
+                        .readbackLastFrameRGBA8();
+                REQUIRE(
+                    pixels.size() ==
+                    32u * 32u * 4u);
+                const auto center =
+                    (16u * 32u + 16u) * 4u;
+                const auto red =
+                    static_cast<unsigned>(
+                        pixels[center]);
+                const auto green =
+                    static_cast<unsigned>(
+                        pixels[center + 1]);
+                const auto blue =
+                    static_cast<unsigned>(
+                        pixels[center + 2]);
+                REQUIRE(green > 170);
+                REQUIRE(green > red + 70);
+                REQUIRE(green > blue + 30);
+            };
+        render_and_require_green();
+
+        renderer
+            .recreateRenderTargetsAndRebindForTesting(
+                {64, 32});
+        compute_tasks.setDispatchGroups(
+            seed_task, 8, 4, 1);
+        compute_tasks.setDispatchGroups(
+            reduce_task, 4, 2, 1);
+        REQUIRE(
+            render_targets.getMetadata(target)
+                .mip_levels == 7);
+        REQUIRE(
+            render_targets.getMetadata(target)
+                .array_layers == 2);
+        const auto resized_mip_zero_view =
+            render_targets.getImageSubresourceView(
+                target, mip_zero, false);
+        const auto resized_mip_one_view =
+            render_targets.getImageSubresourceView(
+                target, mip_one, false);
+        REQUIRE(
+            resized_mip_zero_view !=
+            initial_mip_zero_view);
+        REQUIRE(
+            resized_mip_one_view !=
+            initial_mip_one_view);
+        REQUIRE(
+            compute_tasks.bindingRevisionForTesting(
+                seed_task) >
+            initial_seed_revision);
+        REQUIRE(
+            compute_tasks.bindingRevisionForTesting(
+                reduce_task) >
+            initial_reduce_revision);
+        REQUIRE(
+            compute_tasks.boundImageViewsForTesting(
+                seed_task, 0) ==
+            std::vector<vk::ImageView>{
+                resized_mip_zero_view});
+        const auto resized_reduce_views =
+            compute_tasks.boundImageViewsForTesting(
+                reduce_task, 0);
+        REQUIRE(resized_reduce_views.size() == 2);
+        REQUIRE(
+            std::find(
+                resized_reduce_views.begin(),
+                resized_reduce_views.end(),
+                resized_mip_zero_view) !=
+            resized_reduce_views.end());
+        REQUIRE(
+            std::find(
+                resized_reduce_views.begin(),
+                resized_reduce_views.end(),
+                resized_mip_one_view) !=
+            resized_reduce_views.end());
+        REQUIRE(
+            fullscreen_passes
+                .inputBindingRevisionForTesting(
+                    present->pass_id) >
+            initial_present_revision);
+        REQUIRE(
+            fullscreen_passes
+                .boundInputImageViewsForTesting(
+                    present->pass_id) ==
+            std::vector<vk::ImageView>{
+                resized_mip_one_view});
+        render_and_require_green();
+
+        const auto pre_reload_reduce_revision =
+            compute_tasks.bindingRevisionForTesting(
+                reduce_task);
+        const auto pre_reload_reduce_views =
+            compute_tasks.boundImageViewsForTesting(
+                reduce_task, 0);
+        const auto pre_reload_mip_zero_view =
+            render_targets.getImageSubresourceView(
+                target, mip_zero, false);
+        const auto pre_reload_mip_one_view =
+            render_targets.getImageSubresourceView(
+                target, mip_one, false);
+        REQUIRE(
+            std::find(
+                pre_reload_reduce_views.begin(),
+                pre_reload_reduce_views.end(),
+                pre_reload_mip_zero_view) !=
+            pre_reload_reduce_views.end());
+        REQUIRE(
+            std::find(
+                pre_reload_reduce_views.begin(),
+                pre_reload_reduce_views.end(),
+                pre_reload_mip_one_view) !=
+            pre_reload_reduce_views.end());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "depth_pyramid_reduce.comp",
+            std::string{
+                depthPyramidReduceComputeShader()} +
+                "\n// subresource reload probe\n");
+        REQUIRE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "shaders/depth_pyramid_reduce.comp"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        render_and_require_green();
+        REQUIRE(
+            compute_tasks.bindingRevisionForTesting(
+                reduce_task) >
+            pre_reload_reduce_revision);
+        const auto reloaded_reduce_views =
+            compute_tasks.boundImageViewsForTesting(
+                reduce_task, 0);
+        const auto reloaded_mip_zero_view =
+            render_targets.getImageSubresourceView(
+                target, mip_zero, false);
+        const auto reloaded_mip_one_view =
+            render_targets.getImageSubresourceView(
+                target, mip_one, false);
+        REQUIRE(reloaded_reduce_views.size() == 2);
+        REQUIRE(
+            std::find(
+                reloaded_reduce_views.begin(),
+                reloaded_reduce_views.end(),
+                reloaded_mip_zero_view) !=
+            reloaded_reduce_views.end());
+        REQUIRE(
+            std::find(
+                reloaded_reduce_views.begin(),
+                reloaded_reduce_views.end(),
+                reloaded_mip_one_view) !=
+            reloaded_reduce_views.end());
+        REQUIRE(
+            fullscreen_passes
+                .boundInputImageViewsForTesting(
+                    present->pass_id) ==
+            std::vector<vk::ImageView>{
+                reloaded_mip_one_view});
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        if (runtime_ready) {
+            throw;
+        }
+        SKIP(
+            std::string{
+                "Vulkan depth-pyramid subresource rendering "
+                "unavailable: "} +
+            error.what());
     }
 #endif
 }

@@ -195,7 +195,54 @@ ResourcePattern canonicalizePattern(
 struct CanonicalResourcePatternBinding {
     ResourcePattern pattern;
     std::optional<ResourceExtentPlan> extent;
+    ImageMipLevelCount mip_levels;
+    std::uint32_t array_layers = 1;
 };
+
+ImageMipLevelCount canonicalizeMipLevels(
+    const LogicalResourceDesc &resource,
+    ImageMipLevelCount mip_levels) {
+    if (resource.type.constructor !=
+        LogicalTypeConstructor::image) {
+        if (mip_levels != ImageMipLevelCount{}) {
+            throw std::runtime_error(
+                "resource mip-level binding applies to a non-image resource: " +
+                resource.name);
+        }
+        return {};
+    }
+    if (mip_levels.mode ==
+        ImageMipLevelMode::full_chain) {
+        mip_levels.count = 1;
+        return mip_levels;
+    }
+    if (mip_levels.count == 0) {
+        throw std::runtime_error(
+            "fixed resource mip-level count must be positive: " +
+            resource.name);
+    }
+    return mip_levels;
+}
+
+std::uint32_t canonicalizeArrayLayers(
+    const LogicalResourceDesc &resource,
+    std::uint32_t array_layers) {
+    if (resource.type.constructor !=
+        LogicalTypeConstructor::image) {
+        if (array_layers != 1) {
+            throw std::runtime_error(
+                "resource array-layer binding applies to a non-image resource: " +
+                resource.name);
+        }
+        return 1;
+    }
+    if (array_layers == 0) {
+        throw std::runtime_error(
+            "resource array-layer count must be positive: " +
+            resource.name);
+    }
+    return array_layers;
+}
 
 ResourceExtentPlan canonicalizeExtent(
     const LogicalResourceDesc &resource,
@@ -269,12 +316,22 @@ canonicalPatternBindings(
                       canonicalizeExtent(
                           *resource->second, binding.extent)}
                 : std::nullopt;
+        auto mip_levels =
+            canonicalizeMipLevels(
+                *resource->second,
+                binding.mip_levels);
+        const auto array_layers =
+            canonicalizeArrayLayers(
+                *resource->second,
+                binding.array_layers);
         if (!result
                  .emplace(
                      binding.resource,
                      CanonicalResourcePatternBinding{
                          .pattern = std::move(pattern),
                          .extent = std::move(extent),
+                         .mip_levels = mip_levels,
+                         .array_layers = array_layers,
                      })
                  .second) {
             throw std::runtime_error(
@@ -1063,6 +1120,10 @@ TargetLoweringGraph makeTargetLoweringGraph(
             .logical = std::move(resource),
             .pattern = pattern->second.pattern,
             .extent = pattern->second.extent,
+            .mip_levels =
+                pattern->second.mip_levels,
+            .array_layers =
+                pattern->second.array_layers,
         });
     }
 
@@ -1329,6 +1390,16 @@ nlohmann::ordered_json targetLoweringGraphToJson(
                        {"height", resource.extent->height},
                    }
                  : nlohmann::ordered_json(nullptr)},
+            {"mip_levels",
+             nlohmann::ordered_json{
+                 {"mode",
+                  imageMipLevelModeName(
+                      resource.mip_levels.mode)},
+                 {"count",
+                 resource.mip_levels.count},
+             }},
+            {"array_layers",
+             resource.array_layers},
             {"uses",
              nlohmann::ordered_json{
                  {"read", resource.uses.read},
@@ -1889,7 +1960,9 @@ void applyResourceViewLayouts(
             resource.view_layout =
                 VulkanResourceViewLayout::layered_2d_array;
             resource.array_layers =
-                view_plan.summary.view_count;
+                std::max(
+                    resource.array_layers,
+                    view_plan.summary.view_count);
             resource.required_physical_features.push_back(
                 std::string{vulkanMultiviewCapability});
             canonicalizeCapabilities(
@@ -2174,6 +2247,10 @@ CandidateDraft buildCandidateDraft(
                 .required_physical_features =
                     std::move(required_features),
                 .reason = reason,
+                .mip_levels =
+                    resource.mip_levels,
+                .array_layers =
+                    resource.array_layers,
                 .extent = resource.extent,
             });
         result.decisions.push_back(PlanningDecision{
@@ -2482,6 +2559,8 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     resources[right].resolve_required ||
                 resources[left].view_layout !=
                     resources[right].view_layout ||
+                resources[left].mip_levels !=
+                    resources[right].mip_levels ||
                 resources[left].array_layers !=
                     resources[right].array_layers ||
                 resources[left].extent !=
@@ -3389,6 +3468,14 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                      resource.view_layout)},
                 {"array_layers",
                  resource.array_layers},
+                {"mip_levels",
+                 nlohmann::ordered_json{
+                     {"mode",
+                      imageMipLevelModeName(
+                          resource.mip_levels.mode)},
+                     {"count",
+                      resource.mip_levels.count},
+                 }},
                 {"extent",
                  resource.extent
                      ? nlohmann::ordered_json{

@@ -66,6 +66,8 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
 | `history` | 任意 bool | `true` で 2 面持ち。前フレーム面は `<名前>@history` で読める(§6.8)✅WP88 |
 | `clear_color` | 任意 | history RT の初期化色 |
+| `mip_levels` | 任意 | 正整数または `"full"`。省略時1。`"full"`は実extentから最大mip chainを作り、resize時に再計算する |
+| `layers` | 任意 | 正整数。省略時1。2D array resourceの容量であり、XRの内部view数とはphysical loweringで最大値を取る |
 | `usage` | ✔ | `COLOR_ATTACHMENT` / `DEPTH_STENCIL_ATTACHMENT` / `SAMPLED` / `STORAGE` / `TRANSFER_DST` / `TRANSFER_SRC` |
 
 ### pass 共通フィールド
@@ -76,8 +78,8 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `type` | ✔ | — | `material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / 名前 / 名前配列)と `depth`(null / 名前)の**両キー必須**。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
-| `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address で注釈し、generated shader accessorを作る。依存edgeは増やさない |
-| `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、read footprintから依存とbarrierを導出する |
+| `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
+| `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、read footprintから依存とbarrierを導出する。image subresourceは現状未対応で明示reject |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
 | `clear_color` | 任意 | `[0,0,0,1]` | 4 要素固定 |
@@ -88,7 +90,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 ### type 別の要点
 
 - **`material`** — シーン内の全モデルを描く G-buffer パス。**color 出力はちょうど 5 枚**。カラーパイプライン移行後の契約は SDR 時 `B8G8R8A8_SRGB(albedo), R16G16B16A16F(normal), R8G8B8A8_UNORM(material), R16G16B16A16F(worldpos), B8G8R8A8_SRGB(emissive)`、depth は `D32_SFLOAT` 固定(HDR 時は albedo/emissive が float16 変種)。`shader` は書けません。
-- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む(最大 8 入力)。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
+- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む(最大 8 入力)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
 - **`ui`** — UI オーバーレイ([第7章](07_input_ui.md))。WP87 以降は `engine://features/ui.json` 経由の挿入が標準です。
@@ -234,6 +236,38 @@ portは既存の`reads` / `writes`を注釈するだけで、新しいedgeや順
 `sampling.filter`は`linear|nearest`、`sampling.address`は
 `repeat|mirrored_repeat|clamp_to_edge`です。raw storage buffer/image layoutは
 typed buffer未実装時や特殊descriptor用のescape hatchとして維持されます。
+`layers`がXRの論理view数より大きくても、`per_view` descriptorは先頭の論理view数ぶんだけを
+公開します。明示`subresource`で別の連続layer群を選ぶ場合、`layer_count`は論理view数と
+一致させます。
+
+2D RTの部分viewは`subresource`で指定します。
+
+```json
+"resource_ports": {
+  "source": {
+    "resource": "depth_pyramid",
+    "access": "sampled",
+    "subresource": {
+      "mip": 0,
+      "mip_count": 1,
+      "layer": 1,
+      "layer_count": 1
+    }
+  },
+  "destination": {
+    "resource": "depth_pyramid",
+    "access": "storage",
+    "subresource": {"mip": 1, "layer": 1}
+  }
+}
+```
+
+4 fieldの省略値は0/1/0/1です。同じimageを複数portへ割り当てる場合は、各portに
+明示rangeとaccessが必要です。storageを含むrange同士のoverlap、範囲外、bufferへの
+subresource、2D viewの複数layer、storage viewの複数mipは起動時エラーです。
+依存とlayout trackerは現在resource単位なので、rangeが離れていても実行順やbarrierを
+勝手に緩和せず、image全体を保守的に遷移します。
+
 `schedule` は `per_frame` のみ、`dispatch.groups_from` は予約。設定とshaderの最小例は
 [`adding_features.md`のレシピ4](../adding_features.md)と
 `test/run_compute_headless.cmake`です。

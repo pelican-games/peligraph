@@ -5,6 +5,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include <cstdint>
 #include <array>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -38,10 +39,13 @@ DECLARE_MODULE(FullscreenPassContainer) {
         std::vector<GlobalRenderTargetId> input_rt_ids;
         std::vector<bool> input_rt_history;
         std::vector<PassInputViewDimension> input_rt_views;
+        std::vector<std::optional<ImageSubresourceRange>>
+            input_rt_subresources;
         std::vector<FullscreenInputSampling> input_sampling;
         std::vector<bool> input_local_reads;
         std::vector<FrameGraphBufferId> input_buffer_ids;
         GraphicsPipelineViewContract view;
+        std::uint32_t logical_view_count = 1;
         uint64_t binding_revision = 0;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
@@ -86,7 +90,10 @@ DECLARE_MODULE(FullscreenPassContainer) {
                            const std::vector<FullscreenInputSampling> &input_sampling = {},
                            const std::vector<PassInputViewDimension> &input_views = {},
                            GraphicsPipelineViewContract view = {},
-                           const std::vector<bool> &input_local_reads = {});
+                           const std::vector<bool> &input_local_reads = {},
+                           const std::vector<std::optional<ImageSubresourceRange>>
+                               &input_subresources = {},
+                           std::uint32_t logical_view_count = 0);
     void setInputResourcesById(
         PassId pass_id,
         const std::vector<GlobalRenderTargetId> &input_rts,
@@ -97,7 +104,10 @@ DECLARE_MODULE(FullscreenPassContainer) {
         const std::vector<FullscreenInputSampling> &input_sampling = {},
         const std::vector<PassInputViewDimension> &input_views = {},
         GraphicsPipelineViewContract view = {},
-        const std::vector<bool> &input_local_reads = {});
+        const std::vector<bool> &input_local_reads = {},
+        const std::vector<std::optional<ImageSubresourceRange>>
+            &input_subresources = {},
+        std::uint32_t logical_view_count = 0);
     void rebindInputResources(
         PassId pass_id,
         const RenderTargetImageViewResolver &rt_views,

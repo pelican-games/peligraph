@@ -696,7 +696,18 @@ TEST_CASE(
             "data", "data", 1.0f, std::nullopt,
             test_format, usage,
             vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, stereo_view_count);
+            false, {}, 1, {},
+            stereo_view_count);
+    constexpr std::uint32_t authored_layer_capacity =
+        stereo_view_count + 2;
+    const auto capacity_target =
+        render_targets.registerRenderTarget(
+            "wp209b_layer_capacity_target",
+            test_extent, "data", "data", 1.0f,
+            std::nullopt, test_format, usage,
+            vma::MemoryUsage::eAutoPreferDevice,
+            false, {}, 1, {},
+            authored_layer_capacity);
     const auto local_source =
         render_targets.registerRenderTarget(
             "wp203b_tile_local_source",
@@ -706,7 +717,8 @@ TEST_CASE(
                     eColorAttachment |
                 vk::ImageUsageFlagBits::eSampled,
             vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, stereo_view_count,
+            false, {}, 1, {},
+            stereo_view_count,
             RenderTargetStorageMode::
                 tile_local_attachment);
     const auto local_output =
@@ -719,7 +731,8 @@ TEST_CASE(
                 vk::ImageUsageFlagBits::
                     eTransferSrc,
             vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, stereo_view_count);
+            false, {}, 1, {},
+            stereo_view_count);
     const auto local_source_metadata =
         render_targets.getMetadata(
             local_source);
@@ -845,16 +858,18 @@ TEST_CASE(
         GET_MODULE(FrameGraphResourceContainer);
     fullscreen_passes.setInputResourcesById(
         sequential_input_pass,
-        {managed_target}, {false}, {},
+        {capacity_target}, {false}, {},
         target_views, frame_graph_resources, {},
-        {PassInputViewDimension::sequential_2d});
+        {PassInputViewDimension::sequential_2d},
+        {}, {}, {}, stereo_view_count);
     fullscreen_passes.setInputResourcesById(
         multiview_input_pass,
-        {managed_target}, {false}, {},
+        {capacity_target}, {false}, {},
         target_views, frame_graph_resources, {},
         {PassInputViewDimension::layered_2d_array},
         GraphicsPipelineViewContract::multiview(
-            stereo_view_count));
+            stereo_view_count),
+        {}, {}, stereo_view_count);
     fullscreen_passes.setInputResourcesById(
         local_read_input_pass,
         {managed_target}, {false}, {},
@@ -871,19 +886,33 @@ TEST_CASE(
         fullscreen_passes
             .boundInputImageViewsForTesting(
                 sequential_input_pass, 0)
-            .front() == managed_left);
+            .front() ==
+        render_targets.getImageLayerView(
+            capacity_target, 0));
     REQUIRE(
         fullscreen_passes
             .boundInputImageViewsForTesting(
                 sequential_input_pass, 1)
-            .front() == managed_right);
+            .front() ==
+        render_targets.getImageLayerView(
+            capacity_target, 1));
     REQUIRE(
         fullscreen_passes
             .boundInputImageViewsForTesting(
                 multiview_input_pass)
             .front() ==
-        render_targets.getLayeredImageView(
-            managed_target));
+        render_targets.getImageSubresourceView(
+            capacity_target,
+            ImageSubresourceRange{
+                .layer_count =
+                    stereo_view_count,
+            },
+            true));
+    REQUIRE(
+        render_targets.getMetadata(
+            capacity_target)
+                .array_layers ==
+        authored_layer_capacity);
     REQUIRE(
         fullscreen_passes
             .inputLocalReadsForTesting(

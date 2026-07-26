@@ -385,20 +385,6 @@ std::vector<ResolvedComputeResourceBinding> resolveTaskResources(
     return result;
 }
 
-const ShaderResourcePortDefinition *resourcePort(
-    const ComputeTaskDefinition &definition,
-    std::string_view authored_resource) {
-    const auto found = std::find_if(
-        definition.resource_ports.begin(),
-        definition.resource_ports.end(),
-        [&](const ShaderResourcePortDefinition &port) {
-            return port.resource == authored_resource;
-        });
-    return found == definition.resource_ports.end()
-               ? nullptr
-               : &*found;
-}
-
 bool containsResource(
     std::span<const std::string> resources,
     std::string_view resource) {
@@ -414,23 +400,143 @@ makeComputeResourceInterface(
     const ComputeTaskRuntimeDependencies &dependencies) {
     std::vector<ShaderResourceInterfaceBinding> result;
     result.reserve(definition.resource_ports.size());
+    auto next_extra_binding =
+        static_cast<std::uint32_t>(
+            resources.size());
     for (std::size_t index = 0;
          index < resources.size(); ++index) {
         auto &resource = resources[index];
-        const auto *port =
-            resourcePort(
-                definition, resource.authored_name);
-        if (port == nullptr) continue;
-        if (isValidFrameGraphBufferId(resource.buffer)) {
-            if (port->kind !=
-                    ShaderResourcePortKind::buffer ||
-                !port->buffer_element) {
-                throw std::runtime_error(
-                    "Shader resource port '" + port->name +
-                    "' (resource '" + port->resource +
-                    "') resolves to a frame-graph buffer and requires "
-                    "kind 'buffer' plus an explicit element");
+        std::size_t port_ordinal = 0;
+        for (const auto &port :
+             definition.resource_ports) {
+            if (port.resource !=
+                resource.authored_name) {
+                continue;
             }
+            const auto binding =
+                port_ordinal++ == 0
+                    ? static_cast<std::uint32_t>(
+                          index)
+                    : next_extra_binding++;
+            if (isValidFrameGraphBufferId(
+                    resource.buffer)) {
+                if (port.kind !=
+                        ShaderResourcePortKind::buffer ||
+                    !port.buffer_element ||
+                    port.subresource) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') resolves to a frame-graph buffer and requires "
+                        "kind 'buffer', an explicit element, and no "
+                        "subresource");
+                }
+                const auto written =
+                    containsResource(
+                        definition.writes,
+                        resource.authored_name);
+                const auto readable =
+                    containsResource(
+                        definition.reads,
+                        resource.authored_name);
+                if (effectiveShaderResourcePortAccess(
+                        port, false, written) !=
+                    ShaderResourcePortAccess::storage) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') requires storage access for a buffer");
+                }
+                result.push_back(
+                    ShaderResourceInterfaceBinding{
+                        .port = port,
+                        .binding = binding,
+                        .descriptor =
+                            ShaderResourceDescriptorKind::
+                                storage_buffer,
+                        .image_view_dimension =
+                            ReflectedImageViewDimension::
+                                none,
+                        .buffer_element =
+                            *port.buffer_element,
+                        .readable = readable,
+                        .writable = written,
+                    });
+                continue;
+            }
+            if (!isConcreteRenderTarget(
+                    resource.render_target)) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') does not resolve to an image");
+            }
+            if (port.kind ==
+                ShaderResourcePortKind::buffer) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') declares a buffer but resolves to an image");
+            }
+            if (dependencies.resource_views ==
+                nullptr) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') requires a physical target-plan view");
+            }
+            const auto physical =
+                dependencies.resource_views->find(
+                    resource.name);
+            if (physical ==
+                dependencies.resource_views->end()) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') is absent from the physical target plan");
+            }
+            resource.physical_view =
+                physical->second;
+            if (physical->second ==
+                VulkanResourceViewLayout::shared_2d) {
+                resource.physical_view_count = 1;
+            } else {
+                if (dependencies.resource_view_counts ==
+                    nullptr) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') requires a physical target-plan view count");
+                }
+                const auto count =
+                    dependencies.resource_view_counts
+                        ->find(resource.name);
+                if (count ==
+                        dependencies
+                            .resource_view_counts->end() ||
+                    count->second == 0) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') is missing its physical target-plan view "
+                        "count");
+                }
+                resource.physical_view_count =
+                    count->second;
+            }
+
+            const auto metadata =
+                dependencies.render_target_container
+                    .getMetadata(
+                        resource.render_target);
             const auto written =
                 containsResource(
                     definition.writes,
@@ -439,126 +545,114 @@ makeComputeResourceInterface(
                 containsResource(
                     definition.reads,
                     resource.authored_name);
-            if (effectiveShaderResourcePortAccess(
-                    *port, false, written) !=
-                ShaderResourcePortAccess::storage) {
+            const auto access =
+                effectiveShaderResourcePortAccess(
+                    port, true, written);
+            const auto sampled =
+                access ==
+                ShaderResourcePortAccess::sampled;
+            const auto required_usage =
+                sampled
+                    ? vk::ImageUsageFlagBits::eSampled
+                    : vk::ImageUsageFlagBits::eStorage;
+            if (!(metadata.usage &
+                  required_usage)) {
                 throw std::runtime_error(
-                    "Shader resource port '" + port->name +
-                    "' (resource '" + port->resource +
-                    "') requires storage access for a buffer");
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') requires render-target usage " +
+                    std::string{
+                        sampled ? "sampled"
+                                : "storage"});
+            }
+            const auto dimension =
+                resolveShaderResourceImageViewDimension(
+                    port, physical->second,
+                    ShaderResourceConsumerView::
+                        compute_once);
+            if (dimension ==
+                    ReflectedImageViewDimension::
+                        two_d_array &&
+                metadata.array_layers <
+                    resource.physical_view_count) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') has too few layers for its logical view family");
+            }
+            if (port.subresource) {
+                if (!validImageSubresourceRange(
+                        *port.subresource,
+                        metadata.mip_levels,
+                        metadata.array_layers)) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') has an out-of-range image subresource");
+                }
+                if (!sampled &&
+                    port.subresource
+                            ->level_count != 1) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') storage view requires exactly one mip level");
+                }
+                if (dimension ==
+                        ReflectedImageViewDimension::
+                            two_d &&
+                    port.subresource
+                            ->layer_count != 1) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') 2D view requires exactly one array layer");
+                }
+                if (dimension ==
+                        ReflectedImageViewDimension::
+                            two_d_array &&
+                    port.subresource
+                            ->layer_count !=
+                        resource.physical_view_count) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') per_view subresource must select exactly "
+                        "the logical view count");
+                }
             }
             result.push_back(
                 ShaderResourceInterfaceBinding{
-                    .port = *port,
-                    .binding =
-                        static_cast<std::uint32_t>(
-                            index),
+                    .port = port,
+                    .binding = binding,
                     .descriptor =
-                        ShaderResourceDescriptorKind::
-                            storage_buffer,
-                    .image_view_dimension =
-                        ReflectedImageViewDimension::none,
-                    .buffer_element =
-                        *port->buffer_element,
-                    .readable = readable,
-                    .writable = written,
-                });
-            continue;
-        }
-        if (!isConcreteRenderTarget(
-                resource.render_target)) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') does not resolve to an image");
-        }
-        if (port->kind ==
-            ShaderResourcePortKind::buffer) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') declares a buffer but resolves to an image");
-        }
-        if (dependencies.resource_views == nullptr) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') requires a physical target-plan view");
-        }
-        const auto physical =
-            dependencies.resource_views->find(
-                resource.name);
-        if (physical ==
-            dependencies.resource_views->end()) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') is absent from the physical target plan");
-        }
-        resource.physical_view = physical->second;
-
-        const auto metadata =
-            dependencies.render_target_container
-                .getMetadata(resource.render_target);
-        const auto written =
-            containsResource(
-                definition.writes,
-                resource.authored_name);
-        const auto readable =
-            containsResource(
-                definition.reads,
-                resource.authored_name);
-        const auto access =
-            effectiveShaderResourcePortAccess(
-                *port, true, written);
-        const auto sampled =
-            access ==
-            ShaderResourcePortAccess::sampled;
-        const auto required_usage =
-            sampled
-                ? vk::ImageUsageFlagBits::eSampled
-                : vk::ImageUsageFlagBits::eStorage;
-        if (!(metadata.usage & required_usage)) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') requires render-target usage " +
-                std::string{
-                    sampled ? "sampled" : "storage"});
-        }
-        const auto dimension =
-            resolveShaderResourceImageViewDimension(
-                *port, physical->second,
-                ShaderResourceConsumerView::
-                    compute_once);
-        if (dimension ==
-                ReflectedImageViewDimension::
-                    two_d_array &&
-            metadata.array_layers < 2) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') requires a 2D-array image with at least two layers");
-        }
-        result.push_back(
-            ShaderResourceInterfaceBinding{
-                .port = *port,
-                .binding =
-                    static_cast<std::uint32_t>(
-                        index),
-                .descriptor =
-                    sampled
-                        ? ShaderResourceDescriptorKind::
-                              combined_image_sampler
-                        : ShaderResourceDescriptorKind::
-                              storage_image,
-                .image_view_dimension = dimension,
-                .storage_format =
-                    sampled ? vk::Format::eUndefined
+                        sampled
+                            ? ShaderResourceDescriptorKind::
+                                  combined_image_sampler
+                            : ShaderResourceDescriptorKind::
+                                  storage_image,
+                    .image_view_dimension = dimension,
+                    .storage_format =
+                        sampled
+                            ? vk::Format::eUndefined
                             : metadata.format,
-                .readable = readable,
-                .writable = written,
-            });
+                    .readable =
+                        sampled ? true : readable,
+                    .writable =
+                        sampled ? false : written,
+                });
+        }
+    }
+    if (result.size() !=
+        definition.resource_ports.size()) {
+        throw std::runtime_error(
+            "compute task resource port did not resolve to a declared resource");
     }
     return result;
 }
@@ -663,7 +757,7 @@ vk::UniqueSampler createSampler(
     create_info.addressModeU = address;
     create_info.addressModeV = address;
     create_info.addressModeW = address;
-    create_info.maxLod = 0.0f;
+    create_info.maxLod = VK_LOD_CLAMP_NONE;
     return device.createSamplerUnique(create_info);
 }
 
@@ -1221,23 +1315,64 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                 typed->image_view_dimension ==
                     ReflectedImageViewDimension::
                         two_d_array;
+            const auto shares_storage_layout =
+                sampled &&
+                std::any_of(
+                    resource_interface.begin(),
+                    resource_interface.end(),
+                    [&](const auto &candidate) {
+                        if (candidate.descriptor !=
+                            ShaderResourceDescriptorKind::
+                                storage_image) {
+                            return false;
+                        }
+                        const auto &other =
+                            resourceForInterface(
+                                candidate, resources);
+                        return other.render_target ==
+                                   rt_id &&
+                               other.history_read ==
+                                   resource.history_read;
+                    });
+            vk::ImageView image_view;
+            if (typed != nullptr &&
+                typed->port.subresource) {
+                image_view =
+                    render_target_container
+                        .getImageSubresourceViewForFrame(
+                            rt_id,
+                            *typed->port.subresource,
+                            layered,
+                            resource.history_read,
+                            frame_index);
+            } else if (layered) {
+                image_view =
+                    render_target_container
+                        .getImageSubresourceViewForFrame(
+                            rt_id,
+                            ImageSubresourceRange{
+                                .layer_count =
+                                    resource
+                                        .physical_view_count,
+                            },
+                            true,
+                            resource.history_read,
+                            frame_index);
+            } else {
+                image_view =
+                    render_target_container
+                        .getImageViewForFrame(
+                            rt_id,
+                            resource.history_read,
+                            frame_index);
+            }
             image_infos.push_back(vk::DescriptorImageInfo{
                 sampled
                     ? samplerFor(
                           typed->port.sampling)
                     : vk::Sampler{},
-                layered
-                    ? render_target_container
-                          .getLayeredImageViewForFrame(
-                              rt_id,
-                              resource.history_read,
-                              frame_index)
-                    : render_target_container
-                          .getImageViewForFrame(
-                              rt_id,
-                              resource.history_read,
-                              frame_index),
-                sampled
+                image_view,
+                sampled && !shares_storage_layout
                     ? vk::ImageLayout::
                           eShaderReadOnlyOptimal
                     : vk::ImageLayout::eGeneral,
@@ -1528,21 +1663,30 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
          found->second.resource_bindings) {
         const auto rt_id = resource.render_target;
         if (isConcreteRenderTarget(rt_id)) {
-            const auto typed = std::find_if(
+            const auto sampled = std::any_of(
                 found->second.resource_interface.begin(),
                 found->second.resource_interface.end(),
                 [&](const ShaderResourceInterfaceBinding
                         &candidate) {
                     return candidate.port.resource ==
-                           resource.authored_name;
+                               resource.authored_name &&
+                           candidate.descriptor ==
+                               ShaderResourceDescriptorKind::
+                                   combined_image_sampler;
+                });
+            const auto storage = std::any_of(
+                found->second.resource_interface.begin(),
+                found->second.resource_interface.end(),
+                [&](const ShaderResourceInterfaceBinding
+                        &candidate) {
+                    return candidate.port.resource ==
+                               resource.authored_name &&
+                           candidate.descriptor ==
+                               ShaderResourceDescriptorKind::
+                                   storage_image;
                 });
             const auto desired_layout =
-                typed !=
-                            found->second
-                                .resource_interface.end() &&
-                        typed->descriptor ==
-                            ShaderResourceDescriptorKind::
-                                combined_image_sampler
+                sampled && !storage
                     ? vk::ImageLayout::
                           eShaderReadOnlyOptimal
                     : vk::ImageLayout::eGeneral;

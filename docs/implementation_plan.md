@@ -105,14 +105,14 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 | WP207b | material/geometry typed frame-graph resource port | ✅ 完了（2026-07-26、archive） |
 | WP208 | lighting data contract v2 + clustered dogfood | ✅ 完了（2026-07-26、archive） |
 | WP209a | static texture dimension + material sampler authoring | ✅ 完了（2026-07-26、archive） |
-| WP209b | RT mip/layer/subresource view | 計画済み・WP204/WP209a依存 |
+| WP209b | RT mip/layer/subresource view | ✅ 完了（2026-07-26、archive） |
 | WP210 | indirect dispatch + GPU-written draw arguments | 計画済み・WP207b依存、実 workload gate |
 | WP211 | `dist-bake` + shaderc OFF feature delivery | 並行候補・配布/Quest前必須 |
 | WP212 | VRS/foveation backend contract | Quest SA2 device/計測待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP209a、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP209b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -405,31 +405,24 @@ WP207a/WP207bは2026-07-26に完了した。実装内容と受け入れ結果は
 [`design_reviews/2026-07-26_wp207b_material_resource_ports.md`](design_reviews/2026-07-26_wp207b_material_resource_ports.md)
 を参照する。
 
-WP208/WP209a は2026-07-26に完了した。実装内容と受け入れ結果は
+WP208/WP209a/WP209b は2026-07-26に完了した。実装内容と受け入れ結果は
 [`implementation_archive.md`](implementation_archive.md)および
-[`design_reviews/2026-07-26_wp209a_static_texture_sampler.md`](design_reviews/2026-07-26_wp209a_static_texture_sampler.md)
+[`design_reviews/2026-07-26_wp209a_static_texture_sampler.md`](design_reviews/2026-07-26_wp209a_static_texture_sampler.md)、
+[`design_reviews/2026-07-26_wp209b_rt_subresource.md`](design_reviews/2026-07-26_wp209b_rt_subresource.md)
 を参照する。
 
 #### WP209b: RT mip/layer/subresource view
 
-**目的**: runtime render targetへmip/layerとper-pass subresource viewを宣言し、
-logical image relationからVulkan viewをloweringする。
+2026-07-26 完了。2D runtime RT の fixed/full mip chain、array layer、
+fullscreen/compute の sampled/storage subresource viewをtyped化し、physical plan、
+Vulkan image/view、resize/hot reloadまで接続した。depth pyramidを第2 array layer上で
+実GPU dogfood済み。raster attachmentの任意mip/layer出力、material portのsubresource、
+runtime 3D/cube targetは後続の明示拡張であり、未対応設定は黙って無視せず拒否する。
 
-**実装範囲**:
-
-1. authored mip/layer count、view range、per-mip/layer render/sample/storage bindingをtyped化する。
-2. XR内部2D-array実装を直接schemaへ露出せず、同じlowering backendとして再利用する。
-3. alias/transient/tile-local/MSAA/history/format candidateとのcompatibilityをWP204 verifierへ追加する。
-4. depth pyramidを最初のdogfoodとし、runtime IBL/froxelは後続featureで試す。
-
-**受け入れ条件**:
-
-- multi-mip depth pyramidのplan/runtime/GPU result
-- out-of-range、overlap write、view type、sample/history/XR mismatch reject
-- physical fragment eject/link round-trip
-- resize、hot reload、alias generation ownershipを回帰
-
-依存: WP204、WP209a。見積: 大。
+完了内容・検証・意図的制限は
+[`implementation_archive.md`](implementation_archive.md)と
+[`design_reviews/2026-07-26_wp209b_rt_subresource.md`](design_reviews/2026-07-26_wp209b_rt_subresource.md)
+を参照する。
 
 #### WP210: indirect dispatch + GPU-written draw arguments
 

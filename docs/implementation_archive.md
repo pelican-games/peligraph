@@ -6599,4 +6599,42 @@ public surface contractへ追加する。
 
 ---
 
+### WP209b（済 2026-07-26）: RT mip/layer/subresource view
+
+**目的**: runtime render targetの2D imageへmip/layer contractとper-port
+subresource viewを追加し、logical resourceからVulkan image/viewまで同じtyped情報を運ぶ。
+
+**完了内容**:
+
+- RT宣言へ`mip_levels: <positive integer>|"full"`と`layers: <positive integer>`を追加した。
+  full chainは実extentから再計算され、resize後も実mip数をmetadataへ反映する。
+- shader resource portへ`subresource: {mip, mip_count, layer, layer_count}`を追加した。
+  fullscreenは各inputを1つのsampled portへ、computeは同じimageの互いに素な範囲を
+  sampled/storage portへ割り当てられる。
+- overlapするstorage範囲、暗黙の重複resource、範囲外、2D viewの複数layer、
+  storage viewの複数mip、bufferへのsubresourceを起動時に名前付きで拒否する。
+- mip/layer contractをResourcePattern、disposable lowering graph、Vulkan physical resource、
+  alias compatibility、format/device capability、physical fragment fingerprint/eject/linkへ運んだ。
+  XR view familyが必要な場合はauthored layer数を縮めず、必要view数との最大値を採る。
+- RenderTargetContainerが全mip/layerを持つimageと遅延生成subresource viewを所有する。
+  MSAA時はsingle-mip attachmentとmulti-mip resolve imageを分離し、history clearは全範囲、
+  recreateはview cacheとdescriptor generationを更新する。
+- project-owned headless Vulkan scenarioで、2-layer/full-chain RTのlayer 1について
+  computeがmip 0を書き、別portでmip 0をsampleしてmip 1へ縮小し、fullscreenがmip 1を
+  表示する緑画素を確認した。32x32（6 mip）から64x32（7 mip）へのresizeとshader
+  hot reload後も新しいexact viewへ再bindする。
+
+**意図的制限**:
+
+- material/geometry resource portのsubresource viewは未実装で、設定を明示rejectする。
+- 通常raster passのattachment出力はbase mip/layer（または既存XR view schedulerのlayer）。
+  任意mip/layerをattachmentとして選ぶauthoringは後続。
+- runtime targetは2D imageまで。3D/cube target、sparse/residency、per-subresource layout
+  trackingは後続。現在のlayout transitionはimage全体を保守的に遷移する。
+
+設計・完了証跡:
+[`design_reviews/2026-07-26_wp209b_rt_subresource.md`](design_reviews/2026-07-26_wp209b_rt_subresource.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

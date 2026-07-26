@@ -1,5 +1,6 @@
 #pragma once
 
+#include "imagesubresource.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 #include "vulkanviewplanning.hpp"
@@ -73,6 +74,8 @@ struct ResourcePatternBinding {
     std::string resource;
     ResourcePattern pattern;
     std::optional<ResourceExtentPlan> extent;
+    ImageMipLevelCount mip_levels;
+    std::uint32_t array_layers = 1;
 };
 
 enum class TargetIrDialect : std::uint8_t {
@@ -126,6 +129,8 @@ struct TargetLoweringResource {
     LogicalResourceDesc logical;
     ResourcePattern pattern;
     std::optional<ResourceExtentPlan> extent;
+    ImageMipLevelCount mip_levels;
+    std::uint32_t array_layers = 1;
     TargetIrDialect dialect = TargetIrDialect::logical;
     TargetResourceUseSummary uses;
     TargetResourceLifetime lifetime;
@@ -192,6 +197,7 @@ struct VulkanPhysicalResourcePlan {
     bool resolve_required = false;
     VulkanResourceViewLayout view_layout =
         VulkanResourceViewLayout::shared_2d;
+    ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
     std::optional<ResourceExtentPlan> extent;
 
@@ -393,6 +399,7 @@ struct VulkanPhysicalResourceFormatCapability {
     std::string format;
     bool image_usage_supported = false;
     std::vector<std::uint32_t> supported_samples;
+    std::uint32_t max_mip_levels = 1;
     std::uint32_t max_array_layers = 1;
     bool external_depth_export_supported = false;
 

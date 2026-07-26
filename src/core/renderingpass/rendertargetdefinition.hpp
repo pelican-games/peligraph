@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rendertargetstoragemode.hpp"
+#include "../../project/imagesubresource.hpp"
 
 #include <array>
 #include <cstdint>
@@ -27,6 +28,7 @@ struct RenderTargetDefinition {
     vk::ClearColorValue history_clear_color =
         vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}};
     std::uint32_t samples = 1;
+    ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
     RenderTargetStorageMode storage_mode =
         RenderTargetStorageMode::materialized;

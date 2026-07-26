@@ -227,16 +227,33 @@ void appendShaderResourcePortAccesses(
         const auto access =
             effectiveShaderResourcePortAccess(
                 port, true, written);
-        node.resource_accesses.push_back(
-            FrameGraphResourceAccessDefinition{
-                .resource = port.resource,
-                .intent =
-                    access ==
-                            ShaderResourcePortAccess::
-                                sampled
-                        ? LogicalAccessIntent::sampled
-                        : LogicalAccessIntent::storage,
+        const auto intent =
+            access ==
+                    ShaderResourcePortAccess::sampled
+                ? LogicalAccessIntent::sampled
+                : LogicalAccessIntent::storage;
+        const auto existing = std::find_if(
+            node.resource_accesses.begin(),
+            node.resource_accesses.end(),
+            [&](const auto &candidate) {
+                return candidate.resource ==
+                       port.resource;
             });
+        if (existing ==
+            node.resource_accesses.end()) {
+            node.resource_accesses.push_back(
+                FrameGraphResourceAccessDefinition{
+                    .resource = port.resource,
+                    .intent = intent,
+                });
+        } else if (existing->intent != intent) {
+            // One logical resource use can expose disjoint sampled and
+            // storage subresources. The shadow graph keeps a conservative
+            // base-resource intent while descriptor lowering retains each
+            // precise range.
+            existing->intent =
+                LogicalAccessIntent::storage;
+        }
     }
 }
 

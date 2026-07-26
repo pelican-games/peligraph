@@ -21,6 +21,11 @@ struct RetiredRenderTargetResources {
         image_layer_views;
     std::array<vk::UniqueImageView, 2>
         layered_image_views;
+    std::array<
+        std::map<ImageSubresourceViewKey,
+                 vk::UniqueImageView>,
+        2>
+        subresource_image_views;
     std::array<ImageWrapper, 2> attachment_images;
     std::array<std::vector<vk::UniqueImageView>, 2>
         attachment_image_layer_views;
@@ -77,14 +82,17 @@ vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D bas
 static vk::UniqueImageView createImageView(
     vk::Device device, const ImageWrapper &image,
     vk::ImageViewType view_type,
-    std::uint32_t base_array_layer,
-    std::uint32_t layer_count) {
-    if (layer_count == 0 ||
-        base_array_layer >= image.array_layers ||
-        layer_count >
-            image.array_layers - base_array_layer) {
+    ImageSubresourceRange subresource) {
+    if (!validImageSubresourceRange(
+            subresource, image.mip_levels,
+            image.array_layers)) {
         throw std::runtime_error(
-            "render target image view has an invalid array-layer range");
+            "render target image view has an invalid subresource range");
+    }
+    if (view_type == vk::ImageViewType::e2D &&
+        subresource.layer_count != 1) {
+        throw std::runtime_error(
+            "2D render target image view requires one array layer");
     }
     vk::ImageViewCreateInfo ci;
     ci.image = image.image.get();
@@ -107,11 +115,14 @@ static vk::UniqueImageView createImageView(
         ci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
     }
 
-    ci.subresourceRange.baseMipLevel = 0;
-    ci.subresourceRange.levelCount = 1;
+    ci.subresourceRange.baseMipLevel =
+        subresource.base_mip_level;
+    ci.subresourceRange.levelCount =
+        subresource.level_count;
     ci.subresourceRange.baseArrayLayer =
-        base_array_layer;
-    ci.subresourceRange.layerCount = layer_count;
+        subresource.base_array_layer;
+    ci.subresourceRange.layerCount =
+        subresource.layer_count;
     return device.createImageViewUnique(ci);
 }
 
@@ -124,7 +135,9 @@ createSequentialImageViews(
          layer < image.array_layers; ++layer) {
         result.push_back(createImageView(
             device, image, vk::ImageViewType::e2D,
-            layer, 1));
+            ImageSubresourceRange{
+                .base_array_layer = layer,
+            }));
     }
     return result;
 }
@@ -133,8 +146,10 @@ static vk::UniqueImageView createLayeredImageView(
     vk::Device device, const ImageWrapper &image) {
     if (image.array_layers == 1) return {};
     return createImageView(
-        device, image, vk::ImageViewType::e2DArray, 0,
-        image.array_layers);
+        device, image, vk::ImageViewType::e2DArray,
+        ImageSubresourceRange{
+            .layer_count = image.array_layers,
+        });
 }
 
 void nameRenderTargetSurfaces(const std::string &name,
@@ -198,6 +213,7 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      std::optional<vk::Extent2D> fixed_extent,
                                      vk::Format format, vk::ImageUsageFlags usage,
                                      vma::MemoryUsage memory_usage,
+                                     ImageMipLevelCount mip_levels = {},
                                      vk::SampleCountFlagBits samples =
                                          vk::SampleCountFlagBits::e1,
                                      std::uint32_t array_layers = 1,
@@ -217,10 +233,18 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
         required |= vk::FormatFeatureFlagBits::eSampledImage |
                     vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
     }
+    if (usage & vk::ImageUsageFlagBits::eStorage) {
+        required |=
+            vk::FormatFeatureFlagBits::eStorageImage;
+    }
     if ((features & required) != required) {
         throw std::runtime_error("Render target format lacks required color capability: " + name);
     }
     const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
+    const auto resolved_mip_levels =
+        resolveImageMipLevels(
+            mip_levels, extent.width,
+            extent.height);
     const auto preferred_memory =
         storage_mode ==
                     RenderTargetStorageMode::
@@ -245,7 +269,8 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
     return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
                              memory_usage, allocation_flags,
                              VulkanProcessType::graphics,
-                             {}, 1, samples, array_layers,
+                             {}, resolved_mip_levels, samples,
+                             array_layers,
                              preferred_memory, image_flags);
 }
 
@@ -264,7 +289,8 @@ void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
                     cmd_buf, image, vk::ImageLayout::eUndefined,
                     vk::ImageLayout::eTransferDstOptimal, to_clear);
                 const vk::ImageSubresourceRange range{
-                    vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                    vk::ImageAspectFlagBits::eColor, 0,
+                    image.mip_levels, 0,
                     image.array_layers};
                 cmd_buf.clearColorImage(image.image.get(), vk::ImageLayout::eTransferDstOptimal,
                                         clear_color, range);
@@ -312,11 +338,20 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                                                  bool history,
                                                                  vk::ClearColorValue history_clear_color,
                                                                  std::uint32_t samples,
+                                                                 ImageMipLevelCount mip_levels,
                                                                  std::uint32_t array_layers,
                                                                  RenderTargetStorageMode storage_mode,
                                                                  std::optional<std::string> alias_group,
                                                                  std::optional<std::uint64_t>
                                                                      alias_group_token) {
+    if (mip_levels.mode ==
+        ImageMipLevelMode::full_chain) {
+        mip_levels.count = 1;
+    } else if (mip_levels.count == 0) {
+        throw std::runtime_error(
+            "Render target mip_levels must be greater than zero: " +
+            name);
+    }
     if (alias_group.has_value() !=
         alias_group_token.has_value()) {
         throw std::runtime_error(
@@ -337,6 +372,13 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         vk::ImageUsageFlagBits::eColorAttachment |
         vk::ImageUsageFlagBits::
             eDepthStencilAttachment;
+    if (mip_levels != ImageMipLevelCount{} &&
+        storage_mode !=
+            RenderTargetStorageMode::materialized) {
+        throw std::runtime_error(
+            "multi-mip render target must be materialized: " +
+            name);
+    }
     if (storage_mode ==
         RenderTargetStorageMode::
             transient_attachment) {
@@ -428,6 +470,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         if (existing.fixed_extent != fixed_extent) note("fixed_extent");
         if (existing.history != history) note("history");
         if (existing.samples != samples) note("samples");
+        if (existing.mip_levels != mip_levels)
+            note("mip_levels");
         if (existing.storage_mode != storage_mode)
             note("storage_mode");
         if (existing.alias_group != alias_group)
@@ -473,6 +517,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                 alias_owner->usage != usage ||
                 alias_owner->memory_usage != memUsage ||
                 alias_owner->samples != samples ||
+                alias_owner->mip_levels !=
+                    mip_levels ||
                 alias_owner->array_layers != array_layers ||
                 alias_owner->storage_mode != storage_mode ||
                 owner_extent != requested_extent) {
@@ -505,6 +551,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                 : createRenderTargetImage(
                       name, base_extent, extent_scale,
                       fixed_extent, format, usage, memUsage,
+                      mip_levels,
                       vk::SampleCountFlagBits::e1,
                       array_layers, storage_mode,
                       alias_group_token.has_value());
@@ -518,7 +565,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                          vk::ImageUsageFlagBits::eDepthStencilAttachment);
             attachment_images[i] = createRenderTargetImage(
                 name, base_extent, extent_scale, fixed_extent, format,
-                attachment_usage, memUsage, sample_count,
+                attachment_usage, memUsage,
+                ImageMipLevelCount{}, sample_count,
                 array_layers, storage_mode);
             attachment_image_layer_views[i] =
                 createSequentialImageViews(
@@ -552,6 +600,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .history = history,
         .history_clear_color = history_clear_color,
         .samples = samples,
+        .mip_levels = mip_levels,
         .array_layers = array_layers,
         .storage_mode = storage_mode,
         .alias_group = alias_group,
@@ -640,6 +689,7 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                           rt.extent_scale,
                           rt.fixed_extent, rt.format,
                           rt.usage, rt.memory_usage,
+                          rt.mip_levels,
                           vk::SampleCountFlagBits::e1,
                           rt.array_layers,
                           rt.storage_mode,
@@ -659,6 +709,7 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                 next_attachment_images[i] = createRenderTargetImage(
                     rt.name, base_extent, rt.extent_scale, rt.fixed_extent,
                     rt.format, attachment_usage, rt.memory_usage,
+                    ImageMipLevelCount{},
                     toSampleCount(rt.samples), rt.array_layers,
                     rt.storage_mode);
                 next_attachment_layer_views[i] =
@@ -688,6 +739,9 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                     std::move(rt.image_layer_views),
                 .layered_image_views =
                     std::move(rt.layered_image_views),
+                .subresource_image_views =
+                    std::move(
+                        rt.subresource_image_views),
                 .attachment_images = std::move(rt.attachment_images),
                 .attachment_image_layer_views =
                     std::move(
@@ -702,6 +756,7 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
             std::move(next_layer_views);
         rt.layered_image_views =
             std::move(next_layered_views);
+        rt.subresource_image_views = {};
         rt.attachment_images = std::move(next_attachment_images);
         rt.attachment_image_layer_views =
             std::move(next_attachment_layer_views);
@@ -740,15 +795,20 @@ GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::s
 RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id) const {
     const auto &rt = render_targets.get(id);
     return RenderTargetMetadata{
-        rt.name,
-        rt.usage,
-        rt.format,
-        vk::Extent2D{rt.images[0].extent.width, rt.images[0].extent.height},
-        rt.history,
-        rt.samples,
-        rt.array_layers,
-        rt.storage_mode,
-        rt.alias_group,
+        .name = rt.name,
+        .usage = rt.usage,
+        .format = rt.format,
+        .extent =
+            vk::Extent2D{
+                rt.images[0].extent.width,
+                rt.images[0].extent.height},
+        .history = rt.history,
+        .samples = rt.samples,
+        .mip_levels =
+            rt.images[0].mip_levels,
+        .array_layers = rt.array_layers,
+        .storage_mode = rt.storage_mode,
+        .alias_group = rt.alias_group,
     };
 }
 
@@ -779,6 +839,74 @@ vk::ImageView RenderTargetContainer::getImageViewForFrame(GlobalRenderTargetId i
                                                           uint32_t frame_index) const {
     return getImageLayerViewForFrame(
         id, 0, history_read, frame_index);
+}
+
+vk::ImageView
+RenderTargetContainer::getImageSubresourceView(
+    GlobalRenderTargetId id,
+    ImageSubresourceRange subresource,
+    bool array_view, bool history_read) const {
+    return getImageSubresourceViewForFrame(
+        id, subresource, array_view,
+        history_read, history_frame_index);
+}
+
+vk::ImageView
+RenderTargetContainer::getImageSubresourceViewForFrame(
+    GlobalRenderTargetId id,
+    ImageSubresourceRange subresource,
+    bool array_view, bool history_read,
+    std::uint32_t frame_index) const {
+    const auto &rt = render_targets.get(id);
+    const auto surface =
+        rt.history
+            ? ((frame_index & 1u) ^
+               (history_read ? 1u : 0u))
+            : 0u;
+    const ImageSubresourceViewKey key{
+        .range = subresource,
+        .array_view = array_view,
+    };
+    auto &views =
+        rt.subresource_image_views[surface];
+    if (const auto found = views.find(key);
+        found != views.end()) {
+        return found->second.get();
+    }
+    auto view = createImageView(
+        device, rt.images[surface],
+        array_view
+            ? vk::ImageViewType::e2DArray
+            : vk::ImageViewType::e2D,
+        subresource);
+    GET_MODULE(VulkanManageCore)
+        .getDebugUtils()
+        .nameImageView(
+            view.get(),
+            ("rt/" + rt.name + "/surface/" +
+             std::to_string(surface) +
+             "/mip/" +
+             std::to_string(
+                 subresource.base_mip_level) +
+             "-" +
+             std::to_string(
+                 subresource.level_count) +
+             "/layer/" +
+             std::to_string(
+                 subresource.base_array_layer) +
+             "-" +
+             std::to_string(
+                 subresource.layer_count) +
+             (array_view ? "/array_view"
+                         : "/view"))
+                .c_str());
+    const auto [inserted, success] =
+        views.emplace(key, std::move(view));
+    if (!success) {
+        throw std::runtime_error(
+            "render target subresource view cache changed during creation");
+    }
+    return inserted->second.get();
 }
 
 vk::ImageView RenderTargetContainer::getImageLayerView(

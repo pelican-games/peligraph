@@ -16,6 +16,19 @@ vk::ImageView RenderTargetImageViewResolver::getImageViewForFrame(
 }
 
 vk::ImageView
+RenderTargetImageViewResolver::
+    getImageSubresourceViewForFrame(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        bool array_view, bool history_read,
+        std::uint32_t frame_index) const {
+    return rt_container
+        .getImageSubresourceViewForFrame(
+            id, subresource, array_view,
+            history_read, frame_index);
+}
+
+vk::ImageView
 RenderTargetImageViewResolver::getImageLayerViewForFrame(
     GlobalRenderTargetId id, std::uint32_t array_layer,
     bool history_read, std::uint32_t frame_index) const {

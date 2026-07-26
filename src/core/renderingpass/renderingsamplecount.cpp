@@ -186,6 +186,8 @@ queryImageFormatCapability(
         result.image_usage_supported = true;
         result.supported_samples =
             sampleCounts(properties.sampleCounts);
+        result.max_mip_levels =
+            properties.maxMipLevels;
         result.max_array_layers =
             properties.maxArrayLayers;
         if (isDepthTarget(definition) &&
@@ -541,6 +543,8 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                     types, resource.type, swapchain_format,
                     {}, true, false, false, false),
                 ResourceExtentPlan{},
+                ImageMipLevelCount{},
+                1,
             });
             continue;
         }
@@ -554,12 +558,16 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
             transient_formats.contains({
                 resource.name,
                 vk::to_string(
-                    target->second->format)});
+                    target->second->format)}) &&
+            target->second->mip_levels ==
+                ImageMipLevelCount{};
         const auto tile_local =
             tile_local_formats.contains({
                 resource.name,
                 vk::to_string(
-                    target->second->format)});
+                    target->second->format)}) &&
+            target->second->mip_levels ==
+                ImageMipLevelCount{};
         result.push_back({
             resource.name,
             runtimeImagePattern(
@@ -573,6 +581,8 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                     isRuntimeAliasCandidate(
                         *target->second)),
             runtimeExtentPlan(*target->second),
+            target->second->mip_levels,
+            target->second->array_layers,
         });
     }
     return result;
@@ -730,6 +740,9 @@ RenderingImageFormatCapability queryFormatCapability(
                 ? facts.query_attachment_samples(
                       candidate)
                 : std::vector<std::uint32_t>{1},
+        .max_mip_levels =
+            std::numeric_limits<
+                std::uint32_t>::max(),
         .max_array_layers =
             std::numeric_limits<
                 std::uint32_t>::max(),
@@ -961,6 +974,8 @@ physicalFormatCapabilities(
                 .supported_samples =
                     capability
                         .supported_samples,
+                .max_mip_levels =
+                    capability.max_mip_levels,
                 .max_array_layers =
                     capability.max_array_layers,
                 .external_depth_export_supported =
@@ -1201,6 +1216,8 @@ void validateRuntimePhysicalPlan(
             if (resource.format != contract->format ||
                 resource.view_layout !=
                     contract->view_layout ||
+                resource.mip_levels !=
+                    contract->mip_levels ||
                 resource.array_layers !=
                     contract->array_layers ||
                 resource.extent != contract->extent) {
@@ -1266,10 +1283,12 @@ void validateRuntimePhysicalPlan(
             }
             if (resource.stored ||
                 resource.resolve_required ||
-                resource.rasterization_samples != 1) {
+                resource.rasterization_samples != 1 ||
+                resource.mip_levels !=
+                    ImageMipLevelCount{}) {
                 throw std::runtime_error(
                     "runtime scope-local attachment must be "
-                    "single-sample, unresolved, and unstored: " +
+                    "single-mip, single-sample, unresolved, and unstored: " +
                     resource.logical_resource);
             }
             const auto first_attachment =
@@ -1369,6 +1388,30 @@ void validateRuntimePhysicalPlan(
                 " array layers for '" +
                 resource.logical_resource + "': " +
                 resource.format);
+        }
+        if (capability.max_mip_levels == 0 ||
+            (resource.mip_levels.mode ==
+                 ImageMipLevelMode::fixed &&
+             resource.mip_levels.count >
+                 capability.max_mip_levels)) {
+            throw std::runtime_error(
+                "runtime physical format does not support the "
+                "authored mip-level contract for '" +
+                resource.logical_resource + "': " +
+                resource.format);
+        }
+        if (resource.mip_levels !=
+            target->second->mip_levels) {
+            throw std::runtime_error(
+                "runtime physical mip-level contract mismatch for '" +
+                resource.logical_resource + "'");
+        }
+        if (resource.array_layers <
+            target->second->array_layers) {
+            throw std::runtime_error(
+                "runtime physical array-layer contract is smaller than "
+                "the authored contract for '" +
+                resource.logical_resource + "'");
         }
         if (plan.external_depth_export &&
             plan.external_depth_export
@@ -1950,7 +1993,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
             .resource = target.name,
             .array_layers =
                 found == merged_array_layers.end()
-                    ? 1u
+                    ? target.array_layers
                     : found->second,
         });
     }
@@ -2351,6 +2394,8 @@ void applyRenderingTargetPlan(
                 target->fixed_extent !=
                     contract.fixed_extent ||
                 target->samples != contract.samples ||
+                target->mip_levels !=
+                    contract.mip_levels ||
                 target->array_layers !=
                     contract.array_layers ||
                 target->storage_mode !=

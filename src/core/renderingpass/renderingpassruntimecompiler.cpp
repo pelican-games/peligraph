@@ -159,6 +159,20 @@ GraphicsPipelineViewContract passViewContract(
     return view;
 }
 
+std::uint32_t passLogicalViewCount(
+    const VulkanTargetPlan *plan,
+    const PassDefinition &pass) {
+    if (plan == nullptr) return 1;
+    const auto &scope =
+        requirePassScope(*plan, pass.name);
+    if (scope.view_count == 0) {
+        throw std::runtime_error(
+            "physical scope has a zero logical view count: " +
+            pass.name);
+    }
+    return scope.view_count;
+}
+
 PassInputViewDimension inputViewDimension(
     const VulkanTargetPlan *plan,
     std::string_view resource) {
@@ -1112,6 +1126,8 @@ ShaderBundleId registerShaderReference(ShaderLibrary &shader_library, const Path
 struct CompiledFullscreenResourceInterface {
     std::vector<ShaderResourceInterfaceBinding> bindings;
     std::vector<FullscreenInputSampling> sampling;
+    std::vector<std::optional<ImageSubresourceRange>>
+        subresources;
 };
 
 VulkanResourceViewLayout physicalViewLayout(
@@ -1153,6 +1169,7 @@ compileFullscreenResourceInterface(
     const PassDefinition &pass,
     const FullscreenRuntimeDependencies &dependencies,
     GraphicsPipelineViewContract view,
+    std::uint32_t logical_view_count,
     const CompiledPassRenderingContract &rendering) {
     CompiledFullscreenResourceInterface result;
     const auto &ports =
@@ -1165,6 +1182,8 @@ compileFullscreenResourceInterface(
 
     result.bindings.reserve(ports.size());
     result.sampling.resize(
+        pass.input_targets.size());
+    result.subresources.resize(
         pass.input_targets.size());
     const auto local_reads =
         localReadInputMask(pass, rendering);
@@ -1228,11 +1247,48 @@ compileFullscreenResourceInterface(
         if (dimension ==
                 ReflectedImageViewDimension::
                     two_d_array &&
-            metadata.array_layers < view.view_count) {
+            metadata.array_layers <
+                logical_view_count) {
             throw std::runtime_error(
                 "Shader resource port '" + port->name +
                 "' (resource '" + port->resource +
                 "') has too few physical array layers");
+        }
+        if (port->subresource) {
+            if (!validImageSubresourceRange(
+                    *port->subresource,
+                    metadata.mip_levels,
+                    metadata.array_layers)) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port->name + "' (resource '" +
+                    port->resource +
+                    "') has an out-of-range image subresource");
+            }
+            if (dimension ==
+                    ReflectedImageViewDimension::
+                        two_d &&
+                port->view ==
+                    ShaderResourcePortView::shared_2d &&
+                port->subresource->layer_count !=
+                    1) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port->name + "' (resource '" +
+                    port->resource +
+                    "') 2D view requires exactly one array layer");
+            }
+            if (port->view ==
+                    ShaderResourcePortView::per_view &&
+                port->subresource->layer_count !=
+                    logical_view_count) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port->name + "' (resource '" +
+                    port->resource +
+                    "') per_view subresource must select exactly the "
+                    "logical view count");
+            }
         }
         result.bindings.push_back(
             ShaderResourceInterfaceBinding{
@@ -1249,6 +1305,8 @@ compileFullscreenResourceInterface(
             });
         result.sampling[input] =
             fullscreenSampling(port->sampling);
+        result.subresources[input] =
+            port->subresource;
     }
     for (std::size_t input = 0;
          input < pass.input_buffers.size(); ++input) {
@@ -1416,11 +1474,13 @@ PassId compileFullscreenPass(
     const PassDefinition &pass_def,
     FullscreenRuntimeDependencies dependencies,
     GraphicsPipelineViewContract view,
+    std::uint32_t logical_view_count,
     const CompiledPassRenderingContract
         &rendering) {
     const auto resource_interface =
         compileFullscreenResourceInterface(
             pass_def, dependencies, view,
+            logical_view_count,
             rendering);
     const auto pass_id =
         registerFullscreenPipeline(
@@ -1437,7 +1497,9 @@ PassId compileFullscreenPass(
             pass_def.input_target_views,
             view,
             localReadInputMask(
-                pass_def, rendering));
+                pass_def, rendering),
+            resource_interface.subresources,
+            logical_view_count);
     }
 
     return pass_id;
@@ -1532,6 +1594,9 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
         const auto view =
             passViewContract(
                 dependencies.target_plan, pass_def);
+        const auto logical_view_count =
+            passLogicalViewCount(
+                dependencies.target_plan, pass_def);
         validatePassInputViewContract(
             pass_def, view);
         const auto rendering =
@@ -1546,7 +1611,8 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
                     pass_def,
                     compileFullscreenPass(
                         pass_def, fullscreen_dependencies,
-                        view, rendering),
+                        view, logical_view_count,
+                        rendering),
                     view,
                     rendering});
         } else if (pass_def.isDebugDraw()) {

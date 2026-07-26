@@ -1,7 +1,7 @@
 #include "shaderresourceport.hpp"
 
 #include <algorithm>
-#include <set>
+#include <limits>
 #include <stdexcept>
 
 namespace Pelican {
@@ -159,6 +159,115 @@ ShaderResourcePortSampling parseSampling(
             sampling,
             std::string{context} + ".sampling"),
     };
+}
+
+std::uint32_t parseSubresourceUint(
+    const nlohmann::json &object,
+    std::string_view field,
+    std::uint32_t fallback,
+    std::string_view context) {
+    if (!object.contains(field)) {
+        return fallback;
+    }
+    const auto &encoded =
+        object.at(field);
+    if ((!encoded.is_number_unsigned() &&
+         !encoded.is_number_integer()) ||
+        (!encoded.is_number_unsigned() &&
+         encoded.get<std::int64_t>() < 0)) {
+        throw std::runtime_error(
+            std::string{context} + "." +
+            std::string{field} +
+            " must be a non-negative integer");
+    }
+    const auto value =
+        encoded.get<std::uint64_t>();
+    if (value >
+        std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            std::string{context} + "." +
+            std::string{field} +
+            " exceeds uint32");
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
+std::optional<ImageSubresourceRange> parseSubresource(
+    const nlohmann::json &entry,
+    std::string_view context) {
+    if (!entry.contains("subresource")) {
+        return std::nullopt;
+    }
+    const auto &encoded =
+        entry.at("subresource");
+    if (!encoded.is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".subresource must be an object");
+    }
+    for (auto field = encoded.begin();
+         field != encoded.end(); ++field) {
+        if (field.key() != "mip" &&
+            field.key() != "mip_count" &&
+            field.key() != "layer" &&
+            field.key() != "layer_count") {
+            throw std::runtime_error(
+                std::string{context} +
+                ".subresource has unknown field '" +
+                field.key() + "'");
+        }
+    }
+    ImageSubresourceRange result{
+        .base_mip_level =
+            parseSubresourceUint(
+                encoded, "mip", 0,
+                std::string{context} +
+                    ".subresource"),
+        .level_count =
+            parseSubresourceUint(
+                encoded, "mip_count", 1,
+                std::string{context} +
+                    ".subresource"),
+        .base_array_layer =
+            parseSubresourceUint(
+                encoded, "layer", 0,
+                std::string{context} +
+                    ".subresource"),
+        .layer_count =
+            parseSubresourceUint(
+                encoded, "layer_count", 1,
+                std::string{context} +
+                    ".subresource"),
+    };
+    if (result.level_count == 0 ||
+        result.layer_count == 0) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".subresource counts must be positive");
+    }
+    const auto mip_end =
+        static_cast<std::uint64_t>(
+            result.base_mip_level) +
+        result.level_count;
+    const auto layer_end =
+        static_cast<std::uint64_t>(
+            result.base_array_layer) +
+        result.layer_count;
+    if (mip_end >
+            std::uint64_t{
+                std::numeric_limits<
+                    std::uint32_t>::max()} +
+                1u ||
+        layer_end >
+            std::uint64_t{
+                std::numeric_limits<
+                    std::uint32_t>::max()} +
+                1u) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".subresource range overflows uint32");
+    }
+    return result;
 }
 
 ShaderResourcePortKind parseKind(
@@ -367,8 +476,6 @@ parseShaderResourcePortDefinitions(
 
     std::vector<ShaderResourcePortDefinition> result;
     result.reserve(encoded.size());
-    std::set<std::string, std::less<>>
-        resources;
     for (auto item = encoded.begin();
          item != encoded.end(); ++item) {
         const auto port_context =
@@ -394,7 +501,8 @@ parseShaderResourcePortDefinitions(
                 field.key() != "element" &&
                 field.key() != "access" &&
                 field.key() != "view" &&
-                field.key() != "sampling") {
+                field.key() != "sampling" &&
+                field.key() != "subresource") {
                 throw std::runtime_error(
                     port_context +
                     " has unknown field '" +
@@ -420,13 +528,6 @@ parseShaderResourcePortDefinitions(
                 " references a resource absent from reads/writes/input: " +
                 resource);
         }
-        if (!resources.insert(resource).second) {
-            throw std::runtime_error(
-                std::string{context} +
-                ".resource_ports maps resource more than once: " +
-                resource);
-        }
-
         const auto kind =
             parseKind(object, port_context);
         const auto element =
@@ -440,6 +541,8 @@ parseShaderResourcePortDefinitions(
             (access == ShaderResourcePortAccess::automatic &&
              !written &&
              kind != ShaderResourcePortKind::buffer);
+        const auto subresource =
+            parseSubresource(object, port_context);
         if (kind == ShaderResourcePortKind::buffer &&
             access == ShaderResourcePortAccess::sampled) {
             throw std::runtime_error(
@@ -447,10 +550,13 @@ parseShaderResourcePortDefinitions(
                 " buffer ports require storage access");
         }
         if (access == ShaderResourcePortAccess::sampled &&
-            written) {
+            written &&
+            (!contains(reads, resource) ||
+             !subresource)) {
             throw std::runtime_error(
                 port_context +
-                " cannot sample a written resource: " +
+                " can sample a written resource only through an explicit "
+                "subresource that is also declared in reads: " +
                 resource);
         }
         if (object.contains("sampling") && !sampled) {
@@ -464,6 +570,12 @@ parseShaderResourcePortDefinitions(
                 port_context +
                 ".view is valid only for image resources");
         }
+        if (kind == ShaderResourcePortKind::buffer &&
+            subresource) {
+            throw std::runtime_error(
+                port_context +
+                ".subresource is valid only for image resources");
+        }
         result.push_back(
             ShaderResourcePortDefinition{
                 .name = item.key(),
@@ -474,7 +586,51 @@ parseShaderResourcePortDefinitions(
                 .view = parseView(object, port_context),
                 .sampling =
                     parseSampling(object, port_context),
+                .subresource = subresource,
             });
+    }
+
+    for (std::size_t left = 0;
+         left < result.size(); ++left) {
+        for (std::size_t right = left + 1;
+             right < result.size(); ++right) {
+            const auto &a = result[left];
+            const auto &b = result[right];
+            if (a.resource != b.resource) continue;
+            if (!a.subresource || !b.subresource) {
+                throw std::runtime_error(
+                    std::string{context} +
+                    ".resource_ports maps resource more than once "
+                    "without explicit subresources: " +
+                    a.resource);
+            }
+            if (a.access ==
+                    ShaderResourcePortAccess::automatic ||
+                b.access ==
+                    ShaderResourcePortAccess::automatic) {
+                throw std::runtime_error(
+                    std::string{context} +
+                    ".resource_ports requires explicit access when "
+                    "one resource is mapped more than once: " +
+                    a.resource);
+            }
+            const auto a_writes =
+                a.access ==
+                ShaderResourcePortAccess::storage;
+            const auto b_writes =
+                b.access ==
+                ShaderResourcePortAccess::storage;
+            if ((a_writes || b_writes) &&
+                imageSubresourceRangesOverlap(
+                    *a.subresource,
+                    *b.subresource)) {
+                throw std::runtime_error(
+                    std::string{context} +
+                    ".resource_ports has overlapping shader read/write "
+                    "subresources for: " +
+                    a.resource);
+            }
+        }
     }
     return result;
 }

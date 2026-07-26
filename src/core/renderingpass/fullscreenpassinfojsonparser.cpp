@@ -134,8 +134,18 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
             pass_json, authored_inputs,
             std::span<const std::string>{},
             "fullscreen pass '" + pass_name + "'");
+    std::set<std::string, std::less<>>
+        mapped_resources;
     for (const auto &port :
          fullscreen_info.resource_ports) {
+        if (!mapped_resources
+                 .insert(port.resource)
+                 .second) {
+            throw std::runtime_error(
+                "Fullscreen resource_ports cannot map multiple ports "
+                "to the same input resource '" +
+                port.resource + "': " + pass_name);
+        }
         const auto expected_access =
             port.kind ==
                     ShaderResourcePortKind::buffer

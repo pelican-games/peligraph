@@ -67,6 +67,9 @@ struct ComputeTaskRuntimeDependencies {
     const std::unordered_map<
         std::string, VulkanResourceViewLayout>
         *resource_views = nullptr;
+    const std::unordered_map<
+        std::string, std::uint32_t>
+        *resource_view_counts = nullptr;
 };
 
 struct ResolvedComputeResourceBinding {
@@ -77,6 +80,7 @@ struct ResolvedComputeResourceBinding {
     FrameGraphBufferId buffer = noFrameGraphBufferId();
     VulkanResourceViewLayout physical_view =
         VulkanResourceViewLayout::shared_2d;
+    std::uint32_t physical_view_count = 1;
 };
 
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json);

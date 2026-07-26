@@ -1,5 +1,7 @@
 #pragma once
 
+#include "imagesubresource.hpp"
+
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -102,6 +104,8 @@ struct ShaderResourcePortDefinition {
     ShaderResourcePortView view =
         ShaderResourcePortView::shared_2d;
     ShaderResourcePortSampling sampling;
+    // Omitted preserves the established mip-0/default-view behavior.
+    std::optional<ImageSubresourceRange> subresource;
 
     bool operator==(
         const ShaderResourcePortDefinition &) const = default;

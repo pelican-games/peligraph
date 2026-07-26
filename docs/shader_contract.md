@@ -98,6 +98,37 @@ reflection は port の set、binding、descriptor kind、count、生成変数�
 既存 shader の raw set 1 ABI は不変であり、buffer や特殊 descriptor の escape hatch として
 利用できる。
 
+### runtime RT subresource port(WP209b)
+
+2D runtime render targetは`mip_levels: <positive integer>|"full"`と
+`layers: <positive integer>`を持てる。fullscreen/computeのimage portはoptional
+`subresource`でexact view rangeを選ぶ。
+
+```json
+"subresource": {
+  "mip": 2,
+  "mip_count": 1,
+  "layer": 1,
+  "layer_count": 1
+}
+```
+
+省略値は`mip=0`、`mip_count=1`、`layer=0`、`layer_count=1`。明示viewでは
+shaderから見たLOD 0が`mip`で選んだbase mipに対応し、`pelican_size_<port>()`も
+そのviewのサイズを返す。`shared_2d`の2D viewはlayer count 1、storage imageは
+mip count 1が必要である。`per_view`がphysical layered viewへloweringされた場合だけ
+2D-array accessorになる。physical imageが論理view数より多いlayer容量を持っても、
+`per_view` descriptorは論理view数ぶんだけを公開する。明示rangeの`layer_count`は
+論理view数と一致しなければならない。
+
+computeは同じlogical imageを複数portへ割り当てられるが、各portに明示range/accessが必要で、
+storageを含むoverlapは拒否する。fullscreenはinput順がdescriptor bindingのauthorityなので、
+1 input resourceにつき1 portである。material/geometry portはまだbase viewだけをbindするため、
+`material_resources`の`subresource`は受理せず名前付きエラーにする。
+
+layout/hazard trackingは現時点ではresource単位である。互いに素なrangeでもwhole imageを
+保守的に遷移し、subresource並列化は行わない。
+
 ### material/geometry resource port(WP207b)
 
 `.surface` は shader-facing port を `resource_ports` で宣言する。current

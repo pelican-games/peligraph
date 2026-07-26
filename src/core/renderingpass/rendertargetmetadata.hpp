@@ -16,6 +16,7 @@ struct RenderTargetMetadata {
     vk::Extent2D extent;
     bool history = false;
     std::uint32_t samples = 1;
+    std::uint32_t mip_levels = 1;
     std::uint32_t array_layers = 1;
     RenderTargetStorageMode storage_mode =
         RenderTargetStorageMode::materialized;

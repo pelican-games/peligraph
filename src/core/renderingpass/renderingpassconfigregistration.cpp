@@ -296,6 +296,9 @@ std::vector<CompiledComputeTask> compileComputeTasks(
         std::unordered_map<
             std::string, VulkanResourceViewLayout>
             resource_views;
+        std::unordered_map<
+            std::string, std::uint32_t>
+            resource_view_counts;
         bool task_has_physical_plan = false;
         for (const auto &[graph, plan] :
              target_plans) {
@@ -363,6 +366,32 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                         "') has incompatible physical views across "
                         "target plans");
                 }
+                const auto view_count =
+                    physical->view_layout ==
+                            VulkanResourceViewLayout::
+                                shared_2d
+                        ? 1u
+                        : plan->view_execution_plan
+                              .view_count;
+                if (view_count == 0) {
+                    throw std::runtime_error(
+                        "Compute resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') has a zero physical view count");
+                }
+                const auto [count, count_inserted] =
+                    resource_view_counts.emplace(
+                        resource, view_count);
+                if (!count_inserted &&
+                    count->second != view_count) {
+                    throw std::runtime_error(
+                        "Compute resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') has incompatible physical view counts "
+                        "across target plans");
+                }
             }
         }
         if (!definition.resource_ports.empty() &&
@@ -379,6 +408,7 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 dependencies.render_targets.render_target_container,
                 dependencies.frame_graph_resources,
                 &resource_views,
+                &resource_view_counts,
             });
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
@@ -430,6 +460,8 @@ void mergeVariantRenderTargetPhysicalRequirements(
         std::uint32_t maximum_layers = 1;
         vk::ImageUsageFlags usage;
         std::optional<vk::Format> format;
+        std::optional<ImageMipLevelCount>
+            mip_levels;
     };
     std::unordered_map<std::string, Requirements>
         requirements;
@@ -442,6 +474,16 @@ void mergeVariantRenderTargetPhysicalRequirements(
                 merged.maximum_layers,
                 target.array_layers);
             merged.usage |= target.usage;
+            if (!merged.mip_levels) {
+                merged.mip_levels =
+                    target.mip_levels;
+            } else if (*merged.mip_levels !=
+                       target.mip_levels) {
+                throw std::runtime_error(
+                    "render graph variants require conflicting "
+                    "mip-level contracts for target '" +
+                    target.name + "'");
+            }
             if (!merged.format) {
                 merged.format = target.format;
             } else if (*merged.format !=
@@ -461,6 +503,8 @@ void mergeVariantRenderTargetPhysicalRequirements(
             target.array_layers =
                 merged.maximum_layers;
             target.usage = merged.usage;
+            target.mip_levels =
+                *merged.mip_levels;
             target.format = *merged.format;
         }
     }

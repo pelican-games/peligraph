@@ -242,6 +242,77 @@ TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[ren
 }
 
 TEST_CASE(
+    "render target JSON parser keeps mip and array-layer contracts",
+    "[renderingpass][subresource][wp209b]") {
+    const auto definitions =
+        parseRenderTargetDefinitionsFromJson(
+            nlohmann::json::parse(R"json({
+              "render_targets": [
+                {
+                  "name": "fixed_pyramid",
+                  "extent_scale": 1.0,
+                  "format": "R16G16_SFLOAT",
+                  "usage": ["SAMPLED", "STORAGE"],
+                  "mip_levels": 6,
+                  "layers": 3
+                },
+                {
+                  "name": "full_pyramid",
+                  "extent_scale": 1.0,
+                  "format": "R16G16_SFLOAT",
+                  "usage": ["SAMPLED", "STORAGE"],
+                  "mip_levels": "full"
+                }
+              ]
+            })json"));
+    REQUIRE(definitions.size() == 2);
+    const ImageMipLevelCount fixed{
+        ImageMipLevelMode::fixed, 6};
+    const ImageMipLevelCount full{
+        ImageMipLevelMode::full_chain, 1};
+    REQUIRE(
+        definitions[0].mip_levels ==
+        fixed);
+    REQUIRE(
+        definitions[1].mip_levels ==
+        full);
+    REQUIRE(definitions[0].array_layers == 3);
+    REQUIRE(definitions[1].array_layers == 1);
+    REQUIRE(resolveImageMipLevels(
+                definitions[1].mip_levels,
+                128, 64) == 8);
+
+    auto invalid = nlohmann::json::parse(R"json({
+      "render_targets": [{
+        "name": "bad",
+        "extent_scale": 1.0,
+        "format": "R16G16_SFLOAT",
+        "usage": ["SAMPLED"],
+        "mip_levels": 0
+      }]
+    })json");
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "mip_levels must be positive"));
+    invalid["render_targets"][0]["mip_levels"] =
+        "automatic";
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "must be 'full'"));
+    invalid["render_targets"][0]["mip_levels"] = 1;
+    invalid["render_targets"][0]["layers"] = 0;
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "layers must be positive"));
+}
+
+TEST_CASE(
     "fullscreen pass JSON parser keeps per-input sampling typed",
     "[renderingpass][upscale][sampling]") {
     const nlohmann::json pass_json{
@@ -342,6 +413,21 @@ TEST_CASE(
             unknown, "resolve"),
         Catch::Matchers::ContainsSubstring(
             "absent from reads/writes/input"));
+
+    auto duplicate = pass_json;
+    duplicate["resource_ports"]["color"]["subresource"] =
+        {{"mip", 0}};
+    duplicate["resource_ports"]["previous_depth"]
+             ["resource"] = "scene_color";
+    duplicate["resource_ports"]["previous_depth"]
+             ["access"] = "sampled";
+    duplicate["resource_ports"]["previous_depth"]
+             ["subresource"] = {{"mip", 1}};
+    REQUIRE_THROWS_WITH(
+        parseFullscreenPassInfoFromJson(
+            duplicate, "resolve"),
+        Catch::Matchers::ContainsSubstring(
+            "cannot map multiple ports"));
 }
 
 TEST_CASE(
@@ -387,6 +473,81 @@ TEST_CASE(
             invalid, "lighting"),
         Catch::Matchers::ContainsSubstring(
             "buffer ports require storage access"));
+}
+
+TEST_CASE(
+    "shader resource ports type disjoint mip reads and writes",
+    "[renderingpass][resource-port][subresource][wp209b]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "compute_tasks": [{
+            "name": "reduce_depth",
+            "shader": "shaders/reduce_depth",
+            "reads": ["depth_pyramid"],
+            "writes": ["depth_pyramid"],
+            "resource_ports": {
+              "source_depth": {
+                "resource": "depth_pyramid",
+                "access": "sampled",
+                "subresource": {
+                  "mip": 2,
+                  "layer": 1
+                }
+              },
+              "reduced_depth": {
+                "resource": "depth_pyramid",
+                "access": "storage",
+                "subresource": {
+                  "mip": 3,
+                  "layer": 1
+                }
+              }
+            }
+          }]
+        })json");
+    const auto tasks =
+        parseComputeTaskDefinitionsFromConfigJson(
+            config);
+    REQUIRE(tasks.size() == 1);
+    REQUIRE(
+        tasks.front().resource_ports.size() ==
+        2);
+    const auto source = std::find_if(
+        tasks.front().resource_ports.begin(),
+        tasks.front().resource_ports.end(),
+        [](const auto &port) {
+            return port.name == "source_depth";
+        });
+    REQUIRE(
+        source !=
+        tasks.front().resource_ports.end());
+    REQUIRE(source->subresource.has_value());
+    REQUIRE(
+        source->subresource->base_mip_level ==
+        2);
+    REQUIRE(
+        source->subresource->base_array_layer ==
+        1);
+
+    auto overlap = config;
+    overlap["compute_tasks"][0]
+           ["resource_ports"]["reduced_depth"]
+           ["subresource"]["mip"] = 2;
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            overlap),
+        Catch::Matchers::ContainsSubstring(
+            "overlapping shader read/write subresources"));
+
+    auto implicit = config;
+    implicit["compute_tasks"][0]
+            ["resource_ports"]["source_depth"]
+            .erase("subresource");
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            implicit),
+        Catch::Matchers::ContainsSubstring(
+            "only through an explicit subresource"));
 }
 
 TEST_CASE(
@@ -1390,6 +1551,26 @@ TEST_CASE(
     REQUIRE(
         history.footprint.kind ==
         LogicalReadFootprintKind::temporal);
+
+    PassDefinition subresource;
+    subresource.name = "subresource";
+    subresource.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassResourcesFromJson(
+            subresource,
+            nlohmann::json{
+                {"material_resources",
+                 {{"pyramid",
+                   {
+                       {"resource",
+                        "simulation_color"},
+                       {"access", "sampled"},
+                       {"subresource",
+                        {{"mip", 1}}},
+                   }}}}},
+            names, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "does not yet support image subresource views"));
 
     PassDefinition missing;
     missing.name = "missing";

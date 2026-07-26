@@ -437,6 +437,12 @@ void parseMaterialPassResourcesFromJson(
                 "' must be a resource string or object: " +
                 pass_def.name);
         }
+        if (entry.value().contains("subresource")) {
+            throw std::runtime_error(
+                "Material resource '" + entry.key() +
+                "' does not yet support image subresource views: " +
+                pass_def.name);
+        }
         auto object = entry.value();
         object.erase("footprint");
         sanitized[entry.key()] = std::move(object);
