@@ -10,13 +10,10 @@
 
 namespace Pelican::physics_internal {
 
-Physics::Status registerProvider(const Physics::ProviderV1 &provider,
-                                 internal::RegistrationOwner owner,
-                                 Physics::ProviderHandleV1 &out_handle) noexcept;
 Physics::Status registerProvider(const Physics::ProviderV2 &provider,
                                  internal::RegistrationOwner owner,
                                  Physics::ProviderHandleV2 &out_handle) noexcept;
-Physics::Status unregisterProvider(Physics::ProviderHandleV1 handle,
+Physics::Status unregisterProvider(Physics::ProviderHandleV2 handle,
                                    internal::RegistrationOwner owner) noexcept;
 
 // Game DLL providers are registered during LoadLibrary but become authoritative

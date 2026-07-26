@@ -34,12 +34,9 @@ extern "C" __declspec(dllexport) bool pelican_flipbook_public_api_link_probe(
 }
 
 extern "C" __declspec(dllexport) std::uint32_t pelican_physics_service_public_api_link_probe() {
-    auto api = Pelican::Physics::descriptor<Pelican::Physics::ApiV1>();
-    auto api_v2 = Pelican::Physics::descriptor<Pelican::Physics::ApiV2>();
-    const auto v1 = Pelican::Physics::getApiV1(Pelican::Physics::abiVersionV1, &api);
-    const auto v2 = Pelican::Physics::getApiV2(Pelican::Physics::abiVersionV2, &api_v2);
-    return static_cast<std::uint32_t>(v1) |
-           (static_cast<std::uint32_t>(v2) << 16U);
+    auto api = Pelican::Physics::descriptor<Pelican::Physics::ApiV2>();
+    return static_cast<std::uint32_t>(
+        Pelican::Physics::getApiV2(Pelican::Physics::abiVersionV2, &api));
 }
 
 extern "C" __declspec(dllexport) std::size_t pelican_physquery_public_api_link_probe(

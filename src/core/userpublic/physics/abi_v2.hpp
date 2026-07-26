@@ -1,6 +1,7 @@
 #pragma once
 
-#include "abi_v1.hpp"
+#include "../export.hpp"
+#include "query_types.hpp"
 
 namespace Pelican::Physics {
 
@@ -75,6 +76,10 @@ using ProviderShapeCastAllV2Fn = Status (*)(
     void *, const ProviderShapeCastQueryV2 *, ProviderShapeCastHitV2 *,
     std::uint32_t, std::uint32_t *) noexcept;
 
+// Provider callbacks are noexcept and may be invoked concurrently. The
+// provider and its context must remain alive until unregister_provider returns.
+// Report failures with Status; do not call register_provider or
+// unregister_provider recursively from a callback.
 struct ProviderV2 {
     std::uint32_t struct_size = sizeof(ProviderV2);
     std::uint32_t version = descriptorVersionV1;
@@ -92,7 +97,11 @@ struct ProviderV2 {
     ProviderShapeCastAllV2Fn shape_cast_all = nullptr;
 };
 
-using ProviderHandleV2 = ProviderHandleV1;
+struct ProviderHandleV2 {
+    std::uint64_t identity = 0;
+    std::uint32_t generation = 0;
+    std::uint32_t reserved = 0;
+};
 
 struct ServiceV2 {
     std::uint32_t struct_size = sizeof(ServiceV2);
@@ -115,6 +124,14 @@ using GetServiceV2Fn = Status (*)(void *, std::uint32_t, ServiceV2 *) noexcept;
 using RegisterProviderV2Fn = Status (*)(void *, const ProviderV2 *, ProviderHandleV2 *) noexcept;
 using UnregisterProviderV2Fn = Status (*)(void *, ProviderHandleV2) noexcept;
 
+enum PhysicsApiCapabilityBitsV2 : std::uint64_t {
+    api_query_service = 1ULL << 0U,
+    api_provider_registration = 1ULL << 1U,
+};
+
+// Game DLL providers register while their DLL is loading, under the loader's
+// registration owner. Calls made later, outside that scope, return wrong_owner;
+// this lets hot reload wait for callbacks and unload the DLL safely.
 struct ApiV2 {
     std::uint32_t struct_size = sizeof(ApiV2);
     std::uint32_t version = descriptorVersionV1;
@@ -135,13 +152,17 @@ PELICAN_API Status getApiV2(std::uint32_t client_abi_version,
 static_assert(std::is_standard_layout_v<ApiV2>);
 static_assert(std::is_standard_layout_v<ServiceV2>);
 static_assert(std::is_standard_layout_v<ProviderV2>);
+static_assert(std::is_standard_layout_v<ProviderHandleV2>);
 static_assert(std::is_trivially_copyable_v<ShapeCastQueryV2>);
 static_assert(std::is_trivially_copyable_v<ProviderShapeCastHitV2>);
 static_assert(offsetof(ApiV2, struct_size) == 0);
 static_assert(offsetof(ServiceV2, struct_size) == 0);
 static_assert(offsetof(ProviderV2, struct_size) == 0);
-static_assert(sizeof(ApiV2) == sizeof(ApiV1));
-static_assert(offsetof(ProviderV2, shape_cast_all) == sizeof(ProviderV1));
-static_assert(offsetof(ServiceV2, shape_cast_all) == sizeof(ServiceV1));
+static_assert(
+    offsetof(ProviderV2, shape_cast_all) ==
+    offsetof(ProviderV2, overlap_all) + sizeof(ProviderOverlapAllV1Fn));
+static_assert(
+    offsetof(ServiceV2, shape_cast_all) ==
+    offsetof(ServiceV2, overlap_all) + sizeof(decltype(ServiceV2::overlap_all)));
 
 } // namespace Pelican::Physics
