@@ -104,3 +104,39 @@ tinygltf(`true` = 続行)・miniaudio(降格して success)・imgui(hook 未設�
 
 **重要**: C-1(DeletionQueue)は **headless では構造的に再現しない**。GPU gate
 (CI2)無しでは永久に検出できない類のバグである。
+
+## 7. 追補: 類型別スイープ 2 本の結果(2026-07-26)
+
+先行監査で導出した T1〜T17 を渡し、未監査領域を分担して走査させた。
+**「該当なし」も明示させた**ので、網羅の証拠になっている。
+
+- [ecs/abi 領域](2026-07-26_bughunt_sweep_ecs_abi.md): 13 finding(HIGH 3)。
+  17 型のうち **8 型が該当、9 型が該当なし**
+- [io/tools 領域](2026-07-26_bughunt_sweep_io_tools.md): 16 finding(HIGH 4)。
+  **新規類型 T18〜T20 を抽出**
+
+### 追加された最優先候補
+
+| ID | 内容 | 型 |
+|---|---|---|
+| **EABI-010** | **ECS の変更検出が「前回 tick と同値の version」を新規変更として扱う** — 毎フレーム余計な処理が走るか、逆に取りこぼす | T17 |
+| **EABI-002** | `Behavior::onDestroy` は `noexcept` なのに外側 catch がある(到達不能) — ユーザ behavior の例外は terminate | T5 |
+| **EABI-006〜008** | asset reload / registration publication / animation source ABI の**部分失敗ロールバック欠落 3 根本原因** | T11 |
+| **EABI-011** | reset 時だけ VRMA clip の generation tombstone が欠落 | T10 |
+| **H-2 / M-6 / L-1** | io/tools 側の rollback 欠落 3 件 | T11 |
+
+### 重要な発見: `json::value()` は孤立事例ではなかった
+
+D-1(jsonrpc)に加え、io/tools 領域で **同型が 4 件**(M-1〜M-4)。
+**T15 はリポジトリ横断の系統的問題**であり、個別修正でなく
+「`value()` は既定値付きに見えて型不一致で投げる」という規約の明文化 +
+一括置換が要る。
+
+### 型カタログの有効性
+
+17 型のうち、ecs/abi では 8 型・io/tools では 7 型が該当し、残りは
+「この領域には該当なし」と明示された。**型を先に定義してから走査させる方式は
+機能する** — エージェントが自由に探すより、網羅性と再現性が高い。
+
+新規 T18〜T20 は io/tools レポート §新規類型 を参照(T18 = 終了リソースの
+回収経路が無い、等)。
