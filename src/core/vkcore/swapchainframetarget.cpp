@@ -254,10 +254,22 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
         submission_leases.complete(
             in_flight_frame_index);
 
-        auto image_acquire_result =
-            device.acquireNextImageKHR(swapchain.swapchain.get(),
-                                       nonblocking ? 0 : UINT64_MAX,
-                                       image_prepared_semaphore);
+        // vulkan.hpp only tolerates {eSuccess, eTimeout, eNotReady,
+        // eSuboptimalKHR} here and throws for eErrorOutOfDateKHR, so the
+        // surface-recovery branches below are reachable only if the exception
+        // is translated back into the result they already handle. A window
+        // resize is the ordinary source of that result, not a fatal error.
+        vk::ResultValue<std::uint32_t> image_acquire_result{
+            vk::Result::eErrorOutOfDateKHR, 0};
+        try {
+            image_acquire_result =
+                device.acquireNextImageKHR(swapchain.swapchain.get(),
+                                           nonblocking ? 0 : UINT64_MAX,
+                                           image_prepared_semaphore);
+        } catch (const vk::OutOfDateKHRError &) {
+            image_acquire_result = vk::ResultValue<std::uint32_t>{
+                vk::Result::eErrorOutOfDateKHR, 0};
+        }
         if (nonblocking &&
             (image_acquire_result.result == vk::Result::eTimeout ||
              image_acquire_result.result == vk::Result::eNotReady)) {
@@ -419,7 +431,15 @@ void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
     presen_info.setImageIndices(current_image_index);
     presen_info.setWaitSemaphores(rendered_semaphores[in_flight_frame_index].get());
 
-    const auto present_result = presen_queue.presentKHR(presen_info);
+    // Same contract as the acquire path: vulkan.hpp allows only
+    // {eSuccess, eSuboptimalKHR} for presentKHR and throws for
+    // eErrorOutOfDateKHR, which a window resize produces routinely.
+    vk::Result present_result = vk::Result::eSuccess;
+    try {
+        present_result = presen_queue.presentKHR(presen_info);
+    } catch (const vk::OutOfDateKHRError &) {
+        present_result = vk::Result::eErrorOutOfDateKHR;
+    }
     if (present_result == vk::Result::eSuboptimalKHR || present_result == vk::Result::eErrorOutOfDateKHR) {
         if (current_frame_nonblocking) {
             // The optional mirror acquire/present path must never wait for
