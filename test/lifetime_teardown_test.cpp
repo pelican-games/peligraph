@@ -79,7 +79,7 @@ DECLARE_MODULE(LifetimePermutationOwner) {
 
 DECLARE_MODULE(LifetimePermutationQueue) {
   public:
-    DeletionQueueCore core{2, [] {}};
+    DeletionQueueCore core{[] {}};
     ~LifetimePermutationQueue() {
         module_destruction_trace.emplace_back("queue");
     }

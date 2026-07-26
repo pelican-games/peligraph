@@ -34,40 +34,54 @@ struct CountingResource {
 
 } // namespace
 
-TEST_CASE("DeletionQueueCore releases resources after in-flight frames pass", "[deletionqueue]") {
+TEST_CASE("DeletionQueueCore releases resources only after the bound GPU submission completes",
+          "[deletionqueue][submission-lifetime]") {
     int wait_idle_count = 0;
     int destroyed = 0;
-    DeletionQueueCore queue{2, [&wait_idle_count]() { ++wait_idle_count; }};
+    DeletionQueueCore queue{[&wait_idle_count]() { ++wait_idle_count; }};
 
     queue.defer(CountingResource{destroyed});
     REQUIRE(queue.pendingCount() == 1);
 
-    queue.beginFrame();
+    auto submission = queue.leaseForNextSubmission({});
+    queue.confirmSubmission();
+
     REQUIRE(destroyed == 0);
     REQUIRE(queue.pendingCount() == 1);
+    REQUIRE(queue.currentFrame() == 1);
 
-    queue.beginFrame();
+    submission.reset();
+
     REQUIRE(destroyed == 1);
     REQUIRE(queue.pendingCount() == 0);
     REQUIRE(wait_idle_count == 0);
 }
 
-TEST_CASE("DeletionQueueCore releases resources according to their defer frame", "[deletionqueue]") {
+TEST_CASE("DeletionQueueCore tracks retirement batches by actual submission lease",
+          "[deletionqueue][submission-lifetime]") {
     int destroyed_a = 0;
     int destroyed_b = 0;
-    DeletionQueueCore queue{2, []() {}};
+    DeletionQueueCore queue{[]() {}};
 
     queue.defer(CountingResource{destroyed_a});
-    queue.beginFrame();
-    queue.defer(CountingResource{destroyed_b});
+    auto submission_a = queue.leaseForNextSubmission({});
+    queue.confirmSubmission();
 
-    queue.beginFrame();
-    REQUIRE(destroyed_a == 1);
+    queue.defer(CountingResource{destroyed_b});
+    auto submission_b = queue.leaseForNextSubmission({});
+    queue.confirmSubmission();
+
+    REQUIRE(destroyed_a == 0);
     REQUIRE(destroyed_b == 0);
+    REQUIRE(queue.pendingCount() == 2);
+
+    submission_b.reset();
+    REQUIRE(destroyed_b == 1);
+    REQUIRE(destroyed_a == 0);
     REQUIRE(queue.pendingCount() == 1);
 
-    queue.beginFrame();
-    REQUIRE(destroyed_b == 1);
+    submission_a.reset();
+    REQUIRE(destroyed_a == 1);
     REQUIRE(queue.pendingCount() == 0);
 }
 
@@ -75,7 +89,7 @@ TEST_CASE("DeletionQueueCore flushAll releases all pending resources without wai
     int wait_idle_count = 0;
     int destroyed_a = 0;
     int destroyed_b = 0;
-    DeletionQueueCore queue{2, [&wait_idle_count]() { ++wait_idle_count; }};
+    DeletionQueueCore queue{[&wait_idle_count]() { ++wait_idle_count; }};
 
     queue.defer(CountingResource{destroyed_a});
     queue.defer(CountingResource{destroyed_b});
@@ -93,7 +107,7 @@ TEST_CASE("DeletionQueueCore destructor waits and flushes pending resources as a
     int destroyed = 0;
 
     {
-        DeletionQueueCore queue{2, [&wait_idle_count]() { ++wait_idle_count; }};
+        DeletionQueueCore queue{[&wait_idle_count]() { ++wait_idle_count; }};
         queue.defer(CountingResource{destroyed});
     }
 
@@ -104,7 +118,7 @@ TEST_CASE("DeletionQueueCore destructor waits and flushes pending resources as a
 TEST_CASE("DeletionQueueCore teardown drain closes the queue and rejects late resources",
           "[deletionqueue][teardown][fail-fast]") {
     int destroyed = 0;
-    DeletionQueueCore queue{2, [] {}};
+    DeletionQueueCore queue{[] {}};
     queue.defer(CountingResource{destroyed});
 
     queue.drainForTeardown();
@@ -115,7 +129,9 @@ TEST_CASE("DeletionQueueCore teardown drain closes the queue and rejects late re
     REQUIRE_THROWS_WITH(
         queue.defer(CountingResource{destroyed}),
         Catch::Matchers::ContainsSubstring("after teardown drain"));
-    REQUIRE_THROWS_WITH(queue.beginFrame(),
+    REQUIRE_THROWS_WITH(queue.leaseForNextSubmission({}),
+                        Catch::Matchers::ContainsSubstring("after teardown drain"));
+    REQUIRE_THROWS_WITH(queue.confirmSubmission(),
                         Catch::Matchers::ContainsSubstring("after teardown drain"));
 }
 

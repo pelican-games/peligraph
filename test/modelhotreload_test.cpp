@@ -409,10 +409,9 @@ TEST_CASE("HR2-G survives 1000 geometry reloads without allocation growth",
     const auto vertices = geometry.allocatedVertexCountForTesting();
     for (int iteration = 0; iteration < 1000; ++iteration) {
         REQUIRE(reload.applyRequestForTesting(modified("model.glb")));
-        deletion_queue.beginFrame();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        deletion_queue.flushAll();
     }
-    GET_MODULE(VulkanManageCore).waitIdle();
-    deletion_queue.flushAll();
     REQUIRE(models.contentRevisionForTesting("geometry") == 1001);
     REQUIRE(materials.textureCountForTesting() == textures);
     REQUIRE(materials.materialCountForTesting() == material_count);

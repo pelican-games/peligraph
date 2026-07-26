@@ -139,9 +139,9 @@ TEST_CASE("HR1-T reload keeps identity, rebinds shape changes, and rolls back fa
         REQUIRE(status.failed == 1);
         REQUIRE(status.last_reload_error);
 
-        for (int i = 0; i < 8; ++i) GET_MODULE(DeletionQueue).beginFrame();
-        REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
         GET_MODULE(VulkanManageCore).waitIdle();
+        GET_MODULE(DeletionQueue).flushAll();
+        REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
     } catch (const std::exception &error) {
         SKIP(std::string{"Vulkan texture reload unavailable: "} + error.what());
     }
@@ -220,9 +220,9 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
             {ktx_key, watch::ReloadKind::modified, {}, 1}));
         REQUIRE(materials.textureMipLevelsForTesting(ktx_texture) == 1);
         REQUIRE(materials.textureViewsForTesting(ktx_texture) != old_ktx_views);
-        for (int i = 0; i < 8; ++i) GET_MODULE(DeletionQueue).beginFrame();
-        REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
         GET_MODULE(VulkanManageCore).waitIdle();
+        GET_MODULE(DeletionQueue).flushAll();
+        REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
     } catch (const std::exception &error) {
         SKIP(std::string{"Vulkan texture reload stress unavailable: "} + error.what());
     }

@@ -2724,7 +2724,6 @@ void Renderer::renderLogicalFrame(
     }
 
     auto &deletion_queue = resolveFrameDeletionQueue();
-    deletion_queue.beginFrame();
 
     auto modules = resolveRenderFrameModules();
     // Keep one immutable publication root alive for the whole logical frame.
@@ -2746,6 +2745,9 @@ void Renderer::renderLogicalFrame(
         program->rendering_pass;
     const auto &frame_graph =
         program->frame_graph;
+    const auto submission_lease =
+        deletion_queue.leaseForNextSubmission(
+            runtime_generation);
     std::vector<MaterialDrawTagFilter>
         material_draw_filters;
     std::map<std::uint64_t, std::size_t>
@@ -3142,7 +3144,7 @@ void Renderer::renderLogicalFrame(
         }
 #endif
         target.endViewFamily(
-            runtime_generation);
+            submission_lease);
         if (execution_tracing_for_testing) {
             view_traces.push_back({
                 {"execution", "view_family"},
@@ -3267,7 +3269,7 @@ void Renderer::renderLogicalFrame(
                                        engine_time.frameIndex());
         }
 #endif
-        target.endView(view_index, runtime_generation);
+        target.endView(view_index, submission_lease);
 
         if (execution_tracing_for_testing) {
             view_traces.push_back({
@@ -3282,7 +3284,8 @@ void Renderer::renderLogicalFrame(
     }
     }
 
-    target.endLogicalFrame(runtime_generation);
+    target.endLogicalFrame(submission_lease);
+    deletion_queue.confirmSubmission();
     if (execution_tracing_for_testing) {
         if (use_view_family_execution) {
             last_execution_trace =

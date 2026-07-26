@@ -8,25 +8,26 @@
 
 namespace Pelican {
 
-DeletionQueueCore::DeletionQueueCore(uint32_t in_flight_frames, std::function<void()> wait_idle_hook)
-    : in_flight_frames{in_flight_frames}, wait_idle_hook{std::move(wait_idle_hook)} {
-    if (this->in_flight_frames == 0) {
-        throw std::runtime_error("DeletionQueueCore requires at least one in-flight frame");
-    }
+DeletionQueueCore::DeletionQueueCore(
+    std::function<void()> wait_idle_hook)
+    : wait_idle_hook{std::move(wait_idle_hook)},
+      pending_counter{std::make_shared<PendingCounter>()},
+      current_batch{std::make_shared<RetirementBatch>()} {
     if (!this->wait_idle_hook) {
         throw std::runtime_error("DeletionQueueCore requires a wait idle hook");
     }
+    batches.push_back(current_batch);
 }
 
 DeletionQueueCore::~DeletionQueueCore() noexcept {
     accepting = false;
-    if (pending.empty()) {
+    if (pendingCount() == 0) {
         return;
     }
 
     if (logger != nullptr) {
         LOG_WARNING(logger, "DeletionQueueCore destroyed with {} pending resources; flushing as safety net",
-                    pending.size());
+                    pendingCount());
     }
 
     try {
@@ -43,6 +44,13 @@ DeletionQueueCore::~DeletionQueueCore() noexcept {
     }
 }
 
+void DeletionQueueCore::RetirementBatch::releaseAll() {
+    for (auto &resource : resources) {
+        resource->release();
+    }
+    resources.clear();
+}
+
 void DeletionQueueCore::requireAccepting() const {
     if (!accepting) {
         throw std::logic_error("DeletionQueue cannot accept resources after teardown drain");
@@ -52,33 +60,24 @@ void DeletionQueueCore::requireAccepting() const {
     }
 }
 
-void DeletionQueueCore::releaseEligible(uint64_t oldest_frame) {
-    if (draining) {
-        throw std::logic_error("DeletionQueue callbacks are already draining");
-    }
-    draining = true;
-    struct DrainScope {
-        bool &draining;
-        ~DrainScope() { draining = false; }
-    } drain_scope{draining};
-    for (auto it = pending.begin(); it != pending.end();) {
-        if (it->frame <= oldest_frame) {
-            it->resource->release();
-            it = pending.erase(it);
-        } else {
-            ++it;
-        }
-    }
+GpuSubmissionLease DeletionQueueCore::leaseForNextSubmission(
+    GpuSubmissionLease upstream) {
+    requireAccepting();
+    return std::make_shared<SubmissionLeaseBundle>(
+        SubmissionLeaseBundle{
+            std::move(upstream),
+            current_batch,
+        });
 }
 
-void DeletionQueueCore::beginFrame() {
+void DeletionQueueCore::confirmSubmission() {
     requireAccepting();
-    ++current_frame;
-    if (current_frame < in_flight_frames) {
-        return;
-    }
+    ++completed_submissions;
+    if (current_batch->empty()) return;
 
-    releaseEligible(current_frame - in_flight_frames);
+    auto next_batch = std::make_shared<RetirementBatch>();
+    batches.push_back(next_batch);
+    current_batch = std::move(next_batch);
 }
 
 void DeletionQueueCore::flushAll() {
@@ -90,10 +89,14 @@ void DeletionQueueCore::flushAll() {
         bool &draining;
         ~DrainScope() { draining = false; }
     } drain_scope{draining};
-    std::vector<PendingResource> draining_resources;
-    draining_resources.swap(pending);
-    for (auto &item : draining_resources) {
-        item.resource->release();
+
+    for (auto it = batches.begin(); it != batches.end();) {
+        if (auto batch = it->lock()) {
+            batch->releaseAll();
+            ++it;
+        } else {
+            it = batches.erase(it);
+        }
     }
 }
 
@@ -102,14 +105,23 @@ void DeletionQueueCore::drainForTeardown() {
     flushAll();
 }
 
-size_t DeletionQueueCore::pendingCount() const { return pending.size(); }
+size_t DeletionQueueCore::pendingCount() const {
+    return pending_counter->count;
+}
 
 DeletionQueue::DeletionQueue()
-    : core{static_cast<uint32_t>(in_flight_frames_num), []() { GET_MODULE(VulkanManageCore).waitIdle(); }} {
+    : core{[]() { GET_MODULE(VulkanManageCore).waitIdle(); }} {
     GET_MODULE(VulkanManageCore);
 }
 
-void DeletionQueue::beginFrame() { core.beginFrame(); }
+GpuSubmissionLease DeletionQueue::leaseForNextSubmission(
+    GpuSubmissionLease upstream) {
+    return core.leaseForNextSubmission(std::move(upstream));
+}
+
+void DeletionQueue::confirmSubmission() {
+    core.confirmSubmission();
+}
 
 void DeletionQueue::flushAll() { core.flushAll(); }
 
