@@ -134,7 +134,8 @@ CompiledFrameGraphExecution compileExecution(
         plan_indices.emplace(execution.plan.nodes[i].name, i);
     }
     for (const auto &barrier : execution.plan.barriers) {
-        if (barrier.kind != "read_after_write") {
+        if (barrier.kind != "read_after_write" &&
+            barrier.kind != "write_after_write") {
             throw std::runtime_error(
                 "Unsupported frame plan barrier kind: " +
                 barrier.kind);

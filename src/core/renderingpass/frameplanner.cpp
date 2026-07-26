@@ -1136,25 +1136,32 @@ void addEdge(PlannerEdges &planner_edges, size_t from, size_t to) {
     }
 }
 
-void addDataEdge(PlannerEdges &planner_edges, size_t from, size_t to, const std::string &resource,
-                 const FrameGraphDefinition &definition) {
-    addEdge(planner_edges, from, to);
+void addBarrier(PlannerEdges &planner_edges, std::string kind,
+                size_t from, size_t to, const std::string &resource,
+                const FrameGraphDefinition &definition) {
     const auto barrier = FramePlanBarrier{
-        "read_after_write",
+        std::move(kind),
         resource,
         definition.nodes[from].name,
         definition.nodes[to].name,
     };
-    const auto exists = std::find_if(planner_edges.barriers.begin(), planner_edges.barriers.end(),
-                                     [&barrier](const auto &existing) {
-                                         return existing.kind == barrier.kind &&
-                                                existing.resource == barrier.resource &&
-                                                existing.from == barrier.from &&
-                                                existing.to == barrier.to;
-                                     });
+    const auto exists = std::find_if(
+        planner_edges.barriers.begin(), planner_edges.barriers.end(),
+        [&barrier](const auto &existing) {
+            return existing.resource == barrier.resource &&
+                   existing.from == barrier.from &&
+                   existing.to == barrier.to;
+        });
     if (exists == planner_edges.barriers.end()) {
         planner_edges.barriers.push_back(barrier);
     }
+}
+
+void addDataEdge(PlannerEdges &planner_edges, size_t from, size_t to, const std::string &resource,
+                 const FrameGraphDefinition &definition) {
+    addEdge(planner_edges, from, to);
+    addBarrier(planner_edges, "read_after_write", from, to, resource,
+               definition);
 }
 
 void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const FrameGraphDefinition &definition) {
@@ -1250,6 +1257,29 @@ void validateWritesAreOrdered(const FrameGraphDefinition &definition,
                                              definition.nodes[rhs].name);
                 }
             }
+        }
+    }
+}
+
+void addWriteAfterWriteBarriers(
+    PlannerEdges &planner_edges,
+    const FrameGraphDefinition &definition,
+    const std::vector<size_t> &order) {
+    std::unordered_map<std::string, size_t> last_writer;
+    for (const auto node_index : order) {
+        for (const auto &resource :
+             definition.nodes[node_index].writes) {
+            if (resource.empty()) continue;
+            const auto previous = last_writer.find(resource);
+            if (previous != last_writer.end()) {
+                // Writer ordering is validated before this point. The edge
+                // may be transitive, but Vulkan still needs an explicit
+                // memory dependency between consecutive physical writers.
+                addBarrier(planner_edges, "write_after_write",
+                           previous->second, node_index, resource,
+                           definition);
+            }
+            last_writer[resource] = node_index;
         }
     }
 }
@@ -1402,10 +1432,11 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
     validateUniqueNames(definition);
     validateKnownResources(definition);
     const auto node_index = buildNodeIndex(definition);
-    const auto planner_edges = buildEdges(definition, node_index);
+    auto planner_edges = buildEdges(definition, node_index);
     const auto reachability = transitiveClosure(planner_edges.exists);
     validateWritesAreOrdered(definition, reachability);
     const auto order = topologicalOrder(definition, planner_edges);
+    addWriteAfterWriteBarriers(planner_edges, definition, order);
     const auto levels_by_node = computeLevels(definition.nodes.size(), planner_edges, order);
 
     FramePlan plan;

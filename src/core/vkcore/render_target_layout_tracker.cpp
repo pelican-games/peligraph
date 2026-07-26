@@ -30,7 +30,8 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
         // COLOR_ATTACHMENT_OUTPUT even though both images use a depth
         // attachment layout. Cover both the depth test access and the
         // single-sample resolve write.
-        info.src_stage = vk::PipelineStageFlagBits::eLateFragmentTests |
+        info.src_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                         vk::PipelineStageFlagBits::eLateFragmentTests |
                          vk::PipelineStageFlagBits::eColorAttachmentOutput;
         info.src_access = vk::AccessFlagBits::eDepthStencilAttachmentRead |
                           vk::AccessFlagBits::eDepthStencilAttachmentWrite |
@@ -77,6 +78,7 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
                           vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                         vk::PipelineStageFlagBits::eLateFragmentTests |
                          vk::PipelineStageFlagBits::eColorAttachmentOutput;
         info.dst_access = vk::AccessFlagBits::eDepthStencilAttachmentRead |
                           vk::AccessFlagBits::eDepthStencilAttachmentWrite |

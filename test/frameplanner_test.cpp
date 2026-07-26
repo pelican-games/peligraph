@@ -539,6 +539,37 @@ TEST_CASE("frame planner emits barriers for explicit compute to render resource 
     REQUIRE(plan.barriers.front().to == "present");
 }
 
+TEST_CASE("frame planner emits a barrier for ordered write-after-write",
+          "[frameplanner][synchronization]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+              "name": "ordered_waw",
+              "buffers": [{"name": "shared"}],
+              "compute_tasks": [
+                {
+                  "name": "write_a",
+                  "writes": ["shared"],
+                  "before": ["write_b"]
+                },
+                {
+                  "name": "write_b",
+                  "writes": ["shared"]
+                }
+              ]
+            })json"));
+
+    const auto plan = planFrameGraph(graph);
+    REQUIRE(
+        framePlanOrder(plan) ==
+        std::vector<std::string>{"write_a", "write_b"});
+    REQUIRE(plan.barriers.size() == 1);
+    REQUIRE(plan.barriers.front().kind == "write_after_write");
+    REQUIRE(plan.barriers.front().resource == "shared");
+    REQUIRE(plan.barriers.front().from == "write_a");
+    REQUIRE(plan.barriers.front().to == "write_b");
+}
+
 TEST_CASE(
     "material resource ports create typed compute to geometry reads",
     "[frameplanner][material-resource][wp207b]") {

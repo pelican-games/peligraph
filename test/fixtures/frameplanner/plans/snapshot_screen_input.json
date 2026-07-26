@@ -17,6 +17,12 @@
       "kind": "read_after_write",
       "resource": "display",
       "to": "output_transform"
+    },
+    {
+      "from": "opaque",
+      "kind": "write_after_write",
+      "resource": "display",
+      "to": "refract"
     }
   ],
   "graph": "snapshot_demo",
