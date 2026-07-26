@@ -129,9 +129,75 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
     return glb;
 }
 
+inline std::vector<uint8_t> makeNormalizedPositionGlb() {
+    std::vector<uint8_t> bin{
+        0x80, 0xc0, 0x00,
+        0x7f, 0xc0, 0x00,
+        0x00, 0x7f, 0x00,
+    };
+    nlohmann::json json{
+        {"asset",
+         {{"version", "2.0"},
+          {"generator",
+           "pelican normalized accessor fixture"}}},
+        {"extensionsUsed", {"KHR_mesh_quantization"}},
+        {"extensionsRequired", {"KHR_mesh_quantization"}},
+        {"scene", 0},
+        {"scenes", {{{"nodes", {0}}}}},
+        {"nodes", {{{"name", "Quantized"}, {"mesh", 0}}}},
+        {"meshes",
+         {{{"name", "QuantizedMesh"},
+           {"primitives",
+            {{{"attributes", {{"POSITION", 0}}}}}}}}},
+        {"buffers", {{{"byteLength", bin.size()}}}},
+        {"bufferViews",
+         {{{"buffer", 0},
+           {"byteOffset", 0},
+           {"byteLength", bin.size()}}}},
+        {"accessors",
+         {{{"bufferView", 0},
+           {"componentType", 5120},
+           {"normalized", true},
+           {"count", 3},
+           {"type", "VEC3"},
+           {"min", {-128, -64, 0}},
+           {"max", {127, 127, 0}}}}},
+    };
+
+    auto json_bytes = json.dump();
+    while (json_bytes.size() % 4 != 0) {
+        json_bytes.push_back(' ');
+    }
+    while (bin.size() % 4 != 0) {
+        bin.push_back(0);
+    }
+
+    std::vector<uint8_t> glb;
+    const auto total_length = static_cast<uint32_t>(
+        12 + 8 + json_bytes.size() + 8 + bin.size());
+    detail::appendU32(glb, 0x46546c67);
+    detail::appendU32(glb, 2);
+    detail::appendU32(glb, total_length);
+    detail::appendU32(
+        glb, static_cast<uint32_t>(json_bytes.size()));
+    detail::appendU32(glb, 0x4e4f534a);
+    glb.insert(
+        glb.end(), json_bytes.begin(), json_bytes.end());
+    detail::appendU32(
+        glb, static_cast<uint32_t>(bin.size()));
+    detail::appendU32(glb, 0x004e4942);
+    glb.insert(glb.end(), bin.begin(), bin.end());
+    return glb;
+}
+
 inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_names = false,
                      bool geometry_only = false) {
     detail::writeBytes(path, makeGlb(duplicate_root_names, geometry_only));
+}
+
+inline void writeNormalizedPositionGlb(
+    const std::filesystem::path &path) {
+    detail::writeBytes(path, makeNormalizedPositionGlb());
 }
 
 } // namespace Pelican::TestGltfFragmentFixture

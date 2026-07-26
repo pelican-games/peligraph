@@ -27,6 +27,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -608,6 +609,79 @@ struct InternalGltfLoader {
         }
         return buf;
     }
+
+    template <class InType>
+    static float normalizedIntegerComponent(InType value) {
+        static_assert(std::is_integral_v<InType>);
+        if constexpr (std::is_unsigned_v<InType>) {
+            return static_cast<float>(value) /
+                   static_cast<float>(
+                       std::numeric_limits<InType>::max());
+        } else {
+            return std::max(
+                static_cast<float>(value) /
+                    static_cast<float>(
+                        std::numeric_limits<InType>::max()),
+                -1.0F);
+        }
+    }
+
+    template <class InType, class OutType>
+    std::vector<OutType>
+    readNormalizedScalar(const unsigned char *p_data,
+                         std::size_t count,
+                         std::size_t stride,
+                         std::size_t element_size) {
+        if (element_size != sizeof(InType)) {
+            throw std::runtime_error(
+                "glTF normalized scalar has an invalid element size");
+        }
+        std::vector<OutType> result(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            InType value{};
+            std::memcpy(
+                &value, p_data + stride * index,
+                sizeof(value));
+            result[index] = static_cast<OutType>(
+                normalizedIntegerComponent(value));
+        }
+        return result;
+    }
+
+    template <class InType, class OutType,
+              std::size_t ComponentCount>
+    std::vector<OutType>
+    readNormalizedVector(const unsigned char *p_data,
+                         std::size_t count,
+                         std::size_t stride,
+                         std::size_t element_size) {
+        if (element_size !=
+            sizeof(InType) * ComponentCount) {
+            throw std::runtime_error(
+                "glTF normalized vector has an invalid element size");
+        }
+        using OutComponent = typename OutType::value_type;
+        std::vector<OutType> result(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            auto &decoded = result[index];
+            for (std::size_t component = 0;
+                 component < ComponentCount;
+                 ++component) {
+                InType value{};
+                std::memcpy(
+                    &value,
+                    p_data + stride * index +
+                        sizeof(InType) * component,
+                    sizeof(value));
+                decoded[
+                    static_cast<glm::length_t>(component)] =
+                    static_cast<OutComponent>(
+                        normalizedIntegerComponent(value));
+            }
+        }
+        return result;
+    }
+
     template <int expected_type, class T> std::vector<T> getDataFromAccessor(int accessor_index) {
         const auto context = "glTF accessor " + std::to_string(accessor_index) +
                              " in '" + source_path + "'";
@@ -683,6 +757,94 @@ struct InternalGltfLoader {
                                      " data exceeds its bufferView");
         }
         const auto *p_data = count == 0 ? nullptr : buffer.data.data() + begin;
+
+        if (accessor.normalized) {
+            if constexpr (
+                expected_type ==
+                TINYGLTF_TYPE_SCALAR) {
+                if constexpr (
+                    !std::is_floating_point_v<T>) {
+                    throw std::runtime_error(
+                        context +
+                        " is normalized but its destination is "
+                        "not floating-point");
+                }
+            } else if constexpr (
+                expected_type == TINYGLTF_TYPE_VEC2 ||
+                expected_type == TINYGLTF_TYPE_VEC3 ||
+                expected_type == TINYGLTF_TYPE_VEC4) {
+                if constexpr (
+                    !std::is_floating_point_v<
+                        typename T::value_type>) {
+                    throw std::runtime_error(
+                        context +
+                        " is normalized but its destination is "
+                        "not floating-point");
+                }
+            } else {
+                throw std::runtime_error(
+                    context +
+                    " uses normalized components for an "
+                    "unsupported accessor shape");
+            }
+
+            const auto read_normalized =
+                [&]<class InType>() -> std::vector<T> {
+                if constexpr (
+                    expected_type ==
+                    TINYGLTF_TYPE_SCALAR) {
+                    return readNormalizedScalar<
+                        InType, T>(
+                        p_data, count, stride,
+                        element_size);
+                } else if constexpr (
+                    expected_type ==
+                    TINYGLTF_TYPE_VEC2) {
+                    return readNormalizedVector<
+                        InType, T, 2>(
+                        p_data, count, stride,
+                        element_size);
+                } else if constexpr (
+                    expected_type ==
+                    TINYGLTF_TYPE_VEC3) {
+                    return readNormalizedVector<
+                        InType, T, 3>(
+                        p_data, count, stride,
+                        element_size);
+                } else if constexpr (
+                    expected_type ==
+                    TINYGLTF_TYPE_VEC4) {
+                    return readNormalizedVector<
+                        InType, T, 4>(
+                        p_data, count, stride,
+                        element_size);
+                } else {
+                    throw std::logic_error(
+                        "unreachable normalized accessor shape");
+                }
+            };
+            switch (accessor.componentType) {
+            case TINYGLTF_COMPONENT_TYPE_BYTE:
+                return read_normalized
+                    .template operator()<std::int8_t>();
+            case TINYGLTF_COMPONENT_TYPE_SHORT:
+                return read_normalized
+                    .template operator()<std::int16_t>();
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                return read_normalized
+                    .template operator()<std::uint8_t>();
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                return read_normalized
+                    .template operator()<std::uint16_t>();
+            default:
+                throw std::runtime_error(
+                    context +
+                    " uses normalized components with an "
+                    "unsupported component type " +
+                    std::to_string(
+                        accessor.componentType));
+            }
+        }
 
         if constexpr (expected_type == TINYGLTF_TYPE_SCALAR) {
             switch (accessor.componentType) {
@@ -1621,10 +1783,41 @@ struct InternalGltfLoader {
             if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end())
                 dat.texcoord = getDataFromAccessor<TINYGLTF_TYPE_VEC2, glm::vec2>(it->second);
             if (auto it = primitive.attributes.find("COLOR_0"); it != primitive.attributes.end()) {
-                const auto &tmp_color = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
-                dat.color.resize(tmp_color.size());
-                std::transform(tmp_color.begin(), tmp_color.end(), dat.color.begin(),
-                               [](glm::vec3 v3) { return glm::vec4{v3, 1.0f}; });
+                if (it->second < 0 ||
+                    it->second >=
+                        static_cast<int>(
+                            model.accessors.size())) {
+                    throw std::runtime_error(
+                        "glTF COLOR_0 accessor index is out of range");
+                }
+                const auto &accessor =
+                    model.accessors.at(
+                        static_cast<std::size_t>(
+                            it->second));
+                if (accessor.type ==
+                    TINYGLTF_TYPE_VEC3) {
+                    const auto &tmp_color =
+                        getDataFromAccessor<
+                            TINYGLTF_TYPE_VEC3,
+                            glm::vec3>(it->second);
+                    dat.color.resize(tmp_color.size());
+                    std::transform(
+                        tmp_color.begin(), tmp_color.end(),
+                        dat.color.begin(),
+                        [](glm::vec3 value) {
+                            return glm::vec4{value, 1.0F};
+                        });
+                } else if (
+                    accessor.type ==
+                    TINYGLTF_TYPE_VEC4) {
+                    dat.color =
+                        getDataFromAccessor<
+                            TINYGLTF_TYPE_VEC4,
+                            glm::vec4>(it->second);
+                } else {
+                    throw std::runtime_error(
+                        "glTF COLOR_0 accessor must be VEC3 or VEC4");
+                }
             }
             if (auto it = primitive.attributes.find("JOINTS_0"); it != primitive.attributes.end())
                 dat.joint = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::i16vec4>(it->second);

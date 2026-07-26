@@ -90,8 +90,12 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     const TempDirGuard temp_guard{temp_dir};
     const auto glb_path = temp_dir / "fragment.glb";
     const auto duplicate_path = temp_dir / "duplicate.glb";
+    const auto normalized_path =
+        temp_dir / "normalized.glb";
     TestGltfFragmentFixture::writeGlb(glb_path);
     TestGltfFragmentFixture::writeGlb(duplicate_path, true);
+    TestGltfFragmentFixture::
+        writeNormalizedPositionGlb(normalized_path);
     writeText(temp_dir / "scene.json", R"json({
         "schema":"pelican.scene",
         "version":1,
@@ -177,6 +181,22 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
                         whole.material_primitives.end(), [](const auto &group) {
                             return group.source_material_index == 1;
                         }));
+
+    const auto normalized =
+        loader.loadGltfBinary(
+            normalized_path.string());
+    REQUIRE(primitiveCount(normalized) == 1);
+    const auto &normalized_bounds =
+        normalized.material_primitives.front()
+            .primitives.front()
+            .bounds_source->base;
+    REQUIRE(
+        normalized_bounds.minimum ==
+        glm::vec3{
+            -1.0F, -64.0F / 127.0F, 0.0F});
+    REQUIRE(
+        normalized_bounds.maximum ==
+        glm::vec3{1.0F, 1.0F, 0.0F});
 
 #if PELICAN_WITH_VAT
     const auto vat_path = temp_dir / "bounds_vat.glb";
