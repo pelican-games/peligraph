@@ -79,6 +79,9 @@ struct MaterialPassInfo {
     uint32_t material_count = 0;
     MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
     std::optional<MaterialDrawTagFilter> material_filter;
+    // Opaque project-authored name selecting an alternate material resource.
+    // The name carries no engine technique semantics.
+    std::optional<std::string> material_variant;
     std::vector<MaterialPassScreenInputBinding> screen_inputs;
     // Feature-owned public resources share the material pass-input descriptor
     // ABI but are not authored by individual .surface files.

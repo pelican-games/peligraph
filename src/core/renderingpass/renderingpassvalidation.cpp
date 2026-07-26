@@ -287,6 +287,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             "Only material passes support material_filter: " +
             pass_def.name);
     }
+    if (!pass_def.isMaterial() &&
+        pass_json.contains("material_variant")) {
+        throw std::runtime_error(
+            "Only material passes support material_variant: " +
+            pass_def.name);
+    }
     if (!pass_def.isMaterial() && pass_json.contains("screen_inputs")) {
         throw std::runtime_error("Only material passes support screen_inputs: " +
                                  pass_def.name);

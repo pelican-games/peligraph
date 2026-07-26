@@ -994,6 +994,37 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "frame plan preserves a pass-local material variant beside its filter identity",
+    "[frameplanner][material-variant][wp206b]") {
+    auto authored = nlohmann::json::parse(R"json({
+      "name":"material_variant",
+      "passes":[
+        {"name":"silhouette_overlay","type":"material",
+         "material_contract":"forward_opaque_v1",
+         "material_filter":{"include":["outlined"]},
+         "material_variant":"silhouette",
+         "output":{"color":"scene","depth":"depth"}}
+      ]
+    })json");
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(authored);
+    REQUIRE(graph.nodes.front().material_variant ==
+            "silhouette");
+    const auto plan_json =
+        framePlanToJson(planFrameGraph(graph));
+    REQUIRE(plan_json.at("nodes").at(0)
+                .at("material_variant") ==
+            "silhouette");
+
+    authored["passes"][0].erase(
+        "material_contract");
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphDefinitionFromJson(authored),
+        Catch::Matchers::ContainsSubstring(
+            "requires explicit material_contract"));
+}
+
+TEST_CASE(
     "frame graph preserves per-aspect attachment operations",
     "[frameplanner][attachment-operations]") {
     const auto graph =

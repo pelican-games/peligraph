@@ -512,6 +512,44 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     return lowered;
 }
 
+LoweredNamedMaterialVariant lowerMaterialVariant(
+    const MaterialDefinition &base,
+    const MaterialNamedVariantDefinition &variant,
+    const SurfaceFormatDocument &surface,
+    const MaterialLoweringCapabilities &capabilities) {
+    MaterialDefinition definition;
+    definition.name = base.name + "#" + variant.name;
+    definition.base = base.base;
+    definition.defines = variant.defines;
+    definition.surface = variant.surface;
+    definition.values = variant.values;
+    definition.texture_overrides = variant.texture_overrides;
+    definition.render_path = variant.render_path;
+    return LoweredNamedMaterialVariant{
+        variant.name,
+        lowerMaterial(definition, surface, capabilities),
+    };
+}
+
+std::vector<LoweredNamedMaterialVariant> lowerMaterialVariants(
+    const MaterialDefinition &base,
+    const MaterialSurfaceCatalog &surfaces,
+    const MaterialLoweringCapabilities &capabilities) {
+    std::vector<LoweredNamedMaterialVariant> lowered;
+    lowered.reserve(base.variants.size());
+    for (const auto &variant : base.variants) {
+        const auto surface = surfaces.find(variant.surface);
+        if (surface == surfaces.end()) {
+            throw std::runtime_error(
+                "material '" + base.name + "' variant '" + variant.name +
+                "' surface '" + variant.surface + "' was not provided");
+        }
+        lowered.push_back(
+            lowerMaterialVariant(base, variant, surface->second, capabilities));
+    }
+    return lowered;
+}
+
 LoweredMaterial lowerMaterialWithSnapshots(
     const MaterialDefinition &material,
     const SurfaceFormatDocument &surface,

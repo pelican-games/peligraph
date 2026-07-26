@@ -360,6 +360,48 @@ TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen pass
     REQUIRE(material_pass.isMaterial());
 }
 
+TEST_CASE("material pass selects an opaque named variant through an explicit bounded route",
+          "[renderingpass][material-variant][wp206b]") {
+    PassDefinition pass;
+    pass.name = "silhouette_overlay";
+    pass.pass_info = MaterialPassInfo{};
+    const auto authored = nlohmann::json{
+        {"material_contract", "forward_opaque_v1"},
+        {"material_filter",
+         {{"include", {"outlined"}}}},
+        {"material_variant", "silhouette"},
+    };
+    parseMaterialPassInfoFromJson(pass, authored);
+    REQUIRE(pass.materialInfo().material_variant ==
+            "silhouette");
+    REQUIRE(pass.materialInfo().contract ==
+            MaterialPassContract::forward_opaque_v1);
+    REQUIRE(pass.materialInfo().material_filter
+                ->include ==
+            std::vector<std::string>{"outlined"});
+
+    auto invalid = authored;
+    invalid.erase("material_contract");
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(pass, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "requires explicit material_contract"));
+
+    invalid = authored;
+    invalid["material_filter"]["include"] =
+        nlohmann::json::array();
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(pass, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "requires non-empty material_filter.include"));
+
+    invalid = authored;
+    invalid["material_variant"] = "bad/name";
+    REQUIRE_THROWS_AS(
+        parseMaterialPassInfoFromJson(pass, invalid),
+        std::runtime_error);
+}
+
 TEST_CASE("rendering pass target JSON parser applies output and input targets", "[renderingpass]") {
     const auto resolver = RenderTargetNameResolver{[](const std::string &name) {
         if (name == "color_target") {

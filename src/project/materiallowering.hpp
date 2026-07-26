@@ -84,6 +84,11 @@ struct LoweredMaterial {
     std::optional<MaterialVariantRouting> routing;
 };
 
+struct LoweredNamedMaterialVariant {
+    std::string name;
+    LoweredMaterial material;
+};
+
 DeferredEligibility evaluateDeferredEligibility(
     const MaterialDefinition &material,
     const SurfaceFormatDocument &surface);
@@ -101,6 +106,17 @@ void validateSurfaceCapabilities(const SurfaceFormatDocument &surface,
 LoweredMaterial lowerMaterial(const MaterialDefinition &material,
                               const SurfaceFormatDocument &surface,
                               const MaterialLoweringCapabilities &capabilities = {});
+
+LoweredNamedMaterialVariant lowerMaterialVariant(
+    const MaterialDefinition &base,
+    const MaterialNamedVariantDefinition &variant,
+    const SurfaceFormatDocument &surface,
+    const MaterialLoweringCapabilities &capabilities = {});
+
+std::vector<LoweredNamedMaterialVariant> lowerMaterialVariants(
+    const MaterialDefinition &base,
+    const MaterialSurfaceCatalog &surfaces,
+    const MaterialLoweringCapabilities &capabilities = {});
 
 LoweredMaterial lowerMaterialWithSnapshots(
     const MaterialDefinition &material,

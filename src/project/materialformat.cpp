@@ -604,6 +604,55 @@ parseTextureOverrides(const nlohmann::json &material, const std::string &name,
     return overrides;
 }
 
+std::vector<MaterialNamedVariantDefinition>
+parseNamedVariants(const nlohmann::json &material, const std::string &base_name,
+                   const MaterialSurfaceCatalog &surfaces,
+                   std::vector<std::string> &warnings) {
+    const auto found = material.find("variants");
+    if (found == material.end()) return {};
+    if (!found->is_object()) {
+        throw std::runtime_error(materialContext(base_name) +
+                                 " variants must be an object");
+    }
+
+    std::vector<MaterialNamedVariantDefinition> variants;
+    variants.reserve(found->size());
+    for (auto entry = found->begin(); entry != found->end(); ++entry) {
+        const auto &variant_name = entry.key();
+        validateMaterialVariantName(
+            variant_name, materialContext(base_name));
+        if (!entry->is_object()) {
+            throw std::runtime_error(materialContext(base_name) +
+                                     " variant '" + variant_name +
+                                     "' must be an object");
+        }
+        const auto variant_context =
+            materialContext(base_name) + " variant '" + variant_name + "'";
+        appendUnknownKeyWarnings(
+            *entry,
+            {"surface", "defines", "values", "textures", "render_path"},
+            variant_context, warnings);
+
+        auto surface = requireString(*entry, "surface", variant_context);
+        validateSurfaceReference(surface, variant_context);
+        const auto synthetic_name = base_name + "#" + variant_name;
+
+        MaterialNamedVariantDefinition parsed;
+        parsed.name = variant_name;
+        parsed.surface = std::move(surface);
+        parsed.defines = parseDefines(*entry, synthetic_name);
+        parsed.render_path = parseMaterialRenderPath(*entry, synthetic_name);
+        const std::optional<std::string> surface_reference{parsed.surface};
+        parsed.values =
+            parseValues(*entry, synthetic_name, surface_reference, surfaces);
+        parsed.texture_overrides = parseTextureOverrides(
+            *entry, synthetic_name, surface_reference, surfaces);
+        variants.push_back(std::move(parsed));
+    }
+    std::ranges::sort(variants, {}, &MaterialNamedVariantDefinition::name);
+    return variants;
+}
+
 MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
                                  const MaterialSurfaceCatalog &surfaces,
                                  std::vector<std::string> &warnings) {
@@ -621,7 +670,7 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
     }
     appendUnknownKeyWarnings(material,
                              {"name", "tags", "base", "shader", "defines", "surface", "values",
-                              "textures", "routing", "render_path", "pass"},
+                              "textures", "routing", "render_path", "pass", "variants"},
                              context, warnings);
 
     MaterialDefinition parsed;
@@ -643,6 +692,8 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
     parsed.values = parseValues(material, name, parsed.surface, surfaces);
     parsed.texture_overrides =
         parseTextureOverrides(material, name, parsed.surface, surfaces);
+    parsed.variants =
+        parseNamedVariants(material, name, surfaces, warnings);
     return parsed;
 }
 
@@ -679,6 +730,16 @@ void requireOnlyKeys(const nlohmann::json &object,
 }
 
 } // namespace
+
+void validateMaterialVariantName(std::string_view name,
+                                 std::string_view context) {
+    if (!isR7Identifier(name)) {
+        throw std::runtime_error(
+            std::string{context} +
+            " variant name must match [a-zA-Z0-9_]: " +
+            std::string{name});
+    }
+}
 
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document_json) {
     return parseMaterialFormatJson(document_json, {});

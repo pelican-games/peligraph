@@ -2,6 +2,7 @@
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
+#include "../../project/materialformat.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -80,6 +81,31 @@ void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::jso
                                      contract.get<std::string>() + "': " + pass_def.name);
         }
         material_info.contract = *parsed;
+    }
+
+    if (pass_json.contains("material_variant")) {
+        const auto &variant = pass_json.at("material_variant");
+        if (!variant.is_string()) {
+            throw std::runtime_error(
+                "material_variant must be a string: " +
+                pass_def.name);
+        }
+        auto name = variant.get<std::string>();
+        validateMaterialVariantName(
+            name, "Material pass '" + pass_def.name + "'");
+        if (!pass_json.contains("material_contract")) {
+            throw std::runtime_error(
+                "Material pass '" + pass_def.name +
+                "' material_variant requires explicit material_contract");
+        }
+        if (!material_info.material_filter ||
+            material_info.material_filter->include.empty()) {
+            throw std::runtime_error(
+                "Material pass '" + pass_def.name +
+                "' material_variant requires non-empty "
+                "material_filter.include");
+        }
+        material_info.material_variant = std::move(name);
     }
 
     if (!pass_json.contains("material_range")) return;

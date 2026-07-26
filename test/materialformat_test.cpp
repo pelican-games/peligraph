@@ -210,6 +210,66 @@ TEST_CASE("material format parses canonical stable draw tags",
             "tags must be an array of strings"));
 }
 
+TEST_CASE("current material version parses named pass variants without legacy branches",
+          "[material-format][material-variant][wp206b]") {
+    auto input = nlohmann::json::parse(R"json({
+      "schema":"pelican.material",
+      "version":1,
+      "materials":[{
+        "name":"hero",
+        "surface":"project://shaders/lava.surface",
+        "variants":{
+          "z_silhouette":{
+            "surface":"project://shaders/lava.surface",
+            "render_path":"forward",
+            "defines":["SILHOUETTE"],
+            "values":{"flow_speed":0.75}
+          },
+          "a_overlay":{
+            "surface":"project://shaders/lava.surface"
+          }
+        }
+      }]
+    })json");
+    const auto parsed =
+        parseMaterialFormatJson(input, surfaceCatalog());
+    const auto &variants =
+        parsed.materials.front().variants;
+    REQUIRE(variants.size() == 2);
+    REQUIRE(variants[0].name == "a_overlay");
+    REQUIRE(variants[1].name == "z_silhouette");
+    REQUIRE(variants[1].surface ==
+            "project://shaders/lava.surface");
+    REQUIRE(variants[1].render_path ==
+            MaterialRenderPath::forward);
+    REQUIRE(variants[1].defines ==
+            std::vector<std::string>{"SILHOUETTE"});
+    REQUIRE(variants[1].values.size() == 1);
+
+    auto invalid = input;
+    invalid["materials"][0]["variants"]["bad-name"] =
+        invalid["materials"][0]["variants"]["a_overlay"];
+    REQUIRE_THROWS_WITH(
+        parseMaterialFormatJson(invalid, surfaceCatalog()),
+        Catch::Matchers::ContainsSubstring(
+            "variant name must match"));
+
+    invalid = input;
+    invalid["materials"][0]["variants"]["a_overlay"]
+           .erase("surface");
+    REQUIRE_THROWS_WITH(
+        parseMaterialFormatJson(invalid, surfaceCatalog()),
+        Catch::Matchers::ContainsSubstring(
+            "variant 'a_overlay' requires surface"));
+
+    invalid = input;
+    invalid["version"] = 2;
+    REQUIRE_THROWS_WITH(
+        parseMaterialFormatJson(invalid, surfaceCatalog()),
+        Catch::Matchers::ContainsSubstring(
+            "version is not supported"));
+}
+
 TEST_CASE("full material format round-trips into typed fields and warnings", "[material-format]") {
     const auto document =
         parseMaterialFormatJson(readJson(fixtureRoot() / "valid" / "full.json"), surfaceCatalog());

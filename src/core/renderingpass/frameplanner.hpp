@@ -84,6 +84,7 @@ struct FrameGraphNodeDefinition {
     RenderResolutionDomain resolution_domain =
         RenderResolutionDomain::unclassified;
     std::optional<MaterialDrawTagFilter> material_filter;
+    std::optional<std::string> material_variant;
 };
 
 struct FrameGraphDefinition {
@@ -111,6 +112,7 @@ struct FramePlanNode {
     std::string snapshot_after;
     std::size_t byte_size = 0;
     std::optional<MaterialDrawTagFilter> material_filter;
+    std::optional<std::string> material_variant;
 };
 
 struct FramePlanBarrier {

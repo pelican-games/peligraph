@@ -103,6 +103,68 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     REQUIRE(lowered.render_state.depth_compare == SurfaceDepthCompare::greater_equal);
 }
 
+TEST_CASE("named material variants lower through the ordinary surface and route logic",
+          "[material-lowering][material-variant][wp206b]") {
+    const auto base_surface = parseSurfaceFormat(
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n\n"
+        "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
+        "inout PelicanSurfaceV1 surface) {}\n",
+        "project://surfaces/base.surface");
+    const auto outline_surface = parseSurfaceFormat(
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! params:\n"
+        "//!   - { name: width, type: float, default: 0.01 }\n"
+        "//! render_state: { blend: opaque, cull: front, depth: read_only, "
+        "depth_compare: less_equal }\n\n"
+        "void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) { "
+        "vertex.position += vertex.normal * pelican_param_width(); }\n"
+        "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+        "in PelicanSurfaceInputV1 input_data) { return vec3(0.02); }\n",
+        "project://surfaces/silhouette.surface");
+
+    MaterialDefinition base;
+    base.name = "hero";
+    base.tags = {"outlined"};
+    base.surface = "project://surfaces/base.surface";
+    MaterialNamedVariantDefinition variant;
+    variant.name = "silhouette";
+    variant.surface =
+        "project://surfaces/silhouette.surface";
+    SurfaceParamValue width;
+    width.type = SurfaceParamType::floating;
+    width.values[0] = 0.025;
+    variant.values.push_back({"width", width});
+    base.variants.push_back(variant);
+
+    const MaterialSurfaceCatalog surfaces{
+        {*base.surface, base_surface},
+        {variant.surface, outline_surface},
+    };
+    const auto lowered_base =
+        lowerMaterial(base, base_surface);
+    const auto lowered_variants =
+        lowerMaterialVariants(base, surfaces);
+
+    REQUIRE(lowered_base.tags ==
+            std::vector<std::string>{"outlined"});
+    REQUIRE(lowered_variants.size() == 1);
+    REQUIRE(lowered_variants.front().name ==
+            "silhouette");
+    const auto &lowered =
+        lowered_variants.front().material;
+    REQUIRE(lowered.name == "hero#silhouette");
+    REQUIRE(lowered.tags.empty());
+    REQUIRE(lowered.route ==
+            MaterialRouteClass::forward_opaque);
+    REQUIRE(lowered.render_state.cull ==
+            SurfaceCullMode::front);
+    REQUIRE_FALSE(lowered.render_state.depth_write);
+    REQUIRE(readAt<float>(lowered.values, 0) ==
+            Catch::Approx(0.025f));
+}
+
 TEST_CASE("type color supports explicit linear encoding without decoding alpha",
           "[material-lowering]") {
     const std::string source =

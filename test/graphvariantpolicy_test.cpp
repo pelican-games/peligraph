@@ -5,6 +5,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -227,6 +228,66 @@ TEST_CASE("WP192 preview transform and validation are selected by typed policy",
     REQUIRE_THROWS_WITH(
         validateGraphVariantConfig(policy, config),
         "preview graph 'main' rejects authored pass 'authored_velocity': unsafe pass type/name velocity");
+}
+
+TEST_CASE("WP206b material variant selection survives every graph variant rewrite",
+          "[wp206b][material-variant][graph-variant]") {
+    const auto source = [] {
+        auto config = baseConfig();
+        auto &passes =
+            config.at("rendering_passes")
+                .at(0)
+                .at("passes");
+        passes.insert(
+            passes.begin(),
+            Json{
+                {"name", "silhouette_overlay"},
+                {"type", "material"},
+                {"material_contract", "forward_opaque_v1"},
+                {"material_filter",
+                 {{"include", {"outlined"}}}},
+                {"material_variant", "silhouette"},
+            });
+        return config;
+    }();
+
+    auto variants = std::vector{
+        RenderPipelineGraphVariant::flat,
+        RenderPipelineGraphVariant::preview,
+    };
+#if PELICAN_WITH_OPENXR
+    variants.push_back(RenderPipelineGraphVariant::xr);
+#endif
+    for (const auto variant : variants) {
+        const auto variant_name =
+            std::string{renderPipelineGraphVariantName(variant)};
+        CAPTURE(variant_name);
+        const auto policy = compileGraphVariantPolicy(
+            GraphVariantPolicyRequest{variant});
+        auto transformed = source;
+        transformGraphVariantConfig(policy, transformed);
+        const auto &passes =
+            transformed.at("rendering_passes")
+                .at(0)
+                .at("passes");
+        const auto selected = std::find_if(
+            passes.begin(), passes.end(),
+            [](const auto &pass) {
+                return pass.value("name", "") ==
+                       "silhouette_overlay";
+            });
+        REQUIRE(selected != passes.end());
+        REQUIRE(selected->at("material_variant") ==
+                "silhouette");
+        REQUIRE(selected->at("material_filter")
+                    .at("include") ==
+                Json::array({"outlined"}));
+        REQUIRE(selected->at("material_contract") ==
+                "forward_opaque_v1");
+        REQUIRE_NOTHROW(
+            validateGraphVariantConfig(
+                policy, transformed));
+    }
 }
 
 TEST_CASE("WP192 resolver owns XR and preview policy without injected callbacks",

@@ -74,6 +74,18 @@ struct MaterialBase {
     std::optional<std::string> emissive_texture;
 };
 
+// A user-named alternate B-layer surface for an additional material pass.
+// The base material identity and fixed PBR inputs are retained; the variant
+// owns the surface-defined program, values, textures, state, and route.
+struct MaterialNamedVariantDefinition {
+    std::string name;
+    std::string surface;
+    std::vector<std::string> defines;
+    std::vector<MaterialValue> values;
+    std::vector<MaterialTextureOverride> texture_overrides;
+    MaterialRenderPath render_path = MaterialRenderPath::automatic;
+};
+
 struct MaterialDefinition {
     std::string name;
     std::vector<std::string> tags;
@@ -86,6 +98,7 @@ struct MaterialDefinition {
     std::optional<MaterialVariantRouting> routing;
     MaterialRenderPath render_path = MaterialRenderPath::automatic;
     std::optional<std::string> exact_pass;
+    std::vector<MaterialNamedVariantDefinition> variants;
 };
 
 struct MaterialFormatDocument {
@@ -98,6 +111,9 @@ using MaterialSurfaceCatalog = std::unordered_map<std::string, SurfaceFormatDocu
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document);
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document,
                                                const MaterialSurfaceCatalog &surfaces);
+
+void validateMaterialVariantName(std::string_view name,
+                                 std::string_view context);
 
 PrimitiveMaterialBindingDocument
 parsePrimitiveMaterialBindingJson(const nlohmann::json &document);

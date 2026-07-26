@@ -1,5 +1,6 @@
 #include "frameplanner.hpp"
 #include "materialpassinfojsonparser.hpp"
+#include "../../project/materialformat.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include <algorithm>
@@ -423,11 +424,46 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
                 pass_json,
                 "Frame graph material pass '" +
                     node.name + "'");
+        if (pass_json.contains("material_variant")) {
+            if (!pass_json.at("material_variant").is_string()) {
+                throw std::runtime_error(
+                    "Frame graph material pass '" + node.name +
+                    "' material_variant must be a string");
+            }
+            node.material_variant =
+                pass_json.at("material_variant").get<std::string>();
+            validateMaterialVariantName(
+                *node.material_variant,
+                "Frame graph material pass '" +
+                    node.name + "'");
+            if (!pass_json.contains(
+                    "material_contract")) {
+                throw std::runtime_error(
+                    "Frame graph material pass '" +
+                    node.name +
+                    "' material_variant requires explicit "
+                    "material_contract");
+            }
+            if (!node.material_filter ||
+                node.material_filter->include.empty()) {
+                throw std::runtime_error(
+                    "Frame graph material pass '" +
+                    node.name +
+                    "' material_variant requires non-empty "
+                    "material_filter.include");
+            }
+        }
     } else if (pass_json.contains(
                    "material_filter")) {
         throw std::runtime_error(
             "Only material frame graph passes support "
             "material_filter: " +
+            node.name);
+    } else if (pass_json.contains(
+                   "material_variant")) {
+        throw std::runtime_error(
+            "Only material frame graph passes support "
+            "material_variant: " +
             node.name);
     }
     if (type == "canonical_anchor") {
@@ -736,6 +772,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     if (pass.isMaterial()) {
         node.material_filter =
             pass.materialInfo().material_filter;
+        node.material_variant =
+            pass.materialInfo().material_variant;
     }
     for (size_t i = 0; i < pass.input_targets.size(); ++i) {
         if (pass.input_target_history.at(i)) {
@@ -1186,6 +1224,7 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             node_def.snapshot_after,
             node_def.byte_size,
             node_def.material_filter,
+            node_def.material_variant,
         });
     }
 
@@ -1242,6 +1281,10 @@ nlohmann::json framePlanToJson(
                 {"resolution_state",
                  "pending_draw_queue_compile"},
             };
+        }
+        if (node.material_variant) {
+            node_json["material_variant"] =
+                *node.material_variant;
         }
         nodes_json.push_back(std::move(node_json));
     }
