@@ -1,11 +1,12 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v4)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v5)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v4(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v5(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
 v2 の件数不整合、G2/G13、material screen input、sampler/texture dimension、
-raster tiled lighting の誤判定を訂正した。v4ではWP206aのmaterial-owned stable tag
-selectionを反映し、instance/draw-owned layerだけをG14の残件とした。監査記録は
+raster tiled lighting の誤判定を訂正した。v4のWP206a stable tag selectionに続き、
+v5ではWP206bのpass-local named variantとinverted-hull dogfoodを反映した。
+instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
 ## 0. 判定規則
@@ -50,7 +51,7 @@ selectionを反映し、instance/draw-owned layerだけをG14の残件とした�
 | graphics buffer input | fullscreen は対応済み。material/geometry pass は未対応(G2) |
 | sampler | fullscreen input は filter/address 指定可。material custom texture は固定 sampler、compare/anisotropy 未公開(G12) |
 | texture dimension | XR 内部 array は存在。project authored static cube/array/3D と RT mip/layer/subresource view が未公開(G4/G10) |
-| render state | surface 単位は対応済み。同一 material を別 pass で別 state/surface として描く pass-local variant が未公開(G13) |
+| render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
 | object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
 
@@ -70,7 +71,7 @@ selectionを反映し、instance/draw-owned layerだけをG14の残件とした�
 | A8 | vertex animation(wind/sway) | **○** | `displace` + Frame UBO time |
 | A9 | thin-film interference | **○** | `brdf` hook |
 | A10 | eye shading(cornea/parallax) | **○** | `surface` + `brdf` |
-| A11 | skin SSS analytic approximation | **△** | BRDF 近似とmaterial単位のtag選別は可。screen-space diffusion用variant/outputとinstance単位選別はG13/G15/G14 |
+| A11 | skin SSS analytic approximation | **△** | BRDF近似とmaterial単位のtag/variant overlayは可。screen-space diffusionのtyped contractとinstance単位選別はG15/G14 |
 | A12 | wetness / snow accumulation | **○** | `surface` mask composition |
 | A13 | virtual texture / texture streaming | **✕** | feedback、material resource port、GPU draw/residency、descriptor table(G2/G8/G9) |
 
@@ -143,7 +144,7 @@ selectionを反映し、instance/draw-owned layerだけをG14の残件とした�
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | G1t | sorted transparency | **○** | `forward_transparent_v1` + draw sort provider |
-| G2t | inverted-hull outline | **△** | front cull/displaceとmaterial tag選別は既存。複製なしのpass-local variantがG13、custom geometry contractはG15 |
+| G2t | inverted-hull outline | **○** | WP206bのproject-owned surface/pass dogfoodで、entity/mesh/base material/draw複製なしにfront-cull forward overlayを実GPU描画 |
 | G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式もmultipass/MRT routeのdogfoodが必要。PPLLはfragment storage/atomic contract不足(G2/G9/G15) |
 | G4t | stochastic transparency | **△** | dither/mask は可。TAA integration の品質調整が必要 |
 | G5t | refraction/glass | **○** | material screen input 実配線・描画済み |
@@ -214,7 +215,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G10** | authored RT mip/layer/subresource viewが無い | depth pyramid、runtime IBL、froxel |
 | **G11** | VRS/fragment density/foveation backend contractが無い | XR foveation |
 | **G12** | material samplerのaddress/filter/compare/anisotropy authoringが無い | hardware PCF、special filtering |
-| **G13** | pass-local surface/render-state variantが無い | duplicate-free inverted hull、special overlay |
+| **G13（解消済み、WP206b）** | pass-local named surface/render-state variantを実装。同一phase routeに対応し、opaque/transparent phase跨ぎだけをvariant-aware draw queueへ残す | duplicate-free inverted hull、special overlay |
 | **G14** | material-owned stable tag/filterは実装済みだが、instance/draw-owned tag/layerが未公開 | 同じmaterialを共有するinstanceの個別SSS/outline/decal/reflection |
 | **G15** | material/geometry pass contractがv1閉集合 | custom geometry stage/output |
 | **G16** | stencil state/resource semanticsが未公開 | stencil mask/portal |
@@ -235,7 +236,7 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 次の dogfood は以下を推奨する。
 
 1. public directional shadow reception
-2. 実装済みtag選択 + pass-local variantによる inverted-hull outline
+2. ~~実装済みtag選択 + pass-local variantによる inverted-hull outline~~（WP206bで実GPU dogfood済み）
 3. compute result → material vertex displacement
 4. scalable light inventoryを使う raster/compute clustered lighting
 5. authored mip/layer viewを使う depth pyramid
@@ -250,7 +251,7 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 
 1. 現在の WP204 runtime slice を閉じる
 2. G6a public shadow contract
-3. material-owned G14はWP206aで完了。次はG13、必要なdogfoodでG15。instance/draw-owned G14は実需要時に拡張
+3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1 → G2 の順で compute / geometry typed resource port
 5. G5 lighting data v2 + clustered dogfood
 6. G4/G10/G12 texture dimension/subresource/sampler

@@ -11,6 +11,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -82,10 +83,46 @@ void writeTwoMaterials(const std::filesystem::path &path, double scalar_a,
     writeText(path, document.dump(2));
 }
 
+void writeVariantMaterial(const std::filesystem::path &path,
+                          double base_scalar, double variant_scalar,
+                          bool invalid_variant = false) {
+    const auto variant_value =
+        invalid_variant ? nlohmann::json("wrong")
+                        : nlohmann::json(variant_scalar);
+    const auto document = nlohmann::json{
+        {"schema", "pelican.material"},
+        {"version", 1},
+        {"materials", nlohmann::json::array({
+            {
+                {"name", "live"},
+                {"tags", {"outlined"}},
+                {"surface", "project://wp76.surface"},
+                {"values", {{"scalar_first", base_scalar}}},
+                {"variants",
+                 {
+                     {"silhouette",
+                      {
+                          {"surface", "project://wp76.surface"},
+                          {"values",
+                           {{"scalar_first", variant_value}}},
+                      }},
+                 }},
+            },
+        })},
+    };
+    writeText(path, document.dump(2));
+}
+
 template <class T> T readAt(const std::vector<std::byte> &bytes, std::size_t offset) {
     T value{};
     std::memcpy(&value, bytes.data() + offset, sizeof(value));
     return value;
+}
+
+bool sameBytes(const std::vector<std::byte> &left,
+               const std::vector<std::byte> &right) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin());
 }
 
 void configureGpu(const Sandbox &box) {
@@ -139,6 +176,21 @@ GlobalMaterialId registerValuesMaterial(MaterialContainer &materials,
     };
     applyLoweredMaterial(info, lowered);
     return materials.registerMaterial(std::move(info));
+}
+
+MaterialInfo makeValuesMaterialInfo(const LoweredMaterial &lowered) {
+    const auto &standard = GET_MODULE(StandardMaterialResource);
+    MaterialInfo info{
+        .vert_shader = standard.standardVertShader(),
+        .frag_shader = standard.standardFragShader(),
+        .base_color_texture = standard.whiteTexture(),
+        .metallic_roughness_texture =
+            standard.metallicRoughnessDefaultTexture(),
+        .normal_texture = standard.normalDefaultTexture(),
+        .emissive_texture = standard.emissiveDefaultTexture(),
+    };
+    applyLoweredMaterial(info, lowered);
+    return info;
 }
 
 std::string liveSurface(bool expanded, bool broken = false) {
@@ -394,6 +446,172 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         GET_MODULE(VulkanManageCore).waitIdle();
     } catch (const std::exception &error) {
         SKIP(std::string{"Vulkan material values reload unavailable: "} + error.what());
+    }
+}
+
+TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with its base",
+          "[wp206b][material-variant][material-values-reload][gpu]") {
+    setupLogger();
+    Sandbox box;
+    try {
+        FastModuleContainer modules;
+        configureGpu(box);
+        const auto surface = wp76Surface();
+        const MaterialSurfaceCatalog catalog{
+            {"project://wp76.surface", surface}};
+        const auto path = box.root / "variant.material.json";
+        writeVariantMaterial(path, 2.0, 5.0);
+
+        std::ifstream input{path, std::ios::binary};
+        const auto document = parseMaterialFormatJson(
+            nlohmann::json::parse(input), catalog);
+        REQUIRE(document.materials.size() == 1);
+        const auto &definition = document.materials.front();
+        auto base_lowered =
+            lowerMaterial(definition, surface);
+        auto variants =
+            lowerMaterialVariants(definition, catalog);
+        REQUIRE(variants.size() == 1);
+
+        auto &materials = GET_MODULE(MaterialContainer);
+        auto base_info =
+            makeValuesMaterialInfo(base_lowered);
+        base_info.base_color_factor =
+            {0.25f, 0.5f, 0.75f, 1.0f};
+        const auto base = materials.registerMaterial(
+            std::move(base_info));
+        const auto base_record_before =
+            materials.materialGpuRecordForTesting(base);
+        std::vector<MaterialContainer::NamedMaterialVariantRegistration>
+            registrations;
+        auto variant_info =
+            makeValuesMaterialInfo(
+                variants.front().material);
+        variant_info.base_color_factor =
+            {0.9f, 0.9f, 0.9f, 0.9f};
+        registrations.push_back({
+            variants.front().name,
+            std::move(variant_info),
+        });
+        materials.registerMaterialVariants(
+            base, std::move(registrations));
+        const auto variant =
+            materials.materialVariantResource(base, "silhouette");
+        REQUIRE(variant != base);
+        REQUIRE(sameBytes(
+            materials.materialGpuRecordForTesting(base),
+            base_record_before));
+        REQUIRE(readAt<float>(
+                    materials.materialGpuValuesForTesting(base), 0) ==
+                Catch::Approx(2.0f));
+        REQUIRE(readAt<float>(
+                    materials.materialGpuValuesForTesting(variant), 0) ==
+                Catch::Approx(5.0f));
+        REQUIRE(readAt<float>(
+                    materials.materialGpuRecordForTesting(variant), 0) ==
+                Catch::Approx(0.25f));
+
+        PassDefinition pass;
+        pass.name = "silhouette_overlay";
+        pass.materialInfo().contract =
+            MaterialPassContract::legacy_gbuffer_v1;
+        pass.materialInfo().material_filter =
+            makeMaterialDrawTagFilter(
+                {"outlined"}, {}, pass.name);
+        pass.materialInfo().material_variant =
+            "silhouette";
+        REQUIRE(materials.resolveMaterialForPass(pass, base) ==
+                variant);
+        REQUIRE(materials.materialGpuIndexForPass(pass, base) ==
+                static_cast<std::uint32_t>(variant.value));
+        REQUIRE(materials.isRenderRequired(pass, base));
+
+        auto missing_pass = pass;
+        missing_pass.materialInfo().material_variant = "missing";
+        REQUIRE_THROWS_WITH(
+            materials.resolveMaterialForPass(missing_pass, base),
+            Catch::Matchers::ContainsSubstring(
+                "material pass 'silhouette_overlay' selected variant "
+                "'missing'"));
+        REQUIRE_THROWS_WITH(
+            materials.isRenderRequired(missing_pass, base),
+            Catch::Matchers::ContainsSubstring(
+                "material pass 'silhouette_overlay' selected variant "
+                "'missing'"));
+        missing_pass.materialInfo().material_filter =
+            makeMaterialDrawTagFilter(
+                {"not-selected"}, {}, missing_pass.name);
+        REQUIRE_FALSE(
+            materials.isRenderRequired(missing_pass, base));
+
+        const auto key =
+            watch::makeAssetKey("variant.material.json");
+        const std::array mismatched_bindings{
+            MaterialContainer::ReloadableMaterialValuesBinding{
+                "live", base, std::nullopt},
+            MaterialContainer::ReloadableMaterialValuesBinding{
+                "live", variant, std::string{"silhouette"}},
+        };
+        REQUIRE_THROWS_WITH(
+            materials.registerReloadableMaterialValuesFile(
+                key, path, catalog, mismatched_bindings),
+            Catch::Matchers::ContainsSubstring(
+                "base and variant bindings must use the same base material"));
+        const std::array bindings{
+            MaterialContainer::ReloadableMaterialValuesBinding{
+                "live", base, std::nullopt},
+            MaterialContainer::ReloadableMaterialValuesBinding{
+                "live", base, std::string{"silhouette"}},
+        };
+        materials.registerReloadableMaterialValuesFile(
+            key, path, catalog, bindings);
+        auto &reload = GET_MODULE(watch::ReloadService);
+
+        writeVariantMaterial(path, 7.0, 11.0);
+        REQUIRE(reload.applyRequestForTesting(
+            {key, watch::ReloadKind::modified, {}, 1}));
+        REQUIRE(readAt<float>(
+                    materials.materialGpuValuesForTesting(base), 0) ==
+                Catch::Approx(7.0f));
+        REQUIRE(readAt<float>(
+                    materials.materialGpuValuesForTesting(variant), 0) ==
+                Catch::Approx(11.0f));
+
+        const auto stable_base =
+            materials.materialGpuValuesForTesting(base);
+        const auto stable_variant =
+            materials.materialGpuValuesForTesting(variant);
+        writeVariantMaterial(path, 13.0, 17.0, true);
+        REQUIRE_FALSE(reload.applyRequestForTesting(
+            {key, watch::ReloadKind::modified, {}, 1}));
+        REQUIRE(sameBytes(
+            materials.materialGpuValuesForTesting(base),
+            stable_base));
+        REQUIRE(sameBytes(
+            materials.materialGpuValuesForTesting(variant),
+            stable_variant));
+
+        auto transparent_variant =
+            makeValuesMaterialInfo(variants.front().material);
+        transparent_variant.route =
+            base_lowered.route ==
+                    MaterialRouteClass::forward_transparent
+                ? MaterialRouteClass::deferred_geometry
+                : MaterialRouteClass::forward_transparent;
+        REQUIRE_THROWS_WITH(
+            materials.registerMaterialVariants(
+                base,
+                {{
+                    "transparent",
+                    std::move(transparent_variant),
+                }}),
+            Catch::Matchers::ContainsSubstring(
+                "cross-phase variants require a variant-aware draw queue"));
+        GET_MODULE(VulkanManageCore).waitIdle();
+    } catch (const std::exception &error) {
+        SKIP(std::string{
+                 "Vulkan named material variant reload unavailable: "} +
+             error.what());
     }
 }
 

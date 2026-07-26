@@ -818,10 +818,17 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .shader_contract = info.shader_contract,
         .exact_pass = std::move(info.exact_pass),
         .pass_inputs = std::move(pass_inputs),
+        .skinned = info.skinned,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
         .emissive_texture = info.emissive_texture,
+        .base_color_factor = info.base_color_factor,
+        .emissive_factor = info.emissive_factor,
+        .metallic_factor = info.metallic_factor,
+        .roughness_factor = info.roughness_factor,
+        .normal_scale = info.normal_scale,
+        .occlusion_strength = info.occlusion_strength,
         .vat = info.vat,
         .texture_bindings = std::move(texture_bindings),
         .custom_values_layout = info.custom_values_layout,
@@ -838,6 +845,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             [&](const CompiledRenderingPass &rendering_pass) {
                 for (const auto &compiled :
                      rendering_pass.passes) {
+                    if (compiled.definition.isMaterial() &&
+                        compiled.definition.materialInfo()
+                            .material_variant) {
+                        continue;
+                    }
                     if (isRenderRequired(
                             compiled.definition, material_id)) {
                         (void)ensureScreenInputDescriptor(
@@ -885,10 +897,202 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     return material_id;
 }
 
+void MaterialContainer::registerMaterialVariants(
+    GlobalMaterialId base,
+    std::vector<NamedMaterialVariantRegistration> registrations) {
+    const auto &registered_base = materials.get(base);
+    const auto base_route = registered_base.route;
+    const auto base_skinned = registered_base.skinned;
+    const auto base_color_texture =
+        registered_base.base_color_texture;
+    const auto metallic_roughness_texture =
+        registered_base.metallic_roughness_texture;
+    const auto normal_texture =
+        registered_base.normal_texture;
+    const auto emissive_texture =
+        registered_base.emissive_texture;
+    const auto base_color_factor =
+        registered_base.base_color_factor;
+    const auto emissive_factor =
+        registered_base.emissive_factor;
+    const auto metallic_factor =
+        registered_base.metallic_factor;
+    const auto roughness_factor =
+        registered_base.roughness_factor;
+    const auto normal_scale =
+        registered_base.normal_scale;
+    const auto occlusion_strength =
+        registered_base.occlusion_strength;
+    const auto base_vat = registered_base.vat;
+    std::map<std::string, GlobalMaterialId> next =
+        registered_base.variants;
+    std::vector<std::pair<std::string, GlobalMaterialId>> created;
+    created.reserve(registrations.size());
+    bool attached = false;
+
+    for (const auto &registration : registrations) {
+        validateMaterialVariantName(
+            registration.name,
+            "material " + std::to_string(base.value));
+        if (next.contains(registration.name)) {
+            throw std::runtime_error(
+                "material " + std::to_string(base.value) +
+                " has duplicate variant '" + registration.name + "'");
+        }
+        const auto base_is_transparent =
+            base_route ==
+            MaterialRouteClass::forward_transparent;
+        const auto variant_is_transparent =
+            registration.material.route ==
+            MaterialRouteClass::forward_transparent;
+        if (base_is_transparent != variant_is_transparent) {
+            throw std::runtime_error(
+                "material " + std::to_string(base.value) +
+                " variant '" + registration.name +
+                "' changes draw phase from " +
+                std::string{base_is_transparent ? "transparent" : "opaque"} +
+                " to " +
+                std::string{variant_is_transparent ? "transparent" : "opaque"} +
+                "; cross-phase variants require a variant-aware draw queue");
+        }
+        next.emplace(registration.name, invalidMaterialId());
+    }
+
+    try {
+        for (auto &registration : registrations) {
+            // A hidden runtime resource must never enter a draw queue through
+            // the parent's selection tags.
+            registration.material.tags.clear();
+            registration.material.skinned = base_skinned;
+            registration.material.base_color_texture =
+                base_color_texture;
+            registration.material.metallic_roughness_texture =
+                metallic_roughness_texture;
+            registration.material.normal_texture =
+                normal_texture;
+            registration.material.emissive_texture =
+                emissive_texture;
+            registration.material.base_color_factor =
+                base_color_factor;
+            registration.material.emissive_factor =
+                emissive_factor;
+            registration.material.metallic_factor =
+                metallic_factor;
+            registration.material.roughness_factor =
+                roughness_factor;
+            registration.material.normal_scale =
+                normal_scale;
+            registration.material.occlusion_strength =
+                occlusion_strength;
+            registration.material.vat = base_vat;
+            const auto resource =
+                registerMaterial(std::move(registration.material));
+            created.emplace_back(registration.name, resource);
+            next.at(registration.name) = resource;
+        }
+
+        auto &base_info = materials.get(base);
+        base_info.variants.swap(next);
+        attached = true;
+
+        const auto prewarm =
+            [&](const CompiledRenderingPass &rendering_pass) {
+                for (const auto &compiled :
+                     rendering_pass.passes) {
+                    const auto &pass = compiled.definition;
+                    if (!pass.isMaterial() ||
+                        !pass.materialInfo().material_variant) {
+                        continue;
+                    }
+                    if (!pass.materialInfo().material_filter) {
+                        throw std::runtime_error(
+                            "material variant pass '" + pass.name +
+                            "' has no material_filter");
+                    }
+                    const auto &filter =
+                        *pass.materialInfo().material_filter;
+                    if (!materialDrawTagFilterMatches(
+                            base_info.tags, filter)) {
+                        continue;
+                    }
+                    if (isRenderRequired(pass, base)) {
+                        const auto effective =
+                            resolveMaterialForPass(pass, base);
+                        (void)ensureScreenInputDescriptor(
+                            effective, pass);
+                    }
+                }
+            };
+        const auto &registered_passes =
+            GET_MODULE(RenderingPassContainer);
+        if (const auto generation =
+                registered_passes.snapshot()) {
+            for (const auto rendering_pass_id :
+                 generation->rendering_pass_ids) {
+                const auto *program =
+                    generation->find(rendering_pass_id);
+                if (program == nullptr) {
+                    throw std::logic_error(
+                        "Published render pipeline pass table is inconsistent");
+                }
+                prewarm(program->rendering_pass);
+            }
+        } else {
+            for (const auto rendering_pass_id :
+                 registered_passes.getRegisteredPassIds()) {
+                prewarm(
+                    registered_passes.getCompiledRenderingPass(
+                        rendering_pass_id));
+            }
+        }
+    } catch (...) {
+        if (attached && materials.contains(base)) {
+            materials.get(base).variants.swap(next);
+        }
+        std::vector<GlobalMaterialId> resources;
+        resources.reserve(created.size());
+        for (const auto &[name, resource] : created) {
+            (void)name;
+            resources.push_back(resource);
+        }
+        releaseModelResources(std::move(resources), {}, false);
+        throw;
+    }
+}
+
+GlobalMaterialId MaterialContainer::materialVariantResource(
+    GlobalMaterialId base, std::string_view name) const {
+    const auto &base_info = materials.get(base);
+    const auto found = base_info.variants.find(std::string{name});
+    if (found == base_info.variants.end()) {
+        throw std::runtime_error(
+            "material " + std::to_string(base.value) +
+            " has no variant '" + std::string{name} + "'");
+    }
+    return found->second;
+}
+
 void MaterialContainer::releaseModelResources(
     std::vector<GlobalMaterialId> material_ids,
     std::vector<GlobalTextureId> texture_ids, bool deferred) noexcept {
     try {
+        std::vector<GlobalMaterialId> expanded_material_ids;
+        std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash>
+            seen_material_ids;
+        for (const auto material : material_ids) {
+            if (!seen_material_ids.insert(material).second) continue;
+            expanded_material_ids.push_back(material);
+            if (!materials.contains(material)) continue;
+            for (const auto &[name, variant] :
+                 materials.get(material).variants) {
+                (void)name;
+                if (seen_material_ids.insert(variant).second) {
+                    expanded_material_ids.push_back(variant);
+                }
+            }
+        }
+        material_ids = std::move(expanded_material_ids);
+
         struct RetiredResources {
             std::vector<GlobalMaterialId> material_ids;
             std::vector<InternalMaterialInfo> materials;
@@ -1301,10 +1505,58 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
 bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
                                          GlobalMaterialId material_id) const {
     if (!pass.isMaterial()) return false;
-    const auto &material = materials.get(material_id);
+    if (pass.materialInfo().material_variant) {
+        if (!pass.materialInfo().material_filter) {
+            throw std::runtime_error(
+                "material variant pass '" + pass.name +
+                "' has no material_filter");
+        }
+        const auto &base = materials.get(material_id);
+        if (!materialDrawTagFilterMatches(
+                base.tags,
+                *pass.materialInfo().material_filter)) {
+            return false;
+        }
+    }
+    const auto effective =
+        resolveMaterialForPass(pass, material_id);
+    const auto &material = materials.get(effective);
     const auto contract = pass.materialInfo().contract;
     return materialPassAcceptsMaterial(contract, pass.name, material.route,
                                        material.shader_contract, material.exact_pass);
+}
+
+GlobalMaterialId MaterialContainer::resolveMaterialForPass(
+    const PassDefinition &pass, GlobalMaterialId material) const {
+    if (!pass.isMaterial() ||
+        !pass.materialInfo().material_variant) {
+        (void)materials.get(material);
+        return material;
+    }
+    const auto &name =
+        *pass.materialInfo().material_variant;
+    const auto &base = materials.get(material);
+    const auto found = base.variants.find(name);
+    if (found == base.variants.end()) {
+        throw std::runtime_error(
+            "material pass '" + pass.name +
+            "' selected variant '" + name +
+            "' but material " +
+            std::to_string(material.value) +
+            " does not provide it");
+    }
+    return found->second;
+}
+
+std::uint32_t MaterialContainer::materialGpuIndexForPass(
+    const PassDefinition &pass, GlobalMaterialId material) const {
+    const auto effective =
+        resolveMaterialForPass(pass, material);
+    if (effective.value < 0) {
+        throw std::runtime_error(
+            "material pass resolved an invalid GPU material index");
+    }
+    return static_cast<std::uint32_t>(effective.value);
 }
 
 static std::string makeScreenInputPassKey(const PassDefinition &pass) {
@@ -1550,6 +1802,12 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                                      GlobalMaterialId prev_material_id,
                                      RenderPassViewInvocation invocation) const {
     (void)pass_id;
+    material_id =
+        resolveMaterialForPass(pass, material_id);
+    if (isValidMaterialId(prev_material_id)) {
+        prev_material_id =
+            resolveMaterialForPass(pass, prev_material_id);
+    }
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline_layout = pipeline_factory.layout(material.pipeline);
@@ -1609,7 +1867,10 @@ void MaterialContainer::rebindScreenInputs(
 std::vector<vk::ImageView>
 MaterialContainer::boundScreenInputImageViewsForTesting(
     GlobalMaterialId material, const PassDefinition &pass) const {
-    const auto *descriptor = ensureScreenInputDescriptor(material, pass);
+    const auto effective =
+        resolveMaterialForPass(pass, material);
+    const auto *descriptor =
+        ensureScreenInputDescriptor(effective, pass);
     if (descriptor == nullptr) return {};
     return descriptor->variants.front().bound_image_views[
         GET_MODULE(RenderTargetContainer).historyFrameIndex()];
@@ -1617,7 +1878,10 @@ MaterialContainer::boundScreenInputImageViewsForTesting(
 
 std::uint64_t MaterialContainer::screenInputBindingRevisionForTesting(
     GlobalMaterialId material, const PassDefinition &pass) const {
-    const auto *descriptor = ensureScreenInputDescriptor(material, pass);
+    const auto effective =
+        resolveMaterialForPass(pass, material);
+    const auto *descriptor =
+        ensureScreenInputDescriptor(effective, pass);
     return descriptor == nullptr ? 0 : descriptor->binding_revision;
 }
 
@@ -1628,7 +1892,17 @@ vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
     return GET_MODULE(PipelineFactory).layout(*default_pipeline);
 }
 
-vk::PipelineLayout MaterialContainer::pipelineLayout(GlobalMaterialId material_id) const {
+vk::PipelineLayout MaterialContainer::pipelineLayout(
+    GlobalMaterialId material_id) const {
+    const auto &material = materials.get(material_id);
+    return GET_MODULE(PipelineFactory).layout(material.pipeline);
+}
+
+vk::PipelineLayout MaterialContainer::pipelineLayout(
+    const PassDefinition &pass,
+    GlobalMaterialId material_id) const {
+    material_id =
+        resolveMaterialForPass(pass, material_id);
     const auto &material = materials.get(material_id);
     return GET_MODULE(PipelineFactory).layout(material.pipeline);
 }

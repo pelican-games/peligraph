@@ -1,11 +1,12 @@
-# 描画 authoring の使い勝手と回りくどさの棚卸し(v3)
+# 描画 authoring の使い勝手と回りくどさの棚卸し(v4)
 
 対象読者: feature / material / shader をユーザー空間で書く人、およびその公開面を
 実装するエンジン担当。
 
-ステータス: **v3(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
+ステータス: **v4(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
 再照合し、`extent_scale`、custom texture binding、graphics buffer input の事実誤認を
-訂正した。v3ではWP206aによるU2解消を反映した。機構カバレッジは
+訂正した。v3のWP206a stable selectionに続き、v4ではWP206bのnamed material variantと
+project-owned inverted-hull dogfoodによるU2解消を反映した。機構カバレッジは
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md)、監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
@@ -38,7 +39,7 @@ composer は起動を拒否する。
 PC開発をshaderc ONで続ける回避策はあるが、Quest/cross-buildや小さい配布物へ進む前に
 解消が必要になる。
 
-### U2. 安定したmaterial selection（解消済み、WP206a）
+### U2. 安定したmaterial selectionとmultipass route（解消済み、WP206a/WP206b）
 
 旧`material_range`はdraw-call ordinalであり、scene、sort、visibility、material routeの
 変化へ追従できない。この問題に対する通常authoring経路として、materialの`tags`と
@@ -54,8 +55,13 @@ Vulkan executorは文字列を扱わない。preview/XRも同じlogical filter�
 stable filter ID、resolved draw count、unmatched tag、provenanceを表示する。
 `material_range`は互換用の低レベルfixtureだけに残し、manualの推奨経路から外した。
 
-残る使い勝手は、同じmaterialを別surface/stateで再描画するpass-local variant（G13）と、
-material全体ではなくinstance/draw単位で選ぶlayer拡張である。前者はWP206bが所有する。
+同じmaterialを別surface/stateで再描画する経路は、materialの任意名`variants`とpassの
+`material_variant`として実装した。別layoutのGPU record/pipelineはruntimeが所有し、
+作者はentity/mesh/materialを複製しない。deferred↔forward opaque等の同一phase routeは
+自動解決し、opaque/transparent phaseを跨ぐ誤ったsortは登録時に名前付きで拒否する。
+
+残る使い勝手は、material全体ではなくinstance/draw単位で選ぶlayer拡張と、
+phaseを跨ぐ必要が実際に出た場合のvariant-aware draw queueである。
 
 ### U3. raw fullscreen/compute inputはbinding順を人が合わせる
 
@@ -208,7 +214,8 @@ blockerではなくmaintenance負債である。
 
 現状は「providerで実装を差し替えられるが、authoring kindはv1閉集合」である。
 この契約を正確に書き、具体的なcustom geometry dogfoodが出るまで汎用registry化しない。
-inverted-hull等はまず既存material kindのpass-local variantで解けるかを検証する。
+inverted-hullは既存material kindのpass-local variantで実GPU検証済みである。
+新しいcustom geometry workloadが必要になるまで汎用registry化しない。
 
 ## 4. 実装計画への反映
 
@@ -217,7 +224,7 @@ inverted-hull等はまず既存material kindのpass-local variantで解けるか
 | 順 | mechanism WP | 同時に解消する使い勝手 |
 |---|---|---|
 | 1 | public shadow contract | resource名、feature provenance、失敗段のdiagnostic |
-| 2 | draw tag + multipass material route | U2、pass-local surface/stateの発見性 |
+| 2 | draw tag + multipass material route | ✅ WP206a/WP206bでU2とpass-local surface/stateの発見性を解消 |
 | 3 | compute/material typed resource port | U3、U5、named generated include |
 | 4 | lighting data v2 + clustered dogfood | fixed light cap、format/capability diagnostic |
 | 5 | texture dimension/subresource/sampler | sampler default、合法format/view候補 |

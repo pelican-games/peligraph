@@ -9,8 +9,9 @@
 追補(2026-07-23): M1〜M3.5、`hybrid_v1` 基盤、typed material screen input
 (WP187)は実装済み。renderer 全体の
 拡張境界と後続順序は `design_render_pipeline_extensibility.md` を正とする。
-追補(2026-07-26): WP206aでmaterial-owned stable tag/filterをadditive契約として
-実装した。instance/draw-owned layerとpass-local variantは後続とする。
+追補(2026-07-26): WP206aでmaterial-owned stable tag/filter、WP206bでpass-local
+named variantをadditive契約として実装した。instance/draw-owned layerと
+opaque/transparent phaseを跨ぐvariant-aware queueは後続とする。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
 `design_render_pipeline_extensibility.md`、`design_scene_format.md`、
 [PF] シェーダ stem 規約、[PFW] サブセット原則。
@@ -118,6 +119,34 @@ material passは`material_filter: { include?: string[], exclude?: string[] }`で
 このv1はmaterial-owned tagまでを安定契約とする。instance/draw-owned layer、
 pass-local surface/render-state variant、同一materialのmultipass routeはそれぞれ
 後続拡張であり、tag文字列へshader/stateの意味を埋め込まない。
+
+### 3-0a. pass-local named variant（WP206b）
+
+同一mesh/materialを別のmaterial passでも描く場合、material entryの
+`variants`にユーザー定義名と別`.surface`を宣言し、pass側の
+`material_variant`でその名前を選ぶ。選択範囲はWP206aの`material_filter`を使う。
+`outline`等の技法名をengine enumやpass kindへ追加しない。
+
+variantは作者から見えるmaterial identityやdrawを増やさない一方、runtime loweringでは
+異なるsurface layoutを安全に扱うため、独立したGPU record / descriptor / pipelineを持つ。
+baseの固定PBR値・固定texture slotは継承する。custom values/textures、route、screen input、
+shader、render stateはvariant自身のsurfaceから既存loweringで導出する。
+WP206bではbaseのdraw queueを再利用するため、route変更は同じopaque/transparent phase内
+（例: deferredからforward opaque）に限る。phaseを跨ぐvariantは誤った透明ソートをせず
+登録時に拒否し、後続のvariant-aware queue拡張対象とする。
+
+passの`material_variant`は明示`material_contract`と非空の
+`material_filter.include`を要求する。選択されたbase materialに同名variantが無い場合、
+またはvariant routeとpass contractが不一致の場合は、pass名とvariant名を含むhard errorに
+する。順序は既存resource hazardおよびnamed `after`/`before` edgeで決める。
+
+詳細な設計判断とreload/ownership規律は
+[`design_reviews/2026-07-26_wp206b_material_variant_route.md`](design_reviews/2026-07-26_wp206b_material_variant_route.md)
+を正本とする。
+
+これは現行`pelican.material` version 1内のoptional追加であり、parserは引き続き
+version field必須・`1`だけを受理する。旧版分岐、version range、暗黙upgradeは追加しない。
+将来current versionを上げる変更では、同時にversion 1の受理を削除する。
 
 ### 3-1. 供給の 3 段(A/B/C 梯子 — 2026-07-08 合意)
 

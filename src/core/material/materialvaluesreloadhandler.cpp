@@ -41,6 +41,14 @@ watch::AssetKey materialSource(const watch::AssetKey &document, std::string_view
     return source;
 }
 
+std::string materialBindingName(
+    std::string_view name,
+    const std::optional<std::string> &variant) {
+    return variant
+               ? std::string{name} + "/variants/" + *variant
+               : std::string{name};
+}
+
 watch::AssetKey surfaceDependency(std::string_view reference) {
     constexpr std::string_view engine = "engine://";
     if (reference.starts_with(engine)) {
@@ -61,6 +69,60 @@ const MaterialDefinition &findMaterial(const MaterialFormatDocument &document,
                                  "' is missing from the reloaded document");
     }
     return *found;
+}
+
+const MaterialNamedVariantDefinition &findMaterialVariant(
+    const MaterialDefinition &material, std::string_view name) {
+    const auto found = std::find_if(
+        material.variants.begin(), material.variants.end(),
+        [name](const auto &variant) {
+            return variant.name == name;
+        });
+    if (found == material.variants.end()) {
+        throw std::runtime_error(
+            "material '" + material.name +
+            "' variant '" + std::string{name} +
+            "' is missing from the reloaded document");
+    }
+    return *found;
+}
+
+struct LoweredMaterialBinding {
+    std::string surface_reference;
+    LoweredMaterial lowered;
+};
+
+LoweredMaterialBinding lowerMaterialBinding(
+    const MaterialDefinition &material,
+    const std::optional<std::string> &variant_name,
+    const MaterialSurfaceCatalog &surfaces) {
+    if (variant_name) {
+        const auto &variant =
+            findMaterialVariant(material, *variant_name);
+        const auto surface = surfaces.find(variant.surface);
+        if (surface == surfaces.end()) {
+            throw std::runtime_error(
+                "material '" + material.name + "' variant '" +
+                *variant_name + "' surface '" + variant.surface +
+                "' was not provided");
+        }
+        auto lowered = lowerMaterialVariant(
+            material, variant, surface->second);
+        return {variant.surface, std::move(lowered.material)};
+    }
+    if (!material.surface) {
+        throw std::runtime_error(
+            "material '" + material.name +
+            "' has no surface for values reload");
+    }
+    const auto surface = surfaces.find(*material.surface);
+    if (surface == surfaces.end()) {
+        throw std::runtime_error(
+            "material '" + material.name + "' surface '" +
+            *material.surface + "' was not provided");
+    }
+    return {*material.surface,
+            lowerMaterial(material, surface->second)};
 }
 
 std::string nonValuesSignature(const MaterialDefinition &material) {
@@ -95,6 +157,26 @@ std::string nonValuesSignature(const MaterialDefinition &material) {
         };
     } else {
         signature["routing"] = nullptr;
+    }
+    signature["variants"] = nlohmann::json::array();
+    for (const auto &variant : material.variants) {
+        auto variant_json = nlohmann::json{
+            {"name", variant.name},
+            {"surface", variant.surface},
+            {"defines", variant.defines},
+            {"render_path",
+             materialRenderPathName(variant.render_path)},
+            {"texture_overrides", nlohmann::json::array()},
+        };
+        for (const auto &texture :
+             variant.texture_overrides) {
+            variant_json["texture_overrides"].push_back({
+                {"name", texture.name},
+                {"reference", texture.reference},
+            });
+        }
+        signature["variants"].push_back(
+            std::move(variant_json));
     }
     return signature.dump();
 }
@@ -166,6 +248,8 @@ struct MaterialValuesReloadHandler::TrackedSurface {
 
 struct MaterialValuesReloadHandler::TrackedMaterial {
     std::string name;
+    std::optional<std::string> variant;
+    std::string binding_name;
     std::string surface_reference;
     std::string non_values_signature;
     GlobalMaterialId material;
@@ -202,6 +286,17 @@ void MaterialValuesReloadHandler::track(
     if (bindings.empty()) {
         throw std::runtime_error("reloadable material document requires at least one binding");
     }
+    std::map<std::string, GlobalMaterialId> base_materials;
+    for (const auto &binding : bindings) {
+        const auto [position, inserted] =
+            base_materials.emplace(binding.name, binding.material);
+        if (!inserted &&
+            position->second.value != binding.material.value) {
+            throw std::runtime_error(
+                "reloadable material '" + binding.name +
+                "' base and variant bindings must use the same base material");
+        }
+    }
 
     const auto parsed = parseMaterialFormatJson(readJsonFile(path), surfaces);
     auto document_payload = std::make_shared<DocumentPayload>(
@@ -215,59 +310,101 @@ void MaterialValuesReloadHandler::track(
     tracked.materials.reserve(bindings.size());
     std::set<std::string> names;
     for (const auto &binding : bindings) {
-        if (!names.insert(binding.name).second) {
-            throw std::runtime_error("duplicate reloadable material binding: " + binding.name);
+        const auto binding_name =
+            materialBindingName(binding.name, binding.variant);
+        if (!names.insert(binding_name).second) {
+            throw std::runtime_error(
+                "duplicate reloadable material binding: " +
+                binding_name);
         }
-        const auto &definition = findMaterial(parsed, binding.name);
-        if (!definition.surface) {
-            throw std::runtime_error("material '" + binding.name +
-                                     "' has no surface for values reload");
+    }
+    for (const auto &binding : bindings) {
+        if (binding.variant) continue;
+        const auto &definition =
+            findMaterial(parsed, binding.name);
+        for (const auto &variant : definition.variants) {
+            const auto expected =
+                materialBindingName(binding.name, variant.name);
+            if (!names.contains(expected)) {
+                throw std::runtime_error(
+                    "reloadable material '" + binding.name +
+                    "' must bind declared variant '" +
+                    variant.name +
+                    "' in the same transaction");
+            }
         }
-        const auto surface = tracked.surfaces.find(*definition.surface);
-        if (surface == tracked.surfaces.end()) {
-            throw std::runtime_error("material '" + binding.name + "' surface '" +
-                                     *definition.surface + "' was not provided");
-        }
-        const auto lowered = lowerMaterial(definition, surface->second);
-        if (!materials_.materialValuesLayoutMatches(binding.material,
-                                                    lowered.values_layout)) {
-            throw std::runtime_error("material '" + binding.name +
+    }
+
+    for (const auto &binding : bindings) {
+        const auto binding_name =
+            materialBindingName(binding.name, binding.variant);
+        const auto &definition =
+            findMaterial(parsed, binding.name);
+        auto source_binding =
+            lowerMaterialBinding(
+                definition, binding.variant, tracked.surfaces);
+        const auto material =
+            binding.variant
+                ? materials_.materialVariantResource(
+                      binding.material, *binding.variant)
+                : binding.material;
+        if (!materials_.materialValuesLayoutMatches(
+                material,
+                source_binding.lowered.values_layout)) {
+            throw std::runtime_error("material binding '" + binding_name +
                                      "' registered layout does not match its source");
         }
 
-        const auto dependency = surfaceDependency(*definition.surface);
+        const auto dependency =
+            surfaceDependency(source_binding.surface_reference);
         auto fake = surfaces_.find(dependency);
         if (fake == surfaces_.end()) {
             auto payload = std::make_shared<SurfacePayload>(
-                SurfacePayload{*definition.surface, lowered.values_layout});
+                SurfacePayload{
+                    source_binding.surface_reference,
+                    source_binding.lowered.values_layout});
             auto resource = coordinator_.registry().declareResource(
                 std::string{surfaceFakeTable}, dependency, payload, {dependency}, 0, 0);
+            const auto surface =
+                tracked.surfaces.find(
+                    source_binding.surface_reference);
             fake = surfaces_.emplace(dependency,
                                      TrackedSurface{dependency, std::move(resource), payload,
                                                     surface->second})
                        .first;
         }
 
-        const auto &live_values = materials_.materials.get(binding.material).custom_values;
-        const auto &live_material = materials_.materials.get(binding.material);
-        if (live_material.route != lowered.route) {
-            throw std::runtime_error("material '" + binding.name +
+        const auto &live_values =
+            materials_.materials.get(material).custom_values;
+        const auto &live_material =
+            materials_.materials.get(material);
+        if (live_material.route !=
+            source_binding.lowered.route) {
+            throw std::runtime_error("material binding '" + binding_name +
                                      "' registered route does not match its source");
         }
-        if (live_values.size() != lowered.values_layout.size) {
-            throw std::runtime_error("material '" + binding.name +
+        if (live_values.size() !=
+            source_binding.lowered.values_layout.size) {
+            throw std::runtime_error("material binding '" + binding_name +
                                      "' registered values do not match its layout size");
         }
         auto payload = std::make_shared<ValuesPayload>(ValuesPayload{
-            binding.name, binding.material, lowered.values_layout, live_values, false});
-        const auto source = materialSource(key, binding.name);
+            binding_name, material,
+            source_binding.lowered.values_layout,
+            live_values, false});
+        const auto source =
+            materialSource(key, binding_name);
         auto resource = coordinator_.registry().declareResource(
             std::string{valuesTable}, source, payload, {key, dependency}, 0,
             payload->values.size());
         tracked.materials.push_back(TrackedMaterial{
-            binding.name, *definition.surface, nonValuesSignature(definition), binding.material,
-            std::move(resource), fake->second.resource, dependency, payload,
-            lowered.route, lowered.deferred_eligibility.model});
+            binding.name, binding.variant, binding_name,
+            source_binding.surface_reference,
+            nonValuesSignature(definition), material,
+            std::move(resource), fake->second.resource,
+            dependency, payload,
+            source_binding.lowered.route,
+            source_binding.lowered.deferred_eligibility.model});
     }
     files_.emplace(key, std::move(tracked));
 }
@@ -330,51 +467,58 @@ bool MaterialValuesReloadHandler::enqueue(const watch::ReloadRequest &request,
         const auto current = snapshot.find(material.resource);
         if (!current) throw std::runtime_error("material values resource is stale");
         group.add(watch::ReloadActor{
-            .name = "material values " + material.name,
+            .name = "material values " + material.binding_name,
             .target = material.resource,
             .after = {tracked.document_resource, material.surface_resource},
             .validate = [this, pending, material, surfaces = tracked.surfaces] {
                 if (!pending->document) {
                     throw std::runtime_error("material document candidate was not parsed");
                 }
-                const auto &definition = findMaterial(*pending->document, material.name);
-                if (!definition.surface || *definition.surface != material.surface_reference) {
-                    throw std::runtime_error("material '" + material.name +
+                const auto &definition =
+                    findMaterial(*pending->document, material.name);
+                auto source_binding =
+                    lowerMaterialBinding(
+                        definition, material.variant, surfaces);
+                if (source_binding.surface_reference !=
+                    material.surface_reference) {
+                    throw std::runtime_error("material binding '" +
+                                             material.binding_name +
                                              "' changed surface/layout; HR2-S transaction required");
                 }
                 if (nonValuesSignature(definition) != material.non_values_signature) {
                     throw std::runtime_error(
-                        "material '" + material.name +
+                        "material binding '" + material.binding_name +
                         "' changed fields outside values; HR1-M only updates values");
                 }
-                const auto surface = surfaces.find(*definition.surface);
-                if (surface == surfaces.end()) {
-                    throw std::runtime_error("material '" + material.name +
-                                             "' surface is unavailable");
-                }
-                auto lowered = lowerMaterial(definition, surface->second);
+                auto lowered =
+                    std::move(source_binding.lowered);
                 if (lowered.route != material.route ||
                     lowered.deferred_eligibility.model != material.deferred_model) {
                     throw std::runtime_error(
-                        "material '" + material.name +
+                        "material binding '" + material.binding_name +
                         "' changed render route/model; shader and pipeline reload transaction required");
                 }
                 if (!materials_.materialValuesLayoutMatches(material.material,
                                                             lowered.values_layout)) {
-                    throw std::runtime_error("material '" + material.name +
+                    throw std::runtime_error("material binding '" +
+                                             material.binding_name +
                                              "' changed values layout; HR2-S transaction required");
                 }
-                pending->lowered.insert_or_assign(material.name, std::move(lowered));
+                pending->lowered.insert_or_assign(
+                    material.binding_name, std::move(lowered));
             },
             .stage = [pending, material, current, key = request.key] {
-                const auto candidate = pending->lowered.find(material.name);
+                const auto candidate =
+                    pending->lowered.find(material.binding_name);
                 if (candidate == pending->lowered.end()) {
-                    throw std::runtime_error("material '" + material.name +
+                    throw std::runtime_error("material binding '" +
+                                             material.binding_name +
                                              "' candidate was not lowered");
                 }
                 const auto previous = current->payloadAs<ValuesPayload>();
                 auto payload = std::make_shared<ValuesPayload>(ValuesPayload{
-                    material.name, material.material, candidate->second.values_layout,
+                    material.binding_name, material.material,
+                    candidate->second.values_layout,
                     candidate->second.values,
                     previous->values != candidate->second.values});
                 return watch::StagedResourceData{
@@ -475,30 +619,34 @@ std::function<void()> MaterialValuesReloadHandler::prepareSurfaceReload(
             FileUpdate{&tracked, next_surfaces, std::move(document_payload)});
 
         for (auto &material : tracked.materials) {
-            const auto &definition = findMaterial(parsed, material.name);
-            if (!definition.surface || *definition.surface != material.surface_reference) {
-                throw std::runtime_error("material '" + material.name +
+            const auto &definition =
+                findMaterial(parsed, material.name);
+            auto source_binding =
+                lowerMaterialBinding(
+                    definition, material.variant, next_surfaces);
+            if (source_binding.surface_reference !=
+                material.surface_reference) {
+                throw std::runtime_error("material binding '" +
+                                         material.binding_name +
                                          "' changed its surface reference");
             }
             if (nonValuesSignature(definition) != material.non_values_signature) {
-                throw std::runtime_error("material '" + material.name +
+                throw std::runtime_error("material binding '" +
+                                         material.binding_name +
                                          "' changed fields outside values");
             }
-            const auto found_surface = next_surfaces.find(*definition.surface);
-            if (found_surface == next_surfaces.end()) {
-                throw std::runtime_error("material '" + material.name +
-                                         "' surface is unavailable");
-            }
-            auto lowered = lowerMaterial(definition, found_surface->second);
+            auto lowered =
+                std::move(source_binding.lowered);
             if (lowered.route != material.route ||
                 lowered.deferred_eligibility.model != material.deferred_model) {
                 throw std::runtime_error(
-                    "material '" + material.name +
+                    "material binding '" + material.binding_name +
                     "' changed render route/model; shader and pipeline reload transaction required");
             }
             if (lowered.values.size() != lowered.values_layout.size ||
                 lowered.values.size() > materialCustomValueCapacity) {
-                throw std::runtime_error("material '" + material.name +
+                throw std::runtime_error("material binding '" +
+                                         material.binding_name +
                                          "' values exceed the live material buffer contract");
             }
             const auto current = snapshot.find(material.resource);
@@ -507,7 +655,8 @@ std::function<void()> MaterialValuesReloadHandler::prepareSurfaceReload(
             const bool layout_changed = !sameLayout(previous->layout, lowered.values_layout);
             const bool changed = layout_changed || previous->values != lowered.values;
             auto payload = std::make_shared<ValuesPayload>(ValuesPayload{
-                material.name, material.material, lowered.values_layout,
+                material.binding_name, material.material,
+                lowered.values_layout,
                 lowered.values, changed});
             candidate->staged.push_back(watch::StagedResource{
                 material.resource, payload, {file_key, material.surface_dependency},

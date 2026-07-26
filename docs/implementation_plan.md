@@ -96,12 +96,11 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP213 | 版の単一化 A — import manifest の version 必須化 | 新規登録(2026-07-26) |
 | WP214 | 版の単一化 B — physics service V1 の削除 | 新規登録(2026-07-26) |
 
-WP206a の stable draw tag/filter slice を閉じた後の描画候補は次。番号は実装順を固定するための
+WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
 
 | 候補 | 内容 | 状態 |
 |---|---|---|
-| WP206b | pass-local material variant / multipass route | 計画済み・WP206a実装済み |
 | WP207a | compute Frame/Light + sampled resource port | 計画済み |
 | WP207b | material/geometry typed frame-graph resource port | 計画済み・WP207a依存 |
 | WP208 | lighting data contract v2 + clustered dogfood | 計画済み・WP207b依存 |
@@ -113,7 +112,7 @@ WP206a の stable draw tag/filter slice を閉じた後の描画候補は次。�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP206a、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP206b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -399,30 +398,6 @@ XR2b最終gateを満たす。
    hatchとして残す。
 5. physical指定はWP204 fragmentへlinkし、logical configへVulkan fieldを漏らさない。
 6. feature未参照時に追加pass/resource/variantを持たない。
-
-#### WP206b: pass-local material variant / multipass route
-
-**目的**: 同一mesh/materialをbase passと別surface/render-stateのoverlay passへ参加させ、
-特殊技法を専用engine pass kindなしで書けるようにする。
-
-**実装範囲**:
-
-1. WP206a tag filterを入口に、pass-local surface/state variantまたは同等のtyped material
-   routeを設計する。
-2. existing surfaceのfront cull/additive/depth authoringを再利用する。render state parserを
-   再実装しない。
-3. material contractの全面plugin化は行わず、まず既存material kind内のmultipassを縦切りする。
-4. variant shader/pipelineはruntime generationに所有させ、hot reloadをfailure-atomicにする。
-
-**受け入れ条件**:
-
-- entity/mesh/material複製なしのproject-owned inverted-hull outline
-- `outline`専用pass kind、hardcoded shader名、engine-only material flagを追加しない
-- base-only materialの描画byte不変
-- transparent/deferred/forward routeとの重複・順序を名前入りで検証
-- flat / preview / sequential XR / multiview / hot reloadを回帰
-
-依存: WP206a。見積: 中〜大。着手前にmaterial routeの小設計レビューを行う。
 
 #### WP207a: compute Frame/Light + sampled resource port
 

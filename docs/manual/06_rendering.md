@@ -569,6 +569,62 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 s
 通常authoringでは使用しません。`material_filter`と併記した場合だけは、tagでcompact化した
 rangeへ`material_range`を後段適用します。
 
+### 同じ物体を別 surface でも描く（✅WP206b）
+
+同じentity・mesh・materialを複製せず、選択した物体だけを別の`.surface`とrender stateで
+もう一度描く場合は、materialに任意名の`variants`を宣言し、追加のmaterial passから
+`material_variant`で選びます。名前に`outline`等の固定された意味はありません。
+
+```json
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [{
+    "name": "hero_coat",
+    "tags": ["character", "outlined"],
+    "surface": "project://shaders/coat.surface",
+    "variants": {
+      "silhouette": {
+        "surface": "project://shaders/silhouette.surface",
+        "render_path": "forward",
+        "values": {
+          "width": 0.015,
+          "color": [0.02, 0.02, 0.03, 1.0]
+        }
+      }
+    }
+  }]
+}
+```
+
+```json
+{
+  "name": "silhouette_overlay",
+  "type": "material",
+  "material_contract": "forward_opaque_v1",
+  "material_filter": { "include": ["outlined"] },
+  "material_variant": "silhouette",
+  "after": ["forward_opaque"],
+  "output": { "color": "display", "depth": "offscreen_depth" }
+}
+```
+
+- variantは別surfaceの`defines`、`values`、`textures`、`render_path`を持てます。
+  `.surface`側の`render_state`も通常と同じloweringを通るため、front cullやblend等を
+  variant専用の仕組みで再記述する必要はありません。
+- 固定PBR factor・固定texture slot・skinning/VAT identityはbaseから継承します。
+  custom値、custom texture、shader、pipeline、descriptorは独立しているため、異なる
+  surface layoutでもbase materialのGPU recordを再解釈しません。
+- `material_variant`には明示的な`material_contract`と、空でない
+  `material_filter.include`が必要です。選択されたmaterialに同名variantが無い場合は、
+  pass名とvariant名を含む設定エラーになります。
+- 現在はbase draw queueを再利用するため、deferredからforward opaqueのような
+  opaque phase内のroute変更はできますが、opaqueとtransparentを跨ぐ変更は登録時に
+  拒否します。transparent独自のsortを必要とする跨ぎ方は、variant-aware draw queueの
+  後続拡張で扱います。
+- pass順は通常どおりresource hazardと`after` / `before`で決めます。
+  flat、preview、sequential XR、multiviewでも同じlogical variant指定が保持されます。
+
 GPU への経路は params 宣言順の std140 レイアウト → set 2 binding 6 の `MaterialBuffer` SSBO です。値の同レイアウト・ホットリロードも効きます(✅WP105)。`pelican_cli dump-lowered-material <surface>` で生成物(lowered GLSL・レイアウト)を確認できます。
 
 ### OpenPBR — 第 3 の標準サーフェス(✅WP116/117)

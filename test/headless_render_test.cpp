@@ -108,6 +108,48 @@ CommonPolygonVertData makeScreenQuad(float half_extent, float z) {
     return data;
 }
 
+CommonPolygonVertData makeOutlineCube(float half_extent) {
+    CommonPolygonVertData data;
+    const auto add_face =
+        [&](glm::vec3 normal,
+            std::array<glm::vec3, 4> positions) {
+            const auto first =
+                static_cast<std::uint32_t>(data.pos.size());
+            data.pos.insert(
+                data.pos.end(), positions.begin(), positions.end());
+            data.normal.insert(data.normal.end(), 4, normal);
+            data.texcoord.insert(
+                data.texcoord.end(),
+                {{0.0f, 0.0f}, {1.0f, 0.0f},
+                 {1.0f, 1.0f}, {0.0f, 1.0f}});
+            data.color.insert(data.color.end(), 4, glm::vec4{1.0f});
+            data.indices.insert(
+                data.indices.end(),
+                {first, first + 1, first + 2,
+                 first, first + 2, first + 3});
+        };
+    const auto h = half_extent;
+    add_face(
+        {0.0f, 0.0f, 1.0f},
+        {{{-h, -h, h}, {h, -h, h}, {h, h, h}, {-h, h, h}}});
+    add_face(
+        {0.0f, 0.0f, -1.0f},
+        {{{h, -h, -h}, {-h, -h, -h}, {-h, h, -h}, {h, h, -h}}});
+    add_face(
+        {1.0f, 0.0f, 0.0f},
+        {{{h, -h, h}, {h, -h, -h}, {h, h, -h}, {h, h, h}}});
+    add_face(
+        {-1.0f, 0.0f, 0.0f},
+        {{{-h, -h, -h}, {-h, -h, h}, {-h, h, h}, {-h, h, -h}}});
+    add_face(
+        {0.0f, 1.0f, 0.0f},
+        {{{-h, h, h}, {h, h, h}, {h, h, -h}, {-h, h, -h}}});
+    add_face(
+        {0.0f, -1.0f, 0.0f},
+        {{{-h, -h, -h}, {h, -h, -h}, {h, -h, h}, {-h, -h, h}}});
+    return data;
+}
+
 const char *gpuArenaFullscreenVertexShader() {
     return R"glsl(
 #version 450
@@ -2225,6 +2267,332 @@ TEST_CASE(
             std::string{
                 "Vulkan alias rendering unavailable: "} +
             error.what());
+    }
+#endif
+}
+
+TEST_CASE("project-owned material variant renders a second opaque pass",
+          "[headless][render][material-variant][wp206b]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        std::filesystem::create_directories(temp_dir / "features");
+        std::filesystem::create_directories(temp_dir / "shaders");
+        std::filesystem::create_directories(temp_dir / "materials");
+
+        writeTextFile(
+            temp_dir / "features" / "silhouette.json",
+            nlohmann::json{
+                {"schema", "pelican.render_feature"},
+                {"version", 1},
+                {"name", "silhouette"},
+                {"passes",
+                 nlohmann::json::array({
+                     {
+                         {"insert", "after:forward_opaque"},
+                         {"pass",
+                          {
+                              {"name", "silhouette_overlay"},
+                              {"type", "material"},
+                              {"material_contract", "forward_opaque_v1"},
+                              {"material_filter",
+                               {{"include", {"outlined"}}}},
+                              {"material_variant", "silhouette"},
+                              {"output",
+                               {{"color", {"lit_color"}},
+                                {"depth", "scene_depth"}}},
+                              {"color_load_op", "load"},
+                              {"depth_load_op", "load"},
+                              {"depth_store_op", "store"},
+                          }},
+                     },
+                 })},
+            }
+                .dump(2));
+
+        const auto base_surface_source = std::string{
+            "//! pelican.surface v1\n"
+            "//! language: glsl\n"
+            "//! params:\n"
+            "//!   - { name: tint, type: color, default: [0.02, 0.08, 1.0, 1.0], encoding: linear }\n\n"
+            "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
+            "inout PelicanSurfaceV1 surface) {\n"
+            "    surface.base_color = pelican_param_tint();\n"
+            "    surface.emissive = pelican_param_tint().rgb;\n"
+            "    surface.roughness = 0.8;\n"
+            "}\n"};
+        const auto variant_surface_source = std::string{
+            "//! pelican.surface v1\n"
+            "//! language: glsl\n"
+            "//! params:\n"
+            "//!   - { name: width, type: float, default: 0.12, min: 0.0, max: 0.5 }\n"
+            "//!   - { name: color, type: color, default: [1.0, 0.01, 0.01, 1.0], encoding: linear }\n"
+            "//! render_state: { blend: opaque, cull: front, depth: read_only, depth_compare: less_equal }\n\n"
+            "void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {\n"
+            "    vertex.position += vertex.normal * pelican_param_width();\n"
+            "}\n"
+            "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+            "in PelicanSurfaceInputV1 input_data) {\n"
+            "    return pelican_param_color().rgb;\n"
+            "}\n"};
+        writeTextFile(
+            temp_dir / "shaders" / "base.surface",
+            base_surface_source);
+        writeTextFile(
+            temp_dir / "shaders" / "silhouette.surface",
+            variant_surface_source);
+
+        const auto material_json = nlohmann::json{
+            {"schema", "pelican.material"},
+            {"version", 1},
+            {"materials",
+             nlohmann::json::array({
+                 {
+                     {"name", "outlined_cube"},
+                     {"tags", {"outlined"}},
+                     {"surface", "project://shaders/base.surface"},
+                     {"values",
+                      {{"tint", {0.02, 0.08, 1.0, 1.0}}}},
+                     {"variants",
+                      {
+                          {"silhouette",
+                           {
+                               {"surface",
+                                "project://shaders/silhouette.surface"},
+                               {"render_path", "forward"},
+                               {"values",
+                                {
+                                    {"width", 0.12},
+                                    {"color",
+                                     {1.0, 0.01, 0.01, 1.0}},
+                                }},
+                           }},
+                      }},
+                 },
+             })},
+        };
+        writeTextFile(
+            temp_dir / "materials" / "outlined.material.json",
+            material_json.dump(2));
+        writeTextFile(
+            temp_dir / "hybrid.json",
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features",
+                 nlohmann::json::array(
+                     {"project://features/silhouette.json"})},
+            }
+                .dump(2));
+
+        auto project =
+            makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]["rendering_config_json"] =
+            "hybrid.json";
+        project["basic_config"]["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource).setSourceByData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(
+            EngineTime::Mode::fixed_step, 1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto main_render_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName("main_render");
+        const auto execution =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .find(main_render_id);
+        REQUIRE(execution != nullptr);
+        REQUIRE(execution->render_pipeline != nullptr);
+
+        const auto base_reference =
+            std::string{"project://shaders/base.surface"};
+        const auto variant_reference =
+            std::string{"project://shaders/silhouette.surface"};
+        const auto base_surface = parseSurfaceFormat(
+            base_surface_source, base_reference);
+        const auto variant_surface = parseSurfaceFormat(
+            variant_surface_source, variant_reference);
+        const MaterialSurfaceCatalog surfaces{
+            {base_reference, base_surface},
+            {variant_reference, variant_surface},
+        };
+        const auto document = parseMaterialFormatJson(
+            material_json, surfaces);
+        REQUIRE(document.materials.size() == 1);
+        const auto &definition = document.materials.front();
+        const auto base_lowered =
+            lowerMaterial(definition, base_surface);
+        const auto variants =
+            lowerMaterialVariants(definition, surfaces);
+        REQUIRE(base_lowered.route ==
+                MaterialRouteClass::deferred_geometry);
+        REQUIRE(variants.size() == 1);
+        REQUIRE(variants.front().material.route ==
+                MaterialRouteClass::forward_opaque);
+
+        const auto base_shaders =
+            GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
+                base_surface, base_reference, base_lowered,
+                execution->render_pipeline->shader_defines);
+        const auto variant_shaders =
+            GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
+                variant_surface, variant_reference,
+                variants.front().material,
+                execution->render_pipeline->shader_defines);
+        const auto &standard =
+            GET_MODULE(StandardMaterialResource);
+        const auto make_material =
+            [&](const LoweredMaterial &lowered,
+                SurfaceShaderBundleIds shaders) {
+                MaterialInfo info{
+                    .vert_shader = shaders.vertex,
+                    .frag_shader = shaders.fragment,
+                    .base_color_texture =
+                        standard.whiteTexture(),
+                    .metallic_roughness_texture =
+                        standard
+                            .metallicRoughnessDefaultTexture(),
+                    .normal_texture =
+                        standard.normalDefaultTexture(),
+                    .emissive_texture =
+                        standard.emissiveDefaultTexture(),
+                };
+                applyLoweredMaterialForRoute(info, lowered);
+                return info;
+            };
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto base = materials.registerMaterial(
+            make_material(base_lowered, base_shaders));
+        const auto base_record =
+            materials.materialGpuRecordForTesting(base);
+        materials.registerMaterialVariants(
+            base,
+            {{
+                variants.front().name,
+                make_material(
+                    variants.front().material,
+                    variant_shaders),
+            }});
+        const auto variant =
+            materials.materialVariantResource(
+                base, "silhouette");
+        REQUIRE(variant != base);
+        const auto base_record_after =
+            materials.materialGpuRecordForTesting(base);
+        REQUIRE(base_record_after.size() ==
+                base_record.size());
+        REQUIRE(std::equal(
+            base_record_after.begin(),
+            base_record_after.end(),
+            base_record.begin()));
+
+        const auto &compiled =
+            GET_MODULE(RenderingPassContainer)
+                .getCompiledRenderingPass(main_render_id);
+        const auto overlay = std::find_if(
+            compiled.passes.begin(), compiled.passes.end(),
+            [](const auto &pass) {
+                return pass.definition.name ==
+                       "silhouette_overlay";
+            });
+        REQUIRE(overlay != compiled.passes.end());
+        REQUIRE(
+            overlay->definition.materialInfo()
+                .material_variant ==
+            "silhouette");
+        REQUIRE(materials.resolveMaterialForPass(
+                    overlay->definition, base) ==
+                variant);
+        REQUIRE(materials.isRenderRequired(
+            overlay->definition, base));
+
+        auto &geometry = GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{206};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = base,
+                .primitives = {
+                    geometry.addPrimitiveEntry(
+                        makeOutlineCube(0.55f))},
+                .source_material_index = 0,
+            },
+        };
+        const auto instance =
+            GET_MODULE(PolygonInstanceContainer)
+                .placeModelInstance(model);
+        REQUIRE(
+            GET_MODULE(PolygonInstanceContainer)
+                .isModelInstanceAlive(instance));
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0f, 0.0f, 2.0f});
+        camera.setDir({0.0f, 0.0f, -1.0f});
+        camera.setUp({0.0f, 1.0f, 0.0f});
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() == 32u * 32u * 4u);
+        std::size_t base_pixels = 0;
+        std::size_t variant_pixels = 0;
+        for (std::size_t offset = 0;
+             offset < pixels.size(); offset += 4) {
+            const auto red = pixels[offset];
+            const auto green = pixels[offset + 1];
+            const auto blue = pixels[offset + 2];
+            if (blue > red + 20 && blue > green + 20) {
+                ++base_pixels;
+            }
+            if (red > blue + 20 && red > green + 20) {
+                ++variant_pixels;
+            }
+        }
+        REQUIRE(base_pixels > 0);
+        REQUIRE(variant_pixels > 0);
+
+        const auto plan = renderer.currentFramePlanJson();
+        const auto plan_overlay = std::find_if(
+            plan.at("nodes").begin(),
+            plan.at("nodes").end(),
+            [](const auto &node) {
+                return node.value("name", "") ==
+                       "silhouette_overlay";
+            });
+        REQUIRE(plan_overlay !=
+                plan.at("nodes").end());
+        REQUIRE(plan_overlay->at("material_variant") ==
+                "silhouette");
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        SKIP(std::string{
+                 "Vulkan material variant rendering unavailable: "} +
+             error.what());
     }
 #endif
 }

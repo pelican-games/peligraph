@@ -311,10 +311,31 @@ std::vector<LoweredMaterial> loadRuntimeMaterials() {
         MaterialSurfaceCatalog surfaces;
         if (document_json.contains("materials") && document_json.at("materials").is_array()) {
             for (const auto &entry : document_json.at("materials")) {
-                if (!entry.is_object() || !entry.contains("surface") || !entry.at("surface").is_string()) continue;
-                const auto ref = entry.at("surface").get<std::string>();
-                if (!surfaces.contains(ref)) {
-                    surfaces.emplace(ref, parseSurfaceFormat(resolver.loadText(ref), ref));
+                if (!entry.is_object()) continue;
+                const auto load_surface =
+                    [&](const nlohmann::json &owner) {
+                        if (!owner.is_object() ||
+                            !owner.contains("surface") ||
+                            !owner.at("surface").is_string()) {
+                            return;
+                        }
+                        const auto ref =
+                            owner.at("surface").get<std::string>();
+                        if (!surfaces.contains(ref)) {
+                            surfaces.emplace(
+                                ref,
+                                parseSurfaceFormat(
+                                    resolver.loadText(ref), ref));
+                        }
+                    };
+                load_surface(entry);
+                if (entry.contains("variants") &&
+                    entry.at("variants").is_object()) {
+                    for (const auto &[name, variant] :
+                         entry.at("variants").items()) {
+                        (void)name;
+                        load_surface(variant);
+                    }
                 }
             }
         }
@@ -322,6 +343,10 @@ std::vector<LoweredMaterial> loadRuntimeMaterials() {
         for (const auto &material : document.materials) {
             if (!material.surface) continue;
             lowered.push_back(lowerMaterial(material, surfaces.at(*material.surface)));
+            for (auto &variant :
+                 lowerMaterialVariants(material, surfaces)) {
+                lowered.push_back(std::move(variant.material));
+            }
         }
     }
     return lowered;

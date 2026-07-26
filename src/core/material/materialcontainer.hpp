@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -112,10 +113,17 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<std::string> exact_pass;
         std::vector<MaterialPassInputContract> pass_inputs;
+        bool skinned = false;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
         GlobalTextureId emissive_texture;
+        glm::vec4 base_color_factor{1.0f};
+        glm::vec3 emissive_factor{1.0f};
+        float metallic_factor = 1.0f;
+        float roughness_factor = 1.0f;
+        float normal_scale = 1.0f;
+        float occlusion_strength = 1.0f;
         std::optional<MaterialInfo::VatPlaybackInfo> vat;
         std::vector<TextureBinding> texture_bindings;
         Std140Layout custom_values_layout;
@@ -124,6 +132,9 @@ DECLARE_MODULE(MaterialContainer) {
         vk::UniqueDescriptorSet descset;
         mutable std::unordered_map<std::string, ScreenInputDescriptor>
             screen_input_descriptors;
+        // User-visible identity remains the parent material. These handles
+        // own the independent GPU records selected by material passes.
+        std::map<std::string, GlobalMaterialId> variants;
     };
     std::unordered_map<std::string, PipelineHandle> pipelines;
     std::optional<PipelineHandle> default_pipeline;
@@ -174,6 +185,17 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerReloadableTextureFile(const watch::AssetKey &key,
                                                   const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    struct NamedMaterialVariantRegistration {
+        std::string name;
+        MaterialInfo material;
+    };
+    // Registers a complete set atomically from the caller's perspective.
+    // Variant resources are implementation details retired with their base.
+    void registerMaterialVariants(
+        GlobalMaterialId base,
+        std::vector<NamedMaterialVariantRegistration> variants);
+    GlobalMaterialId materialVariantResource(
+        GlobalMaterialId base, std::string_view name) const;
     // Model generations own all IDs returned by glTF commit. A failed
     // candidate releases immediately; a published generation moves Vulkan
     // objects to DeletionQueue and delays material-slot reuse until the
@@ -184,6 +206,7 @@ DECLARE_MODULE(MaterialContainer) {
     struct ReloadableMaterialValuesBinding {
         std::string name;
         GlobalMaterialId material;
+        std::optional<std::string> variant;
     };
     // Explicit opt-in preserves registerMaterial(). One document may bind
     // several named materials; each receives its own logical values resource.
@@ -229,6 +252,10 @@ DECLARE_MODULE(MaterialContainer) {
         std::span<const watch::AssetKey> material_documents);
 
     bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
+    GlobalMaterialId resolveMaterialForPass(
+        const PassDefinition &pass, GlobalMaterialId material) const;
+    std::uint32_t materialGpuIndexForPass(
+        const PassDefinition &pass, GlobalMaterialId material) const;
     const std::vector<std::string> &
     tagsForMaterial(GlobalMaterialId material) const {
         return materials.get(material).tags;
@@ -247,6 +274,8 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalMaterialId material, const PassDefinition &pass) const;
     vk::PipelineLayout getPipelineLayout() const;
     vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
+    vk::PipelineLayout pipelineLayout(const PassDefinition &pass,
+                                      GlobalMaterialId material) const;
 };
 
 } // namespace Pelican

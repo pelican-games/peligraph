@@ -6376,4 +6376,61 @@ material/draw identityに追従する安定tagを導入する。
 
 ---
 
+### WP206b（済 2026-07-26）: pass-local material variant / multipass route
+
+**目的**: 同一mesh/materialをbase passと別surface/render-stateのoverlay passへ参加させ、
+特殊技法を専用engine pass kindなしで書けるようにする。
+
+**実装範囲**:
+
+1. WP206a tag filterを入口に、pass-local surface/state variantまたは同等のtyped material
+   routeを設計する。
+2. existing surfaceのfront cull/additive/depth authoringを再利用する。render state parserを
+   再実装しない。
+3. material contractの全面plugin化は行わず、まず既存material kind内のmultipassを縦切りする。
+4. variant shader/pipelineはruntime generationに所有させ、hot reloadをfailure-atomicにする。
+
+**受け入れ条件**:
+
+- entity/mesh/material複製なしのproject-owned inverted-hull outline
+- `outline`専用pass kind、hardcoded shader名、engine-only material flagを追加しない
+- base-only materialの描画byte不変
+- transparent/deferred/forward routeとの重複・順序を名前入りで検証
+- flat / preview / sequential XR / multiview / hot reloadを回帰
+
+依存: WP206a。見積: 中〜大。着手前にmaterial routeの小設計レビューを行う。
+
+**完了内容（2026-07-26）**:
+
+- 現行`pelican.material` version 1へoptional `variants` objectを追加し、各variantが
+  user-defined name、`.surface`、defines、custom values/textures、`render_path`を持つ
+  additive形式にした。旧版分岐や暗黙upgradeは追加していない。
+- material passは`material_variant`を、明示`material_contract`と非空の
+  `material_filter.include`と組み合わせて選ぶ。variant名に技法の意味を持たせず、
+  `outline`専用pass kind、shader名、engine flagを追加していない。
+- variantを通常のsurface/route/state loweringへ通し、独立したGPU record、descriptor、
+  pipeline、screen-input descriptorを持つ内部material resourceとして登録する。
+  baseの固定PBR値・texture slot・skinning/VAT identityは登録側で強制継承する。
+- Vulkan描画直前に`(base material id, variant name)`を内部resourceへ解決し、pipeline layout、
+  descriptor、material push indexを同じresourceへ揃えた。entity、mesh、draw command、
+  source-material identityとbase GPU recordは変更しない。
+- base draw queueを再利用できるdeferred↔forward opaque等の同一phase routeを許可した。
+  opaque/transparentを跨ぐvariantは、誤った透明sortを行わず登録時に名前付きで拒否する。
+  phase跨ぎはvariant-aware draw queueの後続拡張へ分離した。
+- material values/surface hot reloadへbase/variantの独立bindingを接続し、同じbase IDを
+  使う完全なbinding集合を一transactionで検証する。失敗candidateはbase/variant両方の
+  live GPU値・layout・pipeline generationを維持する。
+- frame-plan dumpとFrame Plan Viewerがvariantを表示し、flat、preview、sequential XR、
+  multiviewのgraph rewriteが同じlogical selectionを保持する。
+- project-owned temporary feature/material/surfaceによるinverted-hull dogfoodで、一つの
+  base drawから青いdeferred本体と赤いfront-cull forward overlayが実際のGPU画像へ
+  同時に現れることを確認した。
+- Debug全build、全906 CTest、`git diff --check`を通過した。Windows symlink権限依存の
+  PathResolver 1件だけは従来どおりskip。
+
+設計・完了証跡:
+[`design_reviews/2026-07-26_wp206b_material_variant_route.md`](design_reviews/2026-07-26_wp206b_material_variant_route.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。
