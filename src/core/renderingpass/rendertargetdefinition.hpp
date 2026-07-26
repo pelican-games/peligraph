@@ -30,6 +30,9 @@ struct RenderTargetDefinition {
     std::uint32_t array_layers = 1;
     RenderTargetStorageMode storage_mode =
         RenderTargetStorageMode::materialized;
+    // Filled by physical-plan compilation. Targets with the same value may
+    // share one allocation when their compiled lifetimes do not overlap.
+    std::optional<std::string> alias_group;
 };
 
 } // namespace Pelican

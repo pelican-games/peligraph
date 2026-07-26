@@ -2,6 +2,7 @@
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <array>
@@ -235,6 +236,52 @@ nlohmann::json localReadAttachmentConfig(
                       {"output",
                        {{"color", "display"},
                         {"depth", nullptr}}}}})}}})},
+    };
+}
+
+nlohmann::json aliasLifetimeConfig(
+    bool include_second_temporary = true) {
+    auto passes = nlohmann::json::array(
+        {{{"name", "produce_a"},
+          {"type", "fullscreen"},
+          {"output",
+           {{"color", "temporary_a"},
+            {"depth", nullptr}}}},
+         {{"name", "consume_a"},
+          {"type", "fullscreen"},
+          {"input", "temporary_a"},
+          {"input_footprints",
+           {{"temporary_a", "arbitrary"}}},
+          {"output",
+           {{"color", "display"},
+            {"depth", nullptr}}}}});
+    if (include_second_temporary) {
+        passes.push_back(
+            {{"name", "produce_b"},
+             {"type", "fullscreen"},
+             {"after",
+              nlohmann::json::array({"consume_a"})},
+             {"output",
+              {{"color", "temporary_b"},
+               {"depth", nullptr}}}});
+        passes.push_back(
+            {{"name", "consume_b"},
+             {"type", "fullscreen"},
+             {"input", "temporary_b"},
+             {"input_footprints",
+              {{"temporary_b", "arbitrary"}}},
+             {"output",
+              {{"color", "display"},
+               {"depth", nullptr}}}});
+    }
+    return {
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name",
+                include_second_temporary
+                    ? "alias_lifetimes"
+                    : "single_temporary"},
+               {"passes", std::move(passes)}}})},
     };
 }
 
@@ -1294,6 +1341,115 @@ TEST_CASE("color resolve mode follows Vulkan numeric format rules",
     REQUIRE(colorAttachmentResolveMode(
                 vk::Format::eB8G8R8A8Unorm) ==
             vk::ResolveModeFlagBits::eAverage);
+}
+
+TEST_CASE(
+    "runtime target bridge applies compatible lifetime alias groups",
+    "[target-planning][alias][runtime]") {
+    auto display =
+        target("display",
+               vk::Format::eR8G8B8A8Unorm);
+    display.format_class = "display";
+    std::vector targets{
+        target("temporary_a",
+               vk::Format::eR8G8B8A8Unorm),
+        target("temporary_b",
+               vk::Format::eR8G8B8A8Unorm),
+        display,
+    };
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            aliasLifetimeConfig());
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<
+                            std::uint32_t>{1};
+                    },
+            });
+
+    REQUIRE(compilation.plans.size() == 1);
+    REQUIRE(
+        compilation.plans.front()
+            ->alias_groups.size() == 1);
+    REQUIRE(
+        compilation.plans.front()
+            ->alias_groups.front()
+            .resources ==
+        std::vector<std::string>{
+            "temporary_a", "temporary_b"});
+    REQUIRE(
+        compilation.alias_group_assignments.size() ==
+        1);
+    REQUIRE(
+        compilation.alias_group_assignments.front()
+            .resources ==
+        std::vector<std::string>{
+            "temporary_a", "temporary_b"});
+
+    auto duplicate_group = compilation;
+    duplicate_group.alias_group_assignments.push_back(
+        duplicate_group.alias_group_assignments.front());
+    auto duplicate_targets = targets;
+    REQUIRE_THROWS_WITH(
+        applyRenderingTargetPlan(
+            duplicate_targets, duplicate_group),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate physical alias group assignment id"));
+
+    applyRenderingTargetPlan(targets, compilation);
+    REQUIRE(targets[0].alias_group.has_value());
+    REQUIRE(targets[1].alias_group ==
+            targets[0].alias_group);
+    REQUIRE_FALSE(targets[2].alias_group.has_value());
+}
+
+TEST_CASE(
+    "runtime alias merge drops groups that graph variants do not share",
+    "[target-planning][alias][runtime][variant]") {
+    auto display =
+        target("display",
+               vk::Format::eR8G8B8A8Unorm);
+    display.format_class = "display";
+    const std::vector targets{
+        target("temporary_a",
+               vk::Format::eR8G8B8A8Unorm),
+        target("temporary_b",
+               vk::Format::eR8G8B8A8Unorm),
+        display,
+    };
+    auto alias_graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            aliasLifetimeConfig());
+    auto single_graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            aliasLifetimeConfig(false));
+    alias_graphs.insert(
+        alias_graphs.end(),
+        single_graphs.begin(),
+        single_graphs.end());
+
+    const auto compilation =
+        compileRenderingTargetPlans(
+            alias_graphs, targets,
+            SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<
+                            std::uint32_t>{1};
+                    },
+            });
+    REQUIRE(
+        compilation.plans.front()
+            ->alias_groups.size() == 1);
+    REQUIRE(
+        compilation.alias_group_assignments.empty());
 }
 
 TEST_CASE(

@@ -7,6 +7,7 @@
 #include "rendertargetmetadata.hpp"
 #include <optional>
 #include <array>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -34,6 +35,8 @@ DECLARE_MODULE(RenderTargetContainer) {
         std::uint32_t samples;
         std::uint32_t array_layers;
         RenderTargetStorageMode storage_mode;
+        std::optional<std::string> alias_group;
+        std::optional<std::uint64_t> alias_group_token;
         std::array<ImageWrapper, 2> images;
         std::array<std::vector<vk::UniqueImageView>, 2>
             image_layer_views;
@@ -49,6 +52,8 @@ DECLARE_MODULE(RenderTargetContainer) {
 
     std::unordered_map<std::string, GlobalRenderTargetId> name_to_id;
     std::vector<GlobalRenderTargetId> registration_order;
+    std::unordered_map<std::uint64_t, GlobalRenderTargetId>
+        alias_group_owners;
 
   public:
     struct RegistrationCheckpoint {
@@ -71,7 +76,13 @@ DECLARE_MODULE(RenderTargetContainer) {
                                               std::uint32_t samples = 1,
                                               std::uint32_t array_layers = 1,
                                               RenderTargetStorageMode storage_mode =
-                                                  RenderTargetStorageMode::materialized);
+                                                  RenderTargetStorageMode::materialized,
+                                              std::optional<std::string> alias_group =
+                                                  std::nullopt,
+                                              std::optional<std::uint64_t>
+                                                  alias_group_token =
+                                                      std::nullopt);
+    std::uint64_t createAliasGroupToken();
     void recreateForExtent(vk::Extent2D base_extent);
     void resetHistory();
     void advanceHistoryFrame();
@@ -110,6 +121,10 @@ DECLARE_MODULE(RenderTargetContainer) {
     vk::ResolveModeFlagBits resolveMode(GlobalRenderTargetId id) const;
     vk::ImageLayout initialLayout(GlobalRenderTargetId id,
                                   bool attachment = false) const;
+    std::optional<std::uint64_t>
+    aliasGroup(GlobalRenderTargetId id) const;
+    bool sharesAllocation(GlobalRenderTargetId left,
+                          GlobalRenderTargetId right) const;
 
     // Internal append-only transaction surface used by render-config
     // candidate registration.
@@ -130,7 +145,9 @@ DECLARE_MODULE(RenderTargetContainer) {
         const std::vector<GlobalRenderTargetId> &ids) noexcept;
 
   private:
+    void rebuildAliasGroupOwners();
     uint32_t history_frame_index = 0;
+    std::uint64_t next_alias_group_token = 1;
     vk::ResolveModeFlagBits depth_resolve_mode =
         vk::ResolveModeFlagBits::eSampleZero;
 };

@@ -939,6 +939,8 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE12b / WP204 alternate-format slice（済 2026-07-26） | authored format candidate、target固有device evidence、runtime format assignment | undeclared/unsupported reject、sample/layer/external-depth再検証、flat/XR競合reject、Vulkan hot reload実描画 |
 | RPE12b / WP204 attachment-operation slice（済 2026-07-26） | version 2 physical attachment load/store、runtime lowering | logical/MSAA verifier、dynamic rendering、hot reload実描画 |
 | RPE12b / WP204 transient-runtime slice（済 2026-07-26） | write-only attachmentの独立候補、device/format gate、runtime storage mode | automatic Store discard、transient usage、lazy-memory preference、OpenXR OFF/ON |
+| RPE12b / WP204 tile-local-runtime slice（済 2026-07-26） | same-pixel read、physical scope fusion、dynamic rendering local read | input-attachment shader ABI、single-view/multiview、materialized fallback |
+| RPE12b / WP204 alias-runtime slice（済 2026-07-26） | lifetime非重複imageのruntime group、VMA allocation共有、alias memory dependency | variant完全合意、generation分離、rollback/recreate、headless実描画 |
 
 ### 12.1 いま着手する範囲
 
@@ -959,9 +961,11 @@ depth-resolve能力でattachment連結成分ごとの共通sample数を解決す
 multisample attachmentとsingle-sample resolved imageを分離し、後段sample/copyはresolved
 imageだけを見る。WP191ではこの連結成分解決を`VulkanTargetPlan`へ移し、runtimeは
 `FrameGraphDefinition`からlogical shadow graphを経て得たphysical format /
-representation / sample-count contractを検証・適用する。現runtime adapterは実装済みの
-materialized imageと、device/format検証済みのwrite-only single-sample transient attachment
-だけをtarget topologyへadvertiseする。tile-local / alias planは引き続き誤って実行しない。
+representation / sample-count contractを検証・適用する。現runtime adapterはmaterialized image、
+device/format検証済みのwrite-only single-sample transient attachment、same-pixel
+fullscreen subsetのtile-local attachment、完全一致するmaterialized image alias groupを
+target topologyへadvertiseする。これらの条件外の候補は実装済みと偽らず拒否または
+materialized fallbackにする。
 WP192ではflat / preview / XRを
 `GraphVariantPolicyRequest + GraphVariantPolicyCapabilities` から
 `CompiledGraphVariantPolicy`へ純粋compileし、feature decision、history/jitter、
@@ -1000,8 +1004,9 @@ fingerprintを変える循環を防ぐ。WP204 Phase B v1では同じautomatic p
 physical fragmentをejectし、conservative representation変更、scope split、alias groupを
 pure verifier/linkerで再検証してruntime target compilerへ戻す経路を追加した。
 environment fingerprintはdevice factsとprovider generationを含み、logical graphが同じでも
-実行前提が変わったartifactをstaleとして拒否する。現runtime未対応のtile-local/aliasは
-明示capability gateを維持する。alternate-format sliceでは、render targetの
+実行前提が変わったartifactをstaleとして拒否する。v1導入時にruntime未対応だった
+tile-local/aliasは、後続sliceで検証済みの狭い部分集合だけを明示capability gateの内側へ
+追加した。alternate-format sliceでは、render targetの
 `format_candidates`をlogical `ResourcePattern`へ運び、対象resource/formatごとの
 image usage、sample count、array layer、external-depth transfer capabilityを実deviceから
 snapshotしてlinkする。選択formatはsample planとGPU target/pipeline登録へ同時に適用し、
@@ -1012,6 +1017,14 @@ materialized/tile-localと独立した候補を追加し、write-only virtual at
 automatic StoreをDiscardへloweringする。実deviceのformat/usage照合後にruntime storage mode、
 transient image usage、lazy-memory preferenceへ接続し、非対応deviceと
 `conservative_debug`ではmaterialized + Storeへ戻す。
+tile-local-runtime sliceでは、same-pixel fullscreen read、extent/sample/view一致、
+dynamic-rendering-local-read対応を満たすproducer/consumerを一つのphysical scopeへ融合し、
+input attachment shader ABIとsingle-view/multiview実行へ接続した。
+alias-runtime sliceでは、non-history、single-sample、materializedで同じimage契約を持ち、
+lifetimeが重ならないcolor attachment + sampled resourceを対象にする。全graph variantが
+同じgroupへ完全合意した場合だけ、別VkImageを一つのVMA allocationへbindする。
+registration generation固有token、shared allocation ownership、alias切替memory dependencyにより、
+hot reload candidate、rollback、deferred retire、同extent再生成を既存generation境界へ統合した。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
@@ -1031,7 +1044,8 @@ transient image usage、lazy-memory preferenceへ接続し、非対応deviceと
 
 backend candidateだけを固定するWP204 Phase Aのpinと、自動planへ安全な部分編集を戻す
 Phase B v1 fragment、宣言済み候補からdevice検証済みmaterialized-image formatを選ぶ
-runtime slice、verified attachment operation、write-only transient runtimeは実装済みである。
+runtime slice、verified attachment operation、write-only transient、same-pixel tile-local、
+materialized image alias runtimeは実装済みである。
 それより強い一般のload-store / scope-fusion / queue-barrier、
 complete raw plan、`NativeScope`は、現在のverifierを
 具体的な利用要求と対象GPU fixtureで拡張してから公開形式・ABIを凍結する。

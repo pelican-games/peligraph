@@ -5,6 +5,7 @@
 #include "../vkcore/util.hpp"
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -201,7 +202,8 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                          vk::SampleCountFlagBits::e1,
                                      std::uint32_t array_layers = 1,
                                      RenderTargetStorageMode storage_mode =
-                                         RenderTargetStorageMode::materialized) {
+                                         RenderTargetStorageMode::materialized,
+                                     bool aliasable = false) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
     vk::FormatFeatureFlags required;
@@ -230,10 +232,21 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                   vk::MemoryPropertyFlagBits::
                       eLazilyAllocated}
             : vk::MemoryPropertyFlags{};
+    const auto allocation_flags =
+        aliasable
+            ? vma::AllocationCreateFlags{
+                  vma::AllocationCreateFlagBits::eCanAlias}
+            : vma::AllocationCreateFlags{};
+    const auto image_flags =
+        aliasable
+            ? vk::ImageCreateFlags{
+                  vk::ImageCreateFlagBits::eAlias}
+            : vk::ImageCreateFlags{};
     return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
-                             memory_usage, {}, VulkanProcessType::graphics,
+                             memory_usage, allocation_flags,
+                             VulkanProcessType::graphics,
                              {}, 1, samples, array_layers,
-                             preferred_memory);
+                             preferred_memory, image_flags);
 }
 
 void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
@@ -278,6 +291,15 @@ RenderTargetContainer::RenderTargetContainer()
 
 RenderTargetContainer::~RenderTargetContainer() {}
 
+std::uint64_t RenderTargetContainer::createAliasGroupToken() {
+    if (next_alias_group_token ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "render target alias group token space exhausted");
+    }
+    return next_alias_group_token++;
+}
+
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::string &name,
                                                                  vk::Extent2D base_extent,
                                                                  const std::string &format_class,
@@ -291,7 +313,21 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                                                  vk::ClearColorValue history_clear_color,
                                                                  std::uint32_t samples,
                                                                  std::uint32_t array_layers,
-                                                                 RenderTargetStorageMode storage_mode) {
+                                                                 RenderTargetStorageMode storage_mode,
+                                                                 std::optional<std::string> alias_group,
+                                                                 std::optional<std::uint64_t>
+                                                                     alias_group_token) {
+    if (alias_group.has_value() !=
+        alias_group_token.has_value()) {
+        throw std::runtime_error(
+            "render target alias group name and token must be provided together: " +
+            name);
+    }
+    if (alias_group && alias_group->empty()) {
+        throw std::runtime_error(
+            "render target alias group must not be empty: " +
+            name);
+    }
     if (array_layers == 0) {
         throw std::runtime_error(
             "Render target array_layers must be greater than zero: " +
@@ -365,6 +401,14 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         throw std::runtime_error("History render target requires COLOR_ATTACHMENT usage: " + name);
     }
     if (history) usage |= vk::ImageUsageFlagBits::eTransferDst;
+    if (alias_group &&
+        (history || samples != 1 ||
+         storage_mode !=
+             RenderTargetStorageMode::materialized)) {
+        throw std::runtime_error(
+            "aliased render target must be materialized, non-history, and single-sample: " +
+            name);
+    }
 
     // Reuse an existing target when config registration is called more than once.
     if (auto it = name_to_id.find(name); it != name_to_id.end()) {
@@ -386,6 +430,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         if (existing.samples != samples) note("samples");
         if (existing.storage_mode != storage_mode)
             note("storage_mode");
+        if (existing.alias_group != alias_group)
+            note("alias_group");
         // A previously allocated array image is a safe physical superset for
         // a sequential/flat registration. Expanding a live image during a
         // candidate transaction is not failure-atomic, so it remains an
@@ -407,6 +453,37 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
             "multisampled depth render target requires depth resolve support: " +
             name);
     }
+    const InternalRenderTarget *alias_owner = nullptr;
+    if (alias_group_token) {
+        if (const auto owner =
+                alias_group_owners.find(*alias_group_token);
+            owner != alias_group_owners.end()) {
+            alias_owner = &render_targets.get(owner->second);
+            const auto requested_extent =
+                resolveRenderTargetExtent(
+                    name, base_extent, extent_scale,
+                    fixed_extent);
+            const auto &owner_image =
+                alias_owner->images[0];
+            const auto owner_extent =
+                vk::Extent2D{
+                    owner_image.extent.width,
+                    owner_image.extent.height};
+            if (alias_owner->format != format ||
+                alias_owner->usage != usage ||
+                alias_owner->memory_usage != memUsage ||
+                alias_owner->samples != samples ||
+                alias_owner->array_layers != array_layers ||
+                alias_owner->storage_mode != storage_mode ||
+                owner_extent != requested_extent) {
+                throw std::runtime_error(
+                    "render target alias group members have incompatible physical contracts: " +
+                    *alias_group + " (" +
+                    alias_owner->name + ", " + name +
+                    ")");
+            }
+        }
+    }
     registration_order.reserve(registration_order.size() + 1);
     std::array<ImageWrapper, 2> images;
     std::array<std::vector<vk::UniqueImageView>, 2>
@@ -420,11 +497,17 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         layered_attachment_image_views;
     const uint32_t surface_count = history ? 2u : 1u;
     for (uint32_t i = 0; i < surface_count; ++i) {
-        images[i] = createRenderTargetImage(name, base_extent, extent_scale, fixed_extent,
-                                            format, usage, memUsage,
-                                            vk::SampleCountFlagBits::e1,
-                                            array_layers,
-                                            storage_mode);
+        images[i] =
+            alias_owner != nullptr
+                ? GET_MODULE(VulkanManageCore)
+                      .allocAliasingImage(
+                          alias_owner->images[i])
+                : createRenderTargetImage(
+                      name, base_extent, extent_scale,
+                      fixed_extent, format, usage, memUsage,
+                      vk::SampleCountFlagBits::e1,
+                      array_layers, storage_mode,
+                      alias_group_token.has_value());
         image_layer_views[i] =
             createSequentialImageViews(device, images[i]);
         layered_image_views[i] =
@@ -471,6 +554,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .samples = samples,
         .array_layers = array_layers,
         .storage_mode = storage_mode,
+        .alias_group = alias_group,
+        .alias_group_token = alias_group_token,
         .images = std::move(images),
         .image_layer_views =
             std::move(image_layer_views),
@@ -489,17 +574,50 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                 "Render target name table changed during registration: " +
                 name);
         }
+        registration_order.push_back(id);
+        if (alias_group_token &&
+            alias_owner == nullptr &&
+            !alias_group_owners
+                 .emplace(*alias_group_token, id)
+                 .second) {
+            throw std::runtime_error(
+                "render target alias group owner changed during registration: " +
+                *alias_group);
+        }
     } catch (...) {
+        if (const auto found = name_to_id.find(name);
+            found != name_to_id.end() &&
+            found->second == id) {
+            name_to_id.erase(found);
+        }
+        std::erase(registration_order, id);
         (void)render_targets.extract(id, false);
+        rebuildAliasGroupOwners();
         throw;
     }
-    registration_order.push_back(id);
     return id;
 }
 
 void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
     for (const auto id : registration_order) {
         auto &rt = render_targets.get(id);
+        const InternalRenderTarget *alias_owner = nullptr;
+        if (rt.alias_group_token) {
+            const auto owner =
+                alias_group_owners.find(
+                    *rt.alias_group_token);
+            if (owner ==
+                alias_group_owners.end()) {
+                throw std::runtime_error(
+                    "render target alias group has no allocation owner: " +
+                    rt.name);
+            }
+            if (owner->second != id) {
+                alias_owner =
+                    &render_targets.get(
+                        owner->second);
+            }
+        }
         std::array<ImageWrapper, 2> next_images;
         std::array<std::vector<vk::UniqueImageView>, 2>
             next_layer_views;
@@ -512,12 +630,21 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
             next_layered_attachment_views;
         const uint32_t surface_count = rt.history ? 2u : 1u;
         for (uint32_t i = 0; i < surface_count; ++i) {
-            next_images[i] = createRenderTargetImage(rt.name, base_extent, rt.extent_scale,
-                                                     rt.fixed_extent, rt.format, rt.usage,
-                                                     rt.memory_usage,
-                                                     vk::SampleCountFlagBits::e1,
-                                                     rt.array_layers,
-                                                     rt.storage_mode);
+            next_images[i] =
+                alias_owner != nullptr
+                    ? GET_MODULE(VulkanManageCore)
+                          .allocAliasingImage(
+                              alias_owner->images[i])
+                    : createRenderTargetImage(
+                          rt.name, base_extent,
+                          rt.extent_scale,
+                          rt.fixed_extent, rt.format,
+                          rt.usage, rt.memory_usage,
+                          vk::SampleCountFlagBits::e1,
+                          rt.array_layers,
+                          rt.storage_mode,
+                          rt.alias_group_token
+                              .has_value());
             next_layer_views[i] =
                 createSequentialImageViews(
                     device, next_images[i]);
@@ -621,6 +748,7 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
         rt.samples,
         rt.array_layers,
         rt.storage_mode,
+        rt.alias_group,
     };
 }
 
@@ -779,6 +907,24 @@ vk::ImageLayout RenderTargetContainer::initialLayout(
                       : vk::ImageLayout::eUndefined;
 }
 
+std::optional<std::uint64_t>
+RenderTargetContainer::aliasGroup(
+    GlobalRenderTargetId id) const {
+    return render_targets.get(id).alias_group_token;
+}
+
+bool RenderTargetContainer::sharesAllocation(
+    GlobalRenderTargetId left,
+    GlobalRenderTargetId right) const {
+    const auto &left_allocation =
+        getImage(left).allocation;
+    const auto &right_allocation =
+        getImage(right).allocation;
+    return left_allocation != nullptr &&
+           right_allocation != nullptr &&
+           left_allocation == right_allocation;
+}
+
 RenderTargetContainer::RegistrationCheckpoint
 RenderTargetContainer::checkpointRegistrations() const {
     return RegistrationCheckpoint{
@@ -799,6 +945,7 @@ void RenderTargetContainer::rollbackRegistrations(
         registration_order.pop_back();
     }
     name_to_id = std::move(checkpoint.name_to_id);
+    rebuildAliasGroupOwners();
 }
 
 std::vector<std::pair<std::string, GlobalRenderTargetId>>
@@ -847,6 +994,19 @@ void RenderTargetContainer::retireRegistrations(
                 queue->defer(std::move(*retired));
             }
         } catch (...) {
+        }
+    }
+    rebuildAliasGroupOwners();
+}
+
+void RenderTargetContainer::rebuildAliasGroupOwners() {
+    alias_group_owners.clear();
+    for (const auto id : registration_order) {
+        if (!render_targets.contains(id)) continue;
+        const auto &target = render_targets.get(id);
+        if (target.alias_group_token) {
+            alias_group_owners.emplace(
+                *target.alias_group_token, id);
         }
     }
 }

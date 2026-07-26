@@ -73,6 +73,15 @@ struct RenderingTargetRepresentationAssignment {
         default;
 };
 
+struct RenderingTargetAliasGroupAssignment {
+    std::string id;
+    std::vector<std::string> resources;
+
+    bool operator==(
+        const RenderingTargetAliasGroupAssignment &) const =
+        default;
+};
+
 struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_color_attachments = 8;
     bool multiview = false;
@@ -99,6 +108,8 @@ struct RenderingTargetPlanCompilation {
         format_assignments;
     std::vector<RenderingTargetRepresentationAssignment>
         representation_assignments;
+    std::vector<RenderingTargetAliasGroupAssignment>
+        alias_group_assignments;
 };
 
 std::vector<CompiledLogicalRenderGraph>

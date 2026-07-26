@@ -969,9 +969,11 @@ sample count、resolve requirement、physical scope sample countを一括lowerin
 旧runtime bridgeのJSON再走査、pass type string判定、独自disjoint-setは削除した。
 
 現runtime adapterは実deviceのformat sample count、depth resolve、color attachment budgetを
-target factsへ変換する。Vulkan executorが実装済みの`materialized_image`と、write-only /
-single-sample / attachment-onlyに限定した`transient_attachment`だけをadvertiseし、返された
-physical planのformat/representationを検証してから`RenderTargetDefinition`へ適用する。
+target factsへ変換する。Vulkan executorが実装済みの`materialized_image`、write-only /
+single-sample / attachment-onlyに限定した`transient_attachment`、same-pixel fullscreen
+subsetの`tile_local_attachment`、完全一致するmaterialized image alias groupだけをadvertiseし、
+返されたphysical planのformat/representation/aliasを検証してから
+`RenderTargetDefinition`へ適用する。
 `CompiledFrameGraphExecution`がplan本体を所有し、従来の`ResolvedSampleCountPlan`は同じ
 immutable planへのviewである。
 
@@ -981,7 +983,7 @@ gate:
 - 任意名・追加枚数のG-bufferがlogical outputだけからcomponentへ入る
 - physical resource/scopeのsample countと実attachment metadataが一致する
 - sample countが異なるtile scopeをfusionせず、alias compatibilityにもsample contractを含める
-- current runtimeは狭いwrite-only transient subset以外のtile-local/alias候補を実装済みと偽らない
+- current runtimeは明示したtransient/tile-local/alias subsetの外を実装済みと偽らない
 - standard/hybrid headless、feature composition、XR回帰、全CTestが成功する
 
 ### それ以後
@@ -1326,8 +1328,8 @@ format、sample plan、required feature、external-depth contractを同期し、
 capabilityと同じbackend candidateのfeature closureを再検証してから`VulkanTargetPlan`を
 返す。runtime bridgeは同じdevice capability snapshotからformat assignmentを作り、
 同名targetを共有するgraphおよびflat/XR variant間のformat競合をGPU登録前に拒否する。
-現runtime adapterが実装していないtile-local / alias結果はparser成功と実行可能性を混同せず、
-runtime capability gateでrejectする。
+runtime adapterはtile-local / alias結果のうち、後述する検証済みsubsetだけを受理する。
+それ以外はparser成功と実行可能性を混同せず、runtime capability gateでrejectする。
 
 automatic planningにはmaterialized/tile-localと独立した
 `pelican.vulkan.transient_plan@1`を追加した。attachment-only、non-history、
@@ -1337,6 +1339,22 @@ typed storage modeへ変換し、imageへ`VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BI
 lazily allocated memoryを優先する。`conservative_debug`、非対応format、後段readでは
 materialized + Storeへ戻る。physical fragmentはtransientをmaterializeしてStoreを増やす
 保守的なescape hatchを維持する。
+
+tile-local loweringは、non-history、single-sample attachmentのproducerと、`same_pixel`だけを
+読むfullscreen consumerがextent/view契約を共有し、device/formatがdynamic rendering local
+readを受理する場合に限る。physical scope fusion、input attachment shader ABI、location/index
+mapping、BY_REGION dependency、single-view/sequential/multiview実行を同じplanから生成する。
+material/custom/raster consumer、neighborhood read、MSAA、非対応device/formatでは
+materialized candidateへ戻す。
+
+alias runtime loweringは、non-history、single-sample、materialized、
+`COLOR_ATTACHMENT | SAMPLED`の同一image契約を持ち、compiled lifetimeが重ならないresourceに
+限定する。複数graph variantを一つのruntime target集合へmergeするときは、いずれかのmemberへ
+触れる全planが同じ完全groupを持つ場合だけassignmentを残す。不一致時は共有を無効化する。
+runtimeはVMA `CAN_ALIAS`とVulkan `IMAGE_CREATE_ALIAS_BIT`で別VkImageを同一allocationへbindし、
+alias member切替時にmemory dependencyを発行して新しいlogical imageを`Undefined`から遷移する。
+registration generation固有tokenにより、hot reload candidateは旧in-flight allocationを
+共有しない。
 
 renderer strategyはこのlower-layer controlを生成・解釈しない。
 `vulkan_physical_fragments`も`target_planning` / `vulkan_plan_pins`と同様にstrategy ABI
@@ -1353,12 +1371,14 @@ gate:
 - OpenXR OFF / ON、headless Vulkan runtimeで既定経路とfragment routeを維持する
 - headless hot reloadでalternate formatの実image/pipeline世代交換と出力一致を検証する
 - write-only transientのdevice/format gate、Store elision、実allocation、hot reloadを検証する
+- tile-localのscope fusion、shader ABI、single-view/multiview実行とfallbackを検証する
+- aliasのvariant合意、実allocation共有、memory dependency、generation/rollback/recreateを検証する
 
 次の候補:
 
 1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
 2. WP204 後続 — 一般のload-store / scope fusion・queue・barrierのaggressive physical
-   verifierと、tile-local / alias runtime gate
+   verifier、MSAA/history/depth/storage/transfer/bufferを含むalias範囲拡張、対象GPU実測gate
 3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装

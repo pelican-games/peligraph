@@ -24,6 +24,7 @@
 #include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
 #include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
+#include "../src/core/renderingpass/rendertargetconfigregistration.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
@@ -197,6 +198,26 @@ void main() {
     vec4 value =
         PELICAN_TEXTURE_2D_0(inputColor, inUV);
     outColor = vec4(value.b, value.g, value.r, 1.0);
+}
+)glsl";
+}
+
+const char *aliasProducerAFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(1.0, 0.0, 0.0, 1.0);
+}
+)glsl";
+}
+
+const char *aliasProducerBFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.0, 1.0, 0.0, 1.0);
 }
 )glsl";
 }
@@ -522,6 +543,84 @@ nlohmann::json localReadRenderingConfig() {
           "shader": {
             "vertex": "shaders/local_read_fullscreen",
             "fragment": "shaders/local_read_present"
+          }
+        }
+      ]
+    }
+  ]
+}
+)json");
+}
+
+nlohmann::json aliasLifetimeRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [
+    {
+      "name": "alias_a",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "alias_b",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "alias_sink",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "alias_runtime_main",
+      "passes": [
+        {
+          "name": "alias_produce_a",
+          "type": "fullscreen",
+          "output": {"color": "alias_a", "depth": null},
+          "shader": {
+            "vertex": "shaders/alias_fullscreen",
+            "fragment": "shaders/alias_producer_a"
+          }
+        },
+        {
+          "name": "alias_consume_a",
+          "type": "fullscreen",
+          "input": ["alias_a"],
+          "input_footprints": {"alias_a": "arbitrary"},
+          "output": {"color": "alias_sink", "depth": null},
+          "shader": {
+            "vertex": "shaders/alias_fullscreen",
+            "fragment": "shaders/alias_copy"
+          }
+        },
+        {
+          "name": "alias_produce_b",
+          "type": "fullscreen",
+          "after": ["alias_consume_a"],
+          "output": {"color": "alias_b", "depth": null},
+          "shader": {
+            "vertex": "shaders/alias_fullscreen",
+            "fragment": "shaders/alias_producer_b"
+          }
+        },
+        {
+          "name": "alias_consume_b",
+          "type": "fullscreen",
+          "input": ["alias_b"],
+          "input_footprints": {"alias_b": "arbitrary"},
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/alias_fullscreen",
+            "fragment": "shaders/alias_copy"
           }
         }
       ]
@@ -1332,6 +1431,238 @@ TEST_CASE(
         SKIP(
             std::string{
                 "Vulkan tile-local rendering unavailable: "} +
+            error.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "runtime target planner executes aliased image lifetimes",
+    "[headless][render][alias][lifetime]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "alias_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "alias_producer_a.frag",
+            aliasProducerAFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "alias_producer_b.frag",
+            aliasProducerBFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "alias_copy.frag",
+            gpuArenaCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            aliasLifetimeRenderingConfig().dump(2));
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "alias_runtime_main";
+        project["schema"] = "pelican.project";
+        project["version"] = 1;
+        project["name"] =
+            "alias-runtime";
+        GET_MODULE(ProjectSource)
+            .setProjectData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false, project.dump());
+
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 2;
+        auto &engine_time =
+            GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &targets =
+            GET_MODULE(RenderTargetContainer);
+        const auto alias_a =
+            targets.getRenderTargetIdByName(
+                "alias_a");
+        const auto alias_b =
+            targets.getRenderTargetIdByName(
+                "alias_b");
+        const auto metadata_a =
+            targets.getMetadata(alias_a);
+        const auto metadata_b =
+            targets.getMetadata(alias_b);
+        REQUIRE(metadata_a.alias_group.has_value());
+        REQUIRE(metadata_b.alias_group ==
+                metadata_a.alias_group);
+        REQUIRE(
+            targets.aliasGroup(alias_a) ==
+            targets.aliasGroup(alias_b));
+        REQUIRE(
+            targets.sharesAllocation(
+                alias_a, alias_b));
+        REQUIRE(
+            targets.getImage(alias_a).image.get() !=
+            targets.getImage(alias_b).image.get());
+
+        const auto checkpoint =
+            targets.checkpointRegistrations();
+        targets.hideRegistrationName(
+            "alias_a", alias_a);
+        targets.hideRegistrationName(
+            "alias_b", alias_b);
+        auto candidate_a =
+            RenderTargetDefinition{
+                .name = "alias_a",
+                .format_class = "data",
+                .role = "data",
+                .format =
+                    vk::Format::eR8G8B8A8Unorm,
+                .usage =
+                    vk::ImageUsageFlagBits::
+                            eColorAttachment |
+                    vk::ImageUsageFlagBits::eSampled,
+            };
+        candidate_a.alias_group =
+            metadata_a.alias_group;
+        auto candidate_b = candidate_a;
+        candidate_b.name = "alias_b";
+        registerRenderTargetDefinitions(
+            {candidate_a, candidate_b},
+            {32, 32}, targets);
+        const auto candidate_alias_a =
+            targets.getRenderTargetIdByName(
+                "alias_a");
+        const auto candidate_alias_b =
+            targets.getRenderTargetIdByName(
+                "alias_b");
+        REQUIRE(candidate_alias_a != alias_a);
+        REQUIRE(candidate_alias_b != alias_b);
+        REQUIRE(
+            targets.aliasGroup(candidate_alias_a) ==
+            targets.aliasGroup(candidate_alias_b));
+        REQUIRE(
+            targets.aliasGroup(candidate_alias_a) !=
+            targets.aliasGroup(alias_a));
+        REQUIRE(
+            targets.sharesAllocation(
+                candidate_alias_a,
+                candidate_alias_b));
+        REQUIRE_FALSE(
+            targets.sharesAllocation(
+                alias_a, candidate_alias_a));
+        targets.rollbackRegistrations(checkpoint);
+        REQUIRE(
+            targets.getRenderTargetIdByName(
+                "alias_a") == alias_a);
+        REQUIRE(
+            targets.getRenderTargetIdByName(
+                "alias_b") == alias_b);
+        REQUIRE(
+            targets.sharesAllocation(
+                alias_a, alias_b));
+
+        const auto pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "alias_runtime_main");
+        const auto program =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .findProgram(pass_id);
+        REQUIRE(program != nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan !=
+            nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan
+                ->alias_groups.size() == 1);
+        REQUIRE(
+            program->frame_graph.target_plan
+                ->alias_groups.front().resources ==
+            std::vector<std::string>{
+                "alias_a", "alias_b"});
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        REQUIRE(
+            renderer
+                .imageAliasDependencyCountForTesting() >=
+            1);
+
+        renderer
+            .recreateRenderTargetsAndRebindForTesting(
+                {32, 32});
+        REQUIRE(
+            targets.sharesAllocation(
+                alias_a, alias_b));
+        REQUIRE(
+            targets.getImage(alias_a).image.get() !=
+            targets.getImage(alias_b).image.get());
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        REQUIRE(
+            renderer
+                .imageAliasDependencyCountForTesting() >=
+            1);
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            pixels.size() ==
+            32u * 32u * 4u);
+        std::size_t mismatches = 0;
+        for (std::size_t offset = 0;
+             offset < pixels.size();
+             offset += 4) {
+            if (pixels[offset] != 0 ||
+                pixels[offset + 1] != 255 ||
+                pixels[offset + 2] != 0 ||
+                pixels[offset + 3] != 255) {
+                ++mismatches;
+            }
+        }
+        REQUIRE(mismatches == 0);
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan alias rendering unavailable: "} +
             error.what());
     }
 #endif

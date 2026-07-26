@@ -901,6 +901,13 @@ void applyResolvedSampleCounts(
             resolved.samples > 1 &&
             found->representation !=
                 VulkanResourceRepresentation::external;
+        // Runtime aliasing currently owns one resolved single-sample image
+        // per logical resource. A multisample target also needs a distinct
+        // attachment allocation, so keep it out of alias planning until both
+        // surfaces can be lowered as one physical contract.
+        if (resolved.samples > 1) {
+            found->aliasable = false;
+        }
     }
 }
 

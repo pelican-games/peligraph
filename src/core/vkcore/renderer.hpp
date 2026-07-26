@@ -113,6 +113,9 @@ DECLARE_MODULE(Renderer) {
     std::size_t imageMemoryDependencyCountForTesting() const noexcept {
         return render_target_layout_tracker.memoryDependencyCountForTesting();
     }
+    std::size_t imageAliasDependencyCountForTesting() const noexcept {
+        return render_target_layout_tracker.aliasDependencyCountForTesting();
+    }
     const std::vector<RenderFrameSnapshot> &lastViewSnapshotsForTesting() const {
         return last_view_snapshots;
     }

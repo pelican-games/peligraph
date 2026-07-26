@@ -454,12 +454,19 @@ prepare/publishされます。
 `discard`です。内容の保存が必要な特殊実験では、ejectした同じfragmentでresourceを
 `materialized_image`へ保守的に変更し、attachmentを`store`へ戻せます。
 
+自動planのalias groupは、non-history・single-sample・materializedで、format、usage、
+extent、view契約が同一、かつlifetimeが重ならないimageに限ってruntime allocationへ適用されます。
+同じtarget集合を共有する全graph variantが完全に同じgroupへ合意しない場合は、正しさを保ったまま
+allocation共有だけを無効化します。実行時はgroup内でも別々のVkImageを使い、同じVMA allocationを
+共有します。hot reload candidateはgeneration固有groupなので、旧in-flight imageとは共有しません。
+
 まだ受理しないのはphysical fragmentによる`materialized_image`からtile-localへの攻めた変更、
 別の自動scope同士の融合/reorder、一般のmaterialized single-sample surfaceに対する
 store elision、barrier、queue、任意Vulkan flagです。production runtimeが実行する
 非materialized imageは、上記のwrite-only `transient_attachment`と、verified
-same-pixel fullscreen subsetの`tile_local_attachment`です。alias groupはplanner/verifier上の
-表現に留まり、runtime memory bindingはまだ受理しません。
+same-pixel fullscreen subsetの`tile_local_attachment`です。alias runtimeは現在、
+color attachment + sampled用途のmaterialized imageだけを対象とし、MSAA、history、depth、
+storage/transfer image、bufferとの混在はまだ受理しません。
 
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 

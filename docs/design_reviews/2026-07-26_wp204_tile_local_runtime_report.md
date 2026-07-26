@@ -108,13 +108,12 @@ composition target統合と、対象tile GPUでの帯域・GPU時間の実測は
 
 ## 6. コミット範囲
 
-細かな作業コミットは、最終的に次の三つのレビュー可能な垂直単位へ整理した。
+コンパイル、実行、runtime選択を分離して作業したが、単独で使える機能境界は一つなので
+最終履歴では次の一つの垂直コミットへ統合した。
 
 | commit message | 内容 |
 |---|---|
-| `feat(render): compile fused local-read scopes` | device capability、typed read footprint、physical scope/view契約、shader ABI、pipeline mapping、scope-local binding |
-| `feat(render): execute fused local-read scopes` | Vulkan command dispatch、fused dynamic rendering executor、locality verifier、per-view scope保持 |
-| `feat(render): select runtime tile-local attachments` | graph/device/formatによる自動選択、runtime allocation、fallback、E2E、文書 |
+| `feat(render): compile and execute tile-local attachment plans` | device capability、typed read footprint、physical scope/view契約、shader ABI、Vulkan command実行、runtime allocation、fallback、E2E、文書 |
 
 ## 7. 残る境界
 
@@ -122,5 +121,5 @@ composition target統合と、対象tile GPUでの帯域・GPU時間の実測は
 - Quest standalone等のtile GPUでの帯域・GPU時間・lazy memory behavior計測
 - MSAA local read / resolve、一般material/custom/raster consumer
 - depth local readの専用実Vulkan acceptance fixture
-- alias groupの実memory binding
+- MSAA/history/depth/storage/bufferまでのalias範囲拡張
 - physical fragmentによるaggressive fusion/reorder、raw barrier/queue、`NativeScope`

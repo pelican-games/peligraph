@@ -72,7 +72,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP | 内容 | 状態 |
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
-| WP204 | physical plan eject / direct authoring | verified format/attachment + write-only transient runtime slice実装済み・tile-local/scope/queue待ち |
+| WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias runtime実装済み・aggressive scope/queueと実機GPU gate待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -163,8 +163,9 @@ XR2b最終gateを満たす。
    resource/scope/alias/sample/view/external-depth contractをautomatic plan fingerprintへ含め、
    stale artifactを拒否する。link後にendpoint capabilityとfeature closureを再検証する。
 6. `vulkan_physical_fragments.flat|preview|xr[]`をpipeline/runtime target compilerへ接続し、
-   dumpへ`ejectable_physical_fragment` / `applied_physical_fragment`を残す。現runtimeが
-   実行できないtile-local/alias結果は既存capability gateで名指し拒否する。
+   dumpへ`ejectable_physical_fragment` / `applied_physical_fragment`を残す。v1導入時点で
+   実行できなかったtile-local/alias結果はcapability gateで名指し拒否し、後続sliceで
+   検証可能な部分集合だけを段階的に開放する。
 7. `target_planning` / `vulkan_plan_pins`と同様にfragmentをstrategy fingerprintから除外し、
    lower-layer control貼り戻しによる自己参照を防いだ。
 
@@ -230,11 +231,37 @@ XR2b最終gateを満たす。
    fragmentのfail-closedを検証した。headless Vulkanでは実image、Discard、描画結果、
    physical fragmentを伴うhot reload後の契約維持をOpenXR OFF / ONで確認した。
 
+**Phase B follow-up — tile-local attachment runtime(実装済み 2026-07-26)**:
+
+1. logical `same_pixel` read、extent、sample/view契約とdevice/format capabilityから
+   `pelican.vulkan.tile_local_plan@1`を選び、producerとfullscreen consumerを一つの
+   physical rendering scopeへ融合する。
+2. input-attachment shader variant、location/index mapping、BY_REGION dependency、
+   dynamic rendering local read、single-view/sequential/multiview executorへ接続した。
+3. `tile_local_attachment`はinput/transient attachment usageとlazy-memory preferenceを持つ。
+   material/custom consumer、neighborhood read、MSAA、非対応device/formatではmaterializedへ戻る。
+4. synthetic Vulkanのsingle-view/multiviewとOpenXR境界を回帰した。Meta XR Simulator /
+   HMD compositionと対象tile GPUでの帯域・GPU時間は外部gateとして残す。
+
+**Phase B follow-up — physical image alias runtime(実装済み 2026-07-26)**:
+
+1. non-history、single-sample、materialized、同一format/usage/extent/view契約で、
+   compiled lifetimeが重ならないcolor attachment + sampled imageだけを自動alias候補にした。
+2. 同じtargetを使う全graph variantが完全に同じgroupへ合意した場合だけruntime assignmentを
+   適用する。不一致はallocation共有を無効化し、正しさを変えない。
+3. VMA `CAN_ALIAS`とVulkan `IMAGE_CREATE_ALIAS_BIT`で一つのallocationへ別々のVkImageをbindする。
+   registration generationごとに固有tokenを発行し、hot reload candidateを旧in-flight
+   generationと共有しない。rollback、retire、同extent再生成でも所有権を維持する。
+4. alias member切替時は保守的なmemory dependencyを発行し、新しいlogical imageを
+   `Undefined`から必要layoutへ遷移する。headless Vulkanでallocation共有、barrier、画素、
+   candidate publish/rollback、再生成を検証した。
+
 **残る WP204 後続**:
 
 1. automatic scopeをまたぐfusion/reorder、一般のmaterialized single-sample store elision、
    queue/barrierを扱うaggressive physical fragment
-2. tile-local / alias planを実行するruntime adapterと対象GPU gate
+2. MSAA/history/depth/storage/transfer/bufferまで含むalias範囲の拡張と、対象tile GPU /
+   XR実機での性能・validation gate
 3. open external boundary、complete raw physical plan、`NativeScope`
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
@@ -293,14 +320,16 @@ window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submissi
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
 physical plan eject / direct authoring は WP204 Phase B v2とverified alternate-format /
-per-attachment operation / write-only transient runtime sliceまで実装済みである。
+per-attachment operation / transient / tile-local / physical image alias runtime sliceまで
+実装済みである。
 自動planへconservative resource materialization、split-only scope partition、verified alias
 group、宣言済みかつdevice検証済みのmaterialized-image format変更、logical dependencyと
 MSAA resolveを壊さないattachment load/store変更をlinkしてproduction runtimeで実行できる。
-加えて、device/formatが対応するwrite-only single-sample attachmentは自動Store elisionと
-transient image allocationまで実行できる。次はscope fusion/reorder、一般のmaterialized
-store elision、queue/barrier等のaggressive controlとtile-local / alias runtimeを具体的な
-GPU gate付きで進める。`NativeScope`は具体的な
+加えて、device/formatが対応するwrite-only single-sample attachmentの自動Store elision、
+same-pixel fullscreen readのtile-local scope fusion、lifetime非重複imageのallocation共有まで
+実行できる。次はscope fusion/reorder、一般のmaterialized store elision、queue/barrier等の
+aggressive controlと、現runtime subsetの範囲拡張を具体的なGPU gate付きで進める。
+`NativeScope`は具体的な
 Vulkan-only利用例を得てから進める。
 
 ## 3. トラック現況(WP 化待ちを含む)

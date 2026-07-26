@@ -83,6 +83,19 @@ bool isTileLocalAttachmentCandidate(
                    allowed_usage});
 }
 
+bool isRuntimeAliasCandidate(
+    const RenderTargetDefinition &definition) {
+    const auto required_usage =
+        vk::ImageUsageFlags{
+            vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eSampled};
+    return !definition.history &&
+           definition.format_class != "display" &&
+           definition.storage_mode ==
+               RenderTargetStorageMode::materialized &&
+           definition.usage == required_usage;
+}
+
 vk::ImageUsageFlags tileLocalImageUsage(
     const RenderTargetDefinition &definition) {
     const auto attachment_usage =
@@ -418,7 +431,9 @@ LogicalFrameGraphShadowOptions shadowOptions(
             .materialization =
                 isTransientAttachmentCandidate(
                     *target->second) ||
-                        tile_local
+                        tile_local ||
+                        isRuntimeAliasCandidate(
+                            *target->second)
                     ? LogicalMaterializationRequirement::
                           virtual_resource
                     : LogicalMaterializationRequirement::
@@ -434,7 +449,8 @@ ResourcePattern runtimeImagePattern(
     std::span<const vk::Format> authored_candidates,
     bool external,
     bool transient_attachment,
-    bool tile_local_attachment) {
+    bool tile_local_attachment,
+    bool allow_alias) {
     auto candidates =
         std::vector<ResourceFormatCandidate>{};
     const auto append = [&](vk::Format candidate) {
@@ -469,10 +485,11 @@ ResourcePattern runtimeImagePattern(
         .format_candidates = std::move(candidates),
         .prefer_transient = transient_attachment,
         .allow_tile_local = tile_local_attachment,
-        .allow_alias = false,
+        .allow_alias = allow_alias,
         .require_store =
             !transient_attachment &&
-            !tile_local_attachment,
+            !tile_local_attachment &&
+            !allow_alias,
         .local_read_fallback =
             ResourcePatternFallback::materialize,
         .provenance =
@@ -522,7 +539,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 resource.name,
                 runtimeImagePattern(
                     types, resource.type, swapchain_format,
-                    {}, true, false, false),
+                    {}, true, false, false, false),
                 ResourceExtentPlan{},
             });
             continue;
@@ -533,6 +550,16 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 "runtime logical image has no RenderTargetDefinition: " +
                 resource.name);
         }
+        const auto transient =
+            transient_formats.contains({
+                resource.name,
+                vk::to_string(
+                    target->second->format)});
+        const auto tile_local =
+            tile_local_formats.contains({
+                resource.name,
+                vk::to_string(
+                    target->second->format)});
         result.push_back({
             resource.name,
             runtimeImagePattern(
@@ -540,14 +567,11 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 target->second->format,
                 target->second->format_candidates,
                 false,
-                transient_formats.contains({
-                    resource.name,
-                    vk::to_string(
-                        target->second->format)}),
-                tile_local_formats.contains({
-                    resource.name,
-                    vk::to_string(
-                        target->second->format)})),
+                transient,
+                tile_local,
+                !transient && !tile_local &&
+                    isRuntimeAliasCandidate(
+                        *target->second)),
             runtimeExtentPlan(*target->second),
         });
     }
@@ -1137,10 +1161,54 @@ void validateRuntimePhysicalPlan(
         &transient_formats,
     const TileLocalAttachmentFormatSet
         &tile_local_formats) {
-    if (!plan.alias_groups.empty()) {
-        throw std::runtime_error(
-            "current render-target runtime cannot consume physical alias "
-            "groups");
+    std::set<std::string, std::less<>>
+        aliased_resources;
+    for (const auto &group : plan.alias_groups) {
+        if (group.resources.size() < 2) {
+            throw std::runtime_error(
+                "runtime physical alias group requires at least two resources: " +
+                group.id);
+        }
+        const VulkanPhysicalResourcePlan *contract =
+            nullptr;
+        for (const auto &name : group.resources) {
+            if (!aliased_resources.insert(name).second) {
+                throw std::runtime_error(
+                    "runtime physical resource belongs to multiple alias groups: " +
+                    name);
+            }
+            const auto &resource =
+                requirePhysicalResource(plan, name);
+            const auto target =
+                render_targets.find(name);
+            if (target == render_targets.end() ||
+                !isRuntimeAliasCandidate(
+                    *target->second) ||
+                !resource.aliasable ||
+                resource.representation !=
+                    VulkanResourceRepresentation::
+                        materialized_image ||
+                resource.rasterization_samples != 1 ||
+                resource.resolve_required) {
+                throw std::runtime_error(
+                    "runtime physical alias group contains an unsupported resource: " +
+                    name);
+            }
+            if (contract == nullptr) {
+                contract = &resource;
+                continue;
+            }
+            if (resource.format != contract->format ||
+                resource.view_layout !=
+                    contract->view_layout ||
+                resource.array_layers !=
+                    contract->array_layers ||
+                resource.extent != contract->extent) {
+                throw std::runtime_error(
+                    "runtime physical alias group members have incompatible image contracts: " +
+                    group.id);
+            }
+        }
     }
     for (const auto &resource : plan.resources) {
         if (resource.logical_resource == "swapchain") {
@@ -1322,6 +1390,123 @@ void validateRuntimePhysicalPlan(
                 resource.logical_resource + "'");
         }
     }
+}
+
+std::vector<RenderingTargetAliasGroupAssignment>
+mergeRuntimeAliasGroups(
+    std::span<
+        const std::shared_ptr<const VulkanTargetPlan>>
+        plans) {
+    using Group = std::vector<std::string>;
+    std::set<Group> candidates;
+    for (const auto &plan : plans) {
+        if (plan == nullptr) continue;
+        for (const auto &source : plan->alias_groups) {
+            auto group = source.resources;
+            std::sort(group.begin(), group.end());
+            group.erase(
+                std::unique(group.begin(), group.end()),
+                group.end());
+            if (group.size() >= 2) {
+                candidates.insert(std::move(group));
+            }
+        }
+    }
+
+    std::vector<Group> compatible;
+    for (const auto &candidate : candidates) {
+        bool valid = true;
+        bool observed = false;
+        for (const auto &plan : plans) {
+            if (plan == nullptr) continue;
+            std::set<std::string, std::less<>>
+                resources;
+            for (const auto &resource : plan->resources) {
+                resources.insert(
+                    resource.logical_resource);
+            }
+            const auto any_member =
+                std::any_of(
+                    candidate.begin(), candidate.end(),
+                    [&](const auto &member) {
+                        return resources.contains(member);
+                    });
+            if (!any_member) continue;
+            observed = true;
+            if (!std::all_of(
+                    candidate.begin(), candidate.end(),
+                    [&](const auto &member) {
+                        return resources.contains(member);
+                    })) {
+                valid = false;
+                break;
+            }
+
+            bool exact_group = false;
+            bool conflicting_group = false;
+            for (const auto &source :
+                 plan->alias_groups) {
+                auto group = source.resources;
+                std::sort(group.begin(), group.end());
+                group.erase(
+                    std::unique(
+                        group.begin(), group.end()),
+                    group.end());
+                const auto intersects =
+                    std::any_of(
+                        group.begin(), group.end(),
+                        [&](const auto &member) {
+                            return std::binary_search(
+                                candidate.begin(),
+                                candidate.end(),
+                                member);
+                        });
+                if (!intersects) continue;
+                if (group == candidate) {
+                    exact_group = true;
+                } else {
+                    conflicting_group = true;
+                }
+            }
+            if (!exact_group || conflicting_group) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid && observed) {
+            compatible.push_back(candidate);
+        }
+    }
+
+    std::map<std::string, std::size_t, std::less<>>
+        membership_count;
+    for (const auto &group : compatible) {
+        for (const auto &resource : group) {
+            ++membership_count[resource];
+        }
+    }
+
+    std::vector<RenderingTargetAliasGroupAssignment>
+        result;
+    for (const auto &group : compatible) {
+        if (std::any_of(
+                group.begin(), group.end(),
+                [&](const auto &resource) {
+                    return membership_count.at(resource) !=
+                           1;
+                })) {
+            continue;
+        }
+        std::string id = "runtime-alias";
+        for (const auto &resource : group) {
+            id += "/" + resource;
+        }
+        result.push_back({
+            .id = std::move(id),
+            .resources = group,
+        });
+    }
+    return result;
 }
 
 } // namespace
@@ -1814,6 +1999,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         [](const auto &left, const auto &right) {
             return left.resource < right.resource;
         });
+    result.alias_group_assignments =
+        mergeRuntimeAliasGroups(result.plans);
     return result;
 }
 
@@ -1922,6 +2109,10 @@ void applyRenderingTargetPlan(
     std::map<std::string, VulkanResourceRepresentation,
              std::less<>>
         representation_assignments;
+    std::map<std::string, std::string, std::less<>>
+        alias_group_by_resource;
+    std::set<std::string, std::less<>>
+        alias_group_ids;
     std::set<std::string, std::less<>>
         external_depth_sources;
     std::set<std::string, std::less<>>
@@ -1972,6 +2163,33 @@ void applyRenderingTargetPlan(
                 assignment.resource);
         }
     }
+    for (const auto &assignment :
+         compilation.alias_group_assignments) {
+        if (assignment.id.empty() ||
+            assignment.resources.size() < 2) {
+            throw std::runtime_error(
+                "physical alias group assignment is empty or has fewer than two members");
+        }
+        if (!alias_group_ids.insert(assignment.id).second) {
+            throw std::runtime_error(
+                "duplicate physical alias group assignment id: " +
+                assignment.id);
+        }
+        std::set<std::string, std::less<>>
+            unique_resources;
+        for (const auto &resource :
+             assignment.resources) {
+            if (resource.empty() ||
+                !unique_resources.insert(resource).second ||
+                !alias_group_by_resource
+                     .emplace(resource, assignment.id)
+                     .second) {
+                throw std::runtime_error(
+                    "duplicate or invalid physical alias group member: " +
+                    resource);
+            }
+        }
+    }
     for (const auto &plan : compilation.plans) {
         if (plan == nullptr) continue;
         if (plan->external_depth_export) {
@@ -1990,6 +2208,7 @@ void applyRenderingTargetPlan(
         }
     }
     for (auto &target : render_targets) {
+        target.alias_group.reset();
         const auto found = assignments.find(target.name);
         if (found == assignments.end()) {
             throw std::runtime_error(
@@ -2092,6 +2311,55 @@ void applyRenderingTargetPlan(
             }
             target.usage |=
                 vk::ImageUsageFlagBits::eTransferSrc;
+        }
+    }
+
+    std::map<std::string, RenderTargetDefinition *,
+             std::less<>>
+        target_by_name;
+    for (auto &target : render_targets) {
+        target_by_name.emplace(target.name, &target);
+    }
+    std::map<std::string,
+             std::vector<RenderTargetDefinition *>,
+             std::less<>>
+        alias_groups;
+    for (const auto &[resource, group] :
+         alias_group_by_resource) {
+        const auto target =
+            target_by_name.find(resource);
+        if (target == target_by_name.end()) {
+            throw std::runtime_error(
+                "physical alias group references an unknown render target: " +
+                resource);
+        }
+        alias_groups[group].push_back(target->second);
+    }
+    for (auto &[group, targets] : alias_groups) {
+        if (targets.size() < 2) {
+            throw std::runtime_error(
+                "physical alias group requires at least two render targets: " +
+                group);
+        }
+        const auto &contract = *targets.front();
+        for (auto *target : targets) {
+            if (!isRuntimeAliasCandidate(*target) ||
+                target->format != contract.format ||
+                target->usage != contract.usage ||
+                target->extent_scale !=
+                    contract.extent_scale ||
+                target->fixed_extent !=
+                    contract.fixed_extent ||
+                target->samples != contract.samples ||
+                target->array_layers !=
+                    contract.array_layers ||
+                target->storage_mode !=
+                    contract.storage_mode) {
+                throw std::runtime_error(
+                    "physical alias group members have incompatible runtime image contracts: " +
+                    group);
+            }
+            target->alias_group = group;
         }
     }
 }

@@ -95,6 +95,10 @@ gateで名指しrejectし、parse成功を実行可能性として扱わない�
 - `NativeScope`
 - tile-local / aliasのruntime実行
 
+追記: tile-local / aliasのruntime実行は同日後続sliceで検証済みsubsetまで実装した。
+範囲と残件は`2026-07-26_wp204_tile_local_runtime_report.md`および
+`2026-07-26_wp204_alias_runtime_report.md`を参照する。
+
 これらは既存schemaへunchecked fieldを足さず、device capabilityと同期境界を検証できる
 次のversioned sliceで追加する。
 

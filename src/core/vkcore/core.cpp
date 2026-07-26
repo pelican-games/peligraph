@@ -748,12 +748,15 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
                                           vk::SampleCountFlagBits samples,
                                           uint32_t array_layers,
                                           vk::MemoryPropertyFlags
-                                              preferred_memory_flags) const {
+                                              preferred_memory_flags,
+                                          vk::ImageCreateFlags
+                                              image_flags) const {
     if (array_layers == 0) {
         throw std::runtime_error(
             "Vulkan image array_layers must be greater than zero");
     }
     vk::ImageCreateInfo create_info;
+    create_info.flags = image_flags;
     create_info.imageType = vk::ImageType::e2D;
     create_info.format = format;
     create_info.extent = extent;
@@ -794,13 +797,65 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
         .format = format,
         .mip_levels = mip_levels,
         .array_layers = array_layers,
+        .allocation =
+            std::make_shared<vma::UniqueAllocation>(
+                std::move(allocation)),
         .image = std::move(image),
-        .allocation = std::move(allocation),
         .samples = samples,
+        .usage = usage,
+        .create_flags = image_flags,
     };
 }
+
+ImageWrapper VulkanManageCore::allocAliasingImage(
+    const ImageWrapper &allocation_owner) const {
+    if (allocation_owner.allocation == nullptr ||
+        !*allocation_owner.allocation ||
+        !allocation_owner.image) {
+        throw std::runtime_error(
+            "aliasing image requires a live allocation owner");
+    }
+    if (!(allocation_owner.create_flags &
+          vk::ImageCreateFlagBits::eAlias)) {
+        throw std::runtime_error(
+            "aliasing image allocation owner was not created for aliasing");
+    }
+
+    vk::ImageCreateInfo create_info;
+    create_info.flags = allocation_owner.create_flags;
+    create_info.imageType = vk::ImageType::e2D;
+    create_info.format = allocation_owner.format;
+    create_info.extent = allocation_owner.extent;
+    create_info.mipLevels = allocation_owner.mip_levels;
+    create_info.arrayLayers = allocation_owner.array_layers;
+    create_info.samples = allocation_owner.samples;
+    create_info.tiling = vk::ImageTiling::eOptimal;
+    create_info.usage = allocation_owner.usage;
+    create_info.sharingMode = vk::SharingMode::eExclusive;
+    create_info.initialLayout = vk::ImageLayout::eUndefined;
+
+    auto image = allocator->createAliasingImageUnique(
+        allocation_owner.allocation->get(), create_info);
+    return ImageWrapper{
+        .extent = allocation_owner.extent,
+        .format = allocation_owner.format,
+        .mip_levels = allocation_owner.mip_levels,
+        .array_layers = allocation_owner.array_layers,
+        .allocation = allocation_owner.allocation,
+        .image = std::move(image),
+        .samples = allocation_owner.samples,
+        .usage = allocation_owner.usage,
+        .create_flags = allocation_owner.create_flags,
+    };
+}
+
 void VulkanManageCore::writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const {
-    allocator->copyMemoryToAllocation(src, dst.allocation.get(), 0, bytes_num);
+    if (dst.allocation == nullptr || !*dst.allocation) {
+        throw std::runtime_error(
+            "cannot write an image without a live allocation");
+    }
+    allocator->copyMemoryToAllocation(
+        src, dst.allocation->get(), 0, bytes_num);
 }
 
 } // namespace Pelican

@@ -3,6 +3,7 @@
 #include "rendertargetstoragemode.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vulkan/vulkan.hpp>
 
@@ -18,6 +19,7 @@ struct RenderTargetMetadata {
     std::uint32_t array_layers = 1;
     RenderTargetStorageMode storage_mode =
         RenderTargetStorageMode::materialized;
+    std::optional<std::string> alias_group;
 };
 
 } // namespace Pelican

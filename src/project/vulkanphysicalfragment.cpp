@@ -1950,7 +1950,8 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
             lowering->second->logical.materialization !=
                 LogicalMaterializationRequirement::external &&
             lowering->second->uses.widest_read !=
-                LogicalReadFootprintKind::temporal;
+                LogicalReadFootprintKind::temporal &&
+            physical->second->rasterization_samples == 1;
         physical->second->required_physical_features =
             resourceFeatures(
                 *lowering->second,

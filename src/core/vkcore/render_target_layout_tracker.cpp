@@ -132,6 +132,38 @@ void RenderTargetLayoutTracker::transition(
 
     const auto surface = rt_container.surfaceIndex(rt_id, history_read);
     const auto key = layoutKey(rt_id, surface, image_kind);
+    if (const auto alias_group =
+            rt_container.aliasGroup(rt_id)) {
+        const auto pending =
+            alias_groups_requiring_dependency.erase(
+                *alias_group) != 0;
+        auto [active, inserted] =
+            active_alias_resources.try_emplace(
+                *alias_group, key);
+        const auto switched =
+            !inserted && active->second != key;
+        if (pending || switched) {
+            vk::MemoryBarrier barrier;
+            barrier.srcAccessMask =
+                vk::AccessFlagBits::eMemoryRead |
+                vk::AccessFlagBits::eMemoryWrite;
+            barrier.dstAccessMask =
+                vk::AccessFlagBits::eMemoryRead |
+                vk::AccessFlagBits::eMemoryWrite;
+            cmd_buf.pipelineBarrier(
+                vk::PipelineStageFlagBits::eAllCommands,
+                vk::PipelineStageFlagBits::eAllCommands,
+                {}, {barrier}, {}, {});
+            if (switched) {
+                layouts[active->second] =
+                    vk::ImageLayout::eUndefined;
+            }
+            layouts[key] =
+                vk::ImageLayout::eUndefined;
+            ++alias_dependency_count;
+        }
+        active->second = key;
+    }
     auto [it, inserted] = layouts.try_emplace(
         key, rt_container.initialLayout(
                  rt_id, image_kind == RenderTargetImageKind::attachment));
@@ -217,8 +249,15 @@ vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
 }
 
 void RenderTargetLayoutTracker::reset() {
+    for (const auto &[group, resource] :
+         active_alias_resources) {
+        (void)resource;
+        alias_groups_requiring_dependency.insert(group);
+    }
+    active_alias_resources.clear();
     layouts.clear();
     memory_dependency_count = 0;
+    alias_dependency_count = 0;
 }
 
 } // namespace Pelican

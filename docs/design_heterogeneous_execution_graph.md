@@ -933,6 +933,12 @@ BY_REGION dependency、transient/lazy allocation、per-view/multiview execution�
 この実装は「logical graphがVulkan scopeそのものを記述する」のではなく、logical
 footprintから有限physical候補を導出してdevice compilerが選ぶ二段階境界の実例である。
 
+physical image alias runtime sliceでは、同じlogical lifetime分析から得たgroupを、
+non-history・single-sample・materializedで同一image契約を持つ部分集合に限定して実allocationへ
+接続した。全graph variantが同じgroupへ合意した場合だけ、別VkImageを同じVMA allocationへbindし、
+alias切替memory dependencyとgeneration固有tokenでexecution/hot-reload境界を保つ。
+これはHEG全dialect共通allocatorではなく、Vulkan physical loweringが所有する有限backend実装である。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -990,8 +996,10 @@ footprintから有限physical候補を導出してdevice compilerが選ぶ二段
 - WP204 attachment/transient sliceでverified load/storeとwrite-only transient imageを接続
 - WP204 tile-local sliceでsame-pixel fullscreen read、scope fusion、shader/runtime local read、
   transient allocation、single-view/sequential/multiview実行を接続
-- aliasのruntime実行、一般のload/store等のaggressive physical control、NativeScope、
-  CPU・external・video runtime workはまだ追加しない
+- WP204 alias-runtime sliceでmaterialized imageのlifetime group、VMA allocation共有、
+  alias memory dependency、generation/rollback/recreateを接続
+- MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
+  physical control、NativeScope、CPU・external・video runtime workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain
 

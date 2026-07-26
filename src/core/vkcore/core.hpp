@@ -99,7 +99,10 @@ DECLARE_MODULE(VulkanManageCore) {
                                 vk::SampleCountFlagBits::e1,
                             uint32_t array_layers = 1,
                             vk::MemoryPropertyFlags
-                                preferred_memory_flags = {}) const;
+                                preferred_memory_flags = {},
+                            vk::ImageCreateFlags image_flags = {}) const;
+    ImageWrapper allocAliasingImage(
+        const ImageWrapper &allocation_owner) const;
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 

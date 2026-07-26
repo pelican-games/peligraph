@@ -4,6 +4,7 @@
 #include "util.hpp"
 #include <cstddef>
 #include <unordered_map>
+#include <unordered_set>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -33,10 +34,18 @@ class RenderTargetLayoutTracker {
     std::size_t memoryDependencyCountForTesting() const noexcept {
         return memory_dependency_count;
     }
+    std::size_t aliasDependencyCountForTesting() const noexcept {
+        return alias_dependency_count;
+    }
 
   private:
     std::unordered_map<std::uint64_t, vk::ImageLayout> layouts;
+    std::unordered_map<std::uint64_t, std::uint64_t>
+        active_alias_resources;
+    std::unordered_set<std::uint64_t>
+        alias_groups_requiring_dependency;
     std::size_t memory_dependency_count = 0;
+    std::size_t alias_dependency_count = 0;
 };
 
 } // namespace Pelican
