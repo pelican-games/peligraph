@@ -24,8 +24,12 @@ class OffscreenFrameTarget : public IFrameTarget {
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
     vk::ImageLayout color_layout;
+    vk::ImageLayout recording_start_color_layout =
+        vk::ImageLayout::eUndefined;
     bool has_rendered_frame;
     bool output_transform_recorded = false;
+    bool frame_recording = false;
+    bool frame_submitted = false;
 
   public:
     OffscreenFrameTarget();
@@ -36,6 +40,7 @@ class OffscreenFrameTarget : public IFrameTarget {
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
     void render_end(GpuSubmissionLease lease) override;
+    void abort_render() noexcept override;
     FrameTargetCaps caps() const override;
     bool consumeExtentChanged() override;
     bool recoverSurfaceIfStale() override { return false; }

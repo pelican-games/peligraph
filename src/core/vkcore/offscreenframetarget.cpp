@@ -140,6 +140,10 @@ OffscreenFrameTarget::OffscreenFrameTarget()
 OffscreenFrameTarget::~OffscreenFrameTarget() {}
 
 FrameRenderContext OffscreenFrameTarget::render_begin() {
+    if (frame_recording || frame_submitted) {
+        throw std::logic_error(
+            "offscreen frame target begin called with an unfinished frame");
+    }
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
     if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
@@ -151,13 +155,23 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
     submission_leases.complete(
         in_flight_frame_index);
 
-    cmd_buf.recordBegin();
-    GET_MODULE(VulkanUtils)
-        .changeImageLayoutCmd(*cmd_buf, color_image, color_layout, vk::ImageLayout::eColorAttachmentOptimal,
-                              transitionInfo(color_layout, vk::ImageLayout::eColorAttachmentOptimal));
-    color_layout = vk::ImageLayout::eColorAttachmentOptimal;
-    output_transform_recorded = false;
-    setViewportAndScissor(*cmd_buf, extent);
+    recording_start_color_layout = color_layout;
+    try {
+        cmd_buf.recordBegin();
+        frame_recording = true;
+        GET_MODULE(VulkanUtils)
+            .changeImageLayoutCmd(*cmd_buf, color_image, color_layout,
+                                  vk::ImageLayout::eColorAttachmentOptimal,
+                                  transitionInfo(
+                                      color_layout,
+                                      vk::ImageLayout::eColorAttachmentOptimal));
+        color_layout = vk::ImageLayout::eColorAttachmentOptimal;
+        output_transform_recorded = false;
+        setViewportAndScissor(*cmd_buf, extent);
+    } catch (...) {
+        abort_render();
+        throw;
+    }
 
     return FrameRenderContext{
         .cmd_buf = *cmd_buf,
@@ -210,6 +224,10 @@ void OffscreenFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
 
 void OffscreenFrameTarget::render_end(GpuSubmissionLease lease) {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
+    if (!frame_recording || frame_submitted) {
+        throw std::logic_error(
+            "offscreen frame target end called without a recording frame");
+    }
 
     if (!output_transform_recorded) {
         GET_MODULE(VulkanUtils)
@@ -219,6 +237,8 @@ void OffscreenFrameTarget::render_end(GpuSubmissionLease lease) {
     }
 
     cmd_buf.recordEndSubmit();
+    frame_recording = false;
+    frame_submitted = true;
     submission_leases.submitted(
         in_flight_frame_index, std::move(lease));
     if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
@@ -229,10 +249,32 @@ void OffscreenFrameTarget::render_end(GpuSubmissionLease lease) {
     }
     submission_leases.complete(
         in_flight_frame_index);
+    frame_submitted = false;
     has_rendered_frame = true;
 
     in_flight_frame_index++;
     in_flight_frame_index %= in_flight_frames_num;
+}
+
+void OffscreenFrameTarget::abort_render() noexcept {
+    if (!frame_recording && !frame_submitted) return;
+
+    const auto slot = in_flight_frame_index;
+    if (frame_submitted) {
+        try {
+            device.waitIdle();
+            submission_leases.complete(slot);
+        } catch (...) {
+            // The device is no longer recoverable, but abort must preserve the
+            // original render exception.
+        }
+    } else {
+        render_cmd_bufs[slot].abortRecording();
+        color_layout = recording_start_color_layout;
+    }
+    frame_recording = false;
+    frame_submitted = false;
+    output_transform_recorded = false;
 }
 
 FrameTargetCaps OffscreenFrameTarget::caps() const {

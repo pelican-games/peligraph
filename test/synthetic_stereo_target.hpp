@@ -187,6 +187,7 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         vk::SubmitInfo submit;
         submit.setCommandBuffers(command_handles);
         const auto &logical_fence = command(0).getFence();
+        device.resetFences({logical_fence});
         queue.submit({submit}, logical_fence);
         ++submission_count;
         if (device.waitForFences({logical_fence}, VK_TRUE, UINT64_MAX) !=
@@ -197,6 +198,16 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         ++logical_end_count;
         in_flight_frame_index =
             (in_flight_frame_index + 1) % in_flight_frames_num;
+    }
+
+    void abortLogicalFrame() noexcept override {
+        if (!logical_frame_begun) return;
+        for (std::uint32_t view = 0; view < stereo_view_count; ++view) {
+            if (view_begun[view] && !view_ended[view]) {
+                command(view).abortRecording();
+            }
+        }
+        logical_frame_begun = false;
     }
 
     vk::Format colorFormat(std::uint32_t view_index) const override {

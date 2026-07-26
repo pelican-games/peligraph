@@ -870,6 +870,14 @@ class XrCompositionTarget::Impl {
     }
 
   public:
+    void abortLogicalFrame() noexcept {
+        if (!frame_prepared && !logical_frame_begun &&
+            !display_timing.has_value()) {
+            return;
+        }
+        abortFrame();
+    }
+
     Impl(const XrCompositionDependencies &dependencies,
          std::unique_ptr<IXrCompositionGraphics> graphics)
         : dependencies{dependencies},
@@ -1333,6 +1341,10 @@ void XrCompositionTarget::endViewFamily(
 
 void XrCompositionTarget::endLogicalFrame(GpuSubmissionLease lease) {
     impl->endLogicalFrame(std::move(lease));
+}
+
+void XrCompositionTarget::abortLogicalFrame() noexcept {
+    impl->abortLogicalFrame();
 }
 
 vk::Format XrCompositionTarget::colorFormat(std::uint32_t view_index) const {

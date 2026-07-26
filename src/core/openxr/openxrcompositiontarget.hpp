@@ -130,6 +130,7 @@ class XrCompositionTarget final : public IXrCompositionTarget {
     void endViewFamily(
         GpuSubmissionLease lease = {}) override;
     void endLogicalFrame(GpuSubmissionLease lease = {}) override;
+    void abortLogicalFrame() noexcept override;
     vk::Format colorFormat(std::uint32_t view_index) const override;
     bool consumeExtentChanged() override;
     bool generationTeardownRequired() const noexcept override;

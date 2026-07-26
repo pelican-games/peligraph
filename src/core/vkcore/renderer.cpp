@@ -1980,6 +1980,12 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
         view_begun = false;
     }
 
+    void abortLogicalFrame() noexcept override {
+        if (!view_begun) return;
+        target.abort_render();
+        view_begun = false;
+    }
+
     vk::Format colorFormat(std::uint32_t view_index) const override {
         if (view_index != 0) {
             throw std::runtime_error("flat IFrameTarget color format view is out of range");
@@ -1988,6 +1994,21 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
     }
 
     bool consumeExtentChanged() override { return target.consumeExtentChanged(); }
+};
+
+class LogicalFrameAbortGuard {
+    ILogicalFrameTarget *target;
+
+  public:
+    explicit LogicalFrameAbortGuard(ILogicalFrameTarget &target)
+        : target{&target} {}
+    LogicalFrameAbortGuard(const LogicalFrameAbortGuard &) = delete;
+    LogicalFrameAbortGuard &operator=(const LogicalFrameAbortGuard &) = delete;
+    ~LogicalFrameAbortGuard() {
+        if (target != nullptr) target->abortLogicalFrame();
+    }
+
+    void complete() noexcept { target = nullptr; }
 };
 
 } // namespace
@@ -2983,6 +3004,7 @@ void Renderer::renderLogicalFrame(
     }
 
     target.beginLogicalFrame(view_count);
+    LogicalFrameAbortGuard frame_abort_guard{target};
     if (use_view_family_execution) {
         const auto render_ctx =
             target.beginViewFamily(view_count);
@@ -3285,6 +3307,7 @@ void Renderer::renderLogicalFrame(
     }
 
     target.endLogicalFrame(submission_lease);
+    frame_abort_guard.complete();
     deletion_queue.confirmSubmission();
     if (execution_tracing_for_testing) {
         if (use_view_family_execution) {

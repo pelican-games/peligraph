@@ -9,7 +9,7 @@ class CommandBufWrapper {
     vk::Device device;
     vk::Queue queue;
     vk::UniqueCommandBuffer cmd_buf;
-    vk::UniqueFence fence;
+    mutable vk::UniqueFence fence;
 
   public:
     CommandBufWrapper() {}
@@ -22,6 +22,9 @@ class CommandBufWrapper {
     void recordEndSubmit(std::initializer_list<vk::Semaphore> signal_semaphores = {},
                          std::initializer_list<vk::Semaphore> wait_semaphores = {},
                          std::initializer_list<vk::PipelineStageFlags> wait_stages = {}) const;
+    void consumeSemaphore(vk::Semaphore semaphore,
+                          vk::PipelineStageFlags wait_stage) const;
+    void abortRecording() const noexcept;
     const vk::Fence &getFence() const { return fence.get(); }
 };
 

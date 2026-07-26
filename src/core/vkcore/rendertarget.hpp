@@ -51,6 +51,7 @@ DECLARE_MODULE(RenderTarget) {
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent);
     void render_end(GpuSubmissionLease lease = {});
+    void abort_render() noexcept;
 
     vk::Format getSwapchainFormat() const;
     vk::Extent2D getExtent() const;

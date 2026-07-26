@@ -42,6 +42,8 @@ void RenderTarget::render_end(GpuSubmissionLease lease) {
     impl->render_end(std::move(lease));
 }
 
+void RenderTarget::abort_render() noexcept { impl->abort_render(); }
+
 vk::Format RenderTarget::getSwapchainFormat() const { return impl->caps().color_format; }
 
 vk::Extent2D RenderTarget::getExtent() const { return impl->caps().extent; }

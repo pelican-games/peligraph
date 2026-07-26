@@ -69,6 +69,10 @@ class IFrameTarget {
     virtual void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                            vk::Format source_format, vk::Extent2D source_extent) = 0;
     virtual void render_end(GpuSubmissionLease lease) = 0;
+    // Roll back a begun frame which did not reach a normal render_end. The
+    // operation must leave the next begin reusable and must not throw while
+    // the original render exception is unwinding.
+    virtual void abort_render() noexcept = 0;
     virtual FrameTargetCaps caps() const = 0;
     virtual bool consumeExtentChanged() = 0;
     // Optional/nonblocking presenters can leave a window swapchain stale.

@@ -157,6 +157,8 @@ static vk::UniqueImageView createImageViewsForDepth(vk::Device device, const Ima
 }
 
 void SwapchainFrameTarget::releaseSurfaceDependants() {
+    rendered_semaphores.clear();
+    image_acquire_semaphores.clear();
     depth_image_view.reset();
     depth_image = ImageWrapper{};
     swapchain_image_views.clear();
@@ -175,6 +177,15 @@ void SwapchainFrameTarget::surfaceDependantsSetup() {
     GET_MODULE(Camera).setScreenSize(extent.width, extent.height);
     presen_queue = GET_MODULE(VulkanManageCore).getPresentationQueue();
     swapchain_images = getImageFromSwapchain(device, swapchain.swapchain.get());
+    image_acquire_semaphores =
+        GET_MODULE(VulkanManageCore)
+            .createSemaphores(in_flight_frames_num);
+    // A present wait semaphore is reusable only after the corresponding
+    // swapchain image is acquired again. Frame-slot fences do not prove that
+    // the presentation engine consumed the previous binary semaphore signal.
+    rendered_semaphores =
+        GET_MODULE(VulkanManageCore)
+            .createSemaphores(swapchain_images.size());
     swapchain_image_views = createImageViewsFromImages(device, swapchain_images, swapchain.format);
     depth_image =
         GET_MODULE(VulkanManageCore)
@@ -202,6 +213,13 @@ void SwapchainFrameTarget::recreateSurfaceDependants() {
     submission_leases.completeAll();
     surfaceDependantsSetup();
     surface_stale = false;
+    current_image_index = 0;
+    has_rendered_frame = false;
+    output_transform_recorded = false;
+    current_frame_nonblocking = false;
+    frame_acquired = false;
+    frame_recording = false;
+    frame_submitted = false;
     if (previous_extent.width != extent.width || previous_extent.height != extent.height ||
         previous_format != swapchain.format) {
         extent_changed = true;
@@ -210,9 +228,7 @@ void SwapchainFrameTarget::recreateSurfaceDependants() {
 
 SwapchainFrameTarget::SwapchainFrameTarget()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
-      image_acquire_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)},
-      rendered_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)}, render_cmd_bufs{},
-      in_flight_frame_index{0} {
+      render_cmd_bufs{}, in_flight_frame_index{0} {
 
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     {
@@ -231,6 +247,17 @@ SwapchainFrameTarget::SwapchainFrameTarget()
 SwapchainFrameTarget::~SwapchainFrameTarget() {}
 
 std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblocking) {
+    if (frame_acquired || frame_recording || frame_submitted) {
+        throw std::logic_error(
+            "swapchain frame target begin called with an unfinished frame");
+    }
+    if (surface_stale) {
+        const auto framebuffer = GET_MODULE(Window).framebufferExtent();
+        if (framebuffer.width == 0 || framebuffer.height == 0) {
+            if (nonblocking) return std::nullopt;
+        }
+        recreateSurfaceDependants();
+    }
     do {
         if (nonblocking) {
             const auto framebuffer = GET_MODULE(Window).framebufferExtent();
@@ -288,44 +315,49 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
             throw std::runtime_error("failed on vkAcquireNextImageKHR : " + vk::to_string(image_acquire_result.result));
         }
 
-        device.resetFences({cmd_buf.getFence()});
         current_image_index = image_acquire_result.value;
+        frame_acquired = true;
+        try {
+            cmd_buf.recordBegin();
+            frame_recording = true;
+            output_transform_recorded = false;
+            current_frame_nonblocking = nonblocking;
 
-        cmd_buf.recordBegin();
-        output_transform_recorded = false;
-        current_frame_nonblocking = nonblocking;
+            {
+                vk::Viewport viewport;
+                viewport.x = 0;
+                viewport.y = 0;
+                viewport.width = static_cast<float>(extent.width);
+                viewport.height = static_cast<float>(extent.height);
+                viewport.minDepth = 0.0f;
+                viewport.maxDepth = 1.0f;
+                cmd_buf->setViewport(0, {viewport});
 
-        {
-            vk::Viewport viewport;
-            viewport.x = 0;
-            viewport.y = 0;
-            viewport.width = static_cast<float>(extent.width);
-            viewport.height = static_cast<float>(extent.height);
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            cmd_buf->setViewport(0, {viewport});
+                vk::Rect2D scissor;
+                scissor.offset = vk::Offset2D{0, 0};
+                scissor.extent = extent;
+                cmd_buf->setScissor(0, {scissor});
+            }
 
-            vk::Rect2D scissor;
-            scissor.offset = vk::Offset2D{0, 0};
-            scissor.extent = extent;
-            cmd_buf->setScissor(0, {scissor});
-        }
-
-        {
-            vk::ImageMemoryBarrier barrier;
-            barrier.oldLayout = vk::ImageLayout::eUndefined;
-            barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
-            barrier.image = swapchain_images[current_image_index];
-            barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-            barrier.subresourceRange.baseMipLevel = 0;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = {};
-            barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
-                                    vk::AccessFlagBits::eColorAttachmentWrite;
-            cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-                                     vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, {barrier});
+            {
+                vk::ImageMemoryBarrier barrier;
+                barrier.oldLayout = vk::ImageLayout::eUndefined;
+                barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+                barrier.image = swapchain_images[current_image_index];
+                barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+                barrier.subresourceRange.baseMipLevel = 0;
+                barrier.subresourceRange.levelCount = 1;
+                barrier.subresourceRange.baseArrayLayer = 0;
+                barrier.subresourceRange.layerCount = 1;
+                barrier.srcAccessMask = {};
+                barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                                        vk::AccessFlagBits::eColorAttachmentWrite;
+                cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                                         vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, {barrier});
+            }
+        } catch (...) {
+            abort_render();
+            throw;
         }
 
         return FrameRenderContext{
@@ -401,6 +433,10 @@ void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
 
 void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
+    if (!frame_acquired || !frame_recording || frame_submitted) {
+        throw std::logic_error(
+            "swapchain frame target end called without a recording frame");
+    }
 
     if (!output_transform_recorded) {
         vk::ImageMemoryBarrier barrier;
@@ -418,9 +454,13 @@ void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
                                  vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {barrier});
     }
 
-    cmd_buf.recordEndSubmit({rendered_semaphores[in_flight_frame_index].get()},
+    const auto rendered_semaphore =
+        rendered_semaphores[current_image_index].get();
+    cmd_buf.recordEndSubmit({rendered_semaphore},
                             {image_acquire_semaphores[in_flight_frame_index].get()},
                             {vk::PipelineStageFlagBits::eTopOfPipe});
+    frame_recording = false;
+    frame_submitted = true;
     // Capture immediately after queue submission. Presentation may fail after
     // the GPU has accepted the work, so the lease must already be retained.
     submission_leases.submitted(
@@ -429,7 +469,7 @@ void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
     vk::PresentInfoKHR presen_info;
     presen_info.setSwapchains(swapchain.swapchain.get());
     presen_info.setImageIndices(current_image_index);
-    presen_info.setWaitSemaphores(rendered_semaphores[in_flight_frame_index].get());
+    presen_info.setWaitSemaphores(rendered_semaphore);
 
     // Same contract as the acquire path: vulkan.hpp allows only
     // {eSuccess, eSuboptimalKHR} for presentKHR and throws for
@@ -440,6 +480,7 @@ void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
     } catch (const vk::OutOfDateKHRError &) {
         present_result = vk::Result::eErrorOutOfDateKHR;
     }
+    bool recreated = false;
     if (present_result == vk::Result::eSuboptimalKHR || present_result == vk::Result::eErrorOutOfDateKHR) {
         if (current_frame_nonblocking) {
             // The optional mirror acquire/present path must never wait for
@@ -448,6 +489,7 @@ void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
             surface_stale = true;
         } else {
             recreateSurfaceDependants();
+            recreated = true;
         }
     } else if (present_result != vk::Result::eSuccess) {
         throw std::runtime_error("failed on vkQueuePresentKHR : " + vk::to_string(present_result));
@@ -455,8 +497,52 @@ void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
 
     in_flight_frame_index++;
     in_flight_frame_index %= in_flight_frames_num;
+    frame_acquired = false;
+    frame_recording = false;
+    frame_submitted = false;
     current_frame_nonblocking = false;
-    has_rendered_frame = true;
+    has_rendered_frame = !recreated;
+}
+
+void SwapchainFrameTarget::abort_render() noexcept {
+    if (!frame_acquired && !frame_recording && !frame_submitted) return;
+
+    const auto &cmd_buf =
+        render_cmd_bufs[in_flight_frame_index];
+    if (frame_recording) {
+        cmd_buf.abortRecording();
+    }
+    try {
+        if (frame_acquired && !frame_submitted) {
+            cmd_buf.consumeSemaphore(
+                image_acquire_semaphores[
+                    in_flight_frame_index]
+                    .get(),
+                vk::PipelineStageFlagBits::eTopOfPipe);
+        }
+        // Recreating the swapchain consumes the abandoned acquired image and
+        // replaces all WSI semaphores. It also waits any submission which
+        // succeeded before a later present failure.
+        recreateSurfaceDependants();
+    } catch (const std::exception &error) {
+        surface_stale = true;
+        if (logger != nullptr) {
+            LOG_ERROR(logger, "swapchain frame abort recovery failed: {}",
+                      error.what());
+        }
+    } catch (...) {
+        surface_stale = true;
+        if (logger != nullptr) {
+            LOG_ERROR(logger,
+                      "swapchain frame abort recovery failed with an unknown exception");
+        }
+    }
+    frame_acquired = false;
+    frame_recording = false;
+    frame_submitted = false;
+    current_frame_nonblocking = false;
+    output_transform_recorded = false;
+    has_rendered_frame = false;
 }
 
 FrameTargetCaps SwapchainFrameTarget::caps() const {

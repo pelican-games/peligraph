@@ -69,6 +69,7 @@ class ILogicalFrameTarget {
     // Implementations must capture the lease before returning (or throwing)
     // after any successful GPU submit, and release it only after completion.
     virtual void endLogicalFrame(GpuSubmissionLease lease = {}) = 0;
+    virtual void abortLogicalFrame() noexcept = 0;
     virtual vk::Format colorFormat(std::uint32_t view_index) const = 0;
     virtual bool consumeExtentChanged() = 0;
 };

@@ -1255,6 +1255,11 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
             vk::ClearColorValue{std::array{0.0f, 1.0f, 0.0f, 1.0f}},
         };
 
+        // A validation or pass-execution exception may unwind after begin.
+        // The same in-flight slot must remain immediately reusable.
+        (void)render_target.render_begin();
+        render_target.abort_render();
+
         for (const auto clear : clears) {
             engine_time.advance();
             renderClearFrame(render_target, clear);
