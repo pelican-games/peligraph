@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -595,6 +596,141 @@ TEST_CASE("render features append buffers and compute tasks", "[render-feature]"
     REQUIRE(result.feature_names == std::vector<std::string>{"compute_feature"});
     REQUIRE(result.config.at("buffers").at(0).at("name").get<std::string>() == "compute_color");
     REQUIRE(result.config.at("compute_tasks").at(0).at("name").get<std::string>() == "write_color");
+}
+
+TEST_CASE(
+    "clustered lighting feature shares one typed selection across hybrid consumers",
+    "[render-feature][clustered][lighting-data][wp208]") {
+    const auto result =
+        composeRenderFeatureConfig(
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features",
+                 nlohmann::json::array(
+                     {"engine://features/clustered_lighting.json"})},
+            },
+            RenderFeatureComposeDependencies{
+                loadEngineFeature,
+                true,
+            });
+
+    REQUIRE(result.feature_names ==
+            std::vector<std::string>{
+                "clustered_lighting"});
+    REQUIRE(std::find(
+                result.shader_defines.begin(),
+                result.shader_defines.end(),
+                "PELICAN_FEATURE_CLUSTERED_LIGHTING") !=
+            result.shader_defines.end());
+    REQUIRE(
+        result.config.at("buffers").size() == 2);
+    REQUIRE(
+        result.config.at("compute_tasks").size() == 1);
+    const auto &selector =
+        result.config.at("compute_tasks").front();
+    REQUIRE(selector.at("name") ==
+            "clustered_light_select");
+    REQUIRE(selector.at("reads") ==
+            nlohmann::json::array(
+                {"clustered_light_inventory"}));
+    REQUIRE(selector.at("writes") ==
+            nlohmann::json::array(
+                {"clustered_light_selection"}));
+
+    const auto &deferred =
+        passByName(
+            result.config, "deferred_lighting");
+    REQUIRE(
+        deferred.at("resource_ports")
+            .at("light_inventory")
+            .at("element") == "uvec4");
+    REQUIRE(
+        deferred.at("resource_ports")
+            .at("light_selection")
+            .at("element") == "uint");
+    for (const auto pass :
+         {"forward_opaque",
+          "forward_transparent"}) {
+        const auto &resources =
+            passByName(result.config, pass)
+                .at("material_resources");
+        REQUIRE(
+            resources.at("light_inventory") ==
+            "clustered_light_inventory");
+        REQUIRE(
+            resources.at("light_selection") ==
+            "clustered_light_selection");
+    }
+
+    const auto compiled =
+        compileComposition(result);
+    REQUIRE(compiled.lighting_data.has_value());
+    REQUIRE(
+        compiled.lighting_data->provider_feature ==
+        "clustered_lighting");
+    REQUIRE(
+        compiled.lighting_data->provider_reference ==
+        "engine://features/clustered_lighting.json");
+    REQUIRE(
+        compiled.lighting_data->max_lights_per_tile ==
+        64);
+    const auto metadata =
+        serializeCompiledRenderPipelineMetadata(
+            compiled);
+    REQUIRE(
+        metadata.at("lighting_data")
+            .at("inventory_contract") ==
+        "pelican.light_inventory_v2");
+    REQUIRE(
+        metadata.at("lighting_data")
+            .at("xr_path") ==
+        "small_light_v1");
+
+}
+
+TEST_CASE(
+    "hybrid preset keeps the legacy small-light path when clustered lighting is absent",
+    "[render-feature][clustered][feature-off][wp208]") {
+    const auto result =
+        composeRenderFeatureConfig(
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+            },
+            RenderFeatureComposeDependencies{
+                loadEngineFeature,
+                true,
+            });
+
+    REQUIRE(result.feature_names.empty());
+    REQUIRE(std::find(
+                result.shader_defines.begin(),
+                result.shader_defines.end(),
+                "PELICAN_FEATURE_CLUSTERED_LIGHTING") ==
+            result.shader_defines.end());
+    REQUIRE_FALSE(
+        result.config.contains("lighting_data"));
+    REQUIRE_FALSE(result.config.contains("buffers"));
+    REQUIRE_FALSE(
+        result.config.contains("compute_tasks"));
+    REQUIRE_FALSE(
+        passByName(
+            result.config, "deferred_lighting")
+            .contains("resource_ports"));
+    for (const auto pass :
+         {"forward_opaque",
+          "forward_transparent"}) {
+        REQUIRE_FALSE(
+            passByName(result.config, pass)
+                .contains("material_resources"));
+    }
+
+    const auto compiled =
+        compileComposition(result);
+    REQUIRE_FALSE(compiled.lighting_data);
 }
 
 TEST_CASE("HDR render feature marks scene targets and uses the canonical tonemap anchor", "[render-feature]") {

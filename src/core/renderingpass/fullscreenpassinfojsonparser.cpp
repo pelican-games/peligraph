@@ -136,12 +136,23 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
             "fullscreen pass '" + pass_name + "'");
     for (const auto &port :
          fullscreen_info.resource_ports) {
+        const auto expected_access =
+            port.kind ==
+                    ShaderResourcePortKind::buffer
+                ? ShaderResourcePortAccess::storage
+                : ShaderResourcePortAccess::sampled;
         if (effectiveShaderResourcePortAccess(
                 port, true, false) !=
-            ShaderResourcePortAccess::sampled) {
+            expected_access) {
             throw std::runtime_error(
                 "Fullscreen resource port '" + port.name +
-                "' must use sampled access: " + pass_name);
+                "' must use " +
+                std::string{
+                    expected_access ==
+                            ShaderResourcePortAccess::storage
+                        ? "storage"
+                        : "sampled"} +
+                " access: " + pass_name);
         }
     }
     if (!fullscreen_info.resource_ports.empty() &&

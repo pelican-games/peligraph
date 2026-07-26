@@ -1,0 +1,188 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+const uint PELICAN_LIGHT_INVENTORY_V2_MAGIC = 0x504C4932u;
+const uint PELICAN_LIGHT_INVENTORY_V2_VERSION = 2u;
+const uint PELICAN_LIGHT_SELECTION_V1_MAGIC = 0x504C5331u;
+const uint PELICAN_LIGHT_SELECTION_V1_VERSION = 1u;
+const uint PELICAN_TILE_WIDTH = 32u;
+const uint PELICAN_TILE_HEIGHT = 32u;
+const uint PELICAN_MAX_LIGHTS_PER_TILE = 64u;
+const uint PELICAN_SELECTION_HEADER_WORDS = 8u;
+const uint PELICAN_SELECTION_OVERFLOW_BIT = 0x80000000u;
+
+bool inventoryValid(out uint light_count) {
+    light_count = 0u;
+    if (pelican_count_light_inventory() < 2u) {
+        return false;
+    }
+    uvec4 header = pelican_load_light_inventory(0u);
+    uint required = 2u + header.z * 4u;
+    if (header.x != PELICAN_LIGHT_INVENTORY_V2_MAGIC ||
+        header.y != PELICAN_LIGHT_INVENTORY_V2_VERSION ||
+        required < 2u ||
+        required > pelican_count_light_inventory()) {
+        return false;
+    }
+    light_count = header.z;
+    return true;
+}
+
+float derivedInfluenceRadius(vec3 color, float intensity) {
+    // This threshold is deliberately owned by the copyable feature shader,
+    // not by the engine light contract.
+    const float radiance_threshold = 0.01;
+    float peak = max(max(color.r, color.g), color.b) *
+                 max(intensity, 0.0);
+    return sqrt(max(peak / radiance_threshold, 0.0));
+}
+
+bool tileIntersectsLight(uint light_index,
+                         uvec2 tile_coordinate,
+                         vec2 render_size) {
+    uint base = 2u + light_index * 4u;
+    uvec4 metadata = pelican_load_light_inventory(base);
+    if (metadata.x == 0u) {
+        return true;
+    }
+
+    vec4 payload0 =
+        uintBitsToFloat(pelican_load_light_inventory(base + 1u));
+    vec4 payload1 =
+        uintBitsToFloat(pelican_load_light_inventory(base + 2u));
+    float radius = metadata.x == 1u && payload1.w > 0.0
+                       ? payload1.w
+                       : derivedInfluenceRadius(payload1.rgb, payload0.w);
+    vec4 view_position =
+        pelicanFrame.view * vec4(payload0.xyz, 1.0);
+    float depth = -view_position.z;
+    if (depth + radius <= 0.0) {
+        return false;
+    }
+    if (depth <= radius) {
+        // The influence volume intersects the eye plane. Conservatively keep
+        // it in every tile instead of producing an unstable projected bound.
+        return true;
+    }
+
+    vec4 clip =
+        pelicanFrame.projection * view_position;
+    if (clip.w == 0.0) {
+        return true;
+    }
+    vec2 ndc = clip.xy / clip.w;
+    vec2 center_px =
+        (ndc * 0.5 + 0.5) * render_size;
+    float radius_px =
+        abs(pelicanFrame.projection[1][1]) *
+        radius / max(depth, 0.0001) *
+        render_size.y * 0.5;
+
+    vec2 tile_min =
+        vec2(tile_coordinate *
+             uvec2(PELICAN_TILE_WIDTH,
+                   PELICAN_TILE_HEIGHT));
+    vec2 tile_max = min(
+        tile_min +
+            vec2(PELICAN_TILE_WIDTH,
+                 PELICAN_TILE_HEIGHT),
+        render_size);
+    vec2 closest =
+        clamp(center_px, tile_min, tile_max);
+    vec2 delta = closest - center_px;
+    return dot(delta, delta) <=
+           radius_px * radius_px;
+}
+
+void main() {
+    vec2 render_size =
+        max(pelicanResolution.render_resolution.xy,
+            vec2(1.0));
+    uvec2 tiles = uvec2(
+        (uint(render_size.x) + PELICAN_TILE_WIDTH - 1u) /
+            PELICAN_TILE_WIDTH,
+        (uint(render_size.y) + PELICAN_TILE_HEIGHT - 1u) /
+            PELICAN_TILE_HEIGHT);
+    uint tile_count = tiles.x * tiles.y;
+    uint stride = 1u + PELICAN_MAX_LIGHTS_PER_TILE;
+    uint required_words =
+        PELICAN_SELECTION_HEADER_WORDS +
+        tile_count * stride;
+
+    uint light_count = 0u;
+    bool valid = inventoryValid(light_count) &&
+                 tile_count != 0u &&
+                 required_words >=
+                     PELICAN_SELECTION_HEADER_WORDS &&
+                 required_words <=
+                     pelican_count_light_selection();
+
+    uint worker = gl_GlobalInvocationID.x;
+    uint worker_count =
+        gl_NumWorkGroups.x *
+        gl_WorkGroupSize.x;
+    if (worker == 0u) {
+        pelican_store_light_selection(
+            0u, PELICAN_LIGHT_SELECTION_V1_MAGIC);
+        pelican_store_light_selection(
+            1u, PELICAN_LIGHT_SELECTION_V1_VERSION);
+        pelican_store_light_selection(
+            2u, valid ? tiles.x : 0u);
+        pelican_store_light_selection(
+            3u, valid ? tiles.y : 0u);
+        pelican_store_light_selection(
+            4u, PELICAN_TILE_WIDTH);
+        pelican_store_light_selection(
+            5u, PELICAN_TILE_HEIGHT);
+        pelican_store_light_selection(
+            6u, PELICAN_MAX_LIGHTS_PER_TILE);
+        pelican_store_light_selection(
+            7u, light_count);
+    }
+    if (!valid) {
+        return;
+    }
+
+    for (uint tile_index = worker;
+         tile_index < tile_count;
+         tile_index += worker_count) {
+        uvec2 tile = uvec2(
+            tile_index % tiles.x,
+            tile_index / tiles.x);
+        uint output_base =
+            PELICAN_SELECTION_HEADER_WORDS +
+            tile_index * stride;
+        uint selected_count = 0u;
+        bool overflow = false;
+        for (uint light_index = 0u;
+             light_index < light_count;
+             ++light_index) {
+            if (!tileIntersectsLight(
+                    light_index, tile,
+                    render_size)) {
+                continue;
+            }
+            if (selected_count <
+                PELICAN_MAX_LIGHTS_PER_TILE) {
+                pelican_store_light_selection(
+                    output_base + 1u +
+                        selected_count,
+                    light_index);
+                ++selected_count;
+            } else {
+                overflow = true;
+            }
+        }
+        pelican_store_light_selection(
+            output_base,
+            selected_count |
+                (overflow
+                     ? PELICAN_SELECTION_OVERFLOW_BIT
+                     : 0u));
+    }
+}

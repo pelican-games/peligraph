@@ -253,6 +253,233 @@ void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
 #endif
 }
 
+TEST_CASE(
+    "clustered lighting adds typed buffers only to forward surface variants",
+    "[surface-compiler][resource-port][clustered][wp208]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto surface =
+        parseSurfaceFormat(
+            readText(
+                fixtureRoot() / "valid" /
+                "wp78.surface"),
+            "wp78.surface");
+    const std::vector<std::string> defines{
+        "PELICAN_FEATURE_CLUSTERED_LIGHTING"};
+    const auto plain =
+        composeSurfaceShaders(
+            surface, "wp78.surface",
+            SurfacePass::forward);
+    const auto clustered =
+        composeSurfaceShaders(
+            surface, "wp78.surface",
+            SurfacePass::forward, defines);
+    const auto deferred =
+        composeSurfaceShaders(
+            surface, "wp78.surface",
+            SurfacePass::deferred_geometry,
+            defines);
+    const std::vector<std::string>
+        clustered_shadow_defines{
+            "PELICAN_FEATURE_CLUSTERED_LIGHTING",
+            "PELICAN_FEATURE_SHADOW",
+        };
+    const auto clustered_shadow =
+        composeSurfaceShaders(
+            surface, "wp78.surface",
+            SurfacePass::forward,
+            clustered_shadow_defines);
+
+    REQUIRE(
+        clustered.resource_interface.size() ==
+        plain.resource_interface.size() + 2);
+    REQUIRE(
+        deferred.resource_interface.size() ==
+        plain.resource_interface.size());
+    const auto inventory =
+        std::find_if(
+            clustered.resource_interface.begin(),
+            clustered.resource_interface.end(),
+            [](const auto &binding) {
+                return binding.port.name ==
+                       "light_inventory";
+            });
+    const auto selection =
+        std::find_if(
+            clustered.resource_interface.begin(),
+            clustered.resource_interface.end(),
+            [](const auto &binding) {
+                return binding.port.name ==
+                       "light_selection";
+            });
+    REQUIRE(
+        inventory !=
+        clustered.resource_interface.end());
+    REQUIRE(
+        selection !=
+        clustered.resource_interface.end());
+    REQUIRE(
+        inventory->descriptor ==
+        ShaderResourceDescriptorKind::
+            storage_buffer);
+    REQUIRE(
+        inventory->buffer_element ==
+        ShaderResourceBufferElement::uvec4);
+    REQUIRE(
+        selection->buffer_element ==
+        ShaderResourceBufferElement::
+            unsigned_integer);
+    REQUIRE(
+        inventory->expected_stages ==
+        vk::ShaderStageFlagBits::eFragment);
+    REQUIRE(
+        selection->expected_stages ==
+        vk::ShaderStageFlagBits::eFragment);
+    REQUIRE(
+        clustered_shadow.resource_interface
+            .at(0)
+            .binding == 1);
+    REQUIRE(
+        clustered_shadow.resource_interface
+            .at(1)
+            .binding == 2);
+
+    ShaderCompiler compiler;
+    const auto compiled =
+        compileSurfaceShaders(
+            compiler, surface,
+            "wp78.surface",
+            SurfacePass::forward, defines);
+    requireCompiled(compiled);
+    const auto reflection =
+        merge(std::array{
+            reflect(compiled.vertex.spirv),
+            reflect(compiled.fragment.spirv),
+        });
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            clustered.resource_interface,
+            reflection));
+    const auto combined_compiled =
+        compileSurfaceShaders(
+            compiler, surface,
+            "wp78.surface",
+            SurfacePass::forward,
+            clustered_shadow_defines);
+    requireCompiled(combined_compiled);
+    const auto combined_reflection =
+        merge(std::array{
+            reflect(
+                combined_compiled.vertex.spirv),
+            reflect(
+                combined_compiled.fragment.spirv),
+        });
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            clustered_shadow
+                .resource_interface,
+            combined_reflection));
+    REQUIRE(std::any_of(
+        combined_reflection.bindings.begin(),
+        combined_reflection.bindings.end(),
+        [](const auto &binding) {
+            return binding.set == 1 &&
+                   binding.binding == 0 &&
+                   binding.name ==
+                       directionalShadowSamplerName;
+        }));
+#endif
+}
+
+TEST_CASE(
+    "clustered light selector compiles against the generated buffer interface",
+    "[surface-compiler][compute][clustered][wp208]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const std::vector<
+        ShaderResourceInterfaceBinding>
+        interface{
+            ShaderResourceInterfaceBinding{
+                .port =
+                    ShaderResourcePortDefinition{
+                        .name = "light_inventory",
+                        .resource =
+                            "clustered_light_inventory",
+                        .kind =
+                            ShaderResourcePortKind::buffer,
+                        .buffer_element =
+                            ShaderResourceBufferElement::
+                                uvec4,
+                        .access =
+                            ShaderResourcePortAccess::
+                                storage,
+                    },
+                .binding = 0,
+                .descriptor =
+                    ShaderResourceDescriptorKind::
+                        storage_buffer,
+                .image_view_dimension =
+                    ReflectedImageViewDimension::none,
+                .buffer_element =
+                    ShaderResourceBufferElement::
+                        uvec4,
+                .expected_stages =
+                    vk::ShaderStageFlagBits::eCompute,
+                .readable = true,
+                .writable = false,
+            },
+            ShaderResourceInterfaceBinding{
+                .port =
+                    ShaderResourcePortDefinition{
+                        .name = "light_selection",
+                        .resource =
+                            "clustered_light_selection",
+                        .kind =
+                            ShaderResourcePortKind::buffer,
+                        .buffer_element =
+                            ShaderResourceBufferElement::
+                                unsigned_integer,
+                        .access =
+                            ShaderResourcePortAccess::
+                                storage,
+                    },
+                .binding = 1,
+                .descriptor =
+                    ShaderResourceDescriptorKind::
+                        storage_buffer,
+                .image_view_dimension =
+                    ReflectedImageViewDimension::none,
+                .buffer_element =
+                    ShaderResourceBufferElement::
+                        unsigned_integer,
+                .expected_stages =
+                    vk::ShaderStageFlagBits::eCompute,
+                .readable = true,
+                .writable = true,
+            },
+        };
+    ShaderCompileOptions options;
+    options.virtual_includes =
+        makeShaderResourcePortVirtualIncludes(
+            interface);
+    ShaderCompiler compiler;
+    const auto compiled =
+        compiler.compileSource(
+            engineResourceOrThrow(
+                "shaders/compute/"
+                "clustered_light_select.comp"),
+            vk::ShaderStageFlagBits::eCompute,
+            "engine://shaders/compute/"
+            "clustered_light_select.comp",
+            options);
+    INFO("compute log: " << compiled.log);
+    REQUIRE(compiled.ok);
+    REQUIRE_FALSE(compiled.spirv.empty());
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            interface,
+            reflect(compiled.spirv)));
+#endif
+}
+
 TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves feature-off stable",
           "[surface-compiler][shadow][wp205]") {
     const auto source =

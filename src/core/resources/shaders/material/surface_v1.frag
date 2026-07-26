@@ -3,11 +3,12 @@
 #extension GL_GOOGLE_cpp_style_line_directive : enable
 
 #include "pelican_material.glsl"
+#include "pelican_frame.glsl"
 #define PELICAN_MATERIAL_INSTANCE_LOCATION 8
 #include "pelican_material_instance.glsl"
-#include "pelican_lighting_v1.glsl"
 #define PELICAN_SURFACE_STAGE_FRAGMENT 1
 #include "__pelican_surface_params.glsl"
+#include "pelican_lighting_v1.glsl"
 
 layout(set = PELICAN_SET_MATERIAL, binding = 0) uniform sampler2D baseColorSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 1) uniform sampler2D metallicRoughnessSampler;

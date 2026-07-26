@@ -1619,6 +1619,9 @@ CompiledRenderPipeline compileRenderPipeline(
         result.material_routing =
             compileMaterialRouting(pipeline.material_routing);
     }
+    result.lighting_data =
+        compileLightingDataPlan(
+            pipeline.normalized_config);
     result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
     result.sample_count_policy = pipeline.sample_count_policy;
     result.target_planning =
@@ -1821,6 +1824,11 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
              materialRoutingPolicyName(pipeline.material_routing->policy)},
             {"routes", std::move(routes)},
         };
+    }
+    if (pipeline.lighting_data) {
+        metadata["lighting_data"] =
+            lightingDataPlanToJson(
+                *pipeline.lighting_data);
     }
     if (pipeline.draw_sorting.authored) {
         metadata["draw_sort"] = {

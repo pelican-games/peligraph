@@ -317,6 +317,10 @@ std::vector<CompiledComputeTask> compileComputeTasks(
             task_has_physical_plan = true;
             for (const auto &port :
                  definition.resource_ports) {
+                if (port.kind ==
+                    ShaderResourcePortKind::buffer) {
+                    continue;
+                }
                 constexpr std::string_view
                     history_suffix = "@history";
                 auto resource = port.resource;

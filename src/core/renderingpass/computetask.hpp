@@ -8,8 +8,10 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include <array>
+#include <cstddef>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -28,10 +30,33 @@ class RenderTargetLayoutTracker;
 class ShaderLibrary;
 class VulkanUtils;
 
+enum class FrameGraphHostBufferSource : std::uint8_t {
+    scene_lights_v2,
+};
+
+std::string_view frameGraphHostBufferSourceName(
+    FrameGraphHostBufferSource source);
+
+struct FrameGraphBufferExtentSizeDefinition {
+    std::string resource;
+    std::uint32_t tile_width = 1;
+    std::uint32_t tile_height = 1;
+    vk::DeviceSize header_bytes = 0;
+    vk::DeviceSize bytes_per_tile = 0;
+
+    bool operator==(
+        const FrameGraphBufferExtentSizeDefinition &) const =
+        default;
+};
+
 struct FrameGraphBufferDefinition {
     std::string name;
     vk::DeviceSize size = 0;
     bool persistent = true;
+    std::optional<FrameGraphHostBufferSource>
+        host_source;
+    std::optional<FrameGraphBufferExtentSizeDefinition>
+        extent_size;
 };
 
 struct ComputeTaskRuntimeDependencies {
@@ -59,9 +84,21 @@ std::unordered_set<std::string> frameGraphBufferNameSet(const std::vector<FrameG
 std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(const nlohmann::json &config_json);
 
 DECLARE_MODULE(FrameGraphResourceContainer) {
+  public:
+    struct HostBufferPopulation {
+        std::uint64_t source_records = 0;
+        std::uint64_t written_records = 0;
+
+        bool operator==(
+            const HostBufferPopulation &) const = default;
+    };
+
+  private:
     struct BufferRecord {
         FrameGraphBufferDefinition definition;
         BufferWrapper buffer;
+        std::optional<HostBufferPopulation>
+            host_population;
     };
 
     ResourceContainer<FrameGraphBufferId, BufferRecord> buffers;
@@ -69,6 +106,14 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     std::vector<FrameGraphBufferId> registration_order;
 
   public:
+    struct HostBufferTarget {
+        FrameGraphBufferId id = noFrameGraphBufferId();
+        std::string name;
+        vk::DeviceSize size = 0;
+        FrameGraphHostBufferSource source =
+            FrameGraphHostBufferSource::scene_lights_v2;
+    };
+
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
         std::unordered_map<std::string, FrameGraphBufferId>
@@ -88,6 +133,18 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     vk::DeviceSize bufferSize(FrameGraphBufferId id) const;
     vk::DescriptorBufferInfo descriptorInfo(std::string_view name) const;
     vk::DescriptorBufferInfo descriptorInfo(FrameGraphBufferId id) const;
+    bool hasHostBufferSource(
+        FrameGraphHostBufferSource source) const;
+    std::vector<HostBufferTarget> hostBufferTargets(
+        FrameGraphHostBufferSource source) const;
+    void writeHostBuffer(
+        FrameGraphBufferId id,
+        std::span<const std::byte> bytes,
+        std::optional<HostBufferPopulation>
+            population = std::nullopt);
+    std::optional<HostBufferPopulation>
+    hostBufferPopulation(
+        FrameGraphBufferId id) const;
 
     RegistrationCheckpoint checkpointRegistrations() const;
     void rollbackRegistrations(RegistrationCheckpoint checkpoint);

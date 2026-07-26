@@ -7,6 +7,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
@@ -32,6 +33,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
+#include "../src/core/vkcore/util.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 
 #include <algorithm>
@@ -39,10 +41,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <nlohmann/json.hpp>
+#include <span>
 #include <stdexcept>
 #include "ktx2_test_writer.hpp"
 
@@ -106,6 +110,65 @@ CommonPolygonVertData makeScreenQuad(float half_extent, float z) {
                      {1.0f, 1.0f}, {0.0f, 1.0f}};
     data.color.assign(4, glm::vec4{1.0f});
     return data;
+}
+
+std::vector<std::uint8_t>
+readFrameGraphBuffer(
+    std::string_view name) {
+    auto &resources =
+        GET_MODULE(FrameGraphResourceContainer);
+    const auto size = resources.bufferSize(name);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    auto staging = vkcore.allocBuf(
+        size,
+        vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::
+            eHostAccessRandom);
+    const auto &source = resources.buffer(name);
+    GET_MODULE(VulkanUtils).executeOneTimeCmd(
+        [&](vk::CommandBuffer command) {
+            vk::BufferMemoryBarrier barrier;
+            barrier.srcAccessMask =
+                vk::AccessFlagBits::eShaderWrite;
+            barrier.dstAccessMask =
+                vk::AccessFlagBits::eTransferRead;
+            barrier.srcQueueFamilyIndex =
+                VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex =
+                VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = source.buffer.get();
+            barrier.offset = 0;
+            barrier.size = size;
+            command.pipelineBarrier(
+                vk::PipelineStageFlagBits::
+                    eComputeShader,
+                vk::PipelineStageFlagBits::eTransfer,
+                {}, {}, {barrier}, {});
+            command.copyBuffer(
+                source.buffer.get(),
+                staging.buffer.get(),
+                vk::BufferCopy{0, 0, size});
+        },
+        true);
+    return vkcore.readBuf(staging, size);
+}
+
+std::uint32_t wordAt(
+    std::span<const std::uint8_t> bytes,
+    std::size_t index) {
+    const auto offset =
+        index * sizeof(std::uint32_t);
+    if (offset + sizeof(std::uint32_t) >
+        bytes.size()) {
+        throw std::out_of_range(
+            "buffer word is outside readback");
+    }
+    std::uint32_t value = 0;
+    std::memcpy(
+        &value, bytes.data() + offset,
+        sizeof(value));
+    return value;
 }
 
 CommonPolygonVertData makeOutlineCube(float half_extent) {
@@ -3249,6 +3312,300 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
         SKIP(std::string{
                  "Vulkan material variant rendering unavailable: "} +
              error.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "clustered lighting uploads and selects more than 32 lights for every hybrid consumer",
+    "[headless][render][clustered][lighting-data][wp208]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "hybrid.json",
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features",
+                 nlohmann::json::array(
+                     {"engine://features/clustered_lighting.json"})},
+            }
+                .dump(2));
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "hybrid.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource).setSourceByData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto rendering_pass =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "main_render");
+        const auto execution =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .find(rendering_pass);
+        REQUIRE(execution != nullptr);
+        REQUIRE(
+            execution->render_pipeline != nullptr);
+        REQUIRE(
+            execution->render_pipeline
+                ->lighting_data.has_value());
+        REQUIRE(
+            execution->render_pipeline
+                ->lighting_data
+                ->overflow ==
+            LightingOverflowPolicy::
+                deterministic_truncate);
+        const auto &compiled_rendering_pass =
+            GET_MODULE(RenderingPassContainer)
+                .getCompiledRenderingPass(
+                    rendering_pass);
+
+        const auto require_selection_input =
+            [&](std::string_view pass_name) {
+                const auto pass = std::find_if(
+                    compiled_rendering_pass
+                        .passes.begin(),
+                    compiled_rendering_pass
+                        .passes.end(),
+                    [&](const auto &candidate) {
+                        return candidate.definition
+                                   .name ==
+                               pass_name;
+                    });
+                REQUIRE(
+                    pass !=
+                    compiled_rendering_pass
+                        .passes.end());
+                REQUIRE(
+                    std::find(
+                        pass->definition
+                            .input_buffers.begin(),
+                        pass->definition
+                            .input_buffers.end(),
+                        "clustered_light_selection") !=
+                    pass->definition
+                        .input_buffers.end());
+            };
+        require_selection_input(
+            "deferred_lighting");
+        require_selection_input(
+            "forward_opaque");
+        require_selection_input(
+            "forward_transparent");
+
+        std::vector<LightLoadEntry> lights;
+        lights.reserve(70);
+        for (std::uint32_t index = 0;
+             index < 70; ++index) {
+            lights.push_back(
+                LightLoadEntry{
+                    .name =
+                        "Directional" +
+                        std::to_string(index),
+                    .component =
+                        {
+                            {"type", "directional"},
+                            {"direction",
+                             {0.0, 0.0, -1.0}},
+                            {"intensity", 1.0},
+                            {"color",
+                             {1.0, 1.0, 1.0}},
+                        },
+                });
+        }
+        GET_MODULE(LightContainer).load(lights);
+
+        auto &resources =
+            GET_MODULE(
+                FrameGraphResourceContainer);
+        REQUIRE(resources.hasBuffer(
+            "clustered_light_inventory"));
+        REQUIRE(resources.hasBuffer(
+            "clustered_light_selection"));
+        REQUIRE(
+            resources.bufferSize(
+                "clustered_light_selection") ==
+            32u + 260u);
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        const auto inventory_id =
+            resources.getBufferIdByName(
+                "clustered_light_inventory");
+        const auto population =
+            resources.hostBufferPopulation(
+                inventory_id);
+        REQUIRE(population.has_value());
+        REQUIRE(
+            population->source_records == 70);
+        REQUIRE(
+            population->written_records == 70);
+        const auto inventory =
+            GET_MODULE(VulkanManageCore).readBuf(
+                resources.buffer(inventory_id), 32);
+        REQUIRE(
+            wordAt(inventory, 0) ==
+            lightInventoryV2Magic);
+        REQUIRE(
+            wordAt(inventory, 1) ==
+            lightInventoryV2Version);
+        REQUIRE(wordAt(inventory, 2) == 70);
+        REQUIRE(wordAt(inventory, 3) == 0);
+        REQUIRE(wordAt(inventory, 4) == 70);
+
+        const auto selection =
+            readFrameGraphBuffer(
+                "clustered_light_selection");
+        REQUIRE(
+            wordAt(selection, 0) ==
+            0x504C5331u);
+        REQUIRE(wordAt(selection, 1) == 1);
+        REQUIRE(wordAt(selection, 2) == 1);
+        REQUIRE(wordAt(selection, 3) == 1);
+        REQUIRE(wordAt(selection, 4) == 32);
+        REQUIRE(wordAt(selection, 5) == 32);
+        REQUIRE(wordAt(selection, 6) == 64);
+        REQUIRE(wordAt(selection, 7) == 70);
+        const auto encoded_count =
+            wordAt(selection, 8);
+        REQUIRE(
+            (encoded_count & 0x7fffffffu) ==
+            64);
+        REQUIRE(
+            (encoded_count & 0x80000000u) !=
+            0);
+        for (std::uint32_t index = 0;
+             index < 64; ++index) {
+            REQUIRE(
+                wordAt(selection, 9 + index) ==
+                index);
+        }
+
+        const auto order =
+            renderer
+                .currentFramePlanOrderForTesting();
+        const auto selector =
+            std::find(
+                order.begin(), order.end(),
+                "clustered_light_select");
+        REQUIRE(selector != order.end());
+        for (const auto consumer :
+             {"deferred_lighting",
+              "forward_opaque",
+              "forward_transparent"}) {
+            const auto found =
+                std::find(
+                    order.begin(), order.end(),
+                    consumer);
+            REQUIRE(found != order.end());
+            REQUIRE(selector < found);
+        }
+        const auto plan =
+            renderer.currentFramePlanJson();
+        REQUIRE(
+            plan.at("lighting_data")
+                .at("selection_contract") ==
+            "project.clustered_selection_v1");
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("selected_path") ==
+            "compute_clustered");
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("declared_vram_bytes") ==
+            65568u + 292u);
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("inventory")
+                .at("source_records") == 70);
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("inventory")
+                .at("written_records") == 70);
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("storage_buffer_contract")
+                .at("supported") == true);
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("overflow")
+                .at("selection_signal") ==
+            "tile_count_high_bit");
+        REQUIRE(
+            plan.at("lighting_data_runtime")
+                .at("fallbacks")
+                .at("tile_gpu")
+                .at("path") ==
+            "small_light_v1");
+        REQUIRE_FALSE(
+            plan.at("lighting_data_runtime")
+                .at("fallbacks")
+                .at("tile_gpu")
+                .at("reason")
+                .get<std::string>()
+                .empty());
+        for (const auto consumer :
+             {"deferred_lighting",
+              "forward_opaque",
+              "forward_transparent"}) {
+            REQUIRE(std::any_of(
+                plan.at("barriers").begin(),
+                plan.at("barriers").end(),
+                [&](const auto &barrier) {
+                    return barrier.at("from") ==
+                               "clustered_light_select" &&
+                           barrier.at("to") ==
+                               consumer &&
+                           barrier.at("resource") ==
+                               "clustered_light_selection";
+                }));
+        }
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan clustered lighting unavailable: "} +
+            error.what());
     }
 #endif
 }

@@ -573,7 +573,16 @@ GraphVariantFeatureDecision decideGraphVariantFeature(
         return result;
     case RenderPipelineGraphVariant::xr:
 #if PELICAN_WITH_OPENXR
-        if (knownXrExcludedFeature(feature_name)) {
+        if (feature.contains("lighting_data") &&
+            feature.at("lighting_data").is_object() &&
+            feature.at("lighting_data").value(
+                "xr_path", std::string{}) ==
+                "small_light_v1") {
+            result.disposition =
+                GraphVariantFeatureDisposition::exclude;
+            result.reason =
+                GraphVariantFeatureReason::known_incompatible;
+        } else if (knownXrExcludedFeature(feature_name)) {
             result.disposition =
                 GraphVariantFeatureDisposition::exclude;
             result.reason =

@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 88;
+constexpr size_t registeredResourceCount = 91;
 #else
-constexpr size_t registeredResourceCount = 87;
+constexpr size_t registeredResourceCount = 90;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -43,6 +43,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "features/ui.json",
     "features/sprite.json",
     "features/gpu_timing.json",
+    "features/clustered_lighting.json",
     "features/hdr.json",
     "features/shadow_directional.json",
     "features/taa.json",
@@ -63,6 +64,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/include/pelican_sets.glsl",
     "shaders/include/pelican_surface_v1.glsl",
     "shaders/include/pelican_lighting_v1.glsl",
+    "shaders/include/pelican_lighting_v2.glsl",
     "shaders/include/pelican_skinning.glsl",
     "shaders/include/pelican_morph.glsl",
     "shaders/material/standard_lighting.glsl",
@@ -70,6 +72,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/material/openpbr_lighting.glsl",
     "shaders/material/surface_v1.vert",
     "shaders/material/surface_v1.frag",
+    "shaders/compute/clustered_light_select.comp",
     "surfaces/openpbr/manifest.json",
     "surfaces/openpbr/opaque_single.surface",
     "surfaces/openpbr/opaque_double.surface",
@@ -166,6 +169,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         static const std::string feature = b::embed<"features/gpu_timing.json">().str();
         return std::string_view{feature};
     }
+    PELICAN_ENGINE_RESOURCE("features/clustered_lighting.json")
     PELICAN_ENGINE_RESOURCE("features/hdr.json")
     PELICAN_ENGINE_RESOURCE("features/shadow_directional.json")
     PELICAN_ENGINE_RESOURCE("features/taa.json")
@@ -186,6 +190,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_sets.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_surface_v1.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_lighting_v1.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_lighting_v2.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_skinning.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_morph.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/standard_lighting.glsl")
@@ -193,6 +198,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/material/openpbr_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.vert")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.frag")
+    PELICAN_ENGINE_RESOURCE("shaders/compute/clustered_light_select.comp")
     PELICAN_ENGINE_RESOURCE("surfaces/openpbr/manifest.json")
     PELICAN_ENGINE_RESOURCE("surfaces/openpbr/opaque_single.surface")
     PELICAN_ENGINE_RESOURCE("surfaces/openpbr/opaque_double.surface")

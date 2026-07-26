@@ -13,6 +13,13 @@ layout(set = PELICAN_SET_PASS_INPUT,
     uniform sampler2D pelican_directional_shadow_texture;
 #endif
 
+#if defined(PELICAN_FEATURE_CLUSTERED_LIGHTING)
+#include "pelican_lighting_v2.glsl"
+#else
+uint pelican_directional_light_count() {
+    return pelicanLights.directionalLightCount;
+}
+
 uint pelican_light_count() {
     return pelicanLights.directionalLightCount + pelicanLights.pointLightCount +
            pelicanLights.spotLightCount;
@@ -53,10 +60,19 @@ PelicanLightV1 pelican_light(uint index, vec3 world_position) {
     return light;
 }
 
+bool pelican_light_selection_overflowed() {
+    return false;
+}
+
+uint pelican_light_inventory_index(uint local_index) {
+    return local_index;
+}
+#endif
+
 float pelican_shadow(uint light_index, vec3 world_position) {
 #if defined(PELICAN_FEATURE_SHADOW) && defined(PELICAN_PASS_FORWARD)
-    if (light_index != 0u ||
-        pelicanLights.directionalLightCount == 0u) {
+    if (pelican_light_inventory_index(light_index) != 0u ||
+        pelican_directional_light_count() == 0u) {
         return 1.0;
     }
 

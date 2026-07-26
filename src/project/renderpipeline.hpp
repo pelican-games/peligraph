@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphvariantpolicy.hpp"
+#include "lightingdata.hpp"
 #include "logicalrendergraph.hpp"
 #include "materialscreeninput.hpp"
 #include "samplecountplanning.hpp"
@@ -286,6 +287,8 @@ struct CompiledRenderPipeline {
     std::vector<CompiledSurfaceResourceContract>
         surface_resource_contracts;
     std::optional<CompiledMaterialRouting> material_routing;
+    std::optional<CompiledLightingDataPlan>
+        lighting_data;
     CompiledDrawSorting draw_sorting;
     SampleCountPolicy sample_count_policy;
     TargetPlanningPolicy target_planning;

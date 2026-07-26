@@ -1909,9 +1909,14 @@ void applyPassOverrides(nlohmann::json &config, const nlohmann::json &feature) {
             throw std::runtime_error("render feature pass override references unknown pass: " + pass_name);
         }
 
-        for (auto field = override_json.begin(); field != override_json.end(); ++field) {
-            if (field.key() != "input") {
-                throw std::runtime_error("render feature pass override only supports input: " + pass_name);
+        for (auto field = override_json.begin();
+             field != override_json.end(); ++field) {
+            if (field.key() != "input" &&
+                field.key() != "resource_ports" &&
+                field.key() != "material_resources") {
+                throw std::runtime_error(
+                    "render feature pass override has unsupported field '" +
+                    field.key() + "': " + pass_name);
             }
         }
         if (override_json.contains("input")) {
@@ -1920,6 +1925,54 @@ void applyPassOverrides(nlohmann::json &config, const nlohmann::json &feature) {
                 appendStringListValue(*pass, "input", input);
             }
         }
+        const auto merge_named_resources =
+            [&](std::string_view field_name) {
+                const auto field =
+                    std::string{field_name};
+                if (!override_json.contains(field)) {
+                    return;
+                }
+                const auto &resources =
+                    override_json.at(field);
+                if (!resources.is_object()) {
+                    throw std::runtime_error(
+                        "render feature pass override " +
+                        std::string{field_name} +
+                        " must be an object: " +
+                        pass_name);
+                }
+                if (!pass->contains(field)) {
+                    (*pass)[field] =
+                        nlohmann::json::object();
+                }
+                if (!pass->at(field)
+                         .is_object()) {
+                    throw std::runtime_error(
+                        "render feature pass override cannot merge "
+                        "non-object " +
+                        std::string{field_name} +
+                        ": " + pass_name);
+                }
+                for (auto resource =
+                         resources.begin();
+                     resource != resources.end();
+                     ++resource) {
+                    if (pass->at(field)
+                            .contains(resource.key())) {
+                        throw std::runtime_error(
+                            "render feature pass override " +
+                            std::string{field_name} +
+                            " collides at '" +
+                            resource.key() + "': " +
+                            pass_name);
+                    }
+                    (*pass)[field]
+                           [resource.key()] =
+                        resource.value();
+                }
+            };
+        merge_named_resources("resource_ports");
+        merge_named_resources("material_resources");
     }
 }
 
@@ -1940,6 +1993,43 @@ void addFeatureComputeTasks(nlohmann::json &config, const nlohmann::json &featur
         }
         compute_tasks.push_back(task);
     }
+}
+
+void applyLightingDataPlan(
+    nlohmann::json &config,
+    const nlohmann::json &feature,
+    const std::string &feature_name,
+    const std::string &feature_ref) {
+    if (!feature.contains("lighting_data")) {
+        return;
+    }
+    if (config.contains("lighting_data")) {
+        throw std::runtime_error(
+            "render features '" +
+            config.at("lighting_data")
+                .value("provider_feature", std::string{"<authored>"}) +
+            "' and '" + feature_name +
+            "' cannot both provide lighting_data");
+    }
+    const auto &authored =
+        feature.at("lighting_data");
+    if (!authored.is_object()) {
+        throw std::runtime_error(
+            "render feature '" + feature_name +
+            "' lighting_data must be an object");
+    }
+    if (authored.contains("provider_feature") ||
+        authored.contains("provider_reference")) {
+        throw std::runtime_error(
+            "render feature '" + feature_name +
+            "' lighting_data provider identity is assigned by "
+            "feature composition");
+    }
+    config["lighting_data"] = authored;
+    config["lighting_data"]["provider_feature"] =
+        feature_name;
+    config["lighting_data"]["provider_reference"] =
+        feature_ref;
 }
 
 void appendShaderDefines(std::vector<std::string> &defines, const nlohmann::json &json,
@@ -2042,6 +2132,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             surface_resource_contracts);
         applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
+        applyLightingDataPlan(
+            composed, feature, loaded.name,
+            loaded.instance.ref);
         appendShaderDefines(shader_defines, feature, "render feature");
         appendUnique(shader_defines, scalar_defines);
         resolved_instances.push_back({

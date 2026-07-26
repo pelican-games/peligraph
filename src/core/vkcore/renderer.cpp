@@ -252,8 +252,35 @@ RenderFrameModules resolveRenderFrameModules() {
     };
 }
 
-void updateFrameLights(LightContainer &light_container) {
+void updateFrameLights(
+    LightContainer &light_container,
+    FrameGraphResourceContainer
+        &frame_graph_resources) {
     light_container.update();
+    constexpr auto source =
+        FrameGraphHostBufferSource::scene_lights_v2;
+    if (!frame_graph_resources
+             .hasHostBufferSource(source)) {
+        return;
+    }
+    for (const auto &target :
+         frame_graph_resources.hostBufferTargets(
+             source)) {
+        const auto packed =
+            light_container.lightInventoryV2(
+                target.size);
+        frame_graph_resources.writeHostBuffer(
+            target.id,
+            std::as_bytes(
+                std::span{
+                    packed.elements.data(),
+                    packed.elements.size()}),
+            FrameGraphResourceContainer::
+                HostBufferPopulation{
+                    packed.input_count,
+                    packed.accepted_count,
+                });
+    }
 }
 
 glm::vec4 resolutionVector(vk::Extent2D extent) {
@@ -2385,6 +2412,160 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         result["sample_count_plan"] =
             resolvedSampleCountPlanToJson(*frame_graph->sample_count_plan);
     }
+    if (frame_graph->render_pipeline != nullptr &&
+        frame_graph->render_pipeline
+            ->lighting_data) {
+        const auto &lighting =
+            *frame_graph->render_pipeline
+                 ->lighting_data;
+        const auto *resources =
+            FastModuleContainer::tryGet<
+                FrameGraphResourceContainer>();
+        const auto buffer_status =
+            [&](const std::string &name,
+                bool include_population) {
+                nlohmann::json status{
+                    {"resource", name},
+                    {"available", false},
+                    {"bytes", 0},
+                };
+                const auto binding =
+                    frame_graph->buffer_bindings.find(
+                        name);
+                if (resources == nullptr ||
+                    binding ==
+                        frame_graph->buffer_bindings
+                            .end() ||
+                    !resources->hasBuffer(
+                        binding->second)) {
+                    return status;
+                }
+                status["available"] = true;
+                status["bytes"] =
+                    resources->bufferSize(
+                        binding->second);
+                if (include_population) {
+                    const auto population =
+                        resources
+                            ->hostBufferPopulation(
+                                binding->second);
+                    if (population) {
+                        status["source_records"] =
+                            population
+                                ->source_records;
+                        status["written_records"] =
+                            population
+                                ->written_records;
+                        status["dropped_records"] =
+                            population
+                                ->source_records -
+                            std::min(
+                                population
+                                    ->source_records,
+                                population
+                                    ->written_records);
+                    } else {
+                        status["source_records"] =
+                            nullptr;
+                        status["written_records"] =
+                            nullptr;
+                        status["dropped_records"] =
+                            nullptr;
+                    }
+                }
+                return status;
+            };
+
+        auto inventory =
+            buffer_status(
+                lighting.inventory_resource,
+                true);
+        auto selection =
+            buffer_status(
+                lighting.selection_resource,
+                false);
+        const auto inventory_bytes =
+            inventory.at("bytes")
+                .get<std::uint64_t>();
+        const auto selection_bytes =
+            selection.at("bytes")
+                .get<std::uint64_t>();
+        const auto buffers_available =
+            inventory.at("available")
+                    .get<bool>() &&
+            selection.at("available")
+                    .get<bool>();
+        const auto *vkcore =
+            FastModuleContainer::tryGet<
+                VulkanManageCore>();
+        const auto maximum_storage_range =
+            vkcore != nullptr
+                ? static_cast<std::uint64_t>(
+                      vkcore->getPhysDevice()
+                          .getProperties()
+                          .limits
+                          .maxStorageBufferRange)
+                : 0;
+        result["lighting_data_runtime"] = {
+            {"provider_feature",
+             lighting.provider_feature},
+            {"selected_path",
+             lightingTargetPathName(
+                 active_graph_variant ==
+                         RenderGraphVariant::xr
+                     ? lighting.xr_path
+                     : lighting.desktop_path)},
+            {"inventory",
+             std::move(inventory)},
+            {"selection",
+             std::move(selection)},
+            {"declared_vram_bytes",
+             inventory_bytes +
+                 selection_bytes},
+            {"storage_buffer_contract",
+             {
+                 {"supported",
+                  buffers_available &&
+                      maximum_storage_range != 0 &&
+                      inventory_bytes <=
+                          maximum_storage_range &&
+                      selection_bytes <=
+                          maximum_storage_range},
+                 {"max_storage_buffer_range",
+                  maximum_storage_range},
+             }},
+            {"overflow",
+             {
+                 {"policy",
+                  lightingOverflowPolicyName(
+                      lighting.overflow)},
+                 {"selection_signal",
+                  "tile_count_high_bit"},
+             }},
+            {"fallbacks",
+             {
+                 {"tile_gpu",
+                  {
+                      {"path",
+                       lightingTargetPathName(
+                           lighting
+                               .tile_gpu_path)},
+                      {"reason",
+                       lighting
+                           .tile_gpu_fallback_reason},
+                  }},
+                 {"xr",
+                  {
+                      {"path",
+                       lightingTargetPathName(
+                           lighting.xr_path)},
+                      {"reason",
+                       lighting
+                           .xr_fallback_reason},
+                  }},
+             }},
+        };
+    }
     const auto *sprite_scene = FastModuleContainer::tryGet<SpriteScene>();
     result["sprite"] = sprite_scene != nullptr ? sprite_scene->statusJson()
                                                  : nlohmann::json{{"enabled", false}};
@@ -2644,7 +2825,9 @@ void Renderer::renderLogicalFrame(
     }
     observed_time_set_revision = time_set_revision;
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
-    updateFrameLights(modules.light_container);
+    updateFrameLights(
+        modules.light_container,
+        modules.frame_graph_resources);
 
     const auto &graph_variant_policy =
         frame_graph.render_pipeline->graph_variant_policy;

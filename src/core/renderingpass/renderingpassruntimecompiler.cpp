@@ -1187,6 +1187,13 @@ compileFullscreenResourceInterface(
             });
         if (port == ports.end()) continue;
         ++matched_ports;
+        if (port->kind ==
+            ShaderResourcePortKind::buffer) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') declares a buffer but resolves to an image");
+        }
         if (local_reads[input]) {
             throw std::runtime_error(
                 "Shader resource port '" + port->name +
@@ -1243,6 +1250,61 @@ compileFullscreenResourceInterface(
         result.sampling[input] =
             fullscreenSampling(port->sampling);
     }
+    for (std::size_t input = 0;
+         input < pass.input_buffers.size(); ++input) {
+        const auto &authored_resource =
+            pass.input_buffers[input];
+        const auto port = std::find_if(
+            ports.begin(), ports.end(),
+            [&](const ShaderResourcePortDefinition
+                    &candidate) {
+                return candidate.resource ==
+                       authored_resource;
+            });
+        if (port == ports.end()) continue;
+        ++matched_ports;
+        if (port->kind !=
+                ShaderResourcePortKind::buffer ||
+            !port->buffer_element) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') resolves to a frame-graph buffer and requires "
+                "kind 'buffer' plus an explicit element");
+        }
+        if (!dependencies.frame_graph_resources
+                 .hasBuffer(authored_resource)) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') references an unavailable frame-graph buffer");
+        }
+        if (effectiveShaderResourcePortAccess(
+                *port, false, false) !=
+            ShaderResourcePortAccess::storage) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') requires storage access for a buffer");
+        }
+        result.bindings.push_back(
+            ShaderResourceInterfaceBinding{
+                .port = *port,
+                .binding =
+                    static_cast<std::uint32_t>(
+                        pass.input_targets.size() +
+                        input),
+                .descriptor =
+                    ShaderResourceDescriptorKind::
+                        storage_buffer,
+                .image_view_dimension =
+                    ReflectedImageViewDimension::none,
+                .buffer_element =
+                    *port->buffer_element,
+                .readable = true,
+                .writable = false,
+            });
+    }
     if (matched_ports != ports.size()) {
         const auto unmatched = std::find_if(
             ports.begin(), ports.end(),
@@ -1262,13 +1324,19 @@ compileFullscreenResourceInterface(
                         return false;
                     }
                 }
+                if (std::find(
+                        pass.input_buffers.begin(),
+                        pass.input_buffers.end(),
+                        port.resource) !=
+                    pass.input_buffers.end()) {
+                    return false;
+                }
                 return true;
             });
         throw std::runtime_error(
             "Shader resource port '" + unmatched->name +
             "' (resource '" + unmatched->resource +
-            "') is not an image input; typed frame-graph buffers are "
-            "not available yet");
+            "') is not a fullscreen input");
     }
     return result;
 }

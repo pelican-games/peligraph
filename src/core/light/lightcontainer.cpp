@@ -130,6 +130,17 @@ namespace Pelican
 		return projection * view;
 	}
 
+	PackedLightInventoryV2
+	LightContainer::lightInventoryV2(
+		vk::DeviceSize byte_capacity) const
+	{
+		return packLightInventoryV2(
+			m_DirectionalLights,
+			m_PointLights,
+			m_SpotLights,
+			byte_capacity);
+	}
+
 	LightContainer::LightContainer()
 	{
 		auto& vkcore = GET_MODULE(VulkanManageCore);

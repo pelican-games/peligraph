@@ -18,6 +18,11 @@ PELICAN_DECLARE_INPUT_5(ssaoSampler);
 PELICAN_DECLARE_INPUT_6(shadowMapSampler);
 #endif
 
+#ifdef PELICAN_FEATURE_CLUSTERED_LIGHTING
+#include "pelican_resource_ports.glsl"
+#include "pelican_lighting_v1.glsl"
+#endif
+
 const float PI = 3.14159265359;
 
 // GGX法線分布関数
@@ -137,6 +142,58 @@ void main() {
     // 反射率方程式
     vec3 Lo = vec3(0.0);
 
+#ifdef PELICAN_FEATURE_CLUSTERED_LIGHTING
+    uint selectedLightCount = pelican_light_count();
+    for (uint i = 0u; i < selectedLightCount; ++i) {
+        PelicanLightV1 light =
+            pelican_light(i, worldPos);
+        vec3 L = light.direction;
+        vec3 H = normalize(V + L);
+        vec3 radiance =
+            light.radiance * light.attenuation;
+#ifdef PELICAN_FEATURE_SHADOW
+        if (pelican_directional_light_count() > 0u &&
+            pelican_light_inventory_index(i) == 0u) {
+            radiance *= directionalShadowVisibility(
+                worldPos, normal, L);
+        }
+#endif
+
+        float NDF = openPbrBase
+                        ? OpenPbrDistributionGGX(
+                              normal, H, roughness)
+                        : DistributionGGX(
+                              normal, H, roughness);
+        float G = openPbrBase
+                      ? OpenPbrGeometrySmith(
+                            normal, V, L, roughness)
+                      : GeometrySmith(
+                            normal, V, L, roughness);
+        vec3 F =
+            fresnelSchlick(
+                max(dot(H, V), 0.0), F0);
+
+        vec3 kS = F;
+        vec3 kD = vec3(1.0) - kS;
+        kD *= 1.0 - metallic;
+
+        vec3 numerator = NDF * G * F;
+        float denominator =
+            brdfDenominator(
+                normal, V, L, openPbrBase);
+        vec3 specular = numerator / denominator;
+
+        float NdotL =
+            max(dot(normal, L), 0.0);
+        float directDiffuseOcclusion =
+            openPbrBase ? 1.0 : ao;
+        Lo +=
+            (kD * albedo / PI *
+                 directDiffuseOcclusion +
+             specular) *
+            radiance * NdotL;
+    }
+#else
     for(int i = 0; i < pelicanLights.directionalLightCount; ++i) {
         vec3 L = normalize(-pelicanLights.directionalLights[i].direction);
         vec3 H = normalize(V + L);
@@ -229,6 +286,7 @@ void main() {
             Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
         }
     }
+#endif
     
     // 環境光をより充実させる
     float sky = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);

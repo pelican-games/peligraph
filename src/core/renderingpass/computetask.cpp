@@ -1,6 +1,7 @@
 #include "computetask.hpp"
 #include "rendertargetcontainer.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../log.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../renderer/frameresources.hpp"
@@ -10,6 +11,7 @@
 #include "../vkcore/util.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
@@ -52,6 +54,206 @@ vk::DeviceSize requireDeviceSize(const nlohmann::json &json, std::string_view fi
                                  std::string{field});
     }
     return static_cast<vk::DeviceSize>(json.at(field).get<uint64_t>());
+}
+
+FrameGraphHostBufferSource parseHostBufferSource(
+    const nlohmann::json &entry,
+    std::string_view context) {
+    const auto value =
+        requireString(entry, "host_source", context);
+    if (value == "scene_lights_v2") {
+        return FrameGraphHostBufferSource::scene_lights_v2;
+    }
+    throw std::runtime_error(
+        std::string{context} +
+        " has unknown host_source '" + value + "'");
+}
+
+std::pair<std::uint32_t, std::uint32_t>
+renderTargetExtent(
+    const nlohmann::json &config,
+    std::string_view resource,
+    std::string_view context) {
+    if (!config.contains("render_targets") ||
+        !config.at("render_targets").is_array()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires render_targets to resolve resource '" +
+            std::string{resource} + "'");
+    }
+    const auto found = std::find_if(
+        config.at("render_targets").begin(),
+        config.at("render_targets").end(),
+        [resource](const nlohmann::json &target) {
+            return target.is_object() &&
+                   target.value("name", std::string{}) ==
+                       resource;
+        });
+    if (found == config.at("render_targets").end()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " references unknown render target '" +
+            std::string{resource} + "'");
+    }
+    std::uint64_t width = 0;
+    std::uint64_t height = 0;
+    if (found->contains("width") &&
+        found->contains("height")) {
+        width = requireUint32(*found, "width", context);
+        height = requireUint32(*found, "height", context);
+    } else {
+        const auto base = std::find_if(
+            config.at("render_targets").begin(),
+            config.at("render_targets").end(),
+            [](const nlohmann::json &target) {
+                return target.is_object() &&
+                       target.contains("width") &&
+                       target.contains("height");
+            });
+        if (base ==
+            config.at("render_targets").end()) {
+            throw std::runtime_error(
+                std::string{context} +
+                " cannot derive a base render-target extent");
+        }
+        const auto base_width =
+            requireUint32(*base, "width", context);
+        const auto base_height =
+            requireUint32(*base, "height", context);
+        const auto scale =
+            found->value("extent_scale", 1.0);
+        if (!std::isfinite(scale) || scale <= 0.0) {
+            throw std::runtime_error(
+                std::string{context} +
+                " requires a positive finite extent_scale");
+        }
+        width = static_cast<std::uint64_t>(
+            static_cast<double>(base_width) * scale);
+        height = static_cast<std::uint64_t>(
+            static_cast<double>(base_height) * scale);
+    }
+    if (width == 0 || height == 0) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires a non-zero render-target extent");
+    }
+    if (width >
+            std::numeric_limits<std::uint32_t>::max() ||
+        height >
+            std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error(
+            std::string{context} +
+            " render-target extent exceeds uint32");
+    }
+    return {
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height)};
+}
+
+vk::DeviceSize checkedMultiply(
+    vk::DeviceSize lhs, vk::DeviceSize rhs,
+    std::string_view context) {
+    if (rhs != 0 &&
+        lhs > std::numeric_limits<vk::DeviceSize>::max() /
+                  rhs) {
+        throw std::overflow_error(
+            std::string{context} + " byte size overflow");
+    }
+    return lhs * rhs;
+}
+
+vk::DeviceSize checkedAdd(
+    vk::DeviceSize lhs, vk::DeviceSize rhs,
+    std::string_view context) {
+    if (lhs >
+        std::numeric_limits<vk::DeviceSize>::max() -
+            rhs) {
+        throw std::overflow_error(
+            std::string{context} + " byte size overflow");
+    }
+    return lhs + rhs;
+}
+
+std::pair<FrameGraphBufferExtentSizeDefinition,
+          vk::DeviceSize>
+parseExtentDerivedBufferSize(
+    const nlohmann::json &entry,
+    const nlohmann::json &config,
+    std::string_view context) {
+    const auto &encoded =
+        entry.at("size_from_extent");
+    if (!encoded.is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".size_from_extent must be an object");
+    }
+    for (auto field = encoded.begin();
+         field != encoded.end(); ++field) {
+        if (field.key() != "resource" &&
+            field.key() != "tile_width" &&
+            field.key() != "tile_height" &&
+            field.key() != "header_bytes" &&
+            field.key() != "bytes_per_tile") {
+            throw std::runtime_error(
+                std::string{context} +
+                ".size_from_extent has unknown field '" +
+                field.key() + "'");
+        }
+    }
+    FrameGraphBufferExtentSizeDefinition definition{
+        .resource = requireString(
+            encoded, "resource",
+            std::string{context} +
+                ".size_from_extent"),
+        .tile_width = requireUint32(
+            encoded, "tile_width",
+            std::string{context} +
+                ".size_from_extent"),
+        .tile_height = requireUint32(
+            encoded, "tile_height",
+            std::string{context} +
+                ".size_from_extent"),
+        .header_bytes = requireDeviceSize(
+            encoded, "header_bytes",
+            std::string{context} +
+                ".size_from_extent"),
+        .bytes_per_tile = requireDeviceSize(
+            encoded, "bytes_per_tile",
+            std::string{context} +
+                ".size_from_extent"),
+    };
+    if (definition.tile_width == 0 ||
+        definition.tile_height == 0 ||
+        definition.bytes_per_tile == 0) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".size_from_extent requires positive tile dimensions "
+            "and bytes_per_tile");
+    }
+    const auto [width, height] =
+        renderTargetExtent(
+            config, definition.resource, context);
+    const auto tiles_x =
+        (static_cast<std::uint64_t>(width) +
+         definition.tile_width - 1) /
+        definition.tile_width;
+    const auto tiles_y =
+        (static_cast<std::uint64_t>(height) +
+         definition.tile_height - 1) /
+        definition.tile_height;
+    const auto tile_count =
+        checkedMultiply(
+            tiles_x, tiles_y, context);
+    const auto payload =
+        checkedMultiply(
+            tile_count,
+            definition.bytes_per_tile,
+            context);
+    const auto byte_size =
+        checkedAdd(
+            definition.header_bytes,
+            payload, context);
+    return {std::move(definition), byte_size};
 }
 
 std::vector<std::string> parseStringList(const nlohmann::json &json, std::string_view context) {
@@ -220,11 +422,48 @@ makeComputeResourceInterface(
                 definition, resource.authored_name);
         if (port == nullptr) continue;
         if (isValidFrameGraphBufferId(resource.buffer)) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') cannot type a frame-graph buffer yet; use the raw "
-                "storage-buffer layout");
+            if (port->kind !=
+                    ShaderResourcePortKind::buffer ||
+                !port->buffer_element) {
+                throw std::runtime_error(
+                    "Shader resource port '" + port->name +
+                    "' (resource '" + port->resource +
+                    "') resolves to a frame-graph buffer and requires "
+                    "kind 'buffer' plus an explicit element");
+            }
+            const auto written =
+                containsResource(
+                    definition.writes,
+                    resource.authored_name);
+            const auto readable =
+                containsResource(
+                    definition.reads,
+                    resource.authored_name);
+            if (effectiveShaderResourcePortAccess(
+                    *port, false, written) !=
+                ShaderResourcePortAccess::storage) {
+                throw std::runtime_error(
+                    "Shader resource port '" + port->name +
+                    "' (resource '" + port->resource +
+                    "') requires storage access for a buffer");
+            }
+            result.push_back(
+                ShaderResourceInterfaceBinding{
+                    .port = *port,
+                    .binding =
+                        static_cast<std::uint32_t>(
+                            index),
+                    .descriptor =
+                        ShaderResourceDescriptorKind::
+                            storage_buffer,
+                    .image_view_dimension =
+                        ReflectedImageViewDimension::none,
+                    .buffer_element =
+                        *port->buffer_element,
+                    .readable = readable,
+                    .writable = written,
+                });
+            continue;
         }
         if (!isConcreteRenderTarget(
                 resource.render_target)) {
@@ -232,6 +471,13 @@ makeComputeResourceInterface(
                 "Shader resource port '" + port->name +
                 "' (resource '" + port->resource +
                 "') does not resolve to an image");
+        }
+        if (port->kind ==
+            ShaderResourcePortKind::buffer) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') declares a buffer but resolves to an image");
         }
         if (dependencies.resource_views == nullptr) {
             throw std::runtime_error(
@@ -521,6 +767,16 @@ ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const s
 
 } // namespace
 
+std::string_view frameGraphHostBufferSourceName(
+    FrameGraphHostBufferSource source) {
+    switch (source) {
+    case FrameGraphHostBufferSource::scene_lights_v2:
+        return "scene_lights_v2";
+    }
+    throw std::runtime_error(
+        "unknown frame-graph host buffer source");
+}
+
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json) {
     std::vector<FrameGraphBufferDefinition> definitions;
     if (!config_json.contains("buffers")) {
@@ -534,19 +790,50 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
     definitions.reserve(buffers.size());
     for (const auto &entry : buffers) {
         if (entry.is_string()) {
-            definitions.push_back(FrameGraphBufferDefinition{entry.get<std::string>(), 0, true});
+            definitions.push_back(
+                FrameGraphBufferDefinition{
+                    entry.get<std::string>(),
+                    0, true});
             continue;
         }
         if (!entry.is_object()) {
             throw std::runtime_error("buffers entries must be strings or objects");
         }
-        auto definition = FrameGraphBufferDefinition{
-            requireString(entry, "name", "buffer"),
-            entry.contains("size") ? requireDeviceSize(entry, "size", "buffer") : vk::DeviceSize{0},
-            true,
+        const auto name =
+            requireString(entry, "name", "buffer");
+        const auto context = "buffer '" + name + "'";
+        if (entry.contains("size") &&
+            entry.contains("size_from_extent")) {
+            throw std::runtime_error(
+                context +
+                " cannot declare both size and size_from_extent");
+        }
+        FrameGraphBufferDefinition definition{
+            .name = name,
+            .size =
+                entry.contains("size")
+                    ? requireDeviceSize(
+                          entry, "size", context)
+                    : vk::DeviceSize{0},
+            .persistent = true,
         };
+        if (entry.contains("size_from_extent")) {
+            auto [extent_size, byte_size] =
+                parseExtentDerivedBufferSize(
+                    entry, config_json, context);
+            definition.extent_size =
+                std::move(extent_size);
+            definition.size = byte_size;
+        }
+        if (entry.contains("host_source")) {
+            definition.host_source =
+                parseHostBufferSource(
+                    entry, context);
+        }
         if (entry.contains("lifetime")) {
-            const auto lifetime = requireString(entry, "lifetime", "buffer: " + definition.name);
+            const auto lifetime =
+                requireString(
+                    entry, "lifetime", context);
             if (lifetime == "persistent") {
                 definition.persistent = true;
             } else if (lifetime == "transient") {
@@ -554,6 +841,12 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
             } else {
                 throw std::runtime_error("buffer lifetime must be persistent or transient: " + definition.name);
             }
+        }
+        if (definition.host_source &&
+            definition.size == 0) {
+            throw std::runtime_error(
+                context +
+                " host_source requires a non-zero size");
         }
         definitions.push_back(std::move(definition));
     }
@@ -626,14 +919,38 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
         if (name_to_id.contains(definition.name)) {
             continue;
         }
+        const auto maximum_range =
+            static_cast<vk::DeviceSize>(
+                vkcore.getPhysDevice()
+                    .getProperties()
+                    .limits.maxStorageBufferRange);
+        if (definition.size > maximum_range) {
+            throw std::runtime_error(
+                "Frame graph buffer '" + definition.name +
+                "' requires " +
+                std::to_string(definition.size) +
+                " bytes, exceeding device maxStorageBufferRange " +
+                std::to_string(maximum_range));
+        }
         registration_order.reserve(
             registration_order.size() + 1);
-        auto buffer = vkcore.allocBuf(definition.size,
-                                      vk::BufferUsageFlagBits::eStorageBuffer |
-                                          vk::BufferUsageFlagBits::eTransferSrc |
-                                          vk::BufferUsageFlagBits::eTransferDst,
-                                      vma::MemoryUsage::eAutoPreferDevice,
-                                      {});
+        auto buffer = vkcore.allocBuf(
+            definition.size,
+            vk::BufferUsageFlagBits::eStorageBuffer |
+                vk::BufferUsageFlagBits::eTransferSrc |
+                vk::BufferUsageFlagBits::eTransferDst,
+            definition.host_source
+                ? vma::MemoryUsage::eAuto
+                : vma::MemoryUsage::eAutoPreferDevice,
+            definition.host_source
+                ? vma::AllocationCreateFlagBits::
+                      eHostAccessSequentialWrite
+                : vma::AllocationCreateFlags{});
+        vkcore.getDebugUtils().nameBuffer(
+            buffer.buffer.get(),
+            ("frame_graph/buffer/" +
+             definition.name)
+                .c_str());
         const auto id = buffers.reg(
             BufferRecord{definition, std::move(buffer)});
         try {
@@ -706,8 +1023,108 @@ vk::DescriptorBufferInfo FrameGraphResourceContainer::descriptorInfo(std::string
 
 vk::DescriptorBufferInfo FrameGraphResourceContainer::descriptorInfo(
     FrameGraphBufferId id) const {
-    const auto &record = buffers.get(id);
+    auto &record = buffers.get(id);
     return vk::DescriptorBufferInfo{record.buffer.buffer.get(), 0, record.definition.size};
+}
+
+bool FrameGraphResourceContainer::hasHostBufferSource(
+    FrameGraphHostBufferSource source) const {
+    return std::any_of(
+        registration_order.begin(),
+        registration_order.end(),
+        [&](FrameGraphBufferId id) {
+            if (!buffers.contains(id)) return false;
+            const auto &candidate =
+                buffers.get(id).definition.host_source;
+            return candidate && *candidate == source;
+        });
+}
+
+std::vector<
+    FrameGraphResourceContainer::HostBufferTarget>
+FrameGraphResourceContainer::hostBufferTargets(
+    FrameGraphHostBufferSource source) const {
+    std::vector<HostBufferTarget> result;
+    for (const auto id : registration_order) {
+        if (!buffers.contains(id)) continue;
+        const auto &definition =
+            buffers.get(id).definition;
+        if (!definition.host_source ||
+            *definition.host_source != source) {
+            continue;
+        }
+        result.push_back(HostBufferTarget{
+            .id = id,
+            .name = definition.name,
+            .size = definition.size,
+            .source = source,
+        });
+    }
+    return result;
+}
+
+void FrameGraphResourceContainer::writeHostBuffer(
+    FrameGraphBufferId id,
+    std::span<const std::byte> bytes,
+    std::optional<HostBufferPopulation>
+        population) {
+    if (!buffers.contains(id)) {
+        throw std::runtime_error(
+            "Frame graph host buffer handle is unavailable");
+    }
+    auto &record = buffers.get(id);
+    if (!record.definition.host_source) {
+        throw std::runtime_error(
+            "Frame graph buffer '" +
+            record.definition.name +
+            "' is not host sourced");
+    }
+    if (bytes.empty() ||
+        bytes.size() > record.definition.size) {
+        throw std::runtime_error(
+            "Frame graph host write for '" +
+            record.definition.name +
+            "' requires 1.." +
+            std::to_string(record.definition.size) +
+            " bytes, received " +
+            std::to_string(bytes.size()));
+    }
+    GET_MODULE(VulkanManageCore)
+        .writeBuf(
+            record.buffer, bytes.data(), 0,
+            static_cast<vk::DeviceSize>(
+                bytes.size()));
+    if (population &&
+        record.host_population != population) {
+        const auto dropped =
+            population->source_records -
+            std::min(
+                population->source_records,
+                population->written_records);
+        if (logger != nullptr && dropped != 0) {
+            LOG_WARNING(
+                logger,
+                "Host buffer '{}' source '{}' truncated {} of {} records "
+                "(written {})",
+                record.definition.name,
+                frameGraphHostBufferSourceName(
+                    *record.definition.host_source),
+                dropped,
+                population->source_records,
+                population->written_records);
+        }
+        record.host_population = *population;
+    }
+}
+
+std::optional<
+    FrameGraphResourceContainer::HostBufferPopulation>
+FrameGraphResourceContainer::hostBufferPopulation(
+    FrameGraphBufferId id) const {
+    if (!buffers.contains(id)) {
+        return std::nullopt;
+    }
+    return buffers.get(id).host_population;
 }
 
 ComputeTaskContainer::ComputeTaskContainer()

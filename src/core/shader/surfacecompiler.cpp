@@ -70,9 +70,12 @@ vk::ShaderStageFlags resourceStages(
 std::vector<ShaderResourceInterfaceBinding>
 makeSurfaceResourceInterface(
     const SurfaceFormatDocument &surface,
-    std::uint32_t first_binding) {
+    std::uint32_t first_binding,
+    bool clustered_lighting) {
     std::vector<ShaderResourceInterfaceBinding> result;
-    result.reserve(surface.resource_ports.size());
+    result.reserve(
+        surface.resource_ports.size() +
+        (clustered_lighting ? 2u : 0u));
     for (std::size_t index = 0;
          index < surface.resource_ports.size(); ++index) {
         const auto &port = surface.resource_ports[index];
@@ -84,6 +87,15 @@ makeSurfaceResourceInterface(
                     ShaderResourcePortDefinition{
                         .name = port.name,
                         .resource = port.name,
+                        .kind =
+                            image
+                                ? ShaderResourcePortKind::image
+                                : ShaderResourcePortKind::buffer,
+                        .buffer_element =
+                            image
+                                ? std::nullopt
+                                : std::optional{
+                                      port.element},
                         .access =
                             image
                                 ? ShaderResourcePortAccess::sampled
@@ -108,6 +120,63 @@ makeSurfaceResourceInterface(
                 .readable = true,
                 .writable = false,
             });
+    }
+    if (clustered_lighting) {
+        const auto append =
+            [&](std::string name,
+                ShaderResourceBufferElement element) {
+                if (std::find_if(
+                        result.begin(), result.end(),
+                        [&](const auto &binding) {
+                            return binding.port.name ==
+                                   name;
+                        }) != result.end()) {
+                    throw std::runtime_error(
+                        "surface resource port '" +
+                        name +
+                        "' collides with the standard clustered "
+                        "lighting contract");
+                }
+                const auto binding =
+                    first_binding +
+                    static_cast<std::uint32_t>(
+                        result.size());
+                result.push_back(
+                    ShaderResourceInterfaceBinding{
+                        .port =
+                            ShaderResourcePortDefinition{
+                                .name = name,
+                                .resource = name,
+                                .kind =
+                                    ShaderResourcePortKind::
+                                        buffer,
+                                .buffer_element =
+                                    element,
+                                .access =
+                                    ShaderResourcePortAccess::
+                                        storage,
+                            },
+                        .binding = binding,
+                        .descriptor =
+                            ShaderResourceDescriptorKind::
+                                storage_buffer,
+                        .image_view_dimension =
+                            ReflectedImageViewDimension::none,
+                        .buffer_element = element,
+                        .expected_stages =
+                            vk::ShaderStageFlagBits::
+                                eFragment,
+                        .readable = true,
+                        .writable = false,
+                    });
+            };
+        append(
+            "light_inventory",
+            ShaderResourceBufferElement::uvec4);
+        append(
+            "light_selection",
+            ShaderResourceBufferElement::
+                unsigned_integer);
     }
     return result;
 }
@@ -223,12 +292,18 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
                     defines, "PELICAN_FEATURE_SHADOW")
             ? 1u
             : 0u;
+    const auto clustered_lighting =
+        pass == SurfacePass::forward &&
+        hasDefine(
+            defines,
+            "PELICAN_FEATURE_CLUSTERED_LIGHTING");
     auto resource_interface =
         makeSurfaceResourceInterface(
             surface,
             static_cast<std::uint32_t>(
                 surface.screen_inputs.size()) +
-                feature_input_count);
+                feature_input_count,
+            clustered_lighting);
 
     SurfaceShaderComposition composition;
     composition.vertex_source = engineResourceOrThrow("shaders/material/surface_v1.vert");

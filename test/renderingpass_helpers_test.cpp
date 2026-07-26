@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/materialpassattachments.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
@@ -341,6 +342,152 @@ TEST_CASE(
             unknown, "resolve"),
         Catch::Matchers::ContainsSubstring(
             "absent from reads/writes/input"));
+}
+
+TEST_CASE(
+    "fullscreen pass JSON parser accepts explicit read-only buffer ports",
+    "[renderingpass][resource-port][clustered][wp208]") {
+    const auto pass_json =
+        nlohmann::json::parse(R"json({
+          "input": ["scene_color", "light_inventory"],
+          "resource_ports": {
+            "color": {
+              "resource": "scene_color",
+              "access": "sampled"
+            },
+            "lights": {
+              "resource": "light_inventory",
+              "kind": "buffer",
+              "element": "uvec4",
+              "access": "storage"
+            }
+          },
+          "shader": {
+            "vertex": "fullscreen",
+            "fragment": "lighting"
+          }
+        })json");
+
+    const auto info =
+        parseFullscreenPassInfoFromJson(
+            pass_json, "lighting");
+    REQUIRE(info.resource_ports.size() == 2);
+    REQUIRE(
+        info.resource_ports.at(1).kind ==
+        ShaderResourcePortKind::buffer);
+    REQUIRE(
+        info.resource_ports.at(1).buffer_element ==
+        ShaderResourceBufferElement::uvec4);
+
+    auto invalid = pass_json;
+    invalid["resource_ports"]["lights"]["access"] =
+        "sampled";
+    REQUIRE_THROWS_WITH(
+        parseFullscreenPassInfoFromJson(
+            invalid, "lighting"),
+        Catch::Matchers::ContainsSubstring(
+            "buffer ports require storage access"));
+}
+
+TEST_CASE(
+    "typed lighting buffers derive size from render extent and parse compute ports",
+    "[renderingpass][resource-port][clustered][wp208]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "render_targets": [
+            {
+              "name": "display",
+              "width": 1280,
+              "height": 720
+            },
+            {
+              "name": "lit_color",
+              "extent_scale": 0.5
+            }
+          ],
+          "buffers": [
+            {
+              "name": "light_inventory",
+              "size": 65568,
+              "host_source": "scene_lights_v2"
+            },
+            {
+              "name": "light_selection",
+              "size_from_extent": {
+                "resource": "lit_color",
+                "tile_width": 32,
+                "tile_height": 32,
+                "header_bytes": 32,
+                "bytes_per_tile": 260
+              }
+            }
+          ],
+          "compute_tasks": [
+            {
+              "name": "select_lights",
+              "shader": "shaders/select_lights",
+              "reads": ["light_inventory"],
+              "writes": ["light_selection"],
+              "resource_ports": {
+                "inventory": {
+                  "resource": "light_inventory",
+                  "kind": "buffer",
+                  "element": "uvec4",
+                  "access": "storage"
+                },
+                "selection": {
+                  "resource": "light_selection",
+                  "kind": "buffer",
+                  "element": "uint",
+                  "access": "storage"
+                }
+              }
+            }
+          ]
+        })json");
+
+    const auto buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            config);
+    REQUIRE(buffers.size() == 2);
+    REQUIRE(
+        buffers[0].host_source ==
+        FrameGraphHostBufferSource::
+            scene_lights_v2);
+    REQUIRE(buffers[0].size == 65568);
+    REQUIRE(buffers[1].extent_size.has_value());
+    REQUIRE(
+        buffers[1].extent_size->resource ==
+        "lit_color");
+    REQUIRE(
+        buffers[1].size ==
+        32u + 20u * 12u * 260u);
+
+    const auto tasks =
+        parseComputeTaskDefinitionsFromConfigJson(
+            config);
+    REQUIRE(tasks.size() == 1);
+    REQUIRE(tasks[0].resource_ports.size() == 2);
+    REQUIRE(
+        tasks[0].resource_ports[0].kind ==
+        ShaderResourcePortKind::buffer);
+    REQUIRE(
+        tasks[0].resource_ports[0]
+            .buffer_element ==
+        ShaderResourceBufferElement::uvec4);
+    REQUIRE(
+        tasks[0].resource_ports[1]
+            .buffer_element ==
+        ShaderResourceBufferElement::
+            unsigned_integer);
+
+    auto invalid = config;
+    invalid["buffers"][1]["size"] = 16;
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "cannot declare both size and size_from_extent"));
 }
 
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {

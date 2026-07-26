@@ -6,6 +6,7 @@ add_library(pelican_project
     importmanifest.cpp
     importrules.cpp
     jsonrpc.cpp
+    lightingdata.cpp
     logicalrendergraph.cpp
     logicalrendertype.cpp
     materialscreeninput.cpp

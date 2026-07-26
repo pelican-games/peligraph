@@ -161,6 +161,68 @@ ShaderResourcePortSampling parseSampling(
     };
 }
 
+ShaderResourcePortKind parseKind(
+    const nlohmann::json &entry,
+    std::string_view context) {
+    if (!entry.contains("kind")) {
+        return ShaderResourcePortKind::automatic;
+    }
+    if (!entry.at("kind").is_string()) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".kind must be a string");
+    }
+    const auto value =
+        entry.at("kind").get<std::string>();
+    if (value == "automatic") {
+        return ShaderResourcePortKind::automatic;
+    }
+    if (value == "image") {
+        return ShaderResourcePortKind::image;
+    }
+    if (value == "buffer") {
+        return ShaderResourcePortKind::buffer;
+    }
+    throw std::runtime_error(
+        std::string{context} +
+        ".kind has unknown value '" + value + "'");
+}
+
+std::optional<ShaderResourceBufferElement>
+parseBufferElement(
+    const nlohmann::json &entry,
+    ShaderResourcePortKind kind,
+    std::string_view context) {
+    if (!entry.contains("element")) {
+        if (kind == ShaderResourcePortKind::buffer) {
+            throw std::runtime_error(
+                std::string{context} +
+                ".element is required for buffer ports");
+        }
+        return std::nullopt;
+    }
+    if (kind != ShaderResourcePortKind::buffer) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".element is valid only when kind is buffer");
+    }
+    if (!entry.at("element").is_string()) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".element must be a string");
+    }
+    const auto encoded =
+        entry.at("element").get<std::string>();
+    const auto element =
+        shaderResourceBufferElementFromName(encoded);
+    if (!element) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".element has unknown value '" + encoded + "'");
+    }
+    return element;
+}
+
 bool contains(
     std::span<const std::string> values,
     std::string_view value) {
@@ -230,6 +292,65 @@ std::string_view shaderResourceBufferElementName(
         "unknown shader resource buffer element");
 }
 
+std::optional<ShaderResourceBufferElement>
+shaderResourceBufferElementFromName(
+    std::string_view name) {
+    if (name == "float") {
+        return ShaderResourceBufferElement::floating;
+    }
+    if (name == "vec2") {
+        return ShaderResourceBufferElement::vec2;
+    }
+    if (name == "vec3") {
+        return ShaderResourceBufferElement::vec3;
+    }
+    if (name == "vec4") {
+        return ShaderResourceBufferElement::vec4;
+    }
+    if (name == "int") {
+        return ShaderResourceBufferElement::integer;
+    }
+    if (name == "ivec2") {
+        return ShaderResourceBufferElement::ivec2;
+    }
+    if (name == "ivec3") {
+        return ShaderResourceBufferElement::ivec3;
+    }
+    if (name == "ivec4") {
+        return ShaderResourceBufferElement::ivec4;
+    }
+    if (name == "uint") {
+        return ShaderResourceBufferElement::unsigned_integer;
+    }
+    if (name == "uvec2") {
+        return ShaderResourceBufferElement::uvec2;
+    }
+    if (name == "uvec3") {
+        return ShaderResourceBufferElement::uvec3;
+    }
+    if (name == "uvec4") {
+        return ShaderResourceBufferElement::uvec4;
+    }
+    if (name == "mat4") {
+        return ShaderResourceBufferElement::mat4;
+    }
+    return std::nullopt;
+}
+
+std::string_view shaderResourcePortKindName(
+    ShaderResourcePortKind kind) {
+    switch (kind) {
+    case ShaderResourcePortKind::automatic:
+        return "automatic";
+    case ShaderResourcePortKind::image:
+        return "image";
+    case ShaderResourcePortKind::buffer:
+        return "buffer";
+    }
+    throw std::runtime_error(
+        "unknown shader resource port kind");
+}
+
 std::vector<ShaderResourcePortDefinition>
 parseShaderResourcePortDefinitions(
     const nlohmann::json &owner,
@@ -269,6 +390,8 @@ parseShaderResourcePortDefinitions(
         for (auto field = object.begin();
              field != object.end(); ++field) {
             if (field.key() != "resource" &&
+                field.key() != "kind" &&
+                field.key() != "element" &&
                 field.key() != "access" &&
                 field.key() != "view" &&
                 field.key() != "sampling") {
@@ -304,13 +427,25 @@ parseShaderResourcePortDefinitions(
                 resource);
         }
 
+        const auto kind =
+            parseKind(object, port_context);
+        const auto element =
+            parseBufferElement(
+                object, kind, port_context);
         const auto access =
             parseAccess(object, port_context);
         const auto written = contains(writes, resource);
         const auto sampled =
             access == ShaderResourcePortAccess::sampled ||
             (access == ShaderResourcePortAccess::automatic &&
-             !written);
+             !written &&
+             kind != ShaderResourcePortKind::buffer);
+        if (kind == ShaderResourcePortKind::buffer &&
+            access == ShaderResourcePortAccess::sampled) {
+            throw std::runtime_error(
+                port_context +
+                " buffer ports require storage access");
+        }
         if (access == ShaderResourcePortAccess::sampled &&
             written) {
             throw std::runtime_error(
@@ -323,10 +458,18 @@ parseShaderResourcePortDefinitions(
                 port_context +
                 ".sampling is valid only for sampled resources");
         }
+        if (kind == ShaderResourcePortKind::buffer &&
+            object.contains("view")) {
+            throw std::runtime_error(
+                port_context +
+                ".view is valid only for image resources");
+        }
         result.push_back(
             ShaderResourcePortDefinition{
                 .name = item.key(),
                 .resource = std::move(resource),
+                .kind = kind,
+                .buffer_element = element,
                 .access = access,
                 .view = parseView(object, port_context),
                 .sampling =

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -60,6 +61,19 @@ enum class ShaderResourceBufferElement : std::uint8_t {
 std::string_view shaderResourceBufferElementName(
     ShaderResourceBufferElement element);
 
+std::optional<ShaderResourceBufferElement>
+shaderResourceBufferElementFromName(
+    std::string_view name);
+
+enum class ShaderResourcePortKind : std::uint8_t {
+    automatic,
+    image,
+    buffer,
+};
+
+std::string_view shaderResourcePortKindName(
+    ShaderResourcePortKind kind);
+
 struct ShaderResourcePortSampling {
     ShaderResourcePortFilter filter =
         ShaderResourcePortFilter::linear;
@@ -76,6 +90,13 @@ struct ShaderResourcePortSampling {
 struct ShaderResourcePortDefinition {
     std::string name;
     std::string resource;
+    // automatic preserves the established image/buffer inference. Typed
+    // fullscreen/compute buffers opt in explicitly so an element ABI can be
+    // generated without exposing a descriptor binding.
+    ShaderResourcePortKind kind =
+        ShaderResourcePortKind::automatic;
+    std::optional<ShaderResourceBufferElement>
+        buffer_element;
     ShaderResourcePortAccess access =
         ShaderResourcePortAccess::automatic;
     ShaderResourcePortView view =

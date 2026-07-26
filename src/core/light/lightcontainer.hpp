@@ -1,6 +1,7 @@
 #pragma once
 
 #include "light.hpp"
+#include "lightinventory.hpp"
 #include "../container.hpp"
 #include "../vkcore/buf.hpp"
 
@@ -50,6 +51,8 @@ namespace Pelican
 
 		glm::mat4 shadowViewProjection() const;
 		const BufferWrapper& lightBuffer() const { return m_LightUBO; }
+		PackedLightInventoryV2 lightInventoryV2(
+			vk::DeviceSize byte_capacity) const;
 
 	private:
 		DirectionalLight* getLight(const std::string& name);
