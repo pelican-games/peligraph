@@ -78,7 +78,12 @@ nlohmann::json makeProjectConfig(const std::filesystem::path &scene_path, const 
 }
 
 void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_color) {
-    auto frame = render_target.render_begin();
+    auto begun = render_target.beginFrame(nullptr);
+    REQUIRE(begun.disposition ==
+            FrameBeginDisposition::ready);
+    REQUIRE(begun.frame.has_value());
+    auto token = std::move(*begun.frame);
+    const auto frame = token.context();
 
     vk::RenderingAttachmentInfo color_attachment;
     color_attachment.imageView = frame.color_attachment;
@@ -95,7 +100,7 @@ void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_col
     frame.cmd_buf.beginRendering(rendering_info);
     frame.cmd_buf.endRendering();
 
-    render_target.render_end();
+    render_target.submit(std::move(token));
 }
 
 CommonPolygonVertData makeScreenQuad(float half_extent, float z) {
@@ -1257,8 +1262,11 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
 
         // A validation or pass-execution exception may unwind after begin.
         // The same in-flight slot must remain immediately reusable.
-        (void)render_target.render_begin();
-        render_target.abort_render();
+        auto abandoned =
+            render_target.beginFrame(nullptr);
+        REQUIRE(abandoned.frame.has_value());
+        render_target.abandon(
+            std::move(*abandoned.frame));
 
         for (const auto clear : clears) {
             engine_time.advance();
@@ -5107,7 +5115,7 @@ TEST_CASE(
             "render_pipeline/flat";
         batch_xr_options
             .validate_prepared_generation =
-            [](const RenderPipelineRuntimeGeneration &) {
+            [](const RendererRuntimeGeneration &) {
                 throw std::runtime_error(
                     "Injected variant-batch validation failure");
             };
@@ -5329,7 +5337,7 @@ TEST_CASE(
 TEST_CASE(
     "typed image subresources execute a two-stage depth pyramid and "
     "rebind after resize",
-    "[headless][render][compute][subresource][depth-pyramid][wp209b]") {
+    "[headless][render][compute][subresource][depth-pyramid][wp209b][wp215]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
@@ -5533,12 +5541,31 @@ TEST_CASE(
                 REQUIRE(green > 170);
                 REQUIRE(green > red + 70);
                 REQUIRE(green > blue + 30);
-            };
+        };
         render_and_require_green();
+
+        auto stale_candidate =
+            render_targets.prepareForExtent(
+                {48, 32});
+        REQUIRE(stale_candidate.valid());
+        REQUIRE(stale_candidate.extent() ==
+                (vk::Extent2D{48, 32}));
+        REQUIRE(stale_candidate.targetCount() > 0);
+        REQUIRE(
+            render_targets.getMetadata(target)
+                .extent == (vk::Extent2D{32, 32}));
+        REQUIRE(
+            render_targets.getImageSubresourceView(
+                target, mip_zero, false) ==
+            initial_mip_zero_view);
 
         renderer
             .recreateRenderTargetsAndRebindForTesting(
                 {64, 32});
+        REQUIRE_THROWS_WITH(
+            render_targets.publishPreparedExtent(
+                std::move(stale_candidate)),
+            "render target extent candidate is stale");
         compute_tasks.setDispatchGroups(
             seed_task, 8, 4, 1);
         compute_tasks.setDispatchGroups(

@@ -402,7 +402,10 @@ bool writeColorDiffArtifactsRequested() {
 }
 
 void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_color) {
-    auto frame = render_target.render_begin();
+    auto begun = render_target.beginFrame(nullptr);
+    REQUIRE(begun.frame.has_value());
+    auto token = std::move(*begun.frame);
+    const auto frame = token.context();
 
     vk::RenderingAttachmentInfo color_attachment;
     color_attachment.imageView = frame.color_attachment;
@@ -418,7 +421,7 @@ void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_col
 
     frame.cmd_buf.beginRendering(rendering_info);
     frame.cmd_buf.endRendering();
-    render_target.render_end();
+    render_target.submit(std::move(token));
 }
 
 const char *fullscreenVertexShader() {
@@ -620,7 +623,10 @@ void renderFullscreenFrameWithFragment(RenderTarget &render_target, ShaderBundle
         {render_target.getSwapchainFormat()},
     });
 
-    auto frame = render_target.render_begin();
+    auto begun = render_target.beginFrame(nullptr);
+    REQUIRE(begun.frame.has_value());
+    auto token = std::move(*begun.frame);
+    const auto frame = token.context();
 
     vk::RenderingAttachmentInfo color_attachment;
     color_attachment.imageView = frame.color_attachment;
@@ -639,7 +645,7 @@ void renderFullscreenFrameWithFragment(RenderTarget &render_target, ShaderBundle
     frame.cmd_buf.draw(3, 1, 0, 0);
     frame.cmd_buf.endRendering();
 
-    render_target.render_end();
+    render_target.submit(std::move(token));
 }
 
 void renderFullscreenFrame(RenderTarget &render_target, const std::string &fragment_shader_source) {

@@ -77,7 +77,7 @@ RenderPipelineProgramPreparation programFor(
     };
 }
 
-int revisionOf(const RenderPipelineRuntimeGeneration &generation,
+int revisionOf(const RendererRuntimeGeneration &generation,
                RenderingPassId id) {
     const auto *program = generation.find(id);
     if (program == nullptr) return -1;
@@ -100,6 +100,23 @@ int revisionOf(const RenderPipelineRuntimeGeneration &generation,
         return -1;
     }
     return pass_revision;
+}
+
+OutputCompileFacts windowFacts(
+    std::uint32_t width = 1280) {
+    return OutputCompileFacts{
+        .target_kind = OutputTargetKind::window,
+        .extent = vk::Extent2D{width, 720},
+        .color_format = vk::Format::eB8G8R8A8Srgb,
+        .color_space =
+            vk::ColorSpaceKHR::eSrgbNonlinear,
+        .encoding_path =
+            OutputEncodingPath::srgb_hardware,
+        .selected_usage =
+            vk::ImageUsageFlagBits::eColorAttachment,
+        .surface_transform =
+            vk::SurfaceTransformFlagBitsKHR::eIdentity,
+    };
 }
 
 } // namespace
@@ -140,6 +157,68 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP215 window output facts and programs share one renderer publication root",
+    "[wp215][render-pipeline][output][transaction]") {
+    FrameGraphRuntimeContainer runtime;
+    const auto initial_facts = windowFacts();
+    auto initial = runtime.prepareGeneration(
+        {programFor(1)}, std::nullopt, std::nullopt,
+        initial_facts);
+
+    REQUIRE(runtime.snapshot() == nullptr);
+    REQUIRE(initial.candidate().window_output !=
+            nullptr);
+    REQUIRE(
+        initial.candidate()
+            .window_output->compile_fingerprint ==
+        outputCompileFactsFingerprint(initial_facts));
+    REQUIRE(revisionOf(initial.candidate(),
+                       RenderingPassId{0}) == 1);
+
+    runtime.publishPreparedGeneration(
+        std::move(initial));
+    auto old_frame_root = runtime.snapshot();
+    std::weak_ptr<const RendererRuntimeGeneration>
+        retired = old_frame_root;
+
+    const auto resized_facts = windowFacts(1920);
+    auto resized = runtime.prepareGeneration(
+        {programFor(2)}, std::nullopt, std::nullopt,
+        resized_facts);
+    REQUIRE(runtime.snapshot() == old_frame_root);
+    REQUIRE(
+        resized.candidate()
+            .window_output->compile_fingerprint ==
+        outputCompileFactsFingerprint(resized_facts));
+    REQUIRE(revisionOf(resized.candidate(),
+                       RenderingPassId{0}) == 2);
+
+    runtime.publishPreparedGeneration(
+        std::move(resized));
+    REQUIRE(runtime.snapshot() != old_frame_root);
+    REQUIRE(
+        runtime.snapshot()
+            ->window_output->compile_facts.extent ==
+        resized_facts.extent);
+    REQUIRE(revisionOf(*runtime.snapshot(),
+                       RenderingPassId{0}) == 2);
+    REQUIRE_FALSE(retired.expired());
+    old_frame_root.reset();
+    REQUIRE(retired.expired());
+
+    const auto published = runtime.snapshot();
+    auto invalid_facts = resized_facts;
+    invalid_facts.target_kind =
+        OutputTargetKind::offscreen;
+    REQUIRE_THROWS_WITH(
+        runtime.prepareGeneration(
+            {programFor(3)}, std::nullopt,
+            std::nullopt, invalid_facts),
+        "renderer window output child requires window compile facts");
+    REQUIRE(runtime.snapshot() == published);
+}
+
+TEST_CASE(
     "WP193 rollback and failed preparation preserve the published generation",
     "[wp193][render-pipeline][transaction][rollback]") {
     FrameGraphRuntimeContainer runtime;
@@ -177,7 +256,7 @@ TEST_CASE(
     REQUIRE_THROWS_WITH(
         runtime.publishPreparedGeneration(
             std::move(stale)),
-        "Render pipeline runtime candidate is stale");
+        "Renderer runtime candidate is stale");
     REQUIRE(stale.valid());
     REQUIRE(runtime.activeGeneration() == 1);
     REQUIRE(revisionOf(*runtime.snapshot(),
@@ -233,7 +312,7 @@ TEST_CASE(
     runtime.publishPreparedGeneration(std::move(initial));
 
     auto frame_lease = runtime.snapshot();
-    std::weak_ptr<const RenderPipelineRuntimeGeneration>
+    std::weak_ptr<const RendererRuntimeGeneration>
         retired = frame_lease;
 
     auto replacement =

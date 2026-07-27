@@ -14,7 +14,11 @@ namespace Pelican {
 struct SwapchainWithFmt {
     vk::UniqueSwapchainKHR swapchain;
     vk::Format format;
+    vk::ColorSpaceKHR color_space;
     vk::Extent2D extent;
+    vk::ImageUsageFlags selected_usage;
+    vk::SurfaceTransformFlagBitsKHR surface_transform;
+    WsiPresentConfiguration present_configuration;
     bool capture_available;
 };
 
@@ -36,16 +40,33 @@ class SwapchainFrameTarget : public IFrameTarget {
     std::vector<vk::UniqueImageView> swapchain_image_views;
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
-    bool extent_changed = false;
     bool surface_stale = false;
-    bool output_transform_recorded = false;
     bool has_rendered_frame = false;
-    bool current_frame_nonblocking = false;
-    bool frame_acquired = false;
-    bool frame_recording = false;
-    bool frame_submitted = false;
 
-    std::optional<FrameRenderContext> beginFrame(bool nonblocking);
+    enum class ActiveFramePhase {
+        acquired,
+        recording,
+        submitted,
+    };
+    struct ActiveFrame {
+        std::uint64_t serial = 0;
+        std::uint32_t slot = 0;
+        std::uint32_t image_index = 0;
+        FrameBeginMode begin_mode =
+            FrameBeginMode::blocking;
+        ActiveFramePhase phase =
+            ActiveFramePhase::acquired;
+        bool output_transform_recorded = false;
+    };
+    std::optional<ActiveFrame> active_frame;
+    std::uint64_t next_frame_serial = 1;
+    std::shared_ptr<FrameTargetFrameCleanup>
+        frame_cleanup;
+
+    static void cleanupAbandonedFrame(
+        void *owner, std::uint64_t serial) noexcept;
+    void abandonFrameSerial(
+        std::uint64_t serial) noexcept;
     void releaseSurfaceDependants();
     void surfaceDependantsSetup();
     void recreateSurfaceDependants();
@@ -54,15 +75,17 @@ class SwapchainFrameTarget : public IFrameTarget {
     SwapchainFrameTarget();
     ~SwapchainFrameTarget() override;
 
-    FrameRenderContext render_begin() override;
-    bool try_render_begin(FrameRenderContext &context) override;
+    FrameBeginResult beginFrame(
+        std::shared_ptr<const RendererRuntimeGeneration>
+            runtime_generation,
+        GpuSubmissionLease submission_lease,
+        FrameBeginMode mode) override;
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
-    void render_end(GpuSubmissionLease lease) override;
-    void abort_render() noexcept override;
+    FrameSubmitResult submit(
+        FrameTargetFrame frame) override;
+    void abandon(FrameTargetFrame frame) noexcept override;
     FrameTargetCaps caps() const override;
-    bool consumeExtentChanged() override;
-    bool recoverSurfaceIfStale() override;
     std::vector<uint8_t> readbackLastFrameRGBA8() override;
 };
 

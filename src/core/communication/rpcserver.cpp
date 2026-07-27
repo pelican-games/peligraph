@@ -873,10 +873,12 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                          {"initialized_after_runtime_start",
                           module_graph.initialized_after_runtime_start}}},
             {"color", {{"contract", 2},
-                       {"swapchain_format", formatToString(color_caps.color_format)},
-                       {"path", color_caps.color_path},
+                       {"swapchain_format", formatToString(
+                            color_caps.compile_facts.color_format)},
+                       {"path", outputEncodingPathRpcName(
+                            color_caps.compile_facts.encoding_path)},
                        {"readback_encoding", "srgb"},
-                       {"capture", color_caps.capture_available ? "available"
+                       {"capture", color_caps.compile_facts.capture_available ? "available"
                                                                  : "unavailable_windowed"}}},
         };
     });

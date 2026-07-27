@@ -7,6 +7,7 @@
 #include "util.hpp"
 
 #include <cassert>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -101,6 +102,10 @@ OffscreenFrameTarget::OffscreenFrameTarget()
       in_flight_frame_index{0}, extent{GET_MODULE(EngineLaunchConfig).headless_extent},
       color_format{vk::Format::eR8G8B8A8Srgb}, color_layout{vk::ImageLayout::eUndefined},
       has_rendered_frame{false} {
+    frame_cleanup =
+        std::make_shared<FrameTargetFrameCleanup>(
+            this, &OffscreenFrameTarget::
+                      cleanupAbandonedFrame);
     auto &vkcore = GET_MODULE(VulkanManageCore);
     auto format_features = vkcore.getPhysDevice().getFormatProperties(color_format).optimalTilingFeatures;
     const auto required_features = vk::FormatFeatureFlagBits::eColorAttachment |
@@ -137,28 +142,58 @@ OffscreenFrameTarget::OffscreenFrameTarget()
     LOG_INFO(logger, "offscreen frame target initialized");
 }
 
-OffscreenFrameTarget::~OffscreenFrameTarget() {}
+OffscreenFrameTarget::~OffscreenFrameTarget() {
+    frame_cleanup->detach(this);
+}
 
-FrameRenderContext OffscreenFrameTarget::render_begin() {
-    if (frame_recording || frame_submitted) {
+FrameBeginResult OffscreenFrameTarget::beginFrame(
+    std::shared_ptr<const RendererRuntimeGeneration>
+        runtime_generation,
+    GpuSubmissionLease submission_lease,
+    FrameBeginMode mode) {
+    if (active_frame) {
         throw std::logic_error(
             "offscreen frame target begin called with an unfinished frame");
     }
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
-    if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
-        result != vk::Result::eSuccess) {
+    const auto timeout =
+        mode == FrameBeginMode::nonblocking ? 0 : UINT64_MAX;
+    const auto fence_result = device.waitForFences(
+        {cmd_buf.getFence()}, VK_TRUE, timeout);
+    if (mode == FrameBeginMode::nonblocking &&
+        fence_result == vk::Result::eTimeout) {
+        return FrameBeginResult{
+            .disposition =
+                FrameBeginDisposition::unavailable,
+            .reason =
+                FrameUnavailableReason::acquire_not_ready,
+        };
+    }
+    if (fence_result != vk::Result::eSuccess) {
         throw std::runtime_error(
             "failed to wait for offscreen submission fence: " +
-            vk::to_string(result));
+            vk::to_string(fence_result));
     }
     submission_leases.complete(
         in_flight_frame_index);
 
-    recording_start_color_layout = color_layout;
+    if (next_frame_serial ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "offscreen frame token serial space exhausted");
+    }
+    const auto serial = next_frame_serial++;
+    const auto recording_start_color_layout =
+        color_layout;
     try {
         cmd_buf.recordBegin();
-        frame_recording = true;
+        active_frame = ActiveFrame{
+            .serial = serial,
+            .slot = in_flight_frame_index,
+            .recording_start_color_layout =
+                recording_start_color_layout,
+        };
         GET_MODULE(VulkanUtils)
             .changeImageLayoutCmd(*cmd_buf, color_image, color_layout,
                                   vk::ImageLayout::eColorAttachmentOptimal,
@@ -166,14 +201,14 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
                                       color_layout,
                                       vk::ImageLayout::eColorAttachmentOptimal));
         color_layout = vk::ImageLayout::eColorAttachmentOptimal;
-        output_transform_recorded = false;
         setViewportAndScissor(*cmd_buf, extent);
     } catch (...) {
-        abort_render();
+        abandonFrameSerial(serial);
         throw;
     }
 
-    return FrameRenderContext{
+    auto frame = makeFrame(
+        FrameRenderContext{
         .cmd_buf = *cmd_buf,
         .color_image = color_image.image.get(),
         .color_attachment = color_image_view.get(),
@@ -182,18 +217,27 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
         .image_prepared_semaphore = nullptr,
         .required_layout = vk::ImageLayout::eTransferSrcOptimal,
         .in_flight_frame_index = in_flight_frame_index,
-    };
-}
-
-bool OffscreenFrameTarget::try_render_begin(FrameRenderContext &context) {
-    context = render_begin();
-    return true;
+        },
+        std::move(runtime_generation),
+        std::move(submission_lease), frame_cleanup,
+        serial);
+    FrameBeginResult result;
+    result.disposition = FrameBeginDisposition::ready;
+    result.reason = FrameUnavailableReason::none;
+    result.frame.emplace(std::move(frame));
+    return result;
 }
 
 void OffscreenFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                                      vk::Format source_format,
                                                      vk::Extent2D source_extent) {
-    if (output_transform_recorded) {
+    if (!active_frame ||
+        active_frame->phase !=
+            ActiveFramePhase::recording) {
+        throw std::logic_error(
+            "offscreen output transform requires an active frame");
+    }
+    if (active_frame->output_transform_recorded) {
         throw std::runtime_error("output_transform was recorded more than once");
     }
     if (source_format != color_format || source_extent.width != extent.width ||
@@ -219,75 +263,149 @@ void OffscreenFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
                                   vk::ImageLayout::eTransferSrcOptimal,
                                   transitionInfo(color_layout, vk::ImageLayout::eTransferSrcOptimal));
     color_layout = vk::ImageLayout::eTransferSrcOptimal;
-    output_transform_recorded = true;
+    active_frame->output_transform_recorded = true;
 }
 
-void OffscreenFrameTarget::render_end(GpuSubmissionLease lease) {
-    const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
-    if (!frame_recording || frame_submitted) {
+FrameSubmitResult OffscreenFrameTarget::submit(
+    FrameTargetFrame frame) {
+    validateFrameTarget(
+        frame, frame_cleanup,
+        "offscreen frame target");
+    if (!active_frame) {
         throw std::logic_error(
-            "offscreen frame target end called without a recording frame");
+            "offscreen frame target submit called without an active frame");
+    }
+    const auto serial = active_frame->serial;
+    auto consumed = consumeFrame(
+        std::move(frame), frame_cleanup, serial,
+        "offscreen frame target");
+    const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
+    if (active_frame->phase !=
+        ActiveFramePhase::recording) {
+        throw std::logic_error(
+            "offscreen frame target submit called without a recording frame");
     }
 
-    if (!output_transform_recorded) {
-        GET_MODULE(VulkanUtils)
-            .changeImageLayoutCmd(*cmd_buf, color_image, color_layout, vk::ImageLayout::eTransferSrcOptimal,
-                                  transitionInfo(color_layout, vk::ImageLayout::eTransferSrcOptimal));
-        color_layout = vk::ImageLayout::eTransferSrcOptimal;
-    }
+    try {
+        if (!active_frame->output_transform_recorded) {
+            GET_MODULE(VulkanUtils)
+                .changeImageLayoutCmd(
+                    *cmd_buf, color_image, color_layout,
+                    vk::ImageLayout::eTransferSrcOptimal,
+                    transitionInfo(
+                        color_layout,
+                        vk::ImageLayout::
+                            eTransferSrcOptimal));
+            color_layout =
+                vk::ImageLayout::eTransferSrcOptimal;
+        }
 
-    cmd_buf.recordEndSubmit();
-    frame_recording = false;
-    frame_submitted = true;
-    submission_leases.submitted(
-        in_flight_frame_index, std::move(lease));
-    if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
-        result != vk::Result::eSuccess) {
-        throw std::runtime_error(
-            "failed to wait for offscreen submission fence: " +
-            vk::to_string(result));
-    }
-    submission_leases.complete(
-        in_flight_frame_index);
-    frame_submitted = false;
-    has_rendered_frame = true;
+        cmd_buf.recordEndSubmit();
+        active_frame->phase =
+            ActiveFramePhase::submitted;
+        auto lease =
+            consumed.submission_lease != nullptr
+                ? std::move(consumed.submission_lease)
+                : GpuSubmissionLease{
+                      std::move(
+                          consumed.runtime_generation)};
+        submission_leases.submitted(
+            in_flight_frame_index, std::move(lease));
+        if (auto result = device.waitForFences(
+                {cmd_buf.getFence()}, VK_TRUE,
+                UINT64_MAX);
+            result != vk::Result::eSuccess) {
+            throw std::runtime_error(
+                "failed to wait for offscreen submission fence: " +
+                vk::to_string(result));
+        }
+        submission_leases.complete(
+            in_flight_frame_index);
+        active_frame.reset();
+        has_rendered_frame = true;
 
-    in_flight_frame_index++;
-    in_flight_frame_index %= in_flight_frames_num;
+        in_flight_frame_index++;
+        in_flight_frame_index %= in_flight_frames_num;
+        return FrameSubmitResult{
+            .disposition =
+                FrameSubmitDisposition::submitted,
+        };
+    } catch (...) {
+        abandonFrameSerial(serial);
+        throw;
+    }
 }
 
-void OffscreenFrameTarget::abort_render() noexcept {
-    if (!frame_recording && !frame_submitted) return;
+void OffscreenFrameTarget::cleanupAbandonedFrame(
+    void *owner, std::uint64_t serial) noexcept {
+    static_cast<OffscreenFrameTarget *>(owner)
+        ->abandonFrameSerial(serial);
+}
 
-    const auto slot = in_flight_frame_index;
-    if (frame_submitted) {
+void OffscreenFrameTarget::abandonFrameSerial(
+    std::uint64_t serial) noexcept {
+    if (!active_frame ||
+        active_frame->serial != serial) {
+        return;
+    }
+    const auto abandoned = *active_frame;
+    if (abandoned.phase ==
+        ActiveFramePhase::submitted) {
         try {
             device.waitIdle();
-            submission_leases.complete(slot);
+            submission_leases.complete(
+                abandoned.slot);
         } catch (...) {
             // The device is no longer recoverable, but abort must preserve the
             // original render exception.
         }
     } else {
-        render_cmd_bufs[slot].abortRecording();
-        color_layout = recording_start_color_layout;
+        render_cmd_bufs[abandoned.slot]
+            .abortRecording();
+        color_layout =
+            abandoned.recording_start_color_layout;
     }
-    frame_recording = false;
-    frame_submitted = false;
-    output_transform_recorded = false;
+    active_frame.reset();
+}
+
+void OffscreenFrameTarget::abandon(
+    FrameTargetFrame frame) noexcept {
+    abandonFrame(std::move(frame));
 }
 
 FrameTargetCaps OffscreenFrameTarget::caps() const {
+    const auto graphics_queue_family =
+        GET_MODULE(VulkanManageCore)
+            .getGraphicsQueueFamilyIndex();
     return FrameTargetCaps{
-        .color_format = color_format,
-        .extent = extent,
-        .presents = false,
-        .capture_available = true,
-        .color_path = color_format == vk::Format::eR8G8B8A8Srgb ? "srgb" : "unorm_fallback",
+        .compile_facts =
+            OutputCompileFacts{
+                .target_kind =
+                    OutputTargetKind::offscreen,
+                .extent = extent,
+                .color_format = color_format,
+                .color_space =
+                    vk::ColorSpaceKHR::eSrgbNonlinear,
+                .encoding_path =
+                    color_format ==
+                            vk::Format::eR8G8B8A8Srgb
+                        ? OutputEncodingPath::srgb_hardware
+                        : OutputEncodingPath::
+                              srgb_shader_unorm,
+                .selected_usage =
+                    vk::ImageUsageFlagBits::eColorAttachment |
+                    vk::ImageUsageFlagBits::eTransferSrc,
+                .capture_available = true,
+                .surface_transform =
+                    vk::SurfaceTransformFlagBitsKHR::
+                        eIdentity,
+                .graphics_queue_family =
+                    graphics_queue_family,
+                .presentation_queue_family =
+                    graphics_queue_family,
+            },
     };
 }
-
-bool OffscreenFrameTarget::consumeExtentChanged() { return false; }
 
 std::vector<uint8_t> OffscreenFrameTarget::readbackLastFrameRGBA8() {
     if (!has_rendered_frame) {

@@ -5,6 +5,7 @@
 #include "rendertarget.hpp"
 
 #include <array>
+#include <optional>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -24,26 +25,46 @@ class OffscreenFrameTarget : public IFrameTarget {
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
     vk::ImageLayout color_layout;
-    vk::ImageLayout recording_start_color_layout =
-        vk::ImageLayout::eUndefined;
     bool has_rendered_frame;
-    bool output_transform_recorded = false;
-    bool frame_recording = false;
-    bool frame_submitted = false;
+
+    enum class ActiveFramePhase {
+        recording,
+        submitted,
+    };
+    struct ActiveFrame {
+        std::uint64_t serial = 0;
+        std::uint32_t slot = 0;
+        vk::ImageLayout recording_start_color_layout =
+            vk::ImageLayout::eUndefined;
+        bool output_transform_recorded = false;
+        ActiveFramePhase phase =
+            ActiveFramePhase::recording;
+    };
+    std::optional<ActiveFrame> active_frame;
+    std::uint64_t next_frame_serial = 1;
+    std::shared_ptr<FrameTargetFrameCleanup>
+        frame_cleanup;
+
+    static void cleanupAbandonedFrame(
+        void *owner, std::uint64_t serial) noexcept;
+    void abandonFrameSerial(
+        std::uint64_t serial) noexcept;
 
   public:
     OffscreenFrameTarget();
     ~OffscreenFrameTarget() override;
 
-    FrameRenderContext render_begin() override;
-    bool try_render_begin(FrameRenderContext &context) override;
+    FrameBeginResult beginFrame(
+        std::shared_ptr<const RendererRuntimeGeneration>
+            runtime_generation,
+        GpuSubmissionLease submission_lease,
+        FrameBeginMode mode) override;
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
-    void render_end(GpuSubmissionLease lease) override;
-    void abort_render() noexcept override;
+    FrameSubmitResult submit(
+        FrameTargetFrame frame) override;
+    void abandon(FrameTargetFrame frame) noexcept override;
     FrameTargetCaps caps() const override;
-    bool consumeExtentChanged() override;
-    bool recoverSurfaceIfStale() override { return false; }
     std::vector<uint8_t> readbackLastFrameRGBA8() override;
 };
 

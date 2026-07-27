@@ -122,7 +122,10 @@ void selectFrameResources(const FrameRenderContext &frame, FrameResources &resou
 std::vector<std::uint8_t> renderDebugText(
     RenderTarget &target, DebugText &debug_text, PassId pass_id,
     FrameResources &frame_resources, const std::vector<LabelFixture> &labels) {
-    auto frame = target.render_begin();
+    auto begun = target.beginFrame(nullptr);
+    REQUIRE(begun.frame.has_value());
+    auto token = std::move(*begun.frame);
+    const auto frame = token.context();
     selectFrameResources(frame, frame_resources);
     const auto color = glm::vec4{
         fixture_color[0] / 255.0f, fixture_color[1] / 255.0f,
@@ -147,14 +150,17 @@ std::vector<std::uint8_t> renderDebugText(
     frame.cmd_buf.beginRendering(rendering);
     debug_text.render(frame.cmd_buf, pass_id, frame.extent, frame_resources);
     frame.cmd_buf.endRendering();
-    target.render_end();
+    target.submit(std::move(token));
     return target.readbackLastFrameRGBA8();
 }
 
 std::vector<std::uint8_t> renderUi(RenderTarget &target, UiRenderer &renderer,
                                    const UiRendererDependencies &dependencies,
                                    FrameResources &frame_resources) {
-    auto frame = target.render_begin();
+    auto begun = target.beginFrame(nullptr);
+    REQUIRE(begun.frame.has_value());
+    auto token = std::move(*begun.frame);
+    const auto frame = token.context();
     selectFrameResources(frame, frame_resources);
     renderer.render(
         frame.cmd_buf,
@@ -170,7 +176,7 @@ std::vector<std::uint8_t> renderUi(RenderTarget &target, UiRenderer &renderer,
             .ui_scale = fixture_scale,
         },
         dependencies);
-    target.render_end();
+    target.submit(std::move(token));
     return target.readbackLastFrameRGBA8();
 }
 

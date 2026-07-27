@@ -14,8 +14,8 @@
 
 namespace Pelican {
 
-struct RenderPipelineRuntimeGeneration;
-struct RenderPipelineRuntimePublication;
+struct RendererRuntimeGeneration;
+struct RendererRuntimePublication;
 
 struct MaterialPassRenderingBinding {
     std::string pass_name;
@@ -34,7 +34,7 @@ DECLARE_MODULE(RenderingPassContainer) {
     std::vector<RenderingPassId> registered_pass_ids;
     std::vector<std::string> enabled_feature_names;
     std::atomic<
-        std::shared_ptr<const RenderPipelineRuntimePublication>>
+        std::shared_ptr<const RendererRuntimePublication>>
         runtime_publication;
 
   public:
@@ -52,9 +52,9 @@ DECLARE_MODULE(RenderingPassContainer) {
     bool isFeatureEnabled(std::string_view feature_name) const;
     const std::vector<std::string> &getEnabledFeatures() const;
     void bindRuntimePublication(
-        std::shared_ptr<const RenderPipelineRuntimePublication>
+        std::shared_ptr<const RendererRuntimePublication>
             publication) noexcept;
-    std::shared_ptr<const RenderPipelineRuntimeGeneration>
+    std::shared_ptr<const RendererRuntimeGeneration>
     snapshot() const noexcept;
     std::uint64_t activeGeneration() const noexcept;
     bool hasMaterialPasses() const;

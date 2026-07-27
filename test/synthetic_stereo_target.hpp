@@ -113,7 +113,9 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         }
     }
 
-    void beginLogicalFrame(std::uint32_t view_count) override {
+    void beginLogicalFrame(
+        std::uint32_t view_count,
+        LogicalFrameRuntime = {}) override {
         if (logical_frame_begun || view_count != stereo_view_count) {
             throw std::runtime_error(
                 "synthetic stereo target requires one non-nested two-view logical frame");
@@ -218,7 +220,6 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         return format;
     }
 
-    bool consumeExtentChanged() override { return false; }
 
     std::vector<std::uint8_t> readback(std::uint32_t view_index) const {
         if (view_index >= stereo_view_count ||

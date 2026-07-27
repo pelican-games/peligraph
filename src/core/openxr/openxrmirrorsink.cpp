@@ -69,7 +69,8 @@ XrMirrorSink::XrMirrorSink() noexcept {
 
 void XrMirrorSink::initialize() {
     auto &target = GET_MODULE(RenderTarget);
-    if (!target.caps().presents) {
+    if (target.caps().compile_facts.target_kind !=
+        OutputTargetKind::window) {
         disabled = true;
         return;
     }
@@ -172,31 +173,38 @@ void XrMirrorSink::tryPresent() noexcept {
     }
 
     auto &target = GET_MODULE(RenderTarget);
-    bool frame_begun = false;
+    std::optional<FrameTargetFrame> frame_token;
     bool rendering_begun = false;
     bool timing_begun = false;
     GpuSubmissionLease submission_lease;
     RenderTiming *render_timing = FastModuleContainer::tryGet<RenderTiming>();
     vk::CommandBuffer cmd;
     try {
-        submission_lease =
+        const auto runtime_generation =
             GET_MODULE(FrameGraphRuntimeContainer).snapshot();
-        auto frame = target.tryRenderBegin();
-        if (!frame) {
-            (void)target.recoverSurfaceIfStale();
+        submission_lease = runtime_generation;
+        auto begun = target.beginFrame(
+            runtime_generation,
+            submission_lease,
+            FrameBeginMode::nonblocking);
+        if (begun.disposition !=
+                FrameBeginDisposition::ready ||
+            !begun.frame) {
             ++stats.dropped;
             reportProgress();
             return;
         }
-        frame_begun = true;
-        cmd = frame->cmd_buf;
+        frame_token.emplace(std::move(*begun.frame));
+        const auto &frame = frame_token->context();
+        cmd = frame.cmd_buf;
         rebindSourceIfNeeded();
         const auto source_extent =
             GET_MODULE(RenderTargetContainer).getMetadata(source_id).extent;
-        const auto letterbox = mirrorLetterboxRect(source_extent, frame->extent);
+        const auto letterbox = mirrorLetterboxRect(source_extent, frame.extent);
         if (!letterbox) {
-            frame_begun = false;
-            target.render_end(submission_lease);
+            auto token = std::move(*frame_token);
+            frame_token.reset();
+            target.submit(std::move(token));
             ++stats.dropped;
             reportProgress();
             return;
@@ -210,7 +218,7 @@ void XrMirrorSink::tryPresent() noexcept {
         }
         if (render_timing != nullptr) {
             render_timing->beginGpuRange(
-                cmd, frame->in_flight_frame_index, 3,
+                cmd, frame.in_flight_frame_index, 3,
                 GpuTimingRangeIdentity{GET_MODULE(EngineTime).frameIndex(), "xr",
                                        xr_stereo_view_count},
                 {GpuTimingNodeDescriptor{0, "mirror", "output_transform", true}});
@@ -234,14 +242,14 @@ void XrMirrorSink::tryPresent() noexcept {
         }
 
         vk::RenderingAttachmentInfo attachment;
-        attachment.imageView = frame->color_attachment;
+        attachment.imageView = frame.color_attachment;
         attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
         attachment.loadOp = vk::AttachmentLoadOp::eClear;
         attachment.storeOp = vk::AttachmentStoreOp::eStore;
         attachment.clearValue.color =
             vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
         vk::RenderingInfo rendering;
-        rendering.renderArea = vk::Rect2D{{0, 0}, frame->extent};
+        rendering.renderArea = vk::Rect2D{{0, 0}, frame.extent};
         rendering.layerCount = 1;
         rendering.setColorAttachments(attachment);
         cmd.beginRendering(rendering);
@@ -264,8 +272,8 @@ void XrMirrorSink::tryPresent() noexcept {
             GET_MODULE(UiRenderer).render(
                 cmd,
                 UiDrawRequest{
-                    .target_view = frame->color_attachment,
-                    .target_extent = frame->extent,
+                    .target_view = frame.color_attachment,
+                    .target_extent = frame.extent,
                     .target_format = target.getSwapchainFormat(),
                     .load_op = vk::AttachmentLoadOp::eLoad,
                     .store_op = vk::AttachmentStoreOp::eStore,
@@ -282,13 +290,13 @@ void XrMirrorSink::tryPresent() noexcept {
         }
         body_label.end();
         node_label.end();
-        frame_begun = false;
-        target.render_end(submission_lease);
+        auto token = std::move(*frame_token);
+        frame_token.reset();
+        target.submit(std::move(token));
         if (render_timing != nullptr) {
             render_timing->endGpuRange();
             timing_begun = false;
         }
-        (void)target.recoverSurfaceIfStale();
         ++stats.presented;
         reportProgress();
     } catch (const std::exception &e) {
@@ -299,7 +307,11 @@ void XrMirrorSink::tryPresent() noexcept {
         reportProgress();
         try {
             if (rendering_begun) cmd.endRendering();
-            if (frame_begun) target.render_end(submission_lease);
+            if (frame_token) {
+                auto token = std::move(*frame_token);
+                frame_token.reset();
+                target.abandon(std::move(token));
+            }
         } catch (...) {
         }
     } catch (...) {
@@ -310,7 +322,11 @@ void XrMirrorSink::tryPresent() noexcept {
         reportProgress();
         try {
             if (rendering_begun) cmd.endRendering();
-            if (frame_begun) target.render_end(submission_lease);
+            if (frame_token) {
+                auto token = std::move(*frame_token);
+                frame_token.reset();
+                target.abandon(std::move(token));
+            }
         } catch (...) {
         }
     }

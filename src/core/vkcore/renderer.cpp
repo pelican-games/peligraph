@@ -94,7 +94,7 @@ std::optional<watch::AssetKey> projectAssetKeyForReference(
 
 std::set<watch::AssetKey> renderPipelineWatchSources(
     std::string_view root_reference,
-    const RenderPipelineRuntimeGeneration &generation,
+    const RendererRuntimeGeneration &generation,
     RenderingPassId flat_rendering_pass_id) {
     std::set<watch::AssetKey> result;
     const auto append =
@@ -1807,16 +1807,67 @@ bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {
                    .committed != 0;
 }
 
+class OutputRelowerRequired final
+    : public std::runtime_error {
+  public:
+    OutputRelowerRequired()
+        : std::runtime_error{
+              "window output compile facts require render-pipeline re-lowering"} {}
+};
+
+bool windowOutputFactsChanged(
+    const ILogicalFrameTarget &target,
+    const std::shared_ptr<
+        const RendererRuntimeGeneration>
+        &runtime_generation) {
+    const auto output_facts =
+        target.outputCompileFacts();
+    if (!output_facts ||
+        output_facts->target_kind !=
+            OutputTargetKind::window) {
+        return false;
+    }
+    const auto published_output =
+        runtime_generation != nullptr
+            ? runtime_generation->window_output
+            : nullptr;
+    return published_output == nullptr ||
+           published_output->compile_fingerprint !=
+               outputCompileFactsFingerprint(
+                   *output_facts) ||
+           published_output->compile_facts !=
+               *output_facts;
+}
+
 bool handleFrameTargetResize(RenderFrameModules &modules,
                              RenderTargetLayoutTracker &layout_tracker,
-                             ILogicalFrameTarget &target, vk::Extent2D extent,
-                             bool logical_target_extent_changed) {
-    const bool target_reported_change = target.consumeExtentChanged();
-    if (!target_reported_change && !logical_target_extent_changed) {
+                             ILogicalFrameTarget &target,
+                             vk::Extent2D extent,
+                             bool logical_target_extent_changed,
+                             const std::shared_ptr<
+                                 const RendererRuntimeGeneration>
+                                 &runtime_generation) {
+    // Window output resources, descriptors, pipelines, and compile facts are
+    // one renderer generation. Even an extent-only change is re-lowered
+    // through the normal all-or-nothing configuration transaction instead of
+    // mutating live targets beneath the frame's immutable generation.
+    if (windowOutputFactsChanged(
+            target, runtime_generation)) {
+        throw OutputRelowerRequired{};
+    }
+    if (!logical_target_extent_changed) {
         return false;
     }
 
-    modules.render_target_container.recreateForExtent(extent);
+    // Non-window logical targets (currently OpenXR and test targets) do not
+    // participate in WSI compile facts. Their extent-only resources still use
+    // an immutable candidate and a single container publication.
+    auto prepared =
+        modules.render_target_container
+            .prepareForExtent(extent);
+    modules.render_target_container
+        .publishPreparedExtent(
+            std::move(prepared));
     rebindFullscreenInputs(modules);
     layout_tracker.reset();
     return true;
@@ -1944,15 +1995,33 @@ projectionJitterSettingsFor(
 
 class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
     RenderTarget &target;
+    std::optional<FrameTargetFrame> frame;
     bool view_begun = false;
 
   public:
     explicit FlatLogicalFrameTarget(RenderTarget &target) : target{target} {}
 
-    void beginLogicalFrame(std::uint32_t view_count) override {
+    void beginLogicalFrame(
+        std::uint32_t view_count,
+        LogicalFrameRuntime runtime) override {
         if (view_count != 1) {
             throw std::runtime_error("flat IFrameTarget requires exactly one logical-frame view");
         }
+        if (frame) {
+            throw std::logic_error(
+                "flat IFrameTarget began a logical frame while another token was active");
+        }
+        auto begun = target.beginFrame(
+            std::move(runtime.renderer_generation),
+            std::move(runtime.submission_lease),
+            FrameBeginMode::blocking);
+        if (begun.disposition !=
+                FrameBeginDisposition::ready ||
+            !begun.frame) {
+            throw std::runtime_error(
+                "flat IFrameTarget output is unavailable");
+        }
+        frame.emplace(std::move(*begun.frame));
         view_begun = false;
     }
 
@@ -1961,7 +2030,7 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
             throw std::runtime_error("flat IFrameTarget view was begun out of order");
         }
         view_begun = true;
-        return target.render_begin();
+        return frame->context();
     }
 
     void endView(
@@ -1976,13 +2045,18 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
         if (!view_begun) {
             throw std::runtime_error("flat IFrameTarget logical frame ended without a view");
         }
-        target.render_end(std::move(lease));
+        auto token = std::move(*frame);
+        frame.reset();
+        (void)lease;
+        target.submit(std::move(token));
         view_begun = false;
     }
 
     void abortLogicalFrame() noexcept override {
-        if (!view_begun) return;
-        target.abort_render();
+        if (!frame) return;
+        auto token = std::move(*frame);
+        frame.reset();
+        target.abandon(std::move(token));
         view_begun = false;
     }
 
@@ -1993,7 +2067,10 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
         return target.getSwapchainFormat();
     }
 
-    bool consumeExtentChanged() override { return target.consumeExtentChanged(); }
+    std::optional<OutputCompileFacts>
+    outputCompileFacts() const override {
+        return target.caps().compile_facts;
+    }
 };
 
 class LogicalFrameAbortGuard {
@@ -2147,6 +2224,72 @@ void Renderer::installRenderPipelineReloadParticipant() {
                         },
                 },
         });
+}
+
+void Renderer::relowerRenderPipelineForCurrentOutput() {
+    auto variants =
+        loadRenderGraphVariantsFromConfig();
+    const auto generation =
+        GET_MODULE(FrameGraphRuntimeContainer)
+            .snapshot();
+    if (generation == nullptr) {
+        throw std::runtime_error(
+            "output re-lowering published no renderer generation");
+    }
+
+    const auto next_rendering_pass =
+        active_graph_variant ==
+                RenderGraphVariant::flat
+            ? variants.flat
+            : variants.xr.value_or(
+                  invalidRenderingPassId());
+    if (next_rendering_pass ==
+        invalidRenderingPassId()) {
+        throw std::runtime_error(
+            "output re-lowering removed the active XR graph variant");
+    }
+
+    std::optional<std::set<watch::AssetKey>>
+        watched_sources;
+    if (render_pipeline_reload_state != nullptr) {
+        watched_sources =
+            renderPipelineWatchSources(
+                render_pipeline_reload_state
+                    ->source_reference,
+                *generation, variants.flat);
+    }
+
+    flat_rendering_pass_id = variants.flat;
+    xr_rendering_pass_id = variants.xr;
+    xr_excluded_features =
+        std::move(variants.xr_excluded_features);
+    preview_graph_program =
+        std::move(variants.preview);
+    current_rendering_pass_id =
+        next_rendering_pass;
+
+    if (auto *targets =
+            FastModuleContainer::tryGet<
+                RenderTargetContainer>()) {
+        targets->resetHistory();
+    }
+    if (auto *instances =
+            FastModuleContainer::tryGet<
+                PolygonInstanceContainer>()) {
+        instances->resetTemporalHistory();
+    }
+    render_target_layout_tracker.reset();
+    temporal_reset_requested = true;
+
+    if (render_pipeline_reload_state != nullptr) {
+        auto &state =
+            *render_pipeline_reload_state;
+        state.watched_sources =
+            std::move(*watched_sources);
+        state.last_generation =
+            generation->generation;
+        state.last_error.clear();
+    }
 }
 
 bool Renderer::reloadRenderPipelineFromDisk(
@@ -2340,6 +2483,43 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     result["gpu_owner_scope"] = program->owner_scope;
     result["retained_resource_lease_count"] =
         program->resource_leases.size();
+    if (generation->window_output != nullptr) {
+        const auto &output =
+            *generation->window_output;
+        const auto &facts =
+            output.compile_facts;
+        result["window_output"] = {
+            {"generation", output.generation},
+            {"compile_fingerprint",
+             output.compile_fingerprint},
+            {"target_kind",
+             outputTargetKindName(
+                 facts.target_kind)},
+            {"extent",
+             {{"width", facts.extent.width},
+              {"height", facts.extent.height}}},
+            {"color_format",
+             vk::to_string(facts.color_format)},
+            {"color_space",
+             vk::to_string(facts.color_space)},
+            {"encoding_path",
+             outputEncodingPathName(
+                 facts.encoding_path)},
+            {"selected_usage",
+             static_cast<std::uint32_t>(
+                 static_cast<VkImageUsageFlags>(
+                     facts.selected_usage))},
+            {"capture_available",
+             facts.capture_available},
+            {"surface_transform",
+             vk::to_string(
+                 facts.surface_transform)},
+            {"graphics_queue_family",
+             facts.graphics_queue_family},
+            {"presentation_queue_family",
+             facts.presentation_queue_family},
+        };
+    }
     if (const auto *instances =
             FastModuleContainer::tryGet<
                 PolygonInstanceContainer>();
@@ -2672,7 +2852,11 @@ std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
 
 void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     auto modules = resolveRenderFrameModules();
-    modules.render_target_container.recreateForExtent(extent);
+    auto prepared =
+        modules.render_target_container
+            .prepareForExtent(extent);
+    modules.render_target_container
+        .publishPreparedExtent(std::move(prepared));
     rebindFullscreenInputs(modules);
     modules.instance_container.resetTemporalHistory();
     temporal_reset_requested = true;
@@ -2761,6 +2945,13 @@ void Renderer::renderLogicalFrame(
         !program->frame_graph.render_pipeline) {
         throw std::runtime_error(
             "Renderer logical frame requires a compiled render pipeline");
+    }
+    // Most output revisions are caught before an image is acquired. The
+    // post-begin check remains necessary because acquire itself may replace a
+    // blocking legacy WP215 swapchain; WP216 removes that mutable cutover.
+    if (windowOutputFactsChanged(
+            target, runtime_generation)) {
+        throw OutputRelowerRequired{};
     }
     const auto &rendering_pass =
         program->rendering_pass;
@@ -3003,7 +3194,14 @@ void Renderer::renderLogicalFrame(
             "a compiled export source");
     }
 
-    target.beginLogicalFrame(view_count);
+    target.beginLogicalFrame(
+        view_count,
+        LogicalFrameRuntime{
+            .renderer_generation =
+                runtime_generation,
+            .submission_lease =
+                submission_lease,
+        });
     LogicalFrameAbortGuard frame_abort_guard{target};
     if (use_view_family_execution) {
         const auto render_ctx =
@@ -3027,7 +3225,8 @@ void Renderer::renderLogicalFrame(
                 modules,
                 render_target_layout_tracker,
                 target, render_ctx.extent,
-                extent_changed)) {
+                extent_changed,
+                runtime_generation)) {
             modules.instance_container
                 .resetTemporalHistory();
             temporal_reset_requested = true;
@@ -3198,7 +3397,8 @@ void Renderer::renderLogicalFrame(
             const bool extent_changed =
                 !internal_render_extent || *internal_render_extent != render_ctx.extent;
             if (handleFrameTargetResize(modules, render_target_layout_tracker, target,
-                                        render_ctx.extent, extent_changed)) {
+                                        render_ctx.extent, extent_changed,
+                                        runtime_generation)) {
                 modules.instance_container.resetTemporalHistory();
                 temporal_reset_requested = true;
                 internal_render_extent = render_ctx.extent;
@@ -3358,7 +3558,25 @@ void Renderer::render() {
             .camera_position = camera.getPos(),
         },
     };
-    renderLogicalFrame(target, views);
+    for (std::uint32_t attempt = 0; attempt < 2;
+         ++attempt) {
+        try {
+            renderLogicalFrame(target, views);
+            return;
+        } catch (const OutputRelowerRequired &) {
+            try {
+                relowerRenderPipelineForCurrentOutput();
+            } catch (const std::exception &error) {
+                throw std::runtime_error(
+                    "window output re-lowering failed: " +
+                    std::string{error.what()});
+            }
+            internal_render_extent =
+                GET_MODULE(RenderTarget).getExtent();
+        }
+    }
+    throw std::runtime_error(
+        "window output compile facts changed during re-lowering");
 }
 
 } // namespace Pelican

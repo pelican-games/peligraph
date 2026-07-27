@@ -33,6 +33,21 @@ static vk::Extent2D chooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR &surf
     };
 }
 
+static vk::CompositeAlphaFlagBitsKHR chooseCompositeAlpha(
+    vk::CompositeAlphaFlagsKHR supported) {
+    constexpr std::array candidates{
+        vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        vk::CompositeAlphaFlagBitsKHR::ePreMultiplied,
+        vk::CompositeAlphaFlagBitsKHR::ePostMultiplied,
+        vk::CompositeAlphaFlagBitsKHR::eInherit,
+    };
+    for (const auto candidate : candidates) {
+        if (supported & candidate) return candidate;
+    }
+    throw std::runtime_error(
+        "No Vulkan composite alpha mode is available");
+}
+
 static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDevice &phys_device,
                                         vk::SurfaceKHR surface, vk::Extent2D framebuffer_extent,
                                         uint32_t graphics_queue_family,
@@ -100,10 +115,30 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     }
     create_info.preTransform = surface_cap.currentTransform;
     create_info.presentMode = surface_presentmodes[0];
+    create_info.compositeAlpha =
+        chooseCompositeAlpha(
+            surface_cap.supportedCompositeAlpha);
     create_info.clipped = VK_TRUE;
 
-    return SwapchainWithFmt{device.createSwapchainKHRUnique(create_info), surface_fmts[0].format,
-                            swapchain_extent, capture_available};
+    return SwapchainWithFmt{
+        .swapchain =
+            device.createSwapchainKHRUnique(create_info),
+        .format = surface_fmts[0].format,
+        .color_space = surface_fmts[0].colorSpace,
+        .extent = swapchain_extent,
+        .selected_usage = create_info.imageUsage,
+        .surface_transform = create_info.preTransform,
+        .present_configuration =
+            WsiPresentConfiguration{
+                .present_mode = create_info.presentMode,
+                .image_count = create_info.minImageCount,
+                .composite_alpha =
+                    create_info.compositeAlpha,
+                .clipped =
+                    create_info.clipped == VK_TRUE,
+            },
+        .capture_available = capture_available,
+    };
 }
 
 static std::vector<vk::Image> getImageFromSwapchain(vk::Device device, vk::SwapchainKHR swapchain) {
@@ -207,28 +242,21 @@ void SwapchainFrameTarget::surfaceDependantsSetup() {
 }
 
 void SwapchainFrameTarget::recreateSurfaceDependants() {
-    const auto previous_extent = extent;
-    const auto previous_format = swapchain.format;
     device.waitIdle();
     submission_leases.completeAll();
     surfaceDependantsSetup();
     surface_stale = false;
     current_image_index = 0;
     has_rendered_frame = false;
-    output_transform_recorded = false;
-    current_frame_nonblocking = false;
-    frame_acquired = false;
-    frame_recording = false;
-    frame_submitted = false;
-    if (previous_extent.width != extent.width || previous_extent.height != extent.height ||
-        previous_format != swapchain.format) {
-        extent_changed = true;
-    }
 }
 
 SwapchainFrameTarget::SwapchainFrameTarget()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       render_cmd_bufs{}, in_flight_frame_index{0} {
+    frame_cleanup =
+        std::make_shared<FrameTargetFrameCleanup>(
+            this, &SwapchainFrameTarget::
+                      cleanupAbandonedFrame);
 
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     {
@@ -244,17 +272,40 @@ SwapchainFrameTarget::SwapchainFrameTarget()
     LOG_INFO(logger, "rendertarget initialized");
 }
 
-SwapchainFrameTarget::~SwapchainFrameTarget() {}
+SwapchainFrameTarget::~SwapchainFrameTarget() {
+    frame_cleanup->detach(this);
+}
 
-std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblocking) {
-    if (frame_acquired || frame_recording || frame_submitted) {
+FrameBeginResult SwapchainFrameTarget::beginFrame(
+    std::shared_ptr<const RendererRuntimeGeneration>
+        runtime_generation,
+    GpuSubmissionLease submission_lease,
+    FrameBeginMode mode) {
+    if (active_frame) {
         throw std::logic_error(
             "swapchain frame target begin called with an unfinished frame");
     }
+    const bool nonblocking =
+        mode == FrameBeginMode::nonblocking;
     if (surface_stale) {
         const auto framebuffer = GET_MODULE(Window).framebufferExtent();
         if (framebuffer.width == 0 || framebuffer.height == 0) {
-            if (nonblocking) return std::nullopt;
+            if (nonblocking) {
+                return FrameBeginResult{
+                    .disposition =
+                        FrameBeginDisposition::unavailable,
+                    .reason =
+                        FrameUnavailableReason::zero_extent,
+                };
+            }
+        }
+        if (nonblocking) {
+            return FrameBeginResult{
+                .disposition =
+                    FrameBeginDisposition::unavailable,
+                .reason =
+                    FrameUnavailableReason::surface_stale,
+            };
         }
         recreateSurfaceDependants();
     }
@@ -262,7 +313,12 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
         if (nonblocking) {
             const auto framebuffer = GET_MODULE(Window).framebufferExtent();
             if (framebuffer.width == 0 || framebuffer.height == 0) {
-                return std::nullopt;
+                return FrameBeginResult{
+                    .disposition =
+                        FrameBeginDisposition::unavailable,
+                    .reason =
+                        FrameUnavailableReason::zero_extent,
+                };
             }
         }
         const auto image_prepared_semaphore = image_acquire_semaphores[in_flight_frame_index].get();
@@ -271,7 +327,13 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
         const auto fence_result = device.waitForFences(
             {cmd_buf.getFence()}, VK_TRUE, nonblocking ? 0 : UINT64_MAX);
         if (nonblocking && fence_result == vk::Result::eTimeout) {
-            return std::nullopt;
+            return FrameBeginResult{
+                .disposition =
+                    FrameBeginDisposition::unavailable,
+                .reason =
+                    FrameUnavailableReason::
+                        acquire_not_ready,
+            };
         }
         if (fence_result != vk::Result::eSuccess) {
             throw std::runtime_error(
@@ -300,12 +362,24 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
         if (nonblocking &&
             (image_acquire_result.result == vk::Result::eTimeout ||
              image_acquire_result.result == vk::Result::eNotReady)) {
-            return std::nullopt;
+            return FrameBeginResult{
+                .disposition =
+                    FrameBeginDisposition::unavailable,
+                .reason =
+                    FrameUnavailableReason::
+                        acquire_not_ready,
+            };
         }
         if (image_acquire_result.result == vk::Result::eErrorOutOfDateKHR) {
             if (nonblocking) {
                 surface_stale = true;
-                return std::nullopt;
+                return FrameBeginResult{
+                    .disposition =
+                        FrameBeginDisposition::unavailable,
+                    .reason =
+                        FrameUnavailableReason::
+                            output_out_of_date,
+                };
             }
             recreateSurfaceDependants();
             continue;
@@ -315,13 +389,25 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
             throw std::runtime_error("failed on vkAcquireNextImageKHR : " + vk::to_string(image_acquire_result.result));
         }
 
-        current_image_index = image_acquire_result.value;
-        frame_acquired = true;
+        if (next_frame_serial ==
+            std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error(
+                "swapchain frame token serial space exhausted");
+        }
+        const auto serial = next_frame_serial++;
+        current_image_index =
+            image_acquire_result.value;
+        active_frame = ActiveFrame{
+            .serial = serial,
+            .slot = in_flight_frame_index,
+            .image_index =
+                image_acquire_result.value,
+            .begin_mode = mode,
+        };
         try {
             cmd_buf.recordBegin();
-            frame_recording = true;
-            output_transform_recorded = false;
-            current_frame_nonblocking = nonblocking;
+            active_frame->phase =
+                ActiveFramePhase::recording;
 
             {
                 vk::Viewport viewport;
@@ -356,38 +442,52 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
                                          vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, {barrier});
             }
         } catch (...) {
-            abort_render();
+            abandonFrameSerial(serial);
             throw;
         }
 
-        return FrameRenderContext{
-            .cmd_buf = *cmd_buf,
-            .color_image = swapchain_images[image_acquire_result.value],
-            .color_attachment = swapchain_image_views[image_acquire_result.value].get(),
-            .depth_attachment = depth_image_view.get(),
-            .extent = extent,
-            .image_prepared_semaphore = image_prepared_semaphore,
-            .required_layout = vk::ImageLayout::ePresentSrcKHR,
-            .in_flight_frame_index = in_flight_frame_index,
-        };
+        auto frame = makeFrame(
+            FrameRenderContext{
+                .cmd_buf = *cmd_buf,
+                .color_image =
+                    swapchain_images[
+                        image_acquire_result.value],
+                .color_attachment =
+                    swapchain_image_views[
+                        image_acquire_result.value]
+                        .get(),
+                .depth_attachment =
+                    depth_image_view.get(),
+                .extent = extent,
+                .image_prepared_semaphore =
+                    image_prepared_semaphore,
+                .required_layout =
+                    vk::ImageLayout::ePresentSrcKHR,
+                .in_flight_frame_index =
+                    in_flight_frame_index,
+            },
+            std::move(runtime_generation),
+            std::move(submission_lease), frame_cleanup,
+            serial);
+        FrameBeginResult result;
+        result.disposition =
+            FrameBeginDisposition::ready;
+        result.reason = FrameUnavailableReason::none;
+        result.frame.emplace(std::move(frame));
+        return result;
     } while (true);
-}
-
-FrameRenderContext SwapchainFrameTarget::render_begin() {
-    return *beginFrame(false);
-}
-
-bool SwapchainFrameTarget::try_render_begin(FrameRenderContext &context) {
-    auto begun = beginFrame(true);
-    if (!begun) return false;
-    context = *begun;
-    return true;
 }
 
 void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                                      vk::Format source_format,
                                                      vk::Extent2D source_extent) {
-    if (output_transform_recorded) {
+    if (!active_frame ||
+        active_frame->phase !=
+            ActiveFramePhase::recording) {
+        throw std::logic_error(
+            "swapchain output transform requires an active frame");
+    }
+    if (active_frame->output_transform_recorded) {
         throw std::runtime_error("output_transform was recorded more than once");
     }
     if (source_format != swapchain.format || source_extent.width != extent.width ||
@@ -404,7 +504,8 @@ void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
     to_transfer.newLayout = vk::ImageLayout::eTransferDstOptimal;
     to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_transfer.image = swapchain_images[current_image_index];
+    to_transfer.image =
+        swapchain_images[active_frame->image_index];
     to_transfer.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
                             vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, {to_transfer});
@@ -414,7 +515,8 @@ void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
     region.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
     region.extent = vk::Extent3D{extent.width, extent.height, 1};
     cmd_buf.copyImage(source, vk::ImageLayout::eTransferSrcOptimal,
-                      swapchain_images[current_image_index], vk::ImageLayout::eTransferDstOptimal,
+                      swapchain_images[active_frame->image_index],
+                      vk::ImageLayout::eTransferDstOptimal,
                       {region});
 
     vk::ImageMemoryBarrier to_present;
@@ -424,156 +526,202 @@ void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
     to_present.newLayout = vk::ImageLayout::ePresentSrcKHR;
     to_present.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_present.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_present.image = swapchain_images[current_image_index];
+    to_present.image =
+        swapchain_images[active_frame->image_index];
     to_present.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                             vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {to_present});
-    output_transform_recorded = true;
+    active_frame->output_transform_recorded = true;
 }
 
-void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
-    const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
-    if (!frame_acquired || !frame_recording || frame_submitted) {
+FrameSubmitResult SwapchainFrameTarget::submit(
+    FrameTargetFrame frame) {
+    validateFrameTarget(
+        frame, frame_cleanup,
+        "swapchain frame target");
+    if (!active_frame) {
         throw std::logic_error(
-            "swapchain frame target end called without a recording frame");
+            "swapchain frame target submit called without an active frame");
     }
-
-    if (!output_transform_recorded) {
-        vk::ImageMemoryBarrier barrier;
-        barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
-                                vk::AccessFlagBits::eColorAttachmentWrite;
-        barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
-        barrier.image = swapchain_images[current_image_index];
-        barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                                 vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {barrier});
+    const auto active = *active_frame;
+    auto consumed = consumeFrame(
+        std::move(frame), frame_cleanup, active.serial,
+        "swapchain frame target");
+    if (active.phase != ActiveFramePhase::recording) {
+        throw std::logic_error(
+            "swapchain frame target submit called without a recording frame");
     }
+    const auto &cmd_buf = render_cmd_bufs[active.slot];
 
-    const auto rendered_semaphore =
-        rendered_semaphores[current_image_index].get();
-    cmd_buf.recordEndSubmit({rendered_semaphore},
-                            {image_acquire_semaphores[in_flight_frame_index].get()},
-                            {vk::PipelineStageFlagBits::eTopOfPipe});
-    frame_recording = false;
-    frame_submitted = true;
-    // Capture immediately after queue submission. Presentation may fail after
-    // the GPU has accepted the work, so the lease must already be retained.
-    submission_leases.submitted(
-        in_flight_frame_index, std::move(lease));
-
-    vk::PresentInfoKHR presen_info;
-    presen_info.setSwapchains(swapchain.swapchain.get());
-    presen_info.setImageIndices(current_image_index);
-    presen_info.setWaitSemaphores(rendered_semaphore);
-
-    // Same contract as the acquire path: vulkan.hpp allows only
-    // {eSuccess, eSuboptimalKHR} for presentKHR and throws for
-    // eErrorOutOfDateKHR, which a window resize produces routinely.
-    vk::Result present_result = vk::Result::eSuccess;
     try {
-        present_result = presen_queue.presentKHR(presen_info);
-    } catch (const vk::OutOfDateKHRError &) {
-        present_result = vk::Result::eErrorOutOfDateKHR;
-    }
-    bool recreated = false;
-    if (present_result == vk::Result::eSuboptimalKHR || present_result == vk::Result::eErrorOutOfDateKHR) {
-        if (current_frame_nonblocking) {
-            // The optional mirror acquire/present path must never wait for
-            // device idle. Recovery is requested explicitly after this
-            // submission, outside the OpenXR composition path.
-            surface_stale = true;
-        } else {
-            recreateSurfaceDependants();
-            recreated = true;
+        if (!active.output_transform_recorded) {
+            vk::ImageMemoryBarrier barrier;
+            barrier.srcAccessMask =
+                vk::AccessFlagBits::eColorAttachmentRead |
+                vk::AccessFlagBits::eColorAttachmentWrite;
+            barrier.oldLayout =
+                vk::ImageLayout::eColorAttachmentOptimal;
+            barrier.newLayout =
+                vk::ImageLayout::ePresentSrcKHR;
+            barrier.image =
+                swapchain_images[active.image_index];
+            barrier.subresourceRange.aspectMask =
+                vk::ImageAspectFlagBits::eColor;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            cmd_buf->pipelineBarrier(
+                vk::PipelineStageFlagBits::
+                    eColorAttachmentOutput,
+                vk::PipelineStageFlagBits::eBottomOfPipe,
+                {}, {}, {}, {barrier});
         }
-    } else if (present_result != vk::Result::eSuccess) {
-        throw std::runtime_error("failed on vkQueuePresentKHR : " + vk::to_string(present_result));
-    }
 
-    in_flight_frame_index++;
-    in_flight_frame_index %= in_flight_frames_num;
-    frame_acquired = false;
-    frame_recording = false;
-    frame_submitted = false;
-    current_frame_nonblocking = false;
-    has_rendered_frame = !recreated;
+        const auto rendered_semaphore =
+            rendered_semaphores[active.image_index].get();
+        cmd_buf.recordEndSubmit(
+            {rendered_semaphore},
+            {image_acquire_semaphores[active.slot].get()},
+            {vk::PipelineStageFlagBits::eTopOfPipe});
+        active_frame->phase =
+            ActiveFramePhase::submitted;
+        // Capture immediately after queue submission. Presentation may fail
+        // after the GPU has accepted the work, so the lease must already be
+        // retained.
+        auto lease =
+            consumed.submission_lease != nullptr
+                ? std::move(consumed.submission_lease)
+                : GpuSubmissionLease{
+                      std::move(
+                          consumed.runtime_generation)};
+        submission_leases.submitted(
+            active.slot, std::move(lease));
+
+        vk::PresentInfoKHR present_info;
+        present_info.setSwapchains(
+            swapchain.swapchain.get());
+        present_info.setImageIndices(
+            active.image_index);
+        present_info.setWaitSemaphores(
+            rendered_semaphore);
+
+        // vulkan.hpp throws for eErrorOutOfDateKHR even though it is routine
+        // WSI control flow, so normalize it before classifying the result.
+        vk::Result present_result =
+            vk::Result::eSuccess;
+        try {
+            present_result =
+                presen_queue.presentKHR(present_info);
+        } catch (const vk::OutOfDateKHRError &) {
+            present_result =
+                vk::Result::eErrorOutOfDateKHR;
+        }
+
+        auto disposition =
+            FrameSubmitDisposition::presented;
+        bool recreated = false;
+        if (present_result ==
+                vk::Result::eSuboptimalKHR ||
+            present_result ==
+                vk::Result::eErrorOutOfDateKHR) {
+            if (active.begin_mode ==
+                FrameBeginMode::nonblocking) {
+                surface_stale = true;
+                disposition =
+                    FrameSubmitDisposition::
+                        output_stale;
+            } else {
+                recreateSurfaceDependants();
+                recreated = true;
+                disposition =
+                    FrameSubmitDisposition::
+                        output_stale;
+            }
+        } else if (present_result !=
+                   vk::Result::eSuccess) {
+            throw std::runtime_error(
+                "failed on vkQueuePresentKHR : " +
+                vk::to_string(present_result));
+        }
+
+        in_flight_frame_index =
+            (active.slot + 1) %
+            in_flight_frames_num;
+        current_image_index =
+            recreated ? 0 : active.image_index;
+        active_frame.reset();
+        has_rendered_frame = !recreated;
+        return FrameSubmitResult{
+            .disposition = disposition};
+    } catch (...) {
+        abandonFrameSerial(active.serial);
+        throw;
+    }
 }
 
-void SwapchainFrameTarget::abort_render() noexcept {
-    if (!frame_acquired && !frame_recording && !frame_submitted) return;
+void SwapchainFrameTarget::cleanupAbandonedFrame(
+    void *owner, std::uint64_t serial) noexcept {
+    static_cast<SwapchainFrameTarget *>(owner)
+        ->abandonFrameSerial(serial);
+}
 
+void SwapchainFrameTarget::abandonFrameSerial(
+    std::uint64_t serial) noexcept {
+    if (!active_frame ||
+        active_frame->serial != serial) {
+        return;
+    }
+    const auto abandoned = *active_frame;
     const auto &cmd_buf =
-        render_cmd_bufs[in_flight_frame_index];
-    if (frame_recording) {
+        render_cmd_bufs[abandoned.slot];
+    if (abandoned.phase ==
+        ActiveFramePhase::recording) {
         cmd_buf.abortRecording();
     }
-    try {
-        if (frame_acquired && !frame_submitted) {
-            cmd_buf.consumeSemaphore(
-                image_acquire_semaphores[
-                    in_flight_frame_index]
-                    .get(),
-                vk::PipelineStageFlagBits::eTopOfPipe);
-        }
-        // Recreating the swapchain consumes the abandoned acquired image and
-        // replaces all WSI semaphores. It also waits any submission which
-        // succeeded before a later present failure.
-        recreateSurfaceDependants();
-    } catch (const std::exception &error) {
-        surface_stale = true;
-        if (logger != nullptr) {
-            LOG_ERROR(logger, "swapchain frame abort recovery failed: {}",
-                      error.what());
-        }
-    } catch (...) {
-        surface_stale = true;
-        if (logger != nullptr) {
-            LOG_ERROR(logger,
-                      "swapchain frame abort recovery failed with an unknown exception");
-        }
-    }
-    frame_acquired = false;
-    frame_recording = false;
-    frame_submitted = false;
-    current_frame_nonblocking = false;
-    output_transform_recorded = false;
+    // Token destruction must not enter a Vulkan wait or a swapchain create.
+    // The blocking flat path retires this incomplete WP215 swapchain before
+    // the next acquire. A nonblocking mirror stays unavailable until WP216's
+    // epoch maintenance worker publishes a replacement.
+    surface_stale = true;
+    active_frame.reset();
     has_rendered_frame = false;
 }
 
+void SwapchainFrameTarget::abandon(
+    FrameTargetFrame frame) noexcept {
+    abandonFrame(std::move(frame));
+}
+
 FrameTargetCaps SwapchainFrameTarget::caps() const {
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
     return FrameTargetCaps{
-        .color_format = swapchain.format,
-        .extent = extent,
-        .presents = true,
-        .capture_available = swapchain.capture_available,
-        .color_path = (swapchain.format == vk::Format::eR8G8B8A8Srgb ||
-                       swapchain.format == vk::Format::eB8G8R8A8Srgb)
-                          ? "srgb"
-                          : "unorm_fallback",
+        .compile_facts =
+            OutputCompileFacts{
+                .target_kind = OutputTargetKind::window,
+                .extent = extent,
+                .color_format = swapchain.format,
+                .color_space = swapchain.color_space,
+                .encoding_path =
+                    (swapchain.format ==
+                             vk::Format::eR8G8B8A8Srgb ||
+                         swapchain.format ==
+                             vk::Format::eB8G8R8A8Srgb)
+                        ? OutputEncodingPath::srgb_hardware
+                        : OutputEncodingPath::
+                              srgb_shader_unorm,
+                .selected_usage =
+                    swapchain.selected_usage,
+                .capture_available =
+                    swapchain.capture_available,
+                .surface_transform =
+                    swapchain.surface_transform,
+                .graphics_queue_family =
+                    vkcore.getGraphicsQueueFamilyIndex(),
+                .presentation_queue_family =
+                    vkcore.getPresentationQueueFamilyIndex(),
+            },
     };
-}
-
-bool SwapchainFrameTarget::consumeExtentChanged() {
-    const auto changed = extent_changed;
-    extent_changed = false;
-    return changed;
-}
-
-bool SwapchainFrameTarget::recoverSurfaceIfStale() {
-    if (!surface_stale) {
-        return false;
-    }
-    const auto framebuffer = GET_MODULE(Window).framebufferExtent();
-    if (framebuffer.width == 0 || framebuffer.height == 0) {
-        return false;
-    }
-    recreateSurfaceDependants();
-    return true;
 }
 
 std::vector<uint8_t> SwapchainFrameTarget::readbackLastFrameRGBA8() {

@@ -5,6 +5,8 @@ target_sources(pelican_core PRIVATE
     memorydiagnostics.cpp
     deletionqueue.cpp
     externaldepthsubmission.cpp
+    frametarget.cpp
+    outputcompilefacts.cpp
     util.cpp
     cmdbuf.cpp
     offscreenframetarget.cpp

@@ -9,7 +9,9 @@
 #include <map>
 #include <optional>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -18,6 +20,51 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+class RenderTargetContainer;
+
+struct RenderTargetResourceSet {
+    std::array<ImageWrapper, 2> images;
+    std::array<std::vector<vk::UniqueImageView>, 2>
+        image_layer_views;
+    std::array<vk::UniqueImageView, 2>
+        layered_image_views;
+    std::array<
+        std::map<ImageSubresourceViewKey,
+                 vk::UniqueImageView>,
+        2>
+        subresource_image_views;
+    std::array<ImageWrapper, 2> attachment_images;
+    std::array<std::vector<vk::UniqueImageView>, 2>
+        attachment_image_layer_views;
+    std::array<vk::UniqueImageView, 2>
+        layered_attachment_image_views;
+};
+
+class PreparedRenderTargetExtent {
+    friend class RenderTargetContainer;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    explicit PreparedRenderTargetExtent(
+        std::unique_ptr<Impl> impl);
+
+  public:
+    PreparedRenderTargetExtent();
+    ~PreparedRenderTargetExtent();
+    PreparedRenderTargetExtent(
+        const PreparedRenderTargetExtent &) = delete;
+    PreparedRenderTargetExtent &operator=(
+        const PreparedRenderTargetExtent &) = delete;
+    PreparedRenderTargetExtent(
+        PreparedRenderTargetExtent &&) noexcept;
+    PreparedRenderTargetExtent &operator=(
+        PreparedRenderTargetExtent &&) noexcept;
+
+    bool valid() const noexcept;
+    vk::Extent2D extent() const noexcept;
+    std::size_t targetCount() const noexcept;
+};
 
 DECLARE_MODULE(RenderTargetContainer) {
 
@@ -40,21 +87,8 @@ DECLARE_MODULE(RenderTargetContainer) {
         RenderTargetStorageMode storage_mode;
         std::optional<std::string> alias_group;
         std::optional<std::uint64_t> alias_group_token;
-        std::array<ImageWrapper, 2> images;
-        std::array<std::vector<vk::UniqueImageView>, 2>
-            image_layer_views;
-        std::array<vk::UniqueImageView, 2>
-            layered_image_views;
-        mutable std::array<
-            std::map<ImageSubresourceViewKey,
-                     vk::UniqueImageView>,
-            2>
-            subresource_image_views;
-        std::array<ImageWrapper, 2> attachment_images;
-        std::array<std::vector<vk::UniqueImageView>, 2>
-            attachment_image_layer_views;
-        std::array<vk::UniqueImageView, 2>
-            layered_attachment_image_views;
+        std::unique_ptr<RenderTargetResourceSet>
+            resources;
     };
     ResourceContainer<GlobalRenderTargetId, InternalRenderTarget> render_targets;
 
@@ -92,7 +126,10 @@ DECLARE_MODULE(RenderTargetContainer) {
                                                   alias_group_token =
                                                       std::nullopt);
     std::uint64_t createAliasGroupToken();
-    void recreateForExtent(vk::Extent2D base_extent);
+    PreparedRenderTargetExtent prepareForExtent(
+        vk::Extent2D base_extent) const;
+    void publishPreparedExtent(
+        PreparedRenderTargetExtent &&prepared);
     void resetHistory();
     void advanceHistoryFrame();
     uint32_t historyFrameIndex() const { return history_frame_index; }
@@ -165,8 +202,10 @@ DECLARE_MODULE(RenderTargetContainer) {
 
   private:
     void rebuildAliasGroupOwners();
+    void bumpResourceRevision();
     uint32_t history_frame_index = 0;
     std::uint64_t next_alias_group_token = 1;
+    std::uint64_t resource_revision = 0;
     vk::ResolveModeFlagBits depth_resolve_mode =
         vk::ResolveModeFlagBits::eSampleZero;
 };

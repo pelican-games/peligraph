@@ -21,7 +21,7 @@ class ComputeTaskContainer;
 class FullscreenPassContainer;
 class FrameGraphResourceContainer;
 class FrameGraphRuntimeContainer;
-struct RenderPipelineRuntimeGeneration;
+struct RendererRuntimeGeneration;
 class PathResolver;
 class PipelineFactory;
 class RenderingPassContainer;
@@ -81,7 +81,7 @@ struct RenderingPassConfigRegistrationDependencies {
         std::function<void()> prepare_additional_gpu_resources;
         // Runs after every program and GPU scope in the transaction has been
         // prepared, but before the single publication CAS.
-        std::function<void(const RenderPipelineRuntimeGeneration &)>
+        std::function<void(const RendererRuntimeGeneration &)>
             validate_prepared_generation;
         RenderPipelineGpuRegistrationFaultPoint fault_point =
             RenderPipelineGpuRegistrationFaultPoint::none;

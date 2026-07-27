@@ -45,7 +45,7 @@ constexpr bool runtimeShaderCompilerEnabled = false;
 #endif
 
 bool hasOutputTransform(
-    const RenderPipelineRuntimeGeneration &generation,
+    const RendererRuntimeGeneration &generation,
     RenderingPassId rendering_pass_id) {
     const auto *program = generation.find(rendering_pass_id);
     return program != nullptr &&
@@ -116,7 +116,7 @@ RenderingPassId requireDefaultPass(std::string name) {
 }
 
 void validateDefaultPass(
-    const RenderPipelineRuntimeGeneration &generation,
+    const RendererRuntimeGeneration &generation,
     std::string_view name) {
     const auto found =
         generation.name_to_id.find(std::string{name});
@@ -133,7 +133,7 @@ void validateDefaultPass(
 }
 
 bool generationEnablesFeature(
-    const RenderPipelineRuntimeGeneration &generation,
+    const RendererRuntimeGeneration &generation,
     std::string_view name) {
     return std::find(
                generation.enabled_feature_names.begin(),
@@ -157,7 +157,7 @@ void requireInitializedRuntimeModule(
 }
 
 void validateFrozenRuntimeFeatureModules(
-    const RenderPipelineRuntimeGeneration &generation) {
+    const RendererRuntimeGeneration &generation) {
     if (!FastModuleContainer::isCreationFrozen()) {
         return;
     }
@@ -251,7 +251,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         flat_options;
     flat_options.validate_prepared_generation =
         [default_pass_name](
-            const RenderPipelineRuntimeGeneration &generation) {
+            const RendererRuntimeGeneration &generation) {
             validateDefaultPass(generation,
                                 default_pass_name);
             validateFrozenRuntimeFeatureModules(
@@ -292,7 +292,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
             default_pass_name + "#xr";
         xr_options.validate_prepared_generation =
             [xr_default_pass_name](
-                const RenderPipelineRuntimeGeneration &generation) {
+                const RendererRuntimeGeneration &generation) {
                 validateDefaultPass(
                     generation, xr_default_pass_name);
             };

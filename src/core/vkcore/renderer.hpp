@@ -36,6 +36,12 @@ struct RenderViewParameters {
     bool first_person_view = false;
 };
 
+struct LogicalFrameRuntime {
+    std::shared_ptr<const RendererRuntimeGeneration>
+        renderer_generation;
+    GpuSubmissionLease submission_lease;
+};
+
 class ILogicalFrameTarget {
   public:
     virtual ~ILogicalFrameTarget() = default;
@@ -46,7 +52,9 @@ class ILogicalFrameTarget {
         vk::Format, vk::Extent2D) {
         return false;
     }
-    virtual void beginLogicalFrame(std::uint32_t view_count) = 0;
+    virtual void beginLogicalFrame(
+        std::uint32_t view_count,
+        LogicalFrameRuntime runtime = {}) = 0;
     virtual FrameRenderContext beginView(std::uint32_t view_index) = 0;
     virtual bool supportsViewFamilyExecution() const noexcept {
         return false;
@@ -71,7 +79,10 @@ class ILogicalFrameTarget {
     virtual void endLogicalFrame(GpuSubmissionLease lease = {}) = 0;
     virtual void abortLogicalFrame() noexcept = 0;
     virtual vk::Format colorFormat(std::uint32_t view_index) const = 0;
-    virtual bool consumeExtentChanged() = 0;
+    virtual std::optional<OutputCompileFacts>
+    outputCompileFacts() const {
+        return std::nullopt;
+    }
 };
 
 DECLARE_MODULE(Renderer) {
@@ -99,6 +110,7 @@ DECLARE_MODULE(Renderer) {
     std::vector<TemporalFrameHistory> &activeTemporalHistories();
     const std::vector<TemporalFrameHistory> &activeTemporalHistories() const;
     void installRenderPipelineReloadParticipant();
+    void relowerRenderPipelineForCurrentOutput();
     bool reloadRenderPipelineFromDisk(
         std::string &error) noexcept;
 

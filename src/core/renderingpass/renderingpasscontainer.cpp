@@ -10,7 +10,7 @@ namespace {
 
 template <typename Visitor>
 void visitPublishedRenderingPasses(
-    const RenderPipelineRuntimeGeneration &generation,
+    const RendererRuntimeGeneration &generation,
     Visitor &&visitor) {
     for (const auto rendering_pass_id :
          generation.rendering_pass_ids) {
@@ -105,13 +105,13 @@ const std::vector<std::string> &RenderingPassContainer::getEnabledFeatures() con
 }
 
 void RenderingPassContainer::bindRuntimePublication(
-    std::shared_ptr<const RenderPipelineRuntimePublication>
+    std::shared_ptr<const RendererRuntimePublication>
         publication) noexcept {
     runtime_publication.store(
         std::move(publication), std::memory_order_release);
 }
 
-std::shared_ptr<const RenderPipelineRuntimeGeneration>
+std::shared_ptr<const RendererRuntimeGeneration>
 RenderingPassContainer::snapshot() const noexcept {
     const auto publication =
         runtime_publication.load(std::memory_order_acquire);

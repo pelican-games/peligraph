@@ -984,11 +984,19 @@ registerRenderingPassConfigVariantsData(
                 results[index].feature_names;
         }
     }
+    const auto output_facts =
+        first.runtime.render_target.caps()
+            .compile_facts;
     auto prepared_generation =
         first.frame_graph_runtime.prepareGeneration(
             std::move(program_preparations),
             std::move(enabled_feature_names),
-            gpu_arena.preparedScope(owner_scope));
+            gpu_arena.preparedScope(owner_scope),
+            output_facts.target_kind ==
+                    OutputTargetKind::window
+                ? std::optional<OutputCompileFacts>{
+                      output_facts}
+                : std::nullopt);
     for (const auto &variant : dependencies) {
         injectGpuRegistrationFault(
             variant.options,

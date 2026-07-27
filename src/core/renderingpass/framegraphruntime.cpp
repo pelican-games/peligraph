@@ -165,21 +165,21 @@ CompiledFrameGraphExecution compileExecution(
 }
 
 std::uint64_t generationOf(
-    const std::shared_ptr<const RenderPipelineRuntimeGeneration> &generation) {
+    const std::shared_ptr<const RendererRuntimeGeneration> &generation) {
     return generation != nullptr ? generation->generation : 0;
 }
 
 } // namespace
 
-const CompiledRenderProgram *RenderPipelineRuntimeGeneration::find(
+const CompiledRenderProgram *RendererRuntimeGeneration::find(
     RenderingPassId rendering_pass_id) const noexcept {
     const auto found = programs.find(rendering_pass_id);
     return found != programs.end() ? &found->second : nullptr;
 }
 
-PreparedRenderPipelineGeneration::PreparedRenderPipelineGeneration(
+PreparedRendererRuntimeGeneration::PreparedRendererRuntimeGeneration(
     std::uint64_t base_generation,
-    std::shared_ptr<const RenderPipelineRuntimeGeneration> candidate,
+    std::shared_ptr<const RendererRuntimeGeneration> candidate,
     std::vector<RenderingPassId> prepared_rendering_pass_ids)
     : base_generation_{base_generation},
       candidate_{std::move(candidate)},
@@ -188,17 +188,25 @@ PreparedRenderPipelineGeneration::PreparedRenderPipelineGeneration(
 
 FrameGraphRuntimeContainer::FrameGraphRuntimeContainer()
     : publication{
-          std::make_shared<RenderPipelineRuntimePublication>()} {}
+          std::make_shared<RendererRuntimePublication>()} {}
 
 FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() = default;
 
-PreparedRenderPipelineGeneration
+PreparedRendererRuntimeGeneration
 FrameGraphRuntimeContainer::prepareGeneration(
     std::vector<RenderPipelineProgramPreparation> programs,
     std::optional<std::vector<std::string>>
         enabled_feature_names,
     std::optional<RenderPipelineGpuScopePreparation>
-        gpu_scope) const {
+        gpu_scope,
+    std::optional<OutputCompileFacts>
+        window_output_facts) const {
+    if (window_output_facts &&
+        window_output_facts->target_kind !=
+            OutputTargetKind::window) {
+        throw std::runtime_error(
+            "renderer window output child requires window compile facts");
+    }
     const auto current = snapshot();
     const auto base_generation = generationOf(current);
     if (base_generation ==
@@ -223,9 +231,9 @@ FrameGraphRuntimeContainer::prepareGeneration(
 
     auto candidate =
         current != nullptr
-            ? std::make_shared<RenderPipelineRuntimeGeneration>(
+            ? std::make_shared<RendererRuntimeGeneration>(
                   *current)
-            : std::make_shared<RenderPipelineRuntimeGeneration>();
+            : std::make_shared<RendererRuntimeGeneration>();
     candidate->generation = base_generation + 1;
 
     std::int64_t next_id = 0;
@@ -287,6 +295,22 @@ FrameGraphRuntimeContainer::prepareGeneration(
     candidate->gpu_arena = compileRenderPipelineGpuArena(
         current != nullptr ? current->gpu_arena : nullptr,
         candidate->generation, std::move(gpu_scope));
+    if (window_output_facts) {
+        const auto output_fingerprint =
+            outputCompileFactsFingerprint(
+                *window_output_facts);
+        candidate->window_output =
+            std::make_shared<WindowOutputGeneration>(
+                WindowOutputGeneration{
+                    .generation = candidate->generation,
+                    .compile_facts =
+                        std::move(*window_output_facts),
+                    .compile_fingerprint =
+                        output_fingerprint,
+                    .target_resource_lease =
+                        candidate->gpu_arena,
+                });
+    }
     if (enabled_feature_names) {
         candidate->enabled_feature_names =
             std::move(*enabled_feature_names);
@@ -424,23 +448,23 @@ FrameGraphRuntimeContainer::prepareGeneration(
             std::move(stable_order);
     }
 
-    return PreparedRenderPipelineGeneration{
+    return PreparedRendererRuntimeGeneration{
         base_generation, std::move(candidate),
         std::move(prepared_ids)};
 }
 
 void FrameGraphRuntimeContainer::publishPreparedGeneration(
-    PreparedRenderPipelineGeneration &&prepared) {
+    PreparedRendererRuntimeGeneration &&prepared) {
     if (!prepared.valid()) {
         throw std::runtime_error(
-            "Render pipeline runtime candidate is empty");
+            "Renderer runtime candidate is empty");
     }
     auto expected =
         publication->active_generation.load(
             std::memory_order_acquire);
     if (generationOf(expected) != prepared.base_generation_) {
         throw std::runtime_error(
-            "Render pipeline runtime candidate is stale");
+            "Renderer runtime candidate is stale");
     }
     if (!publication->active_generation
              .compare_exchange_strong(
@@ -448,25 +472,25 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
                  std::memory_order_acq_rel,
                  std::memory_order_acquire)) {
         throw std::runtime_error(
-            "Render pipeline runtime candidate lost publication race");
+            "Renderer runtime candidate lost publication race");
     }
     prepared.candidate_.reset();
     prepared.prepared_rendering_pass_ids_.clear();
 }
 
 void FrameGraphRuntimeContainer::rollbackPreparedGeneration(
-    PreparedRenderPipelineGeneration &prepared) const noexcept {
+    PreparedRendererRuntimeGeneration &prepared) const noexcept {
     prepared.candidate_.reset();
     prepared.prepared_rendering_pass_ids_.clear();
 }
 
-std::shared_ptr<const RenderPipelineRuntimeGeneration>
+std::shared_ptr<const RendererRuntimeGeneration>
 FrameGraphRuntimeContainer::snapshot() const noexcept {
     return publication->active_generation.load(
         std::memory_order_acquire);
 }
 
-std::shared_ptr<const RenderPipelineRuntimePublication>
+std::shared_ptr<const RendererRuntimePublication>
 FrameGraphRuntimeContainer::publicationState() const noexcept {
     return publication;
 }

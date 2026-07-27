@@ -1311,7 +1311,9 @@ bool XrCompositionTarget::configureExternalDepthSubmission(
         source_format, source_extent);
 }
 
-void XrCompositionTarget::beginLogicalFrame(std::uint32_t view_count) {
+void XrCompositionTarget::beginLogicalFrame(
+    std::uint32_t view_count,
+    LogicalFrameRuntime) {
     impl->beginLogicalFrame(view_count);
 }
 
@@ -1350,8 +1352,6 @@ void XrCompositionTarget::abortLogicalFrame() noexcept {
 vk::Format XrCompositionTarget::colorFormat(std::uint32_t view_index) const {
     return impl->colorFormat(view_index);
 }
-
-bool XrCompositionTarget::consumeExtentChanged() { return false; }
 
 bool XrCompositionTarget::generationTeardownRequired() const noexcept {
     return impl->teardownRequired();

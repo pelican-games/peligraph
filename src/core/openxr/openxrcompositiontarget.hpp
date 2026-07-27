@@ -119,7 +119,9 @@ class XrCompositionTarget final : public IXrCompositionTarget {
     bool configureExternalDepthSubmission(
         vk::Format source_format,
         vk::Extent2D source_extent) override;
-    void beginLogicalFrame(std::uint32_t view_count) override;
+    void beginLogicalFrame(
+        std::uint32_t view_count,
+        LogicalFrameRuntime runtime = {}) override;
     FrameRenderContext beginView(std::uint32_t view_index) override;
     bool supportsViewFamilyExecution() const noexcept override;
     FrameRenderContext beginViewFamily(
@@ -132,7 +134,6 @@ class XrCompositionTarget final : public IXrCompositionTarget {
     void endLogicalFrame(GpuSubmissionLease lease = {}) override;
     void abortLogicalFrame() noexcept override;
     vk::Format colorFormat(std::uint32_t view_index) const override;
-    bool consumeExtentChanged() override;
     bool generationTeardownRequired() const noexcept override;
     XrSwapchainState swapchainState(std::uint32_t view_index) const override;
     XrSwapchainState depthSwapchainState() const override;

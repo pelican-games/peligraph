@@ -5,6 +5,7 @@
 #include "renderingpass.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../container.hpp"
+#include "../vkcore/outputcompilefacts.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -61,10 +62,19 @@ struct CompiledRenderProgram {
     std::vector<std::shared_ptr<const void>> resource_leases;
 };
 
+struct WindowOutputGeneration {
+    std::uint64_t generation = 0;
+    OutputCompileFacts compile_facts;
+    std::uint64_t compile_fingerprint = 0;
+    // The concrete target/pipeline arena selected by compile_facts. The
+    // renderer root and every frame token retain this lease together.
+    std::shared_ptr<const void> target_resource_lease;
+};
+
 // One immutable publication root for every value that must agree while a
 // frame is recorded. A frame keeps a shared snapshot, so replacing the active
 // root cannot retire the previous pass/plan generation early.
-struct RenderPipelineRuntimeGeneration {
+struct RendererRuntimeGeneration {
     std::uint64_t generation = 0;
     std::vector<std::string> enabled_feature_names;
     std::vector<RenderingPassId> rendering_pass_ids;
@@ -73,14 +83,15 @@ struct RenderPipelineRuntimeGeneration {
                        RenderingPassId::Hash>
         programs;
     std::shared_ptr<const RenderPipelineGpuArena> gpu_arena;
+    std::shared_ptr<const WindowOutputGeneration> window_output;
 
     const CompiledRenderProgram *find(
         RenderingPassId rendering_pass_id) const noexcept;
 };
 
-struct RenderPipelineRuntimePublication {
+struct RendererRuntimePublication {
     std::atomic<
-        std::shared_ptr<const RenderPipelineRuntimeGeneration>>
+        std::shared_ptr<const RendererRuntimeGeneration>>
         active_generation{nullptr};
 };
 
@@ -97,28 +108,28 @@ struct RenderPipelineProgramPreparation {
     std::optional<RenderingPassId> rendering_pass_id;
 };
 
-class PreparedRenderPipelineGeneration {
+class PreparedRendererRuntimeGeneration {
     friend class FrameGraphRuntimeContainer;
 
     std::uint64_t base_generation_ = 0;
-    std::shared_ptr<const RenderPipelineRuntimeGeneration> candidate_;
+    std::shared_ptr<const RendererRuntimeGeneration> candidate_;
     std::vector<RenderingPassId> prepared_rendering_pass_ids_;
 
-    PreparedRenderPipelineGeneration(
+    PreparedRendererRuntimeGeneration(
         std::uint64_t base_generation,
-        std::shared_ptr<const RenderPipelineRuntimeGeneration> candidate,
+        std::shared_ptr<const RendererRuntimeGeneration> candidate,
         std::vector<RenderingPassId> prepared_rendering_pass_ids);
 
   public:
-    PreparedRenderPipelineGeneration() = default;
-    PreparedRenderPipelineGeneration(
-        const PreparedRenderPipelineGeneration &) = delete;
-    PreparedRenderPipelineGeneration &operator=(
-        const PreparedRenderPipelineGeneration &) = delete;
-    PreparedRenderPipelineGeneration(
-        PreparedRenderPipelineGeneration &&) noexcept = default;
-    PreparedRenderPipelineGeneration &operator=(
-        PreparedRenderPipelineGeneration &&) noexcept = default;
+    PreparedRendererRuntimeGeneration() = default;
+    PreparedRendererRuntimeGeneration(
+        const PreparedRendererRuntimeGeneration &) = delete;
+    PreparedRendererRuntimeGeneration &operator=(
+        const PreparedRendererRuntimeGeneration &) = delete;
+    PreparedRendererRuntimeGeneration(
+        PreparedRendererRuntimeGeneration &&) noexcept = default;
+    PreparedRendererRuntimeGeneration &operator=(
+        PreparedRendererRuntimeGeneration &&) noexcept = default;
 
     bool valid() const noexcept {
         return candidate_ != nullptr;
@@ -132,37 +143,39 @@ class PreparedRenderPipelineGeneration {
     const std::vector<RenderingPassId> &renderingPassIds() const noexcept {
         return prepared_rendering_pass_ids_;
     }
-    const RenderPipelineRuntimeGeneration &candidate() const {
+    const RendererRuntimeGeneration &candidate() const {
         if (candidate_ == nullptr) {
             throw std::logic_error(
-                "Render pipeline runtime candidate is empty");
+                "Renderer runtime candidate is empty");
         }
         return *candidate_;
     }
 };
 
 DECLARE_MODULE(FrameGraphRuntimeContainer) {
-    std::shared_ptr<RenderPipelineRuntimePublication>
+    std::shared_ptr<RendererRuntimePublication>
         publication;
 
   public:
     FrameGraphRuntimeContainer();
     ~FrameGraphRuntimeContainer();
 
-    PreparedRenderPipelineGeneration prepareGeneration(
+    PreparedRendererRuntimeGeneration prepareGeneration(
         std::vector<RenderPipelineProgramPreparation> programs,
         std::optional<std::vector<std::string>> enabled_feature_names =
             std::nullopt,
         std::optional<RenderPipelineGpuScopePreparation>
-            gpu_scope = std::nullopt) const;
+            gpu_scope = std::nullopt,
+        std::optional<OutputCompileFacts>
+            window_output_facts = std::nullopt) const;
     void publishPreparedGeneration(
-        PreparedRenderPipelineGeneration &&prepared);
+        PreparedRendererRuntimeGeneration &&prepared);
     void rollbackPreparedGeneration(
-        PreparedRenderPipelineGeneration &prepared) const noexcept;
+        PreparedRendererRuntimeGeneration &prepared) const noexcept;
 
-    std::shared_ptr<const RenderPipelineRuntimeGeneration>
+    std::shared_ptr<const RendererRuntimeGeneration>
     snapshot() const noexcept;
-    std::shared_ptr<const RenderPipelineRuntimePublication>
+    std::shared_ptr<const RendererRuntimePublication>
     publicationState() const noexcept;
     std::uint64_t activeGeneration() const noexcept;
     std::shared_ptr<const CompiledRenderProgram> findProgram(

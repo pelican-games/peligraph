@@ -25,12 +25,14 @@ RenderTarget::RenderTarget() : impl{createFrameTarget()} {}
 
 RenderTarget::~RenderTarget() {}
 
-FrameRenderContext RenderTarget::render_begin() { return impl->render_begin(); }
-
-std::optional<FrameRenderContext> RenderTarget::tryRenderBegin() {
-    FrameRenderContext context;
-    if (!impl->try_render_begin(context)) return std::nullopt;
-    return context;
+FrameBeginResult RenderTarget::beginFrame(
+    std::shared_ptr<const RendererRuntimeGeneration>
+        runtime_generation,
+    GpuSubmissionLease submission_lease,
+    FrameBeginMode mode) {
+    return impl->beginFrame(
+        std::move(runtime_generation),
+        std::move(submission_lease), mode);
 }
 
 void RenderTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
@@ -38,19 +40,23 @@ void RenderTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Imag
     impl->recordOutputTransformCopy(cmd_buf, source, source_format, source_extent);
 }
 
-void RenderTarget::render_end(GpuSubmissionLease lease) {
-    impl->render_end(std::move(lease));
+FrameSubmitResult RenderTarget::submit(
+    FrameTargetFrame frame) {
+    return impl->submit(std::move(frame));
 }
 
-void RenderTarget::abort_render() noexcept { impl->abort_render(); }
+void RenderTarget::abandon(
+    FrameTargetFrame frame) noexcept {
+    impl->abandon(std::move(frame));
+}
 
-vk::Format RenderTarget::getSwapchainFormat() const { return impl->caps().color_format; }
+vk::Format RenderTarget::getSwapchainFormat() const {
+    return impl->caps().compile_facts.color_format;
+}
 
-vk::Extent2D RenderTarget::getExtent() const { return impl->caps().extent; }
-
-bool RenderTarget::consumeExtentChanged() { return impl->consumeExtentChanged(); }
-
-bool RenderTarget::recoverSurfaceIfStale() { return impl->recoverSurfaceIfStale(); }
+vk::Extent2D RenderTarget::getExtent() const {
+    return impl->caps().compile_facts.extent;
+}
 
 FrameTargetCaps RenderTarget::caps() const { return impl->caps(); }
 
@@ -60,7 +66,8 @@ std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() {
             "legacy capture is unavailable while OpenXR is active; source=flat is required");
     }
     auto pixels = impl->readbackLastFrameRGBA8();
-    const auto format = impl->caps().color_format;
+    const auto format =
+        impl->caps().compile_facts.color_format;
     if (format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb) {
         for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
             std::swap(pixels[i], pixels[i + 2]);
@@ -79,9 +86,10 @@ void RenderTarget::captureLastFrameToPng(const std::filesystem::path &path) {
     }
 
     const auto path_string = path.string();
-    const int stride = static_cast<int>(caps.extent.width * 4);
-    if (stbi_write_png(path_string.c_str(), static_cast<int>(caps.extent.width),
-                       static_cast<int>(caps.extent.height), 4, pixels.data(), stride) == 0) {
+    const auto extent = caps.compile_facts.extent;
+    const int stride = static_cast<int>(extent.width * 4);
+    if (stbi_write_png(path_string.c_str(), static_cast<int>(extent.width),
+                       static_cast<int>(extent.height), 4, pixels.data(), stride) == 0) {
         throw std::runtime_error("failed to write PNG: " + path_string);
     }
 }

@@ -5,32 +5,22 @@
 #include "../vkcore/util.hpp"
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace Pelican {
 
 namespace {
 
-struct RetiredRenderTargetResources {
-    std::array<ImageWrapper, 2> images;
-    std::array<std::vector<vk::UniqueImageView>, 2>
-        image_layer_views;
-    std::array<vk::UniqueImageView, 2>
-        layered_image_views;
-    std::array<
-        std::map<ImageSubresourceViewKey,
-                 vk::UniqueImageView>,
-        2>
-        subresource_image_views;
-    std::array<ImageWrapper, 2> attachment_images;
-    std::array<std::vector<vk::UniqueImageView>, 2>
-        attachment_image_layer_views;
-    std::array<vk::UniqueImageView, 2>
-        layered_attachment_image_views;
+struct RetiredRenderTargetResourceBatch {
+    std::vector<std::unique_ptr<RenderTargetResourceSet>>
+        targets;
 };
 
 vk::SampleCountFlagBits toSampleCount(std::uint32_t samples) {
@@ -310,12 +300,61 @@ void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
 
 } // namespace
 
+struct PreparedRenderTargetExtent::Impl {
+    struct Entry {
+        GlobalRenderTargetId id;
+        std::unique_ptr<RenderTargetResourceSet>
+            resources;
+    };
+
+    const RenderTargetContainer *owner = nullptr;
+    std::uint64_t base_revision = 0;
+    vk::Extent2D base_extent{};
+    std::vector<Entry> entries;
+};
+
+PreparedRenderTargetExtent::PreparedRenderTargetExtent() =
+    default;
+PreparedRenderTargetExtent::~PreparedRenderTargetExtent() =
+    default;
+PreparedRenderTargetExtent::PreparedRenderTargetExtent(
+    std::unique_ptr<Impl> impl)
+    : impl_{std::move(impl)} {}
+PreparedRenderTargetExtent::PreparedRenderTargetExtent(
+    PreparedRenderTargetExtent &&) noexcept = default;
+PreparedRenderTargetExtent &
+PreparedRenderTargetExtent::operator=(
+    PreparedRenderTargetExtent &&) noexcept = default;
+
+bool PreparedRenderTargetExtent::valid() const noexcept {
+    return impl_ != nullptr;
+}
+
+vk::Extent2D PreparedRenderTargetExtent::extent() const noexcept {
+    return impl_ != nullptr ? impl_->base_extent
+                            : vk::Extent2D{};
+}
+
+std::size_t
+PreparedRenderTargetExtent::targetCount() const noexcept {
+    return impl_ != nullptr ? impl_->entries.size() : 0;
+}
+
 RenderTargetContainer::RenderTargetContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       depth_resolve_mode{selectDepthResolveMode(
           GET_MODULE(VulkanManageCore).getPhysDevice())} {}
 
 RenderTargetContainer::~RenderTargetContainer() {}
+
+void RenderTargetContainer::bumpResourceRevision() {
+    if (resource_revision ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "render target resource revision space exhausted");
+    }
+    ++resource_revision;
+}
 
 std::uint64_t RenderTargetContainer::createAliasGroupToken() {
     if (next_alias_group_token ==
@@ -508,7 +547,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                     name, base_extent, extent_scale,
                     fixed_extent);
             const auto &owner_image =
-                alias_owner->images[0];
+                alias_owner->resources->images[0];
             const auto owner_extent =
                 vk::Extent2D{
                     owner_image.extent.width,
@@ -546,8 +585,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         images[i] =
             alias_owner != nullptr
                 ? GET_MODULE(VulkanManageCore)
-                      .allocAliasingImage(
-                          alias_owner->images[i])
+                          .allocAliasingImage(
+                          alias_owner->resources->images[i])
                 : createRenderTargetImage(
                       name, base_extent, extent_scale,
                       fixed_extent, format, usage, memUsage,
@@ -605,16 +644,23 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .storage_mode = storage_mode,
         .alias_group = alias_group,
         .alias_group_token = alias_group_token,
-        .images = std::move(images),
-        .image_layer_views =
-            std::move(image_layer_views),
-        .layered_image_views =
-            std::move(layered_image_views),
-        .attachment_images = std::move(attachment_images),
-        .attachment_image_layer_views =
-            std::move(attachment_image_layer_views),
-        .layered_attachment_image_views =
-            std::move(layered_attachment_image_views),
+        .resources =
+            std::make_unique<RenderTargetResourceSet>(
+                RenderTargetResourceSet{
+                    .images = std::move(images),
+                    .image_layer_views =
+                        std::move(image_layer_views),
+                    .layered_image_views =
+                        std::move(layered_image_views),
+                    .attachment_images =
+                        std::move(attachment_images),
+                    .attachment_image_layer_views =
+                        std::move(
+                            attachment_image_layer_views),
+                    .layered_attachment_image_views =
+                        std::move(
+                            layered_attachment_image_views),
+                }),
     });
 
     try {
@@ -633,6 +679,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                 "render target alias group owner changed during registration: " +
                 *alias_group);
         }
+        bumpResourceRevision();
     } catch (...) {
         if (const auto found = name_to_id.find(name);
             found != name_to_id.end() &&
@@ -647,10 +694,25 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
     return id;
 }
 
-void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
+PreparedRenderTargetExtent
+RenderTargetContainer::prepareForExtent(
+    vk::Extent2D base_extent) const {
+    auto prepared =
+        std::make_unique<
+            PreparedRenderTargetExtent::Impl>();
+    prepared->owner = this;
+    prepared->base_revision = resource_revision;
+    prepared->base_extent = base_extent;
+    prepared->entries.reserve(
+        registration_order.size());
+    std::unordered_map<int, std::size_t>
+        prepared_by_id;
+    prepared_by_id.reserve(registration_order.size());
+
     for (const auto id : registration_order) {
-        auto &rt = render_targets.get(id);
-        const InternalRenderTarget *alias_owner = nullptr;
+        const auto &rt = render_targets.get(id);
+        const RenderTargetResourceSet *
+            alias_owner = nullptr;
         if (rt.alias_group_token) {
             const auto owner =
                 alias_group_owners.find(
@@ -662,24 +724,27 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                     rt.name);
             }
             if (owner->second != id) {
+                const auto prepared_owner =
+                    prepared_by_id.find(
+                        owner->second.value);
+                if (prepared_owner ==
+                    prepared_by_id.end()) {
+                    throw std::runtime_error(
+                        "render target alias owner was not prepared before member: " +
+                        rt.name);
+                }
                 alias_owner =
-                    &render_targets.get(
-                        owner->second);
+                    prepared->entries[
+                        prepared_owner->second]
+                        .resources.get();
             }
         }
-        std::array<ImageWrapper, 2> next_images;
-        std::array<std::vector<vk::UniqueImageView>, 2>
-            next_layer_views;
-        std::array<vk::UniqueImageView, 2>
-            next_layered_views;
-        std::array<ImageWrapper, 2> next_attachment_images;
-        std::array<std::vector<vk::UniqueImageView>, 2>
-            next_attachment_layer_views;
-        std::array<vk::UniqueImageView, 2>
-            next_layered_attachment_views;
+        auto next =
+            std::make_unique<
+                RenderTargetResourceSet>();
         const uint32_t surface_count = rt.history ? 2u : 1u;
         for (uint32_t i = 0; i < surface_count; ++i) {
-            next_images[i] =
+            next->images[i] =
                 alias_owner != nullptr
                     ? GET_MODULE(VulkanManageCore)
                           .allocAliasingImage(
@@ -695,82 +760,139 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                           rt.storage_mode,
                           rt.alias_group_token
                               .has_value());
-            next_layer_views[i] =
+            next->image_layer_views[i] =
                 createSequentialImageViews(
-                    device, next_images[i]);
-            next_layered_views[i] =
+                    device, next->images[i]);
+            next->layered_image_views[i] =
                 createLayeredImageView(
-                    device, next_images[i]);
+                    device, next->images[i]);
             if (rt.samples > 1) {
                 const auto attachment_usage =
                     rt.usage &
                     (vk::ImageUsageFlagBits::eColorAttachment |
                      vk::ImageUsageFlagBits::eDepthStencilAttachment);
-                next_attachment_images[i] = createRenderTargetImage(
+                next->attachment_images[i] = createRenderTargetImage(
                     rt.name, base_extent, rt.extent_scale, rt.fixed_extent,
                     rt.format, attachment_usage, rt.memory_usage,
                     ImageMipLevelCount{},
                     toSampleCount(rt.samples), rt.array_layers,
                     rt.storage_mode);
-                next_attachment_layer_views[i] =
+                next->attachment_image_layer_views[i] =
                     createSequentialImageViews(
-                        device, next_attachment_images[i]);
-                next_layered_attachment_views[i] =
+                        device, next->attachment_images[i]);
+                next->layered_attachment_image_views[i] =
                     createLayeredImageView(
-                        device, next_attachment_images[i]);
+                        device, next->attachment_images[i]);
             }
         }
         nameRenderTargetSurfaces(
-            rt.name, next_images, next_layer_views,
-            next_layered_views, surface_count);
+            rt.name, next->images,
+            next->image_layer_views,
+            next->layered_image_views, surface_count);
         if (rt.samples > 1) {
             nameAttachmentSurfaces(
-                rt.name, next_attachment_images,
-                next_attachment_layer_views,
-                next_layered_attachment_views,
+                rt.name, next->attachment_images,
+                next->attachment_image_layer_views,
+                next->layered_attachment_image_views,
                 surface_count);
         }
-        if (rt.history) clearHistoryImages(next_images, rt.history_clear_color);
+        if (rt.history) {
+            clearHistoryImages(
+                next->images,
+                rt.history_clear_color);
+        }
+        prepared_by_id.emplace(
+            id.value, prepared->entries.size());
+        prepared->entries.push_back(
+            PreparedRenderTargetExtent::Impl::Entry{
+                id, std::move(next)});
+    }
+    return PreparedRenderTargetExtent{
+        std::move(prepared)};
+}
 
-        GET_MODULE(DeletionQueue)
-            .defer(RetiredRenderTargetResources{
-                .images = std::move(rt.images),
-                .image_layer_views =
-                    std::move(rt.image_layer_views),
-                .layered_image_views =
-                    std::move(rt.layered_image_views),
-                .subresource_image_views =
-                    std::move(
-                        rt.subresource_image_views),
-                .attachment_images = std::move(rt.attachment_images),
-                .attachment_image_layer_views =
-                    std::move(
-                        rt.attachment_image_layer_views),
-                .layered_attachment_image_views =
-                    std::move(
-                        rt.layered_attachment_image_views),
-            });
+void RenderTargetContainer::publishPreparedExtent(
+    PreparedRenderTargetExtent &&prepared) {
+    if (!prepared.valid()) {
+        throw std::runtime_error(
+            "render target extent candidate is empty");
+    }
+    auto &candidate = *prepared.impl_;
+    if (candidate.owner != this) {
+        throw std::runtime_error(
+            "render target extent candidate belongs to another container");
+    }
+    if (candidate.base_revision != resource_revision) {
+        throw std::runtime_error(
+            "render target extent candidate is stale");
+    }
+    if (candidate.entries.size() !=
+        registration_order.size()) {
+        throw std::runtime_error(
+            "render target extent candidate does not cover the active registry");
+    }
+    if (resource_revision ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "render target resource revision space exhausted");
+    }
 
-        rt.images = std::move(next_images);
-        rt.image_layer_views =
-            std::move(next_layer_views);
-        rt.layered_image_views =
-            std::move(next_layered_views);
-        rt.subresource_image_views = {};
-        rt.attachment_images = std::move(next_attachment_images);
-        rt.attachment_image_layer_views =
-            std::move(next_attachment_layer_views);
-        rt.layered_attachment_image_views =
-            std::move(next_layered_attachment_views);
+    std::vector<InternalRenderTarget *> targets;
+    targets.reserve(candidate.entries.size());
+    for (std::size_t index = 0;
+         index < candidate.entries.size(); ++index) {
+        const auto expected_id =
+            registration_order[index];
+        const auto candidate_id =
+            candidate.entries[index].id;
+        if (candidate_id != expected_id ||
+            !render_targets.contains(candidate_id)) {
+            throw std::runtime_error(
+                "render target extent candidate registry order changed");
+        }
+        auto &target =
+            render_targets.get(candidate_id);
+        if (target.resources == nullptr ||
+            candidate.entries[index].resources ==
+                nullptr) {
+            throw std::runtime_error(
+                "render target extent candidate contains an empty resource set");
+        }
+        targets.push_back(&target);
+    }
+
+    auto retired =
+        std::make_shared<
+            RetiredRenderTargetResourceBatch>();
+    retired->targets.reserve(targets.size());
+    // Enlist and reserve the complete retirement batch before the first
+    // ownership move. Publication below consists only of noexcept unique_ptr
+    // moves, so failure cannot expose a partially replaced target registry.
+    GET_MODULE(DeletionQueue).defer(retired);
+
+    for (std::size_t index = 0;
+         index < targets.size(); ++index) {
+        auto &rt = *targets[index];
+        auto &next =
+            candidate.entries[index].resources;
+        retired->targets.push_back(
+            std::move(rt.resources));
+        rt.resources = std::move(next);
     }
     history_frame_index = 0;
+    ++resource_revision;
+    prepared.impl_.reset();
 }
 
 void RenderTargetContainer::resetHistory() {
     GET_MODULE(VulkanManageCore).waitIdle();
     for (const auto id : registration_order) {
         auto &rt = render_targets.get(id);
-        if (rt.history) clearHistoryImages(rt.images, rt.history_clear_color);
+        if (rt.history) {
+            clearHistoryImages(
+                rt.resources->images,
+                rt.history_clear_color);
+        }
     }
     history_frame_index = 0;
 }
@@ -800,12 +922,12 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
         .format = rt.format,
         .extent =
             vk::Extent2D{
-                rt.images[0].extent.width,
-                rt.images[0].extent.height},
+                rt.resources->images[0].extent.width,
+                rt.resources->images[0].extent.height},
         .history = rt.history,
         .samples = rt.samples,
         .mip_levels =
-            rt.images[0].mip_levels,
+            rt.resources->images[0].mip_levels,
         .array_layers = rt.array_layers,
         .storage_mode = rt.storage_mode,
         .alias_group = rt.alias_group,
@@ -813,22 +935,25 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
 }
 
 const ImageWrapper &RenderTargetContainer::getImage(GlobalRenderTargetId id, bool history_read) const {
-    return render_targets.get(id).images[surfaceIndex(id, history_read)];
+    return render_targets.get(id)
+        .resources->images[
+            surfaceIndex(id, history_read)];
 }
 
 const ImageWrapper &RenderTargetContainer::getImageForFrame(GlobalRenderTargetId id, bool history_read,
                                                             uint32_t frame_index) const {
     const auto &rt = render_targets.get(id);
     const uint32_t index = rt.history ? ((frame_index & 1u) ^ (history_read ? 1u : 0u)) : 0u;
-    return rt.images[index];
+    return rt.resources->images[index];
 }
 
 const ImageWrapper &RenderTargetContainer::getAttachmentImage(
     GlobalRenderTargetId id, bool history_read) const {
     const auto &rt = render_targets.get(id);
     const auto surface = surfaceIndex(id, history_read);
-    return rt.samples > 1 ? rt.attachment_images[surface]
-                          : rt.images[surface];
+    return rt.samples > 1
+               ? rt.resources->attachment_images[surface]
+               : rt.resources->images[surface];
 }
 
 vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id, bool history_read) const {
@@ -868,13 +993,14 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
         .array_view = array_view,
     };
     auto &views =
-        rt.subresource_image_views[surface];
+        rt.resources
+            ->subresource_image_views[surface];
     if (const auto found = views.find(key);
         found != views.end()) {
         return found->second.get();
     }
     auto view = createImageView(
-        device, rt.images[surface],
+        device, rt.resources->images[surface],
         array_view
             ? vk::ImageViewType::e2DArray
             : vk::ImageViewType::e2D,
@@ -915,12 +1041,14 @@ vk::ImageView RenderTargetContainer::getImageLayerView(
     const auto &rt = render_targets.get(id);
     const auto surface = surfaceIndex(id, history_read);
     if (array_layer >=
-        rt.image_layer_views[surface].size()) {
+        rt.resources->image_layer_views[surface]
+            .size()) {
         throw std::out_of_range(
             "render target array layer is out of range: " +
             rt.name);
     }
-    return rt.image_layer_views[surface][array_layer]
+    return rt.resources
+        ->image_layer_views[surface][array_layer]
         .get();
 }
 
@@ -930,12 +1058,15 @@ RenderTargetContainer::getImageLayerViewForFrame(
     bool history_read, uint32_t frame_index) const {
     const auto &rt = render_targets.get(id);
     const uint32_t index = rt.history ? ((frame_index & 1u) ^ (history_read ? 1u : 0u)) : 0u;
-    if (array_layer >= rt.image_layer_views[index].size()) {
+    if (array_layer >=
+        rt.resources->image_layer_views[index]
+            .size()) {
         throw std::out_of_range(
             "render target array layer is out of range: " +
             rt.name);
     }
-    return rt.image_layer_views[index][array_layer]
+    return rt.resources
+        ->image_layer_views[index][array_layer]
         .get();
 }
 
@@ -953,8 +1084,10 @@ RenderTargetContainer::getAttachmentImageLayerView(
     const auto surface = surfaceIndex(id, history_read);
     const auto &views =
         rt.samples > 1
-            ? rt.attachment_image_layer_views[surface]
-            : rt.image_layer_views[surface];
+            ? rt.resources
+                  ->attachment_image_layer_views[surface]
+            : rt.resources
+                  ->image_layer_views[surface];
     if (array_layer >= views.size()) {
         throw std::out_of_range(
             "render target attachment array layer is out of range: " +
@@ -967,9 +1100,12 @@ vk::ImageView RenderTargetContainer::getLayeredImageView(
     GlobalRenderTargetId id, bool history_read) const {
     const auto &rt = render_targets.get(id);
     const auto surface = surfaceIndex(id, history_read);
-    return rt.layered_image_views[surface]
-               ? rt.layered_image_views[surface].get()
-               : rt.image_layer_views[surface]
+    return rt.resources->layered_image_views[surface]
+               ? rt.resources
+                     ->layered_image_views[surface]
+                     .get()
+               : rt.resources
+                     ->image_layer_views[surface]
                      .front()
                      .get();
 }
@@ -984,9 +1120,14 @@ RenderTargetContainer::getLayeredImageViewForFrame(
             ? ((frame_index & 1u) ^
                (history_read ? 1u : 0u))
             : 0u;
-    return rt.layered_image_views[surface]
-               ? rt.layered_image_views[surface].get()
-               : rt.image_layer_views[surface].front().get();
+    return rt.resources->layered_image_views[surface]
+               ? rt.resources
+                     ->layered_image_views[surface]
+                     .get()
+               : rt.resources
+                     ->image_layer_views[surface]
+                     .front()
+                     .get();
 }
 
 vk::ImageView
@@ -995,10 +1136,13 @@ RenderTargetContainer::getLayeredAttachmentImageView(
     const auto &rt = render_targets.get(id);
     const auto surface = surfaceIndex(id, history_read);
     if (rt.samples > 1) {
-        return rt.layered_attachment_image_views[surface]
-                   ? rt.layered_attachment_image_views[surface]
+        return rt.resources
+                       ->layered_attachment_image_views[surface]
+                   ? rt.resources
+                         ->layered_attachment_image_views[surface]
                          .get()
-                   : rt.attachment_image_layer_views[surface]
+                   : rt.resources
+                         ->attachment_image_layer_views[surface]
                          .front()
                          .get();
     }
@@ -1066,6 +1210,9 @@ void RenderTargetContainer::rollbackRegistrations(
         throw std::runtime_error(
             "Render target registration checkpoint is invalid");
     }
+    const bool changed =
+        registration_order.size() >
+        checkpoint.registration_count;
     while (registration_order.size() >
            checkpoint.registration_count) {
         const auto id = registration_order.back();
@@ -1074,6 +1221,7 @@ void RenderTargetContainer::rollbackRegistrations(
     }
     name_to_id = std::move(checkpoint.name_to_id);
     rebuildAliasGroupOwners();
+    if (changed) bumpResourceRevision();
 }
 
 std::vector<std::pair<std::string, GlobalRenderTargetId>>
@@ -1107,8 +1255,10 @@ void RenderTargetContainer::hideRegistrationName(
 
 void RenderTargetContainer::retireRegistrations(
     const std::vector<GlobalRenderTargetId> &ids) noexcept {
+    bool changed = false;
     for (const auto id : ids) {
         if (!render_targets.contains(id)) continue;
+        changed = true;
         const auto name = render_targets.get(id).name;
         hideRegistrationName(name, id);
         auto retired = render_targets.extract(id, false);
@@ -1125,6 +1275,13 @@ void RenderTargetContainer::retireRegistrations(
         }
     }
     rebuildAliasGroupOwners();
+    if (changed) {
+        if (resource_revision ==
+            std::numeric_limits<std::uint64_t>::max()) {
+            std::terminate();
+        }
+        ++resource_revision;
+    }
 }
 
 void RenderTargetContainer::rebuildAliasGroupOwners() {
