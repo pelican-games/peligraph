@@ -3574,6 +3574,16 @@ void Renderer::render() {
             // Zero extent and asynchronous WSI preparation skip only this
             // presentation frame. The app loop continues ticking input, RPC,
             // reload, audio, and ECS work.
+#if PELICAN_WITH_IMGUI
+            // freeze_actions already began the interactive ImGui frame.
+            // A WSI skip has no ImGui render pass to close it, so do not carry
+            // that frame into the next NewFrame call.
+            if (auto *imgui =
+                    FastModuleContainer::tryGet<
+                        ImGuiSystem>()) {
+                imgui->endFrameIfStarted();
+            }
+#endif
             return;
         } catch (const OutputRelowerRequired &) {
             try {
