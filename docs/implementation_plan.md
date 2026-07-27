@@ -116,7 +116,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 | WP208 | lighting data contract v2 + clustered dogfood | ✅ 完了（2026-07-26、archive） |
 | WP209a | static texture dimension + material sampler authoring | ✅ 完了（2026-07-26、archive） |
 | WP209b | RT mip/layer/subresource view | ✅ 完了（2026-07-26、archive） |
-| WP210 | indirect dispatch + GPU-written draw arguments | 🟡 WP210a + WP210b fixed-state draw/count完了（2026-07-27）。一般GPU culling受け入れは継続 |
+| WP210 | indirect dispatch + GPU-written draw arguments | ✅ WP210a〜g 完了（2026-07-28）。transport、culling、segments、hot reload、XR、timing 判断入力まで実装 |
 | WP211 | `dist-bake` + shaderc OFF feature delivery | 並行候補・配布/Quest前必須 |
 | WP212 | VRS/foveation backend contract | Quest SA2 device/計測待ち |
 
@@ -483,7 +483,20 @@ indirect argumentsを生成できるようにする。
 
 詳細は
 [`design_reviews/2026-07-28_wp210f_xr_per_view_gpu_draw.md`](design_reviews/2026-07-28_wp210f_xr_per_view_gpu_draw.md)。
-WP210の残りはGPU timing受け入れである。
+
+**WP210g 完了境界（2026-07-28）**:
+
+- device、candidate/visible/segment/view/output capacity、GPU/CPU 両経路の timing を
+  `GpuDrawTimingObservation` と strict JSON v1 にした
+- `frame_gpu_ms`、minimum gain、minimum sample 数だけを使う offline break-even evaluatorを
+  追加し、live timingからruntime policyへfeedbackしない境界を固定した
+- 10 / 130 / 1024 candidate recordsを各24 sample測る実Vulkan sweepを追加した
+- GPU pathのcount reset/cull/material node identity、CPU pathでのcull不在、query全回収、
+  両経路のRGBA8一致をCI gateにし、絶対msと勝者はgateから除外した
+- 最新結果をbuild treeの単一JSONへ上書きし、captureごとの一時projectは削除する
+
+詳細は
+[`design_reviews/2026-07-28_wp210g_gpu_draw_timing.md`](design_reviews/2026-07-28_wp210g_gpu_draw_timing.md)。
 
 **受け入れ条件**:
 
@@ -492,8 +505,8 @@ WP210の残りはGPU timing受け入れである。
 - ✅ XR view count test
 - ✅ CPU fallbackを同じper-view graphで実行し、GPU sequential / mixed multiviewの
   semantic image一致を確認
-- GPU timingでCPU pathより有利なworkload範囲を記録
-- descriptor pressureが実測blockerになるまでbindless WPを作らない
+- ✅ GPU timingでCPU/GPU pathのworkload範囲と「crossoverなし」を含む判断結果を記録
+- ✅ descriptor pressureが実測blockerになるまでbindless WPを作らない
 
 依存: WP207b。見積: 大。
 

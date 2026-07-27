@@ -1,0 +1,32 @@
+{
+  "schema": "pelican.gpu_draw_timing",
+  "version": 1,
+  "device": {
+    "vendor_id": 4318,
+    "device_id": 9860,
+    "driver_version": 1,
+    "device_name": "fixture device"
+  },
+  "graph_variant": "flat",
+  "workload": {
+    "candidate_records": 1024,
+    "visible_records": 192,
+    "segment_records": 8,
+    "view_count": 1,
+    "output_capacity_records": 2048
+  },
+  "gpu_path": {
+    "frame_gpu_ms": 0.84,
+    "culling_gpu_ms": 0.09,
+    "material_draw_gpu_ms": 0.31,
+    "host_frame_ms": 0.18,
+    "sample_count": 60
+  },
+  "cpu_path": {
+    "frame_gpu_ms": 1.12,
+    "material_draw_gpu_ms": 0.61,
+    "host_frame_ms": 0.27,
+    "sample_count": 60
+  },
+  "source": "schema fixture; not hardware guidance"
+}

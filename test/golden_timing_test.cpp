@@ -24,4 +24,10 @@ TEST_CASE("GPU timing marks sprite anchor body as supported work",
     GoldenHarness::runGpuTimingSprite();
 }
 
+TEST_CASE(
+    "GPU draw timing records a workload sweep without absolute CI thresholds",
+    "[wp210][gpu-timing][break-even][headless]") {
+    GoldenHarness::runGpuDrawBreakEvenTiming();
+}
+
 } // namespace Pelican

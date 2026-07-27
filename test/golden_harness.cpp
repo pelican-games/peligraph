@@ -48,6 +48,7 @@
 #include "../src/project/materialformat.hpp"
 #include "../src/project/materiallowering.hpp"
 #include "../src/project/importmanifest.hpp"
+#include "../src/project/gpudrawtiming.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "skeletal_fixture.hpp"
 #include "material_absolute_override_fixture.hpp"
@@ -67,6 +68,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -2168,10 +2170,17 @@ void writeGpuOcclusionProject(
     bool segmented,
     std::optional<std::string_view>
         xr_view_execution = std::nullopt,
-    bool gpu_timing = false) {
+    bool gpu_timing = false,
+    std::uint32_t candidate_instances = 1,
+    bool timing_cpu_baseline = false) {
+    if (candidate_instances == 0 ||
+        candidate_instances >
+            (segmented ? 1022u : 1023u)) {
+        throw std::runtime_error(
+            "GPU occlusion fixture candidate instance count is out of range");
+    }
     writeShadowProject(root, false);
-    writeTextFile(
-        root / "scene.json",
+    auto scene_document =
         nlohmann::json{
             {"schema", "pelican.scene"},
             {"version", 1},
@@ -2252,8 +2261,20 @@ void writeGpuOcclusionProject(
                               },
                           })},
                      },
-                 })}}}}},
-        }.dump(2));
+                 })}}}}}};
+    auto &scene_objects =
+        scene_document["scenes"]["default_scene"]["objects"];
+    const auto candidate_template = scene_objects.at(1);
+    for (std::uint32_t index = 1;
+         index < candidate_instances; ++index) {
+        auto candidate = candidate_template;
+        candidate["name"] =
+            "Candidate_" + std::to_string(index);
+        scene_objects.push_back(std::move(candidate));
+    }
+    writeTextFile(
+        root / "scene.json",
+        scene_document.dump(2));
     if (segmented) {
         std::ifstream scene_input{
             root / "scene.json",
@@ -2331,6 +2352,17 @@ void writeGpuOcclusionProject(
             nlohmann::json::array(
                 {"engine://features/gpu_timing.json"});
     }
+    const auto candidate_record_count =
+        1u + candidate_instances +
+        (segmented ? 1u : 0u);
+    const auto output_command_capacity =
+        segmented
+            ? std::max(
+                  16u,
+                  candidate_record_count * 4u)
+            : candidate_record_count;
+    const auto output_count_capacity =
+        segmented ? 16u : 1u;
     auto &targets = config["render_targets"];
     targets.push_back({
         {"name",
@@ -2411,7 +2443,9 @@ void writeGpuOcclusionProject(
             {
                 {"name", "draw_candidates"},
                 {"size",
-                 segmented ? 60 : 40},
+                 candidate_record_count *
+                     static_cast<std::uint32_t>(
+                         frameGraphIndexedDrawCommandBytes)},
                 {"host_source",
                  "scene_draw_commands_v1"},
                 {"command_layout",
@@ -2420,7 +2454,9 @@ void writeGpuOcclusionProject(
             {
                 {"name", "draw_bounds"},
                 {"size",
-                 segmented ? 96 : 64},
+                 candidate_record_count *
+                     static_cast<std::uint32_t>(
+                         sizeof(SceneDrawBoundsV1))},
                 {"host_source",
                  "scene_draw_bounds_v1"},
             },
@@ -2433,14 +2469,18 @@ void writeGpuOcclusionProject(
             {
                 {"name", "visible_draws"},
                 {"size",
-                 segmented ? 320 : 40},
+                 output_command_capacity *
+                     static_cast<std::uint32_t>(
+                         frameGraphIndexedDrawCommandBytes)},
                 {"command_layout",
                  "indexed_draw"},
             },
             {
                 {"name", "visible_draw_count"},
                 {"size",
-                 segmented ? 64 : 4},
+                 output_count_capacity *
+                     static_cast<std::uint32_t>(
+                         frameGraphDrawCountBytes)},
                 {"command_layout", "draw_count"},
             },
         });
@@ -2466,7 +2506,7 @@ void writeGpuOcclusionProject(
         {"commands", "visible_draws"},
         {"count", "visible_draw_count"},
         {"max_draw_count",
-         segmented ? 16 : 2},
+         output_command_capacity},
     };
     if (segmented) {
         (*geometry)["gpu_draw_source"]
@@ -2696,10 +2736,53 @@ void writeGpuOcclusionProject(
         {"dispatch",
          {{"groups",
            nlohmann::json::array(
-               {segmented ? 16 : 1,
+               {segmented
+                    ? 16u
+                    : (candidate_record_count +
+                       63u) /
+                          64u,
                 1, 1})}}},
         {"schedule", "per_view"},
     });
+    if (timing_cpu_baseline) {
+        const auto material_pass = std::find_if(
+            passes.begin(), passes.end(),
+            [](const auto &pass) {
+                return pass.value(
+                           "name", std::string{}) ==
+                       "gbuffer_pass";
+            });
+        if (material_pass == passes.end()) {
+            throw std::runtime_error(
+                "GPU draw timing baseline requires gbuffer_pass");
+        }
+        material_pass->erase("gpu_draw_source");
+        tasks.erase(
+            std::remove_if(
+                tasks.begin(), tasks.end(),
+                [](const auto &task) {
+                    const auto name = task.value(
+                        "name", std::string{});
+                    return name == "occlusion_count_reset" ||
+                           name == "occlusion_cull";
+                }),
+            tasks.end());
+        const auto final_reduce = std::find_if(
+            tasks.begin(), tasks.end(),
+            [](const auto &task) {
+                return task.value(
+                           "name", std::string{}) ==
+                       "occlusion_depth_reduce_4";
+            });
+        if (final_reduce == tasks.end()) {
+            throw std::runtime_error(
+                "GPU draw timing baseline requires final depth reduction");
+        }
+        (*final_reduce)["before"] =
+            nlohmann::json::array(
+                {"gbuffer_pass"});
+        config.erase("buffers");
+    }
     config["compute_tasks"] =
         std::move(tasks);
     writeTextFile(
@@ -5789,6 +5872,344 @@ void verifySegmentedGpuDrawHotReload() {
     std::filesystem::remove_all(root);
 }
 
+struct GpuDrawTimingPathCapture {
+    GpuDrawTimingDeviceIdentity device;
+    std::vector<std::uint8_t> pixels;
+    nlohmann::json status;
+    double frame_gpu_ms = 0.0;
+    double culling_gpu_ms = 0.0;
+    double material_draw_gpu_ms = 0.0;
+    double host_frame_ms = 0.0;
+    std::uint32_t sample_count = 0;
+    std::optional<GpuDrawTimingWorkload> workload;
+};
+
+std::set<std::uint64_t> latestTimingFrames(
+    const nlohmann::json &status,
+    std::uint32_t sample_count) {
+    std::vector<std::uint64_t> frames;
+    for (const auto &frame :
+         status.at("logical_frame_history")) {
+        if (frame.at("graph_variant") != "flat") {
+            continue;
+        }
+        frames.push_back(
+            frame.at("logical_frame")
+                .get<std::uint64_t>());
+    }
+    if (frames.size() < sample_count) {
+        throw std::runtime_error(
+            "GPU draw timing did not collect the requested frame count");
+    }
+    return std::set<std::uint64_t>{
+        frames.end() -
+            static_cast<std::ptrdiff_t>(
+                sample_count),
+        frames.end()};
+}
+
+double averageFrameGpuMs(
+    const nlohmann::json &status,
+    const std::set<std::uint64_t> &frames) {
+    double total = 0.0;
+    std::size_t found = 0;
+    for (const auto &frame :
+         status.at("logical_frame_history")) {
+        if (frame.at("graph_variant") != "flat" ||
+            !frames.contains(
+                frame.at("logical_frame")
+                    .get<std::uint64_t>())) {
+            continue;
+        }
+        total +=
+            frame.at("total_ms")
+                .get<double>();
+        ++found;
+    }
+    if (found != frames.size()) {
+        throw std::runtime_error(
+            "GPU draw timing frame identity is incomplete");
+    }
+    return total /
+           static_cast<double>(found);
+}
+
+double averageNodeBodyGpuMs(
+    const nlohmann::json &status,
+    const std::set<std::uint64_t> &frames,
+    std::initializer_list<std::string_view>
+        node_names,
+    std::string_view node_kind) {
+    double total = 0.0;
+    std::size_t found = 0;
+    for (const auto &sample :
+         status.at("nodes")) {
+        const auto name =
+            sample.at("node_name")
+                .get<std::string>();
+        if (sample.at("graph_variant") != "flat" ||
+            sample.at("view_index") != 0 ||
+            sample.at("node_kind") !=
+                std::string{node_kind} ||
+            sample.at("subrange") != "body" ||
+            std::find(
+                node_names.begin(),
+                node_names.end(),
+                name) == node_names.end() ||
+            !frames.contains(
+                sample.at("logical_frame")
+                    .get<std::uint64_t>())) {
+            continue;
+        }
+        if (!sample.at("supported").get<bool>() ||
+            !sample.at("reason").is_null()) {
+            throw std::runtime_error(
+                "GPU draw timing body sample is unsupported: " +
+                name);
+        }
+        const auto identity =
+            sample.at("identity")
+                .get<std::string>();
+        if (!identity.ends_with(
+                ":" + name + "/body")) {
+            throw std::runtime_error(
+                "GPU draw timing body identity does not match its node");
+        }
+        total +=
+            sample.at("ms").get<double>();
+        ++found;
+    }
+    const auto expected =
+        frames.size() * node_names.size();
+    if (found != expected) {
+        throw std::runtime_error(
+            "GPU draw timing node identity is incomplete for " +
+            std::string{node_kind});
+    }
+    return total /
+           static_cast<double>(
+               frames.size());
+}
+
+bool hasTimingNode(
+    const nlohmann::json &status,
+    std::string_view node_name) {
+    return std::any_of(
+        status.at("nodes").begin(),
+        status.at("nodes").end(),
+        [&](const auto &sample) {
+            return sample.at("node_name") ==
+                   std::string{node_name};
+        });
+}
+
+GpuDrawTimingPathCapture captureGpuDrawTimingPath(
+    std::string_view run_name,
+    std::uint32_t candidate_instances,
+    bool cpu_baseline,
+    std::uint32_t warmup_frames,
+    std::uint32_t sample_count) {
+    FastModuleContainer modules;
+    const auto root =
+        makeTempProjectDir(
+            "wp210_gpu_draw_timing_" +
+            std::string{run_name});
+    writeGpuOcclusionProject(
+        root,
+        false,
+        cpu_baseline,
+        true,
+        std::nullopt,
+        true,
+        candidate_instances,
+        cpu_baseline);
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(
+        makeShadowProjectJson().dump());
+
+    auto &launch =
+        GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent =
+        vk::Extent2D{
+            goldenWidth, goldenHeight};
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(
+        EngineTime::Mode::fixed_step,
+        1.0 / 60.0);
+    auto &target = GET_MODULE(RenderTarget);
+    auto &renderer = GET_MODULE(Renderer);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load(
+        "default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 position{
+        0.0f, 2.0f, -4.5f};
+    const glm::vec3 target_position{
+        0.0f, 0.25f, 0.0f};
+    camera.setPos(position);
+    camera.setDir(
+        glm::normalize(
+            target_position - position));
+    camera.setUp(
+        {0.0f, 1.0f, 0.0f});
+
+    for (std::uint32_t frame = 0;
+         frame < warmup_frames; ++frame) {
+        time.advance();
+        renderer.render();
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+
+    double host_frame_total_ms = 0.0;
+    for (std::uint32_t frame = 0;
+         frame < sample_count; ++frame) {
+        time.advance();
+        const auto start =
+            std::chrono::steady_clock::now();
+        renderer.render();
+        const auto end =
+            std::chrono::steady_clock::now();
+        host_frame_total_ms +=
+            std::chrono::duration<double, std::milli>(
+                end - start)
+                .count();
+    }
+    auto &vkcore =
+        GET_MODULE(VulkanManageCore);
+    vkcore.waitIdle();
+    auto &timing = GET_MODULE(RenderTiming);
+    timing.flush();
+    const auto status = timing.statusJson();
+    const auto measured_frames =
+        latestTimingFrames(
+            status, sample_count);
+
+    GpuDrawTimingPathCapture capture;
+    const auto properties =
+        vkcore.getPhysDevice().getProperties();
+    capture.device = {
+        .vendor_id = properties.vendorID,
+        .device_id = properties.deviceID,
+        .driver_version =
+            properties.driverVersion,
+        .device_name =
+            std::string{
+                properties.deviceName.data()},
+    };
+    capture.pixels =
+        target.readbackLastFrameRGBA8();
+    capture.status = status;
+    capture.frame_gpu_ms =
+        averageFrameGpuMs(
+            status, measured_frames);
+    capture.material_draw_gpu_ms =
+        averageNodeBodyGpuMs(
+            status, measured_frames,
+            {"gbuffer_pass"}, "render");
+    capture.host_frame_ms =
+        host_frame_total_ms /
+        static_cast<double>(sample_count);
+    capture.sample_count = sample_count;
+
+    if (!cpu_baseline) {
+        capture.culling_gpu_ms =
+            averageNodeBodyGpuMs(
+                status, measured_frames,
+                {"occlusion_count_reset",
+                 "occlusion_cull"},
+                "compute");
+        auto &resources =
+            GET_MODULE(
+                FrameGraphResourceContainer);
+        const auto candidates =
+            resources.hostBufferPopulation(
+                resources.getBufferIdByName(
+                    "draw_candidates"));
+        const auto segments =
+            resources.hostBufferPopulation(
+                resources.getBufferIdByName(
+                    "draw_segments"));
+        if (!candidates || !segments) {
+            throw std::runtime_error(
+                "GPU draw timing workload publication is unavailable");
+        }
+        const auto counts =
+            readFrameGraphUint32Buffer(
+                "visible_draw_count");
+        std::uint64_t visible_records = 0;
+        for (std::uint32_t segment_index = 0;
+             segment_index <
+             segments->written_records;
+             ++segment_index) {
+            const auto &segment =
+                GET_MODULE(
+                    PolygonInstanceContainer)
+                    .sceneDrawSegment(
+                        segment_index);
+            if (segment.output_count_index >=
+                counts.size()) {
+                throw std::runtime_error(
+                    "GPU draw timing segment count index is out of range");
+            }
+            visible_records +=
+                counts[
+                    segment.output_count_index];
+        }
+        const auto output_capacity =
+            resources.bufferSize(
+                resources.getBufferIdByName(
+                    "visible_draws")) /
+            frameGraphIndexedDrawCommandBytes;
+        if (candidates->written_records >
+                std::numeric_limits<
+                    std::uint32_t>::max() ||
+            segments->written_records >
+                std::numeric_limits<
+                    std::uint32_t>::max() ||
+            visible_records >
+                std::numeric_limits<
+                    std::uint32_t>::max() ||
+            output_capacity >
+                std::numeric_limits<
+                    std::uint32_t>::max()) {
+            throw std::runtime_error(
+                "GPU draw timing workload exceeds its v1 count domain");
+        }
+        capture.workload =
+            GpuDrawTimingWorkload{
+                .candidate_records =
+                    static_cast<
+                        std::uint32_t>(
+                        candidates
+                            ->written_records),
+                .visible_records =
+                    static_cast<
+                        std::uint32_t>(
+                        visible_records),
+                .segment_records =
+                    static_cast<
+                        std::uint32_t>(
+                        segments
+                            ->written_records),
+                .view_count = 1,
+                .output_capacity_records =
+                    static_cast<
+                        std::uint32_t>(
+                        output_capacity),
+            };
+    }
+
+    vkcore.waitIdle();
+    std::filesystem::remove_all(root);
+    return capture;
+}
+
 float srgbToLinear(std::uint8_t encoded) {
     const auto value = static_cast<float>(encoded) / 255.0f;
     return value <= 0.04045f ? value / 12.92f
@@ -7342,6 +7763,295 @@ void GoldenHarness::runGpuTimingCompute() {
     std::filesystem::remove_all(root);
 #else
     SKIP("GPU timing compute fixture requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runGpuDrawBreakEvenTiming() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+
+    constexpr std::uint32_t warmup_frames = 4;
+    constexpr std::uint32_t sample_count = 24;
+    constexpr std::array<
+        std::uint32_t, 3>
+        candidate_workloads{
+            8, 128, 1022};
+    const GpuDrawBreakEvenPolicy policy{
+        .minimum_gain_percent = 5.0,
+        .minimum_sample_count =
+            sample_count,
+    };
+
+    nlohmann::ordered_json observations =
+        nlohmann::ordered_json::array();
+    std::optional<std::uint32_t>
+        first_gpu_preferred;
+    std::optional<std::uint32_t>
+        last_cpu_preferred;
+    bool saw_gpu_preference = false;
+    bool monotonic_after_first_gpu = true;
+
+    for (const auto candidate_instances :
+         candidate_workloads) {
+        CAPTURE(candidate_instances);
+        const auto gpu =
+            captureGpuDrawTimingPath(
+                "gpu_" +
+                    std::to_string(
+                        candidate_instances),
+                candidate_instances,
+                false,
+                warmup_frames,
+                sample_count);
+        const auto cpu =
+            captureGpuDrawTimingPath(
+                "cpu_" +
+                    std::to_string(
+                        candidate_instances),
+                candidate_instances,
+                true,
+                warmup_frames,
+                sample_count);
+
+        REQUIRE(gpu.device == cpu.device);
+        REQUIRE(gpu.pixels == cpu.pixels);
+        REQUIRE(gpu.workload.has_value());
+        REQUIRE(
+            gpu.status.at("supported")
+                .get<bool>());
+        REQUIRE(
+            cpu.status.at("supported")
+                .get<bool>());
+        REQUIRE(
+            gpu.status.at("query_pool")
+                    .at("pending_ranges") ==
+                0);
+        REQUIRE(
+            cpu.status.at("query_pool")
+                    .at("pending_ranges") ==
+                0);
+        REQUIRE(
+            hasTimingNode(
+                gpu.status,
+                "occlusion_count_reset"));
+        REQUIRE(
+            hasTimingNode(
+                gpu.status,
+                "occlusion_cull"));
+        REQUIRE_FALSE(
+            hasTimingNode(
+                cpu.status,
+                "occlusion_count_reset"));
+        REQUIRE_FALSE(
+            hasTimingNode(
+                cpu.status,
+                "occlusion_cull"));
+        REQUIRE(
+            hasTimingNode(
+                gpu.status,
+                "occlusion_depth_reduce_4"));
+        REQUIRE(
+            hasTimingNode(
+                cpu.status,
+                "occlusion_depth_reduce_4"));
+        REQUIRE(
+            hasTimingNode(
+                gpu.status,
+                "gbuffer_pass"));
+        REQUIRE(
+            hasTimingNode(
+                cpu.status,
+                "gbuffer_pass"));
+
+        REQUIRE(
+            gpu.workload
+                ->candidate_records ==
+            candidate_instances + 2);
+        REQUIRE(
+            gpu.workload
+                ->visible_records == 4);
+        REQUIRE(
+            gpu.workload
+                ->segment_records == 4);
+        REQUIRE(
+            gpu.workload
+                ->output_capacity_records >=
+            gpu.workload
+                ->candidate_records);
+
+        const GpuDrawTimingObservation
+            observation{
+                .device = gpu.device,
+                .graph_variant = "flat",
+                .workload = *gpu.workload,
+                .gpu_path =
+                    {
+                        .frame_gpu_ms =
+                            gpu.frame_gpu_ms,
+                        .culling_gpu_ms =
+                            gpu.culling_gpu_ms,
+                        .material_draw_gpu_ms =
+                            gpu.material_draw_gpu_ms,
+                        .host_frame_ms =
+                            gpu.host_frame_ms,
+                        .sample_count =
+                            gpu.sample_count,
+                    },
+                .cpu_path =
+                    {
+                        .frame_gpu_ms =
+                            cpu.frame_gpu_ms,
+                        .material_draw_gpu_ms =
+                            cpu.material_draw_gpu_ms,
+                        .host_frame_ms =
+                            cpu.host_frame_ms,
+                        .sample_count =
+                            cpu.sample_count,
+                    },
+                .source =
+                    "pelican WP210 headless Vulkan timestamp sweep",
+            };
+        validateGpuDrawTimingObservation(
+            observation);
+        const auto encoded =
+            gpuDrawTimingObservationToJson(
+                observation);
+        REQUIRE(
+            compileGpuDrawTimingObservation(
+                encoded) ==
+            observation);
+
+        const auto decision =
+            evaluateGpuDrawBreakEven(
+                observation, policy);
+        REQUIRE(
+            decision.selection !=
+            GpuDrawTimingSelection::
+                inconclusive);
+        INFO(
+            "candidate_records="
+            << observation.workload
+                   .candidate_records
+            << " gpu_frame_ms="
+            << observation.gpu_path
+                   .frame_gpu_ms
+            << " cpu_frame_ms="
+            << observation.cpu_path
+                   .frame_gpu_ms
+            << " selection="
+            << gpuDrawTimingSelectionName(
+                   decision.selection));
+
+        if (decision.selection ==
+            GpuDrawTimingSelection::
+                gpu_culling) {
+            if (!first_gpu_preferred) {
+                first_gpu_preferred =
+                    observation.workload
+                        .candidate_records;
+            }
+            saw_gpu_preference = true;
+        } else {
+            last_cpu_preferred =
+                observation.workload
+                    .candidate_records;
+            if (saw_gpu_preference) {
+                monotonic_after_first_gpu =
+                    false;
+            }
+        }
+        observations.push_back({
+            {"observation", encoded},
+            {"decision",
+             gpuDrawBreakEvenDecisionToJson(
+                 decision)},
+        });
+    }
+
+    nlohmann::ordered_json break_even{
+        {"monotonic_after_first_gpu",
+         monotonic_after_first_gpu},
+    };
+    if (first_gpu_preferred) {
+        break_even[
+            "first_gpu_preferred_candidate_records"] =
+            *first_gpu_preferred;
+    } else {
+        break_even[
+            "first_gpu_preferred_candidate_records"] =
+            nullptr;
+    }
+    if (last_cpu_preferred) {
+        break_even[
+            "last_cpu_preferred_candidate_records"] =
+            *last_cpu_preferred;
+    } else {
+        break_even[
+            "last_cpu_preferred_candidate_records"] =
+            nullptr;
+    }
+    const nlohmann::ordered_json report{
+        {"schema",
+         "pelican.gpu_draw_break_even_report"},
+        {"version", 1},
+        {"policy",
+         gpuDrawBreakEvenPolicyToJson(
+             policy)},
+        {"measurement_context",
+         {
+             {"extent",
+              {
+                  {"width", goldenWidth},
+                  {"height", goldenHeight},
+              }},
+             {"candidate_visibility",
+              "occluded"},
+             {"common_gpu_work",
+              nlohmann::ordered_json::array(
+                  {"depth_prepass",
+                   "depth_pyramid_seed_reduce"})},
+             {"host_frame_ms_includes_pacing",
+              true},
+         }},
+        {"ci_contract",
+         {
+             {"absolute_duration_thresholds",
+              false},
+             {"requires_exact_query_identity",
+              true},
+             {"requires_semantic_image_match",
+              true},
+             {"runtime_feedback",
+              false},
+         }},
+        {"observations",
+         std::move(observations)},
+        {"break_even",
+         std::move(break_even)},
+    };
+    const auto report_path =
+        binaryRoot() /
+        "test_artifacts" /
+        "wp210_gpu_draw_break_even.json";
+    writeTextFile(
+        report_path,
+        report.dump(2) + "\n");
+    REQUIRE(
+        report.at("observations")
+            .size() ==
+        candidate_workloads.size());
+    REQUIRE(
+        report.at("ci_contract")
+                .at(
+                    "absolute_duration_thresholds") ==
+            false);
+    INFO(
+        "GPU draw break-even report="
+        << report_path.string());
+#else
+    SKIP(
+        "GPU draw break-even timing requires the runtime shader compiler");
 #endif
 }
 

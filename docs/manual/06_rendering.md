@@ -1245,6 +1245,34 @@ pelican frame metrics frames=<n> cpu_update_ms_avg=<x> cpu_render_ms_avg=<x> cpu
 
 GUI では ImGui の `Pelican Engine Stats` → `GPU timing`(View / Node / Kind / Barriers ms / Body ms)。表示は**最新フレームのみ**で、120 フレームの積み上げグラフは 🚧 です。
 
+#### GPU-written draw の損益分岐を測る
+
+`GpuDrawTimingObservation`(`src/project/gpudrawtiming.hpp`)は、GPU culling と
+CPU DrawQueue を比較するための offline 計測形式です。`pelican.gpu_draw_timing` version 1
+には device identity、graph variant、candidate/visible/segment/view/output-capacity record 数と、
+両経路の次の値を保存します。
+
+| 値 | 用途 |
+|---|---|
+| `frame_gpu_ms` | v1 の損益分岐 metric。graph 全体の GPU timestamp |
+| `culling_gpu_ms` | GPU path の count reset + cull body。query identity の証拠 |
+| `material_draw_gpu_ms` | `gbuffer_pass/body` の帰属確認 |
+| `host_frame_ms` | `Renderer::render()` の wall-clock 診断値。fence/pacing を含み得るので選択には未使用 |
+| `sample_count` | minimum sample gate |
+
+`evaluateGpuDrawBreakEven()`は、sample不足なら`inconclusive`、それ以外は
+`frame_gpu_ms`の改善が指定したminimum gain以上のときだけ`gpu_culling`を返します。
+これは実行中に呼んで次frameを切り替える仕組みではありません。測定結果をレビューし、
+必要なら将来のdevice/workload profileへ固定値として移すための判断入力です。
+
+実Vulkan受け入れは10 / 130 / 1024 candidate recordsを各24 frame測定し、絶対msや
+CPU/GPUどちらが勝つかではなく、query identity、sample数、query全回収、最終RGBA8一致を
+検証します。最新レポートは
+`build-off-openxr/test_artifacts/wp210_gpu_draw_break_even.json`へ1ファイルだけ上書きされます。
+ローカル参考値と測定条件は
+[`2026-07-28_wp210g_gpu_draw_timing.md`](../design_reviews/2026-07-28_wp210g_gpu_draw_timing.md)
+を参照してください。
+
 ### VRAM(✅WP145)
 
 `get_status.memory`(`schema_version: 1`)は常設で、feature も CLI も要りません。
@@ -1264,7 +1292,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 ### 決定性との関係・未実装
 
-- live の計測値は**診断専用**で、その場の simulation や render policy へ自動 feedback しません。XR の `auto` が読むのは人が rendering config に固定した device profile だけです。rpc の 2 回一致比較では `gpu_timing` と `memory` を丸ごと `<measured>` に正規化して除外します。一方 `frame` / `time` / `seed` などの simulation state と最終 RGBA8 は正規化しません。`.rdc` の byte 一致は決定性ゲートにしません。
+- live の計測値は**診断専用**で、その場の simulation や render policy へ自動 feedback しません。XR の `auto` が読むのは人が rendering config に固定した device profile だけです。GPU draw の break-even evaluator もoffline専用で、観測値をruntimeへ自動適用しません。rpc の 2 回一致比較では `gpu_timing` と `memory` を丸ごと `<measured>` に正規化して除外します。一方 `frame` / `time` / `seed` などの simulation state と最終 RGBA8 は正規化しません。`.rdc` の byte 一致は決定性ゲートにしません。
 - 📐 未実装: buffer / pipeline / texture / sampler の網羅命名と submit 境界の queue label(D-P0b)、ImGui からのキャプチャボタン、XR 中のキャプチャ、Tracy、validation 常設 CI、crash 診断(minidump / `VK_EXT_device_fault`)。
 - 🚧 CPU フェーズ計測は `update` / `render` / `present_wait` の 3 区間が上のログに出るだけです(`get_status.cpu_timing` はありません)。
 

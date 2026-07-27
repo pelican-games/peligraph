@@ -3,6 +3,7 @@ add_library(pelican_project
     featurecompose.cpp
     featurejitter.cpp
     graphvariantpolicy.cpp
+    gpudrawtiming.cpp
     importmanifest.cpp
     importrules.cpp
     jsonrpc.cpp

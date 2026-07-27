@@ -1205,6 +1205,10 @@ pelican_define_test(targetplanning_test pelican_project)
 pelican_define_test(targetrenderplanning_test pelican_project)
 pelican_define_test(samplecountplanning_test pelican_project)
 pelican_define_test(graphvariantpolicy_test pelican_project)
+pelican_define_test(gpudrawtiming_test pelican_project)
+target_compile_definitions(pelican_test_gpudrawtiming_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 
 pelican_define_test(featurecompose_test pelican_core)
 target_compile_definitions(pelican_test_featurecompose_test PRIVATE

@@ -22,6 +22,7 @@ void runGpuTimingIdentity();
 void runGpuTimingRing();
 void runGpuTimingCompute();
 void runGpuTimingSprite();
+void runGpuDrawBreakEvenTiming();
 void runRendererTrace();
 void runFullscreenRebind();
 
