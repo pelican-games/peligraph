@@ -154,6 +154,16 @@ view/filter別rangeはsource commandを共有し得るため、segmentごとのo
 project compute shaderはsegment bufferのzero-filled tailを`command_capacity == 0`として
 無視し、runtime array lengthでcommands、bounds、output、countの各境界を検証する。
 
+WP210eではこの構成を既存hot reload transactionへ載せた。rendering config変更は
+commands/count/segments、compute task、pass、pipelineを候補GPU arenaへ全て構築してから、
+1つの`RendererRuntimeGeneration`としてpublishする。segment strideやbuffer容量の検証に
+失敗した候補はpublic name bindingを一切変えず、旧generationを継続する。
+
+shaderソースだけの変更は別のshader/pipeline transactionで処理する。成功時もgraph
+generationとbuffer IDは維持し、shader bundle versionと依存pipelineだけを一括更新する。
+compile失敗時はbundle versionを進めない。この二分により、graph ABI変更では完全な資源
+差し替えを行い、algorithm実装だけの変更ではgraph再compileを避ける。
+
 現plannerのRAW導出は宣言順上の直前writerを使う。render pass nodeがcompute task nodeより
 先に組み立てられる現行adapterでは、draw command producerはconsumer passへの`before`
 （または逆向きの`after`）を明示する。read edgeとbarrier自体は

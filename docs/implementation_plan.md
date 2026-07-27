@@ -456,12 +456,26 @@ indirect argumentsを生成できるようにする。
 
 詳細は
 [`design_reviews/2026-07-27_wp210d_gpu_draw_segments.md`](design_reviews/2026-07-27_wp210d_gpu_draw_segments.md)。
-WP210の残りは、hot reload、XR per-view、GPU timing受け入れである。
+
+**WP210e 完了境界（2026-07-28）**:
+
+- segmented graph config reloadでcommands/count/segmentsを同じ新runtime generationへ
+  一括差し替えし、旧snapshotから旧buffer IDを保持できることを実Vulkanで検証する
+- `scene_draw_segments_v1`の32 byte ABI違反をpublish前にrejectし、root generation、
+  public buffer ID、segment count、最終画像を直前状態へ保つ
+- cull shaderの成功reloadはbundle/pipeline transactionだけを更新し、graph generationと
+  buffer IDを維持する。compile失敗ではshader versionと描画結果もrollbackする
+- fixture終了時に旧snapshotを解放し、遅延GPU資源をpending 0まで明示flushする
+
+詳細は
+[`design_reviews/2026-07-28_wp210e_segmented_draw_hot_reload.md`](design_reviews/2026-07-28_wp210e_segmented_draw_hot_reload.md)。
+WP210の残りは、XR per-viewとGPU timing受け入れである。
 
 **受け入れ条件**:
 
 - ✅ occlusion cullingをproject-owned fixed-state dogfoodにする
-- GPU生成count 0/1/max/overflow、rollback、hot reload、XR view count test
+- ✅ GPU生成count 0/1/max/overflow、graph/shader rollback、hot reload
+- XR view count test
 - CPU fallbackとのsemantic image一致
 - GPU timingでCPU pathより有利なworkload範囲を記録
 - descriptor pressureが実測blockerになるまでbindless WPを作らない

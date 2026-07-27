@@ -226,6 +226,19 @@ void writeTextFile(const std::filesystem::path &path, const std::string &content
     file << contents;
 }
 
+std::string readTextFile(
+    const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        throw std::runtime_error(
+            "failed to open text fixture: " +
+            path.string());
+    }
+    return std::string{
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{}};
+}
+
 nlohmann::json makeProjectConfig(const std::filesystem::path &scene_path, const std::filesystem::path &asset_path) {
     return nlohmann::json{
         {"basic_config",
@@ -4295,6 +4308,75 @@ bool usesRenderer(const GoldenCase &golden_case) {
            golden_case.mode != "openpbr_coat_sphere";
 }
 
+std::vector<std::uint32_t> readFrameGraphUint32Buffer(
+    std::string_view name) {
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    auto &resources =
+        GET_MODULE(FrameGraphResourceContainer);
+    const auto id =
+        resources.getBufferIdByName(name);
+    if (!isValidFrameGraphBufferId(id)) {
+        throw std::runtime_error(
+            "frame-graph uint32 readback buffer is unavailable: " +
+            std::string{name});
+    }
+    const auto byte_count =
+        resources.bufferSize(id);
+    if (byte_count == 0 ||
+        byte_count % sizeof(std::uint32_t) != 0) {
+        throw std::runtime_error(
+            "frame-graph uint32 readback buffer has an invalid size: " +
+            std::string{name});
+    }
+    const auto &source =
+        resources.buffer(id);
+    auto staging = vkcore.allocBuf(
+        byte_count,
+        vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::
+            eHostAccessRandom);
+    GET_MODULE(VulkanUtils)
+        .executeOneTimeCmd(
+            [&](vk::CommandBuffer command) {
+                vk::BufferMemoryBarrier barrier;
+                barrier.srcAccessMask =
+                    vk::AccessFlagBits::eShaderWrite;
+                barrier.dstAccessMask =
+                    vk::AccessFlagBits::eTransferRead;
+                barrier.srcQueueFamilyIndex =
+                    VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex =
+                    VK_QUEUE_FAMILY_IGNORED;
+                barrier.buffer =
+                    source.buffer.get();
+                barrier.offset = 0;
+                barrier.size = byte_count;
+                command.pipelineBarrier(
+                    vk::PipelineStageFlagBits::
+                        eComputeShader,
+                    vk::PipelineStageFlagBits::
+                        eTransfer,
+                    {}, {}, {barrier}, {});
+                command.copyBuffer(
+                    source.buffer.get(),
+                    staging.buffer.get(),
+                    vk::BufferCopy{
+                        0, 0, byte_count});
+            },
+            true);
+    const auto bytes =
+        vkcore.readBuf(staging, byte_count);
+    std::vector<std::uint32_t> values(
+        static_cast<std::size_t>(
+            byte_count /
+            sizeof(std::uint32_t)));
+    std::memcpy(
+        values.data(), bytes.data(),
+        static_cast<std::size_t>(byte_count));
+    return values;
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                         bool gpu_timing = true) {
     FastModuleContainer modules;
@@ -4599,73 +4681,12 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         gpu_selected_segment_materials;
     if (isGpuOcclusionGoldenMode(
             golden_case.mode)) {
-        auto &vkcore =
-            GET_MODULE(VulkanManageCore);
         auto &resources =
             GET_MODULE(
                 FrameGraphResourceContainer);
-        const auto &source =
-            resources.buffer(
+        const auto count_values =
+            readFrameGraphUint32Buffer(
                 "visible_draw_count");
-        const auto count_bytes =
-            resources.bufferSize(
-                "visible_draw_count");
-        auto staging = vkcore.allocBuf(
-            count_bytes,
-            vk::BufferUsageFlagBits::
-                eTransferDst,
-            vma::MemoryUsage::
-                eAutoPreferHost,
-            vma::AllocationCreateFlagBits::
-                eHostAccessRandom);
-        GET_MODULE(VulkanUtils)
-            .executeOneTimeCmd(
-                [&](vk::CommandBuffer command) {
-                    vk::BufferMemoryBarrier
-                        barrier;
-                    barrier.srcAccessMask =
-                        vk::AccessFlagBits::
-                            eShaderWrite;
-                    barrier.dstAccessMask =
-                        vk::AccessFlagBits::
-                            eTransferRead;
-                    barrier.srcQueueFamilyIndex =
-                        VK_QUEUE_FAMILY_IGNORED;
-                    barrier.dstQueueFamilyIndex =
-                        VK_QUEUE_FAMILY_IGNORED;
-                    barrier.buffer =
-                        source.buffer.get();
-                    barrier.offset = 0;
-                    barrier.size =
-                        count_bytes;
-                    command.pipelineBarrier(
-                        vk::PipelineStageFlagBits::
-                            eComputeShader,
-                        vk::PipelineStageFlagBits::
-                            eTransfer,
-                        {}, {}, {barrier}, {});
-                    command.copyBuffer(
-                        source.buffer.get(),
-                        staging.buffer.get(),
-                        vk::BufferCopy{
-                            0, 0,
-                            count_bytes});
-                },
-                true);
-        const auto bytes =
-            vkcore.readBuf(
-                staging,
-                count_bytes);
-        std::vector<std::uint32_t>
-            count_values(
-                static_cast<std::size_t>(
-                    count_bytes /
-                    sizeof(std::uint32_t)));
-        std::memcpy(
-            count_values.data(),
-            bytes.data(),
-            static_cast<std::size_t>(
-                count_bytes));
         gpu_visible_draw_count =
             count_values.front();
         gpu_draw_command_population =
@@ -4978,6 +4999,497 @@ ShadowProbeCapture captureShadowProbe(bool jitter_enabled) {
     capture.shadow_bytes = readDepthTargetBytes(shadow);
     std::filesystem::remove_all(root);
     return capture;
+}
+
+struct SegmentedDrawRuntimeSnapshot {
+    std::shared_ptr<
+        const RendererRuntimeGeneration>
+        root;
+    FrameGraphBufferId commands =
+        noFrameGraphBufferId();
+    FrameGraphBufferId count =
+        noFrameGraphBufferId();
+    FrameGraphBufferId segments =
+        noFrameGraphBufferId();
+    std::vector<
+        std::pair<ShaderBundleId,
+                  std::uint64_t>>
+        cull_shader_versions;
+};
+
+SegmentedDrawRuntimeSnapshot
+captureSegmentedDrawRuntimeSnapshot() {
+    auto root =
+        GET_MODULE(FrameGraphRuntimeContainer)
+            .snapshot();
+    if (root == nullptr) {
+        throw std::runtime_error(
+            "segmented draw runtime has no published generation");
+    }
+    const auto name =
+        root->name_to_id.find("main");
+    if (name == root->name_to_id.end()) {
+        throw std::runtime_error(
+            "segmented draw runtime has no main program");
+    }
+    const auto *program =
+        root->find(name->second);
+    if (program == nullptr) {
+        throw std::runtime_error(
+            "segmented draw runtime program is unavailable");
+    }
+    const auto pass = std::find_if(
+        program->rendering_pass.passes.begin(),
+        program->rendering_pass.passes.end(),
+        [](const auto &candidate) {
+            return candidate.definition.name ==
+                   "gbuffer_pass";
+        });
+    if (pass ==
+            program->rendering_pass.passes.end() ||
+        !pass->definition.isMaterial()) {
+        throw std::runtime_error(
+            "segmented draw runtime has no material gbuffer_pass");
+    }
+    const auto &source =
+        pass->definition.materialInfo()
+            .gpu_draw_source;
+    if (!source ||
+        source->layout !=
+            GpuDrawSourceLayout::
+                draw_queue_segments_v1) {
+        throw std::runtime_error(
+            "segmented draw runtime did not publish its segment layout");
+    }
+    const auto require_binding =
+        [&](std::string_view authored_name,
+            FrameGraphBufferId expected) {
+            const auto found =
+                program->frame_graph
+                    .buffer_bindings.find(
+                        std::string{
+                            authored_name});
+            if (found ==
+                    program->frame_graph
+                        .buffer_bindings.end() ||
+                found->second != expected) {
+                throw std::runtime_error(
+                    "segmented draw runtime buffer binding is not generation-pinned: " +
+                    std::string{authored_name});
+            }
+        };
+    require_binding(
+        source->commands,
+        source->commands_id);
+    require_binding(
+        source->count,
+        source->count_id);
+    require_binding(
+        source->segments,
+        source->segments_id);
+
+    if (root->gpu_arena == nullptr) {
+        throw std::runtime_error(
+            "segmented draw runtime has no GPU arena");
+    }
+    const auto *scope =
+        root->gpu_arena->findScope(
+            "render_pipeline/flat");
+    if (scope == nullptr) {
+        throw std::runtime_error(
+            "segmented draw runtime has no flat GPU scope");
+    }
+
+    SegmentedDrawRuntimeSnapshot result{
+        .root = std::move(root),
+        .commands = source->commands_id,
+        .count = source->count_id,
+        .segments = source->segments_id,
+    };
+    auto &shaders =
+        GET_MODULE(ShaderLibrary);
+    for (const auto &resource :
+         scope->resources) {
+        if (resource.kind !=
+                RenderPipelineGpuResourceKind::
+                    shader_bundle ||
+            resource.handle < 0 ||
+            resource.handle >
+                std::numeric_limits<int>::max()) {
+            continue;
+        }
+        const auto id = ShaderBundleId{
+            static_cast<int>(
+                resource.handle)};
+        const auto &bundle =
+            shaders.get(id);
+        if (bundle.source_path.filename() !=
+            "occlusion_cull.comp") {
+            continue;
+        }
+        result.cull_shader_versions
+            .emplace_back(
+                id, bundle.version);
+    }
+    std::ranges::sort(
+        result.cull_shader_versions,
+        {},
+        [](const auto &entry) {
+            return entry.first.value;
+        });
+    if (result.cull_shader_versions.empty()) {
+        throw std::runtime_error(
+            "segmented draw runtime does not own the cull shader");
+    }
+    return result;
+}
+
+std::vector<std::uint32_t>
+selectedGpuSegmentCounts() {
+    const auto counts =
+        readFrameGraphUint32Buffer(
+            "visible_draw_count");
+    auto &instances =
+        GET_MODULE(
+            PolygonInstanceContainer);
+    const auto &draw_calls =
+        instances.getDrawCalls(
+            false, std::nullopt, 0);
+    if (draw_calls.size() < 2) {
+        throw std::runtime_error(
+            "segmented draw runtime emitted fewer than two state ranges");
+    }
+    std::vector<std::uint32_t> result;
+    result.reserve(2);
+    for (std::size_t index = 0;
+         index < 2; ++index) {
+        const auto &segment =
+            instances.sceneDrawSegment(
+                draw_calls[index]
+                    .scene_segment_index);
+        if (segment.output_count_index >=
+            counts.size()) {
+            throw std::runtime_error(
+                "segmented draw count slot is outside the published buffer");
+        }
+        result.push_back(
+            counts[
+                segment.output_count_index]);
+    }
+    return result;
+}
+
+nlohmann::json &namedJsonEntry(
+    nlohmann::json &entries,
+    std::string_view name) {
+    const auto found = std::find_if(
+        entries.begin(), entries.end(),
+        [name](const auto &entry) {
+            return entry.value(
+                       "name",
+                       std::string{}) ==
+                   name;
+        });
+    if (found == entries.end()) {
+        throw std::runtime_error(
+            "named JSON fixture entry is missing: " +
+            std::string{name});
+    }
+    return *found;
+}
+
+void requireSegmentedReload(
+    bool condition, std::string_view message) {
+    if (!condition) {
+        throw std::runtime_error(
+            "segmented GPU draw hot reload invariant failed: " +
+            std::string{message});
+    }
+}
+
+bool sameSegmentedPublication(
+    const SegmentedDrawRuntimeSnapshot &left,
+    const SegmentedDrawRuntimeSnapshot &right) {
+    return left.root == right.root &&
+           left.commands == right.commands &&
+           left.count == right.count &&
+           left.segments == right.segments;
+}
+
+bool shaderVersionsAdvancedOnce(
+    const SegmentedDrawRuntimeSnapshot &before,
+    const SegmentedDrawRuntimeSnapshot &after) {
+    if (before.cull_shader_versions.size() !=
+        after.cull_shader_versions.size()) {
+        return false;
+    }
+    for (std::size_t index = 0;
+         index < before.cull_shader_versions.size();
+         ++index) {
+        if (before.cull_shader_versions[index].first !=
+                after.cull_shader_versions[index].first ||
+            before.cull_shader_versions[index].second + 1 !=
+                after.cull_shader_versions[index].second) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void verifySegmentedGpuDrawHotReload() {
+    FastModuleContainer modules;
+    const auto root =
+        makeTempProjectDir(
+            "gpu_segmented_hot_reload");
+    writeGpuOcclusionProject(
+        root, false, false, true);
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(
+        makeShadowProjectJson().dump());
+
+    auto &launch =
+        GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = true;
+    launch.headless_extent =
+        vk::Extent2D{
+            goldenWidth, goldenHeight};
+    launch.headless_frames = 1;
+
+    auto &target = GET_MODULE(RenderTarget);
+    auto &renderer = GET_MODULE(Renderer);
+    const auto expected_counts =
+        std::vector<std::uint32_t>{1, 1};
+    renderShadowFrame(target);
+    const auto initial_pixels =
+        target.readbackLastFrameRGBA8();
+    requireSegmentedReload(
+        selectedGpuSegmentCounts() ==
+            expected_counts,
+        "initial GPU counts");
+
+    auto initial =
+        captureSegmentedDrawRuntimeSnapshot();
+    auto &resources =
+        GET_MODULE(
+            FrameGraphResourceContainer);
+    const auto namesMatch =
+        [&](const SegmentedDrawRuntimeSnapshot &state) {
+            return resources.getBufferIdByName(
+                       "visible_draws") ==
+                       state.commands &&
+                   resources.getBufferIdByName(
+                       "visible_draw_count") ==
+                       state.count &&
+                   resources.getBufferIdByName(
+                       "draw_segments") ==
+                       state.segments;
+        };
+    requireSegmentedReload(
+        namesMatch(initial),
+        "initial public buffer IDs");
+    const auto initial_segment_bytes =
+        resources.bufferSize(initial.segments);
+
+    const auto config_path =
+        root / "passes" / "main.json";
+    auto replacement_config =
+        loadJsonFile(config_path);
+    const auto replacement_segment_bytes =
+        initial_segment_bytes + 32;
+    namedJsonEntry(
+        replacement_config["buffers"],
+        "draw_segments")["size"] =
+        replacement_segment_bytes;
+    writeTextFile(
+        config_path,
+        replacement_config.dump(2));
+
+    auto &reload =
+        GET_MODULE(watch::ReloadService);
+    const auto config_key =
+        watch::makeAssetKey(
+            "passes/main.json");
+    requireSegmentedReload(
+        reload.applyRequestForTesting(
+            {config_key,
+             watch::ReloadKind::modified,
+             {}, 1}),
+        "valid graph reload rejected");
+    auto replacement =
+        captureSegmentedDrawRuntimeSnapshot();
+    requireSegmentedReload(
+        replacement.root != initial.root &&
+            replacement.root->generation ==
+                initial.root->generation + 1,
+        "graph generation did not advance once");
+    requireSegmentedReload(
+        replacement.commands != initial.commands &&
+            replacement.count != initial.count &&
+            replacement.segments != initial.segments,
+        "replacement reused old buffer IDs");
+    requireSegmentedReload(
+        namesMatch(replacement),
+        "replacement public buffer IDs");
+    requireSegmentedReload(
+        resources.bufferSize(initial.segments) ==
+                initial_segment_bytes &&
+            resources.bufferSize(
+                replacement.segments) ==
+                replacement_segment_bytes,
+        "old/new segment buffer generations");
+
+    const auto requireStableFrame =
+        [&](std::string_view phase) {
+            renderer.render();
+            GET_MODULE(VulkanManageCore)
+                .waitIdle();
+            requireSegmentedReload(
+                selectedGpuSegmentCounts() ==
+                    expected_counts,
+                std::string{phase} +
+                    " GPU counts");
+            requireSegmentedReload(
+                target.readbackLastFrameRGBA8() ==
+                    initial_pixels,
+                std::string{phase} +
+                    " image");
+        };
+    requireStableFrame(
+        "valid graph reload");
+
+    auto invalid_segment_config =
+        replacement_config;
+    namedJsonEntry(
+        invalid_segment_config["buffers"],
+        "draw_segments")["size"] =
+        replacement_segment_bytes + 1;
+    writeTextFile(
+        config_path,
+        invalid_segment_config.dump(2));
+    requireSegmentedReload(
+        !reload.applyRequestForTesting(
+            {config_key,
+             watch::ReloadKind::modified,
+             {}, 1}),
+        "invalid segment ABI was accepted");
+    const auto graph_reload_error =
+        reload.statusJson()
+            .at("runtime")
+            .at(std::string{
+                watch::
+                    renderPipelineReloadParticipantName})
+            .at("details")
+            .at("domain_error");
+    requireSegmentedReload(
+        graph_reload_error.is_string() &&
+            graph_reload_error
+                    .get<std::string>()
+                    .find(
+                        "size must be a multiple of 32 bytes") !=
+                std::string::npos,
+        "segment ABI diagnostic");
+    auto after_segment_failure =
+        captureSegmentedDrawRuntimeSnapshot();
+    requireSegmentedReload(
+        sameSegmentedPublication(
+            after_segment_failure,
+            replacement) &&
+            after_segment_failure
+                    .cull_shader_versions ==
+                replacement
+                    .cull_shader_versions &&
+            namesMatch(replacement),
+        "segment ABI rollback");
+    requireStableFrame(
+        "segment ABI rollback");
+
+    // Keep the disk graph valid while exercising the independent
+    // shader/pipeline transaction.
+    writeTextFile(
+        config_path,
+        replacement_config.dump(2));
+    const auto shader_path =
+        root / "shaders" /
+        "occlusion_cull.comp";
+    writeTextFile(
+        shader_path,
+        readTextFile(shader_path) +
+            "\n// WP210e valid hot reload\n");
+    const auto shader_key =
+        watch::makeAssetKey(
+            "shaders/occlusion_cull.comp");
+    requireSegmentedReload(
+        reload.applyRequestForTesting(
+            {shader_key,
+             watch::ReloadKind::modified,
+             {}, 1}),
+        "valid cull shader reload rejected");
+    auto after_shader_reload =
+        captureSegmentedDrawRuntimeSnapshot();
+    requireSegmentedReload(
+        sameSegmentedPublication(
+            after_shader_reload,
+            replacement) &&
+            shaderVersionsAdvancedOnce(
+                replacement,
+                after_shader_reload),
+        "shader reload changed graph identity or versioned incorrectly");
+    requireStableFrame(
+        "valid shader reload");
+
+    writeTextFile(
+        shader_path,
+        "#version 450\n"
+        "layout(local_size_x=1) in;\n"
+        "void main(){ this_is_not_valid; }\n");
+    requireSegmentedReload(
+        !reload.applyRequestForTesting(
+            {shader_key,
+             watch::ReloadKind::modified,
+             {}, 1}),
+        "invalid cull shader was accepted");
+    auto after_shader_failure =
+        captureSegmentedDrawRuntimeSnapshot();
+    requireSegmentedReload(
+        sameSegmentedPublication(
+            after_shader_failure,
+            replacement) &&
+            after_shader_failure
+                    .cull_shader_versions ==
+                after_shader_reload
+                    .cull_shader_versions,
+        "shader rollback");
+    requireStableFrame(
+        "shader rollback");
+    const auto shader_reload_error =
+        reload.statusJson()
+            .at("runtime")
+            .at(std::string{
+                watch::
+                    shaderReloadParticipantName})
+            .at("last_error");
+    requireSegmentedReload(
+        shader_reload_error.is_string() &&
+            shader_reload_error
+                    .get<std::string>()
+                    .find(
+                        "occlusion_cull.comp") !=
+                std::string::npos,
+        "shader compile diagnostic");
+
+    initial.root.reset();
+    after_segment_failure.root.reset();
+    after_shader_reload.root.reset();
+    after_shader_failure.root.reset();
+    replacement.root.reset();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    GET_MODULE(DeletionQueue).flushAll();
+    requireSegmentedReload(
+        GET_MODULE(DeletionQueue)
+                .pendingCountForTesting() == 0,
+        "deferred GPU resources did not drain");
+    std::filesystem::remove_all(root);
 }
 
 float srgbToLinear(std::uint8_t encoded) {
@@ -5360,6 +5872,18 @@ void GoldenHarness::
 #else
     SKIP(
         "GPU segmented occlusion golden requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::
+    runGpuSegmentedOcclusionHotReload() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    verifySegmentedGpuDrawHotReload();
+#else
+    SKIP(
+        "GPU segmented occlusion hot reload requires the runtime shader compiler");
 #endif
 }
 

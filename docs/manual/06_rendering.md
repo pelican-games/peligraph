@@ -441,6 +441,12 @@ pipeline/material handleをGPUへ渡しておらず、CPU DrawQueueに存在し�
 dispatch数もsegment bufferの処理対象slotを覆う必要があります。任意のcompute graphから
 入力bufferの意味やdispatch policyをengineが推測することはありません。
 
+rendering configをホットリロードすると、segmented drawのcommands/count/segmentsを含む
+GPU資源は新しいruntime generationへ一括差し替えされます。segment strideや容量が不正な
+候補はpublishされず、直前のgraphとbuffer IDで描画を継続します。compute shaderファイル
+だけを保存した場合はshader/pipelineだけをtransaction更新するため、graph generationと
+buffer IDは変わりません。shader compileに失敗しても直前の有効pipelineを継続します。
+
 `gpu_draw_source` はcommands/countをrender nodeのreadへ自動追加し、順序付け済みの
 compute writeから`DrawIndirect` / `IndirectCommandRead` barrierを導出します。現プランナは
 宣言順より後ろのwriterをRAW producerとして推測しないため、top-levelでrender passより後に

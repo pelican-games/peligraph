@@ -72,10 +72,11 @@ segmentごとにCPUが設定する。GPU commandはそのstate境界を越えら
 ## 残る境界
 
 1. XRではsegment metadataを公開するが、per-view depth pyramid/cullingの実Vulkan検証は未完。
-2. culling shaderとsegment構成のhot reload/rollback受け入れは未完。
+2. culling shaderとsegment構成のhot reload/rollbackはWP210eで完了。
 3. 大量segment時のGPU timingとCPU fallbackとのbreak-even pointは未計測。
 4. GPUが新規pipeline/material stateを生成するbindless state keyは未実装。
 5. output command容量はauthorが確保する。自動arena sizingは後続範囲。
 
-次は同じsegmented fixtureをhot reload transactionへ載せ、その後XR per-viewで
-sort viewとvisibility metadataが正しく選択されることを実GPUで確認する。
+WP210eの結果は
+[`2026-07-28_wp210e_segmented_draw_hot_reload.md`](2026-07-28_wp210e_segmented_draw_hot_reload.md)。
+次はXR per-viewでsort viewとvisibility metadataが正しく選択されることを実GPUで確認する。

@@ -32,6 +32,15 @@ TEST_CASE(
         runGpuSegmentedOcclusionCulling();
 }
 
+TEST_CASE(
+    "segmented GPU draw generations hot reload and roll back atomically",
+    "[golden][headless][wp210][occlusion][segments][hot-reload][rollback]") {
+    GoldenHarness::
+        runGpuSegmentedOcclusionHotReload();
+    SUCCEED(
+        "segmented graph and shader transactions preserved the published frame");
+}
+
 TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
           "[golden][headless][byte-exact]") {
     GoldenHarness::runRgba8Hashes();
