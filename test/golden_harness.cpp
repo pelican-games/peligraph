@@ -63,6 +63,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -121,6 +122,16 @@ struct RenderedCase {
     bool sprite_gpu_created = false;
     std::size_t atlas_page_count = 0;
     nlohmann::json sprite_status;
+    std::optional<std::uint32_t>
+        gpu_visible_draw_count;
+    std::optional<
+        FrameGraphResourceContainer::
+            HostBufferPopulation>
+        gpu_draw_command_population;
+    std::optional<
+        FrameGraphResourceContainer::
+            HostBufferPopulation>
+        gpu_draw_bounds_population;
 };
 
 struct Tolerance {
@@ -2128,6 +2139,623 @@ void writeGpuDrawProject(
             "u;}\n");
 }
 
+void writeGpuOcclusionProject(
+    const std::filesystem::path &root,
+    bool candidate_visible,
+    bool force_cpu) {
+    writeShadowProject(root, false);
+    writeTextFile(
+        root / "scene.json",
+        nlohmann::json{
+            {"schema", "pelican.scene"},
+            {"version", 1},
+            {"scenes",
+             {{"default_scene",
+               {{"objects",
+                 nlohmann::json::array({
+                     {
+                         {"name", "Occluder"},
+                         {"components",
+                          nlohmann::json::array({
+                              {
+                                  {"name", "transform"},
+                                  {"pos",
+                                   nlohmann::json::array(
+                                       {0.0, -0.12, 0.0})},
+                                  {"rotation",
+                                   nlohmann::json::array(
+                                       {0.0, 0.0, 0.0,
+                                        1.0})},
+                                  {"scale",
+                                   nlohmann::json::array(
+                                       {1.35, 1.35,
+                                        0.12})},
+                              },
+                              {
+                                  {"name",
+                                   "simplemodelview"},
+                                  {"model", "ground"},
+                              },
+                          })},
+                     },
+                     {
+                         {"name", "Candidate"},
+                         {"components",
+                          nlohmann::json::array({
+                              {
+                                  {"name", "transform"},
+                                  {"pos",
+                                   nlohmann::json::array(
+                                       {candidate_visible
+                                            ? 2.1
+                                            : 0.0,
+                                        0.12, 1.2})},
+                                  {"rotation",
+                                   nlohmann::json::array(
+                                       {0.0, 0.0, 0.0,
+                                        1.0})},
+                                  {"scale",
+                                   nlohmann::json::array(
+                                       {0.32, 0.32,
+                                        0.32})},
+                              },
+                              {
+                                  {"name",
+                                   "simplemodelview"},
+                                  {"model", "ground"},
+                              },
+                          })},
+                     },
+                     {
+                         {"name", "Sun"},
+                         {"components",
+                          nlohmann::json::array({
+                              {
+                                  {"name", "light"},
+                                  {"type",
+                                   "directional"},
+                                  {"direction",
+                                   nlohmann::json::array(
+                                       {0.35, -1.0,
+                                        -0.25})},
+                                  {"intensity", 3.0},
+                                  {"color",
+                                   nlohmann::json::array(
+                                       {1.0, 0.94,
+                                        0.82})},
+                              },
+                          })},
+                     },
+                 })}}}}},
+        }.dump(2));
+
+    auto config =
+        makeShadowRenderingConfig(false);
+    auto &targets = config["render_targets"];
+    targets.push_back({
+        {"name",
+         "occlusion_gbuffer_albedo"},
+        {"extent_scale", 1.0},
+        {"format", "B8G8R8A8_UNORM"},
+        {"format_class", "scene"},
+        {"usage",
+         nlohmann::json::array(
+             {"COLOR_ATTACHMENT"})},
+    });
+    targets.push_back({
+        {"name",
+         "occlusion_gbuffer_normal"},
+        {"extent_scale", 1.0},
+        {"format",
+         "R16G16B16A16_SFLOAT"},
+        {"format_class", "data"},
+        {"usage",
+         nlohmann::json::array(
+             {"COLOR_ATTACHMENT"})},
+    });
+    targets.push_back({
+        {"name",
+         "occlusion_gbuffer_material"},
+        {"extent_scale", 1.0},
+        {"format", "R8G8B8A8_UNORM"},
+        {"format_class", "data"},
+        {"usage",
+         nlohmann::json::array(
+             {"COLOR_ATTACHMENT"})},
+    });
+    targets.push_back({
+        {"name",
+         "occlusion_gbuffer_worldpos"},
+        {"extent_scale", 1.0},
+        {"format",
+         "R16G16B16A16_SFLOAT"},
+        {"format_class", "data"},
+        {"usage",
+         nlohmann::json::array(
+             {"COLOR_ATTACHMENT"})},
+    });
+    targets.push_back({
+        {"name",
+         "occlusion_gbuffer_emissive"},
+        {"extent_scale", 1.0},
+        {"format", "R8G8B8A8_UNORM"},
+        {"format_class", "scene"},
+        {"usage",
+         nlohmann::json::array(
+             {"COLOR_ATTACHMENT"})},
+    });
+    targets.push_back({
+        {"name", "occlusion_depth"},
+        {"extent_scale", 1.0},
+        {"format", "D32_SFLOAT"},
+        {"format_class", "data"},
+        {"usage",
+         nlohmann::json::array({
+             "DEPTH_STENCIL_ATTACHMENT",
+             "SAMPLED",
+         })},
+    });
+    targets.push_back({
+        {"name", "occlusion_pyramid"},
+        {"extent_scale", 1.0},
+        {"format", "R32_SFLOAT"},
+        {"format_class", "data"},
+        {"usage",
+         nlohmann::json::array(
+             {"STORAGE", "SAMPLED"})},
+        {"mip_levels", "full"},
+    });
+
+    config["buffers"] =
+        nlohmann::json::array({
+            {
+                {"name", "draw_candidates"},
+                {"size", 40},
+                {"host_source",
+                 "scene_draw_commands_v1"},
+                {"command_layout",
+                 "indexed_draw"},
+            },
+            {
+                {"name", "draw_bounds"},
+                {"size", 64},
+                {"host_source",
+                 "scene_draw_bounds_v1"},
+            },
+            {
+                {"name", "visible_draws"},
+                {"size", 40},
+                {"command_layout",
+                 "indexed_draw"},
+            },
+            {
+                {"name", "visible_draw_count"},
+                {"size", 4},
+                {"command_layout", "draw_count"},
+            },
+        });
+
+    auto &passes =
+        config["rendering_passes"][0]["passes"];
+    const auto geometry = std::find_if(
+        passes.begin(), passes.end(),
+        [](const auto &pass) {
+            return pass.value(
+                       "name", std::string{}) ==
+                   "gbuffer_pass";
+        });
+    if (geometry == passes.end()) {
+        throw std::runtime_error(
+            "GPU occlusion golden requires gbuffer_pass");
+    }
+    (*geometry)["material_range"] = {
+        {"start", 0},
+        {"count", 1},
+    };
+    (*geometry)["gpu_draw_source"] = {
+        {"commands", "visible_draws"},
+        {"count", "visible_draw_count"},
+        {"max_draw_count", 2},
+    };
+    if (force_cpu) {
+        (*geometry)["gpu_draw_source"]
+                   ["execution"] =
+            "cpu";
+    }
+    const auto geometry_index =
+        static_cast<std::size_t>(
+            std::distance(
+                passes.begin(), geometry));
+    auto depth_prepass = *geometry;
+    depth_prepass["name"] =
+        "occlusion_depth_prepass";
+    depth_prepass.erase(
+        "gpu_draw_source");
+    depth_prepass["output"] = {
+        {"color",
+         nlohmann::json::array({
+             "occlusion_gbuffer_albedo",
+             "occlusion_gbuffer_normal",
+             "occlusion_gbuffer_material",
+             "occlusion_gbuffer_worldpos",
+             "occlusion_gbuffer_emissive",
+         })},
+        {"depth", "occlusion_depth"},
+    };
+    passes.insert(
+        passes.begin() +
+            static_cast<
+                nlohmann::json::difference_type>(
+                geometry_index),
+        std::move(depth_prepass));
+
+    auto tasks = nlohmann::json::array();
+    tasks.push_back({
+        {"name", "occlusion_depth_seed"},
+        {"shader",
+         "shaders/occlusion_depth_seed"},
+        {"reads",
+         nlohmann::json::array(
+             {"occlusion_depth"})},
+        {"writes",
+         nlohmann::json::array(
+             {"occlusion_pyramid"})},
+        {"after",
+         nlohmann::json::array(
+             {"occlusion_depth_prepass"})},
+        {"before",
+         nlohmann::json::array(
+             {"occlusion_depth_reduce_1"})},
+        {"resource_ports",
+         {
+             {"scene_depth",
+              {
+                  {"resource",
+                   "occlusion_depth"},
+                  {"access", "sampled"},
+                  {"sampling",
+                   {
+                       {"filter", "nearest"},
+                       {"address",
+                        "clamp_to_edge"},
+                   }},
+              }},
+             {"pyramid_seed",
+              {
+                  {"resource",
+                   "occlusion_pyramid"},
+                  {"access", "storage"},
+                  {"subresource",
+                   {
+                       {"mip", 0},
+                   }},
+              }},
+         }},
+        {"dispatch",
+         {{"groups",
+           nlohmann::json::array(
+               {2, 2, 1})}}},
+        {"schedule", "per_frame"},
+    });
+    for (std::uint32_t mip = 1;
+         mip < 5; ++mip) {
+        tasks.push_back({
+            {"name",
+             "occlusion_depth_reduce_" +
+                 std::to_string(mip)},
+            {"shader",
+             "shaders/occlusion_depth_reduce"},
+            {"reads",
+             nlohmann::json::array(
+                 {"occlusion_pyramid"})},
+            {"writes",
+             nlohmann::json::array(
+                 {"occlusion_pyramid"})},
+            {"after",
+             nlohmann::json::array(
+                 {mip == 1
+                      ? "occlusion_depth_seed"
+                      : "occlusion_depth_reduce_" +
+                            std::to_string(
+                                mip - 1)})},
+            {"before",
+             nlohmann::json::array(
+                 {mip == 4
+                      ? "occlusion_cull"
+                      : "occlusion_depth_reduce_" +
+                            std::to_string(
+                                mip + 1)})},
+            {"resource_ports",
+             {
+                 {"source_depth",
+                  {
+                      {"resource",
+                       "occlusion_pyramid"},
+                      {"access", "sampled"},
+                      {"sampling",
+                       {
+                           {"filter", "nearest"},
+                           {"address",
+                            "clamp_to_edge"},
+                       }},
+                      {"subresource",
+                       {
+                           {"mip", mip - 1},
+                       }},
+                  }},
+                 {"reduced_depth",
+                  {
+                      {"resource",
+                       "occlusion_pyramid"},
+                      {"access", "storage"},
+                      {"subresource",
+                       {
+                           {"mip", mip},
+                       }},
+                  }},
+             }},
+            {"dispatch",
+             {{"groups",
+               nlohmann::json::array(
+                   {1, 1, 1})}}},
+            {"schedule", "per_frame"},
+        });
+    }
+    tasks.push_back({
+        {"name", "occlusion_count_reset"},
+        {"shader",
+         "shaders/occlusion_count_reset"},
+        {"writes",
+         nlohmann::json::array(
+             {"visible_draw_count"})},
+        {"before",
+         nlohmann::json::array(
+             {"occlusion_cull"})},
+        {"dispatch",
+         {{"groups",
+           nlohmann::json::array(
+               {1, 1, 1})}}},
+        {"schedule", "per_frame"},
+    });
+    tasks.push_back({
+        {"name", "occlusion_cull"},
+        {"shader",
+         "shaders/occlusion_cull"},
+        {"reads",
+         nlohmann::json::array(
+             {"draw_candidates",
+              "draw_bounds",
+              "occlusion_pyramid"})},
+        {"writes",
+         nlohmann::json::array(
+             {"visible_draws",
+              "visible_draw_count"})},
+        {"after",
+         nlohmann::json::array(
+             {"occlusion_depth_reduce_4",
+              "occlusion_count_reset"})},
+        {"before",
+         nlohmann::json::array(
+             {"gbuffer_pass"})},
+        {"resource_ports",
+         {
+             {"depth_pyramid",
+              {
+                  {"resource",
+                   "occlusion_pyramid"},
+                  {"access", "sampled"},
+                  {"sampling",
+                   {
+                       {"filter", "nearest"},
+                       {"address",
+                        "clamp_to_edge"},
+                   }},
+                  {"subresource",
+                   {
+                       {"mip", 0},
+                       {"mip_count", 5},
+                   }},
+              }},
+         }},
+        {"dispatch",
+         {{"groups",
+           nlohmann::json::array(
+               {1, 1, 1})}}},
+        {"schedule", "per_frame"},
+    });
+    config["compute_tasks"] =
+        std::move(tasks);
+    writeTextFile(
+        root / "passes" / "main.json",
+        config.dump(2));
+
+    writeTextFile(
+        root / "shaders" /
+            "occlusion_depth_seed.comp",
+        R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 output_size = pelican_size_pyramid_seed();
+    if (any(greaterThanEqual(coordinate, output_size))) return;
+    vec2 uv = (vec2(coordinate) + vec2(0.5)) /
+              vec2(output_size);
+    pelican_store_pyramid_seed(
+        coordinate,
+        vec4(pelican_sample_scene_depth(uv).r));
+}
+)glsl");
+    writeTextFile(
+        root / "shaders" /
+            "occlusion_depth_reduce.comp",
+        R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 output_size = pelican_size_reduced_depth();
+    if (any(greaterThanEqual(coordinate, output_size))) return;
+    ivec2 source_size = pelican_size_source_depth();
+    ivec2 base = coordinate * 2;
+    float farthest = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 source = min(
+                base + ivec2(x, y),
+                source_size - ivec2(1));
+            vec2 uv = (vec2(source) + vec2(0.5)) /
+                      vec2(source_size);
+            farthest = max(
+                farthest,
+                pelican_sample_source_depth(uv).r);
+        }
+    }
+    pelican_store_reduced_depth(
+        coordinate, vec4(farthest));
+}
+)glsl");
+    writeTextFile(
+        root / "shaders" /
+            "occlusion_count_reset.comp",
+        R"glsl(
+#version 450
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+layout(std430,set=1,binding=0) buffer Count {
+    uint value;
+} visible_count;
+void main() {
+    visible_count.value = 0u;
+}
+)glsl");
+    writeTextFile(
+        root / "shaders" /
+            "occlusion_cull.comp",
+        R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
+
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
+
+struct DrawCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+struct DrawBounds {
+    vec4 minimum;
+    vec4 maximum;
+};
+layout(std430,set=1,binding=0) readonly buffer Candidates {
+    DrawCommand values[];
+} candidates;
+layout(std430,set=1,binding=1) readonly buffer Bounds {
+    DrawBounds values[];
+} bounds;
+layout(std430,set=1,binding=3) writeonly buffer Visible {
+    DrawCommand values[];
+} visible;
+layout(std430,set=1,binding=4) buffer Count {
+    uint value;
+} visible_count;
+
+bool survivesOcclusion(DrawBounds bound) {
+    if (bound.minimum.w < 0.5) return true;
+
+    vec2 ndc_min = vec2(1.0);
+    vec2 ndc_max = vec2(-1.0);
+    float nearest_depth = 1.0;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        vec3 world = vec3(
+            (corner & 1u) != 0u
+                ? bound.maximum.x
+                : bound.minimum.x,
+            (corner & 2u) != 0u
+                ? bound.maximum.y
+                : bound.minimum.y,
+            (corner & 4u) != 0u
+                ? bound.maximum.z
+                : bound.minimum.z);
+        vec4 clip = pelicanFrame.projection *
+                    pelicanFrame.view *
+                    vec4(world, 1.0);
+        if (clip.w <= 0.00001) return true;
+        vec3 ndc = clip.xyz / clip.w;
+        ndc_min = min(ndc_min, ndc.xy);
+        ndc_max = max(ndc_max, ndc.xy);
+        nearest_depth = min(nearest_depth, ndc.z);
+    }
+
+    // Frustum rejection is deliberately left to a later policy. This task
+    // only rejects objects for which the hierarchy proves full occlusion.
+    if (ndc_max.x < -1.0 || ndc_min.x > 1.0 ||
+        ndc_max.y < -1.0 || ndc_min.y > 1.0) {
+        return true;
+    }
+    vec2 uv_min = clamp(
+        ndc_min * 0.5 + 0.5,
+        vec2(0.0), vec2(1.0));
+    vec2 uv_max = clamp(
+        ndc_max * 0.5 + 0.5,
+        vec2(0.0), vec2(1.0));
+    vec2 base_size =
+        vec2(pelican_size_lod_depth_pyramid(0));
+    vec2 pixel_span =
+        max((uv_max - uv_min) * base_size,
+            vec2(1.0));
+    float lod = floor(log2(max(
+        pixel_span.x, pixel_span.y)));
+    lod = clamp(
+        lod, 0.0,
+        float(pelican_mip_count_depth_pyramid() - 1u));
+
+    float farthest_depth = 0.0;
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            uv_min, lod).r);
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            vec2(uv_max.x, uv_min.y), lod).r);
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            vec2(uv_min.x, uv_max.y), lod).r);
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            uv_max, lod).r);
+    return nearest_depth <=
+           farthest_depth + 0.0005;
+}
+
+void main() {
+    uint candidate = gl_GlobalInvocationID.x;
+    uint candidate_count = min(
+        uint(candidates.values.length()),
+        uint(bounds.values.length()));
+    if (candidate >= candidate_count) return;
+    if (!survivesOcclusion(bounds.values[candidate])) return;
+
+    uint output_index = atomicAdd(
+        visible_count.value, 1u);
+    if (output_index < uint(visible.values.length())) {
+        visible.values[output_index] =
+            candidates.values[candidate];
+    }
+}
+)glsl");
+}
+
 void writeBLayerShadowProject(const std::filesystem::path &root,
                               std::string_view mode) {
     writeShadowProject(root, false);
@@ -3265,6 +3893,16 @@ bool isGpuDrawGoldenMode(
            mode == "gpu_draw_force_cpu";
 }
 
+bool isGpuOcclusionGoldenMode(
+    const std::string &mode) {
+    return mode ==
+               "gpu_occlusion_hidden" ||
+           mode ==
+               "gpu_occlusion_visible" ||
+           mode ==
+               "gpu_occlusion_force_cpu";
+}
+
 std::uint32_t gpuDrawProducedCount(
     const std::string &mode) {
     if (mode == "gpu_draw_count_zero" ||
@@ -3534,6 +4172,18 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(
             makeShadowProjectJson().dump());
+    } else if (isGpuOcclusionGoldenMode(
+                   golden_case.mode)) {
+        writeGpuOcclusionProject(
+            temp_dir,
+            golden_case.mode ==
+                "gpu_occlusion_visible",
+            golden_case.mode ==
+                "gpu_occlusion_force_cpu");
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(
+            makeShadowProjectJson().dump());
     } else if (isTaaGoldenMode(golden_case.mode)) {
         writeTaaProject(temp_dir, golden_case.mode == "taa_ortho");
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -3636,6 +4286,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
     } else if (isGpuDrawGoldenMode(
                    golden_case.mode)) {
         renderShadowFrame(render_target);
+    } else if (isGpuOcclusionGoldenMode(
+                   golden_case.mode)) {
+        renderShadowFrame(render_target);
     } else if (isTaaGoldenMode(golden_case.mode)) {
         renderTaaGoldenFrames(render_target, golden_case.mode);
     } else if (golden_case.mode == "compute_buffer") {
@@ -3650,6 +4303,89 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
 
     if (golden_case.mode == "explicit_order" && gpu_timing) {
         GET_MODULE(RenderTiming).flush();
+    }
+    std::optional<std::uint32_t>
+        gpu_visible_draw_count;
+    std::optional<
+        FrameGraphResourceContainer::
+            HostBufferPopulation>
+        gpu_draw_command_population;
+    std::optional<
+        FrameGraphResourceContainer::
+            HostBufferPopulation>
+        gpu_draw_bounds_population;
+    if (isGpuOcclusionGoldenMode(
+            golden_case.mode)) {
+        auto &vkcore =
+            GET_MODULE(VulkanManageCore);
+        auto &resources =
+            GET_MODULE(
+                FrameGraphResourceContainer);
+        const auto &source =
+            resources.buffer(
+                "visible_draw_count");
+        auto staging = vkcore.allocBuf(
+            sizeof(std::uint32_t),
+            vk::BufferUsageFlagBits::
+                eTransferDst,
+            vma::MemoryUsage::
+                eAutoPreferHost,
+            vma::AllocationCreateFlagBits::
+                eHostAccessRandom);
+        GET_MODULE(VulkanUtils)
+            .executeOneTimeCmd(
+                [&](vk::CommandBuffer command) {
+                    vk::BufferMemoryBarrier
+                        barrier;
+                    barrier.srcAccessMask =
+                        vk::AccessFlagBits::
+                            eShaderWrite;
+                    barrier.dstAccessMask =
+                        vk::AccessFlagBits::
+                            eTransferRead;
+                    barrier.srcQueueFamilyIndex =
+                        VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex =
+                        VK_QUEUE_FAMILY_IGNORED;
+                    barrier.buffer =
+                        source.buffer.get();
+                    barrier.offset = 0;
+                    barrier.size =
+                        sizeof(
+                            std::uint32_t);
+                    command.pipelineBarrier(
+                        vk::PipelineStageFlagBits::
+                            eComputeShader,
+                        vk::PipelineStageFlagBits::
+                            eTransfer,
+                        {}, {}, {barrier}, {});
+                    command.copyBuffer(
+                        source.buffer.get(),
+                        staging.buffer.get(),
+                        vk::BufferCopy{
+                            0, 0,
+                            sizeof(
+                                std::uint32_t)});
+                },
+                true);
+        const auto bytes =
+            vkcore.readBuf(
+                staging,
+                sizeof(std::uint32_t));
+        std::uint32_t value = 0;
+        std::memcpy(
+            &value, bytes.data(),
+            sizeof(value));
+        gpu_visible_draw_count =
+            value;
+        gpu_draw_command_population =
+            resources.hostBufferPopulation(
+                resources.getBufferIdByName(
+                    "draw_candidates"));
+        gpu_draw_bounds_population =
+            resources.hostBufferPopulation(
+                resources.getBufferIdByName(
+                    "draw_bounds"));
     }
     const auto pixels = render_target.readbackLastFrameRGBA8();
     const auto device_properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
@@ -3681,6 +4417,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         FastModuleContainer::isInitialized<SpriteRenderer>() && GET_MODULE(SpriteRenderer).hasGpuBuffersForTesting(),
         FastModuleContainer::isInitialized<AtlasAssetResource>() ? GET_MODULE(AtlasAssetResource).pageCountForTesting() : 0,
         sprite_status,
+        gpu_visible_draw_count,
+        gpu_draw_command_population,
+        gpu_draw_bounds_population,
     };
 }
 
@@ -4107,6 +4846,115 @@ void GoldenHarness::runGpuDrawIndirect() {
     REQUIRE(producer < consumer);
 #else
     SKIP("GPU-written draw golden requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runGpuOcclusionCulling() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto root =
+        sourceRoot() /
+        "test/golden/shadow_off";
+    const auto hidden =
+        renderCase(GoldenCase{
+            "gpu_occlusion_hidden",
+            "gpu_occlusion_hidden", root,
+            goldenWidth, goldenHeight});
+    const auto visible =
+        renderCase(GoldenCase{
+            "gpu_occlusion_visible",
+            "gpu_occlusion_visible", root,
+            goldenWidth, goldenHeight});
+    const auto forced_cpu =
+        renderCase(GoldenCase{
+            "gpu_occlusion_force_cpu",
+            "gpu_occlusion_force_cpu", root,
+            goldenWidth, goldenHeight});
+
+    REQUIRE(
+        hidden.gpu_visible_draw_count ==
+        std::optional<std::uint32_t>{1});
+    REQUIRE(
+        visible.gpu_visible_draw_count ==
+        std::optional<std::uint32_t>{2});
+    REQUIRE(
+        forced_cpu.gpu_visible_draw_count ==
+        std::optional<std::uint32_t>{1});
+    REQUIRE(
+        hidden.image.pixels ==
+        forced_cpu.image.pixels);
+    REQUIRE(
+        hidden.image.pixels !=
+        visible.image.pixels);
+
+    for (const auto *capture :
+         {&hidden, &visible, &forced_cpu}) {
+        REQUIRE(
+            capture
+                ->gpu_draw_command_population
+                .has_value());
+        REQUIRE(
+            capture
+                ->gpu_draw_bounds_population
+                .has_value());
+        REQUIRE(
+            capture
+                ->gpu_draw_command_population
+                ->source_records == 2);
+        REQUIRE(
+            capture
+                ->gpu_draw_command_population
+                ->written_records == 2);
+        REQUIRE(
+            capture
+                ->gpu_draw_bounds_population
+                ->source_records == 2);
+        REQUIRE(
+            capture
+                ->gpu_draw_bounds_population
+                ->written_records == 2);
+    }
+
+    const auto node =
+        [&](std::string_view name) {
+            return std::find(
+                hidden.plan_order.begin(),
+                hidden.plan_order.end(),
+                name);
+        };
+    const auto prepass =
+        node("occlusion_depth_prepass");
+    const auto seed =
+        node("occlusion_depth_seed");
+    const auto reduce =
+        node("occlusion_depth_reduce_4");
+    const auto cull =
+        node("occlusion_cull");
+    const auto geometry =
+        node("gbuffer_pass");
+    REQUIRE(
+        prepass !=
+        hidden.plan_order.end());
+    REQUIRE(
+        seed !=
+        hidden.plan_order.end());
+    REQUIRE(
+        reduce !=
+        hidden.plan_order.end());
+    REQUIRE(
+        cull !=
+        hidden.plan_order.end());
+    REQUIRE(
+        geometry !=
+        hidden.plan_order.end());
+    REQUIRE(prepass < seed);
+    REQUIRE(seed < reduce);
+    REQUIRE(reduce < cull);
+    REQUIRE(cull < geometry);
+#else
+    SKIP(
+        "GPU occlusion golden requires the runtime shader compiler");
 #endif
 }
 

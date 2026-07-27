@@ -1441,16 +1441,53 @@ glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
-std::vector<vk::DrawIndexedIndirectCommand>
+SceneDrawCandidatesV1
 PolygonInstanceContainer::
-    indexedDrawCommandsForFrameGraph() const {
-    std::vector<vk::DrawIndexedIndirectCommand>
-        result;
+    sceneDrawCandidatesForFrameGraph() const {
+    SceneDrawCandidatesV1 result;
     const auto &records =
         compiled_draw_queue.indirectRecords();
-    result.reserve(records.size());
+    result.commands.reserve(records.size());
+    result.bounds.reserve(records.size());
+    if (records.empty()) {
+        return result;
+    }
     for (const auto &record : records) {
-        result.push_back(record.command);
+        result.commands.push_back(record.command);
+    }
+    for (std::uint32_t view = 0;
+         view < compiled_draw_queue.sortViewCount();
+         ++view) {
+        for (const auto phase :
+             {DrawQueuePhase::opaque,
+              DrawQueuePhase::transparent}) {
+            for (const auto &item :
+                 compiled_draw_queue
+                     .queue(phase, view)
+                     .orderedItems()) {
+                SceneDrawBoundsV1 packed;
+                if (item.world_bounds) {
+                    packed.minimum = {
+                        item.world_bounds->minimum[0],
+                        item.world_bounds->minimum[1],
+                        item.world_bounds->minimum[2],
+                        1.0F,
+                    };
+                    packed.maximum = {
+                        item.world_bounds->maximum[0],
+                        item.world_bounds->maximum[1],
+                        item.world_bounds->maximum[2],
+                        0.0F,
+                    };
+                }
+                result.bounds.push_back(packed);
+            }
+        }
+    }
+    if (result.commands.size() !=
+        result.bounds.size()) {
+        throw std::runtime_error(
+            "scene draw command and bounds publications are misaligned");
     }
     return result;
 }

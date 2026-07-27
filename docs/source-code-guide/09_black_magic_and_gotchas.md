@@ -532,6 +532,7 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 | buffer `command_layout: indexed_draw` | 済 | packed 20 byte以上を検証し`INDIRECT_BUFFER` usageを付与 |
 | buffer `command_layout: draw_count` | 済 | u32 1個以上を検証し`INDIRECT_BUFFER` usageを付与 |
 | buffer `host_source: scene_draw_commands_v1` | 済 | CPU DrawQueue commandを20 byte strideへcompactし、容量超過はゼロ埋め+診断 |
+| buffer `host_source: scene_draw_bounds_v1` | 済 | commandと同じflatten順でworld AABBを32 byte strideへpack。`minimum.w`がvalid flag |
 | material pass `gpu_draw_source` | 済（fixed-state） | 1つの`material_range`を`drawIndexedIndirectCount`で置換。未対応device/CPU強制は既存DrawQueueへfallback |
 | `lifetime: persistent` | 済 | 実質全 buffer が container lifetime |
 | `lifetime: transient` | 済 | frame ごとの確保/recycle は未実装 |

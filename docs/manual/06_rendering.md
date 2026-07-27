@@ -60,7 +60,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `name` | ✔ | `"swapchain"` は予約名(書くとエラー) |
 | `extent_scale` | ✔ | ウィンドウ(swapchain)サイズ × scale。> 0 |
 | `width` / `height` | 任意(両方セット) | 固定サイズ RT(シャドウマップ等)。片方だけはエラー |
-| `format` | ✔ | `B8G8R8A8_UNORM` / `B8G8R8A8_SRGB` / `R8G8B8A8_UNORM` / `R8G8B8A8_SRGB` / `R8_UNORM` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `D32_SFLOAT` / `D24_UNORM_S8_UINT` / `D16_UNORM` |
+| `format` | ✔ | `B8G8R8A8_UNORM` / `B8G8R8A8_SRGB` / `R8G8B8A8_UNORM` / `R8G8B8A8_SRGB` / `R8_UNORM` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `R32_SFLOAT` / `D32_SFLOAT` / `D24_UNORM_S8_UINT` / `D16_UNORM` |
 | `format_candidates` | 任意 string 配列 | verified Vulkan physical fragment が選択してよい追加 format。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
 | `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバが実 format を決める(§6.3)✅WP73 |
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
@@ -329,6 +329,11 @@ indirect command read への stage/access barrier もプランから自動発行
       "command_layout": "indexed_draw"
     },
     {
+      "name": "draw_bounds",
+      "size": 64,
+      "host_source": "scene_draw_bounds_v1"
+    },
+    {
       "name": "visible_draws",
       "size": 40,
       "command_layout": "indexed_draw"
@@ -342,7 +347,7 @@ indirect command read への stage/access barrier もプランから自動発行
   "compute_tasks": [{
     "name": "build_visible_draws",
     "shader": "shaders/build_visible_draws",
-    "reads": ["draw_candidates"],
+    "reads": ["draw_candidates", "draw_bounds"],
     "writes": ["visible_draws", "visible_draw_count"],
     "before": ["gbuffer_pass"],
     "dispatch": {"groups": [1, 1, 1]}
@@ -380,9 +385,24 @@ alignment 必須で、`command_offset + max_draw_count * 20` と
 または書き換えて出力できます。ただし候補列にはmaterial境界などのsegment metadataは
 まだありません。
 
+`scene_draw_bounds_v1`はcommand候補と同じflattened DrawQueue順序のworld AABBです。
+1要素は`vec4 minimum`、`vec4 maximum`の32 byteで、`minimum.w == 1`ならxyzが有効です。
+deformation済みのboundsを毎フレーム公開します。安全なboundsを持たないcustom geometryは
+`minimum.w == 0`になるので、culling shaderは推測で落とさず残してください。
+commands/boundsのbuffer容量はそれぞれ独立しており、overflow時は各bufferの末尾を
+ゼロ埋めしてpopulation診断を残します。consumerは両方のruntime array lengthの小さい方を
+候補数にすると、異なる容量でも範囲外参照を起こしません。
+
+full mip chainをsampled resource portで読むshaderでは、生成accessor
+`pelican_sample_lod_<port>(uv, lod)`、`pelican_size_lod_<port>(lod)`、
+`pelican_mip_count_<port>()`を利用できます。2D-array portのsample LODだけは
+`(uv, view_index, lod)`です。depth pyramidのmax/min reduction、mip選択、biasなどの
+アルゴリズムはengine固定ではなくproject側のcompute shaderで変更できます。
+
 WP210b の実装範囲は **1つの `material_range` entry に pipeline、material descriptor、
 static/skinned vertex layoutを固定する経路**です。そのため `material_range.count` は1が必須で、
-GPU commandが切り替えられるのはgeometry/instanceだけです。複数material、複数pipeline、
+GPU commandが切り替えられるのはgeometry/instanceだけです。WP210cのocclusion dogfoodも
+この固定状態の1 segmentだけをcompactします。複数material、複数pipeline、
 material境界をまたぐGPU cullingは後続範囲です。また固定状態を得るCPU DrawQueue entryが
 0件ならGPU commandだけで新しい状態を作ることはできません。
 

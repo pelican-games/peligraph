@@ -44,6 +44,13 @@ TEST_CASE("rendering pass helper ids name invalid and special targets", "[render
 TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(stringToFormat("R8_UNORM") == vk::Format::eR8Unorm);
     REQUIRE(stringToFormat("D32_SFLOAT") == vk::Format::eD32Sfloat);
+    REQUIRE(
+        stringToFormat("R32_SFLOAT") ==
+        vk::Format::eR32Sfloat);
+    REQUIRE(
+        formatToString(
+            vk::Format::eR32Sfloat) ==
+        "R32_SFLOAT");
 
     const auto usage = stringToUsageFlags({"COLOR_ATTACHMENT", "SAMPLED"});
     REQUIRE(static_cast<bool>(usage & vk::ImageUsageFlagBits::eColorAttachment));
@@ -826,6 +833,11 @@ TEST_CASE(
               "command_layout": "indexed_draw"
             },
             {
+              "name": "candidate_bounds",
+              "size": 64,
+              "host_source": "scene_draw_bounds_v1"
+            },
+            {
               "name": "visible_draws",
               "size": 40,
               "command_layout": "indexed_draw"
@@ -840,7 +852,7 @@ TEST_CASE(
             {
               "name": "build_visible_draws",
               "shader": "shaders/build_visible_draws",
-              "reads": ["candidate_draws"],
+              "reads": ["candidate_draws", "candidate_bounds"],
               "writes": ["visible_draws", "visible_draw_count"],
               "before": ["geometry"],
               "dispatch": {"groups": [1, 1, 1]}
@@ -881,9 +893,18 @@ TEST_CASE(
         FrameGraphBufferCommandLayout::
             indexed_draw);
     REQUIRE(
+        buffers.at(1).host_source ==
+        FrameGraphHostBufferSource::
+            scene_draw_bounds_v1);
+    REQUIRE(
+        std::string{
+            frameGraphHostBufferSourceName(
+                *buffers.at(1).host_source)} ==
+        "scene_draw_bounds_v1");
+    REQUIRE(
         std::string{
             frameGraphBufferCommandLayoutName(
-                *buffers.at(2).command_layout)} ==
+                *buffers.at(3).command_layout)} ==
         "draw_count");
     REQUIRE_NOTHROW(
         validateGpuDrawSourceBufferContracts(
@@ -930,7 +951,7 @@ TEST_CASE(
             }));
 
     auto wrong_layout = config;
-    wrong_layout["buffers"][1]
+    wrong_layout["buffers"][2]
                 ["command_layout"] =
         "draw_count";
     const auto wrong_layout_buffers =
@@ -944,7 +965,7 @@ TEST_CASE(
             "requires command_layout 'indexed_draw'"));
 
     auto too_small = config;
-    too_small["buffers"][1]["size"] = 20;
+    too_small["buffers"][2]["size"] = 20;
     const auto too_small_buffers =
         parseFrameGraphBufferDefinitionsFromJson(
             too_small);
@@ -993,6 +1014,25 @@ TEST_CASE(
             invalid_host_source),
         Catch::Matchers::ContainsSubstring(
             "scene_draw_commands_v1"));
+
+    auto invalid_bounds_size = config;
+    invalid_bounds_size["buffers"][1]["size"] =
+        40;
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid_bounds_size),
+        Catch::Matchers::ContainsSubstring(
+            "scene_draw_bounds_v1"));
+
+    auto invalid_bounds_layout = config;
+    invalid_bounds_layout["buffers"][1]
+                         ["command_layout"] =
+        "indexed_draw";
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid_bounds_layout),
+        Catch::Matchers::ContainsSubstring(
+            "must not declare"));
 }
 
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {

@@ -185,6 +185,22 @@ struct ModelInstanceRebuild {
     const ModelTemplate *replacement = nullptr;
 };
 
+// Host-published companion record for scene_draw_commands_v1. Each entry has
+// the same flattened DrawQueue index as its indexed draw command. minimum.w is
+// 1 when the AABB is valid; custom geometry without bounds uses 0 so GPU
+// policies can keep it conservatively.
+struct alignas(16) SceneDrawBoundsV1 {
+    std::array<float, 4> minimum{};
+    std::array<float, 4> maximum{};
+};
+
+static_assert(sizeof(SceneDrawBoundsV1) == sizeof(float) * 8);
+
+struct SceneDrawCandidatesV1 {
+    std::vector<vk::DrawIndexedIndirectCommand> commands;
+    std::vector<SceneDrawBoundsV1> bounds;
+};
+
 struct DrawQueueSortView {
     RenderPolicy::DrawSortLogicalViewV1 logical_view =
         RenderPolicy::DrawSortLogicalViewV1::shared;
@@ -336,8 +352,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
-    std::vector<vk::DrawIndexedIndirectCommand>
-    indexedDrawCommandsForFrameGraph() const;
+    SceneDrawCandidatesV1
+    sceneDrawCandidatesForFrameGraph() const;
     const BufferWrapper &getObjectBuf() const;
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &

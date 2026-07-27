@@ -124,6 +124,19 @@ GPUへ移す最小の縦切りである。`scene_draw_commands_v1`はCPU DrawQue
 公開しない。複数状態を扱う一般形は、segment tableまたはGPU-visible state keyを別のtyped
 contractとして追加してから行う。
 
+WP210cではcompanion host source `scene_draw_bounds_v1`を追加した。1要素は
+`vec4 minimum` + `vec4 maximum`の32 byteで、`minimum.w`がvalid flagである。
+command列とbounds列は同じframeの同じflattened DrawQueue順序・同じsource record数を持つ。
+custom geometryに安全なboundsがない場合はvalid flag 0とし、culling shaderはそのcommandを
+残す。buffer容量は個別に上限となるため、consumerは両bufferの短い方を候補数にする。
+
+sampled image portには通常の`pelican_sample_<port>` / `pelican_size_<port>`に加え、
+`pelican_sample_lod_<port>`、`pelican_size_lod_<port>`、
+`pelican_mip_count_<port>`を生成する。これによりfull mip subresource viewを受け取る
+project-owned shaderが、raw sampler bindingへ戻らずdepth pyramidのLODを選べる。
+engineはAABB形式とtransportを所有するが、projection、mip選択、depth bias、
+conservative keepなどのculling policyはproject shader側に残す。
+
 現plannerのRAW導出は宣言順上の直前writerを使う。render pass nodeがcompute task nodeより
 先に組み立てられる現行adapterでは、draw command producerはconsumer passへの`before`
 （または逆向きの`after`）を明示する。read edgeとbarrier自体は

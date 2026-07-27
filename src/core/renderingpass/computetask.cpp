@@ -32,6 +32,7 @@ static_assert(
     frameGraphIndexedDrawCommandBytes ==
     sizeof(std::uint32_t) * 5);
 static_assert(frameGraphDrawCountBytes == 4);
+static_assert(frameGraphSceneDrawBoundsV1Bytes == 32);
 
 struct RetiredComputeDescriptorResources {
     vk::UniqueDescriptorPool pool;
@@ -76,6 +77,10 @@ FrameGraphHostBufferSource parseHostBufferSource(
     if (value == "scene_draw_commands_v1") {
         return FrameGraphHostBufferSource::
             scene_draw_commands_v1;
+    }
+    if (value == "scene_draw_bounds_v1") {
+        return FrameGraphHostBufferSource::
+            scene_draw_bounds_v1;
     }
     throw std::runtime_error(
         std::string{context} +
@@ -950,6 +955,9 @@ std::string_view frameGraphHostBufferSourceName(
     case FrameGraphHostBufferSource::
         scene_draw_commands_v1:
         return "scene_draw_commands_v1";
+    case FrameGraphHostBufferSource::
+        scene_draw_bounds_v1:
+        return "scene_draw_bounds_v1";
     }
     throw std::runtime_error(
         "unknown frame-graph host buffer source");
@@ -1107,6 +1115,26 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                 context +
                 " host_source 'scene_draw_commands_v1' size must "
                 "be a multiple of the indexed draw command size");
+        }
+        if (definition.host_source ==
+                FrameGraphHostBufferSource::
+                    scene_draw_bounds_v1 &&
+            definition.command_layout) {
+            throw std::runtime_error(
+                context +
+                " host_source 'scene_draw_bounds_v1' must not declare "
+                "a command_layout");
+        }
+        if (definition.host_source ==
+                FrameGraphHostBufferSource::
+                    scene_draw_bounds_v1 &&
+            definition.size %
+                    frameGraphSceneDrawBoundsV1Bytes !=
+                0) {
+            throw std::runtime_error(
+                context +
+                " host_source 'scene_draw_bounds_v1' size must be a "
+                "multiple of 32 bytes");
         }
         definitions.push_back(std::move(definition));
     }

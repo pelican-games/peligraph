@@ -19,6 +19,12 @@ TEST_CASE(
     GoldenHarness::runGpuDrawIndirect();
 }
 
+TEST_CASE(
+    "depth pyramid compacts a fixed-state draw segment and preserves CPU fallback",
+    "[golden][headless][wp210][occlusion]") {
+    GoldenHarness::runGpuOcclusionCulling();
+}
+
 TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
           "[golden][headless][byte-exact]") {
     GoldenHarness::runRgba8Hashes();

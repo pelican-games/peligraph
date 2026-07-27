@@ -106,9 +106,18 @@ void writeSampledAccessors(
             << "vec4 pelican_sample_" << name
             << "(vec2 uv) { return texture(" << variable
             << ", uv); }\n"
+            << "vec4 pelican_sample_lod_" << name
+            << "(vec2 uv, float lod) { return textureLod("
+            << variable << ", uv, lod); }\n"
             << "ivec2 pelican_size_" << name
             << "() { return textureSize(" << variable
-            << ", 0); }\n";
+            << ", 0); }\n"
+            << "ivec2 pelican_size_lod_" << name
+            << "(int lod) { return textureSize(" << variable
+            << ", lod); }\n"
+            << "uint pelican_mip_count_" << name
+            << "() { return uint(textureQueryLevels(" << variable
+            << ")); }\n";
         return;
     }
     stream
@@ -116,9 +125,19 @@ void writeSampledAccessors(
         << "(vec2 uv, uint view_index) { return texture("
         << variable
         << ", vec3(uv, float(view_index))); }\n"
+        << "vec4 pelican_sample_lod_" << name
+        << "(vec2 uv, uint view_index, float lod) { return textureLod("
+        << variable
+        << ", vec3(uv, float(view_index)), lod); }\n"
         << "ivec2 pelican_size_" << name
         << "() { return textureSize(" << variable
         << ", 0).xy; }\n"
+        << "ivec2 pelican_size_lod_" << name
+        << "(int lod) { return textureSize(" << variable
+        << ", lod).xy; }\n"
+        << "uint pelican_mip_count_" << name
+        << "() { return uint(textureQueryLevels(" << variable
+        << ")); }\n"
         << "uint pelican_view_count_" << name
         << "() { return uint(textureSize(" << variable
         << ", 0).z); }\n";
@@ -246,15 +265,23 @@ void writeInactiveStageAccessors(
         if (binding.image_view_dimension ==
             ReflectedImageViewDimension::two_d) {
             stream << "vec4 pelican_sample_" << name
-                   << "(vec2 uv) { return vec4(0.0); }\n";
+                   << "(vec2 uv) { return vec4(0.0); }\n"
+                   << "vec4 pelican_sample_lod_" << name
+                   << "(vec2 uv, float lod) { return vec4(0.0); }\n";
         } else {
             stream << "vec4 pelican_sample_" << name
                    << "(vec2 uv, uint view_index) { return vec4(0.0); }\n"
+                   << "vec4 pelican_sample_lod_" << name
+                   << "(vec2 uv, uint view_index, float lod) { return vec4(0.0); }\n"
                    << "uint pelican_view_count_" << name
                    << "() { return 0u; }\n";
         }
         stream << "ivec2 pelican_size_" << name
-               << "() { return ivec2(0); }\n";
+               << "() { return ivec2(0); }\n"
+               << "ivec2 pelican_size_lod_" << name
+               << "(int lod) { return ivec2(0); }\n"
+               << "uint pelican_mip_count_" << name
+               << "() { return 0u; }\n";
         return;
     }
     const auto value_type =

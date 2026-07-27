@@ -425,12 +425,26 @@ indirect argumentsを生成できるようにする。
 
 詳細は
 [`design_reviews/2026-07-27_wp210b_gpu_draw_source.md`](design_reviews/2026-07-27_wp210b_gpu_draw_source.md)。
-WP210の残りは、project-ownedの実culling/particle dogfood、複数material/pipeline segment、
-hot reload/XR/timing受け入れである。
+
+**WP210c 完了境界（2026-07-27）**:
+
+- `scene_draw_bounds_v1`（32 byte/AABB）を追加し、`scene_draw_commands_v1`と同じ
+  flattened DrawQueue indexでdeformation適用後のworld boundsを公開する
+- boundsを持たないcustom geometryはvalid flag 0として公開し、project shaderが
+  conservative keepできる契約にする
+- sampled image portへ明示LOD、LOD別size、mip count accessorを追加する
+- project-owned compute shaderで、実geometry depthから5 mipのmax-depth pyramidを生成し、
+  projected AABBを使って1 fixed-state segmentのcommand列をcompactする
+- 実Vulkan fixtureでhidden=1、visible=2をGPU buffer readbackで確認し、
+  CPU強制fallbackとのsemantic image一致とhost command/bounds件数一致を検証する
+
+詳細は
+[`design_reviews/2026-07-27_wp210c_occlusion_dogfood.md`](design_reviews/2026-07-27_wp210c_occlusion_dogfood.md)。
+WP210の残りは、複数material/pipeline segment、hot reload/XR/timing受け入れである。
 
 **受け入れ条件**:
 
-- GPU particleまたはocclusion cullingの一方をproject-owned dogfoodにする
+- ✅ occlusion cullingをproject-owned fixed-state dogfoodにする
 - GPU生成count 0/1/max/overflow、rollback、hot reload、XR view count test
 - CPU fallbackとのsemantic image一致
 - GPU timingでCPU pathより有利なworkload範囲を記録

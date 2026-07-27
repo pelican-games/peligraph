@@ -61,6 +61,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 
 namespace Pelican {
 
@@ -283,47 +284,74 @@ void updateFrameLights(
     }
 }
 
-void updateFrameDrawCommands(
+void updateFrameDrawCandidates(
     const PolygonInstanceContainer
         &instance_container,
     FrameGraphResourceContainer
         &frame_graph_resources) {
-    constexpr auto source =
+    constexpr auto command_source =
         FrameGraphHostBufferSource::
             scene_draw_commands_v1;
-    if (!frame_graph_resources
-             .hasHostBufferSource(source)) {
+    constexpr auto bounds_source =
+        FrameGraphHostBufferSource::
+            scene_draw_bounds_v1;
+    const auto needs_commands =
+        frame_graph_resources
+            .hasHostBufferSource(
+                command_source);
+    const auto needs_bounds =
+        frame_graph_resources
+            .hasHostBufferSource(
+                bounds_source);
+    if (!needs_commands && !needs_bounds) {
         return;
     }
-    const auto commands =
+    const auto candidates =
         instance_container
-            .indexedDrawCommandsForFrameGraph();
-    for (const auto &target :
-         frame_graph_resources.hostBufferTargets(
-             source)) {
-        const auto capacity =
-            static_cast<std::size_t>(
-                target.size /
-                frameGraphIndexedDrawCommandBytes);
-        std::vector<
-            vk::DrawIndexedIndirectCommand>
-            upload(capacity);
-        const auto written =
-            std::min(capacity, commands.size());
-        std::copy_n(
-            commands.begin(), written,
-            upload.begin());
-        frame_graph_resources.writeHostBuffer(
-            target.id,
-            std::as_bytes(
-                std::span{
-                    upload.data(),
-                    upload.size()}),
-            FrameGraphResourceContainer::
-                HostBufferPopulation{
-                    commands.size(),
-                    written,
-                });
+            .sceneDrawCandidatesForFrameGraph();
+    const auto upload =
+        [&](FrameGraphHostBufferSource source,
+            const auto &records) {
+            using Record =
+                typename std::decay_t<
+                    decltype(records)>::value_type;
+            for (const auto &target :
+                 frame_graph_resources
+                     .hostBufferTargets(source)) {
+                const auto capacity =
+                    static_cast<std::size_t>(
+                        target.size /
+                        sizeof(Record));
+                std::vector<Record> staging(
+                    capacity);
+                const auto written =
+                    std::min(
+                        capacity,
+                        records.size());
+                std::copy_n(
+                    records.begin(), written,
+                    staging.begin());
+                frame_graph_resources
+                    .writeHostBuffer(
+                        target.id,
+                        std::as_bytes(
+                            std::span{
+                                staging.data(),
+                                staging.size()}),
+                        FrameGraphResourceContainer::
+                            HostBufferPopulation{
+                                records.size(),
+                                written,
+                            });
+            }
+        };
+    if (needs_commands) {
+        upload(command_source,
+               candidates.commands);
+    }
+    if (needs_bounds) {
+        upload(bounds_source,
+               candidates.bounds);
     }
 }
 
@@ -3294,7 +3322,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
-        updateFrameDrawCommands(
+        updateFrameDrawCandidates(
             modules.instance_container,
             modules.frame_graph_resources);
 
@@ -3466,7 +3494,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
-            updateFrameDrawCommands(
+            updateFrameDrawCandidates(
                 modules.instance_container,
                 modules.frame_graph_resources);
         } else {

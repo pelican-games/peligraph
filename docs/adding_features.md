@@ -134,6 +134,8 @@ GPU が material pass の draw 数を決める場合は、出力bufferを
 現在は`material_range.count: 1`でpipeline/material状態を固定する経路であり、
 producer compute taskからpassへの`before` edgeが必要です。CPU DrawQueueを候補として
 読みたい場合は入力bufferへ`"host_source": "scene_draw_commands_v1"`を指定します。
+同じ候補順序のworld AABBが必要なら、32 byte単位の別bufferへ
+`"host_source": "scene_draw_bounds_v1"`を指定します。
 完全な設定例とfallback条件は
 [`manual/06_rendering.md`](manual/06_rendering.md#gpu-が-indexed-draw-数を決める)を参照してください。
 

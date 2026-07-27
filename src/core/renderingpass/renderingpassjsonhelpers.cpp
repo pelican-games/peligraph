@@ -17,6 +17,7 @@ vk::Format stringToFormat(const std::string &format_str) {
         {"R8_UNORM", vk::Format::eR8Unorm},
         {"R16G16_SFLOAT", vk::Format::eR16G16Sfloat},
         {"R16G16B16A16_SFLOAT", vk::Format::eR16G16B16A16Sfloat},
+        {"R32_SFLOAT", vk::Format::eR32Sfloat},
         {"D32_SFLOAT", vk::Format::eD32Sfloat},
         {"D24_UNORM_S8_UINT", vk::Format::eD24UnormS8Uint},
         {"D16_UNORM", vk::Format::eD16Unorm},
@@ -44,6 +45,8 @@ std::string formatToString(vk::Format format) {
         return "R16G16_SFLOAT";
     case vk::Format::eR16G16B16A16Sfloat:
         return "R16G16B16A16_SFLOAT";
+    case vk::Format::eR32Sfloat:
+        return "R32_SFLOAT";
     case vk::Format::eD32Sfloat:
         return "D32_SFLOAT";
     case vk::Format::eD24UnormS8Uint:

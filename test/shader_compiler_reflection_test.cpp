@@ -220,6 +220,26 @@ TEST_CASE(
             .readable = false,
             .writable = true,
         },
+        ShaderResourceInterfaceBinding{
+            .port =
+                ShaderResourcePortDefinition{
+                    .name = "scene_layers",
+                    .resource = "layers",
+                    .access =
+                        ShaderResourcePortAccess::
+                            sampled,
+                    .view =
+                        ShaderResourcePortView::
+                            per_view,
+                },
+            .binding = 2,
+            .descriptor =
+                ShaderResourceDescriptorKind::
+                    combined_image_sampler,
+            .image_view_dimension =
+                ReflectedImageViewDimension::
+                    two_d_array,
+        },
     };
     ShaderCompiler compiler;
     compiler.addIncludeDir(
@@ -237,7 +257,12 @@ TEST_CASE(
 #include "pelican_resource_ports.glsl"
 layout(local_size_x = 1, local_size_y = 1) in;
 void main() {
-    vec4 value = pelican_sample_scene_color(vec2(0.5));
+    vec4 value = pelican_sample_lod_scene_color(
+        vec2(0.5),
+        float(pelican_mip_count_scene_color() - 1u));
+    value += vec4(pelican_size_lod_scene_color(0), 0, 0) * 0.0;
+    value += pelican_sample_lod_scene_layers(
+        vec2(0.5), 0u, 0.0) * 0.001;
     pelican_store_result(ivec2(0), 0u, value);
 }
 )glsl",
@@ -257,6 +282,9 @@ void main() {
     const auto *storage =
         findBinding(
             reflection, PELICAN_SET_PASS_INPUT, 1);
+    const auto *sampled_array =
+        findBinding(
+            reflection, PELICAN_SET_PASS_INPUT, 2);
     REQUIRE(sampled != nullptr);
     REQUIRE(
         sampled->image_view_dimension ==
@@ -264,6 +292,11 @@ void main() {
     REQUIRE(storage != nullptr);
     REQUIRE(
         storage->image_view_dimension ==
+        ReflectedImageViewDimension::
+            two_d_array);
+    REQUIRE(sampled_array != nullptr);
+    REQUIRE(
+        sampled_array->image_view_dimension ==
         ReflectedImageViewDimension::
             two_d_array);
 
