@@ -50,6 +50,154 @@ WsiResultClass classifyWsiResult(
     }
 }
 
+std::string_view wsiResultClassName(
+    WsiResultClass classification) noexcept {
+    switch (classification) {
+    case WsiResultClass::ready:
+        return "ready";
+    case WsiResultClass::refresh_advisory:
+        return "refresh_advisory";
+    case WsiResultClass::not_ready:
+        return "not_ready";
+    case WsiResultClass::swapchain_unavailable:
+        return "swapchain_unavailable";
+    case WsiResultClass::surface_unavailable:
+        return "surface_unavailable";
+    case WsiResultClass::device_lost:
+        return "device_lost";
+    case WsiResultClass::retryable_failure:
+        return "retryable_failure";
+    case WsiResultClass::fatal:
+        return "fatal";
+    }
+    return "unknown";
+}
+
+WindowWsiRecoveryDecision decideWindowWsiRecovery(
+    WindowWsiCallSite site,
+    vk::Result result) noexcept {
+    const auto classification =
+        classifyWsiResult(result);
+    const bool frame_call =
+        site == WindowWsiCallSite::acquire ||
+        site == WindowWsiCallSite::present;
+
+    switch (classification) {
+    case WsiResultClass::ready:
+        return {
+            classification,
+            WindowWsiRecoveryAction::proceed};
+    case WsiResultClass::refresh_advisory:
+        return {
+            classification,
+            frame_call
+                ? WindowWsiRecoveryAction::
+                      proceed_and_refresh
+                : WindowWsiRecoveryAction::
+                      retry_later};
+    case WsiResultClass::not_ready:
+        return {
+            classification,
+            site == WindowWsiCallSite::acquire
+                ? WindowWsiRecoveryAction::drop_frame
+                : WindowWsiRecoveryAction::retry_later};
+    case WsiResultClass::swapchain_unavailable:
+        return {
+            classification,
+            site == WindowWsiCallSite::
+                            surface_create ||
+                    site == WindowWsiCallSite::
+                                surface_support_query
+                ? WindowWsiRecoveryAction::
+                      replace_surface
+                : WindowWsiRecoveryAction::
+                      replace_swapchain};
+    case WsiResultClass::surface_unavailable:
+        return {
+            classification,
+            WindowWsiRecoveryAction::replace_surface};
+    case WsiResultClass::device_lost:
+        return {
+            classification,
+            WindowWsiRecoveryAction::rebuild_device};
+    case WsiResultClass::retryable_failure:
+        return {
+            classification,
+            WindowWsiRecoveryAction::retry_later};
+    case WsiResultClass::fatal:
+        // Surface/swapchain preparation is failure-contained: it has no
+        // partially-published object, so keep the output completely
+        // unavailable and retry with backoff. Runtime acquire/present errors
+        // cannot be hidden behind that transaction and remain terminal.
+        return {
+            classification,
+            frame_call
+                ? WindowWsiRecoveryAction::fatal
+                : WindowWsiRecoveryAction::
+                      retry_later};
+    }
+    return {
+        classification,
+        WindowWsiRecoveryAction::fatal};
+}
+
+std::string_view windowWsiCallSiteName(
+    WindowWsiCallSite site) noexcept {
+    switch (site) {
+    case WindowWsiCallSite::acquire:
+        return "acquire";
+    case WindowWsiCallSite::present:
+        return "present";
+    case WindowWsiCallSite::surface_create:
+        return "surface_create";
+    case WindowWsiCallSite::surface_support_query:
+        return "surface_support_query";
+    case WindowWsiCallSite::swapchain_create:
+        return "swapchain_create";
+    case WindowWsiCallSite::dependent_resources:
+        return "dependent_resources";
+    }
+    return "unknown";
+}
+
+std::string_view windowWsiRecoveryActionName(
+    WindowWsiRecoveryAction action) noexcept {
+    switch (action) {
+    case WindowWsiRecoveryAction::proceed:
+        return "proceed";
+    case WindowWsiRecoveryAction::
+        proceed_and_refresh:
+        return "proceed_and_refresh";
+    case WindowWsiRecoveryAction::drop_frame:
+        return "drop_frame";
+    case WindowWsiRecoveryAction::
+        replace_swapchain:
+        return "replace_swapchain";
+    case WindowWsiRecoveryAction::replace_surface:
+        return "replace_surface";
+    case WindowWsiRecoveryAction::rebuild_device:
+        return "rebuild_device";
+    case WindowWsiRecoveryAction::retry_later:
+        return "retry_later";
+    case WindowWsiRecoveryAction::fatal:
+        return "fatal";
+    }
+    return "unknown";
+}
+
+SwapchainRecoveryAnchorKind
+selectSwapchainRecoveryAnchor(
+    bool replacement_available,
+    bool previous_available) noexcept {
+    if (replacement_available) {
+        return SwapchainRecoveryAnchorKind::replacement;
+    }
+    if (previous_available) {
+        return SwapchainRecoveryAnchorKind::previous;
+    }
+    return SwapchainRecoveryAnchorKind::none;
+}
+
 WindowOutputRecoveryStateMachine::
     WindowOutputRecoveryStateMachine(
         SwapchainEpochId initial_epoch,

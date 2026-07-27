@@ -149,13 +149,18 @@ SwapchainWithFormat createSwapchain(
     FramebufferExtentSnapshot framebuffer,
     std::uint32_t graphics_queue_family,
     std::uint32_t presentation_queue_family,
-    vk::SwapchainKHR old_swapchain) {
+    vk::SwapchainKHR old_swapchain,
+    WindowWsiCallSite *active_call_site) {
     if (framebuffer.extent.width == 0 ||
         framebuffer.extent.height == 0) {
         throw std::invalid_argument(
             "cannot prepare a swapchain for a zero-sized framebuffer");
     }
 
+    if (active_call_site != nullptr) {
+        *active_call_site =
+            WindowWsiCallSite::surface_support_query;
+    }
     const auto capabilities =
         physical_device.getSurfaceCapabilitiesKHR(surface);
     auto formats =
@@ -258,9 +263,14 @@ SwapchainWithFormat createSwapchain(
     create_info.clipped = VK_TRUE;
     create_info.oldSwapchain = old_swapchain;
 
+    if (active_call_site != nullptr) {
+        *active_call_site =
+            WindowWsiCallSite::swapchain_create;
+    }
+    auto swapchain =
+        device.createSwapchainKHRUnique(create_info);
     return SwapchainWithFormat{
-        .swapchain =
-            device.createSwapchainKHRUnique(create_info),
+        .swapchain = std::move(swapchain),
         .format = formats.front().format,
         .color_space = formats.front().colorSpace,
         .extent = selected_extent,
@@ -604,6 +614,8 @@ struct SwapchainFrameTarget::Impl {
                 SurfaceDeviceRebuildReason::none;
         vk::Result failure_result =
             vk::Result::eSuccess;
+        WindowWsiCallSite failure_site =
+            WindowWsiCallSite::surface_create;
         std::string error;
     };
 
@@ -840,7 +852,9 @@ struct SwapchainFrameTarget::Impl {
     std::shared_ptr<SwapchainEpoch> buildEpoch(
         const BuildRequest &request,
         std::shared_ptr<SwapchainEpoch>
-            *replacement_anchor = nullptr) {
+            *replacement_anchor = nullptr,
+        WindowWsiCallSite
+            *active_call_site = nullptr) {
         if (request.surface_epoch == nullptr ||
             !request.surface_epoch->surface) {
             throw std::logic_error(
@@ -873,7 +887,8 @@ struct SwapchainFrameTarget::Impl {
                 request.surface_epoch
                     ->presentation_queue_family,
                 request.old_epoch->swapchain
-                    .swapchain.get());
+                    .swapchain.get(),
+                active_call_site);
         } else {
             std::scoped_lock lock{
                 request.surface_epoch->host_access};
@@ -884,7 +899,8 @@ struct SwapchainFrameTarget::Impl {
                 graphics_queue_family,
                 request.surface_epoch
                     ->presentation_queue_family,
-                {});
+                {},
+                active_call_site);
         }
         // vkCreateSwapchainKHR success retires oldSwapchain immediately.
         // Preserve the new handle before creating any dependent object so a
@@ -893,6 +909,11 @@ struct SwapchainFrameTarget::Impl {
             *replacement_anchor = epoch;
         }
 
+        if (active_call_site != nullptr) {
+            *active_call_site =
+                WindowWsiCallSite::
+                    dependent_resources;
+        }
         epoch->images =
             device.getSwapchainImagesKHR(
                 epoch->swapchain.swapchain.get());
@@ -1071,8 +1092,14 @@ struct SwapchainFrameTarget::Impl {
                         .preparation_kind ==
                     WindowOutputPreparationKind::
                         surface) {
+                    completion.failure_site =
+                        WindowWsiCallSite::
+                            surface_create;
                     auto prepared_surface =
                         surface_factory.create();
+                    completion.failure_site =
+                        WindowWsiCallSite::
+                            surface_support_query;
                     const auto binding =
                         querySurfacePresentationQueue(
                             physical_device,
@@ -1129,7 +1156,8 @@ struct SwapchainFrameTarget::Impl {
                     completion.candidate =
                         buildEpoch(
                             completion.request,
-                            &replacement_anchor);
+                            &replacement_anchor,
+                            &completion.failure_site);
                 }
             } catch (const vk::SystemError &error) {
                 completion.failure_result =
@@ -1468,8 +1496,16 @@ struct SwapchainFrameTarget::Impl {
                         maintenance_tick);
                 }
             } else {
-                if (completion
-                        ->replacement_anchor != nullptr) {
+                const auto anchor_kind =
+                    selectSwapchainRecoveryAnchor(
+                        completion
+                                ->replacement_anchor !=
+                            nullptr,
+                        completion->request.old_epoch !=
+                            nullptr);
+                if (anchor_kind ==
+                    SwapchainRecoveryAnchorKind::
+                        replacement) {
                     if (completion->request.old_epoch !=
                         nullptr) {
                         retireEpoch(
@@ -1480,7 +1516,10 @@ struct SwapchainFrameTarget::Impl {
                         std::move(
                             completion
                                 ->replacement_anchor);
-                } else {
+                } else if (
+                    anchor_kind ==
+                    SwapchainRecoveryAnchorKind::
+                        previous) {
                     // vkCreateSwapchainKHR did not succeed, so oldSwapchain
                     // was not retired and remains the only legal anchor.
                     recovery_anchor =
@@ -1490,16 +1529,22 @@ struct SwapchainFrameTarget::Impl {
                 }
                 last_wsi_result =
                     completion->failure_result;
-                const auto classification =
-                    classifyWsiResult(
+                const auto decision =
+                    decideWindowWsiRecovery(
+                        completion->failure_site,
                         completion->failure_result);
                 LOG_WARNING(
                     logger,
-                    "swapchain epoch preparation failed: result={} "
-                    "classification={} error={}",
+                    "swapchain epoch preparation failed: call={} result={} "
+                    "classification={} action={} error={}",
+                    windowWsiCallSiteName(
+                        completion->failure_site),
                     vk::to_string(
                         completion->failure_result),
-                    static_cast<int>(classification),
+                    wsiResultClassName(
+                        decision.classification),
+                    windowWsiRecoveryActionName(
+                        decision.action),
                     completion->error);
                 if (completion->device_rebuild_reason !=
                     SurfaceDeviceRebuildReason::none) {
@@ -1508,9 +1553,9 @@ struct SwapchainFrameTarget::Impl {
                             ->device_rebuild_reason;
                     recovery->markDeviceLost();
                 } else if (
-                    classification ==
-                    WsiResultClass::
-                        surface_unavailable) {
+                    decision.action ==
+                    WindowWsiRecoveryAction::
+                        replace_surface) {
                     auto lost_surface =
                         completion->request
                             .surface_epoch;
@@ -1530,25 +1575,30 @@ struct SwapchainFrameTarget::Impl {
                             0, framebuffer);
                     }
                 } else if (
+                    decision.action ==
+                    WindowWsiRecoveryAction::
+                        rebuild_device) {
+                    recovery->markDeviceLost();
+                } else if (
                     framebuffer.extent.width == 0 ||
                     framebuffer.extent.height == 0) {
                     recovery->observeZeroExtent(
                         0, framebuffer);
                 } else if (
-                    classification ==
-                    WsiResultClass::device_lost) {
-                    recovery->markDeviceLost();
-                } else if (
-                    classification ==
-                        WsiResultClass::
-                            retryable_failure ||
-                    classification ==
-                        WsiResultClass::
-                            swapchain_unavailable ||
-                    completion->request.policy
-                            .preparation_kind ==
-                        WindowOutputPreparationKind::
-                            surface) {
+                    decision.action ==
+                        WindowWsiRecoveryAction::
+                            retry_later ||
+                    decision.action ==
+                        WindowWsiRecoveryAction::
+                            replace_swapchain) {
+                    const auto retry_reason =
+                        decision.classification ==
+                                WsiResultClass::
+                                    retryable_failure
+                            ? WindowOutputRecoveryReason::
+                                  resource_pressure
+                            : WindowOutputRecoveryReason::
+                                  prepare_failed;
                     if (completion
                             ->replacement_anchor !=
                         nullptr ||
@@ -1556,8 +1606,7 @@ struct SwapchainFrameTarget::Impl {
                         recovery->deferRetry(
                             requestedRecoveryKey(
                                 framebuffer),
-                            WindowOutputRecoveryReason::
-                                prepare_failed,
+                            retry_reason,
                             maintenance_tick, 30,
                             completion->request.policy
                                 .attempt,
@@ -1799,11 +1848,13 @@ struct SwapchainFrameTarget::Impl {
                     resultFromSystemError(error);
             }
         }
-        const auto classification =
-            classifyWsiResult(acquired.result);
+        const auto decision =
+            decideWindowWsiRecovery(
+                WindowWsiCallSite::acquire,
+                acquired.result);
         last_wsi_result = acquired.result;
-        if (classification ==
-            WsiResultClass::not_ready) {
+        if (decision.action ==
+            WindowWsiRecoveryAction::drop_frame) {
             return {
                 .disposition =
                     FrameBeginDisposition::unavailable,
@@ -1812,9 +1863,9 @@ struct SwapchainFrameTarget::Impl {
                         acquire_not_ready,
             };
         }
-        if (classification ==
-            WsiResultClass::
-                swapchain_unavailable) {
+        if (decision.action ==
+            WindowWsiRecoveryAction::
+                replace_swapchain) {
             (void)recovery->requestRefresh(
                 epoch->id,
                 requestedRecoveryKey(framebuffer),
@@ -1829,30 +1880,39 @@ struct SwapchainFrameTarget::Impl {
                         output_out_of_date,
             };
         }
-        if (classification ==
-            WsiResultClass::surface_unavailable) {
+        if (decision.action ==
+            WindowWsiRecoveryAction::
+                replace_surface) {
             markSurfaceLost(
                 epoch->surface_epoch,
                 epoch->id);
             return unavailableResult();
         }
-        if (classification ==
-            WsiResultClass::device_lost) {
+        if (decision.action ==
+            WindowWsiRecoveryAction::
+                rebuild_device) {
             recovery->markDeviceLost();
             return unavailableResult();
         }
-        if (classification ==
-            WsiResultClass::retryable_failure) {
+        if (decision.action ==
+            WindowWsiRecoveryAction::retry_later) {
             recovery->deferRetry(
                 requestedRecoveryKey(framebuffer),
-                WindowOutputRecoveryReason::
-                    resource_pressure,
+                decision.classification ==
+                        WsiResultClass::
+                            retryable_failure
+                    ? WindowOutputRecoveryReason::
+                          resource_pressure
+                    : WindowOutputRecoveryReason::
+                          prepare_failed,
                 maintenance_tick, 30);
             return unavailableResult();
         }
-        if (classification != WsiResultClass::ready &&
-            classification !=
-                WsiResultClass::refresh_advisory) {
+        if (decision.action !=
+                WindowWsiRecoveryAction::proceed &&
+            decision.action !=
+                WindowWsiRecoveryAction::
+                    proceed_and_refresh) {
             recovery->markFatal();
             return unavailableResult();
         }
@@ -1873,8 +1933,9 @@ struct SwapchainFrameTarget::Impl {
             .image_index = acquired.value,
             .begin_mode = mode,
             .refresh_after_present =
-                classification ==
-                WsiResultClass::refresh_advisory,
+                decision.action ==
+                WindowWsiRecoveryAction::
+                    proceed_and_refresh,
         };
 
         try {
@@ -2165,8 +2226,10 @@ struct SwapchainFrameTarget::Impl {
                         resultFromSystemError(error);
                 }
             }
-            const auto classification =
-                classifyWsiResult(present_result);
+            const auto decision =
+                decideWindowWsiRecovery(
+                    WindowWsiCallSite::present,
+                    present_result);
             last_wsi_result = present_result;
             epoch->present_wait_pending[
                 active.image_index] = true;
@@ -2178,15 +2241,17 @@ struct SwapchainFrameTarget::Impl {
             epoch->last_rendered_image =
                 active.image_index;
             epoch->has_rendered_frame =
-                classification ==
-                    WsiResultClass::ready ||
-                classification ==
-                    WsiResultClass::
-                        refresh_advisory;
+                decision.action ==
+                    WindowWsiRecoveryAction::
+                        proceed ||
+                decision.action ==
+                    WindowWsiRecoveryAction::
+                        proceed_and_refresh;
             active_frame.reset();
 
-            if (classification ==
-                WsiResultClass::surface_unavailable) {
+            if (decision.action ==
+                WindowWsiRecoveryAction::
+                    replace_surface) {
                 markSurfaceLost(
                     epoch->surface_epoch,
                     epoch->id);
@@ -2195,35 +2260,42 @@ struct SwapchainFrameTarget::Impl {
                         FrameSubmitDisposition::
                             output_stale};
             }
-            if (classification ==
-                WsiResultClass::device_lost) {
+            if (decision.action ==
+                WindowWsiRecoveryAction::
+                    rebuild_device) {
                 recovery->markDeviceLost();
                 return {
                     .disposition =
                         FrameSubmitDisposition::
                             output_stale};
             }
-            if (classification ==
-                WsiResultClass::retryable_failure) {
+            if (decision.action ==
+                WindowWsiRecoveryAction::
+                    retry_later) {
                 recovery->deferRetry(
                     requestedRecoveryKey(
                         window.framebufferSnapshot()),
-                    WindowOutputRecoveryReason::
-                        resource_pressure,
+                    decision.classification ==
+                            WsiResultClass::
+                                retryable_failure
+                        ? WindowOutputRecoveryReason::
+                              resource_pressure
+                        : WindowOutputRecoveryReason::
+                              prepare_failed,
                     maintenance_tick, 30);
                 return {
                     .disposition =
                         FrameSubmitDisposition::
                             output_stale};
             }
-            if (classification !=
-                    WsiResultClass::ready &&
-                classification !=
-                    WsiResultClass::
-                        refresh_advisory &&
-                classification !=
-                    WsiResultClass::
-                        swapchain_unavailable) {
+            if (decision.action !=
+                    WindowWsiRecoveryAction::proceed &&
+                decision.action !=
+                    WindowWsiRecoveryAction::
+                        proceed_and_refresh &&
+                decision.action !=
+                    WindowWsiRecoveryAction::
+                        replace_swapchain) {
                 recovery->markFatal();
                 throw std::runtime_error(
                     "failed on vkQueuePresentKHR: " +
@@ -2232,19 +2304,19 @@ struct SwapchainFrameTarget::Impl {
 
             const bool refresh =
                 active.refresh_after_present ||
-                classification ==
-                    WsiResultClass::
-                        refresh_advisory ||
-                classification ==
-                    WsiResultClass::
-                        swapchain_unavailable;
+                decision.action ==
+                    WindowWsiRecoveryAction::
+                        proceed_and_refresh ||
+                decision.action ==
+                    WindowWsiRecoveryAction::
+                        replace_swapchain;
             if (refresh) {
                 const auto framebuffer =
                     window.framebufferSnapshot();
                 const auto reason =
-                    classification ==
-                            WsiResultClass::
-                                swapchain_unavailable
+                    decision.action ==
+                            WindowWsiRecoveryAction::
+                                replace_swapchain
                         ? WindowOutputRecoveryReason::
                               out_of_date
                         : WindowOutputRecoveryReason::

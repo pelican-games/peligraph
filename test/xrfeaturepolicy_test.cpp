@@ -164,18 +164,28 @@ TEST_CASE("OpenXR mirror letterboxes and treats minimized destinations as drops"
 }
 
 TEST_CASE("OpenXR mirror drops transient output maintenance without disabling",
-          "[wp216][openxr][mirror]") {
+          "[wp216][wp217][openxr][mirror]") {
     using Pelican::FrameBeginDisposition;
+    using Pelican::FrameBeginResult;
+    using Pelican::FrameUnavailableReason;
     using Pelican::OpenXr::XrMirrorBeginAction;
-    using Pelican::OpenXr::classifyMirrorBeginDisposition;
+    using Pelican::OpenXr::classifyMirrorBeginResult;
 
-    REQUIRE(classifyMirrorBeginDisposition(FrameBeginDisposition::ready) ==
+    REQUIRE(classifyMirrorBeginResult(FrameBeginResult{
+                .disposition = FrameBeginDisposition::ready}) ==
             XrMirrorBeginAction::present);
-    REQUIRE(classifyMirrorBeginDisposition(FrameBeginDisposition::unavailable) ==
+    REQUIRE(classifyMirrorBeginResult(FrameBeginResult{
+                .disposition = FrameBeginDisposition::unavailable,
+                .reason = FrameUnavailableReason::surface_lost}) ==
             XrMirrorBeginAction::drop);
-    REQUIRE(classifyMirrorBeginDisposition(
-                FrameBeginDisposition::device_rebuild_required) ==
+    REQUIRE(classifyMirrorBeginResult(FrameBeginResult{
+                .disposition =
+                    FrameBeginDisposition::device_rebuild_required,
+                .reason =
+                    FrameUnavailableReason::device_rebuild_required}) ==
             XrMirrorBeginAction::disable);
-    REQUIRE(classifyMirrorBeginDisposition(FrameBeginDisposition::fatal) ==
+    REQUIRE(classifyMirrorBeginResult(FrameBeginResult{
+                .disposition = FrameBeginDisposition::fatal,
+                .reason = FrameUnavailableReason::fatal}) ==
             XrMirrorBeginAction::disable);
 }

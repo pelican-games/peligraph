@@ -23,8 +23,8 @@ enum class XrMirrorBeginAction {
     disable,
 };
 
-XrMirrorBeginAction classifyMirrorBeginDisposition(
-    FrameBeginDisposition disposition) noexcept;
+XrMirrorBeginAction classifyMirrorBeginResult(
+    const FrameBeginResult &result) noexcept;
 
 struct XrMirrorSinkStats {
     std::uint64_t presented = 0;

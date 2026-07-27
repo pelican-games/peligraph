@@ -41,6 +41,63 @@ enum class WsiResultClass {
 };
 
 WsiResultClass classifyWsiResult(vk::Result result) noexcept;
+std::string_view wsiResultClassName(
+    WsiResultClass classification) noexcept;
+
+// The same VkResult has different recovery meaning depending on where it was
+// observed. For example, NOT_READY is a routine frame drop at acquire, while a
+// failed preparation call must enter bounded retry. Keep this policy pure so
+// the real WSI path and protocol-fake tests share one decision table.
+enum class WindowWsiCallSite {
+    acquire,
+    present,
+    surface_create,
+    surface_support_query,
+    swapchain_create,
+    dependent_resources,
+};
+
+enum class WindowWsiRecoveryAction {
+    proceed,
+    proceed_and_refresh,
+    drop_frame,
+    replace_swapchain,
+    replace_surface,
+    rebuild_device,
+    retry_later,
+    fatal,
+};
+
+struct WindowWsiRecoveryDecision {
+    WsiResultClass classification =
+        WsiResultClass::fatal;
+    WindowWsiRecoveryAction action =
+        WindowWsiRecoveryAction::fatal;
+};
+
+WindowWsiRecoveryDecision decideWindowWsiRecovery(
+    WindowWsiCallSite site,
+    vk::Result result) noexcept;
+
+std::string_view windowWsiCallSiteName(
+    WindowWsiCallSite site) noexcept;
+std::string_view windowWsiRecoveryActionName(
+    WindowWsiRecoveryAction action) noexcept;
+
+// vkCreateSwapchainKHR success may retire oldSwapchain even when dependent
+// resources fail later. The successfully-created replacement is then the only
+// legal retry anchor; before that cutover the previous swapchain remains the
+// anchor.
+enum class SwapchainRecoveryAnchorKind {
+    none,
+    previous,
+    replacement,
+};
+
+SwapchainRecoveryAnchorKind
+selectSwapchainRecoveryAnchor(
+    bool replacement_available,
+    bool previous_available) noexcept;
 
 struct SwapchainRecoveryKey {
     std::uint64_t framebuffer_revision = 0;

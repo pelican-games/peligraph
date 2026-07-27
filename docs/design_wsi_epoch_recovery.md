@@ -688,6 +688,20 @@ fakeは `SUBOPTIMAL`、`OUT_OF_DATE`、`SURFACE_LOST` をacquire / present /
 query / createの各位置へ注入する。call order、old epoch retirement、
 frame tokenのexact consume、lease解放を検査する。
 
+2026-07-27のWP217実装では、WSI境界を
+`WindowWsiCallSite + VkResult -> WindowWsiRecoveryDecision`として純化し、
+本番のacquire / present / preparation workerとprotocol fakeが同じ表を使う。
+worker completionは失敗したcall siteを失わず、ログにもsite / classification /
+actionを残す。protocol fakeはacquire / present / support query /
+swapchain createの`SURFACE_LOST`について、fresh factoryのexact call数、
+old/candidate surface identityの非再利用、call orderを固定する。
+
+`vkCreateSwapchainKHR`前後のrollback境界は別の純粋tableで固定する。
+create成功前はprevious swapchain、成功後にdependent resourceが失敗した場合は
+replacement swapchainだけがretry anchorである。実Vulkanでのfault注入は
+driver/validation固有の統合gate、RDP/display/DPIは§14.5のmanual gateとして
+pure protocol testと区別する。
+
 ### 14.3 Vulkan integration
 
 - window resize / maximize / minimize / restoreを繰り返し、validation error 0

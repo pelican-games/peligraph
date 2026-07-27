@@ -55,9 +55,9 @@ std::optional<vk::Rect2D> mirrorLetterboxRect(vk::Extent2D source,
         vk::Extent2D{width, height}};
 }
 
-XrMirrorBeginAction classifyMirrorBeginDisposition(
-    FrameBeginDisposition disposition) noexcept {
-    switch (disposition) {
+XrMirrorBeginAction classifyMirrorBeginResult(
+    const FrameBeginResult &result) noexcept {
+    switch (result.disposition) {
     case FrameBeginDisposition::ready:
         return XrMirrorBeginAction::present;
     case FrameBeginDisposition::unavailable:
@@ -202,7 +202,7 @@ void XrMirrorSink::tryPresent() noexcept {
             submission_lease,
             FrameBeginMode::nonblocking);
         const auto action =
-            classifyMirrorBeginDisposition(begun.disposition);
+            classifyMirrorBeginResult(begun);
         if (action == XrMirrorBeginAction::drop) {
             ++stats.dropped;
             stats.last_drop_reason = begun.reason;

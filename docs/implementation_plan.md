@@ -102,9 +102,9 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias + dependency-safe reorder/fusion runtime実装済み・general scope/queueと実機GPU gate待ち |
 | WP213 | 版の単一化 A — import manifest の version 必須化 | ✅ 完了（2026-07-26、archive） |
 | WP214 | 版の単一化 B — physics service V1 の削除 | ✅ 完了（2026-07-26、archive） |
-| WP215 | transactional window output root / frame token | 設計済み・着手前 |
-| WP216 | nonblocking SwapchainEpoch / XR mirror retirement | 設計済み・WP215依存 |
-| WP217 | SurfaceEpoch recreation / present support revalidation | 設計済み・WP216依存 |
+| WP215 | transactional window output root / frame token | 実装済み |
+| WP216 | nonblocking SwapchainEpoch / XR mirror retirement | 実装済み・XR実機 gate待ち |
+| WP217 | SurfaceEpoch recreation / present support revalidation | 実装済み・manual platform gate待ち |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -576,6 +576,16 @@ global waitとmain-loop停止を除く。
   pure queue decision table testを実装済み
 - WSI準備中にpresentation frameをskipした場合も、開始済みのImGui frameを
   `EndFrame`で閉じ、次frameの`NewFrame`へ持ち越さない
+- acquire / present / surface作成 / support query / swapchain作成 /
+  dependent resource作成をtyped call siteとして追跡し、`VkResult`からの回復指示を
+  productionとprotocol fakeで共有する純粋decision tableへ統一
+- acquire / present / support query / swapchain create各位置の
+  `VK_ERROR_SURFACE_LOST_KHR` protocol injectionで、factory call数、
+  surface identity非再利用、呼び出し順、surface-domain retryを固定
+- `vkCreateSwapchainKHR`成功前はprevious、成功後のdependent failureでは
+  replacementだけを合法なretry anchorとするcutover tableをproductionへ接続
+- XR mirrorは理由付き`unavailable(surface_lost)`をそのlogical frameだけdropし、
+  terminal resultだけをdisableするresult policyを使用
 - 実機のRDP接続・切断、display移動、DPI変更による
   `VK_ERROR_SURFACE_LOST_KHR` 再現はmanual platform gateとして未実施
 

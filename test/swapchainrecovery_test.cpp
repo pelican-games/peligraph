@@ -3,6 +3,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <array>
+#include <optional>
+#include <stdexcept>
+#include <vector>
 
 using namespace Pelican;
 
@@ -19,6 +22,85 @@ SwapchainRecoveryKey key(
         .present_configuration_fingerprint = 33,
     };
 }
+
+class SurfaceFaultProtocol {
+    SwapchainEpochId active_epoch_ = 41;
+    SurfaceEpochId next_surface_ = 102;
+    std::optional<SurfaceEpochId>
+        candidate_surface_;
+
+  public:
+    WindowOutputRecoveryStateMachine state{
+        active_epoch_, key(1)};
+    std::optional<SurfaceEpochId> active_surface{
+        101};
+    std::size_t factory_calls = 0;
+    std::vector<WindowWsiCallSite> trace;
+
+    WindowWsiRecoveryDecision observe(
+        WindowWsiCallSite site,
+        vk::Result result) {
+        trace.push_back(site);
+        return decideWindowWsiRecovery(site, result);
+    }
+
+    void loseRuntimeSurfaceAt(
+        WindowWsiCallSite site) {
+        const auto decision = observe(
+            site,
+            vk::Result::eErrorSurfaceLostKHR);
+        if (decision.action !=
+            WindowWsiRecoveryAction::
+                replace_surface) {
+            throw std::logic_error(
+                "surface fault did not request replacement");
+        }
+        active_surface.reset();
+        state.markSurfaceLost(active_epoch_);
+    }
+
+    SurfaceEpochId beginFreshSurface(
+        std::uint64_t revision) {
+        const auto request =
+            state.takeSurfacePreparationRequest(
+                key(revision));
+        if (!request) {
+            throw std::logic_error(
+                "surface factory called outside preparation");
+        }
+        trace.push_back(
+            WindowWsiCallSite::surface_create);
+        ++factory_calls;
+        candidate_surface_ = next_surface_++;
+        return *candidate_surface_;
+    }
+
+    void loseCandidateSurfaceAt(
+        WindowWsiCallSite site) {
+        const auto decision = observe(
+            site,
+            vk::Result::eErrorSurfaceLostKHR);
+        if (decision.action !=
+            WindowWsiRecoveryAction::
+                replace_surface) {
+            throw std::logic_error(
+                "candidate surface fault did not request replacement");
+        }
+        candidate_surface_.reset();
+        state.markSurfaceLost(0);
+    }
+
+    void publish(std::uint64_t revision) {
+        if (!candidate_surface_) {
+            throw std::logic_error(
+                "surface publication has no candidate");
+        }
+        state.preparationSucceeded(
+            ++active_epoch_, key(revision));
+        active_surface = candidate_surface_;
+        candidate_surface_.reset();
+    }
+};
 
 } // namespace
 
@@ -350,4 +432,234 @@ TEST_CASE(
     REQUIRE(request);
     CHECK(request->preparation_kind ==
           WindowOutputPreparationKind::surface);
+}
+
+TEST_CASE(
+    "WP217 call-site policy covers injected WSI result families",
+    "[wp217][wsi][fault][decision-table]") {
+    constexpr std::array sites{
+        WindowWsiCallSite::acquire,
+        WindowWsiCallSite::present,
+        WindowWsiCallSite::surface_create,
+        WindowWsiCallSite::surface_support_query,
+        WindowWsiCallSite::swapchain_create,
+        WindowWsiCallSite::dependent_resources,
+    };
+
+    for (const auto site : sites) {
+        CHECK(
+            decideWindowWsiRecovery(
+                site,
+                vk::Result::eErrorSurfaceLostKHR)
+                .action ==
+            WindowWsiRecoveryAction::
+                replace_surface);
+        CHECK(
+            decideWindowWsiRecovery(
+                site,
+                vk::Result::eErrorDeviceLost)
+                .action ==
+            WindowWsiRecoveryAction::
+                rebuild_device);
+        CHECK(
+            decideWindowWsiRecovery(
+                site,
+                vk::Result::eErrorOutOfDeviceMemory)
+                .action ==
+            WindowWsiRecoveryAction::retry_later);
+        const bool named =
+            windowWsiCallSiteName(site) !=
+            "unknown";
+        CHECK(named);
+    }
+
+    for (const auto site :
+         {WindowWsiCallSite::surface_create,
+          WindowWsiCallSite::
+              surface_support_query}) {
+        CHECK(
+            decideWindowWsiRecovery(
+                site,
+                vk::Result::eErrorOutOfDateKHR)
+                .action ==
+            WindowWsiRecoveryAction::
+                replace_surface);
+    }
+    for (const auto site :
+         {WindowWsiCallSite::acquire,
+          WindowWsiCallSite::present,
+          WindowWsiCallSite::swapchain_create,
+          WindowWsiCallSite::
+              dependent_resources}) {
+        CHECK(
+            decideWindowWsiRecovery(
+                site,
+                vk::Result::eErrorOutOfDateKHR)
+                .action ==
+            WindowWsiRecoveryAction::
+                replace_swapchain);
+    }
+
+    CHECK(
+        decideWindowWsiRecovery(
+            WindowWsiCallSite::acquire,
+            vk::Result::eNotReady)
+            .action ==
+        WindowWsiRecoveryAction::drop_frame);
+    CHECK(
+        decideWindowWsiRecovery(
+            WindowWsiCallSite::present,
+            vk::Result::eNotReady)
+            .action ==
+        WindowWsiRecoveryAction::retry_later);
+    CHECK(
+        decideWindowWsiRecovery(
+            WindowWsiCallSite::acquire,
+            vk::Result::eSuboptimalKHR)
+            .action ==
+        WindowWsiRecoveryAction::
+            proceed_and_refresh);
+    CHECK(
+        decideWindowWsiRecovery(
+            WindowWsiCallSite::
+                surface_support_query,
+            vk::Result::eSuboptimalKHR)
+            .action ==
+        WindowWsiRecoveryAction::retry_later);
+    CHECK(
+        decideWindowWsiRecovery(
+            WindowWsiCallSite::present,
+            vk::Result::eErrorInitializationFailed)
+            .action ==
+        WindowWsiRecoveryAction::fatal);
+    CHECK(
+        decideWindowWsiRecovery(
+            WindowWsiCallSite::swapchain_create,
+            vk::Result::eErrorInitializationFailed)
+            .action ==
+        WindowWsiRecoveryAction::retry_later);
+}
+
+TEST_CASE(
+    "WP217 acquire and present surface loss each allocate exactly one fresh identity",
+    "[wp217][wsi][fault][protocol]") {
+    for (const auto site :
+         {WindowWsiCallSite::acquire,
+          WindowWsiCallSite::present}) {
+        SurfaceFaultProtocol fake;
+        const auto old_surface =
+            *fake.active_surface;
+
+        fake.loseRuntimeSurfaceAt(site);
+        CHECK_FALSE(fake.active_surface);
+        CHECK(fake.state.kind() ==
+              WindowOutputStateKind::surface_lost);
+
+        const auto fresh =
+            fake.beginFreshSurface(2);
+        CHECK(fake.factory_calls == 1);
+        CHECK(fresh != old_surface);
+        fake.publish(2);
+        REQUIRE(fake.active_surface);
+        CHECK(*fake.active_surface == fresh);
+        CHECK(fake.state.kind() ==
+              WindowOutputStateKind::ready);
+        CHECK(
+            fake.trace ==
+            std::vector<WindowWsiCallSite>{
+                site,
+                WindowWsiCallSite::
+                    surface_create});
+    }
+}
+
+TEST_CASE(
+    "WP217 support and swapchain surface loss discard the candidate before one fresh retry",
+    "[wp217][wsi][fault][protocol]") {
+    for (const auto failure_site :
+         {WindowWsiCallSite::
+              surface_support_query,
+          WindowWsiCallSite::swapchain_create}) {
+        SurfaceFaultProtocol fake;
+        const auto original =
+            *fake.active_surface;
+        fake.loseRuntimeSurfaceAt(
+            WindowWsiCallSite::acquire);
+        const auto failed_candidate =
+            fake.beginFreshSurface(2);
+        if (failure_site ==
+            WindowWsiCallSite::
+                swapchain_create) {
+            CHECK(
+                fake.observe(
+                        WindowWsiCallSite::
+                            surface_support_query,
+                        vk::Result::eSuccess)
+                    .action ==
+                WindowWsiRecoveryAction::proceed);
+        }
+
+        fake.loseCandidateSurfaceAt(
+            failure_site);
+        CHECK(fake.state.kind() ==
+              WindowOutputStateKind::surface_lost);
+        const auto retry_candidate =
+            fake.beginFreshSurface(3);
+
+        CHECK(fake.factory_calls == 2);
+        CHECK(failed_candidate != original);
+        CHECK(retry_candidate != original);
+        CHECK(retry_candidate !=
+              failed_candidate);
+        CHECK(fake.state.kind() ==
+              WindowOutputStateKind::
+                  preparing_surface);
+        CHECK(fake.state.attempt() == 2);
+        const auto expected_trace =
+            failure_site ==
+                    WindowWsiCallSite::
+                        surface_support_query
+                ? std::vector<WindowWsiCallSite>{
+                      WindowWsiCallSite::acquire,
+                      WindowWsiCallSite::
+                          surface_create,
+                      WindowWsiCallSite::
+                          surface_support_query,
+                      WindowWsiCallSite::
+                          surface_create}
+                : std::vector<WindowWsiCallSite>{
+                      WindowWsiCallSite::acquire,
+                      WindowWsiCallSite::
+                          surface_create,
+                      WindowWsiCallSite::
+                          surface_support_query,
+                      WindowWsiCallSite::
+                          swapchain_create,
+                      WindowWsiCallSite::
+                          surface_create};
+        CHECK(fake.trace == expected_trace);
+    }
+}
+
+TEST_CASE(
+    "WP217 swapchain cutover keeps only the legal recovery anchor",
+    "[wp217][wsi][fault][rollback]") {
+    CHECK(
+        selectSwapchainRecoveryAnchor(
+            false, false) ==
+        SwapchainRecoveryAnchorKind::none);
+    CHECK(
+        selectSwapchainRecoveryAnchor(
+            false, true) ==
+        SwapchainRecoveryAnchorKind::previous);
+    CHECK(
+        selectSwapchainRecoveryAnchor(
+            true, true) ==
+        SwapchainRecoveryAnchorKind::
+            replacement);
+    CHECK(
+        selectSwapchainRecoveryAnchor(
+            true, false) ==
+        SwapchainRecoveryAnchorKind::
+            replacement);
 }
