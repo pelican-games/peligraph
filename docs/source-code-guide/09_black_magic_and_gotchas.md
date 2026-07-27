@@ -507,7 +507,7 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 ### barrier
 
 - ordered edge の同 resource write→read を barrier record にする。
-- 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp) は storage buffer に `vk::BufferMemoryBarrier` を出す。`command_layout: "compute_dispatch"`では通常のshader readに加えて`DrawIndirect` / `IndirectCommandRead`をdestinationへ含める。
+- 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp) は storage buffer に `vk::BufferMemoryBarrier` を出す。compute consumerの`command_layout: "compute_dispatch"`とrender consumerの`indexed_draw` / `draw_count`では、通常のshader readに加えて`DrawIndirect` / `IndirectCommandRead`をdestinationへ含める。
 - image は layout tracker に依存。tracker のキーは `(rt_id, surface_index)` になり、history 付き target の現/旧 surface を別々に追跡します([`render_target_layout_tracker.cpp#L72`](../../src/core/vkcore/render_target_layout_tracker.cpp#L72))。
 - layout が変われば layout transition が memory dependency を含む。
 - storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は現在も出ない([同 #L76](../../src/core/vkcore/render_target_layout_tracker.cpp#L76))。
@@ -529,6 +529,10 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 | buffer `size > 0` | 済 | device-local storage buffer を一度確保 |
 | buffer `size == 0` | 済 | graph 名だけ。実 buffer はなし |
 | buffer `command_layout: compute_dispatch` | 済 | 12 byte以上を検証し`INDIRECT_BUFFER` usageを付与 |
+| buffer `command_layout: indexed_draw` | 済 | packed 20 byte以上を検証し`INDIRECT_BUFFER` usageを付与 |
+| buffer `command_layout: draw_count` | 済 | u32 1個以上を検証し`INDIRECT_BUFFER` usageを付与 |
+| buffer `host_source: scene_draw_commands_v1` | 済 | CPU DrawQueue commandを20 byte strideへcompactし、容量超過はゼロ埋め+診断 |
+| material pass `gpu_draw_source` | 済（fixed-state） | 1つの`material_range`を`drawIndexedIndirectCount`で置換。未対応device/CPU強制は既存DrawQueueへfallback |
 | `lifetime: persistent` | 済 | 実質全 buffer が container lifetime |
 | `lifetime: transient` | 済 | frame ごとの確保/recycle は未実装 |
 

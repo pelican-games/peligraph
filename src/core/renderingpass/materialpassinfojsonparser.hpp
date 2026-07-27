@@ -3,11 +3,13 @@
 #include "renderingpass.hpp"
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_set>
 
 namespace Pelican {
 
+struct FrameGraphBufferDefinition;
 class RenderTargetMetadataResolver;
 class RenderTargetNameResolver;
 
@@ -15,6 +17,15 @@ std::optional<MaterialDrawTagFilter>
 parseMaterialDrawTagFilterFromJson(
     const nlohmann::json &pass_json,
     std::string_view context);
+
+std::optional<GpuDrawSourceDefinition>
+parseGpuDrawSourceFromJson(
+    const nlohmann::json &pass_json,
+    std::string_view context);
+void validateGpuDrawSourceBufferContracts(
+    const nlohmann::json &config_json,
+    std::span<const FrameGraphBufferDefinition>
+        buffer_definitions);
 
 void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseMaterialPassScreenInputsFromJson(

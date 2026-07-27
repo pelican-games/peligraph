@@ -336,6 +336,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
+    std::vector<vk::DrawIndexedIndirectCommand>
+    indexedDrawCommandsForFrameGraph() const;
     const BufferWrapper &getObjectBuf() const;
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &

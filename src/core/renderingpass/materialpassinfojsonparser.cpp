@@ -1,4 +1,5 @@
 #include "materialpassinfojsonparser.hpp"
+#include "computetask.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
@@ -9,6 +10,116 @@
 #include <utility>
 
 namespace Pelican {
+
+namespace {
+
+vk::DeviceSize parseOptionalDeviceSize(
+    const nlohmann::json &json,
+    std::string_view field,
+    std::string_view context) {
+    const auto found =
+        json.find(std::string{field});
+    if (found == json.end()) return 0;
+    if (found->is_number_unsigned()) {
+        return found->get<vk::DeviceSize>();
+    }
+    if (found->is_number_integer()) {
+        const auto value =
+            found->get<std::int64_t>();
+        if (value >= 0) {
+            return static_cast<vk::DeviceSize>(
+                value);
+        }
+    }
+    {
+        throw std::runtime_error(
+            std::string{context} + " " +
+            std::string{field} +
+            " must be an unsigned integer");
+    }
+}
+
+const FrameGraphBufferDefinition &
+requireGpuDrawBuffer(
+    std::span<const FrameGraphBufferDefinition>
+        definitions,
+    std::string_view name,
+    std::string_view role,
+    std::string_view pass_name) {
+    const auto found = std::find_if(
+        definitions.begin(), definitions.end(),
+        [&](const auto &candidate) {
+            return candidate.name == name;
+        });
+    if (found == definitions.end()) {
+        throw std::runtime_error(
+            "Material pass '" +
+            std::string{pass_name} +
+            "' gpu_draw_source " +
+            std::string{role} +
+            " references unknown buffer '" +
+            std::string{name} + "'");
+    }
+    return *found;
+}
+
+void validateGpuDrawSourceBufferContract(
+    const GpuDrawSourceDefinition &source,
+    std::span<const FrameGraphBufferDefinition>
+        definitions,
+    std::string_view pass_name) {
+    const auto &commands = requireGpuDrawBuffer(
+        definitions, source.commands, "commands",
+        pass_name);
+    const auto &count = requireGpuDrawBuffer(
+        definitions, source.count, "count",
+        pass_name);
+    if (commands.command_layout !=
+        FrameGraphBufferCommandLayout::
+            indexed_draw) {
+        throw std::runtime_error(
+            "Material pass '" +
+            std::string{pass_name} +
+            "' gpu_draw_source commands buffer '" +
+            source.commands +
+            "' requires command_layout 'indexed_draw'");
+    }
+    if (count.command_layout !=
+        FrameGraphBufferCommandLayout::
+            draw_count) {
+        throw std::runtime_error(
+            "Material pass '" +
+            std::string{pass_name} +
+            "' gpu_draw_source count buffer '" +
+            source.count +
+            "' requires command_layout 'draw_count'");
+    }
+    const auto command_bytes =
+        static_cast<vk::DeviceSize>(
+            source.max_draw_count) *
+        frameGraphIndexedDrawCommandBytes;
+    if (source.command_offset >
+            commands.size ||
+        commands.size - source.command_offset <
+            command_bytes) {
+        throw std::runtime_error(
+            "Material pass '" +
+            std::string{pass_name} +
+            "' gpu_draw_source command range exceeds buffer '" +
+            source.commands + "'");
+    }
+    if (source.count_offset > count.size ||
+        count.size - source.count_offset <
+            frameGraphDrawCountBytes) {
+        throw std::runtime_error(
+            "Material pass '" +
+            std::string{pass_name} +
+            "' gpu_draw_source count value exceeds buffer '" +
+            source.count + "'");
+    }
+}
+
+} // namespace
 
 std::optional<MaterialDrawTagFilter>
 parseMaterialDrawTagFilterFromJson(
@@ -62,6 +173,172 @@ parseMaterialDrawTagFilterFromJson(
         std::string{context} + " material_filter");
 }
 
+std::optional<GpuDrawSourceDefinition>
+parseGpuDrawSourceFromJson(
+    const nlohmann::json &pass_json,
+    std::string_view context) {
+    const auto found =
+        pass_json.find("gpu_draw_source");
+    if (found == pass_json.end()) {
+        return std::nullopt;
+    }
+    if (!found->is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source must be an object");
+    }
+    for (auto field = found->begin();
+         field != found->end(); ++field) {
+        if (field.key() != "commands" &&
+            field.key() != "count" &&
+            field.key() != "max_draw_count" &&
+            field.key() != "command_offset" &&
+            field.key() != "count_offset" &&
+            field.key() != "fallback" &&
+            field.key() != "execution") {
+            throw std::runtime_error(
+                std::string{context} +
+                " gpu_draw_source has unknown field '" +
+                field.key() + "'");
+        }
+    }
+    GpuDrawSourceDefinition result{
+        .commands = parseStringField(
+            *found, "commands",
+            std::string{context} +
+                " gpu_draw_source"),
+        .count = parseStringField(
+            *found, "count",
+            std::string{context} +
+                " gpu_draw_source"),
+        .max_draw_count = parseUint32Field(
+            *found, "max_draw_count",
+            std::string{context} +
+                " gpu_draw_source"),
+        .command_offset = parseOptionalDeviceSize(
+            *found, "command_offset",
+            std::string{context} +
+                " gpu_draw_source"),
+        .count_offset = parseOptionalDeviceSize(
+            *found, "count_offset",
+            std::string{context} +
+                " gpu_draw_source"),
+    };
+    if (result.commands.empty() ||
+        result.count.empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source buffer names must not be empty");
+    }
+    if (result.commands == result.count) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source commands and count buffers must differ");
+    }
+    if (result.max_draw_count == 0) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source max_draw_count must be greater than zero");
+    }
+    if (result.command_offset %
+                frameGraphIndirectCommandAlignment !=
+            0 ||
+        result.count_offset %
+                frameGraphIndirectCommandAlignment !=
+            0) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source offsets must be 4-byte aligned");
+    }
+    if (found->contains("fallback")) {
+        const auto fallback = parseStringField(
+            *found, "fallback",
+            std::string{context} +
+                " gpu_draw_source");
+        if (fallback != "cpu_draw_queue") {
+            throw std::runtime_error(
+                std::string{context} +
+                " gpu_draw_source has unknown fallback '" +
+                fallback + "'");
+        }
+    }
+    if (found->contains("execution")) {
+        const auto execution = parseStringField(
+            *found, "execution",
+            std::string{context} +
+                " gpu_draw_source");
+        if (execution == "automatic") {
+            result.execution =
+                GpuDrawExecutionMode::
+                    automatic;
+        } else if (execution == "cpu") {
+            result.execution =
+                GpuDrawExecutionMode::cpu;
+        } else {
+            throw std::runtime_error(
+                std::string{context} +
+                " gpu_draw_source has unknown execution mode '" +
+                execution + "'");
+        }
+    }
+    const auto range =
+        pass_json.find("material_range");
+    if (range == pass_json.end() ||
+        !range->is_object() ||
+        !range->contains("count") ||
+        parseUint32Field(
+            *range, "count",
+            std::string{context} +
+                " material_range") != 1) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source requires material_range.count = 1 "
+            "to pin one fixed pipeline/material state");
+    }
+    return result;
+}
+
+void validateGpuDrawSourceBufferContracts(
+    const nlohmann::json &config_json,
+    std::span<const FrameGraphBufferDefinition>
+        buffer_definitions) {
+    const auto pass_sets =
+        config_json.find("rendering_passes");
+    if (pass_sets == config_json.end()) return;
+    if (!pass_sets->is_array()) {
+        throw std::runtime_error(
+            "rendering_passes must be an array");
+    }
+    for (const auto &pass_set : *pass_sets) {
+        const auto passes = pass_set.find("passes");
+        if (passes == pass_set.end() ||
+            !passes->is_array()) {
+            continue;
+        }
+        for (const auto &pass : *passes) {
+            if (!pass.is_object() ||
+                !pass.contains("gpu_draw_source")) {
+                continue;
+            }
+            const auto name = parseStringField(
+                pass, "name", "material pass");
+            if (pass.value(
+                    "type", std::string{}) !=
+                "material") {
+                throw std::runtime_error(
+                    "Only material passes support gpu_draw_source: " +
+                    name);
+            }
+            const auto source =
+                parseGpuDrawSourceFromJson(
+                    pass,
+                    "Material pass '" + name + "'");
+            validateGpuDrawSourceBufferContract(
+                *source, buffer_definitions, name);
+        }
+    }
+}
+
 void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isMaterial()) {
         return;
@@ -109,15 +386,30 @@ void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::jso
         material_info.material_variant = std::move(name);
     }
 
-    if (!pass_json.contains("material_range")) return;
+    if (pass_json.contains("material_range")) {
+        const auto &mat_range =
+            pass_json.at("material_range");
+        if (!mat_range.is_object()) {
+            throw std::runtime_error(
+                "material_range must be an object: " +
+                pass_def.name);
+        }
 
-    const auto &mat_range = pass_json.at("material_range");
-    if (!mat_range.is_object()) {
-        throw std::runtime_error("material_range must be an object: " + pass_def.name);
+        material_info.material_start =
+            parseUint32Field(
+                mat_range, "start",
+                "material_range in pass: " +
+                    pass_def.name);
+        material_info.material_count =
+            parseUint32Field(
+                mat_range, "count",
+                "material_range in pass: " +
+                    pass_def.name);
     }
-
-    material_info.material_start = parseUint32Field(mat_range, "start", "material_range in pass: " + pass_def.name);
-    material_info.material_count = parseUint32Field(mat_range, "count", "material_range in pass: " + pass_def.name);
+    material_info.gpu_draw_source =
+        parseGpuDrawSourceFromJson(
+            pass_json,
+            "Material pass '" + pass_def.name + "'");
 }
 
 namespace {

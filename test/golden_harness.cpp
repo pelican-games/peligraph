@@ -2027,6 +2027,107 @@ void main() {
                                std::filesystem::copy_options::overwrite_existing);
 }
 
+void writeGpuDrawProject(
+    const std::filesystem::path &root,
+    std::uint32_t produced_count,
+    bool force_cpu) {
+    writeShadowProject(root, false);
+    auto config =
+        makeShadowRenderingConfig(false);
+    config["buffers"] =
+        nlohmann::json::array({
+            {
+                {"name", "draw_candidates"},
+                {"size", 40},
+                {"host_source",
+                 "scene_draw_commands_v1"},
+                {"command_layout",
+                 "indexed_draw"},
+            },
+            {
+                {"name", "visible_draws"},
+                {"size", 40},
+                {"command_layout",
+                 "indexed_draw"},
+            },
+            {
+                {"name", "visible_draw_count"},
+                {"size", 4},
+                {"command_layout", "draw_count"},
+            },
+        });
+    config["compute_tasks"] =
+        nlohmann::json::array({
+            {
+                {"name", "build_visible_draws"},
+                {"shader",
+                 "shaders/build_visible_draws"},
+                {"reads",
+                 nlohmann::json::array(
+                     {"draw_candidates"})},
+                {"writes",
+                 nlohmann::json::array(
+                     {"visible_draws",
+                      "visible_draw_count"})},
+                {"before",
+                 nlohmann::json::array(
+                     {"gbuffer_pass"})},
+                {"dispatch",
+                 {{"groups",
+                   nlohmann::json::array(
+                       {1, 1, 1})}}},
+                {"schedule", "per_frame"},
+            },
+        });
+    auto &passes =
+        config["rendering_passes"][0]["passes"];
+    const auto geometry = std::find_if(
+        passes.begin(), passes.end(),
+        [](const auto &pass) {
+            return pass.value(
+                       "name", std::string{}) ==
+                   "gbuffer_pass";
+        });
+    if (geometry == passes.end()) {
+        throw std::runtime_error(
+            "GPU draw golden requires gbuffer_pass");
+    }
+    (*geometry)["material_range"] = {
+        {"start", 0},
+        {"count", 1},
+    };
+    (*geometry)["gpu_draw_source"] = {
+        {"commands", "visible_draws"},
+        {"count", "visible_draw_count"},
+        {"max_draw_count", 2},
+    };
+    if (force_cpu) {
+        (*geometry)["gpu_draw_source"]
+                   ["execution"] =
+            "cpu";
+    }
+    writeTextFile(
+        root / "passes" / "main.json",
+        config.dump(2));
+    writeTextFile(
+        root / "shaders" /
+            "build_visible_draws.comp",
+        "#version 450\n"
+        "layout(local_size_x=1,local_size_y=1,local_size_z=1) in;\n"
+        "struct DrawCommand{uint indexCount;uint instanceCount;"
+        "uint firstIndex;int vertexOffset;uint firstInstance;};\n"
+        "layout(std430,set=1,binding=0) readonly buffer Candidates{"
+        "DrawCommand values[];} candidates;\n"
+        "layout(std430,set=1,binding=1) writeonly buffer Visible{"
+        "DrawCommand values[];} visible;\n"
+        "layout(std430,set=1,binding=2) buffer Count{uint value;} "
+        "draw_count;\n"
+        "void main(){visible.values[0]=candidates.values[0];"
+        "visible.values[1]=candidates.values[1];draw_count.value=" +
+            std::to_string(produced_count) +
+            "u;}\n");
+}
+
 void writeBLayerShadowProject(const std::filesystem::path &root,
                               std::string_view mode) {
     writeShadowProject(root, false);
@@ -3155,6 +3256,35 @@ bool isShadowGoldenMode(const std::string &mode) {
     return mode == "shadow_off" || mode == "shadow_on";
 }
 
+bool isGpuDrawGoldenMode(
+    const std::string &mode) {
+    return mode == "gpu_draw_count_zero" ||
+           mode == "gpu_draw_count_one" ||
+           mode == "gpu_draw_count_max" ||
+           mode == "gpu_draw_count_overflow" ||
+           mode == "gpu_draw_force_cpu";
+}
+
+std::uint32_t gpuDrawProducedCount(
+    const std::string &mode) {
+    if (mode == "gpu_draw_count_zero" ||
+        mode == "gpu_draw_force_cpu") {
+        return 0;
+    }
+    if (mode == "gpu_draw_count_one") {
+        return 1;
+    }
+    if (mode == "gpu_draw_count_max") {
+        return 2;
+    }
+    if (mode == "gpu_draw_count_overflow") {
+        return 99;
+    }
+    throw std::runtime_error(
+        "unknown GPU draw golden mode: " +
+        mode);
+}
+
 bool isBLayerShadowGoldenMode(
     const std::string &mode) {
     return mode == "shadow_b_layer_off" ||
@@ -3392,6 +3522,18 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         writeShadowProject(temp_dir, golden_case.mode == "shadow_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    } else if (isGpuDrawGoldenMode(
+                   golden_case.mode)) {
+        writeGpuDrawProject(
+            temp_dir,
+            gpuDrawProducedCount(
+                golden_case.mode),
+            golden_case.mode ==
+                "gpu_draw_force_cpu");
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(
+            makeShadowProjectJson().dump());
     } else if (isTaaGoldenMode(golden_case.mode)) {
         writeTaaProject(temp_dir, golden_case.mode == "taa_ortho");
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -3490,6 +3632,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         renderBLayerShadowFrame(render_target,
                                 golden_case.mode);
     } else if (isShadowGoldenMode(golden_case.mode)) {
+        renderShadowFrame(render_target);
+    } else if (isGpuDrawGoldenMode(
+                   golden_case.mode)) {
         renderShadowFrame(render_target);
     } else if (isTaaGoldenMode(golden_case.mode)) {
         renderTaaGoldenFrames(render_target, golden_case.mode);
@@ -3886,6 +4031,82 @@ void GoldenHarness::runBLayerShadowEquivalence() {
 #else
     SKIP("B-layer directional-shadow golden requires "
          "the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runGpuDrawIndirect() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto root =
+        sourceRoot() / "test/golden/shadow_off";
+    const auto baseline =
+        renderCase(GoldenCase{
+            "gpu_draw_cpu_baseline",
+            "shadow_off", root,
+            goldenWidth, goldenHeight});
+    const auto zero =
+        renderCase(GoldenCase{
+            "gpu_draw_count_zero",
+            "gpu_draw_count_zero", root,
+            goldenWidth, goldenHeight});
+    const auto one =
+        renderCase(GoldenCase{
+            "gpu_draw_count_one",
+            "gpu_draw_count_one", root,
+            goldenWidth, goldenHeight});
+    const auto maximum =
+        renderCase(GoldenCase{
+            "gpu_draw_count_max",
+            "gpu_draw_count_max", root,
+            goldenWidth, goldenHeight});
+    const auto overflow =
+        renderCase(GoldenCase{
+            "gpu_draw_count_overflow",
+            "gpu_draw_count_overflow", root,
+            goldenWidth, goldenHeight});
+    const auto forced_cpu =
+        renderCase(GoldenCase{
+            "gpu_draw_force_cpu",
+            "gpu_draw_force_cpu", root,
+            goldenWidth, goldenHeight});
+
+    REQUIRE(
+        maximum.image.pixels ==
+        baseline.image.pixels);
+    REQUIRE(
+        overflow.image.pixels ==
+        baseline.image.pixels);
+    REQUIRE(
+        forced_cpu.image.pixels ==
+        baseline.image.pixels);
+    REQUIRE(
+        zero.image.pixels !=
+        baseline.image.pixels);
+    REQUIRE(
+        one.image.pixels !=
+        zero.image.pixels);
+    REQUIRE(
+        one.image.pixels !=
+        baseline.image.pixels);
+
+    const auto producer =
+        std::find(
+            maximum.plan_order.begin(),
+            maximum.plan_order.end(),
+            "build_visible_draws");
+    const auto consumer =
+        std::find(
+            maximum.plan_order.begin(),
+            maximum.plan_order.end(),
+            "gbuffer_pass");
+    REQUIRE(producer !=
+            maximum.plan_order.end());
+    REQUIRE(consumer !=
+            maximum.plan_order.end());
+    REQUIRE(producer < consumer);
+#else
+    SKIP("GPU-written draw golden requires the runtime shader compiler");
 #endif
 }
 

@@ -4,6 +4,7 @@
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
 #include "graphtransformregistry.hpp"
+#include "materialpassinfojsonparser.hpp"
 #include "passimplementationregistry.hpp"
 #include "renderpipelinegpuarena.hpp"
 #include "renderstrategyregistry.hpp"
@@ -608,6 +609,9 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     validateComputeTaskBufferContracts(
         buffer_definitions,
         compute_task_definitions);
+    validateGpuDrawSourceBufferContracts(
+        composed_rendering_pass_data,
+        buffer_definitions);
     auto graph_definition_list =
         parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
     applyResolvedLogicalGraphTransformSelections(

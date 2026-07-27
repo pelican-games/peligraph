@@ -313,6 +313,90 @@ indirect command read への stage/access barrier もプランから自動発行
 例のようにproducerを別taskへ分けます。
 `groups` / `groups_from` / `local_size` との併記は起動時エラーです。
 
+### GPU が indexed draw 数を決める
+
+同じフレームの compute task が material pass の indexed draw command と draw count を
+生成する場合は、`indexed_draw` / `draw_count` の typed command buffer と
+`gpu_draw_source` を使います。
+
+```json
+{
+  "buffers": [
+    {
+      "name": "draw_candidates",
+      "size": 40,
+      "host_source": "scene_draw_commands_v1",
+      "command_layout": "indexed_draw"
+    },
+    {
+      "name": "visible_draws",
+      "size": 40,
+      "command_layout": "indexed_draw"
+    },
+    {
+      "name": "visible_draw_count",
+      "size": 4,
+      "command_layout": "draw_count"
+    }
+  ],
+  "compute_tasks": [{
+    "name": "build_visible_draws",
+    "shader": "shaders/build_visible_draws",
+    "reads": ["draw_candidates"],
+    "writes": ["visible_draws", "visible_draw_count"],
+    "before": ["gbuffer_pass"],
+    "dispatch": {"groups": [1, 1, 1]}
+  }],
+  "rendering_passes": [{
+    "name": "main",
+    "passes": [{
+      "name": "gbuffer_pass",
+      "type": "material",
+      "material_range": {"start": 0, "count": 1},
+      "gpu_draw_source": {
+        "commands": "visible_draws",
+        "count": "visible_draw_count",
+        "max_draw_count": 2,
+        "command_offset": 0,
+        "count_offset": 0,
+        "fallback": "cpu_draw_queue",
+        "execution": "automatic"
+      }
+    }]
+  }]
+}
+```
+
+`indexed_draw` の1要素は Vulkan と同じ packed 20 byte
+(`uint indexCount`, `uint instanceCount`, `uint firstIndex`, `int vertexOffset`,
+`uint firstInstance`)です。`draw_count` は1個の `uint` です。両 offset は4 byte
+alignment 必須で、`command_offset + max_draw_count * 20` と
+`count_offset + 4` が各 buffer 内に収まる必要があります。GPU が書いた count が0なら
+描画せず、`max_draw_count`を超えれば Vulkan command が上限で clamp します。
+デバイスの`maxDrawIndirectCount`がより小さい場合もその値を上限にします。
+
+`scene_draw_commands_v1` は、そのフレームのCPU DrawQueueを上記20 byte形式へ詰めた
+候補列を供給する任意の host source です。compute shader はこの列をコピー、compact、
+または書き換えて出力できます。ただし候補列にはmaterial境界などのsegment metadataは
+まだありません。
+
+WP210b の実装範囲は **1つの `material_range` entry に pipeline、material descriptor、
+static/skinned vertex layoutを固定する経路**です。そのため `material_range.count` は1が必須で、
+GPU commandが切り替えられるのはgeometry/instanceだけです。複数material、複数pipeline、
+material境界をまたぐGPU cullingは後続範囲です。また固定状態を得るCPU DrawQueue entryが
+0件ならGPU commandだけで新しい状態を作ることはできません。
+
+`gpu_draw_source` はcommands/countをrender nodeのreadへ自動追加し、順序付け済みの
+compute writeから`DrawIndirect` / `IndirectCommandRead` barrierを導出します。現プランナは
+宣言順より後ろのwriterをRAW producerとして推測しないため、top-levelでrender passより後に
+組み立てられるcompute producerには、例の`before: ["gbuffer_pass"]`または同等の明示edgeが
+必要です。
+
+`execution: "automatic"`はVulkan 1.2 coreの`drawIndirectCount` featureが有効なら
+`drawIndexedIndirectCount`を使います。未対応デバイスでは`fallback: "cpu_draw_queue"`により
+既存CPU DrawQueueを描画します。比較・診断用の`execution: "cpu"`も同じfallbackを強制します。
+現時点で他のfallbackとVulkan 1.1 + `VK_KHR_draw_indirect_count`だけの経路は受理しません。
+
 ### プランダンプ(実行計画の可視化)
 
 ```sh

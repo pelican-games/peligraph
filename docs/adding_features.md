@@ -128,6 +128,15 @@ command は `uint x, y, z` の12 byteで、producer の`writes`からconsumerの
 indirect read edgeと必要なbarrierは自動導出される。consumerのshader入力ではないため、
 同じbufferを`reads`へ重複記述しない。
 
+GPU が material pass の draw 数を決める場合は、出力bufferを
+`"command_layout": "indexed_draw"`（20 byte/command）と
+`"command_layout": "draw_count"`（4 byte）にし、passへ`gpu_draw_source`を付ける。
+現在は`material_range.count: 1`でpipeline/material状態を固定する経路であり、
+producer compute taskからpassへの`before` edgeが必要です。CPU DrawQueueを候補として
+読みたい場合は入力bufferへ`"host_source": "scene_draw_commands_v1"`を指定します。
+完全な設定例とfallback条件は
+[`manual/06_rendering.md`](manual/06_rendering.md#gpu-が-indexed-draw-数を決める)を参照してください。
+
 ## レシピ 5: プロジェクト内C++コード(静的リンク)
 
 プロジェクト固有のゲームロジックを player に取り込む。エンジンはSDKとして扱い、

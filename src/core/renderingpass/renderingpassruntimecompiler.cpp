@@ -335,6 +335,72 @@ PassDefinition applyPhysicalPassContract(
                     resource.buffer);
             }
         }
+        if (auto &draw_source =
+                result.materialInfo()
+                    .gpu_draw_source) {
+            if (frame_graph_resources == nullptr) {
+                throw std::runtime_error(
+                    "material pass '" +
+                    result.name +
+                    "' gpu_draw_source requires frame-graph buffer "
+                    "runtime dependencies");
+            }
+            draw_source->commands_id =
+                frame_graph_resources
+                    ->getBufferIdByName(
+                        draw_source->commands);
+            draw_source->count_id =
+                frame_graph_resources
+                    ->getBufferIdByName(
+                        draw_source->count);
+            if (!isValidFrameGraphBufferId(
+                    draw_source->commands_id) ||
+                !isValidFrameGraphBufferId(
+                    draw_source->count_id)) {
+                throw std::runtime_error(
+                    "material pass '" +
+                    result.name +
+                    "' gpu_draw_source buffer is absent from the active "
+                    "GPU generation");
+            }
+            const auto &commands =
+                frame_graph_resources->definition(
+                    draw_source->commands_id);
+            const auto &count =
+                frame_graph_resources->definition(
+                    draw_source->count_id);
+            if (commands.command_layout !=
+                    FrameGraphBufferCommandLayout::
+                        indexed_draw ||
+                count.command_layout !=
+                    FrameGraphBufferCommandLayout::
+                        draw_count) {
+                throw std::runtime_error(
+                    "material pass '" +
+                    result.name +
+                    "' gpu_draw_source runtime command layout changed");
+            }
+            const auto command_bytes =
+                static_cast<vk::DeviceSize>(
+                    draw_source
+                        ->max_draw_count) *
+                frameGraphIndexedDrawCommandBytes;
+            if (draw_source->command_offset >
+                    commands.size ||
+                commands.size -
+                        draw_source->command_offset <
+                    command_bytes ||
+                draw_source->count_offset >
+                    count.size ||
+                count.size -
+                        draw_source->count_offset <
+                    frameGraphDrawCountBytes) {
+                throw std::runtime_error(
+                    "material pass '" +
+                    result.name +
+                    "' gpu_draw_source runtime range is invalid");
+            }
+        }
     }
     if (plan == nullptr ||
         plan->attachments.empty()) {

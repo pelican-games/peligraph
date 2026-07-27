@@ -96,6 +96,37 @@ struct MaterialPassResourceBinding {
     }
 };
 
+enum class GpuDrawFallback : std::uint8_t {
+    cpu_draw_queue,
+};
+
+enum class GpuDrawExecutionMode : std::uint8_t {
+    automatic,
+    cpu,
+};
+
+// A material pass may replace one CPU-compiled fixed-state draw range with
+// GPU-written indexed indirect commands. The logical buffer names are kept
+// for diagnostics; runtime compilation pins generation-owned handles.
+struct GpuDrawSourceDefinition {
+    std::string commands;
+    std::string count;
+    std::uint32_t max_draw_count = 0;
+    vk::DeviceSize command_offset = 0;
+    vk::DeviceSize count_offset = 0;
+    GpuDrawFallback fallback =
+        GpuDrawFallback::cpu_draw_queue;
+    GpuDrawExecutionMode execution =
+        GpuDrawExecutionMode::automatic;
+    FrameGraphBufferId commands_id =
+        noFrameGraphBufferId();
+    FrameGraphBufferId count_id =
+        noFrameGraphBufferId();
+
+    bool operator==(
+        const GpuDrawSourceDefinition &) const = default;
+};
+
 struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
@@ -112,6 +143,10 @@ struct MaterialPassInfo {
     // typed resource_ports. These named bindings create graph read edges;
     // materials that declare no matching port allocate no descriptor.
     std::vector<MaterialPassResourceBinding> material_resources;
+    // WP210b fixed-state vertical slice. Exactly one material_range entry is
+    // selected; commands may vary geometry/instances but not bound pipeline,
+    // material descriptors, or static/skinned vertex layout.
+    std::optional<GpuDrawSourceDefinition> gpu_draw_source;
 };
 
 enum class FullscreenPushConstantData {

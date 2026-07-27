@@ -13,6 +13,12 @@ TEST_CASE("B-layer directional shadow is visible and copied features are equival
     GoldenHarness::runBLayerShadowEquivalence();
 }
 
+TEST_CASE(
+    "GPU-written indexed draw count handles zero max overflow and CPU fallback",
+    "[golden][headless][wp210]") {
+    GoldenHarness::runGpuDrawIndirect();
+}
+
 TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
           "[golden][headless][byte-exact]") {
     GoldenHarness::runRgba8Hashes();

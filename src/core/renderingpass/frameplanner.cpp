@@ -657,6 +657,16 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     appendMaterialScreenInputReads(pass_json, node);
     appendMaterialSurfaceResourceReads(pass_json, node);
     appendMaterialResourceReads(pass_json, node);
+    if (const auto draw_source =
+            parseGpuDrawSourceFromJson(
+                pass_json,
+                "Frame graph pass '" +
+                    node.name + "'")) {
+        appendUnique(
+            node.reads, draw_source->commands);
+        appendUnique(
+            node.reads, draw_source->count);
+    }
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
     node.raster_geometry =
@@ -1043,6 +1053,16 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
                             ? LogicalAccessIntent::storage
                             : LogicalAccessIntent::sampled,
                 });
+        }
+        if (const auto &draw_source =
+                pass.materialInfo()
+                    .gpu_draw_source) {
+            appendUnique(
+                node.reads,
+                draw_source->commands);
+            appendUnique(
+                node.reads,
+                draw_source->count);
         }
     }
     const auto depth_resource =

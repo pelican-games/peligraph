@@ -1441,6 +1441,19 @@ glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
+std::vector<vk::DrawIndexedIndirectCommand>
+PolygonInstanceContainer::
+    indexedDrawCommandsForFrameGraph() const {
+    std::vector<vk::DrawIndexedIndirectCommand>
+        result;
+    const auto &records =
+        compiled_draw_queue.indirectRecords();
+    result.reserve(records.size());
+    for (const auto &record : records) {
+        result.push_back(record.command);
+    }
+    return result;
+}
 const BufferWrapper &PolygonInstanceContainer::getObjectBuf() const { return model_data_buffer; }
 const BufferWrapper &PolygonInstanceContainer::getPreviousObjectBuf() const { return previous_model_data_buffer; }
 const std::vector<DrawIndirectInfo> &

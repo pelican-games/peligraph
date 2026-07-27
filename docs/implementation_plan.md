@@ -116,7 +116,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 | WP208 | lighting data contract v2 + clustered dogfood | ✅ 完了（2026-07-26、archive） |
 | WP209a | static texture dimension + material sampler authoring | ✅ 完了（2026-07-26、archive） |
 | WP209b | RT mip/layer/subresource view | ✅ 完了（2026-07-26、archive） |
-| WP210 | indirect dispatch + GPU-written draw arguments | 🟡 WP210a indirect dispatch完了（2026-07-27）、GPU draw argumentsは未実装 |
+| WP210 | indirect dispatch + GPU-written draw arguments | 🟡 WP210a + WP210b fixed-state draw/count完了（2026-07-27）。一般GPU culling受け入れは継続 |
 | WP211 | `dist-bake` + shaderc OFF feature delivery | 並行候補・配布/Quest前必須 |
 | WP212 | VRS/foveation backend contract | Quest SA2 device/計測待ち |
 
@@ -390,9 +390,11 @@ indirect argumentsを生成できるようにする。
 **実装範囲**:
 
 1. ✅ buffer usage/typed argument layout、`dispatchIndirect`、barrierを縦切りした（WP210a）。
-2. DrawQueue/rendererへGPU-written indexed indirect/count pathを追加する。
-3. device feature、count clamp、zero count、CPU fallback、validationをcompiled planへ残す。
-4. fixed descriptorで成立するdogfoodを先に行い、bindlessを暗黙依存にしない。
+2. ✅ DrawQueue/rendererへfixed-state GPU-written indexed indirect/count pathを追加した
+   （WP210b）。
+3. ✅ device feature、count clamp、zero count、CPU fallback、validationをcompiled planへ
+   残した（WP210b）。
+4. ✅ fixed descriptorで成立する実Vulkan dogfoodを先に行い、bindlessを暗黙依存にしなかった。
 
 **WP210a 完了境界（2026-07-27）**:
 
@@ -406,8 +408,25 @@ indirect argumentsを生成できるようにする。
 
 詳細は
 [`design_reviews/2026-07-27_wp210a_indirect_dispatch.md`](design_reviews/2026-07-27_wp210a_indirect_dispatch.md)。
-WP210b以降のGPU-written indexed draw/count、0/max/overflow clamp、CPU fallback、
-hot reload/XR/timing受け入れは未完了。
+
+**WP210b 完了境界（2026-07-27）**:
+
+- `indexed_draw`（packed 20 byte）/ `draw_count`（u32）のlogical command layoutを追加し、
+  `INDIRECT_BUFFER` usageへlowerする
+- `scene_draw_commands_v1`でCPU DrawQueueからcompactな候補command列を公開する
+- material passの`gpu_draw_source`を1つの`material_range` entryへ固定し、
+  generation-owned buffer IDをruntime compile時にpinする
+- command/count read edgeとcompute shader write → indirect command read barrierを導出する
+- Vulkan 1.2 `drawIndirectCount` featureを照会・有効化し、
+  `maxDrawIndirectCount`との小さい方を上限にする。未対応または`execution: cpu`は既存
+  CPU DrawQueueへfallbackする
+- 実Vulkan fixtureでcount 0/1/max/overflow、CPU強制fallback、producer順序、
+  baselineとのsemantic image一致を検証する
+
+詳細は
+[`design_reviews/2026-07-27_wp210b_gpu_draw_source.md`](design_reviews/2026-07-27_wp210b_gpu_draw_source.md)。
+WP210の残りは、project-ownedの実culling/particle dogfood、複数material/pipeline segment、
+hot reload/XR/timing受け入れである。
 
 **受け入れ条件**:
 

@@ -6,6 +6,7 @@ void runProjectionJitterEquivalence();
 void runProjectionJitterShadow();
 void runTaaDeterminism();
 void runBLayerShadowEquivalence();
+void runGpuDrawIndirect();
 void runGoldenImages();
 void runLogicalFrameStereo();
 void runOpenXrTaaTransition();

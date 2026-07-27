@@ -1,5 +1,6 @@
 #include "materialrender.hpp"
 #include "frameresources.hpp"
+#include "../renderingpass/computetask.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
@@ -9,6 +10,7 @@
 #include "../vkcore/core.hpp"
 #include "camera.hpp"
 #include "polygoninstancecontainer.hpp"
+#include <algorithm>
 #include <optional>
 
 namespace Pelican {
@@ -52,6 +54,34 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     }
 
     const auto &indirect_buf = instance_container.getIndirectBuf();
+    const auto &gpu_draw_source =
+        pass.materialInfo().gpu_draw_source;
+    if (gpu_draw_source &&
+        pass.materialInfo().material_count != 1) {
+        throw std::runtime_error(
+            "Material pass '" + pass.name +
+            "' gpu_draw_source requires one fixed material range");
+    }
+    std::optional<std::uint32_t>
+        gpu_draw_limit;
+    if (gpu_draw_source &&
+        gpu_draw_source->execution ==
+            GpuDrawExecutionMode::automatic) {
+        const auto &vkcore =
+            GET_MODULE(VulkanManageCore);
+        const auto device_draw_limit =
+            vkcore.getPhysDevice()
+                .getProperties()
+                .limits.maxDrawIndirectCount;
+        if (vkcore.getRuntimeCapabilities()
+                .draw_indirect_count &&
+            device_draw_limit != 0) {
+            gpu_draw_limit = std::min(
+                gpu_draw_source
+                    ->max_draw_count,
+                device_draw_limit);
+        }
+    }
     GlobalMaterialId current_material_id = invalidMaterialId();
     uint32_t material_index = 0;
     for (const auto &draw_call : draw_calls) {
@@ -85,8 +115,44 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
                               PELICAN_PUSH_ENGINE_BYTES, sizeof(material_push), &material_push);
         current_material_id = draw_call.material;
-        cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
-                                    draw_call.stride);
+        if (gpu_draw_source &&
+            gpu_draw_limit) {
+            if (!isValidFrameGraphBufferId(
+                    gpu_draw_source->commands_id) ||
+                !isValidFrameGraphBufferId(
+                    gpu_draw_source->count_id)) {
+                throw std::runtime_error(
+                    "Material pass '" + pass.name +
+                    "' gpu_draw_source was not pinned to the active GPU "
+                    "generation");
+            }
+            const auto &commands =
+                dependencies.frame_graph_resources
+                    .buffer(
+                        gpu_draw_source
+                            ->commands_id);
+            const auto &count =
+                dependencies.frame_graph_resources
+                    .buffer(
+                        gpu_draw_source
+                            ->count_id);
+            cmd_buf.drawIndexedIndirectCount(
+                commands.buffer.get(),
+                gpu_draw_source->command_offset,
+                count.buffer.get(),
+                gpu_draw_source->count_offset,
+                *gpu_draw_limit,
+                static_cast<std::uint32_t>(
+                    frameGraphIndexedDrawCommandBytes));
+        } else {
+            // The established CPU-compiled draw queue is the semantic
+            // fallback when the device cannot consume a GPU-written count.
+            cmd_buf.drawIndexedIndirect(
+                indirect_buf.buffer.get(),
+                draw_call.offset,
+                draw_call.draw_count,
+                draw_call.stride);
+        }
     }
 }
 

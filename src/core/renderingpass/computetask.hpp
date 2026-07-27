@@ -32,6 +32,7 @@ class VulkanUtils;
 
 enum class FrameGraphHostBufferSource : std::uint8_t {
     scene_lights_v2,
+    scene_draw_commands_v1,
 };
 
 std::string_view frameGraphHostBufferSourceName(
@@ -42,10 +43,21 @@ std::string_view frameGraphHostBufferSourceName(
 // project authoring.
 enum class FrameGraphBufferCommandLayout : std::uint8_t {
     compute_dispatch,
+    indexed_draw,
+    draw_count,
 };
 
 std::string_view frameGraphBufferCommandLayoutName(
     FrameGraphBufferCommandLayout layout);
+
+inline constexpr vk::DeviceSize
+    frameGraphIndexedDrawCommandBytes =
+        sizeof(vk::DrawIndexedIndirectCommand);
+inline constexpr vk::DeviceSize
+    frameGraphDrawCountBytes =
+        sizeof(std::uint32_t);
+inline constexpr vk::DeviceSize
+    frameGraphIndirectCommandAlignment = 4;
 
 struct FrameGraphBufferExtentSizeDefinition {
     std::string resource;

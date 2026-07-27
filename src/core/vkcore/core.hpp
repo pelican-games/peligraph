@@ -32,6 +32,7 @@ struct VulkanRuntimeCapabilities {
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
     bool swapchain_maintenance1 = false;
+    bool draw_indirect_count = false;
 };
 
 enum class VulkanProcessType {

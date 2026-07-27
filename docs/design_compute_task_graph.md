@@ -1,14 +1,15 @@
 # フレームグラフ: 宣言的依存とスケジュール最適化(レンダー・コンピュート統一)
 
 対象読者: エンジン担当。
-ステータス: v2.3 ドラフト(2026-07-27。v2: 2026-07-04。
+ステータス: v2.4 ドラフト(2026-07-27。v2: 2026-07-04。
 v1: compute タスクグラフとして起草。
 v2: ユーザー方針によりレンダーパスにも同モデルを拡張 — 統一フレームグラフ化、
 手詰め層の設計、既存 config の意味論保存移行を追加。
 v2.1: `design_render_graph_compiler.md` の logical / physical 分離へ接続。
 v2.2: `design_heterogeneous_execution_graph.md` の typed dialect / domain 分割へ接続し、
 authoring `kind` と selected execution endpoint を分離。
-v2.3: WP210a の typed indirect compute dispatch と自動 dependency/barrier を反映)。
+v2.3: WP210a の typed indirect compute dispatch と自動 dependency/barrier を反映。
+v2.4: WP210b の fixed-state GPU-written indexed draw/count consumerを反映)。
 前提: [SF](実装済み)、`design_render_feature_modules.md`(v1.2 ドラフト)、
 ロードマップ §3 の compute パス予約枠。GPU 計測(WP29 候補)と強く連携。
 
@@ -108,10 +109,25 @@ GPU-produced dispatch は次の別形を取る。
   **`color_load_op` / depth load が `load` のものは reads + writes**
   (前内容の読み取り継承 — ping-pong や加算合成のチェーンはこれで繋がる)
 - `after` / `before` は render pass にも書ける(新規・任意)
+- material passの`gpu_draw_source.commands` / `count` → **reads**。typed
+  `indexed_draw` / `draw_count` bufferとして物理化し、compute writeから
+  `DrawIndirect` / `IndirectCommandRead`へ同期する
 
 既存 config は無変更で新モデルに乗る。**配列順の意味は「正」から
 「タイブレーク」に変わるが、既存の妥当な config では導出順 = 配列順になる**
 (§5 の移行検証で機械的に保証する)。
+
+WP210bではGPU draw consumerを1つの`material_range` entryへ固定する。これは
+pipeline/material/vertex-layoutをCPU側で束ねたまま、geometry/instance commandとcountだけを
+GPUへ移す最小の縦切りである。`scene_draw_commands_v1`はCPU DrawQueueをpacked
+`VkDrawIndexedIndirectCommand`列としてcomputeへ渡すが、material segment metadataはまだ
+公開しない。複数状態を扱う一般形は、segment tableまたはGPU-visible state keyを別のtyped
+contractとして追加してから行う。
+
+現plannerのRAW導出は宣言順上の直前writerを使う。render pass nodeがcompute task nodeより
+先に組み立てられる現行adapterでは、draw command producerはconsumer passへの`before`
+（または逆向きの`after`）を明示する。read edgeとbarrier自体は
+`gpu_draw_source`から自動導出される。
 
 ### 共通規則
 

@@ -283,6 +283,50 @@ void updateFrameLights(
     }
 }
 
+void updateFrameDrawCommands(
+    const PolygonInstanceContainer
+        &instance_container,
+    FrameGraphResourceContainer
+        &frame_graph_resources) {
+    constexpr auto source =
+        FrameGraphHostBufferSource::
+            scene_draw_commands_v1;
+    if (!frame_graph_resources
+             .hasHostBufferSource(source)) {
+        return;
+    }
+    const auto commands =
+        instance_container
+            .indexedDrawCommandsForFrameGraph();
+    for (const auto &target :
+         frame_graph_resources.hostBufferTargets(
+             source)) {
+        const auto capacity =
+            static_cast<std::size_t>(
+                target.size /
+                frameGraphIndexedDrawCommandBytes);
+        std::vector<
+            vk::DrawIndexedIndirectCommand>
+            upload(capacity);
+        const auto written =
+            std::min(capacity, commands.size());
+        std::copy_n(
+            commands.begin(), written,
+            upload.begin());
+        frame_graph_resources.writeHostBuffer(
+            target.id,
+            std::as_bytes(
+                std::span{
+                    upload.data(),
+                    upload.size()}),
+            FrameGraphResourceContainer::
+                HostBufferPopulation{
+                    commands.size(),
+                    written,
+                });
+    }
+}
+
 glm::vec4 resolutionVector(vk::Extent2D extent) {
     const auto inverse_width =
         extent.width == 0
@@ -1679,6 +1723,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         modules.vert_buf_container,
         modules.material_container,
         modules.frame_resources,
+        modules.frame_graph_resources,
         modules.light_container,
         modules.camera,
         default_snapshot.view_projection_jittered,
@@ -3249,6 +3294,9 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+        updateFrameDrawCommands(
+            modules.instance_container,
+            modules.frame_graph_resources);
 
         const auto frame_target_format =
             target.colorFormat(0);
@@ -3418,6 +3466,9 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+            updateFrameDrawCommands(
+                modules.instance_container,
+                modules.frame_graph_resources);
         } else {
             if (render_ctx.in_flight_frame_index != *logical_in_flight_frame) {
                 throw std::runtime_error(

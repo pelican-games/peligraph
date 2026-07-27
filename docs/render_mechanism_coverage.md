@@ -157,14 +157,14 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
-| H1 | GPU culling / depth pyramid | **culling ✕ / pyramid ○** | 2-layer/full-chain RTのmip0→mip1 computeとfullscreen表示を実GPU dogfood済み(WP209b)。cullingからdraw argsへの接続はG8 |
-| H2 | occlusion culling | **✕** | GPU visibilityのcompute dispatchは組めるが、rendererのdraw count/argsへ接続できない(G8) |
+| H1 | GPU culling / depth pyramid | **culling △ / pyramid ○** | 2-layer/full-chain RTのmip0→mip1 computeとfullscreen表示を実GPU dogfood済み(WP209b)。固定状態1 rangeのdraw args/count接続はWP210bで解消。実culling policyとmulti-segmentは未完 |
+| H2 | occlusion culling | **△** | GPU visibilityから固定状態1 rangeのrenderer draw count/argsへ接続可能。depth-pyramid判定のproject dogfoodとmulti-segmentは未完 |
 | H3 | LOD switching | **△** | game側model swapは可。標準LOD policyなし |
 | H4 | impostor | **△** | asset generation外部、runtime selectionはH3 |
 | H5 | mesh shader / meshlet | **✕** | shader stage/pipeline と GPU-driven contract が無い(G8/G9/G15) |
 | H6 | tessellation / displacement stage | **✕** | tessellation stage authoring が無い(G15) |
 | H7 | virtual geometry | **✕** | streaming/residency/GPU-driven/bindless(G8/G9) |
-| H8 | GPU particle | **△** | fixed maximum countならcompute+draw可能。GPU chosen draw countはG8 |
+| H8 | GPU particle | **△** | fixed-stateのGPU chosen indexed draw countまで接続可能。particle固有のinstance生成とproject dogfoodは未完 |
 | H9 | vegetation wind / mass draw | **△** | windは○。large-scale GPU cullingはG8 |
 | H10 | terrain clipmap | **△** | mesh policyはgame側。height displacementは可 |
 
@@ -212,7 +212,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G6a** | public shadow resource/light relationが無く`pelican_shadow()`がstub | material shadow、PCF/PCSS |
 | **G6b** | passへ任意のcamera/view familyを供給できない | CSM、point shadow、planar reflection |
 | **G7** | acceleration structure / RT shader/pipeline contractが無い | K1/K2 |
-| **G8** | GPUがrendererのdraw count/indirect argsを書けない | culling、particles、virtual geometry |
+| **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
 | **G10a（解消済み、WP209b）** | 2D runtime RTのfixed/full mip、array layer、fullscreen/compute sampled/storage subresource viewを実装 | depth pyramid、2D runtime LUT |
 | **G10b** | runtime 3D/cube targetとraster attachmentの任意mip/layer出力が無い | runtime IBL、froxel、raster mip generation |
@@ -259,7 +259,8 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了
 6. G4とG12 authoringはWP209a、G10aはWP209bのdepth pyramidで完了。G10bはruntime 3D/cubeまたはraster subresourceの実需要時
-7. G8 GPU-written draw arguments/count。G9 bindlessは実測需要時
+7. G8 fixed-state GPU-written draw arguments/countはWP210bで完了。次は実occlusion
+   dogfoodと必要になったsegment metadata。G9 bindlessは実測需要時
 8. delivery laneとして`dist-bake`
 9. G11 VRSはQuest device gate後
 

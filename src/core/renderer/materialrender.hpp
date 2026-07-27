@@ -8,6 +8,7 @@
 namespace Pelican {
 
 class Camera;
+class FrameGraphResourceContainer;
 class FrameResources;
 class LightContainer;
 class MaterialContainer;
@@ -21,6 +22,8 @@ struct MaterialRendererDependencies {
     const VertBufContainer &vert_buf_container;
     const MaterialContainer &material_container;
     const FrameResources &frame_resources;
+    const FrameGraphResourceContainer
+        &frame_graph_resources;
     LightContainer &light_container;
     const Camera &camera;
     glm::mat4 view_projection{1.0f};

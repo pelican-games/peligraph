@@ -813,6 +813,188 @@ TEST_CASE(
             "exceeds buffer"));
 }
 
+TEST_CASE(
+    "typed GPU draw source creates render dependencies and validates fixed-state command buffers",
+    "[renderingpass][indirect][draw][wp210]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "buffers": [
+            {
+              "name": "candidate_draws",
+              "size": 40,
+              "host_source": "scene_draw_commands_v1",
+              "command_layout": "indexed_draw"
+            },
+            {
+              "name": "visible_draws",
+              "size": 40,
+              "command_layout": "indexed_draw"
+            },
+            {
+              "name": "visible_draw_count",
+              "size": 4,
+              "command_layout": "draw_count"
+            }
+          ],
+          "compute_tasks": [
+            {
+              "name": "build_visible_draws",
+              "shader": "shaders/build_visible_draws",
+              "reads": ["candidate_draws"],
+              "writes": ["visible_draws", "visible_draw_count"],
+              "before": ["geometry"],
+              "dispatch": {"groups": [1, 1, 1]}
+            }
+          ],
+          "rendering_passes": [
+            {
+              "name": "main",
+              "passes": [
+                {
+                  "name": "geometry",
+                  "type": "material",
+                  "material_range": {"start": 0, "count": 1},
+                  "gpu_draw_source": {
+                    "commands": "visible_draws",
+                    "count": "visible_draw_count",
+                    "max_draw_count": 2
+                  },
+                  "output": {
+                    "color": "swapchain",
+                    "depth": null
+                  }
+                }
+              ]
+            }
+          ]
+        })json");
+
+    const auto buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            config);
+    REQUIRE(
+        buffers.at(0).host_source ==
+        FrameGraphHostBufferSource::
+            scene_draw_commands_v1);
+    REQUIRE(
+        buffers.at(0).command_layout ==
+        FrameGraphBufferCommandLayout::
+            indexed_draw);
+    REQUIRE(
+        std::string{
+            frameGraphBufferCommandLayoutName(
+                *buffers.at(2).command_layout)} ==
+        "draw_count");
+    REQUIRE_NOTHROW(
+        validateGpuDrawSourceBufferContracts(
+            config, buffers));
+
+    const auto source =
+        parseGpuDrawSourceFromJson(
+            config["rendering_passes"][0]
+                  ["passes"][0],
+            "geometry");
+    REQUIRE(source.has_value());
+    REQUIRE(source->commands == "visible_draws");
+    REQUIRE(source->count == "visible_draw_count");
+    REQUIRE(source->max_draw_count == 2);
+    REQUIRE(source->command_offset == 0);
+    REQUIRE(source->count_offset == 0);
+
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    REQUIRE(graphs.size() == 1);
+    const auto plan =
+        planFrameGraph(graphs.front());
+    REQUIRE(
+        framePlanOrder(plan) ==
+        std::vector<std::string>{
+            "build_visible_draws", "geometry"});
+    REQUIRE(plan.barriers.size() == 2);
+    REQUIRE(
+        std::any_of(
+            plan.barriers.begin(),
+            plan.barriers.end(),
+            [](const auto &barrier) {
+                return barrier.resource ==
+                       "visible_draws";
+            }));
+    REQUIRE(
+        std::any_of(
+            plan.barriers.begin(),
+            plan.barriers.end(),
+            [](const auto &barrier) {
+                return barrier.resource ==
+                       "visible_draw_count";
+            }));
+
+    auto wrong_layout = config;
+    wrong_layout["buffers"][1]
+                ["command_layout"] =
+        "draw_count";
+    const auto wrong_layout_buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            wrong_layout);
+    REQUIRE_THROWS_WITH(
+        validateGpuDrawSourceBufferContracts(
+            wrong_layout,
+            wrong_layout_buffers),
+        Catch::Matchers::ContainsSubstring(
+            "requires command_layout 'indexed_draw'"));
+
+    auto too_small = config;
+    too_small["buffers"][1]["size"] = 20;
+    const auto too_small_buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            too_small);
+    REQUIRE_THROWS_WITH(
+        validateGpuDrawSourceBufferContracts(
+            too_small, too_small_buffers),
+        Catch::Matchers::ContainsSubstring(
+            "command range exceeds"));
+
+    auto unaligned = config;
+    unaligned["rendering_passes"][0]["passes"][0]
+             ["gpu_draw_source"]["count_offset"] =
+        2;
+    REQUIRE_THROWS_WITH(
+        validateGpuDrawSourceBufferContracts(
+            unaligned, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "4-byte aligned"));
+
+    auto multiple_ranges = config;
+    multiple_ranges["rendering_passes"][0]["passes"][0]
+                   ["material_range"]["count"] =
+        2;
+    REQUIRE_THROWS_WITH(
+        validateGpuDrawSourceBufferContracts(
+            multiple_ranges, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "material_range.count = 1"));
+
+    auto wrong_pass = config;
+    wrong_pass["rendering_passes"][0]["passes"][0]
+              ["type"] =
+        "fullscreen";
+    REQUIRE_THROWS_WITH(
+        validateGpuDrawSourceBufferContracts(
+            wrong_pass, buffers),
+        Catch::Matchers::ContainsSubstring(
+            "Only material passes"));
+
+    auto invalid_host_source = config;
+    invalid_host_source["buffers"][0]
+                       ["command_layout"] =
+        "draw_count";
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid_host_source),
+        Catch::Matchers::ContainsSubstring(
+            "scene_draw_commands_v1"));
+}
+
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {
     const nlohmann::json pass_json{
         {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting"}}},

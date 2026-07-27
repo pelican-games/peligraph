@@ -266,6 +266,7 @@ struct DeviceFeatureSupport {
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
     bool swapchain_maintenance1 = false;
+    bool draw_indirect_count = false;
 };
 
 static std::vector<std::string> supportedDeviceExtensions(
@@ -281,6 +282,12 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
     const auto &vk11 = chain.get<vk::PhysicalDeviceVulkan11Features>();
     const auto &vk12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
     const auto &dynamic = chain.get<vk::PhysicalDeviceDynamicRenderingFeatures>();
+    const auto api_version =
+        physical_device.getProperties().apiVersion;
+    const auto draw_indirect_count_core =
+        VK_API_VERSION_MAJOR(api_version) > 1 ||
+        (VK_API_VERSION_MAJOR(api_version) == 1 &&
+         VK_API_VERSION_MINOR(api_version) >= 2);
     DeviceFeatureSupport result{
         .required =
             {
@@ -293,6 +300,9 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         .multiview = vk11.multiview == VK_TRUE,
         .sampler_anisotropy =
             core.samplerAnisotropy == VK_TRUE,
+        .draw_indirect_count =
+            draw_indirect_count_core &&
+            vk12.drawIndirectCount == VK_TRUE,
     };
 
     const auto extensions = supportedDeviceExtensions(physical_device);
@@ -466,6 +476,10 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 #endif
     vk::PhysicalDeviceVulkan12Features vk12features;
     vk12features.timelineSemaphore = feature_support.timeline_semaphore ? VK_TRUE : VK_FALSE;
+    vk12features.drawIndirectCount =
+        feature_support.draw_indirect_count
+            ? VK_TRUE
+            : VK_FALSE;
     vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR local_read_features;
     local_read_features.dynamicRenderingLocalRead =
         feature_support.dynamic_rendering_local_read ? VK_TRUE : VK_FALSE;
@@ -500,6 +514,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             feature_support.sampler_anisotropy,
         .swapchain_maintenance1 =
             swapchain_maintenance1,
+        .draw_indirect_count =
+            feature_support.draw_indirect_count,
     };
 
 #if PELICAN_WITH_OPENXR
@@ -706,12 +722,13 @@ VulkanManageCore::VulkanManageCore() {
     LOG_INFO(logger,
              "Vulkan optional features: timeline_semaphore={}, multiview={}, "
              "dynamic_rendering_local_read={}, sampler_anisotropy={}, "
-             "swapchain_maintenance1={}",
+             "swapchain_maintenance1={}, draw_indirect_count={}",
              runtime_capabilities.timeline_semaphore,
              runtime_capabilities.multiview,
              runtime_capabilities.dynamic_rendering_local_read,
              runtime_capabilities.sampler_anisotropy,
-             runtime_capabilities.swapchain_maintenance1);
+             runtime_capabilities.swapchain_maintenance1,
+             runtime_capabilities.draw_indirect_count);
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}

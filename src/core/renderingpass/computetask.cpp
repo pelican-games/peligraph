@@ -25,10 +25,13 @@ constexpr uint32_t max_compute_descriptor_sets = 256;
 constexpr uint32_t max_compute_descriptors = 1024;
 constexpr vk::DeviceSize compute_dispatch_command_size =
     sizeof(vk::DispatchIndirectCommand);
-constexpr vk::DeviceSize indirect_command_alignment = 4;
 static_assert(
     sizeof(vk::DispatchIndirectCommand) ==
     sizeof(std::uint32_t) * 3);
+static_assert(
+    frameGraphIndexedDrawCommandBytes ==
+    sizeof(std::uint32_t) * 5);
+static_assert(frameGraphDrawCountBytes == 4);
 
 struct RetiredComputeDescriptorResources {
     vk::UniqueDescriptorPool pool;
@@ -70,6 +73,10 @@ FrameGraphHostBufferSource parseHostBufferSource(
     if (value == "scene_lights_v2") {
         return FrameGraphHostBufferSource::scene_lights_v2;
     }
+    if (value == "scene_draw_commands_v1") {
+        return FrameGraphHostBufferSource::
+            scene_draw_commands_v1;
+    }
     throw std::runtime_error(
         std::string{context} +
         " has unknown host_source '" + value + "'");
@@ -84,6 +91,14 @@ parseBufferCommandLayout(
     if (value == "compute_dispatch") {
         return FrameGraphBufferCommandLayout::
             compute_dispatch;
+    }
+    if (value == "indexed_draw") {
+        return FrameGraphBufferCommandLayout::
+            indexed_draw;
+    }
+    if (value == "draw_count") {
+        return FrameGraphBufferCommandLayout::
+            draw_count;
     }
     throw std::runtime_error(
         std::string{context} +
@@ -880,7 +895,7 @@ ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const s
                 name);
         }
         if (definition.offset %
-                indirect_command_alignment !=
+                frameGraphIndirectCommandAlignment !=
             0) {
             throw std::runtime_error(
                 "compute task dispatch.indirect offset must be "
@@ -932,6 +947,9 @@ std::string_view frameGraphHostBufferSourceName(
     switch (source) {
     case FrameGraphHostBufferSource::scene_lights_v2:
         return "scene_lights_v2";
+    case FrameGraphHostBufferSource::
+        scene_draw_commands_v1:
+        return "scene_draw_commands_v1";
     }
     throw std::runtime_error(
         "unknown frame-graph host buffer source");
@@ -943,6 +961,12 @@ std::string_view frameGraphBufferCommandLayoutName(
     case FrameGraphBufferCommandLayout::
         compute_dispatch:
         return "compute_dispatch";
+    case FrameGraphBufferCommandLayout::
+        indexed_draw:
+        return "indexed_draw";
+    case FrameGraphBufferCommandLayout::
+        draw_count:
+        return "draw_count";
     }
     throw std::runtime_error(
         "unknown frame-graph buffer command layout");
@@ -1037,6 +1061,52 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                 std::to_string(
                     compute_dispatch_command_size) +
                 " bytes");
+        }
+        if (definition.command_layout ==
+                FrameGraphBufferCommandLayout::
+                    indexed_draw &&
+            definition.size <
+                frameGraphIndexedDrawCommandBytes) {
+            throw std::runtime_error(
+                context +
+                " command_layout 'indexed_draw' requires at least " +
+                std::to_string(
+                    frameGraphIndexedDrawCommandBytes) +
+                " bytes");
+        }
+        if (definition.command_layout ==
+                FrameGraphBufferCommandLayout::
+                    draw_count &&
+            definition.size <
+                frameGraphDrawCountBytes) {
+            throw std::runtime_error(
+                context +
+                " command_layout 'draw_count' requires at least " +
+                std::to_string(
+                    frameGraphDrawCountBytes) +
+                " bytes");
+        }
+        if (definition.host_source ==
+                FrameGraphHostBufferSource::
+                    scene_draw_commands_v1 &&
+            definition.command_layout !=
+                FrameGraphBufferCommandLayout::
+                    indexed_draw) {
+            throw std::runtime_error(
+                context +
+                " host_source 'scene_draw_commands_v1' requires "
+                "command_layout 'indexed_draw'");
+        }
+        if (definition.host_source ==
+                FrameGraphHostBufferSource::
+                    scene_draw_commands_v1 &&
+            definition.size %
+                    frameGraphIndexedDrawCommandBytes !=
+                0) {
+            throw std::runtime_error(
+                context +
+                " host_source 'scene_draw_commands_v1' size must "
+                "be a multiple of the indexed draw command size");
         }
         definitions.push_back(std::move(definition));
     }
@@ -1138,7 +1208,7 @@ void validateComputeTaskBufferContracts(
                 "'compute_dispatch'");
         }
         if (indirect.offset %
-                indirect_command_alignment !=
+                frameGraphIndirectCommandAlignment !=
             0) {
             throw std::runtime_error(
                 "compute task '" + task.name +
@@ -1194,9 +1264,7 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
             vk::BufferUsageFlagBits::eStorageBuffer |
             vk::BufferUsageFlagBits::eTransferSrc |
             vk::BufferUsageFlagBits::eTransferDst;
-        if (definition.command_layout ==
-            FrameGraphBufferCommandLayout::
-                compute_dispatch) {
+        if (definition.command_layout) {
             usage |= vk::BufferUsageFlagBits::
                 eIndirectBuffer;
         }
@@ -1696,7 +1764,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 "'compute_dispatch'");
         }
         if (authored.offset %
-                indirect_command_alignment !=
+                frameGraphIndirectCommandAlignment !=
                 0 ||
             authored.offset >
                 buffer_definition.size ||
@@ -1994,10 +2062,20 @@ void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf
     barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
     const auto &definition =
         resource_container.definition(resource);
-    if (to_kind == FramePlanNodeKind::compute &&
+    const auto indirect_compute =
+        to_kind == FramePlanNodeKind::compute &&
         definition.command_layout ==
             FrameGraphBufferCommandLayout::
-                compute_dispatch) {
+                compute_dispatch;
+    const auto indirect_draw =
+        to_kind == FramePlanNodeKind::render &&
+        (definition.command_layout ==
+             FrameGraphBufferCommandLayout::
+                 indexed_draw ||
+         definition.command_layout ==
+             FrameGraphBufferCommandLayout::
+                 draw_count);
+    if (indirect_compute || indirect_draw) {
         destination_stage |=
             vk::PipelineStageFlagBits::eDrawIndirect;
         barrier.dstAccessMask |=
