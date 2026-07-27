@@ -55,6 +55,20 @@ std::optional<vk::Rect2D> mirrorLetterboxRect(vk::Extent2D source,
         vk::Extent2D{width, height}};
 }
 
+XrMirrorBeginAction classifyMirrorBeginDisposition(
+    FrameBeginDisposition disposition) noexcept {
+    switch (disposition) {
+    case FrameBeginDisposition::ready:
+        return XrMirrorBeginAction::present;
+    case FrameBeginDisposition::unavailable:
+        return XrMirrorBeginAction::drop;
+    case FrameBeginDisposition::device_rebuild_required:
+    case FrameBeginDisposition::fatal:
+        return XrMirrorBeginAction::disable;
+    }
+    return XrMirrorBeginAction::disable;
+}
+
 XrMirrorSink::XrMirrorSink() noexcept {
     try {
         initialize();
@@ -187,10 +201,23 @@ void XrMirrorSink::tryPresent() noexcept {
             runtime_generation,
             submission_lease,
             FrameBeginMode::nonblocking);
-        if (begun.disposition !=
-                FrameBeginDisposition::ready ||
-            !begun.frame) {
+        const auto action =
+            classifyMirrorBeginDisposition(begun.disposition);
+        if (action == XrMirrorBeginAction::drop) {
             ++stats.dropped;
+            stats.last_drop_reason = begun.reason;
+            reportProgress();
+            return;
+        }
+        if (action == XrMirrorBeginAction::disable || !begun.frame) {
+            ++stats.failures;
+            disabled = true;
+            LOG_WARNING(
+                logger,
+                "OpenXR mirror disabled after terminal frame-begin result: "
+                "disposition={} reason={}",
+                static_cast<int>(begun.disposition),
+                frameUnavailableReasonName(begun.reason));
             reportProgress();
             return;
         }

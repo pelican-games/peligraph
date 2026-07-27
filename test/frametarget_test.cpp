@@ -29,6 +29,7 @@ class FakeFrameTarget final : public IFrameTarget {
   public:
     std::size_t submitted = 0;
     std::size_t abandoned = 0;
+    GpuSubmissionLease target_epoch;
 
     FakeFrameTarget()
         : cleanup_{
@@ -54,7 +55,7 @@ class FakeFrameTarget final : public IFrameTarget {
             FrameRenderContext{},
             std::move(runtime_generation),
             std::move(submission_lease), cleanup_,
-            serial_);
+            serial_, target_epoch);
         FrameBeginResult result;
         result.disposition =
             FrameBeginDisposition::ready;
@@ -166,4 +167,21 @@ TEST_CASE(
     REQUIRE(other.submitted == 0);
     other.abandon(std::move(*other_frame.frame));
     REQUIRE(other.abandoned == 1);
+}
+
+TEST_CASE(
+    "WP216 a frame token explicitly retains its target epoch",
+    "[wp216][frame-target][epoch][lifetime]") {
+    FakeFrameTarget target;
+    auto epoch = std::make_shared<const int>(29);
+    std::weak_ptr<const int> observed = epoch;
+    target.target_epoch = epoch;
+    auto begun = target.beginFrame(
+        nullptr, {}, FrameBeginMode::blocking);
+    target.target_epoch.reset();
+    epoch.reset();
+    REQUIRE_FALSE(observed.expired());
+
+    target.submit(std::move(*begun.frame));
+    REQUIRE(observed.expired());
 }

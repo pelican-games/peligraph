@@ -7,6 +7,7 @@ target_sources(pelican_core PRIVATE
     externaldepthsubmission.cpp
     frametarget.cpp
     outputcompilefacts.cpp
+    swapchainrecovery.cpp
     util.cpp
     cmdbuf.cpp
     offscreenframetarget.cpp

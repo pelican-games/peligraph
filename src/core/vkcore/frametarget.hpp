@@ -93,6 +93,7 @@ class FrameTargetFrame {
     std::shared_ptr<const RendererRuntimeGeneration>
         runtime_generation_;
     GpuSubmissionLease submission_lease_;
+    GpuSubmissionLease target_epoch_lease_;
     std::shared_ptr<FrameTargetFrameCleanup> cleanup_;
     std::uint64_t serial_ = 0;
     FrameTargetFrameState state_ =
@@ -103,6 +104,7 @@ class FrameTargetFrame {
         std::shared_ptr<const RendererRuntimeGeneration>
             runtime_generation,
         GpuSubmissionLease submission_lease,
+        GpuSubmissionLease target_epoch_lease,
         std::shared_ptr<FrameTargetFrameCleanup> cleanup,
         std::uint64_t serial);
     void abandonIfActive() noexcept;
@@ -150,7 +152,44 @@ enum class FrameUnavailableReason {
     acquire_not_ready,
     output_out_of_date,
     surface_stale,
+    output_preparing,
+    retry_pending,
+    output_reconfigured,
+    surface_lost,
+    device_lost,
+    fatal,
 };
+
+enum class FrameTargetLifecycleState {
+    ready,
+    preparing,
+    suspended_zero_extent,
+    unavailable_retry,
+    surface_lost,
+    device_rebuild_required,
+    fatal,
+};
+
+struct FrameTargetStatus {
+    FrameTargetLifecycleState state =
+        FrameTargetLifecycleState::ready;
+    FrameUnavailableReason reason =
+        FrameUnavailableReason::none;
+    std::uint64_t swapchain_epoch = 0;
+    std::uint64_t extent_revision = 0;
+    std::uint64_t output_facts_fingerprint = 0;
+    vk::Result last_wsi_result =
+        vk::Result::eSuccess;
+    std::size_t retired_epoch_count = 0;
+    std::size_t quarantined_resource_count = 0;
+    bool asynchronous_maintenance = false;
+    bool exact_present_retirement = false;
+};
+
+std::string_view frameTargetLifecycleStateName(
+    FrameTargetLifecycleState state) noexcept;
+std::string_view frameUnavailableReasonName(
+    FrameUnavailableReason reason) noexcept;
 
 struct FrameBeginResult {
     FrameBeginDisposition disposition =
@@ -210,6 +249,7 @@ class IFrameTarget {
         std::shared_ptr<const RendererRuntimeGeneration>
             runtime_generation;
         GpuSubmissionLease submission_lease;
+        GpuSubmissionLease target_epoch_lease;
         std::uint64_t serial = 0;
     };
 
@@ -220,7 +260,8 @@ class IFrameTarget {
         GpuSubmissionLease submission_lease,
         const std::shared_ptr<FrameTargetFrameCleanup>
             &cleanup,
-        std::uint64_t serial);
+        std::uint64_t serial,
+        GpuSubmissionLease target_epoch_lease = {});
     static void validateFrameTarget(
         const FrameTargetFrame &frame,
         const std::shared_ptr<FrameTargetFrameCleanup>
@@ -248,6 +289,7 @@ class IFrameTarget {
         FrameTargetFrame frame) = 0;
     virtual void abandon(FrameTargetFrame frame) noexcept = 0;
     virtual FrameTargetCaps caps() const = 0;
+    virtual FrameTargetStatus status() const;
     virtual std::vector<uint8_t> readbackLastFrameRGBA8() = 0;
 };
 

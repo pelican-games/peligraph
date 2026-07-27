@@ -7,6 +7,8 @@
 #include "image.hpp"
 #include "memorydiagnostics.hpp"
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -27,6 +29,7 @@ struct VulkanRuntimeCapabilities {
     bool multiview = false;
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
+    bool swapchain_maintenance1 = false;
 };
 
 enum class VulkanProcessType {
@@ -52,6 +55,11 @@ DECLARE_MODULE(VulkanManageCore) {
         set_rendering_attachment_locations = nullptr;
     PFN_vkCmdSetRenderingInputAttachmentIndicesKHR
         set_rendering_input_attachment_indices = nullptr;
+    PFN_vkReleaseSwapchainImagesEXT
+        release_swapchain_images = nullptr;
+    mutable std::mutex presentation_quarantine_mutex;
+    std::vector<std::shared_ptr<const void>>
+        presentation_quarantine;
 
   public:
     VulkanManageCore();
@@ -77,8 +85,15 @@ DECLARE_MODULE(VulkanManageCore) {
         vk::CommandBuffer command_buffer,
         const vk::RenderingInputAttachmentIndexInfoKHR
             &indices) const;
+    vk::Result releaseSwapchainImages(
+        const vk::ReleaseSwapchainImagesInfoEXT
+            &release_info) const noexcept;
     DriverMemoryStatus driverMemoryStatus() const;
     void setCurrentFrameIndex(std::uint64_t logical_frame) const noexcept;
+    void quarantinePresentationResources(
+        std::shared_ptr<const void> resources);
+    std::size_t
+    quarantinedPresentationResourceCount() const noexcept;
 
     void waitIdle() const;
 

@@ -797,6 +797,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("get_status", [instance_id, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
         const auto color_caps = modules.render_target.caps();
+        const auto output_status =
+            modules.render_target.status();
         const auto startup = modules.startup_metrics.snapshot();
         const auto module_graph = FastModuleContainer::graphSnapshot();
         const auto &debug_utils = modules.vulkan.getDebugUtils().getStatus();
@@ -840,6 +842,41 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                                {"queue_label", debug_utils.queue_label}}}}},
             {"gpu_timing", std::move(gpu_timing)},
             {"memory", std::move(memory)},
+            {"window_output",
+             {{"state",
+               frameTargetLifecycleStateName(
+                   output_status.state)},
+              {"reason",
+               frameUnavailableReasonName(
+                   output_status.reason)},
+              {"swapchain_epoch",
+               output_status.swapchain_epoch},
+              {"extent_revision",
+               output_status.extent_revision},
+              {"output_facts_hash",
+               output_status
+                   .output_facts_fingerprint},
+              {"last_vk_result",
+               vk::to_string(
+                   output_status.last_wsi_result)},
+              {"retired_epochs",
+               output_status.retired_epoch_count},
+              {"maintenance",
+               output_status
+                       .asynchronous_maintenance
+                   ? "worker"
+                   : "not_applicable"},
+              {"retirement_mode",
+               output_status
+                       .exact_present_retirement
+                   ? "present_fence"
+                   : (output_status
+                              .asynchronous_maintenance
+                          ? "reacquire"
+                          : "not_applicable")},
+              {"quarantined_resources",
+               output_status
+                   .quarantined_resource_count}}},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},

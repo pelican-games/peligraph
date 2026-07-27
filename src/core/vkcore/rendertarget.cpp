@@ -60,6 +60,10 @@ vk::Extent2D RenderTarget::getExtent() const {
 
 FrameTargetCaps RenderTarget::caps() const { return impl->caps(); }
 
+FrameTargetStatus RenderTarget::status() const {
+    return impl->status();
+}
+
 std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() {
     if (GET_MODULE(EngineLaunchConfig).xr_active) {
         throw std::runtime_error(

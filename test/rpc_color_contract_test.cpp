@@ -224,6 +224,19 @@ void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
     REQUIRE(xr_status.at("reference_space").is_null());
     REQUIRE(xr_status.at("floor_semantics") == "not_applicable");
     REQUIRE(xr_status.at("applied_floor_offset_m").is_null());
+    const auto window_output =
+        nlohmann::json::parse(third_line)
+            .at("result")
+            .at("window_output");
+    REQUIRE(window_output.at("state") == "ready");
+    REQUIRE(window_output.at("reason") == "none");
+    REQUIRE(window_output.at("swapchain_epoch") == 0);
+    REQUIRE(window_output.at("maintenance") ==
+            "not_applicable");
+    REQUIRE(window_output.at("retirement_mode") ==
+            "not_applicable");
+    REQUIRE(window_output.at("quarantined_resources") ==
+            0);
 
     int width = 0;
     int height = 0;

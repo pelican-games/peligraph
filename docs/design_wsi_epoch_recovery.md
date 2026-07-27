@@ -481,17 +481,24 @@ retired / out-of-date / surface-lost時にもresource破棄を証明できるこ
 
 ### 9.3 base Vulkan fallback
 
-maintenance1非対応deviceでは、reacquireにより消費完了を証明できた
-per-image semaphoreだけを通常破棄する。retire時点で証明できない
-present semaphoreは小さな `PresentationSemaphoreQuarantine` へmoveし、
-device teardownまで保持する。
+maintenance1非対応deviceでは、旧epochを即座に破棄しない。successor epochで
+一度presentしたimageを再acquireできた時点を「successorの最初のpresent完了」の
+証明とし、それ以前のretired epochをまとめて退役できるwatermarkを進める。
+これはpresent completion fenceを持たないbase Vulkanで、旧swapchainのpresent
+完了を推測せずに通常回収するための契約である。
 
-- whole swapchain epoch / render target / image viewをprocess lifetimeへ漏らさない
-- quarantine件数、byte概算、原因epochをstatusへ出す
+successorによる証明を得られないままtarget teardown / surface-lostへ入る場合は、
+未証明present semaphoreだけをepochから切り離して破棄順を誤るより、
+presentationに関係する旧epoch bundle全体を
+`PresentationResourceQuarantine`へmoveし、device teardownまで保持する。
+
+- 通常のresize / SUBOPTIMALではsuccessor reacquireで回収し、
+  process-lifetime quarantineにしない
+- quarantine resource bundle件数、原因epochをstatusへ出す
 - `device.waitIdle()` / `queue.waitIdle()` を「present完了証明」として使わない
 - 同じSUBOPTIMALのcoalesceによりquarantineの無制限増加を抑える
 - budget超過時はwarningを出し、flatはcontrolled restart要求、
-  optional mirrorはdisableを選べる。未証明semaphoreを推測でdestroyしない
+  optional mirrorはdisableを選べる。未証明resourceを推測でdestroyしない
 
 ### 9.4 XR mirror
 
@@ -641,7 +648,7 @@ window_output.last_vk_result
 window_output.retry_count
 window_output.last_successful_recovery_ms
 window_output.retirement_mode = present_fence | reacquire | quarantine
-window_output.quarantined_present_semaphores
+window_output.quarantined_resources
 window_output.device_rebuild_reason
 ```
 
@@ -750,6 +757,9 @@ WP217完了前に「surface lost対応済み」と表示しない。
 - [Vulkan swapchain semaphore reuse guide](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html)
   — submit fenceとpresent semaphore lifetimeが別であること、per-image reuse、
   maintenance1 present fence
+- [Vulkan swapchain recreation sample](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html)
+  — maintenance1非対応時にsuccessor imageのreacquireを旧swapchain退役の
+  完了証明として使うbase Vulkan fallback
 - [`VK_EXT_swapchain_maintenance1` proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_swapchain_maintenance1.html)
   — present fenceとacquired image release
 - [`vkCreateSwapchainKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateSwapchainKHR.html)

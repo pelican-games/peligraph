@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../renderingpass/renderingpass.hpp"
+#include "../vkcore/frametarget.hpp"
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -16,10 +17,20 @@ inline constexpr std::string_view xr_mirror_intermediate_name =
 std::optional<vk::Rect2D> mirrorLetterboxRect(vk::Extent2D source,
                                               vk::Extent2D destination);
 
+enum class XrMirrorBeginAction {
+    present,
+    drop,
+    disable,
+};
+
+XrMirrorBeginAction classifyMirrorBeginDisposition(
+    FrameBeginDisposition disposition) noexcept;
+
 struct XrMirrorSinkStats {
     std::uint64_t presented = 0;
     std::uint64_t dropped = 0;
     std::uint64_t failures = 0;
+    FrameUnavailableReason last_drop_reason = FrameUnavailableReason::none;
 };
 
 // The desktop mirror is an optional, best-effort consumer of an engine-owned

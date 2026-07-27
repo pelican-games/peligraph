@@ -1815,6 +1815,8 @@ class OutputRelowerRequired final
               "window output compile facts require render-pipeline re-lowering"} {}
 };
 
+class OutputTemporarilyUnavailable final {};
+
 bool windowOutputFactsChanged(
     const ILogicalFrameTarget &target,
     const std::shared_ptr<
@@ -2015,11 +2017,15 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
             std::move(runtime.renderer_generation),
             std::move(runtime.submission_lease),
             FrameBeginMode::blocking);
+        if (begun.disposition ==
+            FrameBeginDisposition::unavailable) {
+            throw OutputTemporarilyUnavailable{};
+        }
         if (begun.disposition !=
                 FrameBeginDisposition::ready ||
             !begun.frame) {
             throw std::runtime_error(
-                "flat IFrameTarget output is unavailable");
+                "flat IFrameTarget output entered a terminal state");
         }
         frame.emplace(std::move(*begun.frame));
         view_begun = false;
@@ -3562,6 +3568,12 @@ void Renderer::render() {
          ++attempt) {
         try {
             renderLogicalFrame(target, views);
+            return;
+        } catch (
+            const OutputTemporarilyUnavailable &) {
+            // Zero extent and asynchronous WSI preparation skip only this
+            // presentation frame. The app loop continues ticking input, RPC,
+            // reload, audio, and ECS work.
             return;
         } catch (const OutputRelowerRequired &) {
             try {

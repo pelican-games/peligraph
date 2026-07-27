@@ -125,3 +125,40 @@ TEST_CASE(
                 OutputEncodingPath::srgb_shader_unorm)} ==
             "unorm_fallback");
 }
+
+TEST_CASE(
+    "WP216 WSI-only configuration has an independent complete fingerprint",
+    "[wp216][output][wsi][fingerprint]") {
+    const WsiPresentConfiguration original{
+        .present_mode =
+            vk::PresentModeKHR::eMailbox,
+        .image_count = 3,
+        .composite_alpha =
+            vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        .clipped = true,
+    };
+    const auto fingerprint =
+        wsiPresentConfigurationFingerprint(original);
+    CHECK(fingerprint ==
+          wsiPresentConfigurationFingerprint(original));
+
+    auto changed = original;
+    changed.present_mode =
+        vk::PresentModeKHR::eFifo;
+    CHECK(wsiPresentConfigurationFingerprint(changed) !=
+          fingerprint);
+    changed = original;
+    ++changed.image_count;
+    CHECK(wsiPresentConfigurationFingerprint(changed) !=
+          fingerprint);
+    changed = original;
+    changed.composite_alpha =
+        vk::CompositeAlphaFlagBitsKHR::
+            ePreMultiplied;
+    CHECK(wsiPresentConfigurationFingerprint(changed) !=
+          fingerprint);
+    changed = original;
+    changed.clipped = false;
+    CHECK(wsiPresentConfigurationFingerprint(changed) !=
+          fingerprint);
+}

@@ -199,6 +199,41 @@ Window::Window() : window{nullptr} {
         throw;
     }
     glfwSetWindowUserPointer(window, this);
+    {
+        int width = 0;
+        int height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        framebuffer_snapshot = FramebufferExtentSnapshot{
+            .extent =
+                vk::Extent2D{
+                    static_cast<std::uint32_t>(
+                        std::max(width, 0)),
+                    static_cast<std::uint32_t>(
+                        std::max(height, 0))},
+            .revision = 1,
+        };
+    }
+    glfwSetFramebufferSizeCallback(
+        window,
+        [](GLFWwindow *native_window, int width,
+           int height) {
+            auto &self = *static_cast<Window *>(
+                glfwGetWindowUserPointer(
+                    native_window));
+            const auto extent = vk::Extent2D{
+                static_cast<std::uint32_t>(
+                    std::max(width, 0)),
+                static_cast<std::uint32_t>(
+                    std::max(height, 0))};
+            std::scoped_lock lock{
+                self.framebuffer_snapshot_mutex};
+            if (self.framebuffer_snapshot.extent ==
+                extent) {
+                return;
+            }
+            self.framebuffer_snapshot.extent = extent;
+            ++self.framebuffer_snapshot.revision;
+        });
 
     LOG_INFO(logger, "GLFW window initialized");
 
@@ -253,27 +288,15 @@ Window::~Window() {
     glfwTerminate();
 }
 
-vk::Extent2D Window::waitFramebufferExtent() const {
-    int width = 0;
-    int height = 0;
-    while (true) {
-        glfwGetFramebufferSize(window, &width, &height);
-        if (width > 0 && height > 0) {
-            return vk::Extent2D{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
-        }
-        if (glfwWindowShouldClose(window)) {
-            throw std::runtime_error("Window closed while waiting for non-zero framebuffer size");
-        }
-        glfwWaitEvents();
-    }
+FramebufferExtentSnapshot
+Window::framebufferSnapshot() const {
+    std::scoped_lock lock{
+        framebuffer_snapshot_mutex};
+    return framebuffer_snapshot;
 }
 
 vk::Extent2D Window::framebufferExtent() const {
-    int width = 0;
-    int height = 0;
-    glfwGetFramebufferSize(window, &width, &height);
-    return vk::Extent2D{static_cast<uint32_t>(std::max(width, 0)),
-                        static_cast<uint32_t>(std::max(height, 0))};
+    return framebufferSnapshot().extent;
 }
 
 vk::Extent2D Window::logicalExtent() const {

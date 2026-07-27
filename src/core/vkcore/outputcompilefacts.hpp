@@ -53,6 +53,8 @@ std::vector<std::uint8_t> canonicalOutputCompileFacts(
     const OutputCompileFacts &facts);
 std::uint64_t outputCompileFactsFingerprint(
     const OutputCompileFacts &facts);
+std::uint64_t wsiPresentConfigurationFingerprint(
+    const WsiPresentConfiguration &configuration);
 
 std::string_view outputTargetKindName(
     OutputTargetKind kind) noexcept;

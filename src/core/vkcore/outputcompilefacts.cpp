@@ -60,6 +60,28 @@ std::uint64_t outputCompileFactsFingerprint(
     return hash;
 }
 
+std::uint64_t wsiPresentConfigurationFingerprint(
+    const WsiPresentConfiguration &configuration) {
+    constexpr std::uint64_t offset_basis =
+        14695981039346656037ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(5 * sizeof(std::uint32_t));
+    appendU32(bytes, 1);
+    appendU32(
+        bytes, enumValue(configuration.present_mode));
+    appendU32(bytes, configuration.image_count);
+    appendU32(
+        bytes, enumValue(configuration.composite_alpha));
+    appendU32(bytes, configuration.clipped ? 1U : 0U);
+    auto hash = offset_basis;
+    for (const auto byte : bytes) {
+        hash ^= byte;
+        hash *= prime;
+    }
+    return hash;
+}
+
 std::string_view outputTargetKindName(
     OutputTargetKind kind) noexcept {
     switch (kind) {

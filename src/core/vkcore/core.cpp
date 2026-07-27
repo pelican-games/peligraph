@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -27,6 +28,33 @@ static std::vector<std::string> supportedInstanceExtensions() {
         result.emplace_back(extension.extensionName.data());
     }
     return result;
+}
+
+static bool supportsInstanceExtension(
+    std::string_view name) {
+    const auto supported = supportedInstanceExtensions();
+    return std::find(
+               supported.begin(), supported.end(), name) !=
+           supported.end();
+}
+
+static bool supportsSurfaceMaintenance1InstanceContract() {
+    return supportsInstanceExtension(
+               VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) &&
+           supportsInstanceExtension(
+               VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+}
+
+static void appendUniqueInstanceExtension(
+    std::vector<const char *> &extensions,
+    const char *name) {
+    if (std::none_of(
+            extensions.begin(), extensions.end(),
+            [&](const char *existing) {
+                return std::strcmp(existing, name) == 0;
+            })) {
+        extensions.push_back(name);
+    }
 }
 
 static vk::UniqueInstance vulkanCreateInstance(
@@ -51,6 +79,15 @@ static vk::UniqueInstance vulkanCreateInstance(
     }
     if (debug_utils_selection.enabled) {
         exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+    if (!headless &&
+        supportsSurfaceMaintenance1InstanceContract()) {
+        appendUniqueInstanceExtension(
+            exts,
+            VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+        appendUniqueInstanceExtension(
+            exts,
+            VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
     }
     vk::InstanceCreateInfo create_info;
 #ifdef _DEBUG
@@ -87,6 +124,15 @@ static std::vector<std::string> requiredXrInstanceExtensions(
     if (debug_utils_selection.enabled) {
         constexpr std::array debug_utils_extensions{VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
         appendUniqueVulkanExtensions(result, debug_utils_extensions);
+    }
+    if (!headless &&
+        supportsSurfaceMaintenance1InstanceContract()) {
+        constexpr std::array
+            surface_maintenance_extensions{
+                VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+                VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME};
+        appendUniqueVulkanExtensions(
+            result, surface_maintenance_extensions);
     }
     return result;
 }
@@ -218,6 +264,7 @@ struct DeviceFeatureSupport {
     bool multiview = false;
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
+    bool swapchain_maintenance1 = false;
 };
 
 static std::vector<std::string> supportedDeviceExtensions(
@@ -259,6 +306,19 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             local_read_chain
                 .get<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>()
                 .dynamicRenderingLocalRead == VK_TRUE;
+    }
+    if (std::find(
+            extensions.begin(), extensions.end(),
+            VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) !=
+        extensions.end()) {
+        const auto maintenance_chain =
+            physical_device.getFeatures2<
+                vk::PhysicalDeviceFeatures2,
+                vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>();
+        result.swapchain_maintenance1 =
+            maintenance_chain
+                .get<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>()
+                .swapchainMaintenance1 == VK_TRUE;
     }
     return result;
 }
@@ -353,6 +413,14 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         enabled_extensions.emplace_back(
             VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
     }
+    const bool swapchain_maintenance1 =
+        !headless &&
+        feature_support.swapchain_maintenance1 &&
+        supportsSurfaceMaintenance1InstanceContract();
+    if (swapchain_maintenance1) {
+        enabled_extensions.emplace_back(
+            VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    }
     const auto exts = vulkanExtensionNamePointers(enabled_extensions);
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
@@ -400,6 +468,10 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR local_read_features;
     local_read_features.dynamicRenderingLocalRead =
         feature_support.dynamic_rendering_local_read ? VK_TRUE : VK_FALSE;
+    vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT
+        swapchain_maintenance_features;
+    swapchain_maintenance_features.swapchainMaintenance1 =
+        swapchain_maintenance1 ? VK_TRUE : VK_FALSE;
 
     vk::StructureChain create_info_chain{
         create_info,
@@ -408,10 +480,15 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         vk12features,
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
         local_read_features,
+        swapchain_maintenance_features,
     };
     if (!feature_support.dynamic_rendering_local_read) {
         create_info_chain
             .unlink<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>();
+    }
+    if (!swapchain_maintenance1) {
+        create_info_chain
+            .unlink<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>();
     }
     runtime_capabilities = {
         .timeline_semaphore = feature_support.timeline_semaphore,
@@ -420,6 +497,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             feature_support.dynamic_rendering_local_read,
         .sampler_anisotropy =
             feature_support.sampler_anisotropy,
+        .swapchain_maintenance1 =
+            swapchain_maintenance1,
     };
 
 #if PELICAN_WITH_OPENXR
@@ -571,6 +650,22 @@ VulkanManageCore::VulkanManageCore() {
                 "unavailable");
         }
     }
+    if (runtime_capabilities
+            .swapchain_maintenance1) {
+        release_swapchain_images =
+            reinterpret_cast<
+                PFN_vkReleaseSwapchainImagesEXT>(
+                vkGetDeviceProcAddr(
+                    static_cast<VkDevice>(
+                        device.get()),
+                    "vkReleaseSwapchainImagesEXT"));
+        if (release_swapchain_images == nullptr) {
+            LOG_WARNING(
+                logger,
+                "VK_EXT_swapchain_maintenance1 is enabled but "
+                "vkReleaseSwapchainImagesEXT is unavailable");
+        }
+    }
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);
@@ -587,11 +682,13 @@ VulkanManageCore::VulkanManageCore() {
                                    : "VK_EXT_memory_budget_not_supported");
     LOG_INFO(logger,
              "Vulkan optional features: timeline_semaphore={}, multiview={}, "
-             "dynamic_rendering_local_read={}, sampler_anisotropy={}",
+             "dynamic_rendering_local_read={}, sampler_anisotropy={}, "
+             "swapchain_maintenance1={}",
              runtime_capabilities.timeline_semaphore,
              runtime_capabilities.multiview,
              runtime_capabilities.dynamic_rendering_local_read,
-             runtime_capabilities.sampler_anisotropy);
+             runtime_capabilities.sampler_anisotropy,
+             runtime_capabilities.swapchain_maintenance1);
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
@@ -632,6 +729,20 @@ void VulkanManageCore::setRenderingInputAttachmentIndices(
             &indices));
 }
 
+vk::Result VulkanManageCore::releaseSwapchainImages(
+    const vk::ReleaseSwapchainImagesInfoEXT
+        &release_info) const noexcept {
+    if (release_swapchain_images == nullptr) {
+        return vk::Result::eErrorExtensionNotPresent;
+    }
+    return static_cast<vk::Result>(
+        release_swapchain_images(
+            static_cast<VkDevice>(device.get()),
+            reinterpret_cast<
+                const VkReleaseSwapchainImagesInfoEXT *>(
+                &release_info)));
+}
+
 DriverMemoryStatus VulkanManageCore::driverMemoryStatus() const {
     if (!memory_budget_enabled) {
         return {.available = false,
@@ -662,6 +773,22 @@ DriverMemoryStatus VulkanManageCore::driverMemoryStatus() const {
 
 void VulkanManageCore::setCurrentFrameIndex(std::uint64_t logical_frame) const noexcept {
     allocator->setCurrentFrameIndex(static_cast<std::uint32_t>(logical_frame));
+}
+
+void VulkanManageCore::quarantinePresentationResources(
+    std::shared_ptr<const void> resources) {
+    if (resources == nullptr) return;
+    std::scoped_lock lock{
+        presentation_quarantine_mutex};
+    presentation_quarantine.push_back(
+        std::move(resources));
+}
+
+std::size_t VulkanManageCore::
+    quarantinedPresentationResourceCount() const noexcept {
+    std::scoped_lock lock{
+        presentation_quarantine_mutex};
+    return presentation_quarantine.size();
 }
 
 vk::SurfaceKHR VulkanManageCore::getSurface() const {

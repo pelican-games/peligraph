@@ -162,3 +162,20 @@ TEST_CASE("OpenXR mirror letterboxes and treats minimized destinations as drops"
 
     REQUIRE_FALSE(Pelican::OpenXr::mirrorLetterboxRect({200, 100}, {0, 0}).has_value());
 }
+
+TEST_CASE("OpenXR mirror drops transient output maintenance without disabling",
+          "[wp216][openxr][mirror]") {
+    using Pelican::FrameBeginDisposition;
+    using Pelican::OpenXr::XrMirrorBeginAction;
+    using Pelican::OpenXr::classifyMirrorBeginDisposition;
+
+    REQUIRE(classifyMirrorBeginDisposition(FrameBeginDisposition::ready) ==
+            XrMirrorBeginAction::present);
+    REQUIRE(classifyMirrorBeginDisposition(FrameBeginDisposition::unavailable) ==
+            XrMirrorBeginAction::drop);
+    REQUIRE(classifyMirrorBeginDisposition(
+                FrameBeginDisposition::device_rebuild_required) ==
+            XrMirrorBeginAction::disable);
+    REQUIRE(classifyMirrorBeginDisposition(FrameBeginDisposition::fatal) ==
+            XrMirrorBeginAction::disable);
+}
