@@ -57,13 +57,25 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     const auto &gpu_draw_source =
         pass.materialInfo().gpu_draw_source;
     if (gpu_draw_source &&
+        gpu_draw_source->layout ==
+            GpuDrawSourceLayout::
+                fixed_state_v1 &&
         pass.materialInfo().material_count != 1) {
         throw std::runtime_error(
             "Material pass '" + pass.name +
             "' gpu_draw_source requires one fixed material range");
     }
+    if (gpu_draw_source &&
+        gpu_draw_source->layout ==
+            GpuDrawSourceLayout::
+                draw_queue_segments_v1 &&
+        pass.materialInfo().material_count == 0) {
+        throw std::runtime_error(
+            "Material pass '" + pass.name +
+            "' segmented gpu_draw_source requires a non-empty material range");
+    }
     std::optional<std::uint32_t>
-        gpu_draw_limit;
+        gpu_device_draw_limit;
     if (gpu_draw_source &&
         gpu_draw_source->execution ==
             GpuDrawExecutionMode::automatic) {
@@ -76,12 +88,140 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         if (vkcore.getRuntimeCapabilities()
                 .draw_indirect_count &&
             device_draw_limit != 0) {
-            gpu_draw_limit = std::min(
-                gpu_draw_source
-                    ->max_draw_count,
-                device_draw_limit);
+            gpu_device_draw_limit =
+                device_draw_limit;
         }
     }
+
+    const auto selectedByMaterialRange =
+        [&](std::uint32_t draw_index) {
+            return !material_range ||
+                   !isOutsideMaterialRange(
+                       draw_index,
+                       *material_range);
+        };
+    auto use_gpu_draws =
+        gpu_draw_source.has_value() &&
+        gpu_device_draw_limit.has_value();
+    if (use_gpu_draws) {
+        if (!isValidFrameGraphBufferId(
+                gpu_draw_source->commands_id) ||
+            !isValidFrameGraphBufferId(
+                gpu_draw_source->count_id) ||
+            (gpu_draw_source->layout ==
+                 GpuDrawSourceLayout::
+                     draw_queue_segments_v1 &&
+             !isValidFrameGraphBufferId(
+                 gpu_draw_source
+                     ->segments_id))) {
+            throw std::runtime_error(
+                "Material pass '" + pass.name +
+                "' gpu_draw_source was not pinned to the active GPU "
+                "generation");
+        }
+    }
+
+    if (use_gpu_draws &&
+        gpu_draw_source->layout ==
+            GpuDrawSourceLayout::
+                draw_queue_segments_v1) {
+        const auto population =
+            dependencies.frame_graph_resources
+                .hostBufferPopulation(
+                    gpu_draw_source
+                        ->segments_id);
+        if (!population) {
+            use_gpu_draws = false;
+        } else {
+            const auto command_slots =
+                static_cast<std::uint64_t>(
+                    (dependencies
+                         .frame_graph_resources
+                         .bufferSize(
+                             gpu_draw_source
+                                 ->commands_id) -
+                     gpu_draw_source
+                         ->command_offset) /
+                    frameGraphIndexedDrawCommandBytes);
+            const auto count_slots =
+                static_cast<std::uint64_t>(
+                    (dependencies
+                         .frame_graph_resources
+                         .bufferSize(
+                             gpu_draw_source
+                                 ->count_id) -
+                     gpu_draw_source
+                         ->count_offset) /
+                    frameGraphDrawCountBytes);
+            std::uint32_t draw_index = 0;
+            for (const auto &draw_call :
+                 draw_calls) {
+                const auto selected =
+                    selectedByMaterialRange(
+                        draw_index++);
+                if (!selected) continue;
+                if (draw_call
+                        .scene_segment_index ==
+                        noSceneDrawSegmentIndex ||
+                    draw_call
+                            .scene_segment_index >=
+                        population
+                            ->written_records) {
+                    use_gpu_draws = false;
+                    break;
+                }
+                const auto &segment =
+                    instance_container
+                        .sceneDrawSegment(
+                            draw_call
+                                .scene_segment_index);
+                const auto expected_source =
+                    draw_call.offset /
+                    sizeof(RenderCommand);
+                if (draw_call.offset %
+                            sizeof(RenderCommand) !=
+                        0 ||
+                    segment
+                            .source_first_command !=
+                        expected_source ||
+                    segment.command_capacity !=
+                        draw_call.draw_count) {
+                    throw std::runtime_error(
+                        "Material pass '" +
+                        pass.name +
+                        "' scene draw segment no longer matches its CPU "
+                        "DrawQueue range");
+                }
+                const auto output_end =
+                    static_cast<std::uint64_t>(
+                        segment
+                            .output_first_command) +
+                    segment.command_capacity;
+                if (output_end >
+                        gpu_draw_source
+                            ->max_draw_count ||
+                    output_end >
+                        command_slots ||
+                    segment
+                            .output_count_index >=
+                        count_slots) {
+                    use_gpu_draws = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (use_gpu_draws &&
+        gpu_draw_source->layout ==
+            GpuDrawSourceLayout::
+                fixed_state_v1) {
+        gpu_device_draw_limit = std::min(
+            gpu_draw_source
+                ->max_draw_count,
+            *gpu_device_draw_limit);
+    }
+
     GlobalMaterialId current_material_id = invalidMaterialId();
     uint32_t material_index = 0;
     for (const auto &draw_call : draw_calls) {
@@ -90,7 +230,7 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             continue;
         }
 
-        if (material_range.has_value() && isOutsideMaterialRange(draw_index, *material_range)) {
+        if (!selectedByMaterialRange(draw_index)) {
             continue;
         }
 
@@ -115,17 +255,40 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
                               PELICAN_PUSH_ENGINE_BYTES, sizeof(material_push), &material_push);
         current_material_id = draw_call.material;
-        if (gpu_draw_source &&
-            gpu_draw_limit) {
-            if (!isValidFrameGraphBufferId(
-                    gpu_draw_source->commands_id) ||
-                !isValidFrameGraphBufferId(
-                    gpu_draw_source->count_id)) {
-                throw std::runtime_error(
-                    "Material pass '" + pass.name +
-                    "' gpu_draw_source was not pinned to the active GPU "
-                    "generation");
+        if (use_gpu_draws) {
+            auto command_offset =
+                gpu_draw_source
+                    ->command_offset;
+            auto count_offset =
+                gpu_draw_source
+                    ->count_offset;
+            auto draw_limit =
+                gpu_draw_source
+                    ->max_draw_count;
+            if (gpu_draw_source->layout ==
+                GpuDrawSourceLayout::
+                    draw_queue_segments_v1) {
+                const auto &segment =
+                    instance_container
+                        .sceneDrawSegment(
+                            draw_call
+                                .scene_segment_index);
+                command_offset +=
+                    static_cast<vk::DeviceSize>(
+                        segment
+                            .output_first_command) *
+                    frameGraphIndexedDrawCommandBytes;
+                count_offset +=
+                    static_cast<vk::DeviceSize>(
+                        segment
+                            .output_count_index) *
+                    frameGraphDrawCountBytes;
+                draw_limit =
+                    segment.command_capacity;
             }
+            draw_limit = std::min(
+                draw_limit,
+                *gpu_device_draw_limit);
             const auto &commands =
                 dependencies.frame_graph_resources
                     .buffer(
@@ -138,15 +301,16 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                             ->count_id);
             cmd_buf.drawIndexedIndirectCount(
                 commands.buffer.get(),
-                gpu_draw_source->command_offset,
+                command_offset,
                 count.buffer.get(),
-                gpu_draw_source->count_offset,
-                *gpu_draw_limit,
+                count_offset,
+                draw_limit,
                 static_cast<std::uint32_t>(
                     frameGraphIndexedDrawCommandBytes));
         } else {
             // The established CPU-compiled draw queue is the semantic
-            // fallback when the device cannot consume a GPU-written count.
+            // fallback when the device cannot consume a GPU-written count or
+            // the current segmented publication exceeds authored capacity.
             cmd_buf.drawIndexedIndirect(
                 indirect_buf.buffer.get(),
                 draw_call.offset,

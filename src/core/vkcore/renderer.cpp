@@ -295,6 +295,9 @@ void updateFrameDrawCandidates(
     constexpr auto bounds_source =
         FrameGraphHostBufferSource::
             scene_draw_bounds_v1;
+    constexpr auto segment_source =
+        FrameGraphHostBufferSource::
+            scene_draw_segments_v1;
     const auto needs_commands =
         frame_graph_resources
             .hasHostBufferSource(
@@ -303,7 +306,12 @@ void updateFrameDrawCandidates(
         frame_graph_resources
             .hasHostBufferSource(
                 bounds_source);
-    if (!needs_commands && !needs_bounds) {
+    const auto needs_segments =
+        frame_graph_resources
+            .hasHostBufferSource(
+                segment_source);
+    if (!needs_commands && !needs_bounds &&
+        !needs_segments) {
         return;
     }
     const auto candidates =
@@ -352,6 +360,10 @@ void updateFrameDrawCandidates(
     if (needs_bounds) {
         upload(bounds_source,
                candidates.bounds);
+    }
+    if (needs_segments) {
+        upload(segment_source,
+               candidates.segments);
     }
 }
 

@@ -353,10 +353,25 @@ PassDefinition applyPhysicalPassContract(
                 frame_graph_resources
                     ->getBufferIdByName(
                         draw_source->count);
+            if (draw_source->layout ==
+                GpuDrawSourceLayout::
+                    draw_queue_segments_v1) {
+                draw_source->segments_id =
+                    frame_graph_resources
+                        ->getBufferIdByName(
+                            draw_source
+                                ->segments);
+            }
             if (!isValidFrameGraphBufferId(
                     draw_source->commands_id) ||
                 !isValidFrameGraphBufferId(
-                    draw_source->count_id)) {
+                    draw_source->count_id) ||
+                (draw_source->layout ==
+                     GpuDrawSourceLayout::
+                         draw_queue_segments_v1 &&
+                 !isValidFrameGraphBufferId(
+                     draw_source
+                         ->segments_id))) {
                 throw std::runtime_error(
                     "material pass '" +
                     result.name +
@@ -379,6 +394,23 @@ PassDefinition applyPhysicalPassContract(
                     "material pass '" +
                     result.name +
                     "' gpu_draw_source runtime command layout changed");
+            }
+            if (draw_source->layout ==
+                GpuDrawSourceLayout::
+                    draw_queue_segments_v1) {
+                const auto &segments =
+                    frame_graph_resources
+                        ->definition(
+                            draw_source
+                                ->segments_id);
+                if (segments.host_source !=
+                    FrameGraphHostBufferSource::
+                        scene_draw_segments_v1) {
+                    throw std::runtime_error(
+                        "material pass '" +
+                        result.name +
+                        "' gpu_draw_source runtime segment layout changed");
+                }
             }
             const auto command_bytes =
                 static_cast<vk::DeviceSize>(

@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -30,6 +31,9 @@ struct RenderCommand {
 
 static_assert(offsetof(RenderCommand, command) == 0);
 
+inline constexpr std::uint32_t noSceneDrawSegmentIndex =
+    std::numeric_limits<std::uint32_t>::max();
+
 struct DrawIndirectInfo {
     GlobalMaterialId material;
     std::uint32_t source_material_index = noSourceMaterialIndex;
@@ -37,9 +41,33 @@ struct DrawIndirectInfo {
     std::uint32_t draw_count = 0;
     std::uint32_t stride = 0;
     bool skinned = false;
+    // Assigned when phase/view queues are combined into the canonical frame
+    // publication. GPU segmented draw consumers use this to recover the
+    // output command/count slots without deriving material state on the GPU.
+    std::uint32_t scene_segment_index =
+        noSceneDrawSegmentIndex;
 
     bool operator==(const DrawIndirectInfo &) const = default;
 };
+
+// GPU-visible fixed-state range. source_* addresses the packed
+// scene_draw_commands_v1 array. output_* reserves a disjoint compacted range
+// and one count slot so overlapping view/filter publications never race.
+struct alignas(16) SceneDrawSegmentV1 {
+    std::uint32_t source_first_command = 0;
+    std::uint32_t command_capacity = 0;
+    std::uint32_t output_first_command = 0;
+    std::uint32_t output_count_index = 0;
+    std::uint32_t sort_view_index = 0;
+    std::uint32_t phase = 0;
+    std::uint32_t visibility_view = 0;
+    std::uint32_t material_filter_index =
+        noSceneDrawSegmentIndex;
+
+    bool operator==(const SceneDrawSegmentV1 &) const = default;
+};
+
+static_assert(sizeof(SceneDrawSegmentV1) == sizeof(std::uint32_t) * 8);
 
 enum class DrawQueueView : std::uint8_t {
     third_person,
@@ -229,6 +257,8 @@ class CompiledDrawQueueSet {
     std::vector<RenderCommand> indirect_records_;
     std::vector<std::array<std::vector<DrawIndirectInfo>, 2>> all_ranges_;
     std::vector<FilterPublication> material_filters_;
+    std::vector<SceneDrawSegmentV1> scene_draw_segments_;
+    std::uint32_t scene_draw_output_command_capacity_ = 0;
 
     const Variant &variant(DrawQueuePhase phase,
                            std::uint32_t sort_view_index) const;
@@ -248,6 +278,18 @@ class CompiledDrawQueueSet {
     std::size_t queueCount() const noexcept { return variants_.size(); }
     const std::vector<RenderCommand> &indirectRecords() const noexcept {
         return indirect_records_;
+    }
+    const std::vector<SceneDrawSegmentV1> &
+    sceneDrawSegments() const noexcept {
+        return scene_draw_segments_;
+    }
+    std::uint32_t
+    sceneDrawOutputCommandCapacity() const noexcept {
+        return scene_draw_output_command_capacity_;
+    }
+    const SceneDrawSegmentV1 &
+    sceneDrawSegment(std::uint32_t index) const {
+        return scene_draw_segments_.at(index);
     }
     std::span<const std::byte> indirectBytes() const noexcept;
     const std::vector<DrawIndirectInfo> &

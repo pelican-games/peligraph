@@ -399,12 +399,47 @@ full mip chainをsampled resource portで読むshaderでは、生成accessor
 `(uv, view_index, lod)`です。depth pyramidのmax/min reduction、mip選択、biasなどの
 アルゴリズムはengine固定ではなくproject側のcompute shaderで変更できます。
 
-WP210b の実装範囲は **1つの `material_range` entry に pipeline、material descriptor、
-static/skinned vertex layoutを固定する経路**です。そのため `material_range.count` は1が必須で、
-GPU commandが切り替えられるのはgeometry/instanceだけです。WP210cのocclusion dogfoodも
-この固定状態の1 segmentだけをcompactします。複数material、複数pipeline、
-material境界をまたぐGPU cullingは後続範囲です。また固定状態を得るCPU DrawQueue entryが
-0件ならGPU commandだけで新しい状態を作ることはできません。
+既定の`gpu_draw_source.layout`は`"fixed_state_v1"`で、**1つの
+`material_range` entryにpipeline、material descriptor、static/skinned vertex layoutを
+固定**します。この場合`material_range.count`は1が必須です。
+
+複数stateを処理する場合は次のように指定します。
+
+```json
+{
+  "material_range": {"start": 0, "count": 4},
+  "gpu_draw_source": {
+    "layout": "draw_queue_segments_v1",
+    "segments": "draw_segments",
+    "commands": "visible_draws",
+    "count": "visible_draw_counts",
+    "max_draw_count": 256
+  }
+}
+```
+
+`scene_draw_segments_v1`は1要素32 byteの`uint32_t[8]`で、順に
+`source_first_command`、`command_capacity`、`output_first_command`、
+`output_count_index`、`sort_view_index`、`phase`（0=opaque、1=transparent）、
+`visibility_view`（0=third person、1=first person）、`material_filter_index`
+（`0xffffffff`=filterなし）です。各DrawQueue rangeは1つのsegment indexを持ちます。
+view/filterが同じsourceを参照しても競合しないよう、output command範囲とcount slotは
+segmentごとに分離されています。
+
+segmented layoutの`max_draw_count`は、1 segment当たりではなく
+`command_offset`以降に確保した**output command slot総数**です。count bufferには
+`count_offset + (output_count_index + 1) * 4`までの容量が必要です。現在フレームの選択segmentが
+segment host buffer、commands、countのいずれかに収まらなければ、rendererは一部のstateだけを
+GPU実行せずpass全体をCPU DrawQueueへ戻します。
+
+GPUが変更できるのは各CPU-bound segment内のgeometry/instance commandとcountです。
+pipeline/material handleをGPUへ渡しておらず、CPU DrawQueueに存在しない新しいstateは
+生成できません。project compute shaderはsegmentごとのcountを先に0へ戻し、
+`source_*`から読み、`output_*`へcompactしてください。zero-filled tailと容量超過に備え、
+全runtime bufferの`.length()`を境界として使います。segmentのsource範囲がcompute taskで
+実際に読むcandidate commands/bounds host bufferへ収まるかはproject shader側の責務です。
+dispatch数もsegment bufferの処理対象slotを覆う必要があります。任意のcompute graphから
+入力bufferの意味やdispatch policyをengineが推測することはありません。
 
 `gpu_draw_source` はcommands/countをrender nodeのreadへ自動追加し、順序付け済みの
 compute writeから`DrawIndirect` / `IndirectCommandRead` barrierを導出します。現プランナは

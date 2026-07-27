@@ -137,6 +137,23 @@ project-owned shaderが、raw sampler bindingへ戻らずdepth pyramidのLODを�
 engineはAABB形式とtransportを所有するが、projection、mip選択、depth bias、
 conservative keepなどのculling policyはproject shader側に残す。
 
+WP210dでは`scene_draw_segments_v1`を追加し、複数のCPU-bound描画stateを同じ
+GPU culling taskで処理できるようにした。1要素は32 byteで、source command範囲、
+重ならないoutput command範囲、count slot、sort view、phase、visibility view、
+material filter slotを持つ。material/pipeline handle自体はGPU ABIへ入れない。
+
+material passで`gpu_draw_source.layout: "draw_queue_segments_v1"`とsegment host bufferを
+指定すると、rendererは選択された各DrawQueue rangeについて1回ずつ
+`drawIndexedIndirectCount`を発行する。pipeline、material descriptor、static/skinned
+vertex layoutは各rangeを処理する直前にCPUがbindする。segment host publicationや
+commands/count bufferの容量が選択rangeを収容できない場合は、一部だけGPU実行せず
+pass全体をCPU DrawQueueへfallbackする。
+
+view/filter別rangeはsource commandを共有し得るため、segmentごとのoutput範囲とcount slotは
+必ず分離する。このためoutput command容量はsource command数より大きくなり得る。
+project compute shaderはsegment bufferのzero-filled tailを`command_capacity == 0`として
+無視し、runtime array lengthでcommands、bounds、output、countの各境界を検証する。
+
 現plannerのRAW導出は宣言順上の直前writerを使う。render pass nodeがcompute task nodeより
 先に組み立てられる現行adapterでは、draw command producerはconsumer passへの`before`
 （または逆向きの`after`）を明示する。read edgeとbarrier自体は

@@ -1452,6 +1452,8 @@ PolygonInstanceContainer::
     if (records.empty()) {
         return result;
     }
+    result.segments =
+        compiled_draw_queue.sceneDrawSegments();
     for (const auto &record : records) {
         result.commands.push_back(record.command);
     }
@@ -1488,6 +1490,22 @@ PolygonInstanceContainer::
         result.bounds.size()) {
         throw std::runtime_error(
             "scene draw command and bounds publications are misaligned");
+    }
+    for (std::size_t index = 0;
+         index < result.segments.size();
+         ++index) {
+        const auto &segment =
+            result.segments[index];
+        if (segment.output_count_index !=
+                index ||
+            segment.source_first_command >
+                result.commands.size() ||
+            segment.command_capacity >
+                result.commands.size() -
+                    segment.source_first_command) {
+            throw std::runtime_error(
+                "scene draw segment publication is invalid");
+        }
     }
     return result;
 }

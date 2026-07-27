@@ -8,6 +8,7 @@ void runTaaDeterminism();
 void runBLayerShadowEquivalence();
 void runGpuDrawIndirect();
 void runGpuOcclusionCulling();
+void runGpuSegmentedOcclusionCulling();
 void runGoldenImages();
 void runLogicalFrameStereo();
 void runOpenXrTaaTransition();

@@ -591,13 +591,34 @@ TEST_CASE(
             .empty());
     for (std::uint32_t view = 0;
          view < 2; ++view) {
+        const auto &ranges =
+            xr.allDrawRanges(
+                view,
+                DrawQueueView::
+                    third_person,
+                filter.id);
         REQUIRE(
             totalDrawCount(
-                xr.allDrawRanges(
-                    view,
-                    DrawQueueView::
-                        third_person,
-                    filter.id)) == 2);
+                ranges) == 2);
+        for (const auto &range : ranges) {
+            REQUIRE(
+                range.scene_segment_index !=
+                noSceneDrawSegmentIndex);
+            const auto &segment =
+                xr.sceneDrawSegment(
+                    range
+                        .scene_segment_index);
+            CHECK(
+                segment.sort_view_index ==
+                view);
+            CHECK(
+                segment.visibility_view ==
+                0);
+            CHECK(
+                segment
+                    .material_filter_index ==
+                0);
+        }
     }
 }
 
@@ -777,6 +798,94 @@ TEST_CASE("RPE5 phase queues preserve opaque batching and sort transparent back 
                        second.indirectBytes().begin()));
     REQUIRE(first.allDrawRanges(0, DrawQueueView::third_person) ==
             second.allDrawRanges(0, DrawQueueView::third_person));
+}
+
+TEST_CASE(
+    "WP210d draw queue segments assign disjoint GPU output ranges per fixed state",
+    "[renderer][draw-queue][gpu-segment][wp210]") {
+    const std::vector input{
+        item(0, 1, 0, false,
+             PrimitiveViewVisibility::both, 0, 0),
+        item(1, 2, 0, false,
+             PrimitiveViewVisibility::both, 1, 3),
+    };
+    auto opaque_provider = builtinProvider();
+    auto transparent_provider =
+        backToFrontProvider();
+    std::vector<CompiledDrawQueueVariant>
+        variants;
+    variants.push_back({
+        .phase = DrawQueuePhase::opaque,
+        .sort_view_index = 0,
+        .queue = DrawQueueBuilder::build(
+            DrawQueueBuildRequest{
+                .items = input,
+                .max_draw_indirect_count = 64,
+                .target_phase =
+                    DrawQueuePhase::opaque,
+            },
+            opaque_provider),
+    });
+    variants.push_back({
+        .phase = DrawQueuePhase::transparent,
+        .sort_view_index = 0,
+        .queue = DrawQueueBuilder::build(
+            DrawQueueBuildRequest{
+                .items = input,
+                .max_draw_indirect_count = 64,
+                .target_phase =
+                    DrawQueuePhase::transparent,
+            },
+            transparent_provider),
+    });
+
+    const auto compiled =
+        CompiledDrawQueueSet::combine(
+            std::move(variants));
+    const auto &segments =
+        compiled.sceneDrawSegments();
+    REQUIRE(segments.size() == 4);
+    REQUIRE(
+        compiled
+            .sceneDrawOutputCommandCapacity() ==
+        4);
+
+    const auto &third_person =
+        compiled.allDrawRanges(
+            0,
+            DrawQueueView::third_person);
+    REQUIRE(third_person.size() == 2);
+    CHECK(
+        third_person[0]
+            .scene_segment_index == 0);
+    CHECK(
+        third_person[1]
+            .scene_segment_index == 1);
+    for (std::uint32_t index = 0;
+         index < segments.size(); ++index) {
+        const auto &segment =
+            segments[index];
+        CHECK(
+            segment.source_first_command ==
+            index % 2);
+        CHECK(
+            segment.command_capacity == 1);
+        CHECK(
+            segment.output_first_command ==
+            index);
+        CHECK(
+            segment.output_count_index ==
+            index);
+        CHECK(
+            segment.sort_view_index == 0);
+        CHECK(segment.phase == 0);
+        CHECK(
+            segment.visibility_view ==
+            index / 2);
+        CHECK(
+            segment.material_filter_index ==
+            noSceneDrawSegmentIndex);
+    }
 }
 
 TEST_CASE("RPE5 XR queue policy supports one logical center or deterministic per-view order",

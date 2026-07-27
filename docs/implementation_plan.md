@@ -440,7 +440,23 @@ indirect argumentsを生成できるようにする。
 
 詳細は
 [`design_reviews/2026-07-27_wp210c_occlusion_dogfood.md`](design_reviews/2026-07-27_wp210c_occlusion_dogfood.md)。
-WP210の残りは、複数material/pipeline segment、hot reload/XR/timing受け入れである。
+
+**WP210d 完了境界（2026-07-27）**:
+
+- `scene_draw_segments_v1`（32 byte）でCPU DrawQueueのfixed-state rangeと、
+  GPU compact後のcommand範囲/count slotを対応付ける
+- view、phase、visibility、material filterごとにsegmentを発行し、sourceが重なる場合も
+  output範囲を分離する
+- `gpu_draw_source.layout: "draw_queue_segments_v1"`で非空の複数`material_range` entryを
+  選択可能にし、各entryのpipeline/material/vertex layoutはCPU bindingのまま維持する
+- segment publication切り詰め、commands/count容量不足、device feature不足では
+  pass全体をCPU DrawQueueへfallbackする
+- 実Vulkan fixtureで異なる2 material stateを同じdepth-pyramid culling taskからcompactし、
+  segment count `{1, 1}`、CPU fallback画像一致、plan順序を検証する
+
+詳細は
+[`design_reviews/2026-07-27_wp210d_gpu_draw_segments.md`](design_reviews/2026-07-27_wp210d_gpu_draw_segments.md)。
+WP210の残りは、hot reload、XR per-view、GPU timing受け入れである。
 
 **受け入れ条件**:
 

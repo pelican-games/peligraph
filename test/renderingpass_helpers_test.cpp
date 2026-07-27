@@ -1033,6 +1033,93 @@ TEST_CASE(
             invalid_bounds_layout),
         Catch::Matchers::ContainsSubstring(
             "must not declare"));
+
+    auto segmented = config;
+    segmented["buffers"].push_back({
+        {"name", "draw_segments"},
+        {"size", 128},
+        {"host_source",
+         "scene_draw_segments_v1"},
+    });
+    segmented["rendering_passes"][0]["passes"][0]
+             ["material_range"]["count"] = 2;
+    auto &segmented_source =
+        segmented["rendering_passes"][0]
+                 ["passes"][0]
+                 ["gpu_draw_source"];
+    segmented_source["layout"] =
+        "draw_queue_segments_v1";
+    segmented_source["segments"] =
+        "draw_segments";
+    const auto segmented_buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            segmented);
+    REQUIRE_NOTHROW(
+        validateGpuDrawSourceBufferContracts(
+            segmented,
+            segmented_buffers));
+    const auto parsed_segmented =
+        parseGpuDrawSourceFromJson(
+            segmented["rendering_passes"][0]
+                     ["passes"][0],
+            "segmented test");
+    REQUIRE(parsed_segmented.has_value());
+    CHECK(
+        parsed_segmented->layout ==
+        GpuDrawSourceLayout::
+            draw_queue_segments_v1);
+    CHECK(
+        std::string{
+            frameGraphHostBufferSourceName(
+                *segmented_buffers.back()
+                     .host_source)} ==
+        "scene_draw_segments_v1");
+
+    auto wrong_segment_source = segmented;
+    wrong_segment_source["buffers"].back()
+                        .erase("host_source");
+    const auto wrong_segment_buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            wrong_segment_source);
+    REQUIRE_THROWS_WITH(
+        validateGpuDrawSourceBufferContracts(
+            wrong_segment_source,
+            wrong_segment_buffers),
+        Catch::Matchers::ContainsSubstring(
+            "scene_draw_segments_v1"));
+
+    auto invalid_segment_size = segmented;
+    invalid_segment_size["buffers"].back()
+                        ["size"] = 40;
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid_segment_size),
+        Catch::Matchers::ContainsSubstring(
+            "scene_draw_segments_v1"));
+
+    auto invalid_segment_layout = segmented;
+    invalid_segment_layout["buffers"].back()
+                          ["command_layout"] =
+        "indexed_draw";
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid_segment_layout),
+        Catch::Matchers::ContainsSubstring(
+            "must not declare"));
+
+    auto missing_segments = segmented;
+    missing_segments["rendering_passes"][0]
+                    ["passes"][0]
+                    ["gpu_draw_source"]
+                    .erase("segments");
+    REQUIRE_THROWS_WITH(
+        parseGpuDrawSourceFromJson(
+            missing_segments
+                ["rendering_passes"][0]
+                ["passes"][0],
+            "segmented test"),
+        Catch::Matchers::ContainsSubstring(
+            "requires segments"));
 }
 
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {

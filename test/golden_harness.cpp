@@ -132,6 +132,14 @@ struct RenderedCase {
         FrameGraphResourceContainer::
             HostBufferPopulation>
         gpu_draw_bounds_population;
+    std::optional<
+        FrameGraphResourceContainer::
+            HostBufferPopulation>
+        gpu_draw_segment_population;
+    std::vector<std::uint32_t>
+        gpu_selected_segment_counts;
+    std::vector<int>
+        gpu_selected_segment_materials;
 };
 
 struct Tolerance {
@@ -2142,7 +2150,8 @@ void writeGpuDrawProject(
 void writeGpuOcclusionProject(
     const std::filesystem::path &root,
     bool candidate_visible,
-    bool force_cpu) {
+    bool force_cpu,
+    bool segmented) {
     writeShadowProject(root, false);
     writeTextFile(
         root / "scene.json",
@@ -2228,6 +2237,59 @@ void writeGpuOcclusionProject(
                      },
                  })}}}}},
         }.dump(2));
+    if (segmented) {
+        std::ifstream scene_input{
+            root / "scene.json",
+            std::ios::binary};
+        if (!scene_input.is_open()) {
+            throw std::runtime_error(
+                "failed to reopen GPU occlusion scene fixture");
+        }
+        auto scene =
+            nlohmann::json::parse(
+                scene_input);
+        scene["scenes"]["default_scene"]
+             ["objects"]
+                 .push_back({
+                     {"name", "SecondMaterial"},
+                     {"components",
+                      nlohmann::json::array({
+                          {
+                              {"name", "transform"},
+                              {"pos",
+                               nlohmann::json::array(
+                                   {2.1, 0.12, 0.4})},
+                              {"rotation",
+                               nlohmann::json::array(
+                                   {0.0, 0.0, 0.0,
+                                    1.0})},
+                              {"scale",
+                               nlohmann::json::array(
+                                   {0.32, 0.32,
+                                    0.32})},
+                          },
+                          {
+                              {"name",
+                               "simplemodelview"},
+                              {"model", "marker"},
+                          },
+                      })},
+                 });
+        writeTextFile(
+            root / "scene.json",
+            scene.dump(2));
+        TestMorphFixture::writeGlb(
+            root / "assets" /
+                "marker.glb");
+        writeTextFile(
+            root / "assets.json",
+            R"json({
+  "models": [
+    {"name": "ground", "path": "assets/ground.glb"},
+    {"name": "marker", "path": "assets/marker.glb"}
+  ]
+})json");
+    }
 
     auto config =
         makeShadowRenderingConfig(false);
@@ -2310,7 +2372,8 @@ void writeGpuOcclusionProject(
         nlohmann::json::array({
             {
                 {"name", "draw_candidates"},
-                {"size", 40},
+                {"size",
+                 segmented ? 60 : 40},
                 {"host_source",
                  "scene_draw_commands_v1"},
                 {"command_layout",
@@ -2318,19 +2381,28 @@ void writeGpuOcclusionProject(
             },
             {
                 {"name", "draw_bounds"},
-                {"size", 64},
+                {"size",
+                 segmented ? 96 : 64},
                 {"host_source",
                  "scene_draw_bounds_v1"},
             },
             {
+                {"name", "draw_segments"},
+                {"size", 512},
+                {"host_source",
+                 "scene_draw_segments_v1"},
+            },
+            {
                 {"name", "visible_draws"},
-                {"size", 40},
+                {"size",
+                 segmented ? 320 : 40},
                 {"command_layout",
                  "indexed_draw"},
             },
             {
                 {"name", "visible_draw_count"},
-                {"size", 4},
+                {"size",
+                 segmented ? 64 : 4},
                 {"command_layout", "draw_count"},
             },
         });
@@ -2350,13 +2422,22 @@ void writeGpuOcclusionProject(
     }
     (*geometry)["material_range"] = {
         {"start", 0},
-        {"count", 1},
+        {"count", segmented ? 2 : 1},
     };
     (*geometry)["gpu_draw_source"] = {
         {"commands", "visible_draws"},
         {"count", "visible_draw_count"},
-        {"max_draw_count", 2},
+        {"max_draw_count",
+         segmented ? 16 : 2},
     };
+    if (segmented) {
+        (*geometry)["gpu_draw_source"]
+                   ["layout"] =
+            "draw_queue_segments_v1";
+        (*geometry)["gpu_draw_source"]
+                   ["segments"] =
+            "draw_segments";
+    }
     if (force_cpu) {
         (*geometry)["gpu_draw_source"]
                    ["execution"] =
@@ -2517,15 +2598,22 @@ void writeGpuOcclusionProject(
                {1, 1, 1})}}},
         {"schedule", "per_frame"},
     });
+    auto cull_reads =
+        nlohmann::json::array(
+            {"draw_candidates",
+             "draw_bounds"});
+    if (segmented) {
+        cull_reads.push_back(
+            "draw_segments");
+    }
+    cull_reads.push_back(
+        "occlusion_pyramid");
     tasks.push_back({
         {"name", "occlusion_cull"},
         {"shader",
          "shaders/occlusion_cull"},
         {"reads",
-         nlohmann::json::array(
-             {"draw_candidates",
-              "draw_bounds",
-              "occlusion_pyramid"})},
+         std::move(cull_reads)},
         {"writes",
          nlohmann::json::array(
              {"visible_draws",
@@ -2560,7 +2648,8 @@ void writeGpuOcclusionProject(
         {"dispatch",
          {{"groups",
            nlohmann::json::array(
-               {1, 1, 1})}}},
+               {segmented ? 16 : 1,
+                1, 1})}}},
         {"schedule", "per_frame"},
     });
     config["compute_tasks"] =
@@ -2624,14 +2713,184 @@ void main() {
             "occlusion_count_reset.comp",
         R"glsl(
 #version 450
-layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
 layout(std430,set=1,binding=0) buffer Count {
-    uint value;
+    uint values[];
 } visible_count;
 void main() {
-    visible_count.value = 0u;
+    uint index = gl_GlobalInvocationID.x;
+    if (index < uint(visible_count.values.length())) {
+        visible_count.values[index] = 0u;
+    }
 }
 )glsl");
+    if (segmented) {
+        writeTextFile(
+            root / "shaders" /
+                "occlusion_cull.comp",
+            R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
+
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
+
+struct DrawCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+struct DrawBounds {
+    vec4 minimum;
+    vec4 maximum;
+};
+struct DrawSegment {
+    uint sourceFirstCommand;
+    uint commandCapacity;
+    uint outputFirstCommand;
+    uint outputCountIndex;
+    uint sortViewIndex;
+    uint phase;
+    uint visibilityView;
+    uint materialFilterIndex;
+};
+layout(std430,set=1,binding=0) readonly buffer Candidates {
+    DrawCommand values[];
+} candidates;
+layout(std430,set=1,binding=1) readonly buffer Bounds {
+    DrawBounds values[];
+} bounds;
+layout(std430,set=1,binding=2) readonly buffer Segments {
+    DrawSegment values[];
+} segments;
+layout(std430,set=1,binding=4) writeonly buffer Visible {
+    DrawCommand values[];
+} visible;
+layout(std430,set=1,binding=5) buffer Counts {
+    uint values[];
+} visible_counts;
+
+bool survivesOcclusion(DrawBounds bound) {
+    if (bound.minimum.w < 0.5) return true;
+
+    vec2 ndc_min = vec2(1.0);
+    vec2 ndc_max = vec2(-1.0);
+    float nearest_depth = 1.0;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        vec3 world = vec3(
+            (corner & 1u) != 0u
+                ? bound.maximum.x
+                : bound.minimum.x,
+            (corner & 2u) != 0u
+                ? bound.maximum.y
+                : bound.minimum.y,
+            (corner & 4u) != 0u
+                ? bound.maximum.z
+                : bound.minimum.z);
+        vec4 clip = pelicanFrame.projection *
+                    pelicanFrame.view *
+                    vec4(world, 1.0);
+        if (clip.w <= 0.00001) return true;
+        vec3 ndc = clip.xyz / clip.w;
+        ndc_min = min(ndc_min, ndc.xy);
+        ndc_max = max(ndc_max, ndc.xy);
+        nearest_depth = min(nearest_depth, ndc.z);
+    }
+
+    if (ndc_max.x < -1.0 || ndc_min.x > 1.0 ||
+        ndc_max.y < -1.0 || ndc_min.y > 1.0) {
+        return true;
+    }
+    vec2 uv_min = clamp(
+        ndc_min * 0.5 + 0.5,
+        vec2(0.0), vec2(1.0));
+    vec2 uv_max = clamp(
+        ndc_max * 0.5 + 0.5,
+        vec2(0.0), vec2(1.0));
+    vec2 base_size =
+        vec2(pelican_size_lod_depth_pyramid(0));
+    vec2 pixel_span =
+        max((uv_max - uv_min) * base_size,
+            vec2(1.0));
+    float lod = floor(log2(max(
+        pixel_span.x, pixel_span.y)));
+    lod = clamp(
+        lod, 0.0,
+        float(pelican_mip_count_depth_pyramid() - 1u));
+
+    float farthest_depth = 0.0;
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            uv_min, lod).r);
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            vec2(uv_max.x, uv_min.y), lod).r);
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            vec2(uv_min.x, uv_max.y), lod).r);
+    farthest_depth = max(
+        farthest_depth,
+        pelican_sample_lod_depth_pyramid(
+            uv_max, lod).r);
+    return nearest_depth <=
+           farthest_depth + 0.0005;
+}
+
+void main() {
+    uint segment_index = gl_WorkGroupID.x;
+    if (segment_index >=
+        uint(segments.values.length())) {
+        return;
+    }
+    DrawSegment segment =
+        segments.values[segment_index];
+    if (segment.commandCapacity == 0u ||
+        segment.outputCountIndex >=
+            uint(visible_counts.values.length())) {
+        return;
+    }
+    for (uint local_command =
+             gl_LocalInvocationID.x;
+         local_command <
+             segment.commandCapacity;
+         local_command +=
+             gl_WorkGroupSize.x) {
+        uint candidate =
+            segment.sourceFirstCommand +
+            local_command;
+        if (candidate >=
+                uint(candidates.values.length()) ||
+            candidate >=
+                uint(bounds.values.length()) ||
+            !survivesOcclusion(
+                bounds.values[candidate])) {
+            continue;
+        }
+        uint output_index = atomicAdd(
+            visible_counts.values[
+                segment.outputCountIndex],
+            1u);
+        if (output_index <
+                segment.commandCapacity &&
+            segment.outputFirstCommand +
+                    output_index <
+                uint(visible.values.length())) {
+            visible.values[
+                segment.outputFirstCommand +
+                output_index] =
+                candidates.values[candidate];
+        }
+    }
+}
+)glsl");
+        return;
+    }
     writeTextFile(
         root / "shaders" /
             "occlusion_cull.comp",
@@ -3900,7 +4159,19 @@ bool isGpuOcclusionGoldenMode(
            mode ==
                "gpu_occlusion_visible" ||
            mode ==
-               "gpu_occlusion_force_cpu";
+               "gpu_occlusion_force_cpu" ||
+           mode ==
+               "gpu_occlusion_segmented" ||
+           mode ==
+               "gpu_occlusion_segmented_force_cpu";
+}
+
+bool isGpuSegmentedOcclusionGoldenMode(
+    const std::string &mode) {
+    return mode ==
+               "gpu_occlusion_segmented" ||
+           mode ==
+               "gpu_occlusion_segmented_force_cpu";
 }
 
 std::uint32_t gpuDrawProducedCount(
@@ -4179,7 +4450,11 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             golden_case.mode ==
                 "gpu_occlusion_visible",
             golden_case.mode ==
-                "gpu_occlusion_force_cpu");
+                    "gpu_occlusion_force_cpu" ||
+                golden_case.mode ==
+                    "gpu_occlusion_segmented_force_cpu",
+            isGpuSegmentedOcclusionGoldenMode(
+                golden_case.mode));
         GET_MODULE(PathResolver).setup(
             temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(
@@ -4314,6 +4589,14 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         FrameGraphResourceContainer::
             HostBufferPopulation>
         gpu_draw_bounds_population;
+    std::optional<
+        FrameGraphResourceContainer::
+            HostBufferPopulation>
+        gpu_draw_segment_population;
+    std::vector<std::uint32_t>
+        gpu_selected_segment_counts;
+    std::vector<int>
+        gpu_selected_segment_materials;
     if (isGpuOcclusionGoldenMode(
             golden_case.mode)) {
         auto &vkcore =
@@ -4324,8 +4607,11 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         const auto &source =
             resources.buffer(
                 "visible_draw_count");
+        const auto count_bytes =
+            resources.bufferSize(
+                "visible_draw_count");
         auto staging = vkcore.allocBuf(
-            sizeof(std::uint32_t),
+            count_bytes,
             vk::BufferUsageFlagBits::
                 eTransferDst,
             vma::MemoryUsage::
@@ -4351,8 +4637,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                         source.buffer.get();
                     barrier.offset = 0;
                     barrier.size =
-                        sizeof(
-                            std::uint32_t);
+                        count_bytes;
                     command.pipelineBarrier(
                         vk::PipelineStageFlagBits::
                             eComputeShader,
@@ -4364,20 +4649,25 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                         staging.buffer.get(),
                         vk::BufferCopy{
                             0, 0,
-                            sizeof(
-                                std::uint32_t)});
+                            count_bytes});
                 },
                 true);
         const auto bytes =
             vkcore.readBuf(
                 staging,
-                sizeof(std::uint32_t));
-        std::uint32_t value = 0;
+                count_bytes);
+        std::vector<std::uint32_t>
+            count_values(
+                static_cast<std::size_t>(
+                    count_bytes /
+                    sizeof(std::uint32_t)));
         std::memcpy(
-            &value, bytes.data(),
-            sizeof(value));
+            count_values.data(),
+            bytes.data(),
+            static_cast<std::size_t>(
+                count_bytes));
         gpu_visible_draw_count =
-            value;
+            count_values.front();
         gpu_draw_command_population =
             resources.hostBufferPopulation(
                 resources.getBufferIdByName(
@@ -4386,6 +4676,47 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             resources.hostBufferPopulation(
                 resources.getBufferIdByName(
                     "draw_bounds"));
+        gpu_draw_segment_population =
+            resources.hostBufferPopulation(
+                resources.getBufferIdByName(
+                    "draw_segments"));
+        if (isGpuSegmentedOcclusionGoldenMode(
+                golden_case.mode)) {
+            const auto &draw_calls =
+                GET_MODULE(
+                    PolygonInstanceContainer)
+                    .getDrawCalls(
+                        false, std::nullopt,
+                        0);
+            const auto selected_count =
+                std::min<std::size_t>(
+                    draw_calls.size(), 2);
+            for (std::size_t index = 0;
+                 index < selected_count;
+                 ++index) {
+                const auto &draw_call =
+                    draw_calls[index];
+                const auto &segment =
+                    GET_MODULE(
+                        PolygonInstanceContainer)
+                        .sceneDrawSegment(
+                            draw_call
+                                .scene_segment_index);
+                REQUIRE(
+                    segment
+                        .output_count_index <
+                    count_values.size());
+                gpu_selected_segment_counts
+                    .push_back(
+                        count_values[
+                            segment
+                                .output_count_index]);
+                gpu_selected_segment_materials
+                    .push_back(
+                        draw_call
+                            .material.value);
+            }
+        }
     }
     const auto pixels = render_target.readbackLastFrameRGBA8();
     const auto device_properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
@@ -4420,6 +4751,11 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         gpu_visible_draw_count,
         gpu_draw_command_population,
         gpu_draw_bounds_population,
+        gpu_draw_segment_population,
+        std::move(
+            gpu_selected_segment_counts),
+        std::move(
+            gpu_selected_segment_materials),
     };
 }
 
@@ -4955,6 +5291,75 @@ void GoldenHarness::runGpuOcclusionCulling() {
 #else
     SKIP(
         "GPU occlusion golden requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::
+    runGpuSegmentedOcclusionCulling() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto root =
+        sourceRoot() /
+        "test/golden/shadow_off";
+    const auto gpu =
+        renderCase(GoldenCase{
+            "gpu_occlusion_segmented",
+            "gpu_occlusion_segmented",
+            root, goldenWidth,
+            goldenHeight});
+    const auto forced_cpu =
+        renderCase(GoldenCase{
+            "gpu_occlusion_segmented_force_cpu",
+            "gpu_occlusion_segmented_force_cpu",
+            root, goldenWidth,
+            goldenHeight});
+
+    REQUIRE(
+        gpu.gpu_selected_segment_counts ==
+        std::vector<std::uint32_t>{1, 1});
+    REQUIRE(
+        forced_cpu
+            .gpu_selected_segment_counts ==
+        std::vector<std::uint32_t>{1, 1});
+    REQUIRE(
+        gpu.gpu_selected_segment_materials
+            .size() == 2);
+    REQUIRE(
+        gpu.gpu_selected_segment_materials[0] !=
+        gpu.gpu_selected_segment_materials[1]);
+    REQUIRE(
+        gpu.image.pixels ==
+        forced_cpu.image.pixels);
+    REQUIRE(
+        gpu.gpu_draw_command_population ==
+        FrameGraphResourceContainer::
+            HostBufferPopulation{3, 3});
+    REQUIRE(
+        gpu.gpu_draw_bounds_population ==
+        FrameGraphResourceContainer::
+            HostBufferPopulation{3, 3});
+    REQUIRE(
+        gpu.gpu_draw_segment_population ==
+        FrameGraphResourceContainer::
+            HostBufferPopulation{4, 4});
+
+    const auto cull = std::find(
+        gpu.plan_order.begin(),
+        gpu.plan_order.end(),
+        "occlusion_cull");
+    const auto geometry = std::find(
+        gpu.plan_order.begin(),
+        gpu.plan_order.end(),
+        "gbuffer_pass");
+    REQUIRE(cull != gpu.plan_order.end());
+    REQUIRE(
+        geometry !=
+        gpu.plan_order.end());
+    REQUIRE(cull < geometry);
+#else
+    SKIP(
+        "GPU segmented occlusion golden requires the runtime shader compiler");
 #endif
 }
 

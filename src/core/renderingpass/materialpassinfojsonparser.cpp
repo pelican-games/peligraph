@@ -117,6 +117,25 @@ void validateGpuDrawSourceBufferContract(
             "' gpu_draw_source count value exceeds buffer '" +
             source.count + "'");
     }
+    if (source.layout ==
+        GpuDrawSourceLayout::
+            draw_queue_segments_v1) {
+        const auto &segments =
+            requireGpuDrawBuffer(
+                definitions, source.segments,
+                "segments", pass_name);
+        if (segments.host_source !=
+            FrameGraphHostBufferSource::
+                scene_draw_segments_v1) {
+            throw std::runtime_error(
+                "Material pass '" +
+                std::string{pass_name} +
+                "' gpu_draw_source segments buffer '" +
+                source.segments +
+                "' requires host_source "
+                "'scene_draw_segments_v1'");
+        }
+    }
 }
 
 } // namespace
@@ -194,6 +213,8 @@ parseGpuDrawSourceFromJson(
             field.key() != "max_draw_count" &&
             field.key() != "command_offset" &&
             field.key() != "count_offset" &&
+            field.key() != "layout" &&
+            field.key() != "segments" &&
             field.key() != "fallback" &&
             field.key() != "execution") {
             throw std::runtime_error(
@@ -224,6 +245,34 @@ parseGpuDrawSourceFromJson(
             std::string{context} +
                 " gpu_draw_source"),
     };
+    if (found->contains("layout")) {
+        const auto layout = parseStringField(
+            *found, "layout",
+            std::string{context} +
+                " gpu_draw_source");
+        if (layout == "fixed_state_v1") {
+            result.layout =
+                GpuDrawSourceLayout::
+                    fixed_state_v1;
+        } else if (
+            layout ==
+            "draw_queue_segments_v1") {
+            result.layout =
+                GpuDrawSourceLayout::
+                    draw_queue_segments_v1;
+        } else {
+            throw std::runtime_error(
+                std::string{context} +
+                " gpu_draw_source has unknown layout '" +
+                layout + "'");
+        }
+    }
+    if (found->contains("segments")) {
+        result.segments = parseStringField(
+            *found, "segments",
+            std::string{context} +
+                " gpu_draw_source");
+    }
     if (result.commands.empty() ||
         result.count.empty()) {
         throw std::runtime_error(
@@ -234,6 +283,29 @@ parseGpuDrawSourceFromJson(
         throw std::runtime_error(
             std::string{context} +
             " gpu_draw_source commands and count buffers must differ");
+    }
+    if (result.layout ==
+            GpuDrawSourceLayout::
+                fixed_state_v1 &&
+        !result.segments.empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source fixed_state_v1 must not declare segments");
+    }
+    if (result.layout ==
+            GpuDrawSourceLayout::
+                draw_queue_segments_v1 &&
+        result.segments.empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source draw_queue_segments_v1 requires segments");
+    }
+    if (!result.segments.empty() &&
+        (result.segments == result.commands ||
+         result.segments == result.count)) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source buffer names must be distinct");
     }
     if (result.max_draw_count == 0) {
         throw std::runtime_error(
@@ -283,17 +355,34 @@ parseGpuDrawSourceFromJson(
     }
     const auto range =
         pass_json.find("material_range");
-    if (range == pass_json.end() ||
-        !range->is_object() ||
-        !range->contains("count") ||
-        parseUint32Field(
-            *range, "count",
-            std::string{context} +
-                " material_range") != 1) {
+    const auto range_count =
+        range != pass_json.end() &&
+                range->is_object() &&
+                range->contains("count")
+            ? std::optional{
+                  parseUint32Field(
+                      *range, "count",
+                      std::string{context} +
+                          " material_range")}
+            : std::nullopt;
+    if (result.layout ==
+            GpuDrawSourceLayout::
+                fixed_state_v1 &&
+        range_count !=
+            std::optional<std::uint32_t>{1}) {
         throw std::runtime_error(
             std::string{context} +
-            " gpu_draw_source requires material_range.count = 1 "
-            "to pin one fixed pipeline/material state");
+            " gpu_draw_source fixed_state_v1 requires "
+            "material_range.count = 1");
+    }
+    if (result.layout ==
+            GpuDrawSourceLayout::
+                draw_queue_segments_v1 &&
+        (!range_count || *range_count == 0)) {
+        throw std::runtime_error(
+            std::string{context} +
+            " gpu_draw_source draw_queue_segments_v1 requires "
+            "a non-empty material_range");
     }
     return result;
 }

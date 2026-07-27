@@ -25,6 +25,13 @@ TEST_CASE(
     GoldenHarness::runGpuOcclusionCulling();
 }
 
+TEST_CASE(
+    "depth pyramid compacts multiple CPU-bound material state segments",
+    "[golden][headless][wp210][occlusion][segments]") {
+    GoldenHarness::
+        runGpuSegmentedOcclusionCulling();
+}
+
 TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
           "[golden][headless][byte-exact]") {
     GoldenHarness::runRgba8Hashes();

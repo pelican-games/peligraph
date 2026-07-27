@@ -811,9 +811,6 @@ CompiledDrawQueueSet CompiledDrawQueueSet::combine(
             for (auto &range : compiled.draw_ranges[index]) {
                 range.offset += base * sizeof(RenderCommand);
             }
-            auto &all = result.all_ranges_[compiled.sort_view_index][index];
-            all.insert(all.end(), compiled.draw_ranges[index].begin(),
-                       compiled.draw_ranges[index].end());
         }
         compiled.material_filters.reserve(
             compiled.queue.material_filters_.size());
@@ -836,19 +833,6 @@ CompiledDrawQueueSet CompiledDrawQueueSet::combine(
             }
             auto &published =
                 result.material_filters_[filter_index];
-            for (const auto visibility :
-                 {DrawQueueView::third_person,
-                  DrawQueueView::first_person}) {
-                const auto index =
-                    viewIndex(visibility);
-                auto &all =
-                    published.all_ranges
-                        [compiled.sort_view_index][index];
-                all.insert(
-                    all.end(),
-                    filtered.draw_ranges[index].begin(),
-                    filtered.draw_ranges[index].end());
-            }
             if (compiled.sort_view_index == 0) {
                 published.resolution.resolved_draw_count +=
                     source.resolution.resolved_draw_count;
@@ -873,6 +857,135 @@ CompiledDrawQueueSet CompiledDrawQueueSet::combine(
             }
             compiled.material_filters.push_back(
                 std::move(filtered));
+        }
+
+        const auto publish_ranges =
+            [&](std::vector<DrawIndirectInfo> &ranges,
+                DrawQueueView visibility,
+                std::uint32_t filter_index) {
+                for (auto &range : ranges) {
+                    if (range.offset %
+                            sizeof(RenderCommand) !=
+                        0) {
+                        throw std::runtime_error(
+                            "compiled draw queue range is not command aligned");
+                    }
+                    if (result.scene_draw_segments_.size() >=
+                        noSceneDrawSegmentIndex) {
+                        throw std::overflow_error(
+                            "scene draw segment count exceeds uint32");
+                    }
+                    if (range.draw_count >
+                        std::numeric_limits<std::uint32_t>::max() -
+                            result.scene_draw_output_command_capacity_) {
+                        throw std::overflow_error(
+                            "scene draw segment output capacity exceeds uint32");
+                    }
+                    const auto segment_index =
+                        static_cast<std::uint32_t>(
+                            result.scene_draw_segments_.size());
+                    const auto first_command =
+                        range.offset /
+                        sizeof(RenderCommand);
+                    if (first_command >
+                        std::numeric_limits<std::uint32_t>::max()) {
+                        throw std::overflow_error(
+                            "scene draw segment source offset exceeds uint32");
+                    }
+                    range.scene_segment_index =
+                        segment_index;
+                    result.scene_draw_segments_.push_back(
+                        SceneDrawSegmentV1{
+                            .source_first_command =
+                                static_cast<std::uint32_t>(
+                                    first_command),
+                            .command_capacity =
+                                range.draw_count,
+                            .output_first_command =
+                                result.scene_draw_output_command_capacity_,
+                            .output_count_index =
+                                segment_index,
+                            .sort_view_index =
+                                compiled.sort_view_index,
+                            .phase =
+                                compiled.phase ==
+                                        DrawQueuePhase::opaque
+                                    ? 0U
+                                    : 1U,
+                            .visibility_view =
+                                visibility ==
+                                        DrawQueueView::third_person
+                                    ? 0U
+                                    : 1U,
+                            .material_filter_index =
+                                filter_index,
+                        });
+                    result.scene_draw_output_command_capacity_ +=
+                        range.draw_count;
+                }
+            };
+        for (const auto visibility :
+             {DrawQueueView::third_person,
+              DrawQueueView::first_person}) {
+            publish_ranges(
+                compiled.draw_ranges[
+                    viewIndex(visibility)],
+                visibility,
+                noSceneDrawSegmentIndex);
+        }
+        for (std::size_t filter_index = 0;
+             filter_index <
+             compiled.material_filters.size();
+             ++filter_index) {
+            for (const auto visibility :
+                 {DrawQueueView::third_person,
+                  DrawQueueView::first_person}) {
+                publish_ranges(
+                    compiled.material_filters[
+                        filter_index]
+                        .draw_ranges[
+                            viewIndex(visibility)],
+                    visibility,
+                    static_cast<std::uint32_t>(
+                        filter_index));
+            }
+        }
+
+        for (const auto visibility :
+             {DrawQueueView::third_person,
+              DrawQueueView::first_person}) {
+            const auto index =
+                viewIndex(visibility);
+            auto &all =
+                result.all_ranges_[
+                    compiled.sort_view_index][index];
+            all.insert(
+                all.end(),
+                compiled.draw_ranges[index].begin(),
+                compiled.draw_ranges[index].end());
+        }
+        for (std::size_t filter_index = 0;
+             filter_index <
+             compiled.material_filters.size();
+             ++filter_index) {
+            auto &published =
+                result.material_filters_[filter_index];
+            for (const auto visibility :
+                 {DrawQueueView::third_person,
+                  DrawQueueView::first_person}) {
+                const auto index =
+                    viewIndex(visibility);
+                auto &all =
+                    published.all_ranges
+                        [compiled.sort_view_index][index];
+                const auto &ranges =
+                    compiled.material_filters[
+                        filter_index]
+                        .draw_ranges[index];
+                all.insert(
+                    all.end(),
+                    ranges.begin(), ranges.end());
+            }
         }
         result.variants_.push_back(std::move(compiled));
     }

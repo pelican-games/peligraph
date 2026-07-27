@@ -199,6 +199,7 @@ static_assert(sizeof(SceneDrawBoundsV1) == sizeof(float) * 8);
 struct SceneDrawCandidatesV1 {
     std::vector<vk::DrawIndexedIndirectCommand> commands;
     std::vector<SceneDrawBoundsV1> bounds;
+    std::vector<SceneDrawSegmentV1> segments;
 };
 
 struct DrawQueueSortView {
@@ -354,6 +355,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getIndirectBuf() const;
     SceneDrawCandidatesV1
     sceneDrawCandidatesForFrameGraph() const;
+    const SceneDrawSegmentV1 &
+    sceneDrawSegment(std::uint32_t index) const {
+        return compiled_draw_queue.sceneDrawSegment(index);
+    }
     const BufferWrapper &getObjectBuf() const;
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &
