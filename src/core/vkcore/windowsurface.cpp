@@ -142,6 +142,9 @@ std::string_view surfaceDeviceRebuildReasonName(
     case SurfaceDeviceRebuildReason::
         presentation_queue_not_created:
         return "presentation_queue_not_created";
+    case SurfaceDeviceRebuildReason::
+        presentation_completion_unavailable:
+        return "presentation_completion_unavailable";
     }
     return "unknown";
 }

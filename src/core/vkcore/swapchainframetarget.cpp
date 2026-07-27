@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <condition_variable>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -41,6 +42,79 @@ struct SwapchainWithFormat {
     bool capture_available = false;
     std::uint64_t surface_support_fingerprint = 0;
 };
+
+#ifndef NDEBUG
+std::optional<std::string>
+debugWsiFaultScriptFromEnvironment() {
+    constexpr auto name =
+        "PELICAN_TEST_WSI_FAULT_SCRIPT";
+#ifdef _WIN32
+    char *raw_value = nullptr;
+    std::size_t value_size = 0;
+    const auto error =
+        _dupenv_s(
+            &raw_value, &value_size, name);
+    std::unique_ptr<
+        char, decltype(&std::free)>
+        value{raw_value, &std::free};
+    if (error != 0) {
+        throw std::runtime_error(
+            "failed to read PELICAN_TEST_WSI_FAULT_SCRIPT");
+    }
+    if (value == nullptr || value.get()[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string{value.get()};
+#else
+    const auto *value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string{value};
+#endif
+}
+#endif
+
+std::optional<vk::Result>
+takeInjectedWsiFault(
+    WindowWsiFaultScriptForTesting *script,
+    WindowWsiFaultContext context) {
+#ifndef NDEBUG
+    if (script != nullptr) {
+        if (const auto result =
+                script->take(context)) {
+            LOG_WARNING(
+                logger,
+                "WSI fault injected: call={} result={} surface_epoch={} "
+                "swapchain_epoch={} attempt={}",
+                windowWsiCallSiteName(context.site),
+                vk::to_string(*result),
+                context.surface_epoch,
+                context.swapchain_epoch,
+                context.recovery_attempt);
+            return result;
+        }
+    }
+#else
+    (void)script;
+    (void)context;
+#endif
+    return std::nullopt;
+}
+
+void throwInjectedWsiFault(
+    WindowWsiFaultScriptForTesting *script,
+    WindowWsiFaultContext context) {
+    const auto result =
+        takeInjectedWsiFault(script, context);
+    if (!result) return;
+    throw vk::SystemError{
+        vk::make_error_code(*result),
+        "injected WSI fault at " +
+            std::string{
+                windowWsiCallSiteName(
+                    context.site)}};
+}
 
 std::uint64_t hashWord(
     std::uint64_t hash, std::uint64_t value) noexcept {
@@ -150,7 +224,10 @@ SwapchainWithFormat createSwapchain(
     std::uint32_t graphics_queue_family,
     std::uint32_t presentation_queue_family,
     vk::SwapchainKHR old_swapchain,
-    WindowWsiCallSite *active_call_site) {
+    WindowWsiCallSite *active_call_site,
+    WindowWsiFaultScriptForTesting
+        *fault_script,
+    WindowWsiFaultContext fault_context) {
     if (framebuffer.extent.width == 0 ||
         framebuffer.extent.height == 0) {
         throw std::invalid_argument(
@@ -161,6 +238,10 @@ SwapchainWithFormat createSwapchain(
         *active_call_site =
             WindowWsiCallSite::surface_support_query;
     }
+    fault_context.site =
+        WindowWsiCallSite::surface_support_query;
+    throwInjectedWsiFault(
+        fault_script, fault_context);
     const auto capabilities =
         physical_device.getSurfaceCapabilitiesKHR(surface);
     auto formats =
@@ -267,6 +348,10 @@ SwapchainWithFormat createSwapchain(
         *active_call_site =
             WindowWsiCallSite::swapchain_create;
     }
+    fault_context.site =
+        WindowWsiCallSite::swapchain_create;
+    throwInjectedWsiFault(
+        fault_script, fault_context);
     auto swapchain =
         device.createSwapchainKHRUnique(create_info);
     return SwapchainWithFormat{
@@ -626,6 +711,9 @@ struct SwapchainFrameTarget::Impl {
     VulkanManageCore &core;
     Window &window;
     WindowSurfaceFactory surface_factory;
+    std::unique_ptr<
+        WindowWsiFaultScriptForTesting>
+        wsi_fault_script;
     Camera &camera;
     vk::Device device;
     vk::PhysicalDevice physical_device;
@@ -707,6 +795,19 @@ struct SwapchainFrameTarget::Impl {
             std::make_shared<FrameTargetFrameCleanup>(
                 this, &Impl::cleanupAbandonedFrame);
 
+#ifndef NDEBUG
+        if (const auto script =
+                debugWsiFaultScriptFromEnvironment()) {
+            wsi_fault_script =
+                WindowWsiFaultScriptForTesting::
+                    parse(*script);
+            LOG_INFO(
+                logger,
+                "WSI fault injection enabled: rules={}",
+                wsi_fault_script->remainingCount());
+        }
+#endif
+
         const auto framebuffer =
             window.framebufferSnapshot();
         if (framebuffer.extent.width == 0 ||
@@ -786,6 +887,16 @@ struct SwapchainFrameTarget::Impl {
         worker.request_stop();
         worker_wakeup.notify_all();
         if (worker.joinable()) worker.join();
+
+#ifndef NDEBUG
+        if (wsi_fault_script != nullptr) {
+            LOG_INFO(
+                logger,
+                "WSI fault injection summary: injected={} remaining={}",
+                wsi_fault_script->injectedCount(),
+                wsi_fault_script->remainingCount());
+        }
+#endif
 
         try {
             pollRetiredEpochs();
@@ -888,7 +999,16 @@ struct SwapchainFrameTarget::Impl {
                     ->presentation_queue_family,
                 request.old_epoch->swapchain
                     .swapchain.get(),
-                active_call_site);
+                active_call_site,
+                wsi_fault_script.get(),
+                WindowWsiFaultContext{
+                    .surface_epoch =
+                        request.surface_epoch->id,
+                    .swapchain_epoch =
+                        request.epoch_id,
+                    .recovery_attempt =
+                        request.policy.attempt,
+                });
         } else {
             std::scoped_lock lock{
                 request.surface_epoch->host_access};
@@ -900,7 +1020,16 @@ struct SwapchainFrameTarget::Impl {
                 request.surface_epoch
                     ->presentation_queue_family,
                 {},
-                active_call_site);
+                active_call_site,
+                wsi_fault_script.get(),
+                WindowWsiFaultContext{
+                    .surface_epoch =
+                        request.surface_epoch->id,
+                    .swapchain_epoch =
+                        request.epoch_id,
+                    .recovery_attempt =
+                        request.policy.attempt,
+                });
         }
         // vkCreateSwapchainKHR success retires oldSwapchain immediately.
         // Preserve the new handle before creating any dependent object so a
@@ -914,6 +1043,19 @@ struct SwapchainFrameTarget::Impl {
                 WindowWsiCallSite::
                     dependent_resources;
         }
+        throwInjectedWsiFault(
+            wsi_fault_script.get(),
+            WindowWsiFaultContext{
+                .site =
+                    WindowWsiCallSite::
+                        dependent_resources,
+                .surface_epoch =
+                    request.surface_epoch->id,
+                .swapchain_epoch =
+                    request.epoch_id,
+                .recovery_attempt =
+                    request.policy.attempt,
+            });
         epoch->images =
             device.getSwapchainImagesKHR(
                 epoch->swapchain.swapchain.get());
@@ -1095,11 +1237,43 @@ struct SwapchainFrameTarget::Impl {
                     completion.failure_site =
                         WindowWsiCallSite::
                             surface_create;
+                    throwInjectedWsiFault(
+                        wsi_fault_script.get(),
+                        WindowWsiFaultContext{
+                            .site =
+                                WindowWsiCallSite::
+                                    surface_create,
+                            .surface_epoch =
+                                completion.request
+                                    .surface_epoch_id,
+                            .swapchain_epoch =
+                                completion.request
+                                    .epoch_id,
+                            .recovery_attempt =
+                                completion.request
+                                    .policy.attempt,
+                        });
                     auto prepared_surface =
                         surface_factory.create();
                     completion.failure_site =
                         WindowWsiCallSite::
                             surface_support_query;
+                    throwInjectedWsiFault(
+                        wsi_fault_script.get(),
+                        WindowWsiFaultContext{
+                            .site =
+                                WindowWsiCallSite::
+                                    surface_support_query,
+                            .surface_epoch =
+                                completion.request
+                                    .surface_epoch_id,
+                            .swapchain_epoch =
+                                completion.request
+                                    .epoch_id,
+                            .recovery_attempt =
+                                completion.request
+                                    .policy.attempt,
+                        });
                     const auto binding =
                         querySurfacePresentationQueue(
                             physical_device,
@@ -1256,11 +1430,56 @@ struct SwapchainFrameTarget::Impl {
             pending_abandonment.reset();
         }
         recovery->markSurfaceLost(observed_epoch);
+        const bool has_unproven_present =
+            std::any_of(
+                retired_epochs.begin(),
+                retired_epochs.end(),
+                [&](const auto &epoch) {
+                    return belongs_to_lost_surface(
+                               epoch) &&
+                           !epoch->surface_epoch
+                                ->base_retirement
+                                .mayRetire(
+                                    epoch->id,
+                                    epoch
+                                        ->ever_presented);
+                });
+        if (surfaceLossRequiresDeviceRebuild(
+                maintenance1,
+                has_unproven_present)) {
+            // Base Vulkan has no completion primitive for a present on a
+            // lost surface. Keeping that swapchain alive also keeps the
+            // native window associated with it, so a fresh-surface
+            // swapchain cannot legally be created on the same window.
+            // Preserve the bundle until device teardown and request that
+            // teardown instead of entering an endless
+            // VK_ERROR_NATIVE_WINDOW_IN_USE_KHR retry loop.
+            device_rebuild_reason =
+                SurfaceDeviceRebuildReason::
+                    presentation_completion_unavailable;
+            recovery->markDeviceLost();
+        }
     }
 
     void launchPendingPreparation(
         FramebufferExtentSnapshot framebuffer) {
         if (worker_busy) return;
+        if (recovery->kind() ==
+                WindowOutputStateKind::surface_lost &&
+            std::any_of(
+                retired_epochs.begin(),
+                retired_epochs.end(),
+                [](const auto &epoch) {
+                    return epoch != nullptr &&
+                           epoch->surface_epoch !=
+                               nullptr &&
+                           epoch->surface_epoch->lost;
+                })) {
+            // A native window may have only one non-retired swapchain. Wait
+            // until exact maintenance1 fences prove that every old-surface
+            // operation is complete and its swapchain/surface are destroyed.
+            return;
+        }
         auto policy =
             recovery->kind() ==
                     WindowOutputStateKind::
@@ -1361,6 +1580,13 @@ struct SwapchainFrameTarget::Impl {
                     if (gpu_complete &&
                         !present_complete &&
                         epoch->surface_epoch->lost) {
+                        if (maintenance1) {
+                            // Unlike the base fallback, the present fence can
+                            // still prove completion after SURFACE_LOST. Keep
+                            // polling so the old swapchain can be destroyed
+                            // before a fresh surface binds the native window.
+                            return false;
+                        }
                         // A successor reacquire is meaningful only within the
                         // same surface. Once that surface is lost, preserve
                         // unproven presentation objects until device teardown.
@@ -1838,14 +2064,38 @@ struct SwapchainFrameTarget::Impl {
         {
             std::scoped_lock lock{
                 epoch->host_access};
-            try {
-                acquired = device.acquireNextImageKHR(
-                    epoch->swapchain.swapchain.get(),
-                    nonblocking ? 0 : UINT64_MAX,
-                    acquire_semaphore);
-            } catch (const vk::SystemError &error) {
+            if (const auto fault =
+                    takeInjectedWsiFault(
+                        wsi_fault_script.get(),
+                        WindowWsiFaultContext{
+                            .site =
+                                WindowWsiCallSite::
+                                    acquire,
+                            .surface_epoch =
+                                epoch->surface_epoch->id,
+                            .swapchain_epoch =
+                                epoch->id,
+                            .recovery_attempt =
+                                recovery->attempt(),
+                        })) {
                 acquired.result =
-                    resultFromSystemError(error);
+                    *fault;
+            } else {
+                try {
+                    acquired =
+                        device.acquireNextImageKHR(
+                            epoch->swapchain
+                                .swapchain.get(),
+                            nonblocking
+                                ? 0
+                                : UINT64_MAX,
+                            acquire_semaphore);
+                } catch (
+                    const vk::SystemError &error) {
+                    acquired.result =
+                        resultFromSystemError(
+                            error);
+                }
             }
         }
         const auto decision =
@@ -2221,9 +2471,33 @@ struct SwapchainFrameTarget::Impl {
                             .presentKHR(
                                 present_info);
                 } catch (
-                    const vk::SystemError &error) {
+                    const vk::SystemError
+                        &error) {
                     present_result =
-                        resultFromSystemError(error);
+                        resultFromSystemError(
+                            error);
+                }
+                // Present errors still enqueue the semaphore wait operation.
+                // Perform the real call before overriding its returned result
+                // so Debug fault injection preserves the production lifetime
+                // contract (in particular the maintenance1 present fence).
+                if (const auto fault =
+                        takeInjectedWsiFault(
+                            wsi_fault_script.get(),
+                            WindowWsiFaultContext{
+                                .site =
+                                    WindowWsiCallSite::
+                                        present,
+                                .surface_epoch =
+                                    epoch
+                                        ->surface_epoch
+                                        ->id,
+                                .swapchain_epoch =
+                                    epoch->id,
+                                .recovery_attempt =
+                                    recovery->attempt(),
+                            })) {
+                    present_result = *fault;
                 }
             }
             const auto decision =

@@ -155,6 +155,24 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP217 surface loss requires device rebuild only for an unprovable base present",
+    "[wp217][wsi][surface][retirement]") {
+    CHECK_FALSE(surfaceLossRequiresDeviceRebuild(
+        true, true));
+    CHECK_FALSE(surfaceLossRequiresDeviceRebuild(
+        false, false));
+    CHECK(surfaceLossRequiresDeviceRebuild(
+        false, true));
+    CHECK(
+        surfaceDeviceRebuildReasonName(
+            SurfaceDeviceRebuildReason::
+                presentation_completion_unavailable)
+                .compare(
+                    "presentation_completion_unavailable") ==
+        0);
+}
+
+TEST_CASE(
     "WP216 zero extent suspends and one positive revision resumes preparation",
     "[wp216][wsi][zero-extent]") {
     WindowOutputRecoveryStateMachine state{7, key(1)};
@@ -538,6 +556,75 @@ TEST_CASE(
             vk::Result::eErrorInitializationFailed)
             .action ==
         WindowWsiRecoveryAction::retry_later);
+}
+
+TEST_CASE(
+    "WP217 ordered WSI fault scripts consume only the next matching boundary",
+    "[wp217][wsi][fault][script]") {
+    auto script =
+        WindowWsiFaultScriptForTesting::parse(
+            " acquire:surface_lost, "
+            "surface_create:out_of_host_memory, "
+            "present:out_of_date ");
+    REQUIRE(script);
+    CHECK(script->injectedCount() == 0);
+    CHECK(script->remainingCount() == 3);
+
+    CHECK_FALSE(
+        script->take(WindowWsiFaultContext{
+            .site =
+                WindowWsiCallSite::
+                    surface_support_query}));
+    const auto acquire =
+        script->take(WindowWsiFaultContext{
+            .site = WindowWsiCallSite::acquire,
+            .surface_epoch = 3,
+            .swapchain_epoch = 7,
+            .recovery_attempt = 0,
+        });
+    REQUIRE(acquire);
+    CHECK(*acquire ==
+          vk::Result::eErrorSurfaceLostKHR);
+    CHECK(script->injectedCount() == 1);
+
+    CHECK_FALSE(
+        script->take(WindowWsiFaultContext{
+            .site = WindowWsiCallSite::present}));
+    const auto surface_create =
+        script->take(WindowWsiFaultContext{
+            .site =
+                WindowWsiCallSite::surface_create});
+    REQUIRE(surface_create);
+    CHECK(*surface_create ==
+          vk::Result::eErrorOutOfHostMemory);
+
+    const auto present =
+        script->take(WindowWsiFaultContext{
+            .site = WindowWsiCallSite::present});
+    REQUIRE(present);
+    CHECK(*present ==
+          vk::Result::eErrorOutOfDateKHR);
+    CHECK(script->remainingCount() == 0);
+}
+
+TEST_CASE(
+    "WP217 WSI fault scripts reject ambiguous rules",
+    "[wp217][wsi][fault][script]") {
+    REQUIRE_THROWS_AS(
+        WindowWsiFaultScriptForTesting::parse(""),
+        std::invalid_argument);
+    REQUIRE_THROWS_AS(
+        WindowWsiFaultScriptForTesting::parse(
+            "unknown:surface_lost"),
+        std::invalid_argument);
+    REQUIRE_THROWS_AS(
+        WindowWsiFaultScriptForTesting::parse(
+            "acquire:success"),
+        std::invalid_argument);
+    REQUIRE_THROWS_AS(
+        WindowWsiFaultScriptForTesting::parse(
+            "acquire:surface_lost,"),
+        std::invalid_argument);
 }
 
 TEST_CASE(

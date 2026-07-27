@@ -1,9 +1,13 @@
 #include "swapchainrecovery.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 namespace Pelican {
 
@@ -24,6 +28,13 @@ bool BasePresentRetirementTracker::mayRetire(
     return !ever_presented ||
            retired_epoch <
                successor_completion_watermark_;
+}
+
+bool surfaceLossRequiresDeviceRebuild(
+    bool exact_present_retirement,
+    bool has_unproven_present) noexcept {
+    return !exact_present_retirement &&
+           has_unproven_present;
 }
 
 WsiResultClass classifyWsiResult(
@@ -183,6 +194,181 @@ std::string_view windowWsiRecoveryActionName(
         return "fatal";
     }
     return "unknown";
+}
+
+namespace {
+
+struct WindowWsiFaultRule {
+    WindowWsiCallSite site =
+        WindowWsiCallSite::acquire;
+    vk::Result result =
+        vk::Result::eErrorUnknown;
+};
+
+std::string_view trimFaultToken(
+    std::string_view value) noexcept {
+    while (!value.empty() &&
+           std::isspace(
+               static_cast<unsigned char>(
+                   value.front())) != 0) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() &&
+           std::isspace(
+               static_cast<unsigned char>(
+                   value.back())) != 0) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
+WindowWsiCallSite parseFaultCallSite(
+    std::string_view value) {
+    if (value == "acquire") {
+        return WindowWsiCallSite::acquire;
+    }
+    if (value == "present") {
+        return WindowWsiCallSite::present;
+    }
+    if (value == "surface_create") {
+        return WindowWsiCallSite::surface_create;
+    }
+    if (value == "surface_support_query") {
+        return WindowWsiCallSite::
+            surface_support_query;
+    }
+    if (value == "swapchain_create") {
+        return WindowWsiCallSite::swapchain_create;
+    }
+    if (value == "dependent_resources") {
+        return WindowWsiCallSite::
+            dependent_resources;
+    }
+    throw std::invalid_argument(
+        "unknown WSI fault call site: " +
+        std::string{value});
+}
+
+vk::Result parseFaultResult(
+    std::string_view value) {
+    if (value == "surface_lost") {
+        return vk::Result::eErrorSurfaceLostKHR;
+    }
+    if (value == "out_of_date") {
+        return vk::Result::eErrorOutOfDateKHR;
+    }
+    if (value == "out_of_host_memory") {
+        return vk::Result::eErrorOutOfHostMemory;
+    }
+    if (value == "out_of_device_memory") {
+        return vk::Result::eErrorOutOfDeviceMemory;
+    }
+    if (value == "device_lost") {
+        return vk::Result::eErrorDeviceLost;
+    }
+    if (value == "initialization_failed") {
+        return vk::Result::
+            eErrorInitializationFailed;
+    }
+    throw std::invalid_argument(
+        "unknown WSI fault result: " +
+        std::string{value});
+}
+
+} // namespace
+
+struct WindowWsiFaultScriptForTesting::State {
+    mutable std::mutex mutex;
+    std::vector<WindowWsiFaultRule> rules;
+    std::size_t next = 0;
+};
+
+WindowWsiFaultScriptForTesting::
+    WindowWsiFaultScriptForTesting(
+        std::unique_ptr<State> state) noexcept
+    : state_{std::move(state)} {}
+
+WindowWsiFaultScriptForTesting::
+    ~WindowWsiFaultScriptForTesting() = default;
+
+std::unique_ptr<WindowWsiFaultScriptForTesting>
+WindowWsiFaultScriptForTesting::parse(
+    std::string_view script) {
+    auto state = std::make_unique<State>();
+    while (!script.empty()) {
+        const auto separator = script.find(',');
+        const auto rule_text = trimFaultToken(
+            script.substr(0, separator));
+        if (rule_text.empty()) {
+            throw std::invalid_argument(
+                "WSI fault script contains an empty rule");
+        }
+        const auto assignment =
+            rule_text.find(':');
+        if (assignment == std::string_view::npos ||
+            assignment == 0 ||
+            assignment + 1 >= rule_text.size() ||
+            rule_text.find(':', assignment + 1) !=
+                std::string_view::npos) {
+            throw std::invalid_argument(
+                "WSI fault rule must be call:result: " +
+                std::string{rule_text});
+        }
+        state->rules.push_back(
+            WindowWsiFaultRule{
+                .site = parseFaultCallSite(
+                    trimFaultToken(
+                        rule_text.substr(
+                            0, assignment))),
+                .result = parseFaultResult(
+                    trimFaultToken(
+                        rule_text.substr(
+                            assignment + 1))),
+            });
+        if (separator == std::string_view::npos) {
+            script = {};
+        } else {
+            if (separator + 1 == script.size()) {
+                throw std::invalid_argument(
+                    "WSI fault script contains an empty rule");
+            }
+            script.remove_prefix(separator + 1);
+        }
+    }
+    if (state->rules.empty()) {
+        throw std::invalid_argument(
+            "WSI fault script must contain at least one rule");
+    }
+    return std::unique_ptr<
+        WindowWsiFaultScriptForTesting>{
+        new WindowWsiFaultScriptForTesting{
+            std::move(state)}};
+}
+
+std::optional<vk::Result>
+WindowWsiFaultScriptForTesting::take(
+    WindowWsiFaultContext context) noexcept {
+    std::scoped_lock lock{state_->mutex};
+    if (state_->next >= state_->rules.size() ||
+        state_->rules[state_->next].site !=
+            context.site) {
+        return std::nullopt;
+    }
+    return state_->rules[state_->next++].result;
+}
+
+std::size_t
+WindowWsiFaultScriptForTesting::
+    injectedCount() const noexcept {
+    std::scoped_lock lock{state_->mutex};
+    return state_->next;
+}
+
+std::size_t
+WindowWsiFaultScriptForTesting::
+    remainingCount() const noexcept {
+    std::scoped_lock lock{state_->mutex};
+    return state_->rules.size() - state_->next;
 }
 
 SwapchainRecoveryAnchorKind

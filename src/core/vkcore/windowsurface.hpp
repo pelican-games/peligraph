@@ -38,6 +38,7 @@ enum class SurfaceDeviceRebuildReason {
     none,
     no_presentation_support,
     presentation_queue_not_created,
+    presentation_completion_unavailable,
 };
 
 struct SurfaceQueueBinding {

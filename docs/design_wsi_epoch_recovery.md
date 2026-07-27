@@ -424,13 +424,17 @@ surface lost 後の旧 epoch は表示に再利用できない。処理順は次
 
 1. active root を `surface_lost` とし、新 acquire を止める
 2. 旧 epoch の submit fence をnonblocking pollし、完了したframe slotからleaseを解放
-3. 旧 swapchainをretireし、未証明present semaphoreを§9のquarantineへ移す
-4. 旧 swapchainを破棄してから旧 surfaceを破棄
-5. `WindowSurfaceFactory` でfresh surfaceを作る
-6. 現在の physical device / created queuesに対するsupportを再照会
-7. 同じdeviceで成立すれば新`SurfaceEpoch`、target candidate、
+3. maintenance1が使える場合はpresent fenceもnonblocking pollし、submitとpresentの
+   双方が完了するまでfresh surface作成を開始しない
+4. 完了証明後に旧 swapchainを破棄し、それから旧 surfaceを破棄
+5. maintenance1非対応かつ未証明presentが残る場合は、旧epoch bundleを
+   §9のquarantineへ移して`device_rebuild_required`とする。旧swapchainを保持したまま
+   同じnative windowへfresh-surface swapchainを作る再試行は禁止する
+6. `WindowSurfaceFactory` でfresh surfaceを作る
+7. 現在の physical device / created queuesに対するsupportを再照会
+8. 同じdeviceで成立すれば新`SurfaceEpoch`、target candidate、
   `SwapchainEpoch`をprepareして一回publish
-8. 成立しなければ`device_rebuild_required`
+9. 成立しなければ`device_rebuild_required`
 
 surface 作成自体に失敗した場合も、旧 surfaceへ戻らない。
 `unavailable_retry` のまま新しい window revision / bounded backoff で再試行する。
@@ -481,7 +485,7 @@ retired / out-of-date / surface-lost時にもresource破棄を証明できるこ
 
 ### 9.3 base Vulkan fallback
 
-maintenance1非対応deviceでは、旧epochを即座に破棄しない。successor epochで
+maintenance1非対応deviceの通常のswapchain交換では、旧epochを即座に破棄しない。successor epochで
 一度presentしたimageを再acquireできた時点を「successorの最初のpresent完了」の
 証明とし、それ以前のretired epochをまとめて退役できるwatermarkを進める。
 これはpresent completion fenceを持たないbase Vulkanで、旧swapchainのpresent
@@ -491,6 +495,10 @@ successorによる証明を得られないままtarget teardown / surface-lost�
 未証明present semaphoreだけをepochから切り離して破棄順を誤るより、
 presentationに関係する旧epoch bundle全体を
 `PresentationResourceQuarantine`へmoveし、device teardownまで保持する。
+surface-lostではfresh surfaceのsuccessor acquireを先に作れず、native windowは
+旧non-retired swapchainに関連付いたままなので、未証明presentがあるflat targetは
+`presentation_completion_unavailable`を理由に`device_rebuild_required`へ遷移する。
+同じlogical device上で`VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`を繰り返さない。
 
 - 通常のresize / SUBOPTIMALではsuccessor reacquireで回収し、
   process-lifetime quarantineにしない
@@ -698,9 +706,22 @@ old/candidate surface identityの非再利用、call orderを固定する。
 
 `vkCreateSwapchainKHR`前後のrollback境界は別の純粋tableで固定する。
 create成功前はprevious swapchain、成功後にdependent resourceが失敗した場合は
-replacement swapchainだけがretry anchorである。実Vulkanでのfault注入は
-driver/validation固有の統合gate、RDP/display/DPIは§14.5のmanual gateとして
-pure protocol testと区別する。
+replacement swapchainだけがretry anchorである。
+
+実Vulkan境界にはDebug buildだけが読む順序付き
+`PELICAN_TEST_WSI_FAULT_SCRIPT=call:result,...`を接続する。次のruleと一致したcall site
+だけをmutex下で一度消費し、surface / swapchain epochとretry attemptをログへ残す。
+acquire / present / surface create / support query / swapchain create /
+dependent resourcesを対象とし、Release buildはscriptを構築しない。present注入は
+実`vkQueuePresentKHR`を呼んだ後に返却結果を上書きし、present semaphore waitと
+maintenance1 fenceの寿命契約を壊さない。
+
+Windows CTest `wsi_fault_window_player`は通常の`pelican_player`へ6 faultを一processで
+順に注入し、factory call数、包含されたprepare failure、2回のfresh-surface publish、
+script完全消費、validation / stderr / `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR` 0件を固定する。
+windowed `--frames`の明示値をlogical loop上限として使うため、専用player executableや
+無制限window待機は増やさない。RDP/display/DPIは§14.5のmanual gateとして
+pure protocol / live injected gateと区別する。
 
 ### 14.3 Vulkan integration
 
@@ -709,7 +730,11 @@ pure protocol testと区別する。
 - format path fixture(SRGB / UNORM test override)でtarget plan /
   output pipeline fingerprintが追従
 - maintenance1対応deviceでpresent fence前に旧semaphoreを破棄しない
-- 非対応fixtureで未証明semaphoreだけquarantineされる
+- surface lostではpresent fence完了前にfresh surfaceをbindせず、完了後に回復する
+- 非対応fixtureで未証明epoch bundleがquarantineされ、
+  `presentation_completion_unavailable`のdevice rebuild要求になる
+- ordered live fault CTestでsurface create / query / swapchain / dependent failureを
+  一process内で通し、`VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`とvalidation errorが0
 - `device.waitIdle()` / `glfwWaitEvents()` がrecovery traceに出ない
 - hot reloadとresizeを同frameに起こし、単一root CASまたはstale retry
 - ASan / validation / repeated faultでtoken、epoch、registry leaseのleakなし
@@ -760,6 +785,7 @@ pure protocol testと区別する。
 - `SurfaceLostKHRError`を含むfresh surface recreation
 - physical device / created queue support再検証
 - `device_rebuild_required` / optional mirror disable
+- Debug ordered live fault injection / Windows CTest
 - RDP / display切替のplatform gate
 - A-F5を閉じる
 
@@ -779,6 +805,8 @@ WP217完了前に「surface lost対応済み」と表示しない。
 - [`vkCreateSwapchainKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateSwapchainKHR.html)
   / [`VkSwapchainCreateInfoKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainCreateInfoKHR.html)
   — native windowのactive swapchain制約とold swapchain retirement
+- [`vkQueuePresentKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html)
+  — surface-lostでもpresent semaphore waitがqueue operationとしてenqueueされる契約
 - [`vkDestroySwapchainKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroySwapchainKHR.html)
   — acquired image operation完了とpresentation engine lifetime
 - [GLFW Vulkan reference](https://www.glfw.org/docs/latest/vulkan_guide.html)

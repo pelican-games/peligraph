@@ -104,7 +104,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP214 | 版の単一化 B — physics service V1 の削除 | ✅ 完了（2026-07-26、archive） |
 | WP215 | transactional window output root / frame token | 実装済み |
 | WP216 | nonblocking SwapchainEpoch / XR mirror retirement | 実装済み・XR実機 gate待ち |
-| WP217 | SurfaceEpoch recreation / present support revalidation | 実装済み・manual platform gate待ち |
+| WP217 | SurfaceEpoch recreation / present support revalidation | 実装済み・live fault gate済み・manual platform gate待ち |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -571,7 +571,9 @@ global waitとmain-loop停止を除く。
   未作成queueまたはphysical device非対応は理由付き
   `device_rebuild_required`
 - base Vulkanのsuccessor reacquire証明をsurfaceごとに分離し、
-  lost surfaceの未証明present資源はGPU完了後にquarantine
+  lost surfaceの未証明present資源はGPU完了後にquarantine。
+  fresh swapchainを同じnative windowへ重ねず
+  `presentation_completion_unavailable`のdevice rebuild要求にする
 - state / retry / zero extentのsurface domain保持、RPC診断、
   pure queue decision table testを実装済み
 - WSI準備中にpresentation frameをskipした場合も、開始済みのImGui frameを
@@ -584,6 +586,15 @@ global waitとmain-loop停止を除く。
   surface identity非再利用、呼び出し順、surface-domain retryを固定
 - `vkCreateSwapchainKHR`成功前はprevious、成功後のdependent failureでは
   replacementだけを合法なretry anchorとするcutover tableをproductionへ接続
+- Debug専用の順序付きWSI fault scriptを実acquire / present / preparation workerへ接続。
+  presentは実API呼び出し後に結果を注入し、maintenance1 fenceの完了まで旧surfaceを
+  nonblocking pollしてからfresh surfaceを作る
+- 通常の`pelican_player`を使うWindows `wsi_fault_window_player` CTestで、
+  acquire→surface作成失敗→support lost→swapchain lost→dependent OOM→present lostを
+  一processで通し、6注入完全消費、factory 5回、prepare failure 4回、
+  fresh-surface publish 2回、validation / native-window-in-use / stderr 0件を確認
+- explicit `--frames`をwindowed logical loopの有限gateにも使い、専用の大型test executableを
+  追加せずlive smokeを自動終了可能にした
 - XR mirrorは理由付き`unavailable(surface_lost)`をそのlogical frameだけdropし、
   terminal resultだけをdisableするresult policyを使用
 - 実機のRDP接続・切断、display移動、DPI変更による

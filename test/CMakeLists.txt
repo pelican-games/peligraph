@@ -1316,6 +1316,24 @@ pelican_define_test(submissionlifetime_test pelican_core)
 pelican_define_test(outputcompilefacts_test pelican_core)
 pelican_define_test(frametarget_test pelican_core)
 pelican_define_test(swapchainrecovery_test pelican_core)
+if(WIN32)
+    add_test(
+        NAME wsi_fault_window_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/wsi_fault_window
+            -DCONFIG=$<CONFIG>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wsi_fault_window.cmake
+    )
+    set_tests_properties(
+        wsi_fault_window_player
+        PROPERTIES
+            TIMEOUT 180
+            RESOURCE_LOCK pelican_gpu
+            LABELS gpu)
+endif()
 pelican_define_test(texturereload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(materialvaluesreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_materialvaluesreload_test PRIVATE

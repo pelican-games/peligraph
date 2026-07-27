@@ -471,6 +471,17 @@ void Loop::run() {
         requestF11CaptureIfNeeded(modules.renderdoc_capture, xr_frame);
     };
 
+    std::uint32_t interactive_frame_count = 0;
+    const auto windowFrameLimitReached = [&] {
+        if (!launch_config.headless_frames_explicit ||
+            launch_config.headless_frames == 0) {
+            return false;
+        }
+        ++interactive_frame_count;
+        return interactive_frame_count >=
+               launch_config.headless_frames;
+    };
+
     while (true) {
         if (!window.process())
             break;
@@ -538,6 +549,9 @@ void Loop::run() {
                         0.0,
                     });
                 }
+                if (windowFrameLimitReached()) {
+                    break;
+                }
                 continue;
             }
             auto xr_input = xr_session->syncActions(Actions::actionSetStack());
@@ -564,6 +578,9 @@ void Loop::run() {
                 elapsedMs(render_start, render_end),
                 elapsedMs(wait_start, wait_end),
             });
+        }
+        if (windowFrameLimitReached()) {
+            break;
         }
     }
 

@@ -2,6 +2,7 @@
 
 #include "../os/framebuffersnapshot.hpp"
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <variant>
@@ -28,6 +29,13 @@ class BasePresentRetirementTracker {
         return successor_completion_watermark_;
     }
 };
+
+// A fresh surface cannot bind the same native window while an unretired
+// swapchain is still associated with it. Without an exact present-completion
+// primitive there is no safe same-device ordering for that case.
+bool surfaceLossRequiresDeviceRebuild(
+    bool exact_present_retirement,
+    bool has_unproven_present) noexcept;
 
 enum class WsiResultClass {
     ready,
@@ -83,6 +91,45 @@ std::string_view windowWsiCallSiteName(
     WindowWsiCallSite site) noexcept;
 std::string_view windowWsiRecoveryActionName(
     WindowWsiRecoveryAction action) noexcept;
+
+struct WindowWsiFaultContext {
+    WindowWsiCallSite site =
+        WindowWsiCallSite::acquire;
+    std::uint64_t surface_epoch = 0;
+    SwapchainEpochId swapchain_epoch = 0;
+    std::uint32_t recovery_attempt = 0;
+};
+
+// Ordered Debug-only protocol driver. A rule is consumed only when its call
+// site becomes the next observed WSI boundary, so worker/main-thread ordering
+// is deterministic without sleeping or replacing Vulkan handles with fakes.
+// Production construction never creates this object.
+class WindowWsiFaultScriptForTesting {
+    struct State;
+    std::unique_ptr<State> state_;
+
+    explicit WindowWsiFaultScriptForTesting(
+        std::unique_ptr<State> state) noexcept;
+
+  public:
+    ~WindowWsiFaultScriptForTesting();
+
+    WindowWsiFaultScriptForTesting(
+        const WindowWsiFaultScriptForTesting &) =
+        delete;
+    WindowWsiFaultScriptForTesting &operator=(
+        const WindowWsiFaultScriptForTesting &) =
+        delete;
+
+    static std::unique_ptr<
+        WindowWsiFaultScriptForTesting>
+    parse(std::string_view script);
+
+    std::optional<vk::Result> take(
+        WindowWsiFaultContext context) noexcept;
+    std::size_t injectedCount() const noexcept;
+    std::size_t remainingCount() const noexcept;
+};
 
 // vkCreateSwapchainKHR success may retire oldSwapchain even when dependent
 // resources fail later. The successfully-created replacement is then the only
