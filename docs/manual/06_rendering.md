@@ -272,6 +272,47 @@ subresource、2D viewの複数layer、storage viewの複数mipは起動時エラ
 [`adding_features.md`のレシピ4](../adding_features.md)と
 `test/run_compute_headless.cmake`です。
 
+GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
+typed command buffer と `dispatch.indirect` を使います。
+
+```json
+{
+  "buffers": [{
+    "name": "dispatch_arguments",
+    "size": 12,
+    "command_layout": "compute_dispatch"
+  }],
+  "compute_tasks": [
+    {
+      "name": "build_dispatch",
+      "shader": "shaders/build_dispatch",
+      "writes": ["dispatch_arguments"],
+      "dispatch": {"groups": [1, 1, 1]}
+    },
+    {
+      "name": "consume_dispatch",
+      "shader": "shaders/consume_dispatch",
+      "dispatch": {
+        "indirect": {
+          "buffer": "dispatch_arguments",
+          "offset": 0
+        }
+      }
+    }
+  ]
+}
+```
+
+`command_layout: "compute_dispatch"` は3個の連続した `uint` (`x`, `y`, `z`)を表す
+論理レイアウトで、エンジンが必要な indirect buffer usage へ lower します。`offset` は省略時
+0、4 byte alignment 必須で、12 byte の command 全体が buffer 内に収まる必要があります。
+`dispatch.indirect` 自体が frame graph の read edge を作るため、consumer shader がその
+buffer を読まない限り `reads` へ重複記述しません。producer の shader write から
+indirect command read への stage/access barrier もプランから自動発行されます。
+同じtaskが自身のindirect bufferを書く構成はframe間の隠れたfeedbackになるため拒否され、
+例のようにproducerを別taskへ分けます。
+`groups` / `groups_from` / `local_size` との併記は起動時エラーです。
+
 ### プランダンプ(実行計画の可視化)
 
 ```sh

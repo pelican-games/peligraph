@@ -23,6 +23,12 @@ namespace {
 
 constexpr uint32_t max_compute_descriptor_sets = 256;
 constexpr uint32_t max_compute_descriptors = 1024;
+constexpr vk::DeviceSize compute_dispatch_command_size =
+    sizeof(vk::DispatchIndirectCommand);
+constexpr vk::DeviceSize indirect_command_alignment = 4;
+static_assert(
+    sizeof(vk::DispatchIndirectCommand) ==
+    sizeof(std::uint32_t) * 3);
 
 struct RetiredComputeDescriptorResources {
     vk::UniqueDescriptorPool pool;
@@ -67,6 +73,21 @@ FrameGraphHostBufferSource parseHostBufferSource(
     throw std::runtime_error(
         std::string{context} +
         " has unknown host_source '" + value + "'");
+}
+
+FrameGraphBufferCommandLayout
+parseBufferCommandLayout(
+    const nlohmann::json &entry,
+    std::string_view context) {
+    const auto value =
+        requireString(entry, "command_layout", context);
+    if (value == "compute_dispatch") {
+        return FrameGraphBufferCommandLayout::
+            compute_dispatch;
+    }
+    throw std::runtime_error(
+        std::string{context} +
+        " has unknown command_layout '" + value + "'");
 }
 
 std::pair<std::uint32_t, std::uint32_t>
@@ -825,6 +846,51 @@ ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const s
         throw std::runtime_error("compute task dispatch must be an object: " + name);
     }
 
+    if (json.contains("indirect")) {
+        if (json.contains("groups") ||
+            json.contains("groups_from") ||
+            json.contains("local_size")) {
+            throw std::runtime_error(
+                "compute task dispatch.indirect cannot be combined with "
+                "groups, groups_from, or local_size: " +
+                name);
+        }
+        const auto &indirect = json.at("indirect");
+        if (!indirect.is_object()) {
+            throw std::runtime_error(
+                "compute task dispatch.indirect must be an object: " +
+                name);
+        }
+        ComputeIndirectDispatchDefinition definition{
+            .buffer = requireString(
+                indirect, "buffer",
+                "compute task dispatch.indirect: " +
+                    name),
+            .offset =
+                indirect.contains("offset")
+                    ? requireDeviceSize(
+                          indirect, "offset",
+                          "compute task dispatch.indirect: " +
+                              name)
+                    : vk::DeviceSize{0},
+        };
+        if (definition.buffer.empty()) {
+            throw std::runtime_error(
+                "compute task dispatch.indirect buffer must not be empty: " +
+                name);
+        }
+        if (definition.offset %
+                indirect_command_alignment !=
+            0) {
+            throw std::runtime_error(
+                "compute task dispatch.indirect offset must be "
+                "4-byte aligned: " +
+                name);
+        }
+        dispatch.indirect = std::move(definition);
+        return dispatch;
+    }
+
     if (json.contains("groups")) {
         const auto &groups = json.at("groups");
         if (groups.is_array()) {
@@ -869,6 +935,17 @@ std::string_view frameGraphHostBufferSourceName(
     }
     throw std::runtime_error(
         "unknown frame-graph host buffer source");
+}
+
+std::string_view frameGraphBufferCommandLayoutName(
+    FrameGraphBufferCommandLayout layout) {
+    switch (layout) {
+    case FrameGraphBufferCommandLayout::
+        compute_dispatch:
+        return "compute_dispatch";
+    }
+    throw std::runtime_error(
+        "unknown frame-graph buffer command layout");
 }
 
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json) {
@@ -924,6 +1001,11 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                 parseHostBufferSource(
                     entry, context);
         }
+        if (entry.contains("command_layout")) {
+            definition.command_layout =
+                parseBufferCommandLayout(
+                    entry, context);
+        }
         if (entry.contains("lifetime")) {
             const auto lifetime =
                 requireString(
@@ -941,6 +1023,20 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
             throw std::runtime_error(
                 context +
                 " host_source requires a non-zero size");
+        }
+        if (definition.command_layout &&
+            *definition.command_layout ==
+                FrameGraphBufferCommandLayout::
+                    compute_dispatch &&
+            definition.size <
+                compute_dispatch_command_size) {
+            throw std::runtime_error(
+                context +
+                " command_layout 'compute_dispatch' requires at "
+                "least " +
+                std::to_string(
+                    compute_dispatch_command_size) +
+                " bytes");
         }
         definitions.push_back(std::move(definition));
     }
@@ -997,6 +1093,72 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
     return definitions;
 }
 
+void validateComputeTaskBufferContracts(
+    std::span<const FrameGraphBufferDefinition>
+        buffer_definitions,
+    std::span<const ComputeTaskDefinition>
+        task_definitions) {
+    for (const auto &task : task_definitions) {
+        if (!task.dispatch.indirect) continue;
+        const auto &indirect =
+            *task.dispatch.indirect;
+        if (std::find(
+                task.writes.begin(),
+                task.writes.end(),
+                indirect.buffer) !=
+            task.writes.end()) {
+            throw std::runtime_error(
+                "compute task '" + task.name +
+                "' cannot write its own indirect dispatch "
+                "buffer; use a separate producer task");
+        }
+        const auto buffer = std::find_if(
+            buffer_definitions.begin(),
+            buffer_definitions.end(),
+            [&](const FrameGraphBufferDefinition
+                    &candidate) {
+                return candidate.name ==
+                       indirect.buffer;
+            });
+        if (buffer == buffer_definitions.end()) {
+            throw std::runtime_error(
+                "compute task '" + task.name +
+                "' indirect dispatch references unknown buffer '" +
+                indirect.buffer + "'");
+        }
+        if (!buffer->command_layout ||
+            *buffer->command_layout !=
+                FrameGraphBufferCommandLayout::
+                    compute_dispatch) {
+            throw std::runtime_error(
+                "compute task '" + task.name +
+                "' indirect dispatch buffer '" +
+                indirect.buffer +
+                "' requires command_layout "
+                "'compute_dispatch'");
+        }
+        if (indirect.offset %
+                indirect_command_alignment !=
+            0) {
+            throw std::runtime_error(
+                "compute task '" + task.name +
+                "' indirect dispatch offset must be 4-byte "
+                "aligned");
+        }
+        if (indirect.offset > buffer->size ||
+            buffer->size - indirect.offset <
+                compute_dispatch_command_size) {
+            throw std::runtime_error(
+                "compute task '" + task.name +
+                "' indirect dispatch command at offset " +
+                std::to_string(indirect.offset) +
+                " exceeds buffer '" +
+                indirect.buffer + "' size " +
+                std::to_string(buffer->size));
+        }
+    }
+}
+
 FrameGraphResourceContainer::FrameGraphResourceContainer() = default;
 
 FrameGraphResourceContainer::~FrameGraphResourceContainer() = default;
@@ -1028,11 +1190,19 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
         }
         registration_order.reserve(
             registration_order.size() + 1);
+        auto usage =
+            vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc |
+            vk::BufferUsageFlagBits::eTransferDst;
+        if (definition.command_layout ==
+            FrameGraphBufferCommandLayout::
+                compute_dispatch) {
+            usage |= vk::BufferUsageFlagBits::
+                eIndirectBuffer;
+        }
         auto buffer = vkcore.allocBuf(
             definition.size,
-            vk::BufferUsageFlagBits::eStorageBuffer |
-                vk::BufferUsageFlagBits::eTransferSrc |
-                vk::BufferUsageFlagBits::eTransferDst,
+            usage,
             definition.host_source
                 ? vma::MemoryUsage::eAuto
                 : vma::MemoryUsage::eAutoPreferDevice,
@@ -1104,6 +1274,12 @@ vk::DeviceSize FrameGraphResourceContainer::bufferSize(std::string_view name) co
 vk::DeviceSize FrameGraphResourceContainer::bufferSize(
     FrameGraphBufferId id) const {
     return buffers.get(id).definition.size;
+}
+
+const FrameGraphBufferDefinition &
+FrameGraphResourceContainer::definition(
+    FrameGraphBufferId id) const {
+    return buffers.get(id).definition;
 }
 
 vk::DescriptorBufferInfo FrameGraphResourceContainer::descriptorInfo(std::string_view name) const {
@@ -1482,6 +1658,62 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     auto resolved_resources = resolveTaskResources(
         definition, dependencies.render_target_container,
         dependencies.frame_graph_resources);
+    std::optional<IndirectDispatchRecord>
+        indirect_dispatch;
+    if (definition.dispatch.indirect) {
+        const auto &authored =
+            *definition.dispatch.indirect;
+        if (std::find(
+                definition.writes.begin(),
+                definition.writes.end(),
+                authored.buffer) !=
+            definition.writes.end()) {
+            throw std::runtime_error(
+                "Compute task '" + definition.name +
+                "' cannot write its own indirect dispatch "
+                "buffer; use a separate producer task");
+        }
+        const auto buffer =
+            dependencies.frame_graph_resources
+                .getBufferIdByName(authored.buffer);
+        if (!isValidFrameGraphBufferId(buffer)) {
+            throw std::runtime_error(
+                "Compute task '" + definition.name +
+                "' indirect dispatch buffer not found: " +
+                authored.buffer);
+        }
+        const auto &buffer_definition =
+            dependencies.frame_graph_resources
+                .definition(buffer);
+        if (buffer_definition.command_layout !=
+            FrameGraphBufferCommandLayout::
+                compute_dispatch) {
+            throw std::runtime_error(
+                "Compute task '" + definition.name +
+                "' indirect dispatch buffer '" +
+                authored.buffer +
+                "' requires command_layout "
+                "'compute_dispatch'");
+        }
+        if (authored.offset %
+                indirect_command_alignment !=
+                0 ||
+            authored.offset >
+                buffer_definition.size ||
+            buffer_definition.size -
+                    authored.offset <
+                compute_dispatch_command_size) {
+            throw std::runtime_error(
+                "Compute task '" + definition.name +
+                "' indirect dispatch command is outside buffer '" +
+                authored.buffer + "'");
+        }
+        indirect_dispatch =
+            IndirectDispatchRecord{
+                .buffer = buffer,
+                .offset = authored.offset,
+            };
+    }
     auto resource_interface =
         makeComputeResourceInterface(
             definition, resolved_resources,
@@ -1548,6 +1780,8 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 definition.dispatch.groups_y,
             .dispatch_z =
                 definition.dispatch.groups_z,
+            .indirect_dispatch =
+                indirect_dispatch,
         });
     if (!task_inserted) {
         throw std::runtime_error(
@@ -1637,6 +1871,11 @@ void ComputeTaskContainer::setDispatchGroups(ComputeTaskId task_id, uint32_t x, 
     if (found == tasks.end()) {
         throw std::runtime_error("Compute task not found");
     }
+    if (found->second.indirect_dispatch) {
+        throw std::runtime_error(
+            "cannot set direct dispatch groups on an indirect "
+            "compute task");
+    }
     found->second.dispatch_x = x;
     found->second.dispatch_y = y;
     found->second.dispatch_z = z;
@@ -1724,7 +1963,20 @@ void ComputeTaskContainer::dispatch(
                                    PELICAN_SET_PASS_INPUT,
                                    record.descriptor_sets[parity].get(), {});
     }
-    cmd_buf.dispatch(record.dispatch_x, record.dispatch_y, record.dispatch_z);
+    if (record.indirect_dispatch) {
+        const auto &indirect =
+            *record.indirect_dispatch;
+        const auto &resources =
+            GET_MODULE(FrameGraphResourceContainer);
+        cmd_buf.dispatchIndirect(
+            resources.buffer(indirect.buffer)
+                .buffer.get(),
+            indirect.offset);
+    } else {
+        cmd_buf.dispatch(
+            record.dispatch_x, record.dispatch_y,
+            record.dispatch_z);
+    }
 }
 
 void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf,
@@ -1738,13 +1990,28 @@ void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf
 
     vk::BufferMemoryBarrier barrier;
     barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+    auto destination_stage = shaderStage(to_kind);
     barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+    const auto &definition =
+        resource_container.definition(resource);
+    if (to_kind == FramePlanNodeKind::compute &&
+        definition.command_layout ==
+            FrameGraphBufferCommandLayout::
+                compute_dispatch) {
+        destination_stage |=
+            vk::PipelineStageFlagBits::eDrawIndirect;
+        barrier.dstAccessMask |=
+            vk::AccessFlagBits::
+                eIndirectCommandRead;
+    }
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.buffer = resource_container.buffer(resource).buffer.get();
     barrier.offset = 0;
     barrier.size = resource_container.bufferSize(resource);
-    cmd_buf.pipelineBarrier(shaderStage(from_kind), shaderStage(to_kind), {}, {}, {barrier}, {});
+    cmd_buf.pipelineBarrier(
+        shaderStage(from_kind), destination_stage,
+        {}, {}, {barrier}, {});
 }
 
 std::vector<vk::ImageView> ComputeTaskContainer::boundImageViewsForTesting(

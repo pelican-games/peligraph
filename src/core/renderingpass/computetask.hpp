@@ -37,6 +37,16 @@ enum class FrameGraphHostBufferSource : std::uint8_t {
 std::string_view frameGraphHostBufferSourceName(
     FrameGraphHostBufferSource source);
 
+// Command layouts are logical buffer element contracts. They imply the
+// required physical Vulkan usage without exposing VkBufferUsageFlags in
+// project authoring.
+enum class FrameGraphBufferCommandLayout : std::uint8_t {
+    compute_dispatch,
+};
+
+std::string_view frameGraphBufferCommandLayoutName(
+    FrameGraphBufferCommandLayout layout);
+
 struct FrameGraphBufferExtentSizeDefinition {
     std::string resource;
     std::uint32_t tile_width = 1;
@@ -57,6 +67,8 @@ struct FrameGraphBufferDefinition {
         host_source;
     std::optional<FrameGraphBufferExtentSizeDefinition>
         extent_size;
+    std::optional<FrameGraphBufferCommandLayout>
+        command_layout;
 };
 
 struct ComputeTaskRuntimeDependencies {
@@ -86,6 +98,11 @@ struct ResolvedComputeResourceBinding {
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json);
 std::unordered_set<std::string> frameGraphBufferNameSet(const std::vector<FrameGraphBufferDefinition> &definitions);
 std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(const nlohmann::json &config_json);
+void validateComputeTaskBufferContracts(
+    std::span<const FrameGraphBufferDefinition>
+        buffer_definitions,
+    std::span<const ComputeTaskDefinition>
+        task_definitions);
 
 DECLARE_MODULE(FrameGraphResourceContainer) {
   public:
@@ -135,6 +152,8 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     const BufferWrapper &buffer(FrameGraphBufferId id) const;
     vk::DeviceSize bufferSize(std::string_view name) const;
     vk::DeviceSize bufferSize(FrameGraphBufferId id) const;
+    const FrameGraphBufferDefinition &definition(
+        FrameGraphBufferId id) const;
     vk::DescriptorBufferInfo descriptorInfo(std::string_view name) const;
     vk::DescriptorBufferInfo descriptorInfo(FrameGraphBufferId id) const;
     bool hasHostBufferSource(
@@ -169,6 +188,12 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
 };
 
 DECLARE_MODULE(ComputeTaskContainer) {
+    struct IndirectDispatchRecord {
+        FrameGraphBufferId buffer =
+            noFrameGraphBufferId();
+        vk::DeviceSize offset = 0;
+    };
+
     struct TaskRecord {
         ComputeTaskDefinition definition;
         std::vector<ResolvedComputeResourceBinding> resource_bindings;
@@ -181,6 +206,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
         uint32_t dispatch_x = 1;
         uint32_t dispatch_y = 1;
         uint32_t dispatch_z = 1;
+        std::optional<IndirectDispatchRecord>
+            indirect_dispatch;
     };
 
     vk::Device device;

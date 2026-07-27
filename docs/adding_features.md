@@ -121,6 +121,13 @@ void main() {
 `layout(set=1,binding=N)` は buffer、特殊 descriptor、低レベル実験用の
 escape hatch として残る。
 
+GPU が次の task の dispatch 数を生成する場合は、buffer に
+`"command_layout": "compute_dispatch"`を付け、consumer を
+`"dispatch": {"indirect": {"buffer": "<name>", "offset": 0}}`にする。
+command は `uint x, y, z` の12 byteで、producer の`writes`からconsumerの
+indirect read edgeと必要なbarrierは自動導出される。consumerのshader入力ではないため、
+同じbufferを`reads`へ重複記述しない。
+
 ## レシピ 5: プロジェクト内C++コード(静的リンク)
 
 プロジェクト固有のゲームロジックを player に取り込む。エンジンはSDKとして扱い、

@@ -116,7 +116,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 | WP208 | lighting data contract v2 + clustered dogfood | ✅ 完了（2026-07-26、archive） |
 | WP209a | static texture dimension + material sampler authoring | ✅ 完了（2026-07-26、archive） |
 | WP209b | RT mip/layer/subresource view | ✅ 完了（2026-07-26、archive） |
-| WP210 | indirect dispatch + GPU-written draw arguments | 計画済み・WP207b依存、実 workload gate |
+| WP210 | indirect dispatch + GPU-written draw arguments | 🟡 WP210a indirect dispatch完了（2026-07-27）、GPU draw argumentsは未実装 |
 | WP211 | `dist-bake` + shaderc OFF feature delivery | 並行候補・配布/Quest前必須 |
 | WP212 | VRS/foveation backend contract | Quest SA2 device/計測待ち |
 
@@ -389,10 +389,25 @@ indirect argumentsを生成できるようにする。
 
 **実装範囲**:
 
-1. buffer usage/typed argument layout、`dispatchIndirect`、barrierを先に縦切りする。
+1. ✅ buffer usage/typed argument layout、`dispatchIndirect`、barrierを縦切りした（WP210a）。
 2. DrawQueue/rendererへGPU-written indexed indirect/count pathを追加する。
 3. device feature、count clamp、zero count、CPU fallback、validationをcompiled planへ残す。
 4. fixed descriptorで成立するdogfoodを先に行い、bindlessを暗黙依存にしない。
+
+**WP210a 完了境界（2026-07-27）**:
+
+- `command_layout: "compute_dispatch"`を論理型として追加し、Vulkan
+  `INDIRECT_BUFFER` usageへlowerする
+- `dispatch.indirect.{buffer,offset}`を追加。command resourceは自動read edgeとなる
+- compute shader write → indirect command readのstage/access barrierを自動発行
+- CPU compile時に参照、layout、4-byte alignment、12-byte範囲、direct/indirect混在、
+  自身のcommand bufferへの暗黙frame間feedbackを拒否
+- project-owned compute headless fixtureをGPU生成argumentへ移行し、同じ画像結果を確認
+
+詳細は
+[`design_reviews/2026-07-27_wp210a_indirect_dispatch.md`](design_reviews/2026-07-27_wp210a_indirect_dispatch.md)。
+WP210b以降のGPU-written indexed draw/count、0/max/overflow clamp、CPU fallback、
+hot reload/XR/timing受け入れは未完了。
 
 **受け入れ条件**:
 

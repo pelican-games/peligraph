@@ -507,7 +507,7 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 ### barrier
 
 - ordered edge の同 resource write→read を barrier record にする。
-- 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L501) は storage buffer だけに `vk::BufferMemoryBarrier` を出す。
+- 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp) は storage buffer に `vk::BufferMemoryBarrier` を出す。`command_layout: "compute_dispatch"`では通常のshader readに加えて`DrawIndirect` / `IndirectCommandRead`をdestinationへ含める。
 - image は layout tracker に依存。tracker のキーは `(rt_id, surface_index)` になり、history 付き target の現/旧 surface を別々に追跡します([`render_target_layout_tracker.cpp#L72`](../../src/core/vkcore/render_target_layout_tracker.cpp#L72))。
 - layout が変われば layout transition が memory dependency を含む。
 - storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は現在も出ない([同 #L76](../../src/core/vkcore/render_target_layout_tracker.cpp#L76))。
@@ -521,18 +521,21 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 | 設定 | parse | runtime behavior |
 |---|---:|---|
 | `dispatch.groups` | 済 | `vkCmdDispatch(x,y,z)` に使用 |
+| `dispatch.indirect` | 済 | typed command bufferから`vkCmdDispatchIndirect`。command resourceのread edgeも自動導出 |
 | `dispatch.groups_from` | 済 | 自動算出には未接続 |
 | `dispatch.local_size` | 済 | 自動算出には未接続。shader reflection の local size とも結合しない |
 | `schedule: per_frame` | 済 | 対応 |
 | その他 schedule | 検出 | 明示 error |
 | buffer `size > 0` | 済 | device-local storage buffer を一度確保 |
 | buffer `size == 0` | 済 | graph 名だけ。実 buffer はなし |
+| buffer `command_layout: compute_dispatch` | 済 | 12 byte以上を検証し`INDIRECT_BUFFER` usageを付与 |
 | `lifetime: persistent` | 済 | 実質全 buffer が container lifetime |
 | `lifetime: transient` | 済 | frame ごとの確保/recycle は未実装 |
 
-根拠は [`parseDispatch()`](../../src/core/renderingpass/computetask.cpp#L152)、[`registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L287)、[`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L407) です。
+根拠は [`computetask.cpp`](../../src/core/renderingpass/computetask.cpp) の
+`parseDispatch()`、`registerBuffers()`、`registerComputeTask()`です。
 
-表の「自動算出」は、**group 数を `dispatch.groups` の直書きではなく要素数から割り出す**機能を指します。設計上は `groups_from` が要素数の取得元となる名前付きパラメータ名、`local_size` が 1 group あたりのスレッド数で、`{"groups_from": "particle_count", "local_size": 64}` のように書く想定です([design_compute_task_graph.md](../design_compute_task_graph.md))。現在は両方とも `ComputeDispatchDefinition`([renderingpass.hpp#L151-L157](../../src/core/renderingpass/renderingpass.hpp#L151))へ読み込まれるだけで、`registerComputeTask()` が `TaskRecord` に記録するのも実 dispatch が使うのも `groups_x/y/z` だけです。結合時期は未定で、同設計書の未決事項1「`dispatch.groups_from` の名前付きパラメータ注入の正確な API」が先に必要です。shader reflection 側の `local_size`([shaderreflection.hpp#L25](../../src/core/shader/shaderreflection.hpp#L25))は別経路で取れていますが、この JSON の `local_size` とは照合していません。
+表の「自動算出」は、**group 数を `dispatch.groups` の直書きではなく要素数から割り出す**機能を指します。設計上は `groups_from` が要素数の取得元となる名前付きパラメータ名、`local_size` が 1 group あたりのスレッド数で、`{"groups_from": "particle_count", "local_size": 64}` のように書く想定です([design_compute_task_graph.md](../design_compute_task_graph.md))。現在`groups_from`と`local_size`は`ComputeDispatchDefinition`へ読み込まれるだけで、direct taskの実dispatchが使うのは`groups_x/y/z`です。一方、`dispatch.indirect`は別のtyped command buffer経路として実装済みであり、`groups_from`のCPU自動算出を実装したものではありません。`groups_from`の結合時期は未定で、同設計書の未決事項1「名前付きパラメータ注入の正確な API」が先に必要です。shader reflection 側の `local_size`([shaderreflection.hpp#L25](../../src/core/shader/shaderreflection.hpp#L25))は別経路で取れていますが、この JSON の `local_size` とは照合していません。
 
 compute task は dedicated compute queue へ submit せず、graphics frame command buffer に記録します。一方 [`pickQueues()`](../../src/core/vkcore/core.cpp#L141) の fallback は graphics と compute を別 family として受理できます。現 frame graph compute は graphics queue に compute capability があることを実質仮定していますが、fallback path はそれを必須検証していません。async compute を実装する場合は command pool/submit だけでなく queue family ownership transfer も必要です。
 

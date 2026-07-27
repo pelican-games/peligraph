@@ -605,6 +605,9 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     auto buffer_names = frameGraphBufferNameSet(buffer_definitions);
     auto compute_task_definitions =
         parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
+    validateComputeTaskBufferContracts(
+        buffer_definitions,
+        compute_task_definitions);
     auto graph_definition_list =
         parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
     applyResolvedLogicalGraphTransformSelections(

@@ -1,13 +1,14 @@
 # フレームグラフ: 宣言的依存とスケジュール最適化(レンダー・コンピュート統一)
 
 対象読者: エンジン担当。
-ステータス: v2.2 ドラフト(2026-07-23。v2: 2026-07-04。
+ステータス: v2.3 ドラフト(2026-07-27。v2: 2026-07-04。
 v1: compute タスクグラフとして起草。
 v2: ユーザー方針によりレンダーパスにも同モデルを拡張 — 統一フレームグラフ化、
 手詰め層の設計、既存 config の意味論保存移行を追加。
 v2.1: `design_render_graph_compiler.md` の logical / physical 分離へ接続。
 v2.2: `design_heterogeneous_execution_graph.md` の typed dialect / domain 分割へ接続し、
-authoring `kind` と selected execution endpoint を分離)。
+authoring `kind` と selected execution endpoint を分離。
+v2.3: WP210a の typed indirect compute dispatch と自動 dependency/barrier を反映)。
 前提: [SF](実装済み)、`design_render_feature_modules.md`(v1.2 ドラフト)、
 ロードマップ §3 の compute パス予約枠。GPU 計測(WP29 候補)と強く連携。
 
@@ -72,6 +73,31 @@ fragment / closed forest の規則は
   "schedule": "per_frame"
 }
 ```
+
+GPU-produced dispatch は次の別形を取る。
+
+```json
+{
+  "buffers": [{
+    "name": "dispatch_arguments",
+    "size": 12,
+    "command_layout": "compute_dispatch"
+  }],
+  "compute_tasks": [{
+    "name": "consume_dispatch",
+    "shader": "shaders/consume_dispatch",
+    "dispatch": {
+      "indirect": {"buffer": "dispatch_arguments"}
+    }
+  }]
+}
+```
+
+`command_layout` は Vulkan のusage bitをauthoringへ露出する欄ではなく、command bufferの
+論理element contractである。physical lowererはこの型からindirect usageを付与する。
+`dispatch.indirect`はshader portではないが実行系のresource readなので、plannerがread edgeを
+自動導出する。producer shader writeからcommand processor readへのbarrierも同じedgeから
+導出し、authorはstage/access maskを書かない。
 
 ### render pass(既存形式 — 追加キーなしで依存を導出できる)
 
@@ -187,14 +213,13 @@ CPU implementation はdata / effect依存がなければ既定でparallel / reen
 
 1. `dispatch.groups_from` の名前付きパラメータ注入の正確な API
    (コマンド層 stage 3 / ゲームロジック設計と同時に確定)
-2. indirect dispatch(GPU 駆動のディスパッチ数)— v1 は CPU 指定のみ
-3. compute 結果の CPU readback(rpc `capture` 類似)— 需要が出てから
-4. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— **F0 v1 は解決済み**:
+2. compute 結果の CPU readback(rpc `capture` 類似)— 需要が出てから
+3. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— **F0 v1 は解決済み**:
    F0 では `pelican.frame_plan` v1 とし、`schema` / `version` / `graph` /
    `nodes` / `levels` / `barriers` を持つ。`nodes[*].kind` は
    `"render" | "compute"` の authoring category。異種 execution の選択結果は schema v2 の
    独立 field とし、v1 へ詰め込まない。
-5. 非同期キュー導入時期(v2)
+4. 非同期キュー導入時期(v2)
 
 ### 7-4. プランダンプ JSON スキーマ(F0 確定)
 

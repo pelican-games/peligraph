@@ -158,7 +158,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | H1 | GPU culling / depth pyramid | **culling ✕ / pyramid ○** | 2-layer/full-chain RTのmip0→mip1 computeとfullscreen表示を実GPU dogfood済み(WP209b)。cullingからdraw argsへの接続はG8 |
-| H2 | occlusion culling | **✕** | GPU visibilityからdraw count/argsへ接続できない(G3/G8) |
+| H2 | occlusion culling | **✕** | GPU visibilityのcompute dispatchは組めるが、rendererのdraw count/argsへ接続できない(G8) |
 | H3 | LOD switching | **△** | game側model swapは可。標準LOD policyなし |
 | H4 | impostor | **△** | asset generation外部、runtime selectionはH3 |
 | H5 | mesh shader / meshlet | **✕** | shader stage/pipeline と GPU-driven contract が無い(G8/G9/G15) |
@@ -206,7 +206,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 |---|---|---|
 | **G1（解消済み、WP207a）** | compute pipelineへFrame/Light setとnamed sampled/storage image portを実装。fullscreenも同じgenerated interfaceを使う | clustered compute、DDGI、runtime LUTの入力境界 |
 | **G2（解消済み、WP207b）** | material vertex/fragmentへtyped readonly buffer/sampled image port、element/stage schema、generated accessor、世代固定descriptorを実装 | FFT ocean、GPU simulation consumer。PPLL write/storage imageは別拡張 |
-| **G3** | authored dispatchが定数、indirect dispatchが無い | GPU culling、adaptive work |
+| **G3（解消済み、WP210a）** | typed command buffer、GPU-written indirect dispatch、自動read edge/barrierを実装 | GPU culling、adaptive work |
 | **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a** | public shadow resource/light relationが無く`pelican_shadow()`がstub | material shadow、PCF/PCSS |
@@ -259,7 +259,7 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了
 6. G4とG12 authoringはWP209a、G10aはWP209bのdepth pyramidで完了。G10bはruntime 3D/cubeまたはraster subresourceの実需要時
-7. G3/G8 GPU-driven execution。G9 bindlessは実測需要時
+7. G8 GPU-written draw arguments/count。G9 bindlessは実測需要時
 8. delivery laneとして`dist-bake`
 9. G11 VRSはQuest device gate後
 

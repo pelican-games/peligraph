@@ -126,6 +126,21 @@ void main() {
 }
 ]=])
 
+file(WRITE "${OUT_DIR}/shaders/build_dispatch.comp" [=[
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 1, binding = 0) buffer DispatchArguments {
+    uint x;
+    uint y;
+    uint z;
+} dispatch_arguments;
+void main() {
+    dispatch_arguments.x = 1;
+    dispatch_arguments.y = 1;
+    dispatch_arguments.z = 1;
+}
+]=])
+
 file(WRITE "${OUT_DIR}/shaders/compute_present.frag" [=[
 #version 450
 layout(std430, set = 1, binding = 0) readonly buffer ComputeColor {
@@ -141,7 +156,13 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
 {
   "buffers": [
     {"name": "raw_color", "size": 16, "lifetime": "persistent"},
-    {"name": "compute_color", "size": 16, "lifetime": "persistent"}
+    {"name": "compute_color", "size": 16, "lifetime": "persistent"},
+    {
+      "name": "dispatch_arguments",
+      "size": 12,
+      "lifetime": "persistent",
+      "command_layout": "compute_dispatch"
+    }
   ],
   "render_targets": [
     {"name": "material_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "format_class": "scene", "role": "color", "usage": ["COLOR_ATTACHMENT"]},
@@ -237,11 +258,22 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
       "schedule": "per_frame"
     },
     {
+      "name": "build_dispatch",
+      "shader": "shaders/build_dispatch",
+      "writes": ["dispatch_arguments"],
+      "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    },
+    {
       "name": "transform_color",
       "shader": "shaders/transform_color",
       "reads": ["raw_color"],
       "writes": ["compute_color"],
-      "dispatch": {"groups": [1, 1, 1]},
+      "dispatch": {
+        "indirect": {
+          "buffer": "dispatch_arguments"
+        }
+      },
       "schedule": "per_frame"
     }
   ]

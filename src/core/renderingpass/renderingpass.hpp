@@ -316,12 +316,23 @@ struct PassDefinition {
     const VelocityPassInfo &velocityInfo() const { return std::get<VelocityPassInfo>(pass_info); }
 };
 
+struct ComputeIndirectDispatchDefinition {
+    std::string buffer;
+    vk::DeviceSize offset = 0;
+
+    bool operator==(
+        const ComputeIndirectDispatchDefinition &) const =
+        default;
+};
+
 struct ComputeDispatchDefinition {
     uint32_t groups_x = 1;
     uint32_t groups_y = 1;
     uint32_t groups_z = 1;
     std::string groups_from;
     uint32_t local_size = 1;
+    std::optional<ComputeIndirectDispatchDefinition>
+        indirect;
 };
 
 struct ComputeTaskDefinition {

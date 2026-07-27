@@ -651,6 +651,168 @@ TEST_CASE(
             "cannot declare both size and size_from_extent"));
 }
 
+TEST_CASE(
+    "typed indirect compute dispatch creates a graph read and validates its command buffer",
+    "[renderingpass][compute][indirect][wp210]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "buffers": [
+            {
+              "name": "dispatch_arguments",
+              "size": 24,
+              "command_layout": "compute_dispatch"
+            },
+            {
+              "name": "result",
+              "size": 4
+            }
+          ],
+          "compute_tasks": [
+            {
+              "name": "build_dispatch",
+              "shader": "shaders/build_dispatch",
+              "writes": ["dispatch_arguments"],
+              "dispatch": {"groups": [1, 1, 1]}
+            },
+            {
+              "name": "consume_dispatch",
+              "shader": "shaders/consume_dispatch",
+              "writes": ["result"],
+              "dispatch": {
+                "indirect": {
+                  "buffer": "dispatch_arguments",
+                  "offset": 12
+                }
+              }
+            }
+          ]
+        })json");
+
+    const auto buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            config);
+    const auto tasks =
+        parseComputeTaskDefinitionsFromConfigJson(
+            config);
+    REQUIRE(
+        buffers.at(0).command_layout ==
+        FrameGraphBufferCommandLayout::
+            compute_dispatch);
+    REQUIRE(
+        std::string{
+            frameGraphBufferCommandLayoutName(
+                *buffers.at(0).command_layout)} ==
+        "compute_dispatch");
+    REQUIRE(tasks.at(1).dispatch.indirect.has_value());
+    REQUIRE(
+        tasks.at(1).dispatch.indirect->buffer ==
+        "dispatch_arguments");
+    REQUIRE(
+        tasks.at(1).dispatch.indirect->offset == 12);
+    REQUIRE_NOTHROW(
+        validateComputeTaskBufferContracts(
+            buffers, tasks));
+
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    REQUIRE(graphs.size() == 1);
+    const auto consumer = std::find_if(
+        graphs.front().nodes.begin(),
+        graphs.front().nodes.end(),
+        [](const FrameGraphNodeDefinition &node) {
+            return node.name ==
+                   "consume_dispatch";
+        });
+    REQUIRE(consumer != graphs.front().nodes.end());
+    REQUIRE(
+        std::find(
+            consumer->reads.begin(),
+            consumer->reads.end(),
+            "dispatch_arguments") !=
+        consumer->reads.end());
+    const auto plan =
+        planFrameGraph(graphs.front());
+    REQUIRE(
+        framePlanOrder(plan) ==
+        std::vector<std::string>{
+            "build_dispatch",
+            "consume_dispatch"});
+    REQUIRE(plan.barriers.size() == 1);
+    REQUIRE(
+        plan.barriers.front().resource ==
+        "dispatch_arguments");
+    REQUIRE(
+        plan.barriers.front().from ==
+        "build_dispatch");
+    REQUIRE(
+        plan.barriers.front().to ==
+        "consume_dispatch");
+
+    auto mixed = config;
+    mixed["compute_tasks"][1]["dispatch"]["groups"] =
+        nlohmann::json::array({1, 1, 1});
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            mixed),
+        Catch::Matchers::ContainsSubstring(
+            "cannot be combined"));
+
+    auto unaligned = config;
+    unaligned["compute_tasks"][1]
+             ["dispatch"]["indirect"]["offset"] =
+        2;
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            unaligned),
+        Catch::Matchers::ContainsSubstring(
+            "4-byte aligned"));
+
+    auto wrong_layout = config;
+    wrong_layout["buffers"][0].erase(
+        "command_layout");
+    const auto untyped_buffers =
+        parseFrameGraphBufferDefinitionsFromJson(
+            wrong_layout);
+    REQUIRE_THROWS_WITH(
+        validateComputeTaskBufferContracts(
+            untyped_buffers, tasks),
+        Catch::Matchers::ContainsSubstring(
+            "requires command_layout"));
+
+    auto unknown_buffer_tasks = tasks;
+    unknown_buffer_tasks.at(1)
+        .dispatch.indirect->buffer =
+        "missing_arguments";
+    REQUIRE_THROWS_WITH(
+        validateComputeTaskBufferContracts(
+            buffers, unknown_buffer_tasks),
+        Catch::Matchers::ContainsSubstring(
+            "unknown buffer"));
+
+    auto self_writing_tasks = tasks;
+    self_writing_tasks.at(1).writes.push_back(
+        "dispatch_arguments");
+    REQUIRE_THROWS_WITH(
+        validateComputeTaskBufferContracts(
+            buffers, self_writing_tasks),
+        Catch::Matchers::ContainsSubstring(
+            "separate producer task"));
+
+    auto out_of_bounds = config;
+    out_of_bounds["compute_tasks"][1]
+                 ["dispatch"]["indirect"]["offset"] =
+        16;
+    const auto out_of_bounds_tasks =
+        parseComputeTaskDefinitionsFromConfigJson(
+            out_of_bounds);
+    REQUIRE_THROWS_WITH(
+        validateComputeTaskBufferContracts(
+            buffers, out_of_bounds_tasks),
+        Catch::Matchers::ContainsSubstring(
+            "exceeds buffer"));
+}
+
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {
     const nlohmann::json pass_json{
         {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting"}}},

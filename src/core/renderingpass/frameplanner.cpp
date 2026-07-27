@@ -756,6 +756,26 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     splitHistoryReads(
         authored_reads,
         node.reads, node.reads_history);
+    if (task_json.contains("dispatch")) {
+        const auto &dispatch =
+            task_json.at("dispatch");
+        if (dispatch.is_object() &&
+            dispatch.contains("indirect")) {
+            const auto &indirect =
+                dispatch.at("indirect");
+            if (!indirect.is_object()) {
+                throw std::runtime_error(
+                    "compute task dispatch.indirect must be an object: " +
+                    node.name);
+            }
+            appendUnique(
+                node.reads,
+                requireString(
+                    indirect, "buffer",
+                    "compute task dispatch.indirect: " +
+                        node.name));
+        }
+    }
     appendShaderResourcePortAccesses(
         task_json, authored_reads, writes,
         "frame graph compute task '" + node.name + "'",

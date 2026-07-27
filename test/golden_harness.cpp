@@ -2384,10 +2384,28 @@ void writeComputeProject(const std::filesystem::path &root,
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "write_color.comp", computeWriteColorShader());
+    writeTextFile(root / "shaders" / "build_dispatch.comp", R"glsl(#version 450
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+layout(std430,set=1,binding=0) buffer DispatchArguments {
+    uint x;
+    uint y;
+    uint z;
+} dispatch_arguments;
+void main(){
+    dispatch_arguments.x=1;
+    dispatch_arguments.y=1;
+    dispatch_arguments.z=1;
+})glsl");
     writeTextFile(root / "shaders" / "compute_present.frag", computeBufferFragmentShader());
     writeTextFile(root / "passes" / "main.json", R"json({
   "buffers": [
-    {"name": "compute_color", "size": 16, "lifetime": "persistent"}
+    {"name": "compute_color", "size": 16, "lifetime": "persistent"},
+    {
+      "name": "dispatch_arguments",
+      "size": 12,
+      "lifetime": "persistent",
+      "command_layout": "compute_dispatch"
+    }
   ],
   "rendering_passes": [
     {
@@ -2408,11 +2426,22 @@ void writeComputeProject(const std::filesystem::path &root,
   ],
   "compute_tasks": [
     {
+      "name": "build_dispatch",
+      "shader": "shaders/build_dispatch",
+      "writes": ["dispatch_arguments"],
+      "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    },
+    {
       "name": "write_color",
       "shader": "shaders/write_color",
       "writes": ["compute_color"],
       "before": ["present"],
-      "dispatch": {"groups": [1, 1, 1]},
+      "dispatch": {
+        "indirect": {
+          "buffer": "dispatch_arguments"
+        }
+      },
       "schedule": "per_frame"
     }
   ]
