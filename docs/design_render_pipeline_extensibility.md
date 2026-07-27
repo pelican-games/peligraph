@@ -1,8 +1,8 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2.4)
+# レンダーパイプライン拡張境界とポリシー統合(v2.5)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2.4 実装方針(2026-07-24。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.5 実装方針(2026-07-27。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
@@ -58,6 +58,12 @@ data/after/beforeを保つscope reorder、編集後lifetime、compatibleなsingl
 materialized rendering scope fusionをruntime scheduleとdynamic renderingへ接続した。
 一般のload/store、queue/barrier、MSAA/external scope fusionはaggressive follow-upまで
 compiler-ownedに残す。
+v2.5 は window output の surface / swapchain / target resourceを別々に
+in-place更新せず、既存renderer publication rootへ
+`WindowOutputGeneration`として束ねる方針を追加した。extent / format /
+surface変更はlogical authoringを書き換えず、変更されたtarget factsだけを
+再lowerする。WSIの状態機械、present lifetime、failure-contained cutoverは
+[`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md)を正とする。
 
 関連文書:
 
@@ -74,6 +80,8 @@ compiler-ownedに残す。
 - [`design_asset_hot_reload.md`](design_asset_hot_reload.md) —
   prepare / publish / rollback / retire
 - [`design_openxr.md`](design_openxr.md) — 論理 frame/view と OpenXR lifecycle
+- [`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md) —
+  window surface / swapchain epoch、output facts、回復とretire
 - [`design_physics_queries.md`](design_physics_queries.md) —
   versioned provider と game-DLL 差分実装の先行例
 
@@ -805,6 +813,14 @@ pipeline / policy reload は既存 transaction 規律へ揃える。
 4. frame boundary で logical plan、physical plan、関連 material route を一括 publish
 5. 失敗時は candidate のみ rollback
 6. 旧 plan / provider generation / GPU resource は in-flight 完了後 retire
+
+window resize / format change / surface lossも別のactive stateを持たず、同じ
+renderer rootのtransactionとして扱う。window factsに依存するtarget runtimeと
+WSI epochを同じrootへ結び、frameはそのsnapshotをsubmitまで保持する。
+Vulkan WSIのold-swapchain retirementは常にrollback可能ではないため、その
+cutover後の失敗だけはcomplete oldへ戻さず、complete `unavailable` stateへ
+封じ込めて再試行する。詳細は
+[`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md) §8。
 
 route/model/sample count の変更を material 単体で部分 publish しない。現在
 fail-fast している route 変更は、この transaction が成立した後に解禁する。

@@ -17,6 +17,8 @@
   Vulkan physical plan の詳細(以下 [RGC])
 - `docs/design_heterogeneous_execution_graph.md` — typed dialect / domain partition /
   CPU・Vulkan sibling lowering / fragment・closed forest の詳細(以下 [HEG])
+- `docs/design_wsi_epoch_recovery.md` — window surface / swapchain epoch、
+  output facts、回復publicationとpresent lifetime(以下 [WSI])
 
 改訂履歴: v2 で実装者レビューを反映し WP を再分割・採番し直した。旧番号との対応: 旧WP1→WP1、旧WP2→WP3、旧WP3→WP4+5+6、旧WP4→WP7、旧WP5→WP8、旧WP6→WP9、旧WP7→WP10、旧WP8→WP11、旧WP9→WP12、旧WP10→WP13、旧WP11→WP14、旧WP12→WP15、旧WP13→WP16。WP2(EngineTime)は新設。
 v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP19(シェーダ stem)を追加。設計の正に [PF] / [PFW] を追加。web 側の対応作業(WW1〜3)は my_webpage リポジトリの `docs/implementation_plan_web.md` にある(本書の管轄外)。
@@ -77,6 +79,11 @@ ctest --test-dir ./build -C Debug --output-on-failure
 これは 2026-07-08 の「ランタイムは v1 だけを読む」を、対象と例外を明確にして
 置き換えたものである(旧文は §3 の RenderWorld / ECS 項に残る)。
 
+**runtime epochはversionではない**: `SurfaceEpoch` / `SwapchainEpoch` /
+temporal reset epoch等はprocess-localな寿命・不連続markerであり、保存形式の
+解釈や旧版受理には使わない。古いepochは互換用に残さず、対応submit /
+present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
+
 ### 禁止事項
 
 - **旧版受理の追加**(上記「版の扱い」)。版を増やす WP は旧版の受理を同時に削除する
@@ -95,6 +102,9 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias + dependency-safe reorder/fusion runtime実装済み・general scope/queueと実機GPU gate待ち |
 | WP213 | 版の単一化 A — import manifest の version 必須化 | ✅ 完了（2026-07-26、archive） |
 | WP214 | 版の単一化 B — physics service V1 の削除 | ✅ 完了（2026-07-26、archive） |
+| WP215 | transactional window output root / frame token | 設計済み・着手前 |
+| WP216 | nonblocking SwapchainEpoch / XR mirror retirement | 設計済み・WP215依存 |
+| WP217 | SurfaceEpoch recreation / present support revalidation | 設計済み・WP216依存 |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -432,6 +442,127 @@ baseline GPU timingが得られていること。
 
 見積: device facts取得後に再見積。
 
+### WP215〜217: Window presentation / WSI epoch recovery
+
+正本: [`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md) [WSI]。
+
+この三WPはbug huntのA-F2/A-F3/A-F4/A-F5/A-F6/A-F7/A-F9/A-F11/
+A-F12/A-F13を、局所catchや追加boolでなく一つのwindow output lifecycleとして
+閉じる。`SurfaceEpoch`等のepochは旧版互換ではなくprocess-localなresource
+lifetimeである。各WPで置換対象の旧APIを直接削除し、compatibility shimを残さない。
+
+#### WP215: transactional window output root / frame token
+
+**目的**: surface factsに依存するtarget / pipelineとframe begin-endを、
+partial update不能な一つのrenderer generationへ移す。
+
+**実装範囲**:
+
+1. typed `OutputCompileFacts`、`OutputEncodingPath`、canonical fingerprintを追加し、
+   extent / format / color space / usage / queue bindingとWSI-only present configを分ける。
+2. 既存`RenderPipelineRuntimeGeneration` publicationをwindow output childまで含む
+   top-level rootへ広げる。別のactive WSI pointerを作らず、hot reloadと同じbase-id
+   transaction / single CASを使う。
+3. `RenderTargetContainer::recreateForExtent()`のtargetごとのin-place commitを、
+   全target / descriptor / output pipelineを完成後にpublishするcandidate arenaへ置換する。
+4. `IFrameTarget`をmove-only `FrameTargetFrame`のbegin / submit / abandonへ変更し、
+   current image / begun / submittedをtarget外側のbool組で管理しない。
+5. extentだけならcompiled logicalを再利用してtarget loweringを再実行し、
+   format / encoding変更ならattachment/output pipelineまで再prepareする。
+   present mode / image countだけではgraphを再compileしない。
+6. fullscreen rebind、layout state、temporal resetをpublish contractへ含め、
+   publish後にthrowし得る後処理列として残さない。
+
+**受け入れ条件**:
+
+- output factsのfield inclusion / exclusion、canonical hash、rebuild matrixをpure CPU testで固定
+- target N個目、descriptor、pipeline、publish直前のfault injectionで
+  active rootが完全なoldのまま、candidate membershipがexact rollback
+- irreversible WSI cutover後を模したfixtureでは完全な`unavailable`だけが見え、
+  partial new / retired oldをReadyとして公開しない
+- SRGB↔UNORM test overrideとextent変更でtarget plan / pipeline fingerprintが追従
+- resizeとhot reload同時発生でsingle CASまたはstale candidate retry
+- begun frame途中の例外でfence / image / generation leaseが次frameに安全
+- 旧`consumeExtentChanged()` /引数なしbegin-end /外側`abort_render()`を削除し、
+  alias / shimを残さない
+- 全CTest、window Vulkan smoke、validation error 0、`git diff --check`
+
+閉じるfinding: A-F3 / A-F4 / A-F6 / A-F9。見積: 特大。
+
+#### WP216: nonblocking SwapchainEpoch / XR mirror retirement
+
+**目的**: swapchain依存objectと状態遷移を一epochへ束ね、window recoveryから
+global waitとmain-loop停止を除く。
+
+**実装範囲**:
+
+1. swapchain / images / views / depth / acquire sync / per-image present semaphore /
+   frame slot leaseをimmutable `SwapchainEpoch`所有へ移す。
+2. `ready / refresh_pending / suspended_zero_extent / preparing /
+   unavailable_retry`をdiscriminated stateとして実装し、VkResult分類を一か所へ集約する。
+3. framebuffer callbackのrevision付きsnapshotを使い、zero extentはframe skip、
+   `SUBOPTIMAL`はfacts keyでcoalesce、`OUT_OF_DATE`は同surfaceのchild epoch交換とする。
+4. maintenance1対応時はper-present fenceをpollしてexact retireする。非対応時は
+   reacquireで証明済みのsemaphoreだけ破棄し、未証明分だけdevice-lifetime
+   quarantineへ移す。
+5. swapchain recoveryの`device.waitIdle()`、renderer内`glfwWaitEvents()`、
+   caller起動の`recoverSurfaceIfStale()`を削除する。
+6. XR mirrorはunavailableならdropし、blockし得るprepareをpresentation
+   maintenance workerへ送る。registry commit / publicationだけowner frame boundaryへ戻す。
+
+**受け入れ条件**:
+
+- acquire / present各位置のSuccess/Suboptimal/OutOfDate/OOMとzero extentの
+  state/call-order protocol fake
+- 同じSUBOPTIMAL keyで再構築1回以下、新revisionでだけ再評価
+- maintenance1 fixtureはpresent fence前に旧semaphoreを破棄せず、
+  signal後にexact retire
+- base Vulkan fixtureはreacquire proofとquarantineを区別し、
+  `waitIdle`を完了証明に使わない
+- minimize中もRPC / reload / ECS / audio tickが進むwindow smoke
+- mirror resize / minimize / failed prepare中もHMD protocol fakeの
+  wait-begin-end countと順序が継続
+- recovery traceにdevice/queue global idleとblocking GLFW event waitが無い
+- validation error 0、全CTest、`git diff --check`
+
+閉じるfinding: A-F2 / A-F7 / A-F11 / A-F12 / A-F13。依存: WP215。
+見積: 特大。
+
+#### WP217: SurfaceEpoch recreation / support revalidation
+
+**目的**:永久所有surfaceをfresh factoryへ置換し、
+`VK_ERROR_SURFACE_LOST_KHR`から同じlogical deviceで可能な範囲を回復する。
+
+**実装範囲**:
+
+1. Vulkan bootstrapをinstance→initial surface probe→device→initial output
+   generationへ分け、initial surfaceをcomposition rootから最初の
+   `SurfaceEpoch`へmoveする。
+2. `VulkanManageCore`からactive `vk::UniqueSurfaceKHR`と`getSurface()`を削除し、
+   instance + native windowからcandidateを作る`WindowSurfaceFactory`を追加する。
+3. acquire / present / query / createの`SurfaceLostKHRError`をsurface-lost stateへ写像し、
+   old swapchain / surface detach後にfresh surface + child swapchainをprepareする。
+4. fresh surfaceに対して現在physical deviceと**作成済み**queue familyの
+   present support / sharing planを再検証する。
+5. 同じdeviceで成立しない場合、flatは`device_rebuild_required`、
+   optional mirrorはreason付きdisableとする。別deviceへ暗黙移行しない。
+
+**受け入れ条件**:
+
+- acquire / present / support query / swapchain create各位置のsurface-lost injectionで
+  fresh surface factoryがexact一回ずつ呼ばれ、old handleを再利用しない
+- surface作成、support query、target prepare、swapchain prepare各failureで
+  complete unavailableを維持し、bounded retryする
+- same queue / logical device作成済みalternate queue / uncreated queue /
+  unsupported physical deviceのdecision table test
+- `VulkanManageCore::getSurface()`とpermanent surface memberが0件
+- optional mirrorのsurface lostでHMD loopが継続
+- Windows window smoke + validation error 0。RDP接続/切断、display移動は
+  manual platform gateとしてreportへ結果を残す
+- 全CTest、`git diff --check`
+
+閉じるfinding: A-F5。依存: WP216。見積: 大。
+
 ### 完了地点
 
 WP203aでlogical XR policyとdevice-dependentなVulkan view execution planningを分離した。
@@ -604,6 +735,11 @@ feature-off shader byte、flat/preview/XR view contract、resize/hot reload/roll
   multiview planning/runtime、2-layer OpenXR color/depth composition、
   実測 device profile gate まで実装済み。残りは現実装の Simulator 再確認、
   物理 HMD/対象 GPU 実測 gate、Quest standalone SA0〜SA3
+- **Window presentation / WSI lifecycle**: 2026-07-27に[WSI]を確定。
+  SurfaceEpoch / SwapchainEpochはversion互換でなくruntime lifetimeとし、
+  output factsとrenderer rootのsingle publication、nonblocking resize /
+  minimize、present fence / quarantine、fresh surface recoveryを
+  WP215→WP216→WP217で実装する。完了まではA-F5/A-F12等を対応済みと扱わない
 - **bindless バックエンド**: 2026-07-08 方向決定 — classic(set 2)と併用(`design_material_shading.md` §3-5)。生成アクセサが差を吸収、M2 のデータ形(SSBO + 参照)が前提工事。実装は M2 の後・GPU 駆動系(WP36 パーティクル・大規模シーン)の需要と同時に WP 化。**web/モバイルの床に PC を縛らせない**(web は将来やるとしてもシンプルな 3D/2D — ユーザー確認)
 - **web ビルド(WASM)**: 将来の可能性としてのみ保持(2026-07-08)。守るべき不変条件は全部現行規律(純ロジック規律・データ契約が抽象・classic 床・dist-bake/WGSL レーン)— 特別な保全作業なし。進めるときは案 B(WASM ゲームコア + TS レンダラ接合)→ 案 A(C++ WebGPU 実行系、データ契約の兄弟執行器)。**RHI の後付けは禁止**(本体の C++ インターフェースへの制約源にしない)
 - **アセットホットリロード**: HR0〜HR2-G 完了。WP147 で model

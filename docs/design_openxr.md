@@ -1,7 +1,7 @@
-# OpenXR 対応(v2.1 — 条件付き受理)— Quest 3 で VRM キャラを見る
+# OpenXR 対応(v2.2 — 条件付き受理)— Quest 3 で VRM キャラを見る
 
 対象読者: エンジン担当・VR コンテンツを作る人。
-ステータス: v2 ドラフト(2026-07-17)。v1 は敵対レビュー
+ステータス: v2.2 ドラフト(2026-07-27)。v1 は敵対レビュー
 `docs/design_reviews/2026-07-17_openxr_review_codex.md`(以下「レビュー」)
 で **Reject** — ①「既存フレームを view ごとに 2 回実行」は
 `Renderer::render()` = 1 論理フレーム(history flip・temporal advance・
@@ -152,7 +152,10 @@ projection[i]     = XrFovf からの非対称 RH_ZO
 - **mirror** = engine 所有の left-eye intermediate を window extent へ
   scale/letterbox → screen-space UI を window 座標で overlay →
   present する**別 sink**(XR image から copy しない・window stall で
-  HMD ループを止めない optional sink)
+  HMD ループを止めない optional sink)。window surface / swapchainの
+  epoch交換、nonblocking drop、present retirementは
+  [`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md)を正とし、
+  mirrorから同期的なglobal idle / recoveryを起動しない
 - legacy capture は XR 中 **名前入り reject**(v1)。headless/golden は
   常にフラット経路のみ
 

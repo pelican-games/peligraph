@@ -1086,7 +1086,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 - [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1・J1/J1b/J1c + 標準 TAA すべて実装済み)
 - [../design_usd_openpbr.md](../design_usd_openpbr.md) — USD レーン + OpenPBR(v2.1・M-PBR0/U-USD0 実装済み)
 - [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md) — OpenPBR 写像表の正
-- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.1・XR0〜XR4 + WP203a〜c local implementation済み。現実装のSimulator/物理HMD・対象GPU実測gateは未)
+- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.2・XR0〜XR4 + WP203a〜c local implementation済み。desktop mirror WSI lifecycleはWP215〜217計画済み。現実装のSimulator/物理HMD・対象GPU実測gateは未)
 - [../design_2d_game_layer.md](../design_2d_game_layer.md) — 2D ゲーム層(v2.4・S2D 実装済み)
 - [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
 - [../design_debug_profiling.md](../design_debug_profiling.md) — デバッグ・プロファイリング(v1.1・条件付き受理。D-P0a/D-P1a/D-P2a/D-P2b 実装済み、§6.14)

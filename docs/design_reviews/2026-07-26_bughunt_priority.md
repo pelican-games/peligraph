@@ -68,6 +68,13 @@ tinygltf(`true` = 続行)・miniaudio(降格して success)・imgui(hook 未設�
 | **A-F2/F3/F4/F9** | ゼロ extent TOCTOU・部分失敗のロールバック欠如。**現状の実害は「その操作で落ちる」**(混在状態で描画継続ではない)。局所回復を入れるなら 4 件とも先に transaction 化が必要 |
 | **A-F7** | 恒常 SUBOPTIMAL で毎フレーム `waitIdle` + 再構築(停止条件なし) |
 
+> **設計追補(2026-07-27)**: 上表のwindow出力群は
+> [`design_wsi_epoch_recovery.md`](../design_wsi_epoch_recovery.md)で
+> 一つのlifecycleとして設計済み。実装順はWP215(transactional output) →
+> WP216(nonblocking swapchain epoch) → WP217(surface epoch recreation)。
+> epochは旧version保護ではなくprocess-localなGPU / present lifetimeであり、
+> WP217完了前にA-F5を修正済みとは扱わない。
+
 ## 4. 無害な死にコード(掃除対象・実害なし)
 
 `B-4`(素な集合の交差検査)/ `B-T2-PIPE`(pipeline result 比較)/

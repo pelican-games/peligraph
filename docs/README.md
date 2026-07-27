@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-26(OpenXR array/depth composition + measured multiview gate / WP203c)。
+最終更新: 2026-07-27(window presentation / WSI epoch回復設計)。
 文書が矛盾したら
 **凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
 コード・テスト・`design_reviews` の完了レポートを正とする。
@@ -37,8 +37,9 @@
 | `design_render_feature_modules.md` | v1.2・config合成実装済み(WP28〜30)、typed接続未 | **パージ可能 GPU 機能**。fragment 合成・defines・RT overrides。typed GraphFragment / closed forest へ接続 |
 | `design_compute_task_graph.md` | v2.2・現行render/compute実装済み(WP33〜35)、異種拡張未 | **統一フレームグラフ**。依存宣言→機械最適化→手詰めの三層。authoring kind と execution domain を分離 |
 | `design_heterogeneous_execution_graph.md` | v1 方針・HEG1a〜HEG2b実装済み | **異種 execution の正本**。共通 typed dialect、endpoint/link topology、backend probe、CPU/Vulkan sibling lowering、fragment / closed forest、trust-first・optimize-by-default・advisory診断。動画は拡張可能性だけを予約 |
-| `design_render_pipeline_extensibility.md` | v2.1 方針・RPE1〜RPE6c1実装済み | **renderer 拡張境界の正本**。preset から physical/native までの拡張 ladder、renderer compiler facade、draw sort/MSAA/XR/hot reload の分離 |
+| `design_render_pipeline_extensibility.md` | v2.5 方針・RPE1〜RPE12bの検証済みsliceを段階実装 | **renderer 拡張境界の正本**。preset から physical/native までの拡張 ladder、renderer compiler facade、draw sort/MSAA/XR/hot reload/WSI publication の分離 |
 | `design_render_graph_compiler.md` | v1.1 方針・RPE6c1実装済み | **renderer compiler の詳細設計**。logical type / versioned value、material/light contract、target execution seam、tile GPU、Vulkan physical IR / NativeScope |
+| `design_wsi_epoch_recovery.md` | v1 方針・WP215〜217計画済み | **window presentation lifecycleの正本**。SurfaceEpoch / SwapchainEpoch、output facts、failure-contained publication、present retire、XR mirror非停止 |
 | `design_input_actions.md` | v1・I1〜I4 + XR action/pose 実装済み(WP39/49/89/91/130/132) | 入力四層・アクション層・プロファイル・収録/再生。HR2-I は未 |
 | `design_project_interpretation_layer.md` | v1・主要分離実施済み | 解釈(`pelican_project`)と engine binder の分離 |
 | `design_project_dcc_houdini.md` | v1・engine 側受け口実装済み | import manifest/VAT 再生は実装済み。Houdini adapter は外部リポジトリ |
@@ -57,7 +58,7 @@
 | `design_project_vcs.md` | v1・主要機能実装済み(WP55/57/66) | asset store、assets manifest、project init、外部 DAM 契約 |
 | `design_asset_containers.md` | v1・K1〜K4 実装済み(WP77/79/81/84) | `#` fragment、glTF scene extract、PSD/atlas tools、import rules |
 | `design_animation_graph.md` | v2.1・A0〜A2 + VRM/VRMA 実装済み(WP94〜102/111/121〜134/176〜178) | graph v1、typed VRMA decode/retarget/source。graph v2/live/SpringBone は未 |
-| `design_openxr.md` | v2.1・XR0〜XR4実装済み(WP125〜138)、XR2b local implementation完了(WP203a〜c) | array stereo composition、optional depth submit、measured multiview profile gateまで実装済み。現実装のSimulator/物理HMD・対象GPU実測gateは未 |
+| `design_openxr.md` | v2.2・XR0〜XR4実装済み(WP125〜138)、XR2b local implementation完了(WP203a〜c) | array stereo composition、optional depth submit、measured multiview profile gateまで実装済み。desktop mirror WSIは別正本へ分離。現実装のSimulator/物理HMD・対象GPU実測gateは未 |
 | `design_editor_tooling.md` | v2.5・共通 authoring/editor 基盤実装済み(WP149〜172) | typed RPC/service、transaction、undo/save/snapshot/watch/preview。Qt viewport/gizmo は未 |
 | `design_asset_hot_reload.md` | v2.1・HR0〜HR2-G + targeted animation generation 実装済み | 残り HR2-I、U3、VRMA watcher 自動配線 |
 | `design_debug_profiling.md` | D-P0〜D-P2 実装済み(WP139/140/143/145) | debug labels、RenderDoc、GPU/VRAM/XR timing。D-P3以降は未 |
@@ -96,6 +97,9 @@
   swapchain、optional composition depth、実測 device profile gate は済。
   次は現実装の Meta XR Simulator/物理 HMD と対象 GPU で WP203c gate を閉じ、
   その後 Quest standalone SA0〜SA3
+- window presentation = surface / swapchainをruntime epochとして交換し、
+  format-aware target compile、failure-contained publication、present lifetime、
+  XR mirror非停止へ統合する設計を確定。実装はWP215→216→217
 - physics = query/Jolt provider/E2 trigger は済。rigid-body simulation は
   将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
 - rendering = `hybrid_v1` の deferred + forward 合成、semantic material route、

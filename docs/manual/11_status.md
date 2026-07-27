@@ -258,7 +258,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_postprocess_temporal.md](../design_postprocess_temporal.md) | ✅ T1/T2(WP88/95)。TAA は [design_taa_jitter.md](../design_taa_jitter.md) へ | [第6章](06_rendering.md) |
 | [design_taa_jitter.md](../design_taa_jitter.md) | ✅ v2.1(条件付き受理)・J1/J1b/J1c/T-TAA すべて実装済み(WP112〜115) | [第6章](06_rendering.md) |
 | [design_usd_openpbr.md](../design_usd_openpbr.md) | ✅ v2.1(条件付き受理)・M-PBR0a/0b + U-USD0a/0b/0c 実装済み(WP116〜119/124)。U-USD1 系は未 | [第5章](05_assets.md)・[第6章](06_rendering.md) |
-| [design_openxr.md](../design_openxr.md) | ✅ v2.1・XR0〜XR4 + Meta XR Simulator gate実装済み(WP125〜138)。WP203a〜cでXR2b array/multiview/depth/profile gate、WP204でtile-local local readとのplanner/synthetic Vulkan接続をローカル実装済み。現実装のSimulator/物理HMD・対象GPU実測、standaloneは未 | [第6章](06_rendering.md) §6.12・[第2章](02_getting_started.md) |
+| [design_openxr.md](../design_openxr.md) | ✅ v2.2・XR0〜XR4 + Meta XR Simulator gate実装済み(WP125〜138)。WP203a〜cでXR2b array/multiview/depth/profile gate、WP204でtile-local local readとのplanner/synthetic Vulkan接続をローカル実装済み。desktop mirror WSI lifecycleはWP215〜217計画済み。現実装のSimulator/物理HMD・対象GPU実測、standaloneは未 | [第6章](06_rendering.md) §6.12・[第2章](02_getting_started.md) |
 | [design_debug_profiling.md](../design_debug_profiling.md) | ✅ D-P0〜D-P2 実装済み(WP139/140/143/145)。D-P3/D-P5/D-P4/D-P6/OPT は未 | [第10章](10_tools.md) |
 | [shader_contract.md](../shader_contract.md) | ✅(FrameUBO/SSBO/resources manifest まで反映) | [第6章](06_rendering.md) |
 | [design_input_actions.md](../design_input_actions.md) | ✅ I1〜I4 すべて(WP39/49/89/91) | [第7章](07_input_ui.md) |
