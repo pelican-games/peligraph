@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
     frametarget.cpp
     outputcompilefacts.cpp
     swapchainrecovery.cpp
+    windowsurface.cpp
     util.cpp
     cmdbuf.cpp
     offscreenframetarget.cpp

@@ -157,6 +157,9 @@ std::string_view frameTargetLifecycleStateName(
     case FrameTargetLifecycleState::preparing:
         return "preparing";
     case FrameTargetLifecycleState::
+        preparing_surface:
+        return "preparing_surface";
+    case FrameTargetLifecycleState::
         suspended_zero_extent:
         return "suspended_zero_extent";
     case FrameTargetLifecycleState::
@@ -196,6 +199,9 @@ std::string_view frameUnavailableReasonName(
         return "surface_lost";
     case FrameUnavailableReason::device_lost:
         return "device_lost";
+    case FrameUnavailableReason::
+        device_rebuild_required:
+        return "device_rebuild_required";
     case FrameUnavailableReason::fatal:
         return "fatal";
     }

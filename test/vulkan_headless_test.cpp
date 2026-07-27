@@ -4,7 +4,6 @@
 #include "../src/core/vkcore/core.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
-#include <stdexcept>
 #include <string_view>
 
 namespace Pelican {
@@ -20,7 +19,8 @@ TEST_CASE("VulkanManageCore initializes without a Window in headless mode", "[vu
         auto &vkcore = GET_MODULE(VulkanManageCore);
         REQUIRE(static_cast<VkDevice>(vkcore.getDevice()) != VK_NULL_HANDLE);
         REQUIRE(static_cast<VkPhysicalDevice>(vkcore.getPhysDevice()) != VK_NULL_HANDLE);
-        REQUIRE_THROWS_AS(vkcore.getSurface(), std::runtime_error);
+        REQUIRE_FALSE(
+            vkcore.takeInitialWindowSurface().has_value());
         if (vkcore.getRuntimeCapabilities().dynamic_rendering_local_read) {
             const auto extensions =
                 vkcore.getPhysDevice().enumerateDeviceExtensionProperties();

@@ -8,6 +8,7 @@
 #include "rendertarget.hpp"
 #include "swapchainrecovery.hpp"
 #include "util.hpp"
+#include "windowsurface.hpp"
 
 #include <algorithm>
 #include <array>
@@ -371,7 +372,22 @@ vk::Result resultFromSystemError(
 } // namespace
 
 struct SwapchainFrameTarget::Impl {
+    struct SurfaceEpoch {
+        SurfaceEpochId id = 0;
+        vk::UniqueSurfaceKHR surface;
+        vk::Queue presentation_queue;
+        std::uint32_t presentation_queue_family =
+            VK_QUEUE_FAMILY_IGNORED;
+        BasePresentRetirementTracker
+            base_retirement;
+        bool lost = false;
+        mutable std::mutex host_access;
+    };
+
     struct SwapchainEpoch {
+        // This lease precedes the swapchain so reverse member destruction
+        // destroys every swapchain child before releasing its VkSurfaceKHR.
+        std::shared_ptr<SurfaceEpoch> surface_epoch;
         vk::Device device;
         SwapchainEpochId id = 0;
         FramebufferExtentSnapshot framebuffer;
@@ -489,9 +505,7 @@ struct SwapchainFrameTarget::Impl {
 
         void noteAcquired(
             std::uint32_t image_index,
-            bool maintenance1,
-            BasePresentRetirementTracker
-                &base_retirement) {
+            bool maintenance1) {
             if (image_index >=
                 present_wait_pending.size()) {
                 throw std::runtime_error(
@@ -502,7 +516,7 @@ struct SwapchainFrameTarget::Impl {
             }
             present_wait_pending[image_index] = false;
             if (!maintenance1) {
-                base_retirement
+                surface_epoch->base_retirement
                     .noteSuccessorImageReacquired(
                         id, true);
             }
@@ -567,8 +581,11 @@ struct SwapchainFrameTarget::Impl {
 
     struct BuildRequest {
         SwapchainEpochId epoch_id = 0;
+        SurfaceEpochId surface_epoch_id = 0;
         SwapchainPreparationRequest policy;
         FramebufferExtentSnapshot framebuffer;
+        std::shared_ptr<SurfaceEpoch>
+            surface_epoch;
         std::shared_ptr<SwapchainEpoch> old_epoch;
         std::optional<std::uint32_t>
             release_image_index;
@@ -582,6 +599,9 @@ struct SwapchainFrameTarget::Impl {
         // the request's old epoch was retired by the successful create.
         std::shared_ptr<SwapchainEpoch>
             replacement_anchor;
+        SurfaceDeviceRebuildReason
+            device_rebuild_reason =
+                SurfaceDeviceRebuildReason::none;
         vk::Result failure_result =
             vk::Result::eSuccess;
         std::string error;
@@ -593,17 +613,18 @@ struct SwapchainFrameTarget::Impl {
 
     VulkanManageCore &core;
     Window &window;
+    WindowSurfaceFactory surface_factory;
     Camera &camera;
     vk::Device device;
     vk::PhysicalDevice physical_device;
-    vk::SurfaceKHR surface;
     vk::Queue graphics_queue;
-    vk::Queue presentation_queue;
     std::uint32_t graphics_queue_family = 0;
-    std::uint32_t presentation_queue_family = 0;
+    std::uint32_t
+        current_presentation_queue_family = 0;
+    std::vector<std::uint32_t>
+        created_queue_families;
     bool maintenance1 = false;
 
-    mutable std::mutex surface_host_access;
     std::shared_ptr<SwapchainEpoch> active_epoch;
     // A complete stale candidate, a partially built replacement, or the
     // previous active epoch after create-before-retire failed. Exactly one
@@ -612,9 +633,13 @@ struct SwapchainFrameTarget::Impl {
         recovery_anchor;
     std::vector<std::shared_ptr<SwapchainEpoch>>
         retired_epochs;
-    BasePresentRetirementTracker
-        base_retirement;
     SwapchainEpochId next_epoch_id = 1;
+    SurfaceEpochId next_surface_epoch_id = 1;
+    SurfaceEpochId published_surface_epoch_id = 0;
+    std::uint64_t surface_recovery_count = 0;
+    SurfaceDeviceRebuildReason
+        device_rebuild_reason =
+            SurfaceDeviceRebuildReason::none;
     FrameTargetCaps published_caps;
     WsiPresentConfiguration
         last_present_configuration;
@@ -650,17 +675,19 @@ struct SwapchainFrameTarget::Impl {
     Impl()
         : core{GET_MODULE(VulkanManageCore)},
           window{GET_MODULE(Window)},
+          surface_factory{
+              core.getInstance(), window},
           camera{GET_MODULE(Camera)},
           device{core.getDevice()},
           physical_device{core.getPhysDevice()},
-          surface{core.getSurface()},
           graphics_queue{core.getGraphicsQueue()},
-          presentation_queue{
-              core.getPresentationQueue()},
           graphics_queue_family{
               core.getGraphicsQueueFamilyIndex()},
-          presentation_queue_family{
-              core.getPresentationQueueFamilyIndex()},
+          current_presentation_queue_family{
+              core
+                  .getBootstrapPresentationQueueFamilyIndex()},
+          created_queue_families{
+              core.createdQueueFamilyIndices()},
           maintenance1{
               core.getRuntimeCapabilities()
                   .swapchain_maintenance1} {
@@ -676,11 +703,41 @@ struct SwapchainFrameTarget::Impl {
                 "initial window framebuffer has zero extent; "
                 "swapchain bootstrap cannot block the engine loop");
         }
+        auto initial_surface =
+            core.takeInitialWindowSurface();
+        if (!initial_surface) {
+            throw std::runtime_error(
+                "window frame target requires the one-shot bootstrap surface");
+        }
+        const auto initial_queue =
+            core.createdQueue(
+                current_presentation_queue_family);
+        if (!initial_queue) {
+            throw std::logic_error(
+                "bootstrap presentation queue was not created");
+        }
+        auto initial_surface_epoch =
+            std::make_shared<SurfaceEpoch>();
+        initial_surface_epoch->id =
+            next_surface_epoch_id++;
+        initial_surface_epoch->surface =
+            std::move(initial_surface->surface);
+        initial_surface_epoch->presentation_queue =
+            *initial_queue;
+        initial_surface_epoch
+            ->presentation_queue_family =
+            current_presentation_queue_family;
         BuildRequest initial_request{
             .epoch_id = next_epoch_id++,
+            .surface_epoch_id =
+                initial_surface_epoch->id,
             .framebuffer = framebuffer,
+            .surface_epoch =
+                std::move(initial_surface_epoch),
         };
         active_epoch = buildEpoch(initial_request);
+        published_surface_epoch_id =
+            active_epoch->surface_epoch->id;
         published_caps.compile_facts =
             active_epoch->output_facts;
         last_present_configuration =
@@ -704,10 +761,11 @@ struct SwapchainFrameTarget::Impl {
         LOG_INFO(
             logger,
             "swapchain epoch initialized: epoch={} extent={}x{} "
-            "maintenance1={}",
+            "surface_epoch={} maintenance1={}",
             active_epoch->id,
             active_epoch->output_facts.extent.width,
             active_epoch->output_facts.extent.height,
+            active_epoch->surface_epoch->id,
             maintenance1);
     }
 
@@ -783,32 +841,50 @@ struct SwapchainFrameTarget::Impl {
         const BuildRequest &request,
         std::shared_ptr<SwapchainEpoch>
             *replacement_anchor = nullptr) {
+        if (request.surface_epoch == nullptr ||
+            !request.surface_epoch->surface) {
+            throw std::logic_error(
+                "swapchain preparation requires a live surface epoch");
+        }
+        if (request.old_epoch != nullptr &&
+            request.old_epoch->surface_epoch !=
+                request.surface_epoch) {
+            throw std::logic_error(
+                "oldSwapchain cannot cross surface epochs");
+        }
         auto epoch =
             std::make_shared<SwapchainEpoch>();
+        epoch->surface_epoch =
+            request.surface_epoch;
         epoch->device = device;
         epoch->id = request.epoch_id;
         epoch->framebuffer = request.framebuffer;
 
         if (request.old_epoch != nullptr) {
             std::scoped_lock lock{
-                surface_host_access,
+                request.surface_epoch->host_access,
                 request.old_epoch->host_access};
             releaseAbandonedImage(request);
             epoch->swapchain = createSwapchain(
-                device, physical_device, surface,
+                device, physical_device,
+                request.surface_epoch->surface.get(),
                 request.framebuffer,
                 graphics_queue_family,
-                presentation_queue_family,
+                request.surface_epoch
+                    ->presentation_queue_family,
                 request.old_epoch->swapchain
                     .swapchain.get());
         } else {
             std::scoped_lock lock{
-                surface_host_access};
+                request.surface_epoch->host_access};
             epoch->swapchain = createSwapchain(
-                device, physical_device, surface,
+                device, physical_device,
+                request.surface_epoch->surface.get(),
                 request.framebuffer,
                 graphics_queue_family,
-                presentation_queue_family, {});
+                request.surface_epoch
+                    ->presentation_queue_family,
+                {});
         }
         // vkCreateSwapchainKHR success retires oldSwapchain immediately.
         // Preserve the new handle before creating any dependent object so a
@@ -890,7 +966,8 @@ struct SwapchainFrameTarget::Impl {
         epoch->output_facts = outputFacts(
             epoch->swapchain,
             graphics_queue_family,
-            presentation_queue_family);
+            request.surface_epoch
+                ->presentation_queue_family);
         epoch->recovery_key =
             SwapchainRecoveryKey{
                 .framebuffer_revision =
@@ -990,10 +1067,70 @@ struct SwapchainFrameTarget::Impl {
             std::shared_ptr<SwapchainEpoch>
                 replacement_anchor;
             try {
-                completion.candidate =
-                    buildEpoch(
-                        completion.request,
-                        &replacement_anchor);
+                if (completion.request.policy
+                        .preparation_kind ==
+                    WindowOutputPreparationKind::
+                        surface) {
+                    auto prepared_surface =
+                        surface_factory.create();
+                    const auto binding =
+                        querySurfacePresentationQueue(
+                            physical_device,
+                            prepared_surface.surface.get(),
+                            current_presentation_queue_family,
+                            created_queue_families);
+                    if (binding.kind ==
+                        SurfaceQueueBindingKind::
+                            device_rebuild_required) {
+                        completion.device_rebuild_reason =
+                            binding.rebuild_reason;
+                    } else {
+                        const auto queue =
+                            core.createdQueue(
+                                binding
+                                    .presentation_queue_family);
+                        if (!queue) {
+                            throw std::logic_error(
+                                "surface policy selected an uncreated queue");
+                        }
+                        auto surface_epoch =
+                            std::make_shared<
+                                SurfaceEpoch>();
+                        surface_epoch->id =
+                            completion.request
+                                .surface_epoch_id;
+                        surface_epoch->surface =
+                            std::move(
+                                prepared_surface.surface);
+                        surface_epoch
+                            ->presentation_queue =
+                            *queue;
+                        surface_epoch
+                            ->presentation_queue_family =
+                            binding
+                                .presentation_queue_family;
+                        completion.request
+                            .surface_epoch =
+                            std::move(surface_epoch);
+                    }
+                }
+                if (completion.device_rebuild_reason !=
+                    SurfaceDeviceRebuildReason::none) {
+                    completion.failure_result =
+                        vk::Result::
+                            eErrorInitializationFailed;
+                    completion.error =
+                        "fresh surface requires Vulkan device rebuild: " +
+                        std::string{
+                            surfaceDeviceRebuildReasonName(
+                                completion
+                                    .device_rebuild_reason)};
+                } else {
+                    completion.candidate =
+                        buildEpoch(
+                            completion.request,
+                            &replacement_anchor);
+                }
             } catch (const vk::SystemError &error) {
                 completion.failure_result =
                     resultFromSystemError(error);
@@ -1048,14 +1185,73 @@ struct SwapchainFrameTarget::Impl {
         };
     }
 
-    void launchPendingPreparation() {
+    void retireEpoch(
+        std::shared_ptr<SwapchainEpoch> epoch) {
+        if (epoch == nullptr) return;
+        const auto duplicate = std::find_if(
+            retired_epochs.begin(),
+            retired_epochs.end(),
+            [&](const auto &existing) {
+                return existing.get() == epoch.get();
+            });
+        if (duplicate == retired_epochs.end()) {
+            retired_epochs.push_back(
+                std::move(epoch));
+        }
+    }
+
+    void markSurfaceLost(
+        const std::shared_ptr<SurfaceEpoch>
+            &lost_surface,
+        SwapchainEpochId observed_epoch) {
+        if (lost_surface != nullptr) {
+            lost_surface->lost = true;
+        }
+        const auto belongs_to_lost_surface =
+            [&](const auto &epoch) {
+                return lost_surface != nullptr &&
+                       epoch != nullptr &&
+                       epoch->surface_epoch ==
+                           lost_surface;
+            };
+        if (belongs_to_lost_surface(active_epoch)) {
+            retireEpoch(std::move(active_epoch));
+        }
+        if (belongs_to_lost_surface(
+                recovery_anchor)) {
+            retireEpoch(
+                std::move(recovery_anchor));
+        }
+        if (pending_abandonment &&
+            belongs_to_lost_surface(
+                pending_abandonment->epoch)) {
+            pending_abandonment.reset();
+        }
+        recovery->markSurfaceLost(observed_epoch);
+    }
+
+    void launchPendingPreparation(
+        FramebufferExtentSnapshot framebuffer) {
         if (worker_busy) return;
         auto policy =
-            recovery->takePreparationRequest();
+            recovery->kind() ==
+                    WindowOutputStateKind::
+                        surface_lost
+                ? recovery
+                      ->takeSurfacePreparationRequest(
+                          requestedRecoveryKey(
+                              framebuffer))
+                : recovery->takePreparationRequest();
         if (!policy) return;
 
         BuildRequest request{
             .epoch_id = next_epoch_id++,
+            .surface_epoch_id =
+                policy->preparation_kind ==
+                        WindowOutputPreparationKind::
+                            surface
+                    ? next_surface_epoch_id++
+                    : 0,
             .policy = *policy,
             .framebuffer =
                 FramebufferExtentSnapshot{
@@ -1065,12 +1261,30 @@ struct SwapchainFrameTarget::Impl {
                         policy->key
                             .framebuffer_revision},
         };
-        if (active_epoch != nullptr) {
-            request.old_epoch = active_epoch;
-            active_epoch.reset();
-        } else if (recovery_anchor != nullptr) {
-            request.old_epoch =
-                std::move(recovery_anchor);
+        if (policy->preparation_kind ==
+            WindowOutputPreparationKind::
+                swapchain) {
+            if (active_epoch != nullptr) {
+                request.old_epoch =
+                    std::move(active_epoch);
+            } else if (
+                recovery_anchor != nullptr) {
+                request.old_epoch =
+                    std::move(recovery_anchor);
+            }
+            if (request.old_epoch == nullptr) {
+                recovery->markFatal();
+                throw std::logic_error(
+                    "swapchain preparation has no surface anchor");
+            }
+            request.surface_epoch =
+                request.old_epoch->surface_epoch;
+        } else {
+            if (active_epoch != nullptr ||
+                recovery_anchor != nullptr) {
+                throw std::logic_error(
+                    "surface preparation retained a lost active swapchain");
+            }
         }
         if (pending_abandonment) {
             if (request.old_epoch ==
@@ -1110,9 +1324,21 @@ struct SwapchainFrameTarget::Impl {
                                 true);
                     } else {
                         present_complete =
-                            base_retirement.mayRetire(
+                            epoch->surface_epoch
+                                ->base_retirement
+                                .mayRetire(
                                 epoch->id,
                                 epoch->ever_presented);
+                    }
+                    if (gpu_complete &&
+                        !present_complete &&
+                        epoch->surface_epoch->lost) {
+                        // A successor reacquire is meaningful only within the
+                        // same surface. Once that surface is lost, preserve
+                        // unproven presentation objects until device teardown.
+                        core.quarantinePresentationResources(
+                            epoch);
+                        return true;
                     }
                     return gpu_complete &&
                            present_complete;
@@ -1147,7 +1373,7 @@ struct SwapchainFrameTarget::Impl {
                 framebuffer_still_matches) {
                 if (completion->request.old_epoch !=
                     nullptr) {
-                    retired_epochs.push_back(
+                    retireEpoch(
                         completion->request.old_epoch);
                 }
                 const auto previous_fingerprint =
@@ -1155,6 +1381,12 @@ struct SwapchainFrameTarget::Impl {
                         published_caps.compile_facts);
                 active_epoch =
                     std::move(completion->candidate);
+                if (published_surface_epoch_id !=
+                    active_epoch->surface_epoch->id) {
+                    published_surface_epoch_id =
+                        active_epoch->surface_epoch->id;
+                    ++surface_recovery_count;
+                }
                 published_caps.compile_facts =
                     active_epoch->output_facts;
                 last_present_configuration =
@@ -1163,6 +1395,11 @@ struct SwapchainFrameTarget::Impl {
                 last_support_fingerprint =
                     active_epoch->swapchain
                         .surface_support_fingerprint;
+                current_presentation_queue_family =
+                    active_epoch->surface_epoch
+                        ->presentation_queue_family;
+                device_rebuild_reason =
+                    SurfaceDeviceRebuildReason::none;
                 recovery->preparationSucceeded(
                     active_epoch->id,
                     active_epoch->recovery_key);
@@ -1177,9 +1414,10 @@ struct SwapchainFrameTarget::Impl {
                         active_epoch->output_facts);
                 LOG_INFO(
                     logger,
-                    "swapchain epoch published: epoch={} extent={}x{} "
-                    "reason={} facts_changed={}",
+                    "swapchain epoch published: epoch={} surface_epoch={} "
+                    "extent={}x{} reason={} facts_changed={}",
                     active_epoch->id,
+                    active_epoch->surface_epoch->id,
                     active_epoch->output_facts
                         .extent.width,
                     active_epoch->output_facts
@@ -1191,7 +1429,7 @@ struct SwapchainFrameTarget::Impl {
                 completion->candidate != nullptr) {
                 if (completion->request.old_epoch !=
                     nullptr) {
-                    retired_epochs.push_back(
+                    retireEpoch(
                         completion->request.old_epoch);
                 }
                 LOG_INFO(
@@ -1206,13 +1444,21 @@ struct SwapchainFrameTarget::Impl {
                 // instead of creating a second non-retired swapchain.
                 recovery_anchor =
                     std::move(completion->candidate);
+                recovery->deferRetry(
+                    requestedRecoveryKey(
+                        framebuffer),
+                    WindowOutputRecoveryReason::
+                        framebuffer_changed,
+                    maintenance_tick, 1,
+                    completion->request.policy
+                        .attempt,
+                    WindowOutputPreparationKind::
+                        swapchain);
                 if (framebuffer.extent.width == 0 ||
                     framebuffer.extent.height == 0) {
                     recovery->observeZeroExtent(
                         0, framebuffer);
                 } else {
-                    recovery->preparationFailed(
-                        maintenance_tick, 1);
                     (void)recovery->requestRefresh(
                         0,
                         requestedRecoveryKey(
@@ -1226,7 +1472,7 @@ struct SwapchainFrameTarget::Impl {
                         ->replacement_anchor != nullptr) {
                     if (completion->request.old_epoch !=
                         nullptr) {
-                        retired_epochs.push_back(
+                        retireEpoch(
                             completion->request
                                 .old_epoch);
                     }
@@ -1255,15 +1501,39 @@ struct SwapchainFrameTarget::Impl {
                         completion->failure_result),
                     static_cast<int>(classification),
                     completion->error);
-                if (framebuffer.extent.width == 0 ||
-                    framebuffer.extent.height == 0) {
-                    recovery->observeZeroExtent(
-                        0, framebuffer);
+                if (completion->device_rebuild_reason !=
+                    SurfaceDeviceRebuildReason::none) {
+                    device_rebuild_reason =
+                        completion
+                            ->device_rebuild_reason;
+                    recovery->markDeviceLost();
                 } else if (
                     classification ==
                     WsiResultClass::
                         surface_unavailable) {
-                    recovery->markSurfaceLost(0);
+                    auto lost_surface =
+                        completion->request
+                            .surface_epoch;
+                    if (lost_surface == nullptr &&
+                        recovery_anchor != nullptr) {
+                        lost_surface =
+                            recovery_anchor
+                                ->surface_epoch;
+                    }
+                    markSurfaceLost(
+                        lost_surface, 0);
+                    if (framebuffer.extent.width ==
+                            0 ||
+                        framebuffer.extent.height ==
+                            0) {
+                        recovery->observeZeroExtent(
+                            0, framebuffer);
+                    }
+                } else if (
+                    framebuffer.extent.width == 0 ||
+                    framebuffer.extent.height == 0) {
+                    recovery->observeZeroExtent(
+                        0, framebuffer);
                 } else if (
                     classification ==
                     WsiResultClass::device_lost) {
@@ -1274,9 +1544,29 @@ struct SwapchainFrameTarget::Impl {
                             retryable_failure ||
                     classification ==
                         WsiResultClass::
-                            swapchain_unavailable) {
-                    recovery->preparationFailed(
-                        maintenance_tick, 30);
+                            swapchain_unavailable ||
+                    completion->request.policy
+                            .preparation_kind ==
+                        WindowOutputPreparationKind::
+                            surface) {
+                    if (completion
+                            ->replacement_anchor !=
+                        nullptr ||
+                        recovery_anchor != nullptr) {
+                        recovery->deferRetry(
+                            requestedRecoveryKey(
+                                framebuffer),
+                            WindowOutputRecoveryReason::
+                                prepare_failed,
+                            maintenance_tick, 30,
+                            completion->request.policy
+                                .attempt,
+                            WindowOutputPreparationKind::
+                                swapchain);
+                    } else {
+                        recovery->preparationFailed(
+                            maintenance_tick, 30);
+                    }
                 } else {
                     recovery->markFatal();
                 }
@@ -1304,6 +1594,17 @@ struct SwapchainFrameTarget::Impl {
                 unavailable_retry) {
             (void)recovery->retryIfDue(
                 maintenance_tick);
+            if (recovery->kind() ==
+                WindowOutputStateKind::
+                    unavailable_retry) {
+                (void)recovery->requestRefresh(
+                    0,
+                    requestedRecoveryKey(
+                        framebuffer),
+                    WindowOutputRecoveryReason::
+                        framebuffer_changed,
+                    maintenance_tick);
+            }
         }
         if (recovery->kind() ==
             WindowOutputStateKind::
@@ -1327,7 +1628,7 @@ struct SwapchainFrameTarget::Impl {
                     framebuffer_changed,
                 maintenance_tick);
         }
-        launchPendingPreparation();
+        launchPendingPreparation(framebuffer);
         return result;
     }
 
@@ -1342,6 +1643,8 @@ struct SwapchainFrameTarget::Impl {
                     FrameUnavailableReason::zero_extent,
             };
         case WindowOutputStateKind::preparing:
+        case WindowOutputStateKind::
+            preparing_surface:
         case WindowOutputStateKind::refresh_pending:
             return {
                 .disposition =
@@ -1373,7 +1676,13 @@ struct SwapchainFrameTarget::Impl {
                     FrameBeginDisposition::
                         device_rebuild_required,
                 .reason =
-                    FrameUnavailableReason::device_lost,
+                    device_rebuild_reason ==
+                            SurfaceDeviceRebuildReason::
+                                none
+                        ? FrameUnavailableReason::
+                              device_lost
+                        : FrameUnavailableReason::
+                              device_rebuild_required,
             };
         case WindowOutputStateKind::fatal:
             return {
@@ -1511,7 +1820,7 @@ struct SwapchainFrameTarget::Impl {
                 requestedRecoveryKey(framebuffer),
                 WindowOutputRecoveryReason::out_of_date,
                 maintenance_tick);
-            launchPendingPreparation();
+            launchPendingPreparation(framebuffer);
             return {
                 .disposition =
                     FrameBeginDisposition::unavailable,
@@ -1522,9 +1831,9 @@ struct SwapchainFrameTarget::Impl {
         }
         if (classification ==
             WsiResultClass::surface_unavailable) {
-            retired_epochs.push_back(epoch);
-            active_epoch.reset();
-            recovery->markSurfaceLost(epoch->id);
+            markSurfaceLost(
+                epoch->surface_epoch,
+                epoch->id);
             return unavailableResult();
         }
         if (classification ==
@@ -1549,8 +1858,7 @@ struct SwapchainFrameTarget::Impl {
         }
 
         epoch->noteAcquired(
-            acquired.value, maintenance1,
-            base_retirement);
+            acquired.value, maintenance1);
         pollRetiredEpochs();
         if (next_frame_serial ==
             std::numeric_limits<std::uint64_t>::max()) {
@@ -1847,8 +2155,10 @@ struct SwapchainFrameTarget::Impl {
                     epoch->host_access};
                 try {
                     present_result =
-                        presentation_queue.presentKHR(
-                            present_info);
+                        epoch->surface_epoch
+                            ->presentation_queue
+                            .presentKHR(
+                                present_info);
                 } catch (
                     const vk::SystemError &error) {
                     present_result =
@@ -1877,11 +2187,9 @@ struct SwapchainFrameTarget::Impl {
 
             if (classification ==
                 WsiResultClass::surface_unavailable) {
-                retired_epochs.push_back(epoch);
-                if (active_epoch == epoch) {
-                    active_epoch.reset();
-                }
-                recovery->markSurfaceLost(epoch->id);
+                markSurfaceLost(
+                    epoch->surface_epoch,
+                    epoch->id);
                 return {
                     .disposition =
                         FrameSubmitDisposition::
@@ -1946,7 +2254,7 @@ struct SwapchainFrameTarget::Impl {
                     requestedRecoveryKey(
                         framebuffer),
                     reason, maintenance_tick);
-                launchPendingPreparation();
+                launchPendingPreparation(framebuffer);
                 return {
                     .disposition =
                         FrameSubmitDisposition::
@@ -1991,10 +2299,20 @@ struct SwapchainFrameTarget::Impl {
 
     FrameTargetStatus status() const {
         FrameTargetStatus result{
+            .surface_epoch =
+                published_surface_epoch_id,
             .swapchain_epoch =
                 active_epoch != nullptr
                     ? active_epoch->id
                     : 0,
+            .presentation_queue_family =
+                published_surface_epoch_id != 0
+                    ? current_presentation_queue_family
+                    : VK_QUEUE_FAMILY_IGNORED,
+            .surface_recovery_count =
+                surface_recovery_count,
+            .recovery_attempt =
+                recovery->attempt(),
             .extent_revision =
                 active_epoch != nullptr
                     ? active_epoch->framebuffer
@@ -2013,6 +2331,10 @@ struct SwapchainFrameTarget::Impl {
             .asynchronous_maintenance = true,
             .exact_present_retirement =
                 maintenance1,
+            .device_rebuild_reason =
+                std::string{
+                    surfaceDeviceRebuildReasonName(
+                        device_rebuild_reason)},
         };
         switch (recovery->kind()) {
         case WindowOutputStateKind::ready:
@@ -2023,6 +2345,15 @@ struct SwapchainFrameTarget::Impl {
         case WindowOutputStateKind::preparing:
             result.state =
                 FrameTargetLifecycleState::preparing;
+            result.reason =
+                FrameUnavailableReason::
+                    output_preparing;
+            break;
+        case WindowOutputStateKind::
+            preparing_surface:
+            result.state =
+                FrameTargetLifecycleState::
+                    preparing_surface;
             result.reason =
                 FrameUnavailableReason::
                     output_preparing;
@@ -2057,7 +2388,13 @@ struct SwapchainFrameTarget::Impl {
                 FrameTargetLifecycleState::
                     device_rebuild_required;
             result.reason =
-                FrameUnavailableReason::device_lost;
+                device_rebuild_reason ==
+                        SurfaceDeviceRebuildReason::
+                            none
+                    ? FrameUnavailableReason::
+                          device_lost
+                    : FrameUnavailableReason::
+                          device_rebuild_required;
             break;
         case WindowOutputStateKind::fatal:
             result.state =

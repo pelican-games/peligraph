@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -157,12 +158,14 @@ enum class FrameUnavailableReason {
     output_reconfigured,
     surface_lost,
     device_lost,
+    device_rebuild_required,
     fatal,
 };
 
 enum class FrameTargetLifecycleState {
     ready,
     preparing,
+    preparing_surface,
     suspended_zero_extent,
     unavailable_retry,
     surface_lost,
@@ -175,7 +178,12 @@ struct FrameTargetStatus {
         FrameTargetLifecycleState::ready;
     FrameUnavailableReason reason =
         FrameUnavailableReason::none;
+    std::uint64_t surface_epoch = 0;
     std::uint64_t swapchain_epoch = 0;
+    std::uint32_t presentation_queue_family =
+        VK_QUEUE_FAMILY_IGNORED;
+    std::uint64_t surface_recovery_count = 0;
+    std::uint32_t recovery_attempt = 0;
     std::uint64_t extent_revision = 0;
     std::uint64_t output_facts_fingerprint = 0;
     vk::Result last_wsi_result =
@@ -184,6 +192,7 @@ struct FrameTargetStatus {
     std::size_t quarantined_resource_count = 0;
     bool asynchronous_maintenance = false;
     bool exact_present_retirement = false;
+    std::string device_rebuild_reason = "none";
 };
 
 std::string_view frameTargetLifecycleStateName(

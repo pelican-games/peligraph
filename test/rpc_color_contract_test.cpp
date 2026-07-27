@@ -230,7 +230,18 @@ void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
             .at("window_output");
     REQUIRE(window_output.at("state") == "ready");
     REQUIRE(window_output.at("reason") == "none");
+    REQUIRE(window_output.at("surface_epoch") == 0);
     REQUIRE(window_output.at("swapchain_epoch") == 0);
+    REQUIRE(
+        window_output.at(
+            "presentation_queue_family")
+            .is_null());
+    REQUIRE(window_output.at("surface_recoveries") ==
+            0);
+    REQUIRE(window_output.at("retry_count") == 0);
+    REQUIRE(window_output.at(
+                "device_rebuild_reason") ==
+            "none");
     REQUIRE(window_output.at("maintenance") ==
             "not_applicable");
     REQUIRE(window_output.at("retirement_mode") ==

@@ -6,9 +6,11 @@
 #include "debugutils.hpp"
 #include "image.hpp"
 #include "memorydiagnostics.hpp"
+#include "windowsurface.hpp"
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -39,7 +41,8 @@ enum class VulkanProcessType {
 
 DECLARE_MODULE(VulkanManageCore) {
     vk::UniqueInstance instance;
-    vk::UniqueSurfaceKHR surface;
+    std::optional<PreparedWindowSurface>
+        initial_window_surface;
     vk::PhysicalDevice phys_device;
     QueueSet queue_set;
     vk::UniqueDevice device;
@@ -69,10 +72,17 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::Instance getInstance() const { return instance.get(); }
     vk::PhysicalDevice getPhysDevice() const { return phys_device; };
     vk::Queue getGraphicsQueue() const { return graphic_queue; }
-    vk::SurfaceKHR getSurface() const;
-    vk::Queue getPresentationQueue() const { return presen_queue; }
     uint32_t getGraphicsQueueFamilyIndex() const { return queue_set.graphic_queue; }
-    uint32_t getPresentationQueueFamilyIndex() const { return queue_set.presentation_queue; }
+    uint32_t
+    getBootstrapPresentationQueueFamilyIndex() const {
+        return queue_set.presentation_queue;
+    }
+    std::optional<PreparedWindowSurface>
+    takeInitialWindowSurface() noexcept;
+    std::vector<std::uint32_t>
+    createdQueueFamilyIndices() const;
+    std::optional<vk::Queue> createdQueue(
+        std::uint32_t family) const noexcept;
     const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
     const VulkanRuntimeCapabilities &getRuntimeCapabilities() const noexcept {
         return runtime_capabilities;

@@ -563,6 +563,22 @@ global waitとmain-loop停止を除く。
 
 閉じるfinding: A-F5。依存: WP216。見積: 大。
 
+**実装状況(2026-07-27)**:
+
+- `WindowSurfaceFactory`、one-shot bootstrap handoff、`SurfaceEpoch`、
+  worker 上の fresh surface + swapchain transaction を実装済み
+- 現 presentation familyを優先し、作成済みalternate queueへだけ切替可能。
+  未作成queueまたはphysical device非対応は理由付き
+  `device_rebuild_required`
+- base Vulkanのsuccessor reacquire証明をsurfaceごとに分離し、
+  lost surfaceの未証明present資源はGPU完了後にquarantine
+- state / retry / zero extentのsurface domain保持、RPC診断、
+  pure queue decision table testを実装済み
+- WSI準備中にpresentation frameをskipした場合も、開始済みのImGui frameを
+  `EndFrame`で閉じ、次frameの`NewFrame`へ持ち越さない
+- 実機のRDP接続・切断、display移動、DPI変更による
+  `VK_ERROR_SURFACE_LOST_KHR` 再現はmanual platform gateとして未実施
+
 ### 完了地点
 
 WP203aでlogical XR policyとdevice-dependentなVulkan view execution planningを分離した。

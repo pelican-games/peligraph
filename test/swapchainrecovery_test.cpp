@@ -1,6 +1,8 @@
 #include "../src/core/vkcore/swapchainrecovery.hpp"
+#include "../src/core/vkcore/windowsurface.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <array>
 
 using namespace Pelican;
 
@@ -180,4 +182,172 @@ TEST_CASE(
     CHECK(request->reason ==
           WindowOutputRecoveryReason::
               resource_pressure);
+}
+
+TEST_CASE(
+    "WP217 surface loss prepares a distinct surface transaction and retries it",
+    "[wp217][wsi][surface][retry]") {
+    WindowOutputRecoveryStateMachine state{
+        8, key(4)};
+    state.markSurfaceLost(8);
+    CHECK(state.kind() ==
+          WindowOutputStateKind::surface_lost);
+
+    const auto first =
+        state.takeSurfacePreparationRequest(
+            key(5));
+    REQUIRE(first);
+    CHECK(first->preparation_kind ==
+          WindowOutputPreparationKind::surface);
+    CHECK(first->old_epoch == 8);
+    CHECK(first->attempt == 1);
+    CHECK(state.attempt() == 1);
+    CHECK(state.kind() ==
+          WindowOutputStateKind::
+              preparing_surface);
+
+    state.markSurfaceLost(0);
+    CHECK(state.attempt() == 1);
+    REQUIRE(
+        state.takeSurfacePreparationRequest(
+            key(5)));
+    state.preparationFailed(20, 3);
+    CHECK(state.kind() ==
+          WindowOutputStateKind::
+              unavailable_retry);
+    CHECK(state.reason() ==
+          WindowOutputRecoveryReason::
+              surface_lost);
+    CHECK_FALSE(state.retryIfDue(22));
+    CHECK(state.retryIfDue(23));
+    CHECK(state.kind() ==
+          WindowOutputStateKind::surface_lost);
+
+    const auto second =
+        state.takeSurfacePreparationRequest(
+            key(6));
+    REQUIRE(second);
+    CHECK(second->attempt == 3);
+    CHECK(state.attempt() == 3);
+    state.preparationSucceeded(9, key(6));
+    CHECK(state.kind() ==
+          WindowOutputStateKind::ready);
+}
+
+TEST_CASE(
+    "WP217 a new framebuffer revision bypasses surface retry without changing domains",
+    "[wp217][wsi][surface][retry]") {
+    WindowOutputRecoveryStateMachine state{
+        5, key(1)};
+    state.markSurfaceLost(5);
+    REQUIRE(
+        state.takeSurfacePreparationRequest(
+            key(2)));
+    state.preparationFailed(10, 30);
+    CHECK_FALSE(state.requestRefresh(
+        0, key(2),
+        WindowOutputRecoveryReason::
+            framebuffer_changed,
+        11));
+    CHECK(state.requestRefresh(
+        0, key(3),
+        WindowOutputRecoveryReason::
+            framebuffer_changed,
+        11));
+    CHECK(state.kind() ==
+          WindowOutputStateKind::surface_lost);
+    const auto request =
+        state.takeSurfacePreparationRequest(
+            key(3));
+    REQUIRE(request);
+    CHECK(request->preparation_kind ==
+          WindowOutputPreparationKind::surface);
+    CHECK(request->attempt == 2);
+}
+
+TEST_CASE(
+    "WP217 fresh surfaces prefer the current presentation queue then a created alternate",
+    "[wp217][wsi][surface][queues]") {
+    constexpr std::array created{2u, 5u, 7u};
+
+    std::array<std::uint8_t, 8> support{};
+    support[5] = 1;
+    auto selection =
+        selectSurfacePresentationQueue(
+            5, created, support);
+    CHECK(selection.kind ==
+          SurfaceQueueBindingKind::compatible);
+    CHECK(selection.presentation_queue_family == 5);
+
+    support.fill(0);
+    support[2] = 1;
+    selection = selectSurfacePresentationQueue(
+        5, created, support);
+    CHECK(selection.kind ==
+          SurfaceQueueBindingKind::compatible);
+    CHECK(selection.presentation_queue_family == 2);
+}
+
+TEST_CASE(
+    "WP217 successor reacquire evidence never crosses surface epochs",
+    "[wp217][wsi][surface][retirement]") {
+    BasePresentRetirementTracker lost_surface;
+    BasePresentRetirementTracker fresh_surface;
+    fresh_surface.noteSuccessorImageReacquired(
+        9, true);
+
+    CHECK_FALSE(
+        lost_surface.mayRetire(4, true));
+    CHECK(fresh_surface.mayRetire(4, true));
+}
+
+TEST_CASE(
+    "WP217 fresh surfaces require device rebuild when presentation needs an uncreated queue",
+    "[wp217][wsi][surface][queues]") {
+    constexpr std::array created{1u, 3u};
+    std::array<std::uint8_t, 6> support{};
+    support[4] = 1;
+
+    auto selection =
+        selectSurfacePresentationQueue(
+            3, created, support);
+    CHECK(selection.kind ==
+          SurfaceQueueBindingKind::
+              device_rebuild_required);
+    CHECK(selection.rebuild_reason ==
+          SurfaceDeviceRebuildReason::
+              presentation_queue_not_created);
+
+    support.fill(0);
+    selection = selectSurfacePresentationQueue(
+        3, created, support);
+    CHECK(selection.rebuild_reason ==
+          SurfaceDeviceRebuildReason::
+              no_presentation_support);
+}
+
+TEST_CASE(
+    "WP217 zero extent preserves a pending surface replacement",
+    "[wp217][wsi][surface][zero-extent]") {
+    WindowOutputRecoveryStateMachine state{
+        3, key(1)};
+    state.markSurfaceLost(3);
+    state.observeZeroExtent(
+        3,
+        FramebufferExtentSnapshot{
+            .extent = {0, 0},
+            .revision = 2});
+    CHECK(state.kind() ==
+          WindowOutputStateKind::
+              suspended_zero_extent);
+    CHECK(state.resumeFromPositiveExtent(
+        0, key(3), 7));
+    CHECK(state.kind() ==
+          WindowOutputStateKind::surface_lost);
+    const auto request =
+        state.takeSurfacePreparationRequest(
+            key(3));
+    REQUIRE(request);
+    CHECK(request->preparation_kind ==
+          WindowOutputPreparationKind::surface);
 }

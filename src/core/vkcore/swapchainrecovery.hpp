@@ -71,10 +71,16 @@ enum class WindowOutputStateKind {
     refresh_pending,
     suspended_zero_extent,
     preparing,
+    preparing_surface,
     unavailable_retry,
     surface_lost,
     device_rebuild_required,
     fatal,
+};
+
+enum class WindowOutputPreparationKind {
+    swapchain,
+    surface,
 };
 
 struct WindowOutputReady {
@@ -92,6 +98,9 @@ struct WindowOutputRefreshPending {
 struct WindowOutputSuspendedZeroExtent {
     SwapchainEpochId old_epoch = 0;
     FramebufferExtentSnapshot framebuffer;
+    WindowOutputPreparationKind preparation_kind =
+        WindowOutputPreparationKind::swapchain;
+    std::uint32_t attempt = 0;
 };
 
 struct WindowOutputPreparing {
@@ -100,18 +109,24 @@ struct WindowOutputPreparing {
     WindowOutputRecoveryReason reason =
         WindowOutputRecoveryReason::framebuffer_changed;
     std::uint32_t attempt = 0;
+    WindowOutputPreparationKind preparation_kind =
+        WindowOutputPreparationKind::swapchain;
 };
 
 struct WindowOutputUnavailableRetry {
+    SwapchainEpochId old_epoch = 0;
     SwapchainRecoveryKey key;
     WindowOutputRecoveryReason reason =
         WindowOutputRecoveryReason::prepare_failed;
     std::uint64_t retry_after_tick = 0;
     std::uint32_t attempt = 0;
+    WindowOutputPreparationKind preparation_kind =
+        WindowOutputPreparationKind::swapchain;
 };
 
 struct WindowOutputSurfaceLost {
     SwapchainEpochId old_epoch = 0;
+    std::uint32_t attempt = 0;
 };
 
 struct WindowOutputDeviceRebuildRequired {};
@@ -134,6 +149,8 @@ struct SwapchainPreparationRequest {
     WindowOutputRecoveryReason reason =
         WindowOutputRecoveryReason::framebuffer_changed;
     std::uint32_t attempt = 0;
+    WindowOutputPreparationKind preparation_kind =
+        WindowOutputPreparationKind::swapchain;
 };
 
 // Pure, deterministic lifecycle policy. Vulkan object creation and publication
@@ -154,6 +171,7 @@ class WindowOutputRecoveryStateMachine {
     }
     WindowOutputStateKind kind() const noexcept;
     WindowOutputRecoveryReason reason() const noexcept;
+    std::uint32_t attempt() const noexcept;
 
     // Returns true only when a new refresh request was published. Duplicate
     // callbacks/results for the same key are coalesced.
@@ -172,6 +190,9 @@ class WindowOutputRecoveryStateMachine {
 
     std::optional<SwapchainPreparationRequest>
     takePreparationRequest();
+    std::optional<SwapchainPreparationRequest>
+    takeSurfacePreparationRequest(
+        SwapchainRecoveryKey key);
     bool retryIfDue(std::uint64_t tick);
     void preparationSucceeded(
         SwapchainEpochId new_epoch,
@@ -184,7 +205,12 @@ class WindowOutputRecoveryStateMachine {
         WindowOutputRecoveryReason reason,
         std::uint64_t tick,
         std::uint64_t retry_delay_ticks,
-        std::uint32_t attempt = 1);
+        std::uint32_t attempt = 1,
+        WindowOutputPreparationKind
+            preparation_kind =
+                WindowOutputPreparationKind::
+                    swapchain,
+        SwapchainEpochId old_epoch = 0);
     void markSurfaceLost(SwapchainEpochId old_epoch);
     void markDeviceLost();
     void markFatal();

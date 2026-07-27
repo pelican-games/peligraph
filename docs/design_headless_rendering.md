@@ -100,7 +100,7 @@ struct EngineLaunchConfig {     // 新規・先頭で確定する純データモ
 
 - headless 時: instance 拡張は空(GLFW 拡張を要求しない)、surface 非作成、`pickQueues` は presentation サポート条件を外し `presentation_queue = graphic_queue` に縮退
 - `GET_MODULE(Window)` を headless 経路で一切呼ばないこと(モジュールは遅延初期化なので、呼ばなければ GLFW は初期化されない)
-- `getSurface()` は headless 時に呼ばれたら throw(誤用の早期検出)
+- active surface は `VulkanManageCore` に置かない。windowed bootstrap だけが one-shot の initial surface を output target へ handoff し、headless ではその handoff が空になる
 
 ### 3.4 Loop と CLI(C3)
 

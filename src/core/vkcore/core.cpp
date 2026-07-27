@@ -1,5 +1,6 @@
 #include "core.hpp"
 #include "bootstrap.hpp"
+#include "windowsurface.hpp"
 #include "../startup.hpp"
 #include "../config.hpp"
 #include "../launchconfig.hpp"
@@ -540,7 +541,8 @@ static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::
 
 struct VulkanBootstrapState {
     vk::UniqueInstance instance;
-    vk::UniqueSurfaceKHR surface;
+    std::optional<PreparedWindowSurface>
+        window_surface;
     vk::PhysicalDevice physical_device;
     QueueSet queues{};
     vk::UniqueDevice device;
@@ -552,11 +554,21 @@ static VulkanBootstrapState bootstrapFlatVulkan(
     bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     VulkanBootstrapState result;
     result.instance = vulkanCreateInstance(headless, debug_utils_selection);
-    if (!headless) result.surface = GET_MODULE(Window).getVulkanSurface(result.instance.get());
-    result.physical_device = pickPhysicalDevice(result.instance.get(), result.surface.get(), headless);
+    if (!headless) {
+        result.window_surface =
+            WindowSurfaceFactory{
+                result.instance.get(),
+                GET_MODULE(Window)}
+                .create();
+    }
+    const auto surface =
+        result.window_surface
+            ? result.window_surface->surface.get()
+            : vk::SurfaceKHR{};
+    result.physical_device = pickPhysicalDevice(result.instance.get(), surface, headless);
     const auto queues = pickQueues(result.physical_device,
                                    result.physical_device.getQueueFamilyProperties(),
-                                   result.surface.get(), headless);
+                                   surface, headless);
     if (!queues) throw std::runtime_error("No suitable Vulkan queue families found");
     result.queues = *queues;
     result.device = createLogicalDevice(result.physical_device, result.queues, headless,
@@ -570,14 +582,24 @@ static VulkanBootstrapState bootstrapXrVulkan(
     bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     VulkanBootstrapState result;
     result.instance = xrCreateVulkanInstance(headless, debug_utils_selection);
-    if (!headless) result.surface = GET_MODULE(Window).getVulkanSurface(result.instance.get());
+    if (!headless) {
+        result.window_surface =
+            WindowSurfaceFactory{
+                result.instance.get(),
+                GET_MODULE(Window)}
+                .create();
+    }
 
     const auto raw_physical_device =
         OpenXr::getVulkanGraphicsDevice(static_cast<VkInstance>(result.instance.get()));
     result.physical_device = vk::PhysicalDevice{raw_physical_device};
+    const auto surface =
+        result.window_surface
+            ? result.window_surface->surface.get()
+            : vk::SurfaceKHR{};
     const auto queues = pickQueues(result.physical_device,
                                    result.physical_device.getQueueFamilyProperties(),
-                                   result.surface.get(), headless);
+                                   surface, headless);
     if (!queues) {
         throw OpenXr::VulkanBootstrapError(
             "runtime-selected physical device has no engine-compatible queue families");
@@ -618,7 +640,8 @@ VulkanManageCore::VulkanManageCore() {
     bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
 #endif
     instance = std::move(bootstrap.instance);
-    surface = std::move(bootstrap.surface);
+    initial_window_surface =
+        std::move(bootstrap.window_surface);
     phys_device = bootstrap.physical_device;
     queue_set = bootstrap.queues;
     device = std::move(bootstrap.device);
@@ -791,11 +814,45 @@ std::size_t VulkanManageCore::
     return presentation_quarantine.size();
 }
 
-vk::SurfaceKHR VulkanManageCore::getSurface() const {
-    if (!surface) {
-        throw std::runtime_error("Vulkan surface is unavailable in headless mode");
+std::optional<PreparedWindowSurface>
+VulkanManageCore::takeInitialWindowSurface() noexcept {
+    auto result =
+        std::move(initial_window_surface);
+    initial_window_surface.reset();
+    return result;
+}
+
+std::vector<std::uint32_t>
+VulkanManageCore::createdQueueFamilyIndices() const {
+    std::vector<std::uint32_t> result;
+    result.reserve(3);
+    const auto append =
+        [&](std::uint32_t family) {
+            if (std::find(
+                    result.begin(), result.end(),
+                    family) == result.end()) {
+                result.push_back(family);
+            }
+        };
+    append(queue_set.graphic_queue);
+    append(queue_set.presentation_queue);
+    append(queue_set.compute_queue);
+    return result;
+}
+
+std::optional<vk::Queue>
+VulkanManageCore::createdQueue(
+    std::uint32_t family) const noexcept {
+    if (family == queue_set.graphic_queue) {
+        return graphic_queue;
     }
-    return surface.get();
+    if (family == queue_set.presentation_queue) {
+        return presen_queue;
+    }
+    if (family == queue_set.compute_queue) {
+        return compute_queue;
+    }
+    return std::nullopt;
 }
 
 void VulkanManageCore::waitIdle() const { device->waitIdle(); }

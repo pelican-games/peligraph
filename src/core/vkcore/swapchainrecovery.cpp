@@ -1,6 +1,7 @@
 #include "swapchainrecovery.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 
@@ -85,7 +86,13 @@ WindowOutputRecoveryStateMachine::kind() const noexcept {
             } else if constexpr (
                 std::is_same_v<
                     State, WindowOutputPreparing>) {
-                return WindowOutputStateKind::preparing;
+                return value.preparation_kind ==
+                               WindowOutputPreparationKind::
+                                   surface
+                           ? WindowOutputStateKind::
+                                 preparing_surface
+                           : WindowOutputStateKind::
+                                 preparing;
             } else if constexpr (
                 std::is_same_v<
                     State,
@@ -145,6 +152,20 @@ WindowOutputRecoveryStateMachine::reason() const noexcept {
         state_);
 }
 
+std::uint32_t
+WindowOutputRecoveryStateMachine::attempt() const noexcept {
+    return std::visit(
+        [](const auto &value) -> std::uint32_t {
+            if constexpr (
+                requires { value.attempt; }) {
+                return value.attempt;
+            } else {
+                return 0;
+            }
+        },
+        state_);
+}
+
 bool WindowOutputRecoveryStateMachine::requestRefresh(
     SwapchainEpochId old_epoch,
     SwapchainRecoveryKey key,
@@ -176,6 +197,16 @@ bool WindowOutputRecoveryStateMachine::requestRefresh(
         tick < retry->retry_after_tick) {
         return false;
     }
+    if (const auto *retry =
+            std::get_if<WindowOutputUnavailableRetry>(
+                &state_);
+        retry != nullptr &&
+        retry->preparation_kind ==
+            WindowOutputPreparationKind::surface) {
+        state_ = WindowOutputSurfaceLost{
+            retry->old_epoch, retry->attempt};
+        return true;
+    }
     if (std::holds_alternative<
             WindowOutputDeviceRebuildRequired>(state_) ||
         std::holds_alternative<WindowOutputFatal>(state_) ||
@@ -197,8 +228,36 @@ void WindowOutputRecoveryStateMachine::observeZeroExtent(
         throw std::invalid_argument(
             "zero-extent transition received a positive framebuffer");
     }
+    auto preparation_kind =
+        WindowOutputPreparationKind::swapchain;
+    std::uint32_t attempt = 0;
+    if (const auto *preparing =
+            std::get_if<WindowOutputPreparing>(
+                &state_);
+        preparing != nullptr) {
+        preparation_kind =
+            preparing->preparation_kind;
+        attempt = preparing->attempt;
+    } else if (const auto *retry =
+                   std::get_if<
+                       WindowOutputUnavailableRetry>(
+                       &state_);
+               retry != nullptr) {
+        preparation_kind =
+            retry->preparation_kind;
+        attempt = retry->attempt;
+    } else if (const auto *lost =
+                   std::get_if<
+                       WindowOutputSurfaceLost>(
+                       &state_);
+               lost != nullptr) {
+        preparation_kind =
+            WindowOutputPreparationKind::surface;
+        attempt = lost->attempt;
+    }
     state_ = WindowOutputSuspendedZeroExtent{
-        old_epoch, framebuffer};
+        old_epoch, framebuffer,
+        preparation_kind, attempt};
 }
 
 bool WindowOutputRecoveryStateMachine::
@@ -210,13 +269,23 @@ bool WindowOutputRecoveryStateMachine::
         key.framebuffer_extent.height == 0) {
         return false;
     }
-    if (!std::holds_alternative<
-            WindowOutputSuspendedZeroExtent>(state_)) {
+    const auto *suspended =
+        std::get_if<
+            WindowOutputSuspendedZeroExtent>(
+            &state_);
+    if (suspended == nullptr) {
         return requestRefresh(
             old_epoch, std::move(key),
             WindowOutputRecoveryReason::
                 framebuffer_changed,
             tick);
+    }
+    if (suspended->preparation_kind ==
+        WindowOutputPreparationKind::surface) {
+        state_ = WindowOutputSurfaceLost{
+            suspended->old_epoch,
+            suspended->attempt};
+        return true;
     }
     state_ = WindowOutputRefreshPending{
         old_epoch, std::move(key),
@@ -240,7 +309,37 @@ WindowOutputRecoveryStateMachine::
     };
     state_ = WindowOutputPreparing{
         request.old_epoch, request.key,
-        request.reason, request.attempt};
+        request.reason, request.attempt,
+        request.preparation_kind};
+    return request;
+}
+
+std::optional<SwapchainPreparationRequest>
+WindowOutputRecoveryStateMachine::
+    takeSurfacePreparationRequest(
+        SwapchainRecoveryKey key) {
+    const auto *lost =
+        std::get_if<WindowOutputSurfaceLost>(
+            &state_);
+    if (lost == nullptr) return std::nullopt;
+    auto request = SwapchainPreparationRequest{
+        .old_epoch = lost->old_epoch,
+        .key = std::move(key),
+        .reason =
+            WindowOutputRecoveryReason::surface_lost,
+        .attempt =
+            lost->attempt ==
+                    std::numeric_limits<
+                        std::uint32_t>::max()
+                ? lost->attempt
+                : lost->attempt + 1,
+        .preparation_kind =
+            WindowOutputPreparationKind::surface,
+    };
+    state_ = WindowOutputPreparing{
+        request.old_epoch, request.key,
+        request.reason, request.attempt,
+        request.preparation_kind};
     return request;
 }
 
@@ -253,8 +352,15 @@ bool WindowOutputRecoveryStateMachine::retryIfDue(
         tick < retry->retry_after_tick) {
         return false;
     }
-    state_ = WindowOutputRefreshPending{
-        0, retry->key, retry->reason};
+    if (retry->preparation_kind ==
+        WindowOutputPreparationKind::surface) {
+        state_ = WindowOutputSurfaceLost{
+            retry->old_epoch, retry->attempt};
+    } else {
+        state_ = WindowOutputRefreshPending{
+            retry->old_epoch,
+            retry->key, retry->reason};
+    }
     return true;
 }
 
@@ -289,10 +395,17 @@ void WindowOutputRecoveryStateMachine::
     const auto delay =
         std::max<std::uint64_t>(retry_delay_ticks, 1);
     state_ = WindowOutputUnavailableRetry{
+        preparing->old_epoch,
         preparing->key,
-        WindowOutputRecoveryReason::prepare_failed,
+        preparing->preparation_kind ==
+                WindowOutputPreparationKind::surface
+            ? WindowOutputRecoveryReason::
+                  surface_lost
+            : WindowOutputRecoveryReason::
+                  prepare_failed,
         tick + delay,
         preparing->attempt,
+        preparing->preparation_kind,
     };
 }
 
@@ -301,19 +414,47 @@ void WindowOutputRecoveryStateMachine::deferRetry(
     WindowOutputRecoveryReason retry_reason,
     std::uint64_t tick,
     std::uint64_t retry_delay_ticks,
-    std::uint32_t attempt) {
+    std::uint32_t attempt,
+    WindowOutputPreparationKind
+        preparation_kind,
+    SwapchainEpochId old_epoch) {
     const auto delay =
         std::max<std::uint64_t>(
             retry_delay_ticks, 1);
     state_ = WindowOutputUnavailableRetry{
-        std::move(key), retry_reason,
-        tick + delay, attempt,
+        old_epoch, std::move(key), retry_reason,
+        tick + delay, attempt, preparation_kind,
     };
 }
 
 void WindowOutputRecoveryStateMachine::markSurfaceLost(
     SwapchainEpochId old_epoch) {
-    state_ = WindowOutputSurfaceLost{old_epoch};
+    std::uint32_t attempt = 0;
+    if (const auto *preparing =
+            std::get_if<WindowOutputPreparing>(
+                &state_);
+        preparing != nullptr &&
+        preparing->preparation_kind ==
+            WindowOutputPreparationKind::surface) {
+        attempt = preparing->attempt;
+    } else if (const auto *retry =
+                   std::get_if<
+                       WindowOutputUnavailableRetry>(
+                       &state_);
+               retry != nullptr &&
+               retry->preparation_kind ==
+                   WindowOutputPreparationKind::
+                       surface) {
+        attempt = retry->attempt;
+    } else if (const auto *lost =
+                   std::get_if<
+                       WindowOutputSurfaceLost>(
+                       &state_);
+               lost != nullptr) {
+        attempt = lost->attempt;
+    }
+    state_ = WindowOutputSurfaceLost{
+        old_epoch, attempt};
 }
 
 void WindowOutputRecoveryStateMachine::markDeviceLost() {
@@ -334,6 +475,8 @@ std::string_view windowOutputStateName(
         return "suspended_zero_extent";
     case WindowOutputStateKind::preparing:
         return "preparing";
+    case WindowOutputStateKind::preparing_surface:
+        return "preparing_surface";
     case WindowOutputStateKind::unavailable_retry:
         return "unavailable_retry";
     case WindowOutputStateKind::surface_lost:

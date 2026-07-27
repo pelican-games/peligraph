@@ -30,7 +30,6 @@ DECLARE_MODULE(Window) {
     vk::Extent2D logicalExtent() const;
     GLFWwindow *nativeHandle() const noexcept { return window; }
     void *renderDocCaptureHandle() const noexcept;
-    vk::UniqueSurfaceKHR getVulkanSurface(vk::Instance instance);
     std::vector<const char *> getRequiredVulkanInstanceExts();
 
     // false to close

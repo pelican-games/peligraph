@@ -330,17 +330,6 @@ std::vector<InputEvent> Window::drainInputEvents() {
     return events;
 }
 
-vk::UniqueSurfaceKHR Window::getVulkanSurface(vk::Instance instance) {
-    VkSurfaceKHR surface;
-    if (auto result = glfwCreateWindowSurface(instance, window, nullptr, &surface); result != VK_SUCCESS) {
-        throw std::runtime_error("glfwCreateWindowSurface failed: " + vk::to_string(vk::Result{result}));
-    }
-
-    LOG_INFO(logger, "vulkan surface created");
-
-    return vk::UniqueSurfaceKHR{surface, instance};
-}
-
 std::vector<const char *> Window::getRequiredVulkanInstanceExts() {
     uint32_t count = 0;
     const char **ext_names_raw = glfwGetRequiredInstanceExtensions(&count);

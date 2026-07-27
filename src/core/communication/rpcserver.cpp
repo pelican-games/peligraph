@@ -849,8 +849,23 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
               {"reason",
                frameUnavailableReasonName(
                    output_status.reason)},
+              {"surface_epoch",
+               output_status.surface_epoch},
               {"swapchain_epoch",
                output_status.swapchain_epoch},
+              {"presentation_queue_family",
+               output_status
+                   .presentation_queue_family ==
+                       VK_QUEUE_FAMILY_IGNORED
+                   ? nlohmann::json(nullptr)
+                   : nlohmann::json(
+                         output_status
+                             .presentation_queue_family)},
+              {"surface_recoveries",
+               output_status
+                   .surface_recovery_count},
+              {"retry_count",
+               output_status.recovery_attempt},
               {"extent_revision",
                output_status.extent_revision},
               {"output_facts_hash",
@@ -876,7 +891,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                           : "not_applicable")},
               {"quarantined_resources",
                output_status
-                   .quarantined_resource_count}}},
+                   .quarantined_resource_count},
+              {"device_rebuild_reason",
+               output_status
+                   .device_rebuild_reason}}},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},
