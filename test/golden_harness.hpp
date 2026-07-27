@@ -9,6 +9,7 @@ void runBLayerShadowEquivalence();
 void runGpuDrawIndirect();
 void runGpuOcclusionCulling();
 void runGpuSegmentedOcclusionCulling();
+void runGpuSegmentedOcclusionXr();
 void runGpuSegmentedOcclusionHotReload();
 void runGoldenImages();
 void runLogicalFrameStereo();

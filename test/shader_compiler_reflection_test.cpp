@@ -260,6 +260,9 @@ void main() {
     vec4 value = pelican_sample_lod_scene_color(
         vec2(0.5),
         float(pelican_mip_count_scene_color() - 1u));
+    value += pelican_sample_lod_scene_color(
+        vec2(0.5), 0u, 0.0) *
+        float(pelican_view_count_scene_color()) * 0.001;
     value += vec4(pelican_size_lod_scene_color(0), 0, 0) * 0.0;
     value += pelican_sample_lod_scene_layers(
         vec2(0.5), 0u, 0.0) * 0.001;
@@ -350,6 +353,31 @@ TEST_CASE(
             ShaderResourceConsumerView::
                 graphics_sequential) ==
         ReflectedImageViewDimension::two_d);
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                shared_2d,
+            ShaderResourceConsumerView::
+                compute_per_view) ==
+        ReflectedImageViewDimension::two_d);
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                sequential_2d,
+            ShaderResourceConsumerView::
+                compute_per_view) ==
+        ReflectedImageViewDimension::two_d);
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                layered_2d_array,
+            ShaderResourceConsumerView::
+                compute_per_view) ==
+        ReflectedImageViewDimension::
+            two_d_array);
     REQUIRE(
         resolveShaderResourceImageViewDimension(
             per_view,

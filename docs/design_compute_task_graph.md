@@ -1,7 +1,7 @@
 # フレームグラフ: 宣言的依存とスケジュール最適化(レンダー・コンピュート統一)
 
 対象読者: エンジン担当。
-ステータス: v2.4 ドラフト(2026-07-27。v2: 2026-07-04。
+ステータス: v2.5 ドラフト(2026-07-28。v2: 2026-07-04。
 v1: compute タスクグラフとして起草。
 v2: ユーザー方針によりレンダーパスにも同モデルを拡張 — 統一フレームグラフ化、
 手詰め層の設計、既存 config の意味論保存移行を追加。
@@ -9,7 +9,8 @@ v2.1: `design_render_graph_compiler.md` の logical / physical 分離へ接続�
 v2.2: `design_heterogeneous_execution_graph.md` の typed dialect / domain 分割へ接続し、
 authoring `kind` と selected execution endpoint を分離。
 v2.3: WP210a の typed indirect compute dispatch と自動 dependency/barrier を反映。
-v2.4: WP210b の fixed-state GPU-written indexed draw/count consumerを反映)。
+ v2.4: WP210b の fixed-state GPU-written indexed draw/count consumerを反映。
+ v2.5: WP210f の per-view compute scheduling、view ABI、XR GPU cullingを反映)。
 前提: [SF](実装済み)、`design_render_feature_modules.md`(v1.2 ドラフト)、
 ロードマップ §3 の compute パス予約枠。GPU 計測(WP29 候補)と強く連携。
 
@@ -163,6 +164,17 @@ shaderソースだけの変更は別のshader/pipeline transactionで処理す�
 generationとbuffer IDは維持し、shader bundle versionと依存pipelineだけを一括更新する。
 compile失敗時はbundle versionを進めない。この二分により、graph ABI変更では完全な資源
 差し替えを行い、algorithm実装だけの変更ではgraph再compileを避ける。
+
+WP210fでは`compute_tasks[].schedule`をtyped enumにし、既定`per_frame`に加えて
+`per_view`を追加した。`per_view` taskはlogical viewごとに1回実行し、他のrendering
+scopeがmultiviewでもcompute invocation自体はsequentialのまま混在できる。
+FrameUBOの`pelican_view_index()` / `pelican_view_count()`が現在のlogical viewを公開する。
+
+`per_view` image portの物理形は1つに固定しない。flat/sharedまたは1枚を眼ごとに再利用する
+`sequential_2d`はscalar 2D accessor、複数layerを持つ`sequential_2d`は眼別descriptor、
+`layered_2d_array`はindexed array accessorへlowerする。したがってproject shaderは
+Vulkan image-viewの選択をハードコードせず、同じlogical portをflat、sequential XR、
+mixed multiviewで利用できる。
 
 現plannerのRAW導出は宣言順上の直前writerを使う。render pass nodeがcompute task nodeより
 先に組み立てられる現行adapterでは、draw command producerはconsumer passへの`before`

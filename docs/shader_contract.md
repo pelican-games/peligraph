@@ -88,10 +88,15 @@ sampled port に `pelican_sample_<port>()` / `pelican_size_<port>()`、storage p
 実 descriptor 変数は generated include の内部詳細であり、shader は set/binding を書かない。
 
 `view: "shared_2d"` は全 view 共通の `sampler2D` / `image2D` である。
-`view: "per_view"` は sequential graphics では当該 eye の 2D view、multiview graphics と
-1回 dispatch の compute では 2D array になる。後者の accessor は `view_index` を受け、
-`pelican_view_count_<port>()` も生成する。logical view と physical target plan が一致しない
-構成は pipeline 登録前に拒否する。
+`view: "per_view"` は sequential graphics / `schedule: "per_view"` computeでは当該 eye の
+2D view、multiview graphicsと`per_frame` computeでは2D arrayになる。per-view computeの
+物理targetが1枚再利用なら同じ2D descriptorを各実行で使い、複数layerなら眼別descriptorを
+bindする。2Dにもindexed accessor overloadと`pelican_view_count_<port>() == 1`を生成するため、
+同じshader sourceをarray loweringと共有できる。logical viewとphysical target planが一致しない
+構成はpipeline登録前に拒否する。
+
+`pelican_frame.glsl`は`pelican_view_index()`と`pelican_view_count()`も公開する。
+sequential / computeではFrameUBOの値、multiview graphicsでは`gl_ViewIndex`を返す。
 
 reflection は port の set、binding、descriptor kind、count、生成変数名、2D/2D-array 次元を
 照合する。hot reload も同じ interface を保存して再検証する。`resource_ports` を持たない
@@ -118,8 +123,9 @@ shaderから見たLOD 0が`mip`で選んだbase mipに対応し、`pelican_size_
 そのviewのサイズを返す。`shared_2d`の2D viewはlayer count 1、storage imageは
 mip count 1が必要である。`per_view`がphysical layered viewへloweringされた場合だけ
 2D-array accessorになる。physical imageが論理view数より多いlayer容量を持っても、
-`per_view` descriptorは論理view数ぶんだけを公開する。明示rangeの`layer_count`は
-論理view数と一致しなければならない。
+layered `per_view` descriptorは論理view数ぶんだけを公開する。明示rangeは1 layerから
+logical view数へ展開するか、logical view数と同じ連続rangeを指定する。1枚再利用の
+`sequential_2d`は`layer_count: 1`のままでよい。
 
 computeは同じlogical imageを複数portへ割り当てられるが、各portに明示range/accessが必要で、
 storageを含むoverlapは拒否する。fullscreenはinput順がdescriptor bindingのauthorityなので、

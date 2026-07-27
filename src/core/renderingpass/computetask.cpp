@@ -37,7 +37,11 @@ static_assert(frameGraphSceneDrawSegmentV1Bytes == 32);
 
 struct RetiredComputeDescriptorResources {
     vk::UniqueDescriptorPool pool;
-    std::vector<std::array<vk::UniqueDescriptorSet, 2>> descriptor_sets;
+    std::vector<
+        std::vector<
+            std::array<
+                vk::UniqueDescriptorSet, 2>>>
+        descriptor_sets;
 };
 
 std::string requireString(const nlohmann::json &json, std::string_view field, std::string_view context) {
@@ -615,8 +619,13 @@ makeComputeResourceInterface(
             const auto dimension =
                 resolveShaderResourceImageViewDimension(
                     port, physical->second,
-                    ShaderResourceConsumerView::
-                        compute_once);
+                    definition.schedule ==
+                            ComputeTaskSchedule::
+                                per_view
+                        ? ShaderResourceConsumerView::
+                              compute_per_view
+                        : ShaderResourceConsumerView::
+                              compute_once);
             if (dimension ==
                     ReflectedImageViewDimension::
                         two_d_array &&
@@ -626,11 +635,45 @@ makeComputeResourceInterface(
                     "Shader resource port '" +
                     port.name + "' (resource '" +
                     port.resource +
-                    "') has too few layers for its logical view family");
+                    "') has too few layers for its logical view family "
+                    "(physical_layers=" +
+                    std::to_string(
+                        metadata.array_layers) +
+                    ", logical_views=" +
+                    std::to_string(
+                        resource
+                            .physical_view_count) +
+                    ")");
             }
-            if (port.subresource) {
+            auto resolved_port = port;
+            if (resolved_port.subresource &&
+                resolved_port.view ==
+                    ShaderResourcePortView::per_view &&
+                dimension ==
+                    ReflectedImageViewDimension::
+                        two_d_array) {
+                if (resolved_port.subresource
+                        ->layer_count == 1) {
+                    resolved_port.subresource
+                        ->layer_count =
+                        resource
+                            .physical_view_count;
+                } else if (
+                    resolved_port.subresource
+                            ->layer_count !=
+                        resource
+                            .physical_view_count) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') per_view subresource must select one "
+                        "expandable layer or exactly the logical view count");
+                }
+            }
+            if (resolved_port.subresource) {
                 if (!validImageSubresourceRange(
-                        *port.subresource,
+                        *resolved_port.subresource,
                         metadata.mip_levels,
                         metadata.array_layers)) {
                     throw std::runtime_error(
@@ -640,7 +683,7 @@ makeComputeResourceInterface(
                         "') has an out-of-range image subresource");
                 }
                 if (!sampled &&
-                    port.subresource
+                    resolved_port.subresource
                             ->level_count != 1) {
                     throw std::runtime_error(
                         "Shader resource port '" +
@@ -651,7 +694,7 @@ makeComputeResourceInterface(
                 if (dimension ==
                         ReflectedImageViewDimension::
                             two_d &&
-                    port.subresource
+                    resolved_port.subresource
                             ->layer_count != 1) {
                     throw std::runtime_error(
                         "Shader resource port '" +
@@ -662,7 +705,7 @@ makeComputeResourceInterface(
                 if (dimension ==
                         ReflectedImageViewDimension::
                             two_d_array &&
-                    port.subresource
+                    resolved_port.subresource
                             ->layer_count !=
                         resource.physical_view_count) {
                     throw std::runtime_error(
@@ -675,7 +718,9 @@ makeComputeResourceInterface(
             }
             result.push_back(
                 ShaderResourceInterfaceBinding{
-                    .port = port,
+                    .port =
+                        std::move(
+                            resolved_port),
                     .binding = binding,
                     .descriptor =
                         sampled
@@ -988,6 +1033,18 @@ std::string_view frameGraphBufferCommandLayoutName(
         "unknown frame-graph buffer command layout");
 }
 
+std::string_view computeTaskScheduleName(
+    ComputeTaskSchedule schedule) {
+    switch (schedule) {
+    case ComputeTaskSchedule::per_frame:
+        return "per_frame";
+    case ComputeTaskSchedule::per_view:
+        return "per_view";
+    }
+    throw std::runtime_error(
+        "unknown compute task schedule");
+}
+
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json) {
     std::vector<FrameGraphBufferDefinition> definitions;
     if (!config_json.contains("buffers")) {
@@ -1209,10 +1266,23 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
                 "compute task '" + definition.name + "'");
         definition.dispatch = parseDispatch(task_json, definition.name);
         if (task_json.contains("schedule")) {
-            definition.schedule = requireString(task_json, "schedule", "compute task: " + definition.name);
-        }
-        if (definition.schedule != "per_frame") {
-            throw std::runtime_error("compute task schedule only supports per_frame in v1: " + definition.name);
+            const auto schedule =
+                requireString(
+                    task_json, "schedule",
+                    "compute task: " +
+                        definition.name);
+            if (schedule == "per_frame") {
+                definition.schedule =
+                    ComputeTaskSchedule::per_frame;
+            } else if (schedule == "per_view") {
+                definition.schedule =
+                    ComputeTaskSchedule::per_view;
+            } else {
+                throw std::runtime_error(
+                    "compute task schedule supports per_frame or "
+                    "per_view: " +
+                    definition.name);
+            }
         }
         definitions.push_back(std::move(definition));
     }
@@ -1534,7 +1604,8 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
         &resource_interface,
     RenderTargetContainer &render_target_container,
     const FrameGraphResourceContainer &frame_graph_resources,
-    std::uint32_t frame_index) {
+    std::uint32_t frame_index,
+    std::uint32_t view_index) {
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto bindings = passInputBindings(pipeline_factory.reflection(pipeline));
     if (bindings.empty()) {
@@ -1615,6 +1686,24 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                 typed->image_view_dimension ==
                     ReflectedImageViewDimension::
                         two_d_array;
+            const auto metadata =
+                render_target_container
+                    .getMetadata(rt_id);
+            const auto sequential_layer =
+                !layered &&
+                resource.physical_view ==
+                    VulkanResourceViewLayout::
+                        sequential_2d &&
+                resource.physical_view_count > 1 &&
+                metadata.array_layers >=
+                    resource.physical_view_count;
+            if (sequential_layer &&
+                view_index >=
+                    resource.physical_view_count) {
+                throw std::runtime_error(
+                    "Compute task descriptor view index is outside the logical view family: " +
+                    resource.authored_name);
+            }
             const auto shares_storage_layout =
                 sampled &&
                 std::any_of(
@@ -1637,11 +1726,18 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
             vk::ImageView image_view;
             if (typed != nullptr &&
                 typed->port.subresource) {
+                auto subresource =
+                    *typed->port.subresource;
+                if (sequential_layer) {
+                    subresource
+                        .base_array_layer +=
+                        view_index;
+                }
                 image_view =
                     render_target_container
                         .getImageSubresourceViewForFrame(
                             rt_id,
-                            *typed->port.subresource,
+                            subresource,
                             layered,
                             resource.history_read,
                             frame_index);
@@ -1656,6 +1752,13 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                                         .physical_view_count,
                             },
                             true,
+                            resource.history_read,
+                            frame_index);
+            } else if (sequential_layer) {
+                image_view =
+                    render_target_container
+                        .getImageLayerViewForFrame(
+                            rt_id, view_index,
                             resource.history_read,
                             frame_index);
             } else {
@@ -1864,17 +1967,66 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .resource_interface =
                     resource_interface,
             });
-    std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
-    std::array<std::vector<vk::ImageView>, 2> bound_image_views;
-    for (std::uint32_t frame_index = 0; frame_index < 2; ++frame_index) {
-        auto binding = createDescriptorSet(
-            descriptor_pool.get(), pipeline,
-            resolved_resources,
-            resource_interface,
-            dependencies.render_target_container,
-            dependencies.frame_graph_resources, frame_index);
-        descriptor_sets[frame_index] = std::move(binding.descriptor_set);
-        bound_image_views[frame_index] = std::move(binding.bound_image_views);
+    std::uint32_t descriptor_variant_count = 1;
+    if (definition.schedule ==
+        ComputeTaskSchedule::per_view) {
+        for (const auto &resource :
+             resolved_resources) {
+            if (!isConcreteRenderTarget(
+                    resource.render_target) ||
+                resource.physical_view !=
+                    VulkanResourceViewLayout::
+                        sequential_2d ||
+                resource.physical_view_count <= 1) {
+                continue;
+            }
+            const auto metadata =
+                dependencies
+                    .render_target_container
+                    .getMetadata(
+                        resource.render_target);
+            if (metadata.array_layers >=
+                resource.physical_view_count) {
+                descriptor_variant_count =
+                    std::max(
+                        descriptor_variant_count,
+                        resource
+                            .physical_view_count);
+            }
+        }
+    }
+    std::vector<
+        std::array<vk::UniqueDescriptorSet, 2>>
+        descriptor_sets(
+            descriptor_variant_count);
+    std::vector<
+        std::array<
+            std::vector<vk::ImageView>, 2>>
+        bound_image_views(
+            descriptor_variant_count);
+    for (std::uint32_t view_index = 0;
+         view_index < descriptor_variant_count;
+         ++view_index) {
+        for (std::uint32_t frame_index = 0;
+             frame_index < 2; ++frame_index) {
+            auto binding = createDescriptorSet(
+                descriptor_pool.get(), pipeline,
+                resolved_resources,
+                resource_interface,
+                dependencies
+                    .render_target_container,
+                dependencies
+                    .frame_graph_resources,
+                frame_index, view_index);
+            descriptor_sets[view_index]
+                           [frame_index] =
+                std::move(
+                    binding.descriptor_set);
+            bound_image_views[view_index]
+                             [frame_index] =
+                std::move(
+                    binding.bound_image_views);
+        }
     }
 
     registration_order.reserve(registration_order.size() + 1);
@@ -1930,8 +2082,13 @@ void ComputeTaskContainer::rebindRenderTargets(
     auto next_pool = createDescriptorPool(device);
     struct ReboundTask {
         int id = -1;
-        std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
-        std::array<std::vector<vk::ImageView>, 2> bound_image_views;
+        std::vector<
+            std::array<vk::UniqueDescriptorSet, 2>>
+            descriptor_sets;
+        std::vector<
+            std::array<
+                std::vector<vk::ImageView>, 2>>
+            bound_image_views;
     };
     std::vector<ReboundTask> rebound;
     rebound.reserve(tasks.size());
@@ -1940,17 +2097,39 @@ void ComputeTaskContainer::rebindRenderTargets(
     for (const auto &[id, task] : tasks) {
         ReboundTask next;
         next.id = id;
-        for (std::uint32_t frame_index = 0; frame_index < 2; ++frame_index) {
-            auto binding = createDescriptorSet(
-                next_pool.get(), task.pipeline,
-                task.resource_bindings,
-                task.resource_interface,
-                render_target_container,
-                frame_graph_resources, frame_index);
-            next.descriptor_sets[frame_index] =
-                std::move(binding.descriptor_set);
-            next.bound_image_views[frame_index] =
-                std::move(binding.bound_image_views);
+        next.descriptor_sets.resize(
+            task.descriptor_sets.size());
+        next.bound_image_views.resize(
+            task.descriptor_sets.size());
+        for (std::uint32_t view_index = 0;
+             view_index <
+             task.descriptor_sets.size();
+             ++view_index) {
+            for (std::uint32_t frame_index = 0;
+                 frame_index < 2;
+                 ++frame_index) {
+                auto binding =
+                    createDescriptorSet(
+                        next_pool.get(),
+                        task.pipeline,
+                        task.resource_bindings,
+                        task.resource_interface,
+                        render_target_container,
+                        frame_graph_resources,
+                        frame_index,
+                        view_index);
+                next.descriptor_sets
+                        [view_index]
+                        [frame_index] =
+                    std::move(
+                        binding.descriptor_set);
+                next.bound_image_views
+                        [view_index]
+                        [frame_index] =
+                    std::move(
+                        binding
+                            .bound_image_views);
+            }
         }
         rebound.push_back(std::move(next));
     }
@@ -2070,22 +2249,41 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
 
 void ComputeTaskContainer::dispatch(
     vk::CommandBuffer cmd_buf, ComputeTaskId task_id,
-    const FrameResources &frame_resources) const {
+    const FrameResources &frame_resources,
+    std::uint32_t view_index) const {
     const auto found = tasks.find(task_id.value);
     if (found == tasks.end()) {
         throw std::runtime_error("Compute task not found");
     }
     const auto &record = found->second;
+    if (record.descriptor_sets.empty()) {
+        throw std::runtime_error(
+            "Compute task has no descriptor variants");
+    }
+    const auto descriptor_view =
+        record.descriptor_sets.size() == 1
+            ? 0u
+            : view_index;
+    if (descriptor_view >=
+        record.descriptor_sets.size()) {
+        throw std::runtime_error(
+            "Compute task descriptor view index is out of range");
+    }
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_factory.pipeline(record.pipeline));
     frame_resources.bindCompute(
         cmd_buf,
         pipeline_factory.layout(record.pipeline));
     const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
-    if (record.descriptor_sets[parity]) {
+    if (record.descriptor_sets
+            [descriptor_view][parity]) {
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_factory.layout(record.pipeline),
                                    PELICAN_SET_PASS_INPUT,
-                                   record.descriptor_sets[parity].get(), {});
+                                   record.descriptor_sets
+                                       [descriptor_view]
+                                       [parity]
+                                           .get(),
+                                   {});
     }
     if (record.indirect_dispatch) {
         const auto &indirect =
@@ -2149,12 +2347,19 @@ void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf
 }
 
 std::vector<vk::ImageView> ComputeTaskContainer::boundImageViewsForTesting(
-    ComputeTaskId task_id, std::uint32_t frame_index) const {
+    ComputeTaskId task_id, std::uint32_t frame_index,
+    std::uint32_t view_index) const {
     const auto found = tasks.find(task_id.value);
-    if (found == tasks.end() || frame_index >= 2) {
+    if (found == tasks.end() ||
+        frame_index >= 2 ||
+        view_index >=
+            found->second
+                .bound_image_views.size()) {
         return {};
     }
-    return found->second.bound_image_views[frame_index];
+    return found->second
+        .bound_image_views[view_index]
+                          [frame_index];
 }
 
 std::uint64_t ComputeTaskContainer::bindingRevisionForTesting(

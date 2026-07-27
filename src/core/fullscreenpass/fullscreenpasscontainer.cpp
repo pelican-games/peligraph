@@ -458,10 +458,40 @@ void FullscreenPassContainer::setInputResourcesById(
         throw std::runtime_error(
             "Fullscreen pass input texture must be a render target");
     }
+    const auto has_separate_view_layers =
+        [&]() {
+            for (std::size_t input = 0;
+                 input < input_rts.size();
+                 ++input) {
+                const auto dimension =
+                    info.input_rt_views[input];
+                if (dimension ==
+                    PassInputViewDimension::
+                        layered_2d_array) {
+                    return true;
+                }
+                if (dimension !=
+                    PassInputViewDimension::
+                        sequential_2d) {
+                    continue;
+                }
+                const auto selected_layers =
+                    info.input_rt_subresources[input]
+                        ? info.input_rt_subresources[input]
+                              ->layer_count
+                        : rt_views.arrayLayers(
+                              input_rts[input]);
+                if (selected_layers >=
+                    logical_view_count) {
+                    return true;
+                }
+            }
+            return false;
+        }();
     std::uint32_t variant_count = 1;
     if (view.execution ==
             GraphicsPipelineViewExecution::single_view &&
-        has_per_view_input) {
+        has_separate_view_layers) {
         variant_count = logical_view_count;
     }
     for (std::size_t input = 0;
@@ -478,8 +508,9 @@ void FullscreenPassContainer::setInputResourcesById(
                 ? info.input_rt_subresources[input]
                       ->layer_count
                 : layers;
-        if (info.input_rt_views[input] !=
-            PassInputViewDimension::shared_2d) {
+        if (info.input_rt_views[input] ==
+            PassInputViewDimension::
+                layered_2d_array) {
             if (selected_layers <
                 logical_view_count) {
                 throw std::runtime_error(
@@ -491,6 +522,23 @@ void FullscreenPassContainer::setInputResourcesById(
                 throw std::runtime_error(
                     "Fullscreen per_view subresource must select "
                     "exactly the logical view count");
+            }
+        } else if (
+            info.input_rt_views[input] ==
+                PassInputViewDimension::
+                    sequential_2d) {
+            if (selected_layers != 1 &&
+                selected_layers <
+                    logical_view_count) {
+                throw std::runtime_error(
+                    "Fullscreen sequential_2d input must provide one reusable layer or every logical view");
+            }
+            if (info.input_rt_subresources[input] &&
+                selected_layers != 1 &&
+                selected_layers !=
+                    logical_view_count) {
+                throw std::runtime_error(
+                    "Fullscreen sequential_2d subresource must select one reusable layer or exactly the logical view count");
             }
         }
     }
@@ -521,6 +569,21 @@ void FullscreenPassContainer::setInputResourcesById(
                 const auto dimension =
                     info.input_rt_views[i];
                 vk::ImageView image_view;
+                const auto selected_layers =
+                    info.input_rt_subresources[i]
+                        ? info.input_rt_subresources[i]
+                              ->layer_count
+                        : rt_views.arrayLayers(
+                              input_rts[i]);
+                const auto separate_view_layers =
+                    dimension ==
+                        PassInputViewDimension::
+                            layered_2d_array ||
+                    (dimension ==
+                         PassInputViewDimension::
+                             sequential_2d &&
+                     selected_layers >=
+                         logical_view_count);
                 if (info.input_rt_subresources[i]) {
                     auto subresource =
                         *info.input_rt_subresources[i];
@@ -528,9 +591,7 @@ void FullscreenPassContainer::setInputResourcesById(
                         view.execution ==
                                 GraphicsPipelineViewExecution::
                                     single_view &&
-                            dimension !=
-                                PassInputViewDimension::
-                                    shared_2d;
+                            separate_view_layers;
                     if (sequential) {
                         subresource.base_array_layer +=
                             variant;
@@ -573,8 +634,7 @@ void FullscreenPassContainer::setInputResourcesById(
                 } else if (
                     view.execution ==
                         GraphicsPipelineViewExecution::single_view &&
-                    dimension !=
-                        PassInputViewDimension::shared_2d) {
+                    separate_view_layers) {
                     image_view =
                         rt_views.getImageLayerViewForFrame(
                             input_rts[i], variant,

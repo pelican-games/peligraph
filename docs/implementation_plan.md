@@ -469,14 +469,29 @@ indirect argumentsを生成できるようにする。
 
 詳細は
 [`design_reviews/2026-07-28_wp210e_segmented_draw_hot_reload.md`](design_reviews/2026-07-28_wp210e_segmented_draw_hot_reload.md)。
-WP210の残りは、XR per-viewとGPU timing受け入れである。
+
+**WP210f 完了境界（2026-07-28）**:
+
+- compute scheduleを`per_frame|per_view`のtyped contractにし、`per_view`をlogical viewごとに
+  sequential実行するmixed view-family scheduleへ接続した
+- FrameUBOへ`view_index` / `view_count`を追加し、GLSL helperでsequentialとmultiviewを統一した
+- per-view imageをscalar reuse、layer-per-eye descriptor、layered 2D-arrayの3物理形へlowerする
+- flatのtransient targetとXRのexternal transfer targetがvariant間で同名の場合、
+  storage mode / alias contractを安全なmaterialized supersetへ統合する
+- 異なる両眼でCPU fallback、GPU sequential、mixed multiviewを実Vulkan実行し、
+  GPU 2経路のRGBA8、全count slot、segment metadata、実行回数が一致することを確認した
+
+詳細は
+[`design_reviews/2026-07-28_wp210f_xr_per_view_gpu_draw.md`](design_reviews/2026-07-28_wp210f_xr_per_view_gpu_draw.md)。
+WP210の残りはGPU timing受け入れである。
 
 **受け入れ条件**:
 
 - ✅ occlusion cullingをproject-owned fixed-state dogfoodにする
 - ✅ GPU生成count 0/1/max/overflow、graph/shader rollback、hot reload
-- XR view count test
-- CPU fallbackとのsemantic image一致
+- ✅ XR view count test
+- ✅ CPU fallbackを同じper-view graphで実行し、GPU sequential / mixed multiviewの
+  semantic image一致を確認
 - GPU timingでCPU pathより有利なworkload範囲を記録
 - descriptor pressureが実測blockerになるまでbindless WPを作らない
 

@@ -560,6 +560,12 @@ pelican_struct_schema_compile_fixture(fail_component_codec TRUE)
 add_library(pelican_golden_harness STATIC golden_harness.cpp)
 set_target_properties(pelican_golden_harness PROPERTIES CXX_STANDARD 20)
 target_include_directories(pelican_golden_harness PRIVATE ${Vulkan_INCLUDE_DIRS})
+if(MSVC)
+    # The shared golden harness intentionally keeps all generated-project
+    # fixtures in one translation unit. Its Catch assertions exceed COFF's
+    # default section count before they approach compiler memory limits.
+    target_compile_options(pelican_golden_harness PRIVATE /bigobj)
+endif()
 target_compile_definitions(pelican_golden_harness PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>

@@ -204,7 +204,8 @@ targetViewExecutionRequest(
         }
     }
     for (const auto &task : compute_tasks) {
-        if (task.schedule == "per_frame") {
+        if (task.schedule ==
+            ComputeTaskSchedule::per_frame) {
             independent_candidates.insert(task.name);
         }
     }
@@ -463,6 +464,11 @@ void mergeVariantRenderTargetPhysicalRequirements(
         std::optional<vk::Format> format;
         std::optional<ImageMipLevelCount>
             mip_levels;
+        std::optional<RenderTargetStorageMode>
+            storage_mode;
+        std::optional<std::string> alias_group;
+        bool alias_group_initialized = false;
+        bool alias_group_compatible = true;
     };
     std::unordered_map<std::string, Requirements>
         requirements;
@@ -494,6 +500,38 @@ void mergeVariantRenderTargetPhysicalRequirements(
                     "physical formats for target '" +
                     target.name + "'");
             }
+            if (!merged.storage_mode) {
+                merged.storage_mode =
+                    target.storage_mode;
+            } else if (
+                *merged.storage_mode !=
+                target.storage_mode) {
+                // Variant images share one allocation. Materialized storage
+                // is the safe superset when (for example) flat rendering
+                // chooses a transient depth attachment while XR requires the
+                // same depth image as an external transfer source.
+                merged.storage_mode =
+                    RenderTargetStorageMode::
+                        materialized;
+            }
+            if (!merged.alias_group_initialized) {
+                merged.alias_group =
+                    target.alias_group;
+                merged.alias_group_initialized =
+                    true;
+            } else if (
+                merged.alias_group !=
+                target.alias_group) {
+                // An alias relationship is valid only when every variant
+                // publishes the same relationship. Falling back to distinct
+                // materialized allocations is always safe.
+                merged.alias_group_compatible =
+                    false;
+                merged.alias_group.reset();
+                merged.storage_mode =
+                    RenderTargetStorageMode::
+                        materialized;
+            }
         }
     }
     for (auto &variant : variants) {
@@ -507,6 +545,12 @@ void mergeVariantRenderTargetPhysicalRequirements(
             target.mip_levels =
                 *merged.mip_levels;
             target.format = *merged.format;
+            target.storage_mode =
+                *merged.storage_mode;
+            target.alias_group =
+                merged.alias_group_compatible
+                    ? merged.alias_group
+                    : std::nullopt;
         }
     }
 }

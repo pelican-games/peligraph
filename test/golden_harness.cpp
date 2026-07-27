@@ -67,6 +67,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
@@ -2164,7 +2165,10 @@ void writeGpuOcclusionProject(
     const std::filesystem::path &root,
     bool candidate_visible,
     bool force_cpu,
-    bool segmented) {
+    bool segmented,
+    std::optional<std::string_view>
+        xr_view_execution = std::nullopt,
+    bool gpu_timing = false) {
     writeShadowProject(root, false);
     writeTextFile(
         root / "scene.json",
@@ -2306,6 +2310,27 @@ void writeGpuOcclusionProject(
 
     auto config =
         makeShadowRenderingConfig(false);
+    if (xr_view_execution) {
+        config["draw_sort"] = {
+            {"opaque",
+             {{"provider",
+               "state_batched_v1"}}},
+            {"transparent",
+             {{"provider",
+               "back_to_front_v1"}}},
+            {"xr_view_policy", "per_view"},
+        };
+        config["xr"] = {
+            {"view_execution",
+             std::string{
+                 *xr_view_execution}},
+        };
+    }
+    if (gpu_timing) {
+        config["features"] =
+            nlohmann::json::array(
+                {"engine://features/gpu_timing.json"});
+    }
     auto &targets = config["render_targets"];
     targets.push_back({
         {"name",
@@ -2507,6 +2532,7 @@ void writeGpuOcclusionProject(
                   {"resource",
                    "occlusion_depth"},
                   {"access", "sampled"},
+                  {"view", "per_view"},
                   {"sampling",
                    {
                        {"filter", "nearest"},
@@ -2519,6 +2545,7 @@ void writeGpuOcclusionProject(
                   {"resource",
                    "occlusion_pyramid"},
                   {"access", "storage"},
+                  {"view", "per_view"},
                   {"subresource",
                    {
                        {"mip", 0},
@@ -2529,7 +2556,7 @@ void writeGpuOcclusionProject(
          {{"groups",
            nlohmann::json::array(
                {2, 2, 1})}}},
-        {"schedule", "per_frame"},
+        {"schedule", "per_view"},
     });
     for (std::uint32_t mip = 1;
          mip < 5; ++mip) {
@@ -2566,6 +2593,7 @@ void writeGpuOcclusionProject(
                       {"resource",
                        "occlusion_pyramid"},
                       {"access", "sampled"},
+                      {"view", "per_view"},
                       {"sampling",
                        {
                            {"filter", "nearest"},
@@ -2582,6 +2610,7 @@ void writeGpuOcclusionProject(
                       {"resource",
                        "occlusion_pyramid"},
                       {"access", "storage"},
+                      {"view", "per_view"},
                       {"subresource",
                        {
                            {"mip", mip},
@@ -2592,13 +2621,18 @@ void writeGpuOcclusionProject(
              {{"groups",
                nlohmann::json::array(
                    {1, 1, 1})}}},
-            {"schedule", "per_frame"},
+            {"schedule", "per_view"},
         });
     }
     tasks.push_back({
         {"name", "occlusion_count_reset"},
         {"shader",
          "shaders/occlusion_count_reset"},
+        {"reads",
+         segmented
+             ? nlohmann::json::array(
+                   {"draw_segments"})
+             : nlohmann::json::array()},
         {"writes",
          nlohmann::json::array(
              {"visible_draw_count"})},
@@ -2609,7 +2643,7 @@ void writeGpuOcclusionProject(
          {{"groups",
            nlohmann::json::array(
                {1, 1, 1})}}},
-        {"schedule", "per_frame"},
+        {"schedule", "per_view"},
     });
     auto cull_reads =
         nlohmann::json::array(
@@ -2645,6 +2679,7 @@ void writeGpuOcclusionProject(
                   {"resource",
                    "occlusion_pyramid"},
                   {"access", "sampled"},
+                  {"view", "per_view"},
                   {"sampling",
                    {
                        {"filter", "nearest"},
@@ -2663,7 +2698,7 @@ void writeGpuOcclusionProject(
            nlohmann::json::array(
                {segmented ? 16 : 1,
                 1, 1})}}},
-        {"schedule", "per_frame"},
+        {"schedule", "per_view"},
     });
     config["compute_tasks"] =
         std::move(tasks);
@@ -2677,6 +2712,7 @@ void writeGpuOcclusionProject(
         R"glsl(
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
 #include "pelican_resource_ports.glsl"
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 void main() {
@@ -2685,9 +2721,11 @@ void main() {
     if (any(greaterThanEqual(coordinate, output_size))) return;
     vec2 uv = (vec2(coordinate) + vec2(0.5)) /
               vec2(output_size);
+    uint view_index = pelican_view_index();
     pelican_store_pyramid_seed(
-        coordinate,
-        vec4(pelican_sample_scene_depth(uv).r));
+        coordinate, view_index,
+        vec4(pelican_sample_scene_depth(
+            uv, view_index).r));
 }
 )glsl");
     writeTextFile(
@@ -2696,6 +2734,7 @@ void main() {
         R"glsl(
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
 #include "pelican_resource_ports.glsl"
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 void main() {
@@ -2704,6 +2743,7 @@ void main() {
     if (any(greaterThanEqual(coordinate, output_size))) return;
     ivec2 source_size = pelican_size_source_depth();
     ivec2 base = coordinate * 2;
+    uint view_index = pelican_view_index();
     float farthest = 0.0;
     for (int y = 0; y < 2; ++y) {
         for (int x = 0; x < 2; ++x) {
@@ -2714,17 +2754,56 @@ void main() {
                       vec2(source_size);
             farthest = max(
                 farthest,
-                pelican_sample_source_depth(uv).r);
+                pelican_sample_source_depth(
+                    uv, view_index).r);
         }
     }
     pelican_store_reduced_depth(
-        coordinate, vec4(farthest));
+        coordinate, view_index, vec4(farthest));
 }
 )glsl");
-    writeTextFile(
-        root / "shaders" /
-            "occlusion_count_reset.comp",
-        R"glsl(
+    if (segmented) {
+        writeTextFile(
+            root / "shaders" /
+                "occlusion_count_reset.comp",
+            R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
+struct DrawSegment {
+    uint sourceFirstCommand;
+    uint commandCapacity;
+    uint outputFirstCommand;
+    uint outputCountIndex;
+    uint sortViewIndex;
+    uint phase;
+    uint visibilityView;
+    uint materialFilterIndex;
+};
+layout(std430,set=1,binding=0) readonly buffer Segments {
+    DrawSegment values[];
+} segments;
+layout(std430,set=1,binding=1) buffer Count {
+    uint values[];
+} visible_count;
+void main() {
+    uint segment_index = gl_GlobalInvocationID.x;
+    if (segment_index >= uint(segments.values.length())) return;
+    DrawSegment segment = segments.values[segment_index];
+    if (segment.commandCapacity != 0u &&
+        segment.sortViewIndex == pelican_view_index() &&
+        segment.outputCountIndex <
+            uint(visible_count.values.length())) {
+        visible_count.values[segment.outputCountIndex] = 0u;
+    }
+}
+)glsl");
+    } else {
+        writeTextFile(
+            root / "shaders" /
+                "occlusion_count_reset.comp",
+            R"glsl(
 #version 450
 layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
 layout(std430,set=1,binding=0) buffer Count {
@@ -2737,6 +2816,7 @@ void main() {
     }
 }
 )glsl");
+    }
     if (segmented) {
         writeTextFile(
             root / "shaders" /
@@ -2834,23 +2914,26 @@ bool survivesOcclusion(DrawBounds bound) {
         lod, 0.0,
         float(pelican_mip_count_depth_pyramid() - 1u));
 
+    uint view_index = pelican_view_index();
     float farthest_depth = 0.0;
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            uv_min, lod).r);
+            uv_min, view_index, lod).r);
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            vec2(uv_max.x, uv_min.y), lod).r);
+            vec2(uv_max.x, uv_min.y),
+            view_index, lod).r);
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            vec2(uv_min.x, uv_max.y), lod).r);
+            vec2(uv_min.x, uv_max.y),
+            view_index, lod).r);
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            uv_max, lod).r);
+            uv_max, view_index, lod).r);
     return nearest_depth <=
            farthest_depth + 0.0005;
 }
@@ -2864,6 +2947,8 @@ void main() {
     DrawSegment segment =
         segments.values[segment_index];
     if (segment.commandCapacity == 0u ||
+        segment.sortViewIndex !=
+            pelican_view_index() ||
         segment.outputCountIndex >=
             uint(visible_counts.values.length())) {
         return;
@@ -2989,23 +3074,26 @@ bool survivesOcclusion(DrawBounds bound) {
         lod, 0.0,
         float(pelican_mip_count_depth_pyramid() - 1u));
 
+    uint view_index = pelican_view_index();
     float farthest_depth = 0.0;
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            uv_min, lod).r);
+            uv_min, view_index, lod).r);
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            vec2(uv_max.x, uv_min.y), lod).r);
+            vec2(uv_max.x, uv_min.y),
+            view_index, lod).r);
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            vec2(uv_min.x, uv_max.y), lod).r);
+            vec2(uv_min.x, uv_max.y),
+            view_index, lod).r);
     farthest_depth = max(
         farthest_depth,
         pelican_sample_lod_depth_pyramid(
-            uv_max, lod).r);
+            uv_max, view_index, lod).r);
     return nearest_depth <=
            farthest_depth + 0.0005;
 }
@@ -5179,6 +5267,215 @@ selectedGpuSegmentCounts() {
     return result;
 }
 
+struct XrSegmentedOcclusionCapture {
+    std::array<std::vector<std::uint8_t>, 2>
+        images;
+    std::vector<std::uint32_t> all_counts;
+    std::array<
+        std::vector<SceneDrawSegmentV1>, 2>
+        selected_segments;
+    nlohmann::json frame_plan;
+    nlohmann::json execution_trace;
+    std::uint64_t logical_begin_count = 0;
+    std::uint64_t logical_end_count = 0;
+    std::uint64_t view_begin_count = 0;
+    std::uint64_t view_end_count = 0;
+    std::uint64_t submission_count = 0;
+};
+
+XrSegmentedOcclusionCapture
+captureGpuSegmentedOcclusionXr(
+    std::string_view view_execution,
+    bool force_cpu) {
+    FastModuleContainer modules;
+    const auto root =
+        makeTempProjectDir(
+            std::string{
+                "gpu_segmented_xr_"} +
+            std::string{view_execution} +
+            (force_cpu ? "_cpu" : "_gpu"));
+    writeGpuOcclusionProject(
+        root, false, force_cpu, true,
+        view_execution);
+    GET_MODULE(PathResolver).setup(
+        root, false);
+    GET_MODULE(ProjectSource).setProjectData(
+        makeShadowProjectJson().dump());
+
+    auto &launch =
+        GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent =
+        vk::Extent2D{
+            goldenWidth, goldenHeight};
+    launch.headless_frames = 1;
+
+    // This fixture tests the renderer's XR graph without bootstrapping an
+    // OpenXR runtime. Vulkan must therefore exist before the XR graph flag is
+    // enabled, matching the established logical-frame stereo fixture.
+    auto &vkcore =
+        GET_MODULE(VulkanManageCore);
+    launch.xr_active = true;
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(
+        EngineTime::Mode::fixed_step,
+        1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration)
+        .reg();
+    GET_MODULE(SceneLoader)
+        .load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 center{
+        0.0f, 2.0f, -4.5f};
+    const glm::vec3 target{
+        0.0f, 0.25f, 0.0f};
+    camera.setScreenSize(
+        goldenWidth, goldenHeight);
+    camera.setPos(center);
+    camera.setDir(
+        glm::normalize(target - center));
+    camera.setUp({0.0f, 1.0f, 0.0f});
+
+    std::array<RenderViewParameters, 2>
+        views;
+    for (std::uint32_t view_index = 0;
+         view_index < views.size();
+         ++view_index) {
+        // Use distinct eye transforms so a shared per-frame pyramid or stale
+        // frame view index cannot accidentally pass the mixed-execution
+        // comparison.
+        const glm::vec3 eye =
+            center +
+            glm::vec3{
+                view_index == 0 ? -0.04f
+                                : 0.04f,
+                0.0f, 0.0f};
+        views[view_index].view =
+            glm::lookAt(
+                eye, target,
+                glm::vec3{
+                    0.0f, 1.0f, 0.0f});
+        views[view_index].projection =
+            camera.getProjectionMatrix();
+        views[view_index].camera_position =
+            eye;
+        // Keep one visibility domain so CPU fallback and GPU-compacted
+        // output are pixel-comparable; the per-eye sort indices still create
+        // independent segment/count ranges.
+        views[view_index]
+            .first_person_view =
+            false;
+    }
+
+    auto &renderer = GET_MODULE(Renderer);
+    renderer.selectGraphVariant(
+        RenderGraphVariant::xr);
+    renderer.setExecutionTracingForTesting(
+        true);
+    const auto format =
+        GET_MODULE(RenderTarget)
+            .getSwapchainFormat();
+
+    XrSegmentedOcclusionCapture result;
+    time.advance();
+    if (view_execution != "sequential") {
+        Test::
+            VulkanSyntheticViewFamilyTarget
+                target_output{
+                    launch.headless_extent,
+                    format};
+        renderer.renderLogicalFrame(
+            target_output, views);
+        result.images[0] =
+            target_output.readback(0);
+        result.images[1] =
+            target_output.readback(1);
+        result.logical_begin_count =
+            target_output
+                .logicalBeginCount();
+        result.logical_end_count =
+            target_output
+                .logicalEndCount();
+        result.view_begin_count =
+            target_output
+                .viewFamilyBeginCount();
+        result.view_end_count =
+            target_output
+                .viewFamilyEndCount();
+        result.submission_count =
+            target_output
+                .submissionCount();
+    } else {
+        Test::VulkanSyntheticStereoTarget
+            target_output{
+                launch.headless_extent,
+                format};
+        renderer.renderLogicalFrame(
+            target_output, views);
+        result.images[0] =
+            target_output.readback(0);
+        result.images[1] =
+            target_output.readback(1);
+        result.logical_begin_count =
+            target_output
+                .logicalBeginCount();
+        result.logical_end_count =
+            target_output
+                .logicalEndCount();
+        result.view_begin_count =
+            target_output.viewBeginCount();
+        result.view_end_count =
+            target_output.viewEndCount();
+        result.submission_count =
+            target_output.submissionCount();
+    }
+
+    result.all_counts =
+        readFrameGraphUint32Buffer(
+            "visible_draw_count");
+    auto &instances =
+        GET_MODULE(
+            PolygonInstanceContainer);
+    for (std::uint32_t view_index = 0;
+         view_index < views.size();
+         ++view_index) {
+        const auto &draw_calls =
+            instances.getDrawCalls(
+                views[view_index]
+                    .first_person_view,
+                std::nullopt,
+                view_index);
+        if (draw_calls.size() < 2) {
+            throw std::runtime_error(
+                "XR segmented GPU draw fixture emitted fewer than two state ranges");
+        }
+        for (std::size_t index = 0;
+             index < 2; ++index) {
+            result.selected_segments[
+                      view_index]
+                .push_back(
+                    instances
+                        .sceneDrawSegment(
+                            draw_calls[index]
+                                .scene_segment_index));
+        }
+    }
+    result.frame_plan =
+        renderer.currentFramePlanJson();
+    result.execution_trace =
+        renderer
+            .lastExecutionTraceForTesting();
+
+    vkcore.waitIdle();
+    std::filesystem::remove_all(root);
+    return result;
+}
+
 nlohmann::json &namedJsonEntry(
     nlohmann::json &entries,
     std::string_view name) {
@@ -5872,6 +6169,332 @@ void GoldenHarness::
 #else
     SKIP(
         "GPU segmented occlusion golden requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::
+    runGpuSegmentedOcclusionXr() {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    setupLogger();
+    requireGoldenVulkanDevice();
+    {
+        FastModuleContainer modules;
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{
+                goldenWidth, goldenHeight};
+        if (!GET_MODULE(VulkanManageCore)
+                 .getRuntimeCapabilities()
+                 .multiview) {
+            SKIP(
+                "XR segmented GPU draw multiview acceptance requires Vulkan multiview");
+        }
+    }
+
+    const auto cpu_sequential =
+        captureGpuSegmentedOcclusionXr(
+            "sequential", true);
+    const auto gpu_sequential =
+        captureGpuSegmentedOcclusionXr(
+            "sequential", false);
+    const auto gpu_multiview =
+        captureGpuSegmentedOcclusionXr(
+            "auto", false);
+
+    for (const auto *capture :
+         {&cpu_sequential,
+          &gpu_sequential,
+          &gpu_multiview}) {
+        REQUIRE(
+            capture->logical_begin_count ==
+            1);
+        REQUIRE(
+            capture->logical_end_count ==
+            1);
+        REQUIRE(
+            capture->submission_count == 1);
+        REQUIRE(
+            capture->images[0].size() ==
+            goldenWidth * goldenHeight * 4);
+        REQUIRE(
+            capture->images[1].size() ==
+            goldenWidth * goldenHeight * 4);
+        REQUIRE(
+            capture->selected_segments[0]
+                    .size() == 2);
+        REQUIRE(
+            capture->selected_segments[1]
+                    .size() == 2);
+    }
+    REQUIRE(
+        cpu_sequential.view_begin_count == 2);
+    REQUIRE(
+        cpu_sequential.view_end_count == 2);
+    REQUIRE(
+        gpu_sequential.view_begin_count ==
+        2);
+    REQUIRE(
+        gpu_sequential.view_end_count == 2);
+    REQUIRE(
+        gpu_multiview.view_begin_count == 1);
+    REQUIRE(
+        gpu_multiview.view_end_count == 1);
+
+    const auto differing_bytes =
+        [](const auto &left,
+           const auto &right) {
+            if (left.size() !=
+                right.size()) {
+                return std::max(
+                    left.size(),
+                    right.size());
+            }
+            std::size_t result = 0;
+            for (std::size_t index = 0;
+                 index < left.size();
+                 ++index) {
+                result +=
+                    left[index] !=
+                    right[index];
+            }
+            return result;
+        };
+    for (std::uint32_t view_index = 0;
+         view_index < 2; ++view_index) {
+        CAPTURE(view_index);
+        const auto cpu_difference =
+            differing_bytes(
+                gpu_sequential
+                    .images[view_index],
+                cpu_sequential
+                    .images[view_index]);
+        const auto multiview_difference =
+            differing_bytes(
+                gpu_multiview
+                    .images[view_index],
+                gpu_sequential
+                    .images[view_index]);
+        INFO(
+            "CPU fallback differing bytes="
+            << cpu_difference);
+        INFO(
+            "mixed multiview differing bytes="
+            << multiview_difference);
+        REQUIRE(
+            multiview_difference == 0);
+    }
+    INFO(
+        "CPU fallback cross-view differing bytes="
+        << differing_bytes(
+               cpu_sequential.images[0],
+               cpu_sequential.images[1]));
+    INFO(
+        "GPU sequential cross-view differing bytes="
+        << differing_bytes(
+               gpu_sequential.images[0],
+               gpu_sequential.images[1]));
+    REQUIRE(
+        gpu_multiview.all_counts ==
+        gpu_sequential.all_counts);
+    REQUIRE(
+        cpu_sequential.all_counts ==
+        gpu_sequential.all_counts);
+
+    std::set<std::uint32_t>
+        selected_count_slots;
+    std::vector<SceneDrawSegmentV1>
+        selected_segments;
+    std::array<std::uint32_t, 2>
+        visible_draw_counts{};
+    for (std::uint32_t view_index = 0;
+         view_index < 2; ++view_index) {
+        const auto expected_visibility =
+            static_cast<std::uint32_t>(
+                DrawQueueView::
+                    third_person);
+        for (std::size_t segment_index = 0;
+             segment_index < 2;
+             ++segment_index) {
+            const auto &segment =
+                gpu_multiview
+                    .selected_segments[
+                        view_index]
+                    .at(segment_index);
+            CAPTURE(
+                view_index,
+                segment_index,
+                segment
+                    .output_count_index);
+            REQUIRE(
+                segment.sort_view_index ==
+                view_index);
+            REQUIRE(
+                segment.visibility_view ==
+                expected_visibility);
+            REQUIRE(
+                segment.output_count_index <
+                gpu_multiview
+                    .all_counts.size());
+            REQUIRE(
+                gpu_multiview
+                    .all_counts[
+                        segment
+                            .output_count_index] <=
+                segment.command_capacity);
+            visible_draw_counts[view_index] +=
+                gpu_multiview
+                    .all_counts[
+                        segment
+                            .output_count_index];
+            REQUIRE(
+                selected_count_slots.insert(
+                    segment
+                        .output_count_index)
+                    .second);
+            REQUIRE(
+                segment ==
+                gpu_sequential
+                    .selected_segments[
+                        view_index]
+                    .at(segment_index));
+            selected_segments.push_back(
+                segment);
+        }
+    }
+    REQUIRE(
+        visible_draw_counts[0] +
+            visible_draw_counts[1] >
+        0);
+    REQUIRE(
+        visible_draw_counts[0] !=
+        visible_draw_counts[1]);
+    for (std::size_t left = 0;
+         left < selected_segments.size();
+         ++left) {
+        for (std::size_t right = left + 1;
+             right <
+             selected_segments.size();
+             ++right) {
+            const auto &a =
+                selected_segments[left];
+            const auto &b =
+                selected_segments[right];
+            REQUIRE((
+                a.output_first_command +
+                        a.command_capacity <=
+                    b.output_first_command ||
+                b.output_first_command +
+                        b.command_capacity <=
+                    a.output_first_command));
+        }
+    }
+
+    const auto &sequential_plan =
+        cpu_sequential.frame_plan
+            .at("physical_target_plan")
+            .at("view_execution_plan");
+    REQUIRE(
+        sequential_plan.at("requested") ==
+        "sequential");
+    REQUIRE_FALSE(
+        sequential_plan
+            .at("uses_multiview")
+            .get<bool>());
+
+    const auto &multiview_plan =
+        gpu_multiview.frame_plan
+            .at("physical_target_plan")
+            .at("view_execution_plan");
+    REQUIRE(
+        multiview_plan.at("requested") ==
+        "auto");
+    REQUIRE(
+        multiview_plan
+            .at("uses_multiview")
+            .get<bool>());
+    REQUIRE(
+        multiview_plan
+            .at("mixed_execution")
+            .get<bool>());
+
+    const auto &physical_plan =
+        gpu_multiview.frame_plan
+            .at("physical_target_plan");
+    REQUIRE(
+        std::any_of(
+            physical_plan.at("scopes")
+                .begin(),
+            physical_plan.at("scopes")
+                .end(),
+            [](const auto &scope) {
+                return scope.at(
+                           "view_execution") ==
+                       "multiview";
+            }));
+    const auto pyramid =
+        std::find_if(
+            physical_plan.at("resources")
+                .begin(),
+            physical_plan.at("resources")
+                .end(),
+            [](const auto &resource) {
+                return resource.at(
+                           "logical_resource") ==
+                       "occlusion_pyramid";
+            });
+    REQUIRE(
+        pyramid !=
+        physical_plan.at("resources").end());
+    REQUIRE(
+        pyramid->at("view_layout") ==
+        "sequential_2d");
+    REQUIRE(
+        pyramid->at("array_layers") == 1);
+
+    const auto &family_trace =
+        gpu_multiview.execution_trace
+            .at("view_family");
+    REQUIRE(
+        family_trace.at("view_count") == 2);
+    for (const auto task_name :
+         {"occlusion_depth_seed",
+          "occlusion_depth_reduce_4",
+          "occlusion_count_reset",
+          "occlusion_cull"}) {
+        CAPTURE(task_name);
+        std::array<std::size_t, 2>
+            invocations{};
+        for (const auto &node :
+             family_trace.at("nodes")) {
+            const auto node_name =
+                node.at("name")
+                    .get<std::string>();
+            if (node_name != task_name &&
+                node_name !=
+                    std::string{task_name} +
+                        "#xr") {
+                continue;
+            }
+            CAPTURE(task_name);
+            REQUIRE(
+                node.at("view_execution") ==
+                "sequential");
+            const auto view_index =
+                node.at("view_index")
+                    .get<std::uint32_t>();
+            REQUIRE(view_index < 2);
+            ++invocations[view_index];
+        }
+        REQUIRE(
+            invocations ==
+            std::array<std::size_t, 2>{
+                1, 1});
+    }
+#else
+    SKIP(
+        "XR segmented GPU draw acceptance requires OpenXR and the runtime shader compiler");
 #endif
 }
 

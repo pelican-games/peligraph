@@ -558,6 +558,55 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "compute task schedules distinguish frame and logical-view work",
+    "[renderingpass][compute][schedule][xr][wp210]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "compute_tasks": [
+            {
+              "name": "once",
+              "shader": "shaders/once"
+            },
+            {
+              "name": "per_eye",
+              "shader": "shaders/per_eye",
+              "schedule": "per_view"
+            }
+          ]
+        })json");
+
+    const auto tasks =
+        parseComputeTaskDefinitionsFromConfigJson(
+            config);
+    REQUIRE(tasks.size() == 2);
+    REQUIRE(
+        tasks[0].schedule ==
+        ComputeTaskSchedule::per_frame);
+    REQUIRE(
+        tasks[1].schedule ==
+        ComputeTaskSchedule::per_view);
+    REQUIRE(
+        std::string{
+            computeTaskScheduleName(
+                tasks[0].schedule)} ==
+        "per_frame");
+    REQUIRE(
+        std::string{
+            computeTaskScheduleName(
+                tasks[1].schedule)} ==
+        "per_view");
+
+    auto invalid = config;
+    invalid["compute_tasks"][1]["schedule"] =
+        "per_pass";
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "per_frame or per_view"));
+}
+
+TEST_CASE(
     "typed lighting buffers derive size from render extent and parse compute ports",
     "[renderingpass][resource-port][clustered][wp208]") {
     const auto config =

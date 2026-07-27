@@ -1463,15 +1463,26 @@ compileFullscreenResourceInterface(
                     "') 2D view requires exactly one array layer");
             }
             if (port->view ==
-                    ShaderResourcePortView::per_view &&
-                port->subresource->layer_count !=
-                    logical_view_count) {
-                throw std::runtime_error(
-                    "Shader resource port '" +
-                    port->name + "' (resource '" +
-                    port->resource +
-                    "') per_view subresource must select exactly the "
-                    "logical view count");
+                    ShaderResourcePortView::per_view) {
+                const auto layer_count =
+                    port->subresource->layer_count;
+                const auto valid_layer_count =
+                    physical ==
+                            VulkanResourceViewLayout::
+                                sequential_2d
+                        ? layer_count == 1 ||
+                              layer_count ==
+                                  logical_view_count
+                        : layer_count ==
+                              logical_view_count;
+                if (!valid_layer_count) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port->name + "' (resource '" +
+                        port->resource +
+                        "') per_view subresource does not match the "
+                        "physical view layout");
+                }
             }
         }
         result.bindings.push_back(

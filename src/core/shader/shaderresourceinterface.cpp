@@ -106,8 +106,14 @@ void writeSampledAccessors(
             << "vec4 pelican_sample_" << name
             << "(vec2 uv) { return texture(" << variable
             << ", uv); }\n"
+            << "vec4 pelican_sample_" << name
+            << "(vec2 uv, uint view_index) { return texture(" << variable
+            << ", uv); }\n"
             << "vec4 pelican_sample_lod_" << name
             << "(vec2 uv, float lod) { return textureLod("
+            << variable << ", uv, lod); }\n"
+            << "vec4 pelican_sample_lod_" << name
+            << "(vec2 uv, uint view_index, float lod) { return textureLod("
             << variable << ", uv, lod); }\n"
             << "ivec2 pelican_size_" << name
             << "() { return textureSize(" << variable
@@ -117,7 +123,9 @@ void writeSampledAccessors(
             << ", lod); }\n"
             << "uint pelican_mip_count_" << name
             << "() { return uint(textureQueryLevels(" << variable
-            << ")); }\n";
+            << ")); }\n"
+            << "uint pelican_view_count_" << name
+            << "() { return 1u; }\n";
         return;
     }
     stream
@@ -162,6 +170,11 @@ void writeStorageAccessors(
                        ? "ivec3(coordinate, int(view_index))"
                        : "coordinate")
                << "); }\n";
+        if (!array) {
+            stream << value_type << " pelican_load_" << name
+                   << "(ivec2 coordinate, uint view_index) { return imageLoad("
+                   << variable << ", coordinate); }\n";
+        }
     }
     if (binding.writable) {
         stream << "void pelican_store_" << name
@@ -174,6 +187,12 @@ void writeStorageAccessors(
                        ? "ivec3(coordinate, int(view_index))"
                        : "coordinate")
                << ", value); }\n";
+        if (!array) {
+            stream << "void pelican_store_" << name
+                   << "(ivec2 coordinate, uint view_index, "
+                   << value_type << " value) { imageStore("
+                   << variable << ", coordinate, value); }\n";
+        }
     }
     stream << "ivec2 pelican_size_" << name
            << "() { return imageSize(" << variable
@@ -182,6 +201,9 @@ void writeStorageAccessors(
         stream << "uint pelican_view_count_" << name
                << "() { return uint(imageSize(" << variable
                << ").z); }\n";
+    } else {
+        stream << "uint pelican_view_count_" << name
+               << "() { return 1u; }\n";
     }
 }
 
@@ -266,8 +288,14 @@ void writeInactiveStageAccessors(
             ReflectedImageViewDimension::two_d) {
             stream << "vec4 pelican_sample_" << name
                    << "(vec2 uv) { return vec4(0.0); }\n"
+                   << "vec4 pelican_sample_" << name
+                   << "(vec2 uv, uint view_index) { return vec4(0.0); }\n"
                    << "vec4 pelican_sample_lod_" << name
-                   << "(vec2 uv, float lod) { return vec4(0.0); }\n";
+                   << "(vec2 uv, float lod) { return vec4(0.0); }\n"
+                   << "vec4 pelican_sample_lod_" << name
+                   << "(vec2 uv, uint view_index, float lod) { return vec4(0.0); }\n"
+                   << "uint pelican_view_count_" << name
+                   << "() { return 1u; }\n";
         } else {
             stream << "vec4 pelican_sample_" << name
                    << "(vec2 uv, uint view_index) { return vec4(0.0); }\n"
@@ -299,12 +327,20 @@ void writeInactiveStageAccessors(
                        : "ivec2 coordinate")
                << ") { return " << value_type
                << "(0); }\n";
+        if (!array) {
+            stream << value_type << " pelican_load_" << name
+                   << "(ivec2 coordinate, uint view_index) { return "
+                   << value_type << "(0); }\n";
+        }
     }
     stream << "ivec2 pelican_size_" << name
            << "() { return ivec2(0); }\n";
     if (array) {
         stream << "uint pelican_view_count_" << name
                << "() { return 0u; }\n";
+    } else {
+        stream << "uint pelican_view_count_" << name
+               << "() { return 1u; }\n";
     }
 }
 
@@ -334,10 +370,11 @@ resolveShaderResourceImageViewDimension(
 
     if (physical_view ==
         VulkanResourceViewLayout::shared_2d) {
-        throw std::runtime_error(
-            prefix +
-            " requires per_view, but the physical target plan selected "
-            "shared_2d");
+        // A mono graph is the scalar physical representation of a per-view
+        // contract. This keeps one authored shader valid for flat and XR
+        // variants; stereo compute/multiview consumers still receive an
+        // indexed array view below.
+        return ReflectedImageViewDimension::two_d;
     }
     if (consumer ==
             ShaderResourceConsumerView::graphics_multiview &&
@@ -346,7 +383,17 @@ resolveShaderResourceImageViewDimension(
         throw std::runtime_error(
             prefix +
             " cannot feed a multiview shader from a sequential_2d "
-            "physical view");
+                "physical view");
+    }
+    if (consumer ==
+            ShaderResourceConsumerView::
+                compute_per_view &&
+        physical_view ==
+            VulkanResourceViewLayout::
+                sequential_2d) {
+        // Sequential per-view compute runs inside the selected logical view
+        // and the physical image is intentionally reused between eyes.
+        return ReflectedImageViewDimension::two_d;
     }
     if (consumer ==
             ShaderResourceConsumerView::graphics_sequential) {

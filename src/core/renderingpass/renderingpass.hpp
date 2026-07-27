@@ -381,6 +381,17 @@ struct ComputeDispatchDefinition {
         indirect;
 };
 
+enum class ComputeTaskSchedule : std::uint8_t {
+    // Executes once for the logical frame and may feed every view.
+    per_frame,
+    // Executes once for each logical view. Physical lowering may keep these
+    // invocations sequential while other scopes use Vulkan multiview.
+    per_view,
+};
+
+std::string_view computeTaskScheduleName(
+    ComputeTaskSchedule schedule);
+
 struct ComputeTaskDefinition {
     std::string name;
     ShaderReference shader = ShaderReference{"", ShaderStage::compute, ShaderReferenceKind::explicit_file, false};
@@ -392,7 +403,8 @@ struct ComputeTaskDefinition {
     // remain authoritative and are not synthesized from these declarations.
     std::vector<ShaderResourcePortDefinition> resource_ports;
     ComputeDispatchDefinition dispatch;
-    std::string schedule = "per_frame";
+    ComputeTaskSchedule schedule =
+        ComputeTaskSchedule::per_frame;
 };
 
 struct CompiledComputeTask {

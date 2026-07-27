@@ -25,7 +25,8 @@ struct alignas(16) FrameUniformData {
     alignas(8) glm::vec2 previous_jitter_ndc{0.0f};
     std::uint32_t temporal_reset_epoch = 0;
     std::uint32_t previous_temporal_reset_epoch = 0;
-    glm::uvec2 temporal_padding{0u};
+    std::uint32_t view_index = 0;
+    std::uint32_t view_count = 1;
 };
 
 static_assert(offsetof(FrameUniformData, time_delta) == 0);
@@ -40,6 +41,8 @@ static_assert(offsetof(FrameUniformData, jitter_ndc) == 320);
 static_assert(offsetof(FrameUniformData, previous_jitter_ndc) == 328);
 static_assert(offsetof(FrameUniformData, temporal_reset_epoch) == 336);
 static_assert(offsetof(FrameUniformData, previous_temporal_reset_epoch) == 340);
+static_assert(offsetof(FrameUniformData, view_index) == 344);
+static_assert(offsetof(FrameUniformData, view_count) == 348);
 static_assert(sizeof(FrameUniformData) == 352);
 static_assert(std::is_trivially_copyable_v<FrameUniformData>);
 

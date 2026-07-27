@@ -236,9 +236,10 @@ portは既存の`reads` / `writes`を注釈するだけで、新しいedgeや順
 `sampling.filter`は`linear|nearest`、`sampling.address`は
 `repeat|mirrored_repeat|clamp_to_edge`です。raw storage buffer/image layoutは
 typed buffer未実装時や特殊descriptor用のescape hatchとして維持されます。
-`layers`がXRの論理view数より大きくても、`per_view` descriptorは先頭の論理view数ぶんだけを
-公開します。明示`subresource`で別の連続layer群を選ぶ場合、`layer_count`は論理view数と
-一致させます。
+`layers`がXRの論理view数より大きくても、layered `per_view` descriptorは選択した先頭の
+論理view数ぶんだけを公開します。明示`subresource`は1 layerを起点としてlogical view数へ
+展開するか、logical view数と同じ連続layer群を指定します。1枚再利用の
+`sequential_2d`では`layer_count: 1`のままです。
 
 2D RTの部分viewは`subresource`で指定します。
 
@@ -268,7 +269,12 @@ subresource、2D viewの複数layer、storage viewの複数mipは起動時エラ
 依存とlayout trackerは現在resource単位なので、rangeが離れていても実行順やbarrierを
 勝手に緩和せず、image全体を保守的に遷移します。
 
-`schedule` は `per_frame` のみ、`dispatch.groups_from` は予約。設定とshaderの最小例は
+`schedule` は既定`per_frame`（logical frameで1回）または`per_view`
+（logical viewごとに1回）です。`per_view`はXRのdepth pyramid、culling、eye別post-process
+などに使い、他のscopeがmultiviewでも当該compute taskはsequentialに実行されます。
+shaderは`#include "pelican_frame.glsl"`の`pelican_view_index()` /
+`pelican_view_count()`で現在のviewを取得します。`dispatch.groups_from` は予約。
+設定とshaderの最小例は
 [`adding_features.md`のレシピ4](../adding_features.md)と
 `test/run_compute_headless.cmake`です。
 
@@ -396,7 +402,10 @@ commands/boundsのbuffer容量はそれぞれ独立しており、overflow時は
 full mip chainをsampled resource portで読むshaderでは、生成accessor
 `pelican_sample_lod_<port>(uv, lod)`、`pelican_size_lod_<port>(lod)`、
 `pelican_mip_count_<port>()`を利用できます。2D-array portのsample LODだけは
-`(uv, view_index, lod)`です。depth pyramidのmax/min reduction、mip選択、biasなどの
+`(uv, view_index, lod)`です。scalar 2D portにも同じindexed overloadが生成され、
+`view_index`はdescriptorが既に選んだ眼を表すため無視されます。このため同じshaderを
+1枚再利用のsequential XRと2D-array loweringの両方で使えます。
+depth pyramidのmax/min reduction、mip選択、biasなどの
 アルゴリズムはengine固定ではなくproject側のcompute shaderで変更できます。
 
 既定の`gpu_draw_source.layout`は`"fixed_state_v1"`で、**1つの

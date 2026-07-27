@@ -18,7 +18,8 @@ struct PelicanFrameData {
     vec2 previous_jitter_ndc;
     uint temporal_reset_epoch;
     uint previous_temporal_reset_epoch;
-    uvec2 temporal_padding;
+    uint view_index;
+    uint view_count;
 };
 
 layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uniform PelicanFrameUBO {
@@ -40,9 +41,22 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uni
     vec2 previous_jitter_ndc;
     uint temporal_reset_epoch;
     uint previous_temporal_reset_epoch;
-    uvec2 temporal_padding;
+    uint view_index;
+    uint view_count;
 } pelicanFrame;
 #endif
+
+uint pelican_view_index() {
+#if defined(PELICAN_MULTIVIEW)
+    return uint(gl_ViewIndex);
+#else
+    return pelicanFrame.view_index;
+#endif
+}
+
+uint pelican_view_count() {
+    return pelicanFrame.view_count;
+}
 
 struct PelicanResolutionData {
     vec4 render_resolution;

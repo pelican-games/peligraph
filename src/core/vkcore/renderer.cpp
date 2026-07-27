@@ -469,7 +469,9 @@ FrameResolutionExtents resolveFrameResolutionExtents(
 FrameUniformData updateFrameResources(
     RenderFrameModules &modules, EngineTime &engine_time,
     vk::Extent2D render_extent, vk::Extent2D output_extent,
-    const RenderFrameSnapshot &snapshot) {
+    const RenderFrameSnapshot &snapshot,
+    std::uint32_t view_index,
+    std::uint32_t view_count) {
     const auto frame_index = engine_time.frameIndex();
 
     FrameUniformData data;
@@ -489,6 +491,8 @@ FrameUniformData updateFrameResources(
     data.previous_jitter_ndc = snapshot.previous_jitter_ndc;
     data.temporal_reset_epoch = snapshot.temporal_reset_epoch;
     data.previous_temporal_reset_epoch = snapshot.previous_temporal_reset_epoch;
+    data.view_index = view_index;
+    data.view_count = view_count;
 
     modules.frame_resources.setSceneBuffers(modules.instance_container.getObjectBuf(),
                                             modules.instance_container.getPreviousObjectBuf(),
@@ -1493,7 +1497,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 layout_tracker);
             modules.compute_task_container.dispatch(
                 render_ctx.cmd_buf, task.task_id,
-                modules.frame_resources);
+                modules.frame_resources,
+                scheduled.view_index);
             if (node_trace != nullptr) {
                 node_trace->push_back(computeNodeTrace(task, node_index, frame_graph,
                                                        modules.render_target_container,
@@ -3403,7 +3408,8 @@ void Renderer::renderLogicalFrame(
                     modules, engine_time,
                     resolution_extents.render,
                     resolution_extents.output,
-                    snapshots.back()));
+                    snapshots.back(),
+                    view_index, view_count));
             frame_resolutions.push_back(
                 frameResolutionData(
                     resolution_extents.render,
@@ -3548,7 +3554,8 @@ void Renderer::renderLogicalFrame(
         updateFrameResources(
             modules, engine_time,
             resolution_extents.render,
-            resolution_extents.output, snapshot);
+            resolution_extents.output, snapshot,
+            view_index, view_count);
 
         nlohmann::json node_trace;
         nlohmann::json *node_trace_ptr = nullptr;

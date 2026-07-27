@@ -220,8 +220,13 @@ DECLARE_MODULE(ComputeTaskContainer) {
         std::vector<ShaderResourceInterfaceBinding>
             resource_interface;
         PipelineHandle pipeline;
-        std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
-        std::array<std::vector<vk::ImageView>, 2> bound_image_views;
+        std::vector<
+            std::array<vk::UniqueDescriptorSet, 2>>
+            descriptor_sets;
+        std::vector<
+            std::array<
+                std::vector<vk::ImageView>, 2>>
+            bound_image_views;
         std::uint64_t binding_revision = 0;
         uint32_t dispatch_x = 1;
         uint32_t dispatch_y = 1;
@@ -250,7 +255,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
             &resource_interface,
         RenderTargetContainer &render_target_container,
         const FrameGraphResourceContainer &frame_graph_resources,
-        std::uint32_t frame_index);
+        std::uint32_t frame_index,
+        std::uint32_t view_index);
     vk::Sampler samplerFor(
         ShaderResourcePortSampling sampling);
 
@@ -280,13 +286,15 @@ DECLARE_MODULE(ComputeTaskContainer) {
                                         VulkanUtils &vk_utils,
                                         RenderTargetLayoutTracker &layout_tracker) const;
     void dispatch(vk::CommandBuffer cmd_buf, ComputeTaskId task_id,
-                  const FrameResources &frame_resources) const;
+                  const FrameResources &frame_resources,
+                  std::uint32_t view_index = 0) const;
     void bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf,
                                      FrameGraphBufferId resource,
                                      FramePlanNodeKind from_kind,
                                      FramePlanNodeKind to_kind) const;
     std::vector<vk::ImageView> boundImageViewsForTesting(
-        ComputeTaskId task_id, std::uint32_t frame_index) const;
+        ComputeTaskId task_id, std::uint32_t frame_index,
+        std::uint32_t view_index = 0) const;
     std::uint64_t bindingRevisionForTesting(ComputeTaskId task_id) const;
 
     RegistrationCheckpoint checkpointRegistrations() const;

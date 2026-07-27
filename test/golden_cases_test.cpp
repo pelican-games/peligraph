@@ -33,6 +33,13 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "per-view GPU culling preserves segmented draws across XR execution modes",
+    "[golden][headless][wp210][occlusion][segments][xr][multiview]") {
+    GoldenHarness::
+        runGpuSegmentedOcclusionXr();
+}
+
+TEST_CASE(
     "segmented GPU draw generations hot reload and roll back atomically",
     "[golden][headless][wp210][occlusion][segments][hot-reload][rollback]") {
     GoldenHarness::

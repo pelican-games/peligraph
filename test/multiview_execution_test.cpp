@@ -202,6 +202,21 @@ void main() {
 )glsl";
 }
 
+const char *perViewComputeShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 1, local_size_y = 1) in;
+void main() {
+    vec4 value = pelican_sample_eye_input(
+        vec2(0.5), 0u);
+    pelican_store_probe_result(
+        0u, uvec4(value * 255.0));
+}
+)glsl";
+}
+
 ShaderBundleId compileBundle(
     ShaderLibrary &library, ShaderCompiler &compiler,
     std::string_view source, vk::ShaderStageFlagBits stage,
@@ -708,6 +723,108 @@ TEST_CASE(
             vma::MemoryUsage::eAutoPreferDevice,
             false, {}, 1, {},
             authored_layer_capacity);
+    std::filesystem::create_directories(
+        project.path() / "shaders");
+    std::ofstream{
+        project.path() / "shaders" /
+            "per_view_probe.comp",
+        std::ios::binary}
+        << perViewComputeShader();
+    auto &frame_graph_resources =
+        GET_MODULE(FrameGraphResourceContainer);
+    frame_graph_resources.registerBuffers(
+        {FrameGraphBufferDefinition{
+            .name = "per_view_probe_result",
+            .size = 16,
+        }});
+    ComputeTaskDefinition per_view_task{
+        .name = "per_view_descriptor_probe",
+        .shader =
+            makeShaderReference(
+                "shaders/per_view_probe",
+                ShaderStage::compute),
+        .reads = {
+            "wp209b_layer_capacity_target"},
+        .writes = {
+            "per_view_probe_result"},
+        .resource_ports = {
+            ShaderResourcePortDefinition{
+                .name = "eye_input",
+                .resource =
+                    "wp209b_layer_capacity_target",
+                .access =
+                    ShaderResourcePortAccess::
+                        sampled,
+                .view =
+                    ShaderResourcePortView::
+                        per_view,
+            },
+            ShaderResourcePortDefinition{
+                .name = "probe_result",
+                .resource =
+                    "per_view_probe_result",
+                .kind =
+                    ShaderResourcePortKind::
+                        buffer,
+                .buffer_element =
+                    ShaderResourceBufferElement::
+                        uvec4,
+                .access =
+                    ShaderResourcePortAccess::
+                        storage,
+            },
+        },
+        .schedule =
+            ComputeTaskSchedule::per_view,
+    };
+    const std::unordered_map<
+        std::string,
+        VulkanResourceViewLayout>
+        compute_resource_views{
+            {"wp209b_layer_capacity_target",
+             VulkanResourceViewLayout::
+                 sequential_2d},
+        };
+    const std::unordered_map<
+        std::string, std::uint32_t>
+        compute_resource_view_counts{
+            {"wp209b_layer_capacity_target",
+             stereo_view_count},
+        };
+    const auto per_view_task_id =
+        GET_MODULE(ComputeTaskContainer)
+            .registerComputeTask(
+                per_view_task,
+                ComputeTaskRuntimeDependencies{
+                    library,
+                    GET_MODULE(PathResolver),
+                    render_targets,
+                    frame_graph_resources,
+                    &compute_resource_views,
+                    &compute_resource_view_counts,
+                });
+    const auto per_view_left =
+        GET_MODULE(ComputeTaskContainer)
+            .boundImageViewsForTesting(
+                per_view_task_id, 0, 0);
+    const auto per_view_right =
+        GET_MODULE(ComputeTaskContainer)
+            .boundImageViewsForTesting(
+                per_view_task_id, 0, 1);
+    REQUIRE(
+        per_view_left ==
+        std::vector<vk::ImageView>{
+            render_targets
+                .getImageLayerView(
+                    capacity_target, 0)});
+    REQUIRE(
+        per_view_right ==
+        std::vector<vk::ImageView>{
+            render_targets
+                .getImageLayerView(
+                    capacity_target, 1)});
+    REQUIRE(
+        per_view_left != per_view_right);
     const auto local_source =
         render_targets.registerRenderTarget(
             "wp203b_tile_local_source",
@@ -854,8 +971,6 @@ TEST_CASE(
             local_read_consumer_pipeline.value)};
     const RenderTargetImageViewResolver
         target_views{render_targets};
-    auto &frame_graph_resources =
-        GET_MODULE(FrameGraphResourceContainer);
     fullscreen_passes.setInputResourcesById(
         sequential_input_pass,
         {capacity_target}, {false}, {},

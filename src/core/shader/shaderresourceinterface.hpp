@@ -26,6 +26,7 @@ enum class ShaderResourceDescriptorKind : std::uint8_t {
 
 enum class ShaderResourceConsumerView : std::uint8_t {
     compute_once,
+    compute_per_view,
     graphics_sequential,
     graphics_multiview,
 };
