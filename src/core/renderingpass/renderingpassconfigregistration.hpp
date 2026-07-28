@@ -1,5 +1,6 @@
 #pragma once
 
+#include "previewgraph.hpp"
 #include "renderingpass.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/targetrenderplanning.hpp"
@@ -104,6 +105,12 @@ struct RenderingPassConfigRegistrationResult {
     std::uint64_t runtime_generation = 0;
 };
 
+struct RenderGraphVariantFamilyRegistrationResult {
+    std::vector<RenderingPassConfigRegistrationResult>
+        runtime_variants;
+    PreviewGraphProgram preview;
+};
+
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
     const std::string &json_path, vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies dependencies);
@@ -114,5 +121,13 @@ std::vector<RenderingPassConfigRegistrationResult>
 registerRenderingPassConfigVariantsFromJsonData(
     std::string_view json_data, vk::Extent2D base_extent,
     std::vector<RenderingPassConfigRegistrationDependencies> dependencies);
+// Compiles the request-local preview with all live runtime variants in one
+// compiler invocation. Only runtime variants enter shared GPU registration.
+RenderGraphVariantFamilyRegistrationResult
+registerRenderGraphVariantFamilyFromJsonData(
+    std::string_view json_data,
+    vk::Extent2D base_extent,
+    std::vector<RenderingPassConfigRegistrationDependencies>
+        runtime_dependencies);
 
 } // namespace Pelican

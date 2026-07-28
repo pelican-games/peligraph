@@ -15,6 +15,7 @@ enum class NativeProgramFault {
     none,
     wrong_backend,
     missing_target_index,
+    data_only_physical_package,
 };
 
 class NativeVulkanProgram final
@@ -60,6 +61,29 @@ class NativeVulkanProgram final
             pipeline->graph_variant_policy.variant =
                 request.graph_variant;
 
+            RenderCompilerProgramVariantOutput
+                variant;
+            variant.graph_variant =
+                request.graph_variant;
+            variant.compiled_pipeline =
+                std::move(pipeline);
+            variant.normalized_config =
+                nlohmann::json::object();
+            if (request.artifact ==
+                RenderCompilerProgramArtifact::
+                    data_only) {
+                if (fault_ ==
+                    NativeProgramFault::
+                        data_only_physical_package) {
+                    variant.physical_package =
+                        std::make_unique<
+                            VulkanRenderCompilerPhysicalPackage>();
+                }
+                output.variants.push_back(
+                    std::move(variant));
+                continue;
+            }
+
             auto target_plan =
                 std::make_shared<VulkanTargetPlan>();
             target_plan->graph = "native_graph";
@@ -76,14 +100,6 @@ class NativeVulkanProgram final
                     target_plan);
             }
 
-            RenderCompilerProgramVariantOutput
-                variant;
-            variant.graph_variant =
-                request.graph_variant;
-            variant.compiled_pipeline =
-                std::move(pipeline);
-            variant.normalized_config =
-                nlohmann::json::object();
             variant.frame_plans.emplace(
                 "native_graph",
                 FramePlan{
@@ -122,6 +138,14 @@ struct ProgramInputFixture {
                 .graph_variant =
                     RenderPipelineGraphVariant::xr,
             },
+            RenderCompilerProgramVariantRequest{
+                .graph_variant =
+                    RenderPipelineGraphVariant::
+                        preview,
+                .artifact =
+                    RenderCompilerProgramArtifact::
+                        data_only,
+            },
         };
 
     RenderCompilerProgramInput input() const {
@@ -154,7 +178,7 @@ TEST_CASE(
         program, fixture.input());
 
     REQUIRE(program.compile_calls == 1);
-    REQUIRE(output.variants.size() == 2);
+    REQUIRE(output.variants.size() == 3);
     const auto &variant = output.variants.front();
     REQUIRE(
         variant.compiled_pipeline
@@ -186,10 +210,26 @@ TEST_CASE(
                 ["mode"] ==
         "backend_native");
     CHECK(
-        output.variants.back()
+        output.variants.at(1)
             .compiled_pipeline
             ->graph_variant_policy.variant ==
         RenderPipelineGraphVariant::xr);
+    const auto &preview =
+        output.variants.back();
+    CHECK(
+        preview.compiled_pipeline
+            ->graph_variant_policy.variant ==
+        RenderPipelineGraphVariant::preview);
+    CHECK(
+        preview.physical_package == nullptr);
+    REQUIRE(
+        preview.compiled_pipeline
+            ->render_compiler_program
+            .has_value());
+    CHECK(
+        preview.compiled_pipeline
+            ->render_compiler_program->name ==
+        "test.native");
 }
 
 TEST_CASE(
@@ -228,6 +268,18 @@ TEST_CASE(
             Catch::Matchers::ContainsSubstring(
                 "unknown or duplicate graph variant"));
         CHECK(program.compile_calls == 0);
+    }
+
+    SECTION("data-only physical package") {
+        NativeVulkanProgram program{
+            NativeProgramFault::
+                data_only_physical_package};
+        CHECK_THROWS_WITH(
+            runRenderCompilerProgram(
+                program, fixture.input()),
+            Catch::Matchers::ContainsSubstring(
+                "data-only artifact returned a "
+                "physical package"));
     }
 }
 

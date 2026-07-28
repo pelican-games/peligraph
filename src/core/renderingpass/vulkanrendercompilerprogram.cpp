@@ -237,8 +237,19 @@ void namespaceComputeTasks(
     }
 }
 
-RenderCompilerProgramVariantOutput
-compileDefaultVulkanVariant(
+struct DefaultLogicalVariantCompilation {
+    CompiledRenderPipeline compiled_pipeline;
+    nlohmann::json composed_config;
+    std::vector<LogicalGraphTransformSelection>
+        graph_transforms;
+    std::optional<RenderStrategySelection>
+        render_strategy;
+    std::vector<ResolvedTaggedSubgraphGraph>
+        subgraphs;
+};
+
+DefaultLogicalVariantCompilation
+compileDefaultLogicalVariant(
     const RenderCompilerProgramInput &input,
     const VulkanRenderCompilerBackendContext
         &backend,
@@ -246,15 +257,8 @@ compileDefaultVulkanVariant(
         &request) {
     std::optional<RenderStrategySelection>
         resolved_render_strategy;
-    auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{
-            input.rendering_config,
-            input.source_name},
-        RenderEnvironmentCapabilities{
-            input.runtime_shader_compiler_enabled,
-            request.graph_variant,
-        },
-        RenderPipelineResolveDependencies{
+    RenderPipelineResolveDependencies
+        resolve_dependencies{
             .load_feature_json =
                 [&input](std::string_view ref) {
                     return input.path_resolver.loadText(
@@ -264,23 +268,6 @@ compileDefaultVulkanVariant(
                 [&input](std::string_view ref) {
                     return input.path_resolver.loadText(
                         ref);
-                },
-            .normalize_config =
-                [&backend](
-                    const nlohmann::json &config,
-                    const std::vector<std::string>
-                        &feature_names) {
-                    const bool hdr_enabled =
-                        std::find(
-                            feature_names.begin(),
-                            feature_names.end(),
-                            "hdr") !=
-                        feature_names.end();
-                    return resolveRenderTargetFormatClassesV2(
-                        config,
-                        backend.output_format,
-                        backend.output_extent,
-                        hdr_enabled);
                 },
             .resolve_render_strategy =
                 [&input,
@@ -298,11 +285,57 @@ compileDefaultVulkanVariant(
                         generated.selection;
                     return std::move(generated.config);
                 },
-        });
+        };
+    if (request.artifact ==
+        RenderCompilerProgramArtifact::
+            runtime_package) {
+        resolve_dependencies.normalize_config =
+            [&backend](
+                const nlohmann::json &config,
+                const std::vector<std::string>
+                    &feature_names) {
+                const bool hdr_enabled =
+                    std::find(
+                        feature_names.begin(),
+                        feature_names.end(),
+                        "hdr") !=
+                    feature_names.end();
+                return resolveRenderTargetFormatClassesV2(
+                    config,
+                    backend.output_format,
+                    backend.output_extent,
+                    hdr_enabled);
+            };
+    }
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            input.rendering_config,
+            input.source_name},
+        RenderEnvironmentCapabilities{
+            input.runtime_shader_compiler_enabled,
+            request.graph_variant,
+        },
+        resolve_dependencies);
     auto compiled_pipeline_value =
         compileRenderPipeline(resolved);
     auto composed_config =
         std::move(resolved.normalized_config);
+    if (request.artifact ==
+        RenderCompilerProgramArtifact::data_only) {
+        // Preview remains a request-local CPU program: resolve feature and
+        // strategy policy here, but do not apply runtime host additions or
+        // enter transform/subgraph/device planning that assumes concrete
+        // target storage.
+        compiled_pipeline_value.render_strategy =
+            std::move(resolved_render_strategy);
+        return {
+            .compiled_pipeline =
+                std::move(
+                    compiled_pipeline_value),
+            .composed_config =
+                std::move(composed_config),
+        };
+    }
     if (request.compose_runtime_config) {
         request.compose_runtime_config(
             composed_config);
@@ -322,43 +355,81 @@ compileDefaultVulkanVariant(
             input.subgraph_replacements);
     composed_config =
         std::move(resolved_subgraphs.config);
-
-    auto render_target_definitions =
-        parseRenderTargetDefinitionsFromJson(
-            composed_config);
-    auto buffer_definitions =
-        parseFrameGraphBufferDefinitionsFromJson(
-            composed_config);
-    auto buffer_names =
-        frameGraphBufferNameSet(buffer_definitions);
-    auto compute_task_definitions =
-        parseComputeTaskDefinitionsFromConfigJson(
-            composed_config);
-    validateComputeTaskBufferContracts(
-        buffer_definitions,
-        compute_task_definitions);
-    validateGpuDrawSourceBufferContracts(
-        composed_config,
-        buffer_definitions);
-    auto graph_definitions =
-        parseFrameGraphDefinitionsFromConfigJson(
-            composed_config);
-    applyResolvedLogicalGraphTransformSelections(
-        graph_definitions,
-        resolved_transforms.selections);
-    applyResolvedRenderStrategySelection(
-        graph_definitions,
-        resolved_render_strategy);
-    applyResolvedTaggedSubgraphSelections(
-        graph_definitions,
-        resolved_subgraphs.graphs);
     compiled_pipeline_value.graph_transforms =
         resolved_transforms.selections;
     compiled_pipeline_value.render_strategy =
         resolved_render_strategy;
+
+    return {
+        .compiled_pipeline =
+            std::move(compiled_pipeline_value),
+        .composed_config =
+            std::move(composed_config),
+        .graph_transforms =
+            std::move(resolved_transforms.selections),
+        .render_strategy =
+            std::move(resolved_render_strategy),
+        .subgraphs =
+            std::move(resolved_subgraphs.graphs),
+    };
+}
+
+RenderCompilerProgramVariantOutput
+compileDefaultVulkanVariant(
+    const RenderCompilerProgramInput &input,
+    const VulkanRenderCompilerBackendContext
+        &backend,
+    const RenderCompilerProgramVariantRequest
+        &request) {
+    auto logical = compileDefaultLogicalVariant(
+        input, backend, request);
+    if (request.artifact ==
+        RenderCompilerProgramArtifact::data_only) {
+        return {
+            .graph_variant = request.graph_variant,
+            .compiled_pipeline =
+                std::make_shared<
+                    const CompiledRenderPipeline>(
+                    std::move(
+                        logical.compiled_pipeline)),
+            .normalized_config =
+                std::move(
+                    logical.composed_config),
+        };
+    }
+
+    auto render_target_definitions =
+        parseRenderTargetDefinitionsFromJson(
+            logical.composed_config);
+    auto buffer_definitions =
+        parseFrameGraphBufferDefinitionsFromJson(
+            logical.composed_config);
+    auto buffer_names =
+        frameGraphBufferNameSet(buffer_definitions);
+    auto compute_task_definitions =
+        parseComputeTaskDefinitionsFromConfigJson(
+            logical.composed_config);
+    validateComputeTaskBufferContracts(
+        buffer_definitions,
+        compute_task_definitions);
+    validateGpuDrawSourceBufferContracts(
+        logical.composed_config,
+        buffer_definitions);
+    auto graph_definitions =
+        parseFrameGraphDefinitionsFromConfigJson(
+            logical.composed_config);
+    applyResolvedLogicalGraphTransformSelections(
+        graph_definitions,
+        logical.graph_transforms);
+    applyResolvedRenderStrategySelection(
+        graph_definitions,
+        logical.render_strategy);
+    applyResolvedTaggedSubgraphSelections(
+        graph_definitions,
+        logical.subgraphs);
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
-            std::move(compiled_pipeline_value));
+            std::move(logical.compiled_pipeline));
     namespaceComputeTasks(
         compute_task_definitions,
         graph_definitions,
@@ -377,7 +448,7 @@ compileDefaultVulkanVariant(
             backend.physical_device,
             targetViewExecutionRequest(
                 *compiled_pipeline,
-                composed_config,
+                logical.composed_config,
                 graph_definitions,
                 compute_task_definitions,
                 request.enable_multiview_runtime),
@@ -403,7 +474,7 @@ compileDefaultVulkanVariant(
         .compiled_pipeline =
             std::move(compiled_pipeline),
         .normalized_config =
-            std::move(composed_config),
+            std::move(logical.composed_config),
         .buffer_definitions =
             std::move(buffer_definitions),
         .buffer_names =

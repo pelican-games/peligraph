@@ -1290,6 +1290,12 @@ class DelegatingVulkanCompilerProgram final
     : public RenderCompilerProgram {
   public:
     mutable std::size_t compile_calls = 0;
+    mutable std::vector<
+        RenderPipelineGraphVariant>
+        compiled_variants;
+    mutable std::vector<
+        RenderCompilerProgramArtifact>
+        compiled_artifacts;
 
     RenderCompilerProgramSelection selection(
         const RenderCompilerBackendContext
@@ -1308,6 +1314,15 @@ class DelegatingVulkanCompilerProgram final
         const RenderCompilerProgramInput
             &input) const override {
         ++compile_calls;
+        compiled_variants.clear();
+        compiled_artifacts.clear();
+        for (const auto &variant :
+             input.variants) {
+            compiled_variants.push_back(
+                variant.graph_variant);
+            compiled_artifacts.push_back(
+                variant.artifact);
+        }
         return defaultVulkanRenderCompilerProgram()
             .compile(input);
     }
@@ -1471,6 +1486,20 @@ TEST_CASE(
             EngineTime::Mode::fixed_step, 1.0 / 60.0);
 
         auto &renderer = GET_MODULE(Renderer);
+        const auto &preview_program =
+            renderer.previewGraphProgram();
+        REQUIRE(
+            preview_program.render_pipeline !=
+            nullptr);
+        REQUIRE(
+            preview_program.render_pipeline
+                ->render_compiler_program
+                .has_value());
+        CHECK(
+            preview_program.graph_variant_policy
+                .variant ==
+            RenderPipelineGraphVariant::preview);
+        CHECK(preview_program.generation != 0);
         const auto main_render_id =
             GET_MODULE(RenderingPassContainer)
                 .getRenderingPassIdByName("main_render");
@@ -1479,6 +1508,15 @@ TEST_CASE(
                 .find(main_render_id);
         REQUIRE(execution != nullptr);
         REQUIRE(execution->render_pipeline != nullptr);
+        REQUIRE(
+            execution->render_pipeline
+                ->render_compiler_program
+                .has_value());
+        CHECK(
+            *preview_program.render_pipeline
+                 ->render_compiler_program ==
+            *execution->render_pipeline
+                 ->render_compiler_program);
         runtime_ready = true;
 
         constexpr std::string_view surface_source =
@@ -5013,6 +5051,11 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             GET_MODULE(FrameGraphRuntimeContainer);
         auto previous_generation = runtime.snapshot();
         REQUIRE(previous_generation != nullptr);
+        const auto previous_preview_pipeline =
+            renderer.previewGraphProgram()
+                .render_pipeline;
+        REQUIRE(
+            previous_preview_pipeline != nullptr);
         const auto previous_generation_number =
             previous_generation->generation;
         REQUIRE(previous_generation->find(
@@ -5066,6 +5109,23 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(previous_generation->gpu_arena
                     ->resourceCount() ==
                 previous_gpu_resource_count);
+        const auto reloaded_preview_pipeline =
+            renderer.previewGraphProgram()
+                .render_pipeline;
+        REQUIRE(
+            reloaded_preview_pipeline != nullptr);
+        REQUIRE(
+            reloaded_preview_pipeline !=
+            previous_preview_pipeline);
+        REQUIRE(
+            std::find(
+                renderer.previewGraphProgram()
+                    .render_pipeline->feature_names.begin(),
+                renderer.previewGraphProgram()
+                    .render_pipeline->feature_names.end(),
+                "shadow_directional_reloaded") !=
+            renderer.previewGraphProgram()
+                .render_pipeline->feature_names.end());
 
         const auto reloaded_main_id =
             reloaded_generation->name_to_id.at(
@@ -5077,6 +5137,12 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(
             reloaded_program->frame_graph
                 .render_pipeline != nullptr);
+        REQUIRE(
+            reloaded_preview_pipeline
+                ->render_compiler_program ==
+            reloaded_program->frame_graph
+                .render_pipeline
+                ->render_compiler_program);
         REQUIRE(
             reloaded_program->frame_graph
                 .render_pipeline
@@ -5145,6 +5211,19 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                         {}, 1}));
         REQUIRE(runtime.snapshot() ==
                 reloaded_generation);
+        REQUIRE(
+            renderer.previewGraphProgram()
+                .render_pipeline ==
+            reloaded_preview_pipeline);
+        REQUIRE(
+            std::find(
+                renderer.previewGraphProgram()
+                    .render_pipeline->feature_names.begin(),
+                renderer.previewGraphProgram()
+                    .render_pipeline->feature_names.end(),
+                "shadow_directional_reloaded") !=
+            renderer.previewGraphProgram()
+                .render_pipeline->feature_names.end());
         REQUIRE(previous_generation->find(
                     main_render_id) != nullptr);
         REQUIRE(previous_generation->gpu_arena
@@ -5966,8 +6045,18 @@ TEST_CASE(
             registerRenderingPassConfigFromJsonData(
                 config, {16, 16},
                 gpuArenaRegistrationDependencies(
-                    std::move(compiler_options)));
+                    std::move(
+                        compiler_options)));
         REQUIRE(compiler_program.compile_calls == 1);
+        REQUIRE(
+            compiler_program.compiled_variants ==
+            std::vector{
+                RenderPipelineGraphVariant::flat});
+        REQUIRE(
+            compiler_program.compiled_artifacts ==
+            std::vector{
+                RenderCompilerProgramArtifact::
+                    runtime_package});
         REQUIRE(registered.runtime_generation == 1);
         REQUIRE(registered.target_plans.size() == 1);
         REQUIRE(

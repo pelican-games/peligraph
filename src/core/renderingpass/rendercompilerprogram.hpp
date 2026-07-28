@@ -4,6 +4,7 @@
 #include "frameplanner.hpp"
 #include "../../project/renderpipeline.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -44,9 +45,21 @@ class RenderCompilerBackendPhysicalPackage {
             frame_graph_names) const = 0;
 };
 
+enum class RenderCompilerProgramArtifact : std::uint8_t {
+    // Produces the backend package consumed by the live runtime registration
+    // transaction.
+    runtime_package,
+    // Produces immutable CPU data for a request-local consumer. It joins the
+    // same compiler invocation and provider snapshot without entering the
+    // shared GPU registration path.
+    data_only,
+};
+
 struct RenderCompilerProgramVariantRequest {
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;
+    RenderCompilerProgramArtifact artifact =
+        RenderCompilerProgramArtifact::runtime_package;
     bool enable_multiview_runtime = false;
     bool enable_external_depth_export = false;
     // Host-owned logical additions, such as the built-in ImGui graph pass,

@@ -39,12 +39,6 @@ namespace Pelican {
 
 namespace {
 
-#if PELICAN_RUNTIME_SHADER_COMPILER
-constexpr bool runtimeShaderCompilerEnabled = true;
-#else
-constexpr bool runtimeShaderCompilerEnabled = false;
-#endif
-
 bool hasOutputTransform(
     const RendererRuntimeGeneration &generation,
     RenderingPassId rendering_pass_id) {
@@ -238,14 +232,6 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     const auto base_extent =
         GET_MODULE(RenderTarget).getExtent();
     const auto default_pass_name = config.defaultRenderingPass();
-    // Compose and validate the third graph before runtime modules are frozen.
-    // It remains a data program and intentionally performs no shared render
-    // target/pass registration.
-    auto &path_resolver = GET_MODULE(PathResolver);
-    auto preview = precompilePreviewGraph(
-        rendering_config_json,
-        [&path_resolver](std::string_view ref) { return path_resolver.loadText(ref); },
-        runtimeShaderCompilerEnabled);
     std::vector<RenderingPassConfigRegistrationDependencies>
         variant_dependencies;
     RenderingPassConfigRegistrationDependencies::Options
@@ -310,22 +296,23 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     }
 #endif
     try {
-        auto registrations =
-            registerRenderingPassConfigVariantsFromJsonData(
+        auto family =
+            registerRenderGraphVariantFamilyFromJsonData(
                 rendering_config_json,
                 base_extent,
                 std::move(variant_dependencies));
         RenderGraphVariantConfig variants{
             .flat = requireDefaultPass(
                 default_pass_name),
-            .preview = std::move(preview),
+            .preview =
+                std::move(family.preview),
         };
 #if PELICAN_WITH_OPENXR
         if (xr_active) {
             variants.xr = requireDefaultPass(
                 default_pass_name + "#xr");
             variants.xr_excluded_features =
-                registrations.at(1)
+                family.runtime_variants.at(1)
                     .excluded_feature_names;
         }
 #endif

@@ -25,6 +25,16 @@ void validateInput(
     std::set<RenderPipelineGraphVariant>
         graph_variants;
     for (const auto &request : input.variants) {
+        switch (request.artifact) {
+        case RenderCompilerProgramArtifact::
+            runtime_package:
+        case RenderCompilerProgramArtifact::data_only:
+            break;
+        default:
+            throw std::runtime_error(
+                "Render compiler program input has an "
+                "unknown artifact kind");
+        }
         if (renderPipelineGraphVariantName(
                 request.graph_variant) ==
                 "unknown" ||
@@ -101,20 +111,6 @@ void validateVariantOutput(
             "Render compiler program normalized config "
             "must be an object");
     }
-    if (variant.physical_package == nullptr) {
-        throw std::runtime_error(
-            "Render compiler program returned a null "
-            "physical package");
-    }
-    if (variant.physical_package->backend() !=
-        selection.backend) {
-        throw std::runtime_error(
-            "Render compiler physical package backend '" +
-            std::string{
-                variant.physical_package->backend()} +
-            "' does not match selection backend '" +
-            selection.backend + "'");
-    }
 
     std::unordered_set<std::string>
         expected_buffer_names;
@@ -151,8 +147,33 @@ void validateVariantOutput(
     std::sort(
         frame_graph_names.begin(),
         frame_graph_names.end());
-    variant.physical_package->validate(
-        frame_graph_names);
+    if (request.artifact ==
+        RenderCompilerProgramArtifact::
+            runtime_package) {
+        if (variant.physical_package == nullptr) {
+            throw std::runtime_error(
+                "Render compiler runtime artifact "
+                "returned a null physical package");
+        }
+        if (variant.physical_package->backend() !=
+            selection.backend) {
+            throw std::runtime_error(
+                "Render compiler physical package "
+                "backend '" +
+                std::string{
+                    variant.physical_package
+                        ->backend()} +
+                "' does not match selection backend '" +
+                selection.backend + "'");
+        }
+        variant.physical_package->validate(
+            frame_graph_names);
+    } else if (
+        variant.physical_package != nullptr) {
+        throw std::runtime_error(
+            "Render compiler data-only artifact "
+            "returned a physical package");
+    }
 
     auto stamped =
         std::make_shared<CompiledRenderPipeline>(

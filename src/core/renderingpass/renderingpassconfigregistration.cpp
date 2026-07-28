@@ -564,12 +564,19 @@ std::mutex &gpuRegistrationMutex() {
     return mutex;
 }
 
-std::vector<RenderingPassConfigRegistrationResult>
+struct RegisteredRenderGraphVariantFamily {
+    std::vector<RenderingPassConfigRegistrationResult>
+        runtime_variants;
+    std::optional<PreviewGraphProgram> preview;
+};
+
+RegisteredRenderGraphVariantFamily
 registerRenderingPassConfigVariantsData(
     const nlohmann::json &rendering_pass_data,
     vk::Extent2D base_extent,
     std::vector<RenderingPassConfigRegistrationDependencies>
-        dependencies) {
+        dependencies,
+    bool include_preview = false) {
     if (dependencies.empty()) {
         throw std::runtime_error(
             "Render pipeline variant transaction is empty");
@@ -616,7 +623,9 @@ registerRenderingPassConfigVariantsData(
     // the existing rollback checks below.
     std::vector<RenderCompilerProgramVariantRequest>
         variant_requests;
-    variant_requests.reserve(dependencies.size());
+    variant_requests.reserve(
+        dependencies.size() +
+        (include_preview ? 1u : 0u));
     for (const auto &variant : dependencies) {
         RenderCompilerProgramVariantRequest request{
             .graph_variant =
@@ -644,6 +653,17 @@ registerRenderingPassConfigVariantsData(
 #endif
         variant_requests.push_back(
             std::move(request));
+    }
+    if (include_preview) {
+        variant_requests.push_back(
+            RenderCompilerProgramVariantRequest{
+                .graph_variant =
+                    RenderPipelineGraphVariant::
+                        preview,
+                .artifact =
+                    RenderCompilerProgramArtifact::
+                        data_only,
+            });
     }
 #if PELICAN_RUNTIME_SHADER_COMPILER
     constexpr bool runtime_shader_compiler_enabled =
@@ -688,6 +708,21 @@ registerRenderingPassConfigVariantsData(
             compiler_input);
     auto prepared_variants =
         std::move(compiler_output.variants);
+    std::optional<PreviewGraphProgram>
+        prepared_preview;
+    if (include_preview) {
+        auto preview_variant =
+            std::move(prepared_variants.back());
+        prepared_variants.pop_back();
+        prepared_preview =
+            makePreviewGraphProgram(
+                std::move(
+                    preview_variant
+                        .compiled_pipeline),
+                std::move(
+                    preview_variant
+                        .normalized_config));
+    }
     for (std::size_t index = 0;
          index < dependencies.size(); ++index) {
         dependencies[index].runtime.shader_defines =
@@ -803,7 +838,12 @@ registerRenderingPassConfigVariantsData(
     first.frame_graph_runtime.publishPreparedGeneration(
         std::move(prepared_generation));
     gpu_arena.commit();
-    return results;
+    return {
+        .runtime_variants =
+            std::move(results),
+        .preview =
+            std::move(prepared_preview),
+    };
 }
 
 } // namespace
@@ -817,7 +857,8 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
     auto results = registerRenderingPassConfigVariantsData(
         loadRenderingPassConfigJson(json_path), base_extent,
         std::move(variants));
-    return std::move(results.front());
+    return std::move(
+        results.runtime_variants.front());
 }
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJsonData(
@@ -829,7 +870,8 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJsonData(
     auto results = registerRenderingPassConfigVariantsData(
         loadRenderingPassConfigJsonFromString(json_data, "ProjectBasicConfig"),
         base_extent, std::move(variants));
-    return std::move(results.front());
+    return std::move(
+        results.runtime_variants.front());
 }
 
 std::vector<RenderingPassConfigRegistrationResult>
@@ -838,9 +880,40 @@ registerRenderingPassConfigVariantsFromJsonData(
     std::vector<RenderingPassConfigRegistrationDependencies>
         dependencies) {
     return registerRenderingPassConfigVariantsData(
-        loadRenderingPassConfigJsonFromString(
-            json_data, "ProjectBasicConfig"),
-        base_extent, std::move(dependencies));
+               loadRenderingPassConfigJsonFromString(
+                   json_data,
+                   "ProjectBasicConfig"),
+               base_extent,
+               std::move(dependencies))
+        .runtime_variants;
+}
+
+RenderGraphVariantFamilyRegistrationResult
+registerRenderGraphVariantFamilyFromJsonData(
+    std::string_view json_data,
+    vk::Extent2D base_extent,
+    std::vector<RenderingPassConfigRegistrationDependencies>
+        runtime_dependencies) {
+    auto registered =
+        registerRenderingPassConfigVariantsData(
+            loadRenderingPassConfigJsonFromString(
+                json_data,
+                "ProjectBasicConfig"),
+            base_extent,
+            std::move(runtime_dependencies),
+            true);
+    if (!registered.preview) {
+        throw std::runtime_error(
+            "Render graph variant family omitted its "
+            "preview artifact");
+    }
+    return {
+        .runtime_variants =
+            std::move(
+                registered.runtime_variants),
+        .preview =
+            std::move(*registered.preview),
+    };
 }
 
 } // namespace Pelican
