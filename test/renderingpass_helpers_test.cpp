@@ -2622,6 +2622,97 @@ TEST_CASE("material pass availability distinguishes fullscreen-only graphs",
 }
 
 TEST_CASE(
+    "material pass container resolves one sampled or local-read shader input ABI across variants",
+    "[renderingpass][material][local-read][wp220]") {
+    RenderingPassContainer container;
+    const GlobalRenderTargetId unrelated{4};
+    const GlobalRenderTargetId source{5};
+    const GlobalRenderTargetId output{6};
+
+    PassDefinition material;
+    material.name = "decal";
+    material.pass_info = MaterialPassInfo{};
+    material.input_targets = {
+        unrelated, source};
+    material.input_target_history = {
+        false, false};
+    material.output_color = {output};
+    material.materialInfo()
+        .material_resources.push_back(
+            MaterialPassResourceBinding{
+                .port =
+                    ShaderResourcePortDefinition{
+                        .name = "gbuffer_normal",
+                        .resource = "normal",
+                        .kind =
+                            ShaderResourcePortKind::
+                                image,
+                        .access =
+                            ShaderResourcePortAccess::
+                                sampled,
+                    },
+                .target = source,
+                .footprint = {
+                    LogicalReadFootprintKind::
+                        same_pixel,
+                    std::nullopt,
+                },
+            });
+
+    CompiledPassRenderingContract rendering;
+    rendering.local_read_scope = true;
+    rendering.color_attachments = {
+        source, output};
+    rendering.color_attachment_locations = {
+        unusedPhysicalAttachmentMapping, 0};
+    rendering.color_attachment_input_indices = {
+        1, unusedPhysicalAttachmentMapping};
+    container.registerCompiledRenderingPass(
+        CompiledRenderingPass{
+            "flat",
+            {{material, PassId{0}, {}, rendering}},
+            {}});
+
+    const std::array requests{
+        MaterialPassShaderInputRequest{
+            .kind =
+                MaterialPassShaderInputKind::
+                    material_resource,
+            .name = "gbuffer_normal",
+        },
+    };
+    const auto local =
+        container.materialPassShaderInputBindings(
+            MaterialRouteClass::deferred_geometry,
+            MaterialShaderContract::gbuffer_v1,
+            requests);
+    REQUIRE(local.size() == 1);
+    REQUIRE(
+        local.front().input_attachment_index ==
+        1u);
+
+    auto sampled_rendering = rendering;
+    sampled_rendering.local_read_scope = false;
+    sampled_rendering
+        .color_attachment_input_indices = {
+            unusedPhysicalAttachmentMapping,
+            unusedPhysicalAttachmentMapping};
+    container.registerCompiledRenderingPass(
+        CompiledRenderingPass{
+            "desktop",
+            {{material, PassId{0}, {},
+              sampled_rendering}},
+            {}});
+    REQUIRE_THROWS_WITH(
+        container.materialPassShaderInputBindings(
+            MaterialRouteClass::deferred_geometry,
+            MaterialShaderContract::gbuffer_v1,
+            requests),
+        Catch::Matchers::ContainsSubstring(
+            "different sampled/local-read ABIs"));
+}
+
+TEST_CASE(
     "material pass container resolves one output ABI across runtime variants",
     "[renderingpass][material-output][wp218]") {
     RenderingPassContainer container;

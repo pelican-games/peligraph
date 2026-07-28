@@ -120,6 +120,9 @@ struct LoweredNamedMaterialVariant {
     LoweredMaterial material;
 };
 
+MaterialShaderContract materialShaderContractForRoute(
+    MaterialRouteClass route);
+
 DeferredEligibility evaluateDeferredEligibility(
     const MaterialDefinition &material,
     const SurfaceFormatDocument &surface);

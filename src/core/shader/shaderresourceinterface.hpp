@@ -20,6 +20,7 @@ inline constexpr std::string_view
 
 enum class ShaderResourceDescriptorKind : std::uint8_t {
     combined_image_sampler,
+    input_attachment,
     storage_image,
     storage_buffer,
 };
@@ -43,6 +44,8 @@ struct ShaderResourceInterfaceBinding {
         ShaderResourceDescriptorKind::combined_image_sampler;
     ReflectedImageViewDimension image_view_dimension =
         ReflectedImageViewDimension::two_d;
+    std::optional<std::uint32_t>
+        input_attachment_index;
     vk::Format storage_format = vk::Format::eUndefined;
     ShaderResourceBufferElement buffer_element =
         ShaderResourceBufferElement::unsigned_integer;

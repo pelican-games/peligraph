@@ -100,6 +100,7 @@ ResolvedMaterialScreenInputContract resolveMaterialScreenInputContract(
 
 enum class MaterialScreenInputReflectionKind : std::uint8_t {
     combined_image_sampler,
+    input_attachment,
     unsupported,
 };
 
@@ -109,6 +110,8 @@ struct MaterialScreenInputReflectionBinding {
     MaterialScreenInputReflectionKind kind =
         MaterialScreenInputReflectionKind::unsupported;
     std::string name;
+    std::optional<std::uint32_t>
+        input_attachment_index;
 
     bool operator==(const MaterialScreenInputReflectionBinding &) const =
         default;

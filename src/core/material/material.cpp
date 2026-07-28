@@ -32,16 +32,6 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
     }
 }
 
-namespace {
-
-MaterialShaderContract shaderContractForRoute(MaterialRouteClass route) {
-    return route == MaterialRouteClass::deferred_geometry
-               ? MaterialShaderContract::gbuffer_v1
-               : MaterialShaderContract::forward_scene_color_v1;
-}
-
-} // namespace
-
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered,
                           const LoweredMaterialTextureResolver &resolve_texture) {
     if (!resolve_texture) {
@@ -64,14 +54,16 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
 void applyLoweredMaterialForRoute(MaterialInfo &destination,
                                   const LoweredMaterial &lowered) {
     applyLoweredMaterial(destination, lowered);
-    destination.shader_contract = shaderContractForRoute(lowered.route);
+    destination.shader_contract =
+        materialShaderContractForRoute(lowered.route);
 }
 
 void applyLoweredMaterialForRoute(MaterialInfo &destination,
                                   const LoweredMaterial &lowered,
                                   const LoweredMaterialTextureResolver &resolve_texture) {
     applyLoweredMaterial(destination, lowered, resolve_texture);
-    destination.shader_contract = shaderContractForRoute(lowered.route);
+    destination.shader_contract =
+        materialShaderContractForRoute(lowered.route);
 }
 
 } // namespace Pelican

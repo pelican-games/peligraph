@@ -56,6 +56,40 @@ static bool supportsDepthComparisonSampling(
     }
 }
 
+static bool isIntegerColorFormat(vk::Format format) {
+    switch (format) {
+    case vk::Format::eD16Unorm:
+    case vk::Format::eX8D24UnormPack32:
+    case vk::Format::eD32Sfloat:
+    case vk::Format::eD16UnormS8Uint:
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32SfloatS8Uint:
+        return false;
+    default:
+        break;
+    }
+    const auto name = vk::to_string(format);
+    return name.find("Uint") != std::string::npos ||
+           name.find("Sint") != std::string::npos;
+}
+
+static void validateMaterialInputAttachmentFormat(
+    std::string_view input_name,
+    GlobalRenderTargetId target) {
+    const auto format =
+        GET_MODULE(RenderTargetContainer)
+            .getMetadata(target)
+            .format;
+    if (isIntegerColorFormat(format)) {
+        throw std::runtime_error(
+            "material input '" + std::string{input_name} +
+            "' cannot use integer input attachment format " +
+            vk::to_string(format) +
+            "; the generated material image accessor currently "
+            "returns vec4");
+    }
+}
+
 struct MaterialPipelineRenderingContract {
     std::vector<vk::Format> color_formats;
     std::optional<vk::Format> depth_format;
@@ -161,27 +195,6 @@ resolveMaterialPassRenderingBinding(
     result.local_read.depth_attachment_input_index =
         binding.rendering
             .depth_attachment_input_index;
-
-    const auto consumes_local_color =
-        std::any_of(
-            result.local_read
-                .color_attachment_input_indices.begin(),
-            result.local_read
-                .color_attachment_input_indices.end(),
-            [](std::uint32_t index) {
-                return index !=
-                       unusedGraphicsAttachmentMapping;
-            });
-    if (consumes_local_color ||
-        result.local_read
-                .depth_attachment_input_index !=
-            unusedGraphicsAttachmentMapping) {
-        throw std::runtime_error(
-            "material pass consumes a tile-local attachment but "
-            "the surface-shader input-attachment ABI is not "
-            "available yet: " +
-            binding.pass_name);
-    }
     return result;
 }
 
@@ -408,6 +421,30 @@ resolveMaterialResourceInterface(
         const auto image =
             port.kind ==
             SurfaceResourcePortKind::image;
+        const auto input_attachment =
+            image &&
+            found->type ==
+                vk::DescriptorType::
+                    eInputAttachment;
+        if (image &&
+            found->type !=
+                vk::DescriptorType::
+                    eCombinedImageSampler &&
+            !input_attachment) {
+            throw std::runtime_error(
+                "material resource port '" +
+                port.name +
+                "' reflects an unsupported image descriptor type " +
+                vk::to_string(found->type));
+        }
+        if (input_attachment &&
+            port.stage !=
+                SurfaceResourcePortStage::fragment) {
+            throw std::runtime_error(
+                "material resource port '" +
+                port.name +
+                "' input attachment must be fragment-only");
+        }
         result.push_back(
             ShaderResourceInterfaceBinding{
                 .port =
@@ -424,16 +461,21 @@ resolveMaterialResourceInterface(
                 .binding = found->binding,
                 .descriptor =
                     image
-                        ? ShaderResourceDescriptorKind::
-                              combined_image_sampler
+                        ? input_attachment
+                              ? ShaderResourceDescriptorKind::
+                                    input_attachment
+                              : ShaderResourceDescriptorKind::
+                                    combined_image_sampler
                         : ShaderResourceDescriptorKind::
                               storage_buffer,
                 .image_view_dimension =
                     image
-                        ? ReflectedImageViewDimension::
-                              two_d
-                        : ReflectedImageViewDimension::
-                              none,
+                                ? ReflectedImageViewDimension::
+                                      two_d
+                                : ReflectedImageViewDimension::
+                                      none,
+                .input_attachment_index =
+                    found->input_attachment_index,
                 .buffer_element = port.element,
                 .expected_stages =
                     materialResourceStages(port.stage),
@@ -882,7 +924,15 @@ static void validateMaterialTextureReflection(
     }
 }
 
-static std::vector<MaterialPassInputContract>
+struct ReflectedMaterialPassInput {
+    MaterialPassInputContract contract;
+    vk::DescriptorType descriptor_type =
+        vk::DescriptorType::eCombinedImageSampler;
+    std::optional<std::uint32_t>
+        input_attachment_index;
+};
+
+static std::vector<ReflectedMaterialPassInput>
 resolveReflectedMaterialPassInputs(
     PipelineHandle pipeline,
     std::span<const MaterialScreenInputContract>
@@ -897,6 +947,10 @@ resolveReflectedMaterialPassInputs(
     bindings.reserve(reflection.bindings.size());
     for (const auto &binding :
          reflection.bindings) {
+        if (binding.set !=
+            PELICAN_SET_PASS_INPUT) {
+            continue;
+        }
         if (std::any_of(
                 resource_interface.begin(),
                 resource_interface.end(),
@@ -917,11 +971,26 @@ resolveReflectedMaterialPassInputs(
                             eCombinedImageSampler
                     ? MaterialScreenInputReflectionKind::
                           combined_image_sampler
+                    : binding.type ==
+                              vk::DescriptorType::
+                                  eInputAttachment
+                          ? MaterialScreenInputReflectionKind::
+                                input_attachment
                     : MaterialScreenInputReflectionKind::
                           unsupported,
             .name = binding.name,
+            .input_attachment_index =
+                binding.input_attachment_index,
         });
     }
+    std::sort(
+        bindings.begin(), bindings.end(),
+        [](const auto &left, const auto &right) {
+            if (left.set != right.set) {
+                return left.set < right.set;
+            }
+            return left.binding < right.binding;
+        });
     auto resolved =
         resolveMaterialPassInputInterfaceReflection(
             makeBuiltinLogicalTypeRegistry(),
@@ -931,7 +1000,26 @@ resolveReflectedMaterialPassInputs(
         throw std::runtime_error(
             "material has too many pass inputs");
     }
-    return resolved;
+    std::vector<ReflectedMaterialPassInput> result;
+    result.reserve(resolved.size());
+    for (std::size_t index = 0;
+         index < resolved.size(); ++index) {
+        const auto &binding = bindings.at(index);
+        result.push_back({
+            .contract = std::move(resolved[index]),
+            .descriptor_type =
+                binding.kind ==
+                        MaterialScreenInputReflectionKind::
+                            input_attachment
+                    ? vk::DescriptorType::
+                          eInputAttachment
+                    : vk::DescriptorType::
+                          eCombinedImageSampler,
+            .input_attachment_index =
+                binding.input_attachment_index,
+        });
+    }
+    return result;
 }
 
 MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
@@ -978,14 +1066,19 @@ static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, bool spl
 
 static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
     vk::Device device, uint32_t max_sets = maxMaterials * 8) {
-    const vk::DescriptorPoolSize pool_size{
-        vk::DescriptorType::eCombinedImageSampler,
-        max_sets * maxMaterialPassInputs};
+    const std::array pool_sizes{
+        vk::DescriptorPoolSize{
+            vk::DescriptorType::eCombinedImageSampler,
+            max_sets * maxMaterialPassInputs},
+        vk::DescriptorPoolSize{
+            vk::DescriptorType::eInputAttachment,
+            max_sets * maxMaterialPassInputs},
+    };
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags =
         vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     create_info.maxSets = max_sets;
-    create_info.setPoolSizes(pool_size);
+    create_info.setPoolSizes(pool_sizes);
     return device.createDescriptorPoolUnique(create_info);
 }
 
@@ -997,6 +1090,10 @@ createMaterialResourceDescriptorPool(
         vk::DescriptorPoolSize{
             vk::DescriptorType::
                 eCombinedImageSampler,
+            max_sets *
+                maxMaterialPassDescriptors},
+        vk::DescriptorPoolSize{
+            vk::DescriptorType::eInputAttachment,
             max_sets *
                 maxMaterialPassDescriptors},
         vk::DescriptorPoolSize{
@@ -1630,10 +1727,26 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     validateShaderResourceInterfaceReflection(
         resource_interface, pipeline_reflection,
         PELICAN_SET_PASS_INPUT);
-    auto pass_inputs =
+    auto reflected_pass_inputs =
         resolveReflectedMaterialPassInputs(
             pipeline, info.screen_inputs,
             resource_interface);
+    std::vector<
+        InternalMaterialInfo::PassInput>
+        pass_inputs;
+    pass_inputs.reserve(
+        reflected_pass_inputs.size());
+    for (auto &input :
+         reflected_pass_inputs) {
+        pass_inputs.push_back({
+            .contract =
+                std::move(input.contract),
+            .descriptor_type =
+                input.descriptor_type,
+            .input_attachment_index =
+                input.input_attachment_index,
+        });
+    }
 
     vk::DescriptorSetAllocateInfo desc_alloc_info;
     desc_alloc_info.descriptorPool = desc_pool.get();
@@ -2820,6 +2933,44 @@ static std::string makeScreenInputPassKey(const PassDefinition &pass) {
     return key.str();
 }
 
+static std::optional<std::uint32_t>
+materialPassInputAttachmentIndex(
+    const GraphicsPipelineRenderingLocalReadContract
+        &local_read,
+    const PassDefinition &pass,
+    GlobalRenderTargetId target,
+    bool history) {
+    if (!local_read.enabled || history) {
+        return std::nullopt;
+    }
+    const auto position = std::find(
+        pass.input_targets.begin(),
+        pass.input_targets.end(), target);
+    if (position == pass.input_targets.end()) {
+        throw std::runtime_error(
+            "material pass input target is absent from pass '" +
+            pass.name + "'");
+    }
+    const auto input_index =
+        static_cast<std::uint32_t>(
+            position - pass.input_targets.begin());
+    const auto color =
+        std::find(
+            local_read
+                .color_attachment_input_indices.begin(),
+            local_read
+                .color_attachment_input_indices.end(),
+            input_index) !=
+        local_read
+            .color_attachment_input_indices.end();
+    if (color ||
+        local_read.depth_attachment_input_index ==
+            input_index) {
+        return input_index;
+    }
+    return std::nullopt;
+}
+
 MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor
 MaterialContainer::buildScreenInputDescriptor(
     PipelineHandle pipeline,
@@ -2881,6 +3032,12 @@ MaterialContainer::buildScreenInputDescriptor(
                 "material image input must resolve to a render target: " +
                 resource.name);
         }
+        if (resource.isInputAttachment() &&
+            resource.history) {
+            throw std::runtime_error(
+                "material input attachment cannot read history: " +
+                resource.name);
+        }
         if (resource.isBuffer() &&
             !GET_MODULE(FrameGraphResourceContainer)
                  .hasBuffer(resource.buffer)) {
@@ -2890,7 +3047,11 @@ MaterialContainer::buildScreenInputDescriptor(
         }
         if (resource.isImage() &&
             resource.view_dimension !=
-            PassInputViewDimension::shared_2d) {
+                PassInputViewDimension::shared_2d &&
+            !(resource.isInputAttachment() &&
+              resource.view_dimension ==
+                  PassInputViewDimension::
+                      layered_2d_array)) {
             variant_count = std::max(
                 variant_count,
                 rt_views.arrayLayers(resource.target));
@@ -2900,6 +3061,10 @@ MaterialContainer::buildScreenInputDescriptor(
         if (resource.isImage() &&
             resource.view_dimension !=
                 PassInputViewDimension::shared_2d &&
+            !(resource.isInputAttachment() &&
+              resource.view_dimension ==
+                  PassInputViewDimension::
+                      layered_2d_array) &&
             rt_views.arrayLayers(resource.target) !=
                 variant_count) {
             throw std::runtime_error(
@@ -2967,8 +3132,18 @@ MaterialContainer::buildScreenInputDescriptor(
                     continue;
                 }
                 const auto image_view =
-                    resource.view_dimension ==
-                            PassInputViewDimension::shared_2d
+                    resource.isInputAttachment() &&
+                            resource.view_dimension ==
+                                PassInputViewDimension::
+                                    layered_2d_array
+                        ? rt_views
+                              .getLayeredImageViewForFrame(
+                                  resource.target,
+                                  resource.history,
+                                  parity)
+                    : resource.view_dimension ==
+                              PassInputViewDimension::
+                                  shared_2d
                         ? rt_views.getImageViewForFrame(
                               resource.target,
                               resource.history, parity)
@@ -2976,9 +3151,11 @@ MaterialContainer::buildScreenInputDescriptor(
                               resource.target, variant,
                               resource.history, parity);
                 const auto sampler =
-                    resource.sampling.address_mode ==
-                            ShaderResourcePortAddressMode::
-                                clamp_to_edge
+                    resource.isInputAttachment()
+                        ? vk::Sampler{}
+                    : resource.sampling.address_mode ==
+                              ShaderResourcePortAddressMode::
+                                  clamp_to_edge
                         ? resource.sampling.filter ==
                                   ShaderResourcePortFilter::
                                       nearest
@@ -2988,13 +3165,18 @@ MaterialContainer::buildScreenInputDescriptor(
                               resource.sampling);
                 image_infos.push_back(vk::DescriptorImageInfo{
                     sampler,
-                    image_view, vk::ImageLayout::eShaderReadOnlyOptimal});
+                    image_view,
+                    resource.isInputAttachment()
+                        ? vk::ImageLayout::
+                              eRenderingLocalReadKHR
+                        : vk::ImageLayout::
+                              eShaderReadOnlyOptimal});
                 descriptor_variant.bound_image_views[parity]
                     .push_back(image_view);
                 vk::WriteDescriptorSet write{
                     descriptor_variant.descsets[parity].get(),
                     resource.binding, 0, 1,
-                    vk::DescriptorType::eCombinedImageSampler};
+                    resource.descriptor_type};
                 write.pImageInfo = &image_infos.back();
                 writes.push_back(write);
             }
@@ -3042,7 +3224,7 @@ MaterialContainer::ensureScreenInputDescriptor(
                 bindings.begin(), bindings.end(),
                 [&](const auto &candidate) {
                     return candidate.contract.name ==
-                           required.name;
+                           required.contract.name;
                 });
             return found == bindings.end()
                        ? nullptr
@@ -3058,19 +3240,48 @@ MaterialContainer::ensureScreenInputDescriptor(
         }
         if (binding == nullptr) {
             throw std::runtime_error(
-                "material pass input '" + required.name +
+                "material pass input '" +
+                required.contract.name +
                 "' is not provided by pass '" + pass.name +
                 "' (fallback=" +
                 std::string{
                     materialPassInputFallbackName(
-                        required.fallback)} +
+                        required.contract.fallback)} +
                 ")");
         }
-        if (binding->contract != required) {
+        if (binding->contract != required.contract) {
             throw std::runtime_error(
-                "material pass input '" + required.name +
+                "material pass input '" +
+                required.contract.name +
                 "' type or footprint does not match pass '" + pass.name +
                 "'");
+        }
+        const auto input_attachment_index =
+            materialPassInputAttachmentIndex(
+                material.pipeline_local_read,
+                pass, binding->target,
+                binding->history);
+        const auto expected_descriptor =
+            input_attachment_index
+                ? vk::DescriptorType::
+                      eInputAttachment
+                : vk::DescriptorType::
+                      eCombinedImageSampler;
+        if (input_attachment_index) {
+            validateMaterialInputAttachmentFormat(
+                required.contract.name,
+                binding->target);
+        }
+        if (required.descriptor_type !=
+                expected_descriptor ||
+            required.input_attachment_index !=
+                input_attachment_index) {
+            throw std::runtime_error(
+                "material pass input '" +
+                required.contract.name +
+                "' shader sampled/local-read ABI does not match "
+                "pass '" +
+                pass.name + "'");
         }
         auto view_dimension =
             PassInputViewDimension::shared_2d;
@@ -3087,22 +3298,22 @@ MaterialContainer::ensureScreenInputDescriptor(
                         target_position -
                         pass.input_targets.begin()));
         }
-        if (required.view_policy ==
+        if (required.contract.view_policy ==
                 MaterialPassInputViewPolicy::shared_2d &&
             view_dimension !=
                 PassInputViewDimension::shared_2d) {
             throw std::runtime_error(
-                "material pass input '" + required.name +
+                "material pass input '" +
+                required.contract.name +
                 "' requires shared_2d view policy in pass '" +
                 pass.name + "'");
         }
         resources.push_back(
             InternalMaterialInfo::ScreenInputResource{
-                .name = required.name,
+                .name = required.contract.name,
                 .binding = screen_binding++,
                 .descriptor_type =
-                    vk::DescriptorType::
-                        eCombinedImageSampler,
+                    required.descriptor_type,
                 .target = binding->target,
                 .history = binding->history,
                 .view_dimension =
@@ -3112,7 +3323,7 @@ MaterialContainer::ensureScreenInputDescriptor(
                 // the clamp sampler at runtime.
                 .sampling =
                     ShaderResourcePortSampling{
-                        required.sampling ==
+                        required.contract.sampling ==
                                 MaterialPassInputSampling::
                                     nearest_clamp_to_edge
                             ? ShaderResourcePortFilter::
@@ -3175,15 +3386,51 @@ MaterialContainer::ensureScreenInputDescriptor(
                     });
             continue;
         }
-        if (required.descriptor !=
-                ShaderResourceDescriptorKind::
-                    combined_image_sampler ||
+        const auto input_attachment =
+            required.descriptor ==
+            ShaderResourceDescriptorKind::
+                input_attachment;
+        if ((required.descriptor !=
+                 ShaderResourceDescriptorKind::
+                     combined_image_sampler &&
+             !input_attachment) ||
             !binding->isImage()) {
             throw std::runtime_error(
                 "material resource port '" +
                 required.port.name +
-                "' requires a sampled image in pass '" +
+                "' requires an image in pass '" +
                 pass.name + "'");
+        }
+        const auto input_attachment_index =
+            materialPassInputAttachmentIndex(
+                material.pipeline_local_read,
+                pass, binding->target,
+                binding->history);
+        if (input_attachment !=
+                input_attachment_index.has_value() ||
+            required.input_attachment_index !=
+                input_attachment_index) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' shader sampled/local-read ABI does not match "
+                "pass '" +
+                pass.name + "'");
+        }
+        if (input_attachment &&
+            binding->footprint.kind !=
+                LogicalReadFootprintKind::
+                    same_pixel) {
+            throw std::logic_error(
+                "material resource port '" +
+                required.port.name +
+                "' uses an input attachment without a same-pixel "
+                "contract");
+        }
+        if (input_attachment) {
+            validateMaterialInputAttachmentFormat(
+                required.port.name,
+                binding->target);
         }
 
         auto view_dimension =
@@ -3224,7 +3471,8 @@ MaterialContainer::ensureScreenInputDescriptor(
         }
         if (view_dimension ==
             PassInputViewDimension::
-                layered_2d_array) {
+                layered_2d_array &&
+            !input_attachment) {
             throw std::runtime_error(
                 "material resource port '" +
                 required.port.name +
@@ -3239,8 +3487,11 @@ MaterialContainer::ensureScreenInputDescriptor(
                     .binding =
                         required.binding,
                     .descriptor_type =
-                        vk::DescriptorType::
-                            eCombinedImageSampler,
+                        input_attachment
+                            ? vk::DescriptorType::
+                                  eInputAttachment
+                            : vk::DescriptorType::
+                                  eCombinedImageSampler,
                     .target =
                         binding->target,
                     .history =

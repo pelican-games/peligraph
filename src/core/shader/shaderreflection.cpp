@@ -166,14 +166,22 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
     }
 
     for (const auto *binding : descriptor_bindings) {
+        const auto descriptor_type =
+            static_cast<vk::DescriptorType>(
+                binding->descriptor_type);
         reflection.bindings.push_back({
             binding->set,
             binding->binding,
-            static_cast<vk::DescriptorType>(binding->descriptor_type),
+            descriptor_type,
             descriptorCount(*binding),
             stageFlags(module->shader_stage),
             binding->name != nullptr ? binding->name : "",
             imageViewDimension(*binding),
+            descriptor_type ==
+                    vk::DescriptorType::eInputAttachment
+                ? std::optional<std::uint32_t>{
+                      binding->input_attachment_index}
+                : std::nullopt,
         });
     }
 
@@ -293,6 +301,11 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
                 binding.image_view_dimension) {
                 throw std::runtime_error(
                     "Shader descriptor image view dimension mismatch");
+            }
+            if (existing.input_attachment_index !=
+                binding.input_attachment_index) {
+                throw std::runtime_error(
+                    "Shader input attachment index mismatch");
             }
             existing.stages |= binding.stages;
             if (existing.name.empty()) {

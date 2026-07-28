@@ -33,6 +33,10 @@ struct ReflectedBinding {
     std::string name;
     ReflectedImageViewDimension image_view_dimension =
         ReflectedImageViewDimension::none;
+    // Present only for input-attachment descriptors. Descriptor binding and
+    // input-attachment index are independent namespaces under dynamic
+    // rendering local read.
+    std::optional<std::uint32_t> input_attachment_index;
 };
 
 struct ReflectedFragmentOutput {

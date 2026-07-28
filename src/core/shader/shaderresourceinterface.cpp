@@ -107,6 +107,9 @@ std::string descriptorName(
     case ShaderResourceDescriptorKind::
         combined_image_sampler:
         return "combined image sampler";
+    case ShaderResourceDescriptorKind::
+        input_attachment:
+        return "input attachment";
     case ShaderResourceDescriptorKind::storage_image:
         return "storage image";
     case ShaderResourceDescriptorKind::storage_buffer:
@@ -123,6 +126,10 @@ vk::DescriptorType descriptorType(
         combined_image_sampler:
         return vk::DescriptorType::
             eCombinedImageSampler;
+    case ShaderResourceDescriptorKind::
+        input_attachment:
+        return vk::DescriptorType::
+            eInputAttachment;
     case ShaderResourceDescriptorKind::storage_image:
         return vk::DescriptorType::eStorageImage;
     case ShaderResourceDescriptorKind::storage_buffer:
@@ -151,6 +158,34 @@ std::string imageType(
     throw std::runtime_error(
         "generated shader resource ports support only 2D and "
         "2D-array image views");
+}
+
+void writeInputAttachmentAccessors(
+    std::ostringstream &stream,
+    const ShaderResourceInterfaceBinding &binding,
+    std::string_view variable) {
+    const auto &name = binding.port.name;
+    stream
+        << "vec4 pelican_sample_" << name
+        << "(vec2 uv) { return subpassLoad(" << variable
+        << "); }\n"
+        << "vec4 pelican_sample_" << name
+        << "(vec2 uv, uint view_index) { return subpassLoad("
+        << variable << "); }\n"
+        << "vec4 pelican_sample_lod_" << name
+        << "(vec2 uv, float lod) { return subpassLoad("
+        << variable << "); }\n"
+        << "vec4 pelican_sample_lod_" << name
+        << "(vec2 uv, uint view_index, float lod) { return subpassLoad("
+        << variable << "); }\n"
+        << "ivec2 pelican_size_" << name
+        << "() { return ivec2(pelicanResolution.render_resolution.xy); }\n"
+        << "ivec2 pelican_size_lod_" << name
+        << "(int lod) { return ivec2(pelicanResolution.render_resolution.xy); }\n"
+        << "uint pelican_mip_count_" << name
+        << "() { return 1u; }\n"
+        << "uint pelican_view_count_" << name
+        << "() { return pelican_view_count(); }\n";
 }
 
 void writeSampledAccessors(
@@ -370,6 +405,27 @@ void writeInactiveStageAccessors(
                << "() { return 0u; }\n";
         return;
     }
+    if (binding.descriptor ==
+        ShaderResourceDescriptorKind::
+            input_attachment) {
+        stream << "vec4 pelican_sample_" << name
+               << "(vec2 uv) { return vec4(0.0); }\n"
+               << "vec4 pelican_sample_" << name
+               << "(vec2 uv, uint view_index) { return vec4(0.0); }\n"
+               << "vec4 pelican_sample_lod_" << name
+               << "(vec2 uv, float lod) { return vec4(0.0); }\n"
+               << "vec4 pelican_sample_lod_" << name
+               << "(vec2 uv, uint view_index, float lod) { return vec4(0.0); }\n"
+               << "ivec2 pelican_size_" << name
+               << "() { return ivec2(0); }\n"
+               << "ivec2 pelican_size_lod_" << name
+               << "(int lod) { return ivec2(0); }\n"
+               << "uint pelican_mip_count_" << name
+               << "() { return 1u; }\n"
+               << "uint pelican_view_count_" << name
+               << "() { return 0u; }\n";
+        return;
+    }
     const auto value_type =
         storageImageFormat(
             binding.storage_format, binding.port)
@@ -467,6 +523,15 @@ std::string generateShaderResourcePortInclude(
         << "#ifndef PELICAN_RESOURCE_PORTS_GLSL\n"
         << "#define PELICAN_RESOURCE_PORTS_GLSL\n"
         << "#include \"pelican_sets.glsl\"\n";
+    if (std::any_of(
+            bindings.begin(), bindings.end(),
+            [](const auto &binding) {
+                return binding.descriptor ==
+                       ShaderResourceDescriptorKind::
+                           input_attachment;
+            })) {
+        stream << "#include \"pelican_frame.glsl\"\n";
+    }
     for (const auto &binding : bindings) {
         const auto guarded =
             writeStageGuardBegin(
@@ -517,6 +582,49 @@ std::string generateShaderResourcePortInclude(
                        binding.image_view_dimension)
                 << " " << variable << ";\n";
             writeSampledAccessors(
+                stream, binding, variable);
+            if (guarded) {
+                if (singleSurfaceStage(
+                        binding.expected_stages)) {
+                    stream << "#else\n";
+                    writeInactiveStageAccessors(
+                        stream, binding);
+                }
+                stream << "#endif\n";
+            }
+            continue;
+        }
+        if (binding.descriptor ==
+            ShaderResourceDescriptorKind::
+                input_attachment) {
+            if (binding.expected_stages !=
+                vk::ShaderStageFlagBits::eFragment) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    binding.port.name +
+                    "' input attachment is fragment-only");
+            }
+            if (!binding.input_attachment_index) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    binding.port.name +
+                    "' input attachment has no physical index");
+            }
+            if (binding.image_view_dimension !=
+                ReflectedImageViewDimension::two_d) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    binding.port.name +
+                    "' input attachment requires a 2D shader view");
+            }
+            stream
+                << "layout(input_attachment_index = "
+                << *binding.input_attachment_index
+                << ", set = PELICAN_SET_PASS_INPUT, binding = "
+                << binding.binding
+                << ") uniform subpassInput "
+                << variable << ";\n";
+            writeInputAttachmentAccessors(
                 stream, binding, variable);
             if (guarded) {
                 if (singleSurfaceStage(
@@ -638,8 +746,14 @@ void validateShaderResourceInterfaceReflection(
                 found->name + "' at binding " +
                 std::to_string(expected.binding));
         }
-        if (found->image_view_dimension !=
-            expected.image_view_dimension) {
+        // SPIR-V reflects subpassInput as DimSubpassData rather than as the
+        // concrete 2D/2D-array image view bound by the runtime. The physical
+        // view policy is validated when the material descriptor is built.
+        if (expected.descriptor !=
+                ShaderResourceDescriptorKind::
+                    input_attachment &&
+            found->image_view_dimension !=
+                expected.image_view_dimension) {
             throw std::runtime_error(
                 prefix + " requires " +
                 std::string{
@@ -649,6 +763,28 @@ void validateShaderResourceInterfaceReflection(
                 std::string{
                     reflectedImageViewDimensionName(
                         found->image_view_dimension)});
+        }
+        if (expected.descriptor ==
+            ShaderResourceDescriptorKind::
+                input_attachment) {
+            if (!expected.input_attachment_index) {
+                throw std::logic_error(
+                    prefix +
+                    " has no compiler-owned input-attachment index");
+            }
+            if (found->input_attachment_index !=
+                expected.input_attachment_index) {
+                throw std::runtime_error(
+                    prefix +
+                    " reflected input-attachment index " +
+                    (found->input_attachment_index
+                         ? std::to_string(
+                               *found->input_attachment_index)
+                         : std::string{"<missing>"}) +
+                    ", expected " +
+                    std::to_string(
+                        *expected.input_attachment_index));
+            }
         }
         if (expected.expected_stages &&
             found->stages != expected.expected_stages) {

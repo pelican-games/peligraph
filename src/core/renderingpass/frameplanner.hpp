@@ -84,6 +84,11 @@ struct FrameGraphNodeDefinition {
     std::vector<std::string> reads_history;
     std::vector<FrameGraphReadFootprintDefinition>
         read_footprints;
+    // Resource reads whose concrete pass implementation can switch between
+    // a sampled descriptor and an input attachment. This prevents a future
+    // same-pixel read on shadow/velocity/feature-owned inputs from being
+    // fused before its shader ABI exists.
+    std::vector<std::string> local_read_shader_inputs;
     std::vector<FrameGraphResourceAccessDefinition>
         resource_accesses;
     std::vector<std::string> writes;

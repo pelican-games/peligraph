@@ -682,12 +682,91 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
             defines.push_back(std::move(define));
         }
     }
+    const auto reserved_physical_define =
+        [](std::string_view define) {
+            return define.starts_with(
+                       surfaceScreenInputLocalReadDefinePrefix) ||
+                   define.starts_with(
+                       surfaceResourceLocalReadDefinePrefix);
+        };
+    if (std::any_of(
+            defines.begin(), defines.end(),
+            reserved_physical_define)) {
+        throw std::runtime_error(
+            "material defines cannot override the compiler-owned "
+            "local-read shader ABI");
+    }
     std::optional<MaterialOutputSchema> output_schema;
     if (const auto *passes =
             FastModuleContainer::tryGet<
                 RenderingPassContainer>()) {
         output_schema = passes->materialOutputSchema(
             material.route, material.exact_pass);
+        std::vector<MaterialPassShaderInputRequest>
+            requested_inputs;
+        requested_inputs.reserve(
+            material.screen_inputs.size() +
+            material.resource_ports.size());
+        for (const auto &input :
+             material.screen_inputs) {
+            requested_inputs.push_back({
+                .kind =
+                    MaterialPassShaderInputKind::
+                        screen_input,
+                .name = input,
+            });
+        }
+        std::vector<std::size_t>
+            image_resource_indices;
+        for (std::size_t index = 0;
+             index < material.resource_ports.size();
+             ++index) {
+            if (material.resource_ports[index].kind !=
+                SurfaceResourcePortKind::image) {
+                continue;
+            }
+            requested_inputs.push_back({
+                .kind =
+                    MaterialPassShaderInputKind::
+                        material_resource,
+                .name =
+                    material.resource_ports[index].name,
+            });
+            image_resource_indices.push_back(index);
+        }
+        const auto physical_inputs =
+            passes->materialPassShaderInputBindings(
+                material.route,
+                materialShaderContractForRoute(
+                    material.route),
+                requested_inputs,
+                material.exact_pass);
+        for (std::size_t index = 0;
+             index < material.screen_inputs.size();
+             ++index) {
+            if (physical_inputs[index]
+                    .input_attachment_index) {
+                defines.push_back(
+                    makeSurfaceScreenInputLocalReadDefine(
+                        index,
+                        *physical_inputs[index]
+                             .input_attachment_index));
+            }
+        }
+        for (std::size_t index = 0;
+             index < image_resource_indices.size();
+             ++index) {
+            const auto physical_index =
+                material.screen_inputs.size() + index;
+            if (physical_inputs[physical_index]
+                    .input_attachment_index) {
+                defines.push_back(
+                    makeSurfaceResourceLocalReadDefine(
+                        image_resource_indices[index],
+                        *physical_inputs[physical_index]
+                             .input_attachment_index));
+            }
+        }
     }
     return loadFromSurface(
         surface, source_name,

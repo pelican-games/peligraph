@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -17,6 +18,31 @@ namespace Pelican {
 struct RendererRuntimeGeneration;
 struct RendererRuntimePublication;
 
+enum class MaterialPassShaderInputKind : std::uint8_t {
+    screen_input,
+    material_resource,
+};
+
+struct MaterialPassShaderInputRequest {
+    MaterialPassShaderInputKind kind =
+        MaterialPassShaderInputKind::screen_input;
+    std::string name;
+
+    bool operator==(
+        const MaterialPassShaderInputRequest &) const = default;
+};
+
+// A missing index means that the physical plan materializes the image and the
+// shader must use its sampled-image fallback. A present index is the
+// VkRenderingInputAttachmentIndexInfoKHR index, not the descriptor binding.
+struct MaterialPassShaderInputBinding {
+    MaterialPassShaderInputRequest input;
+    std::optional<std::uint32_t> input_attachment_index;
+
+    bool operator==(
+        const MaterialPassShaderInputBinding &) const = default;
+};
+
 struct MaterialPassRenderingBinding {
     std::string pass_name;
     vk::SampleCountFlagBits rasterization_samples =
@@ -24,6 +50,7 @@ struct MaterialPassRenderingBinding {
     CompiledPassRenderingContract rendering;
     std::optional<MaterialOutputSchema> output_schema;
     std::vector<MaterialOutputAttachmentState> output_states;
+    std::vector<MaterialPassShaderInputBinding> shader_inputs;
 
     bool operator==(
         const MaterialPassRenderingBinding &) const =
@@ -67,6 +94,17 @@ DECLARE_MODULE(RenderingPassContainer) {
     materialPassRenderingBindings(
         MaterialRouteClass route,
         MaterialShaderContract shader_contract,
+        const std::optional<std::string> &exact_pass =
+            std::nullopt) const;
+    // Resolves the shader-visible input implementation selected by every
+    // active graph variant. The same material shader cannot mix a sampler and
+    // an input attachment (or different input-attachment indices) across
+    // variants, so disagreement is rejected before shader compilation.
+    std::vector<MaterialPassShaderInputBinding>
+    materialPassShaderInputBindings(
+        MaterialRouteClass route,
+        MaterialShaderContract shader_contract,
+        std::span<const MaterialPassShaderInputRequest> inputs,
         const std::optional<std::string> &exact_pass =
             std::nullopt) const;
     // Resolves the strategy-private fragment-output ABI selected by a route.

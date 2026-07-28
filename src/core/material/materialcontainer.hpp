@@ -121,7 +121,15 @@ DECLARE_MODULE(MaterialContainer) {
             bool isImage() const {
                 return descriptor_type ==
                        vk::DescriptorType::
-                           eCombinedImageSampler;
+                           eCombinedImageSampler ||
+                       descriptor_type ==
+                           vk::DescriptorType::
+                               eInputAttachment;
+            }
+            bool isInputAttachment() const {
+                return descriptor_type ==
+                       vk::DescriptorType::
+                           eInputAttachment;
             }
             bool isBuffer() const {
                 return descriptor_type ==
@@ -154,7 +162,15 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<MaterialOutputSchema> output_schema;
         std::optional<std::string> exact_pass;
-        std::vector<MaterialPassInputContract> pass_inputs;
+        struct PassInput {
+            MaterialPassInputContract contract;
+            vk::DescriptorType descriptor_type =
+                vk::DescriptorType::
+                    eCombinedImageSampler;
+            std::optional<std::uint32_t>
+                input_attachment_index;
+        };
+        std::vector<PassInput> pass_inputs;
         std::vector<ShaderResourceInterfaceBinding>
             resource_interface;
         bool skinned = false;

@@ -489,7 +489,7 @@ TEST_CASE("screen input declaration must match reflected set shape",
             validateMaterialScreenInputInterfaceReflection(
                 2, wrong_type, 1);
         },
-        "consecutive combined image samplers");
+        "combined image samplers or input attachments");
 
     auto gap = valid;
     gap[1].binding = 2;
@@ -497,7 +497,23 @@ TEST_CASE("screen input declaration must match reflected set shape",
         [&] {
             validateMaterialScreenInputInterfaceReflection(2, gap, 1);
         },
-        "consecutive combined image samplers");
+        "consecutive bindings");
+
+    auto local = valid;
+    local.back().kind =
+        MaterialScreenInputReflectionKind::
+            input_attachment;
+    local.back().input_attachment_index = 3;
+    REQUIRE_NOTHROW(
+        validateMaterialScreenInputInterfaceReflection(
+            2, local, 1));
+    local.back().input_attachment_index.reset();
+    requireThrowsContaining(
+        [&] {
+            validateMaterialScreenInputInterfaceReflection(
+                2, local, 1);
+        },
+        "without an input-attachment index");
 }
 
 TEST_CASE(
@@ -564,6 +580,69 @@ TEST_CASE(
                     types, declared, reordered);
         },
         "unexpected sampler");
+}
+
+TEST_CASE(
+    "material screen input reflection accepts a physical input attachment",
+    "[target-planning][shader-interface][local-read][wp220]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const std::vector<MaterialScreenInputContract>
+        declared{
+            makeBuiltinMaterialScreenInputContract(
+                types, "scene_depth"),
+        };
+    const std::vector<
+        MaterialScreenInputReflectionBinding>
+        reflected{
+            {
+                .set = 1,
+                .binding = 0,
+                .kind =
+                    MaterialScreenInputReflectionKind::
+                        input_attachment,
+                .name =
+                    "pelican_screen_scene_depth_texture",
+                .input_attachment_index = 3,
+            },
+        };
+
+    const auto resolved =
+        resolveMaterialPassInputInterfaceReflection(
+            types, declared, reflected);
+    REQUIRE(resolved == declared);
+
+    auto missing_index = reflected;
+    missing_index.front()
+        .input_attachment_index.reset();
+    requireThrowsContaining(
+        [&] {
+            (void)
+                resolveMaterialPassInputInterfaceReflection(
+                    types, declared,
+                    missing_index);
+        },
+        "without an input-attachment index");
+
+    auto feature_input = reflected;
+    feature_input.push_back({
+        .set = 1,
+        .binding = 1,
+        .kind =
+            MaterialScreenInputReflectionKind::
+                input_attachment,
+        .name =
+            "pelican_directional_shadow_texture",
+        .input_attachment_index = 4,
+    });
+    requireThrowsContaining(
+        [&] {
+            (void)
+                resolveMaterialPassInputInterfaceReflection(
+                    types, declared,
+                    feature_input);
+        },
+        "feature-owned material pass inputs");
 }
 
 } // namespace Pelican

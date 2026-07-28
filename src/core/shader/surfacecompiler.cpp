@@ -4,17 +4,72 @@
 #include "../../project/materiallowering.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 
 namespace Pelican {
+
+std::string makeSurfaceScreenInputLocalReadDefine(
+    std::size_t input,
+    std::uint32_t input_attachment_index) {
+    return std::string{
+               surfaceScreenInputLocalReadDefinePrefix} +
+           std::to_string(input) + "_LOCAL_READ=" +
+           std::to_string(input_attachment_index);
+}
+
+std::string makeSurfaceResourceLocalReadDefine(
+    std::size_t resource,
+    std::uint32_t input_attachment_index) {
+    return std::string{
+               surfaceResourceLocalReadDefinePrefix} +
+           std::to_string(resource) + "_LOCAL_READ=" +
+           std::to_string(input_attachment_index);
+}
+
 namespace {
 
 constexpr std::string_view userIncludeName = "__pelican_user_surface.glsl";
 constexpr std::string_view paramsIncludeName = "__pelican_surface_params.glsl";
 constexpr std::string_view materialOutputsIncludeName =
     "__pelican_material_outputs.glsl";
+
+std::optional<std::uint32_t>
+physicalLocalReadIndex(
+    std::span<const std::string> defines,
+    std::string_view prefix, std::size_t index) {
+    const auto key =
+        std::string{prefix} +
+        std::to_string(index) + "_LOCAL_READ=";
+    std::optional<std::uint32_t> result;
+    for (const auto &define : defines) {
+        if (!define.starts_with(key)) {
+            continue;
+        }
+        if (result) {
+            throw std::runtime_error(
+                "surface physical local-read define is duplicated: " +
+                key);
+        }
+        const auto encoded =
+            std::string_view{define}.substr(key.size());
+        std::uint32_t value = 0;
+        const auto [end, error] = std::from_chars(
+            encoded.data(),
+            encoded.data() + encoded.size(), value);
+        if (error != std::errc{} ||
+            end != encoded.data() + encoded.size()) {
+            throw std::runtime_error(
+                "surface physical local-read define has an invalid "
+                "input-attachment index: " +
+                define);
+        }
+        result = value;
+    }
+    return result;
+}
 
 std::string diagnosticSourceName(std::string_view source_name) {
     std::string result{source_name};
@@ -169,7 +224,8 @@ std::vector<ShaderResourceInterfaceBinding>
 makeSurfaceResourceInterface(
     const SurfaceFormatDocument &surface,
     std::uint32_t first_binding,
-    bool clustered_lighting) {
+    bool clustered_lighting,
+    std::span<const std::string> defines) {
     std::vector<ShaderResourceInterfaceBinding> result;
     result.reserve(
         surface.resource_ports.size() +
@@ -179,6 +235,21 @@ makeSurfaceResourceInterface(
         const auto &port = surface.resource_ports[index];
         const auto image =
             port.kind == SurfaceResourcePortKind::image;
+        const auto local_read =
+            image
+                ? physicalLocalReadIndex(
+                      defines,
+                      surfaceResourceLocalReadDefinePrefix,
+                      index)
+                : std::nullopt;
+        if (local_read &&
+            port.stage !=
+                SurfaceResourcePortStage::fragment) {
+            throw std::runtime_error(
+                "surface resource port '" + port.name +
+                "' selected an input attachment but is not "
+                "fragment-only");
+        }
         result.push_back(
             ShaderResourceInterfaceBinding{
                 .port =
@@ -204,14 +275,19 @@ makeSurfaceResourceInterface(
                     static_cast<std::uint32_t>(index),
                 .descriptor =
                     image
-                        ? ShaderResourceDescriptorKind::
-                              combined_image_sampler
+                        ? local_read
+                              ? ShaderResourceDescriptorKind::
+                                    input_attachment
+                              : ShaderResourceDescriptorKind::
+                                    combined_image_sampler
                         : ShaderResourceDescriptorKind::
                               storage_buffer,
                 .image_view_dimension =
                     image
-                        ? ReflectedImageViewDimension::two_d
-                        : ReflectedImageViewDimension::none,
+                                ? ReflectedImageViewDimension::two_d
+                                : ReflectedImageViewDimension::none,
+                .input_attachment_index =
+                    local_read,
                 .buffer_element = port.element,
                 .expected_stages =
                     resourceStages(port.stage),
@@ -283,6 +359,7 @@ std::string makeParamsInclude(
     const SurfaceFormatDocument &surface,
     std::span<const ShaderResourceInterfaceBinding>
         resource_interface,
+    std::span<const std::string> defines,
     bool split_samplers = false) {
     const auto layout = makeSurfaceStd140Layout(surface);
     std::ostringstream source;
@@ -342,20 +419,53 @@ std::string makeParamsInclude(
     }
     for (std::size_t i = 0; i < surface.screen_inputs.size(); ++i) {
         const auto &input = surface.screen_inputs[i];
-        source << "layout(set = PELICAN_SET_PASS_INPUT, binding = " << i
-               << ") uniform sampler2D pelican_screen_" << input << "_texture;\n";
+        const auto local_read =
+            physicalLocalReadIndex(
+                defines,
+                surfaceScreenInputLocalReadDefinePrefix,
+                i);
+        if (local_read) {
+            source
+                << "#if defined(PELICAN_SURFACE_STAGE_FRAGMENT)\n"
+                << "layout(input_attachment_index = "
+                << *local_read
+                << ", set = PELICAN_SET_PASS_INPUT, binding = "
+                << i
+                << ") uniform subpassInput pelican_screen_"
+                << input << "_texture;\n";
+        } else {
+            source
+                << "layout(set = PELICAN_SET_PASS_INPUT, binding = "
+                << i
+                << ") uniform sampler2D pelican_screen_"
+                << input << "_texture;\n";
+        }
+        const auto sample =
+            local_read
+                ? "subpassLoad(pelican_screen_" +
+                      input + "_texture)"
+                : "texture(pelican_screen_" +
+                      input + "_texture, uv)";
         if (input == "linear_view_depth") {
             source << "vec4 pelican_screen_linear_view_depth(vec2 uv) { "
-                      "float device_depth = texture("
-                      "pelican_screen_linear_view_depth_texture, uv).r; "
+                      "float device_depth = "
+                   << sample
+                   << ".r; "
                       "vec4 view_position = inverse(pelicanFrame.projection) * "
                       "vec4(uv * 2.0 - 1.0, device_depth, 1.0); "
                       "float linear_depth = -view_position.z / view_position.w; "
                       "return vec4(linear_depth); }\n";
         } else {
             source << "vec4 pelican_screen_" << input
-                   << "(vec2 uv) { return texture(pelican_screen_" << input
-                   << "_texture, uv); }\n";
+                   << "(vec2 uv) { return "
+                   << sample << "; }\n";
+        }
+        if (local_read) {
+            source
+                << "#else\n"
+                << "vec4 pelican_screen_" << input
+                << "(vec2 uv) { return vec4(0.0); }\n"
+                << "#endif\n";
         }
     }
     if (!resource_interface.empty()) {
@@ -585,7 +695,7 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
             static_cast<std::uint32_t>(
                 surface.screen_inputs.size()) +
                 feature_input_count,
-            clustered_lighting);
+            clustered_lighting, defines);
 
     SurfaceShaderComposition composition;
     composition.vertex_source = engineResourceOrThrow("shaders/material/surface_v1.vert");
@@ -595,6 +705,7 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
         paramsIncludeName,
         makeParamsInclude(
             surface, resource_interface,
+            defines,
             split_samplers));
     if (material_output_schema) {
         composition.virtual_includes.emplace_back(

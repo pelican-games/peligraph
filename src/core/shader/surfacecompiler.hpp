@@ -7,9 +7,11 @@
 #include "../../project/renderpipeline.hpp"
 #include "../../project/surfaceformat.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -22,6 +24,23 @@ enum class SurfacePass {
     depth,
     velocity,
 };
+
+// Internal physical-lowering defines. Public .surface files keep one logical
+// accessor; loadFromSurfaceForMaterial supplies these only after the active
+// render graph has selected an input-attachment implementation.
+inline constexpr std::string_view
+    surfaceScreenInputLocalReadDefinePrefix =
+        "PELICAN_MATERIAL_SCREEN_INPUT_";
+inline constexpr std::string_view
+    surfaceResourceLocalReadDefinePrefix =
+        "PELICAN_MATERIAL_RESOURCE_";
+
+std::string makeSurfaceScreenInputLocalReadDefine(
+    std::size_t input,
+    std::uint32_t input_attachment_index);
+std::string makeSurfaceResourceLocalReadDefine(
+    std::size_t resource,
+    std::uint32_t input_attachment_index);
 
 struct SurfaceShaderComposition {
     std::string vertex_source;

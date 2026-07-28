@@ -1101,6 +1101,112 @@ TEST_CASE("example depth fade lowers same-pixel depth and emits linearization ac
 #endif
 }
 
+TEST_CASE(
+    "surface physical variant lowers screen and custom image inputs to input attachments",
+    "[surface-compiler][material-local-read][wp220]") {
+    constexpr std::string_view source_name =
+        "project://shaders/local_decal.surface";
+    const auto surface = parseSurfaceFormat(
+        R"surface(//! pelican.surface v1
+//! language: glsl
+//! screen_inputs: [scene_depth]
+//! resource_ports:
+//!   - { name: gbuffer_normal, kind: image, stage: fragment }
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    vec4 normal_data =
+        pelican_sample_gbuffer_normal(vec2(0.0));
+    vec4 depth_data =
+        pelican_screen_scene_depth(vec2(0.0));
+    surface.emissive =
+        normal_data.rgb + depth_data.rrr;
+}
+)surface",
+        source_name);
+    const std::vector<std::string> local_defines{
+        makeSurfaceScreenInputLocalReadDefine(0, 3),
+        makeSurfaceResourceLocalReadDefine(0, 5),
+    };
+    const auto local = composeSurfaceShaders(
+        surface, source_name,
+        SurfacePass::forward, local_defines);
+    REQUIRE(local.resource_interface.size() == 1);
+    REQUIRE(
+        local.resource_interface.front().binding ==
+        1u);
+    REQUIRE(
+        local.resource_interface.front().descriptor ==
+        ShaderResourceDescriptorKind::
+            input_attachment);
+    REQUIRE(
+        local.resource_interface.front()
+            .input_attachment_index ==
+        5u);
+    const auto params = std::find_if(
+        local.virtual_includes.begin(),
+        local.virtual_includes.end(),
+        [](const auto &include) {
+            return include.first ==
+                   "__pelican_surface_params.glsl";
+        });
+    REQUIRE(params !=
+            local.virtual_includes.end());
+    REQUIRE(
+        params->second.find(
+            "input_attachment_index = 3") !=
+        std::string::npos);
+    REQUIRE(
+        params->second.find(
+            "input_attachment_index = 5") !=
+        std::string::npos);
+    REQUIRE(
+        params->second.find("subpassLoad") !=
+        std::string::npos);
+
+    const auto sampled = composeSurfaceShaders(
+        surface, source_name,
+        SurfacePass::forward);
+    REQUIRE(
+        sampled.resource_interface.front().descriptor ==
+        ShaderResourceDescriptorKind::
+            combined_image_sampler);
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto compiled = compileSurfaceShaders(
+        compiler, surface, source_name,
+        SurfacePass::forward, local_defines);
+    requireCompiled(compiled);
+    const auto fragment =
+        reflect(compiled.fragment.spirv);
+    const auto require_input_attachment =
+        [&](std::uint32_t binding,
+            std::uint32_t input_attachment_index) {
+            const auto found = std::find_if(
+                fragment.bindings.begin(),
+                fragment.bindings.end(),
+                [&](const auto &candidate) {
+                    return candidate.set == 1 &&
+                           candidate.binding ==
+                               binding;
+                });
+            REQUIRE(found !=
+                    fragment.bindings.end());
+            REQUIRE(
+                found->type ==
+                vk::DescriptorType::
+                    eInputAttachment);
+            REQUIRE(
+                found->input_attachment_index ==
+                input_attachment_index);
+        };
+    require_input_attachment(0, 3);
+    require_input_attachment(1, 5);
+#endif
+}
+
 TEST_CASE("unchanged example toon surface compiles all skinned template variants",
           "[surface-compiler][skeletal]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

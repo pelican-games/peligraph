@@ -197,6 +197,112 @@ RenderingPassContainer::materialPassRenderingBindings(
                         .output_states =
                             pass.materialInfo()
                                 .output_states,
+                        .shader_inputs = [&] {
+                            std::vector<
+                                MaterialPassShaderInputBinding>
+                                inputs;
+                            const auto input_attachment_index =
+                                [&](GlobalRenderTargetId target,
+                                    bool history,
+                                    const LogicalReadFootprint
+                                        &footprint)
+                                -> std::optional<
+                                    std::uint32_t> {
+                                if (history) {
+                                    return std::nullopt;
+                                }
+                                const auto target_position =
+                                    std::find(
+                                        pass.input_targets.begin(),
+                                        pass.input_targets.end(),
+                                        target);
+                                if (target_position ==
+                                    pass.input_targets.end()) {
+                                    throw std::runtime_error(
+                                        "material pass input is absent "
+                                        "from the positional physical "
+                                        "input table: " +
+                                        pass.name);
+                                }
+                                const auto index =
+                                    static_cast<std::uint32_t>(
+                                        target_position -
+                                        pass.input_targets.begin());
+                                const auto local =
+                                    std::find(
+                                        compiled.rendering
+                                            .color_attachment_input_indices
+                                            .begin(),
+                                        compiled.rendering
+                                            .color_attachment_input_indices
+                                            .end(),
+                                        index) !=
+                                        compiled.rendering
+                                            .color_attachment_input_indices
+                                            .end() ||
+                                    compiled.rendering
+                                            .depth_attachment_input_index ==
+                                        index;
+                                if (!local) {
+                                    return std::nullopt;
+                                }
+                                if (footprint.kind !=
+                                    LogicalReadFootprintKind::
+                                        same_pixel) {
+                                    throw std::logic_error(
+                                        "material pass selected a local "
+                                        "attachment for a non-same-pixel "
+                                        "input: " +
+                                        pass.name);
+                                }
+                                return index;
+                            };
+                            const auto append =
+                                [&](MaterialPassShaderInputKind kind,
+                                    std::string name,
+                                    GlobalRenderTargetId target,
+                                    bool history,
+                                    const LogicalReadFootprint
+                                        &footprint) {
+                                    inputs.push_back(
+                                        MaterialPassShaderInputBinding{
+                                            .input = {
+                                                .kind = kind,
+                                                .name =
+                                                    std::move(name),
+                                            },
+                                            .input_attachment_index =
+                                                input_attachment_index(
+                                                    target, history,
+                                                    footprint),
+                                        });
+                                };
+                            for (const auto &input :
+                                 pass.materialInfo()
+                                     .screen_inputs) {
+                                append(
+                                    MaterialPassShaderInputKind::
+                                        screen_input,
+                                    input.contract.name,
+                                    input.target, input.history,
+                                    input.contract.footprint);
+                            }
+                            for (const auto &resource :
+                                 pass.materialInfo()
+                                     .material_resources) {
+                                if (!resource.isImage()) {
+                                    continue;
+                                }
+                                append(
+                                    MaterialPassShaderInputKind::
+                                        material_resource,
+                                    resource.port.name,
+                                    resource.target,
+                                    resource.history,
+                                    resource.footprint);
+                            }
+                            return inputs;
+                        }(),
                     });
             }
         };
@@ -209,6 +315,65 @@ RenderingPassContainer::materialPassRenderingBindings(
             collect(rendering_passes.get(
                 rendering_pass_id));
         }
+    }
+    return result;
+}
+
+std::vector<MaterialPassShaderInputBinding>
+RenderingPassContainer::materialPassShaderInputBindings(
+    MaterialRouteClass route,
+    MaterialShaderContract shader_contract,
+    std::span<const MaterialPassShaderInputRequest> inputs,
+    const std::optional<std::string> &exact_pass) const {
+    std::vector<MaterialPassShaderInputBinding> result;
+    result.reserve(inputs.size());
+    for (const auto &input : inputs) {
+        result.push_back({
+            .input = input,
+            .input_attachment_index = std::nullopt,
+        });
+    }
+
+    const auto passes = materialPassRenderingBindings(
+        route, shader_contract, exact_pass);
+    if (passes.empty()) {
+        return result;
+    }
+    for (std::size_t input_index = 0;
+         input_index < inputs.size(); ++input_index) {
+        std::optional<std::uint32_t> expected;
+        bool initialized = false;
+        for (const auto &pass : passes) {
+            const auto found = std::find_if(
+                pass.shader_inputs.begin(),
+                pass.shader_inputs.end(),
+                [&](const auto &candidate) {
+                    return candidate.input ==
+                           inputs[input_index];
+                });
+            if (found == pass.shader_inputs.end()) {
+                throw std::runtime_error(
+                    "material pass '" + pass.pass_name +
+                    "' does not provide shader input '" +
+                    inputs[input_index].name + "'");
+            }
+            if (!initialized) {
+                expected =
+                    found->input_attachment_index;
+                initialized = true;
+                continue;
+            }
+            if (expected !=
+                found->input_attachment_index) {
+                throw std::runtime_error(
+                    "material shader input '" +
+                    inputs[input_index].name +
+                    "' resolves to different sampled/local-read "
+                    "ABIs across render graph variants");
+            }
+        }
+        result[input_index].input_attachment_index =
+            expected;
     }
     return result;
 }

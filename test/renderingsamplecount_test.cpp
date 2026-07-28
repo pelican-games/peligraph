@@ -180,7 +180,7 @@ nlohmann::json writeOnlyAttachmentConfig() {
 nlohmann::json localReadAttachmentConfig(
     std::string consumer_type = "fullscreen",
     float gbuffer_extent_scale = 1.0f) {
-    return {
+    auto result = nlohmann::json{
         {"render_targets",
          nlohmann::json::array({
              {
@@ -223,7 +223,7 @@ nlohmann::json localReadAttachmentConfig(
                        {{"color", "gbuffer"},
                         {"depth", nullptr}}}},
                      {{"name", "lighting"},
-                      {"type", std::move(consumer_type)},
+                      {"type", consumer_type},
                       {"input", "gbuffer"},
                       {"input_footprints",
                        {{"gbuffer", "same_pixel"}}},
@@ -237,6 +237,23 @@ nlohmann::json localReadAttachmentConfig(
                        {{"color", "display"},
                         {"depth", nullptr}}}}})}}})},
     };
+    if (consumer_type == "material") {
+        auto &consumer =
+            result["rendering_passes"][0]
+                  ["passes"][1];
+        consumer.erase("input");
+        consumer.erase("input_footprints");
+        consumer["material_resources"] = {
+            {"gbuffer_input",
+             {
+                 {"resource", "gbuffer"},
+                 {"kind", "image"},
+                 {"access", "sampled"},
+                 {"footprint", "same_pixel"},
+             }},
+        };
+    }
+    return result;
 }
 
 nlohmann::json aliasLifetimeConfig(
@@ -711,7 +728,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "runtime local-read eligibility rejects unsupported consumers extents and multisampling",
+    "runtime local-read eligibility accepts material consumers and rejects incompatible extents and multisampling",
     "[target-planning][rendering][tile-local][fallback]") {
     const auto compile_config =
         [](const nlohmann::json &config,
@@ -735,10 +752,21 @@ TEST_CASE(
         material_consumer.plans.front()
             ->backend_selection
             .selected_candidate ==
-        "pelican.vulkan.materialized_plan@1");
+        "pelican.vulkan.tile_local_plan@1");
     REQUIRE(
         representationAssignment(
             material_consumer, "gbuffer")
+            .representation ==
+        VulkanResourceRepresentation::
+            tile_local_attachment);
+
+    const auto unsupported_geometry_consumer =
+        compile_config(
+            localReadAttachmentConfig("velocity"));
+    REQUIRE(
+        representationAssignment(
+            unsupported_geometry_consumer,
+            "gbuffer")
             .representation ==
         VulkanResourceRepresentation::
             materialized_image);
@@ -881,11 +909,16 @@ TEST_CASE(
     "[target-planning][rendering][tile-local][multi-graph]") {
     auto config = localReadAttachmentConfig();
     auto material_graph =
-        config["rendering_passes"].front();
+        localReadAttachmentConfig("material")
+            ["rendering_passes"]
+            .front();
     material_graph["name"] =
         "material_fallback";
-    material_graph["passes"][1]["type"] =
-        "material";
+    material_graph["passes"][1]
+                  ["material_resources"]
+                  ["gbuffer_input"]
+                  ["footprint"] =
+        "neighborhood";
     config["rendering_passes"].push_back(
         std::move(material_graph));
 

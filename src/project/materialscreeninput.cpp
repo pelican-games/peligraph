@@ -176,11 +176,27 @@ void validateMaterialScreenInputInterfaceReflection(
             "material screen inputs do not match shader reflection binding count");
     }
     for (std::size_t index = 0; index < bindings.size(); ++index) {
-        if (bindings[index].binding != index ||
-            bindings[index].kind !=
-                MaterialScreenInputReflectionKind::combined_image_sampler) {
+        if (bindings[index].binding != index) {
             throw std::runtime_error(
-                "material screen inputs require consecutive combined image samplers in set 1");
+                "material screen inputs require consecutive bindings in set 1");
+        }
+        if (bindings[index].kind !=
+                MaterialScreenInputReflectionKind::
+                    combined_image_sampler &&
+            bindings[index].kind !=
+                MaterialScreenInputReflectionKind::
+                    input_attachment) {
+            throw std::runtime_error(
+                "material screen inputs require combined image samplers "
+                "or input attachments in set 1");
+        }
+        if (bindings[index].kind ==
+                MaterialScreenInputReflectionKind::
+                    input_attachment &&
+            !bindings[index].input_attachment_index) {
+            throw std::runtime_error(
+                "material screen input reflects an input attachment "
+                "without an input-attachment index");
         }
     }
 }
@@ -211,14 +227,30 @@ resolveMaterialPassInputInterfaceReflection(
     resolved.reserve(bindings.size());
     for (std::size_t index = 0; index < bindings.size(); ++index) {
         const auto &binding = bindings[index];
-        if (binding.binding != index ||
-            binding.kind !=
-                MaterialScreenInputReflectionKind::combined_image_sampler) {
+        if (binding.binding != index) {
             throw std::runtime_error(
-                "material pass inputs require consecutive combined image samplers in set 1");
+                "material pass inputs require consecutive bindings in set 1");
         }
         if (index < declared_screen_inputs.size()) {
             const auto &declared = declared_screen_inputs[index];
+            if (binding.kind !=
+                    MaterialScreenInputReflectionKind::
+                        combined_image_sampler &&
+                binding.kind !=
+                    MaterialScreenInputReflectionKind::
+                        input_attachment) {
+                throw std::runtime_error(
+                    "material screen input requires a combined image "
+                    "sampler or input attachment in set 1");
+            }
+            if (binding.kind ==
+                    MaterialScreenInputReflectionKind::
+                        input_attachment &&
+                !binding.input_attachment_index) {
+                throw std::runtime_error(
+                    "material screen input reflects an input attachment "
+                    "without an input-attachment index");
+            }
             const auto expected_name =
                 "pelican_screen_" + declared.name + "_texture";
             if (!binding.name.empty() &&
@@ -230,6 +262,13 @@ resolveMaterialPassInputInterfaceReflection(
             }
             resolved.push_back(declared);
             continue;
+        }
+        if (binding.kind !=
+            MaterialScreenInputReflectionKind::
+                combined_image_sampler) {
+            throw std::runtime_error(
+                "feature-owned material pass inputs require combined "
+                "image samplers in set 1");
         }
         if (binding.name == directionalShadowSamplerName) {
             if (std::any_of(

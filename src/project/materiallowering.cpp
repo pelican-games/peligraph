@@ -11,6 +11,17 @@
 #include <unordered_map>
 
 namespace Pelican {
+
+MaterialShaderContract materialShaderContractForRoute(
+    MaterialRouteClass route) {
+    return route ==
+                   MaterialRouteClass::
+                       deferred_geometry
+               ? MaterialShaderContract::gbuffer_v1
+               : MaterialShaderContract::
+                     forward_scene_color_v1;
+}
+
 namespace {
 
 std::size_t alignUp(std::size_t value, std::size_t alignment) {

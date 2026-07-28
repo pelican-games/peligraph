@@ -996,6 +996,94 @@ nlohmann::json localReadRenderingConfig() {
 )json");
 }
 
+nlohmann::json materialLocalReadRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [
+    {
+      "name": "material_local_source",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "material_local_output",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "material_local_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "material_local_main",
+      "passes": [
+        {
+          "name": "material_local_producer",
+          "type": "fullscreen",
+          "output": {
+            "color": "material_local_source",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/material_local_fullscreen",
+            "fragment": "shaders/material_local_producer"
+          }
+        },
+        {
+          "name": "material_local_consumer",
+          "type": "material",
+          "material_contract": "forward_opaque_v1",
+          "material_resources": {
+            "local_color": {
+              "resource": "material_local_source",
+              "access": "sampled",
+              "sampling": {
+                "filter": "nearest",
+                "address": "clamp_to_edge"
+              },
+              "footprint": "same_pixel"
+            }
+          },
+          "output": {
+            "color": "material_local_output",
+            "depth": "material_local_depth"
+          }
+        },
+        {
+          "name": "material_local_present",
+          "type": "fullscreen",
+          "input": ["material_local_output"],
+          "input_sampling": [
+            {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          ],
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/material_local_fullscreen",
+            "fragment": "shaders/material_local_present"
+          }
+        }
+      ]
+    }
+  ]
+}
+)json");
+}
+
 nlohmann::json dependencySafePhysicalScopeRenderingConfig() {
     return nlohmann::json::parse(R"json(
 {
@@ -2782,6 +2870,388 @@ TEST_CASE(
         SKIP(
             std::string{
                 "Vulkan tile-local rendering unavailable: "} +
+            error.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "material same-pixel resource executes through the tile-local input ABI",
+    "[wp220][headless][render][material][tile-local]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    bool runtime_ready = false;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_local_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_local_producer.frag",
+            localReadProducerFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_local_present.frag",
+            gpuArenaCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            materialLocalReadRenderingConfig().dump(2));
+
+        constexpr std::string_view surface_source =
+            R"surface(//! pelican.surface v1
+//! language: glsl
+//! resource_ports:
+//!   - { name: local_color, kind: image, stage: fragment }
+//! render_state: { blend: opaque, cull: none, depth: read_write }
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(1.0);
+    surface.roughness = 1.0;
+}
+
+vec3 pelican_lighting_v1(
+    in PelicanSurfaceV1 surface,
+    in PelicanSurfaceInputV1 input_data) {
+    return pelican_sample_local_color(input_data.uv).rgb;
+}
+)surface";
+        constexpr std::string_view surface_reference =
+            "project://shaders/material_local.surface";
+        writeTextFile(
+            temp_dir / "shaders" /
+                "material_local.surface",
+            std::string{surface_source});
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "material_local_main";
+        GET_MODULE(ProjectSource)
+            .setSourceByData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        auto &engine_time =
+            GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &vkcore =
+            GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities()
+                 .dynamic_rendering_local_read) {
+            std::filesystem::remove_all(
+                temp_dir);
+            temp_dir.clear();
+            SKIP(
+                "Vulkan device has no dynamic rendering local "
+                "read support");
+        }
+
+        auto &renderer = GET_MODULE(Renderer);
+        runtime_ready = true;
+        const auto pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "material_local_main");
+        const auto program =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .findProgram(pass_id);
+        REQUIRE(program != nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan !=
+            nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan
+                ->backend_selection
+                .selected_candidate ==
+            "pelican.vulkan.tile_local_plan@1");
+
+        const auto source =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "material_local_source");
+        const auto source_metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(source);
+        REQUIRE(
+            source_metadata.storage_mode ==
+            RenderTargetStorageMode::
+                tile_local_attachment);
+        REQUIRE(
+            source_metadata.usage &
+            vk::ImageUsageFlagBits::
+                eInputAttachment);
+        REQUIRE_FALSE(
+            source_metadata.usage &
+            vk::ImageUsageFlagBits::eSampled);
+
+        const auto consumer =
+            std::find_if(
+                program->rendering_pass
+                    .passes.begin(),
+                program->rendering_pass
+                    .passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.name ==
+                           "material_local_consumer";
+                });
+        REQUIRE(
+            consumer !=
+            program->rendering_pass.passes.end());
+        REQUIRE(
+            consumer->rendering
+                .local_read_scope);
+        const auto source_slot =
+            std::find(
+                consumer->rendering
+                    .color_attachments.begin(),
+                consumer->rendering
+                    .color_attachments.end(),
+                source);
+        REQUIRE(
+            source_slot !=
+            consumer->rendering
+                .color_attachments.end());
+        const auto source_slot_index =
+            static_cast<std::size_t>(
+                std::distance(
+                    consumer->rendering
+                        .color_attachments.begin(),
+                    source_slot));
+        REQUIRE(
+            source_slot_index <
+            consumer->rendering
+                .color_attachment_input_indices
+                .size());
+        const auto physical_input_index =
+            consumer->rendering
+                .color_attachment_input_indices
+                .at(source_slot_index);
+        REQUIRE(
+            physical_input_index !=
+            unusedPhysicalAttachmentMapping);
+
+        const auto surface =
+            parseSurfaceFormat(
+                surface_source,
+                surface_reference);
+        MaterialDefinition definition;
+        definition.name =
+            "material_local_quad";
+        definition.surface =
+            surface_reference;
+        definition.render_path =
+            MaterialRenderPath::forward;
+        const auto lowered =
+            lowerMaterial(
+                definition, surface);
+        REQUIRE(
+            lowered.route ==
+            MaterialRouteClass::
+                forward_opaque);
+        const auto shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    surface,
+                    surface_reference,
+                    lowered,
+                    program->frame_graph
+                        .render_pipeline
+                        ->shader_defines);
+        const auto &fragment =
+            GET_MODULE(ShaderLibrary)
+                .get(shaders.fragment);
+        const auto local_binding =
+            std::find_if(
+                fragment.reflection
+                    .bindings.begin(),
+                fragment.reflection
+                    .bindings.end(),
+                [](const auto &binding) {
+                    return binding.set == 1 &&
+                           binding.name ==
+                               "pelican_resource_local_color";
+                });
+        REQUIRE(
+            local_binding !=
+            fragment.reflection
+                .bindings.end());
+        REQUIRE(
+            local_binding->type ==
+            vk::DescriptorType::
+                eInputAttachment);
+        REQUIRE(
+            local_binding
+                ->input_attachment_index ==
+            physical_input_index);
+
+        auto &materials =
+            GET_MODULE(MaterialContainer);
+        const std::array<std::uint8_t, 4>
+            white_pixel{255, 255, 255, 255};
+        const std::array<std::uint8_t, 4>
+            normal_pixel{128, 128, 255, 255};
+        const std::array<std::uint8_t, 4>
+            black_pixel{0, 0, 0, 255};
+        const auto white_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                white_pixel.data());
+        const auto normal_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                normal_pixel.data());
+        const auto black_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                black_pixel.data());
+        MaterialInfo material{
+            .vert_shader = shaders.vertex,
+            .frag_shader = shaders.fragment,
+            .base_color_texture =
+                white_texture,
+            .metallic_roughness_texture =
+                white_texture,
+            .normal_texture =
+                normal_texture,
+            .emissive_texture =
+                black_texture,
+        };
+        applyLoweredMaterialForRoute(
+            material, lowered);
+        const auto material_id =
+            materials.registerMaterial(
+                std::move(material));
+        REQUIRE(
+            isValidMaterialId(material_id));
+        REQUIRE(
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    consumer->definition) != 0);
+        REQUIRE(
+            materials
+                .boundScreenInputImageViewsForTesting(
+                    material_id,
+                    consumer->definition) ==
+            std::vector<vk::ImageView>{
+                GET_MODULE(RenderTargetContainer)
+                    .getImageView(source)});
+
+        auto &geometry =
+            GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id =
+            ModelAssetId{220};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material_id,
+                .primitives = {
+                    geometry.addPrimitiveEntry(
+                        makeScreenQuad(
+                            0.6f, 0.0f))},
+                .source_material_index = 0,
+            },
+        };
+        const auto instance =
+            GET_MODULE(
+                PolygonInstanceContainer)
+                .placeModelInstance(model);
+        REQUIRE(
+            GET_MODULE(
+                PolygonInstanceContainer)
+                .isModelInstanceAlive(
+                    instance));
+        auto &camera =
+            GET_MODULE(Camera);
+        camera.setPos(
+            {0.0f, 0.0f, 2.0f});
+        camera.setDir(
+            {0.0f, 0.0f, -1.0f});
+        camera.setUp(
+            {0.0f, 1.0f, 0.0f});
+
+        engine_time.advance();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            pixels.size() ==
+            32u * 32u * 4u);
+        const auto center =
+            (16u * 32u + 16u) * 4u;
+        INFO(
+            "material local-read center = (" <<
+            static_cast<unsigned>(
+                pixels[center]) << ", " <<
+            static_cast<unsigned>(
+                pixels[center + 1]) << ", " <<
+            static_cast<unsigned>(
+                pixels[center + 2]) << ", " <<
+            static_cast<unsigned>(
+                pixels[center + 3]) << ")");
+        REQUIRE(
+            pixels[center] >= 120);
+        REQUIRE(
+            pixels[center] <= 128);
+        REQUIRE(
+            pixels[center + 1] >= 166);
+        REQUIRE(
+            pixels[center + 1] <= 174);
+        REQUIRE(
+            pixels[center + 2] >= 227);
+        REQUIRE(
+            pixels[center + 2] <= 235);
+        REQUIRE(
+            pixels[center + 3] == 255);
+
+        vkcore.waitIdle();
+        std::filesystem::remove_all(
+            temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        if (runtime_ready) {
+            throw;
+        }
+        SKIP(
+            std::string{
+                "Vulkan material local-read rendering "
+                "unavailable: "} +
             error.what());
     }
 #endif

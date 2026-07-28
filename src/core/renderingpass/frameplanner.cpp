@@ -323,6 +323,9 @@ void appendMaterialScreenInputReads(
         const auto resource =
             entry.value().get<std::string>();
         appendUnique(node.reads, resource);
+        appendUnique(
+            node.local_read_shader_inputs,
+            resource);
         appendReadFootprint(
             node, resource,
             makeBuiltinMaterialScreenInputContract(
@@ -439,6 +442,16 @@ void appendMaterialResourceReads(
                 node.reads_history, resource);
         } else {
             appendUnique(node.reads, resource);
+            if (port.access !=
+                    ShaderResourcePortAccess::
+                        storage &&
+                port.kind !=
+                    ShaderResourcePortKind::
+                        buffer) {
+                appendUnique(
+                    node.local_read_shader_inputs,
+                    resource);
+            }
             const auto &source =
                 encoded.at(port.name);
             appendReadFootprint(
@@ -672,6 +685,13 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     node.raster_geometry =
         type == "material" || type == "shadow_depth" ||
         type == "velocity";
+    if (type == "fullscreen") {
+        for (const auto &resource : node.reads) {
+            appendUnique(
+                node.local_read_shader_inputs,
+                resource);
+        }
+    }
     node.resolution_domain =
         parseRenderResolutionDomain(
             pass_json, type, node.name);
@@ -979,6 +999,18 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
         pass.isVelocity();
+    if (pass.isFullscreen()) {
+        for (std::size_t index = 0;
+             index < pass.input_targets.size();
+             ++index) {
+            if (!pass.input_target_history.at(index)) {
+                appendUnique(
+                    node.local_read_shader_inputs,
+                    renderTargetResourceName(
+                        pass.input_targets[index]));
+            }
+        }
+    }
     node.resolution_domain =
         pass.resolution_domain;
     if (pass.isMaterial()) {
@@ -1017,6 +1049,12 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     if (pass.isMaterial()) {
         for (const auto &input :
              pass.materialInfo().screen_inputs) {
+            if (!input.history) {
+                appendUnique(
+                    node.local_read_shader_inputs,
+                    renderTargetResourceName(
+                        input.target));
+            }
             appendReadFootprint(
                 node,
                 renderTargetResourceName(input.target),
@@ -1037,6 +1075,11 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
                     : renderTargetResourceName(
                           input.target);
             if (!input.history) {
+                if (input.isImage()) {
+                    appendUnique(
+                        node.local_read_shader_inputs,
+                        resource);
+                }
                 appendReadFootprint(
                     node, resource,
                     input.footprint);

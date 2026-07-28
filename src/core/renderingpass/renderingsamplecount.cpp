@@ -897,7 +897,14 @@ graphTileLocalAttachmentFormats(
                 read = true;
                 if (node.kind !=
                         FramePlanNodeKind::render ||
-                    node.raster_geometry ||
+                    std::find(
+                        node.local_read_shader_inputs
+                            .begin(),
+                        node.local_read_shader_inputs
+                            .end(),
+                        name) ==
+                        node.local_read_shader_inputs
+                            .end() ||
                     !nodeHasSamePixelRead(
                         node, name) ||
                     !nodeAttachmentsMatchLocalReadExtent(
