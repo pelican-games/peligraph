@@ -129,11 +129,15 @@ headless gateは`B8G8R8A8_UNORM` albedoを0.25でclearし、shaderの0.25を
 
 ## 残る境界
 
-1. material/custom raster shaderからのsame-pixel local-read input ABI (G18)
+1. material/custom raster shaderからのsame-pixel local-read input ABI
+   （WP220で解消）
 2. graph + surface + material pipelineのcoordinated hot reload
 3. shaderc OFF / dist-bakeでのcustom schema artifact
 4. weighted OIT accumulation + compositeをproject-owned featureとしてdogfood
 5. blend constants、dual-source blend、logic op、advanced blend extension
 
-次はG18を実装し、同じ`MaterialPipelineRenderingContract`へinput attachment ABIを
-追加する。WP219のoutput stateやWP218のoutput枚数を別の固定スロットへ戻さない。
+G18は後続のWP220で同じ`MaterialPipelineRenderingContract`へinput attachment ABIを
+追加して解消した。WP219のoutput stateやWP218のoutput枚数を別の固定スロットへ戻さない。
+詳細は
+[`2026-07-29_wp220_material_local_read_report.md`](2026-07-29_wp220_material_local_read_report.md)
+を参照する。

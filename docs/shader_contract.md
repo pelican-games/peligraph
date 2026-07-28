@@ -135,7 +135,7 @@ storageを含むoverlapは拒否する。fullscreenはinput順がdescriptor bind
 layout/hazard trackingは現時点ではresource単位である。互いに素なrangeでもwhole imageを
 保守的に遷移し、subresource並列化は行わない。
 
-### material/geometry resource port(WP207b)
+### material/geometry resource port(WP207b / WP220)
 
 `.surface` は shader-facing port を `resource_ports` で宣言する。current
 `pelican.surface v1` への additive field であり、別版や旧版互換分岐はない。
@@ -153,7 +153,7 @@ void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
 `kind: buffer` は `element` 必須の readonly std430 array で、
 `pelican_load_<port>(uint)` / `pelican_count_<port>()` を生成する。element は
 `float|vec2|vec3|vec4`、対応する signed/unsigned vector、`mat4`。
-`kind: image` は sampled `sampler2D` で、
+`kind: image` は同じ公開関数のsampled/input-attachment両variantを持ち、
 `pelican_sample_<port>(vec2)` / `pelican_size_<port>()` を生成する。
 `stage` は `vertex|fragment|vertex_fragment`、省略時 fragment。reflection は
 descriptor kind/nameだけでなく実 stage visibilityも一致させる。
@@ -171,30 +171,52 @@ material pass は同名 port を graph resource へ割り当てる。
     "resource": "simulation_color",
     "access": "sampled",
     "view": "shared_2d",
-    "sampling": {"filter": "linear", "address": "clamp_to_edge"}
+    "sampling": {"filter": "linear", "address": "clamp_to_edge"},
+    "footprint": "same_pixel"
   }
 }
 ```
 
 この map が producer/read edge、footprint、current/history、physical view、sampler policy の
 authorityであり、surface は特定の graph resource 名を持たない。buffer は history/per-view/
-sampling不可、imageは現在 sampled-only。image history は `<name>@history` で指定する。
-shared 2D と sequential per-view 2D は利用できるが、material accessor がまだ
-`sampler2DArray` を公開しないため layered multiview は名前付きで拒否する。
+sampling不可。image history は `<name>@history` で指定する。
+
+imageは通常set 1のcombined image samplerである。fragment-only portが
+`footprint: "same_pixel"`で、physical plannerが同一rendering scopeへ融合した場合は、
+同じbinding位置のdescriptorをinput attachmentへ変え、generated functionを
+`subpassLoad()`へloweringする。descriptor bindingとinput attachment indexは独立しており、
+reflectionは両方を照合する。local variantは意味論上現在画素だけを読むため、
+関数のUV/LOD引数を使わない。history、material subresource、MSAAはlocal化せず、
+条件不成立時はsamplerへfallbackする。
+
+shared 2Dとsequential per-view 2Dは両variantで利用できる。layered multiviewは
+input attachment variantだけ2D-array attachment viewをbindできる。sampled側は
+`sampler2DArray` accessorをまだ公開しないため名前付きで拒否する。
+generated image accessorは現在floating-point `vec4`契約であり、UINT/SINT
+input attachmentはtyped image portを追加するまで拒否する。
+
+一つのmaterial shader/pipelineを共有するactive graph variantは、各portの
+sampler/input-attachment種別とinput attachment indexが一致する必要がある。
+graph-only hot reloadでこの物理契約が変わるcandidateは、coordinated material rebuildが
+未実装のためrollbackする。
 
 runtime compile は buffer を active generation の `FrameGraphBufferId` へ固定し、
 target recreate/pipeline reloadではdescriptorを新しいimage view/IDへ再生成する。
 typed portを使わないmaterialでは追加のstorage descriptor pool/samplerを生成しない。
 詳細と制限は
 [`design_reviews/2026-07-26_wp207b_material_resource_ports.md`](design_reviews/2026-07-26_wp207b_material_resource_ports.md)
+および
+[`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
 を参照する。
 
 ### 名前付きスクリーンスナップショット(M3.5 / WP83)
 
 `.surface` の `screen_inputs` は rendering config の `snapshots` で先に定義した名前だけを
-参照する。宣言順 `i` の入力は set 1 binding `i` の combined image sampler となり、
-生成 accessor `vec4 pelican_screen_<name>(vec2 uv)` で読む。入力名は shader identifier
-でなければならず、未定義名は material 名・snapshot 名を含む起動時エラーになる。
+参照する。宣言順 `i` の入力はset 1 binding `i`を使い、生成accessor
+`vec4 pelican_screen_<name>(vec2 uv)`で読む。通常はcombined image samplerだが、
+same-pixel contractがphysical tile-localへ解決された場合は、同じpublic accessorを
+input attachmentへloweringする。入力名はshader identifierでなければならず、
+未定義名はmaterial名・snapshot名を含む起動時エラーになる。
 
 v1 の snapshot は `display` を opaque 後の指定 copy point で一度だけ同 format・同 extent の
 sampled image へコピーする固定内容である。許可する copy point は canonical `post_ldr` 領域の

@@ -106,6 +106,8 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP216 | nonblocking SwapchainEpoch / XR mirror retirement | 実装済み・XR実機 gate待ち |
 | WP217 | SurfaceEpoch recreation / present support revalidation | 実装済み・live fault gate済み・manual platform gate待ち |
 | WP218 | strategy-private arbitrary material outputs / typed MRT | ✅ 完了（2026-07-28）。任意長schema、UINT実GPU、MSAA、typed clear、reflection、reload rollback |
+| WP219 | material output attachment state | ✅ 完了（2026-07-28）。output別blend/write-mask、device capability、実GPU、reload rollback |
+| WP220 | material same-pixel local-read ABI | ✅ 完了（2026-07-29）。screen/resource input、sampler/input-attachment自動lowering、実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -123,7 +125,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP218、2026-07-28。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP220、2026-07-29。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -146,8 +148,8 @@ SINT/UINT clear/history、flat/XR整合性、hot reload rollbackを同じcontrac
 
 受け入れ結果と意図的に残した境界は
 [`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)
-を正とする。次にこの境界へ追加する候補は、attachment別blend/write-mask、
-material local-read input、graph+surface coordinated reload、WP211 dist-bakeである。
+を正とする。attachment別blend/write-maskはWP219、material local-read inputは
+WP220で解消した。残る候補はgraph+surface coordinated reloadとWP211 dist-bakeである。
 
 ### WP219: material output attachment state
 
@@ -166,8 +168,26 @@ fingerprint、pipeline cache key、live material hot reload rollbackを一つの
 
 受け入れ結果と公開構文は
 [`design_reviews/2026-07-28_wp219_material_output_states_report.md`](design_reviews/2026-07-28_wp219_material_output_states_report.md)
-を正とする。次はmaterial/custom raster local-read input ABIを同じ
-physical rendering contractへ追加する。
+を正とする。material/custom raster local-read input ABIはWP220で同じ
+physical rendering contractへ追加した。
+
+### WP220: material same-pixel local-read ABI
+
+`.surface`のscreen inputとimage resource portを、公開アクセサを変えずに
+combined image samplerまたはinput attachmentへ物理解決する。
+material passが`same_pixel`を宣言し、target plannerがtile-local候補を選べる場合、
+material raster consumerもproducerと同じdynamic rendering scopeへ融合する。
+
+active graph variant間でsampled/local種別とinput attachment indexが一致することを
+shader compile前に要求する。surface compiler、SPIR-V reflection、pipeline local-read
+mapping、descriptor type/layout、sequential/multiview viewを一つのcontractへ接続した。
+不成立時はmaterialized samplerへfallbackし、整数input attachmentは現行`vec4` image
+accessorと型が合わないため明示的に拒否する。
+
+受け入れ結果と公開境界は
+[`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
+を正とする。次の描画基盤候補はgraph+surface+material pipelineのcoordinated reload、
+typed integer image accessor、WP211 dist-bake、Quest/物理HMD gateである。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
@@ -800,7 +820,8 @@ per-attachment operation / transient / tile-local / physical image alias runtime
 group、宣言済みかつdevice検証済みのmaterialized-image format変更、logical dependencyと
 MSAA resolveを壊さないattachment load/store変更をlinkしてproduction runtimeで実行できる。
 加えて、device/formatが対応するwrite-only single-sample attachmentの自動Store elision、
-same-pixel fullscreen readのtile-local scope fusion、lifetime非重複imageのallocation共有まで
+same-pixel fullscreen/material readのtile-local scope fusion、
+lifetime非重複imageのallocation共有まで
 実行できる。次はscope fusion/reorder、一般のmaterialized store elision、queue/barrier等の
 aggressive controlと、現runtime subsetの範囲拡張を具体的なGPU gate付きで進める。
 `NativeScope`は具体的な

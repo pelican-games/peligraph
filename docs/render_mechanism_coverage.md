@@ -1,18 +1,19 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v11)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v12)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v11(2026-07-28)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v12(2026-07-29)**。84 行の技法候補を現行コードとテストへ再照合し、
 WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
 mip/layer/subresource view、WP218の任意長・型付きmaterial output ABI、
-WP219のoutput別blend/write-maskまで反映した。
+WP219のoutput別blend/write-mask、WP220のmaterial same-pixel local-readまで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
-3D/cube targetとraster attachment subresource、material local-read inputは
+3D/cube targetとraster attachment subresource、typed integer material image inputは
 後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md) と
 [`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)、
-[`design_reviews/2026-07-28_wp219_material_output_states_report.md`](design_reviews/2026-07-28_wp219_material_output_states_report.md)。
+[`design_reviews/2026-07-28_wp219_material_output_states_report.md`](design_reviews/2026-07-28_wp219_material_output_states_report.md)、
+[`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)。
 
 ## 0. 判定規則
 
@@ -43,8 +44,8 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | material surface | `displace` / `surface` / `brdf` / `lighting`、custom params/texture、generated accessor | [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp) |
 | material render state | opaque/blend/**additive**、none/**front**/back cull、depth test/write/compare | [surfaceformat.cpp:530](../src/project/surfaceformat.cpp) |
 | material selection | material `tags` + pass `material_filter.include/exclude`。compile済みcompact range、flat/preview/XR共通 | [drawqueuebuilder.cpp](../src/core/renderer/drawqueuebuilder.cpp) |
-| material screen input | `opaque_color` / depth / linearized depth、opaque snapshot、XR layered binding | [headless_render_test.cpp:2444](../test/headless_render_test.cpp) |
-| material graph resource | `.surface`のvertex/fragment typed readonly buffer・sampled image port、generated accessor、pass mapping、世代固定descriptor | [surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp) |
+| material screen input | `opaque_color` / depth / linearized depth、opaque snapshot、sampler/input-attachment自動lowering、XR layered binding | [surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp) |
+| material graph resource | `.surface`のvertex/fragment typed readonly buffer・image port、generated sampler/local-read accessor、pass mapping、世代固定descriptor | [surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp) |
 | compute | fixed dispatch、storage buffer/image、reads/writes/after/before | [computetask.cpp](../src/core/renderingpass/computetask.cpp) |
 | temporal | history、velocity、projection jitter、reset epoch、解像度分離 | [taa.json](../src/core/resources/features/taa.json) |
 | graph/compiler | logical type/value、target planning、physical fragment、transient/tile-local/alias runtime | [design_render_graph_compiler.md](design_render_graph_compiler.md) |
@@ -60,7 +61,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
 | object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
-| material output state | output枚数・順序・型・sourceに加え、field名別のblend equation/write-maskを公開済み。material/custom rasterからのsame-pixel local-readは未公開(G18) |
+| material raster physical ABI | output枚数・順序・型・source、field名別blend/write-mask、screen/resource same-pixel inputのsampler/input-attachment loweringを公開済み。整数image inputはtyped accessor待ち |
 
 ## 2. 技法別判定(84 行)
 
@@ -156,7 +157,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | G4t | stochastic transparency | **△** | dither/mask は可。TAA integration の品質調整が必要 |
 | G5t | refraction/glass | **○** | material screen input 実配線・描画済み |
 | G6t | additive effect | **○** | `.surface render_state.blend: additive` 実装・test済み |
-| G7t | deferred decal | **△** | G-buffer schema拡張、選択write、ping-pong/fullscreenは可。mesh decalにはinstance単位選別(G14)とmaterial local-read(G18)が必要 |
+| G7t | deferred decal | **△** | G-buffer schema拡張、選択write、ping-pong/fullscreen、material local-readは可。mesh decalにはinstance単位選別(G14)とproject-owned dogfoodが必要 |
 
 ### H. geometry / performance
 
@@ -228,7 +229,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G15** | material/geometry pass contractがv1閉集合 | custom geometry stage/output |
 | **G16** | stencil state/resource semanticsが未公開 | stencil mask/portal |
 | **G17（解消済み、WP219）** | `material_output_states`でschema field名ごとのblend equation / write maskを公開。省略fieldはsurface render_stateを継承し、variant整合性・pipeline key・hot reload・`independentBlend`/format capabilityまで検証 | weighted OIT、選択的G-buffer更新 |
-| **G18** | fullscreen same-pixel local-read subsetは実装済みだが、material/custom raster shaderのinput-attachment ABIが未公開 | tile GPU上のdeferred lighting/decal、subpass相当の融合 |
+| **G18（解消済み、WP220）** | material screen/resource same-pixel inputを、同じpublic accessorのsamplerまたはinput attachmentへlowering。variant整合、reflection/index、descriptor、sequential/multiview、materialized fallbackを実GPU検証 | tile GPU上のdeferred lighting/decal、subpass相当の融合。UINT/SINT typed inputは別拡張 |
 
 ## 4. dogfood の扱い
 
@@ -242,7 +243,8 @@ WP218、light inventoryはWP208で解消したが、個別技法は引き続き�
 4. 成功して初めて○へ上げる。止まった箇所はfile:lineとtyped contractを記録する。
 
 既にこの条件を満たす代表例は、compute buffer → fullscreen、material refraction、
-additive/front/depth surface state、TAA、MSAA、upscale resolution contractである。
+material same-pixel local-read、additive/front/depth surface state、TAA、MSAA、
+upscale resolution contractである。
 
 次の dogfood は以下を推奨する。
 

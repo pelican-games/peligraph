@@ -1008,6 +1008,8 @@ headless fixtureは独立compute scopeを先頭へ移動し、その後の融合
 - WP204 attachment/transient sliceでverified load/storeとwrite-only transient imageを接続
 - WP204 tile-local sliceでsame-pixel fullscreen read、scope fusion、shader/runtime local read、
   transient allocation、single-view/sequential/multiview実行を接続
+- WP220で同じphysical local-read contractをmaterial screen/image resourceへ広げ、
+  semantic accessorのsampler/input-attachment loweringと実GPU material consumerを接続
 - WP204 alias-runtime sliceでmaterialized imageのlifetime group、VMA allocation共有、
   alias memory dependency、generation/rollback/recreateを接続
 - WP204 dependency-safe-scope sliceでversion 3 fragment、data/after/beforeを保つreorder、

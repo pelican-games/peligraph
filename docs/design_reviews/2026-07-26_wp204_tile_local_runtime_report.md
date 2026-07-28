@@ -119,7 +119,7 @@ composition target統合と、対象tile GPUでの帯域・GPU時間の実測は
 
 - Meta XR Simulator / Quest Link / 物理HMDでの現composition path検証
 - Quest standalone等のtile GPUでの帯域・GPU時間・lazy memory behavior計測
-- MSAA local read / resolve、一般material/custom/raster consumer
+- MSAA local read / resolve（material raster consumerはWP220で対応）
 - depth local readの専用実Vulkan acceptance fixture
 - MSAA/history/depth/storage/bufferまでのalias範囲拡張
 - physical fragmentによるaggressive fusion/reorder、raw barrier/queue、`NativeScope`

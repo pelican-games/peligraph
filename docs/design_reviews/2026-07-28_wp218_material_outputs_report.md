@@ -130,10 +130,11 @@ deviceが6 color attachmentsまたは対象format/sampleを持たない場合は
    `material_output_states`をschema field名へ対応付け、route/pipeline/hot reloadと
    `independentBlend` capabilityまで接続した。詳細は
    [`2026-07-28_wp219_material_output_states_report.md`](2026-07-28_wp219_material_output_states_report.md)。
-2. **material/custom raster local-read input ABI**
+2. **material/custom raster local-read input ABI（WP220で解消）**
 
-   fullscreen same-pixel local-readはあるが、material shaderからinput attachmentを読む
-   公開契約がない。tile GPU向けdeferred lighting/decalで必要になる。
+   同じsurface accessorをsampler/input attachmentへlowerする公開契約を追加した。
+   詳細は
+   [`2026-07-29_wp220_material_local_read_report.md`](2026-07-29_wp220_material_local_read_report.md)。
 3. **coordinated graph + surface hot reload**
 
    schema変更時にlive material pipelineもcandidate世代へ再prepareするtransaction。

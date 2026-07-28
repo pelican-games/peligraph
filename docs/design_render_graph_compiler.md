@@ -971,7 +971,8 @@ sample count、resolve requirement、physical scope sample countを一括lowerin
 現runtime adapterは実deviceのformat sample count、depth resolve、color attachment budgetを
 target factsへ変換する。Vulkan executorが実装済みの`materialized_image`、write-only /
 single-sample / attachment-onlyに限定した`transient_attachment`、same-pixel fullscreen
-subsetの`tile_local_attachment`、完全一致するmaterialized image alias groupだけをadvertiseし、
+またはmaterial raster subsetの`tile_local_attachment`、完全一致するmaterialized image
+alias groupだけをadvertiseし、
 返されたphysical planのformat/representation/aliasを検証してから
 `RenderTargetDefinition`へ適用する。
 `CompiledFrameGraphExecution`がplan本体を所有し、従来の`ResolvedSampleCountPlan`は同じ
@@ -1023,9 +1024,32 @@ gate:
 
 WP219では同じseamへfield名別のblend equation/write-maskを追加し、
 route variant整合性、pipeline key、device capability、hot reload rollbackまで接続した。
-後続境界は、coordinated graph+surface hot reload、shaderc OFF向けdist-bake、
-material local-read input ABIである。これらはoutput枚数を
+material local-read input ABIはWP220で解消した。残る境界はcoordinated
+graph+surface hot reloadとshaderc OFF向けdist-bakeである。これらはoutput枚数を
 再固定せず、同じschema/physical-contract seamへ追加する。
+
+### RPE8e / WP220 — material same-pixel local-read input ABI
+
+状態: **実装済み（2026-07-29）**。tile-local plannerが選んだphysical inputを、
+material `.surface`のsemantic accessorへ接続した。surfaceはscreen/resource port名だけを
+宣言し、passがresourceとfootprintを割り当てる。compiled passがinput attachment indexを
+決め、surface compilerが同じpublic accessorをsamplerまたは`subpassLoad`へloweringする。
+
+一つのmaterial shader/pipelineを共有する全active graph variantは、各inputについて
+sampled/local種別とinput attachment indexが一致しなければならない。reflectionはdescriptor
+type、stage、名前、indexを検証し、runtime descriptorは同じcontractから
+`INPUT_ATTACHMENT`と`RENDERING_LOCAL_READ_KHR`を設定する。indexはdescriptor bindingと
+別の番号空間であり、同値を仮定しない。
+
+gate:
+
+- material image inputはfragment-only、non-history、single-sample、`same_pixel`
+- extent/view/scope/device/format不成立時はmaterialized samplerへfallback
+- screen inputとcustom image resourceの両経路で同じABI選択を使う
+- sequential viewとlayered multiview local viewを検証する
+- floating-point `vec4` accessorへUINT/SINT input attachmentを黙ってbindしない
+- graph-only reloadでlive pipelineの物理ABIが変わるcandidateはrollbackする
+- 実Vulkanでscope fusion、reflection、descriptor image view、最終pixelを検証する
 
 ### それ以後
 
@@ -1400,10 +1424,12 @@ materialized + Storeへ戻る。physical fragmentはtransientをmaterializeし�
 保守的なescape hatchを維持する。
 
 tile-local loweringは、non-history、single-sample attachmentのproducerと、`same_pixel`だけを
-読むfullscreen consumerがextent/view契約を共有し、device/formatがdynamic rendering local
-readを受理する場合に限る。physical scope fusion、input attachment shader ABI、location/index
-mapping、BY_REGION dependency、single-view/sequential/multiview実行を同じplanから生成する。
-material/custom/raster consumer、neighborhood read、MSAA、非対応device/formatでは
+読むfullscreenまたはmaterial raster consumerがextent/view契約を共有し、
+device/formatがdynamic rendering local readを受理する場合に限る。physical scope fusion、
+input attachment shader ABI、location/index mapping、BY_REGION dependency、
+single-view/sequential/multiview実行を同じplanから生成する。materialではscreen inputまたは
+fragment image resource portのsemantic accessorを物理ABIへloweringする。
+unsupported raster consumer、neighborhood read、history、MSAA、非対応device/formatでは
 materialized candidateへ戻す。
 
 alias runtime loweringは、non-history、single-sample、materialized、
@@ -1430,7 +1456,8 @@ gate:
 - OpenXR OFF / ON、headless Vulkan runtimeで既定経路とfragment routeを維持する
 - headless hot reloadでalternate formatの実image/pipeline世代交換と出力一致を検証する
 - write-only transientのdevice/format gate、Store elision、実allocation、hot reloadを検証する
-- tile-localのscope fusion、shader ABI、single-view/multiview実行とfallbackを検証する
+- tile-localのscope fusion、fullscreen/material shader ABI、single-view/multiview実行と
+  materialized fallbackを検証する
 - aliasのvariant合意、実allocation共有、memory dependency、generation/rollback/recreateを検証する
 - dependency-safe reorderのdata/after/before維持、lifetime再計算、非連続node index scheduleを検証する
 - headless hot reloadで独立compute scopeのreorder、materialized rendering scopeの単一instance化、

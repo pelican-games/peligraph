@@ -946,6 +946,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE8b / WP191（済 2026-07-23） | WP189 physical target planner と WP190 runtime bridge の single lowering path | JSON/DSU重複削除、physical resource/scope sample contract、materialized runtime consume、追加G-buffer、desktop/tile/headless |
 | RPE8c / WP218（済 2026-07-28） | strategy-private `pelican.material_outputs` schema、任意長・typed material MRT、generated shader ABI | 6枚目UINT G-buffer実GPU、MSAA resolve、target別typed clear、reflection、device上限、XR同一性、hot reload rollback |
 | RPE8d / WP219（済 2026-07-28） | schema field名別のblend equation / write mask、surface state継承、typed lowering | additive + R-only write実GPU、integer blend拒否、`independentBlend`/format capability、XR同一性、hot reload rollback |
+| RPE8e / WP220（済 2026-07-29） | material screen/resource same-pixel inputをsamplerまたはinput attachmentへ物理解決 | accessor不変、variant ABI整合、reflection/index検証、descriptor/runtime、materialized fallback、実GPU |
 | RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
 | RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |
@@ -985,7 +986,7 @@ imageだけを見る。WP191ではこの連結成分解決を`VulkanTargetPlan`�
 `FrameGraphDefinition`からlogical shadow graphを経て得たphysical format /
 representation / sample-count contractを検証・適用する。現runtime adapterはmaterialized image、
 device/format検証済みのwrite-only single-sample transient attachment、same-pixel
-fullscreen subsetのtile-local attachment、完全一致するmaterialized image alias groupを
+fullscreen/material raster subsetのtile-local attachment、完全一致するmaterialized image alias groupを
 target topologyへadvertiseする。これらの条件外の候補は実装済みと偽らず拒否または
 materialized fallbackにする。
 WP192ではflat / preview / XRを
@@ -1041,7 +1042,9 @@ transient image usage、lazy-memory preferenceへ接続し、非対応deviceと
 `conservative_debug`ではmaterialized + Storeへ戻す。
 tile-local-runtime sliceでは、same-pixel fullscreen read、extent/sample/view一致、
 dynamic-rendering-local-read対応を満たすproducer/consumerを一つのphysical scopeへ融合し、
-input attachment shader ABIとsingle-view/multiview実行へ接続した。
+input attachment shader ABIとsingle-view/multiview実行へ接続した。WP220では同じ
+physical contractをmaterial screen/resource inputへ広げ、surfaceのsemantic accessorを
+samplerまたはinput attachmentへ自動loweringする。
 alias-runtime sliceでは、non-history、single-sample、materializedで同じimage契約を持ち、
 lifetimeが重ならないcolor attachment + sampled resourceを対象にする。全graph variantが
 同じgroupへ完全合意した場合だけ、別VkImageを一つのVMA allocationへbindする。

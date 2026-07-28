@@ -483,6 +483,24 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
 - blend constant、dual-source blend、logic op、advanced blendは、それぞれ必要な
   pipeline/shader/device contractと同時に追加する。factor名だけを先行公開しない
 
+**material local-read追補（WP220、2026-07-29）**:
+
+- `.surface`のscreen inputとfragment image resource portはsemantic accessorだけを公開し、
+  physical compilerがcombined image samplerまたはinput attachmentへlowerする。
+  shader authorはdescriptor type、binding、input attachment indexを記述しない
+- material passが`same_pixel` footprintを宣言し、non-history/single-sample、
+  extent/view/device/format条件を満たす場合、material raster consumerもproducerと
+  同じdynamic rendering scopeへ融合する。条件外ではmaterialized samplerへ戻す
+- 一つのshader/pipelineを共有する全active graph variantは、各inputのsampled/local種別と
+  input attachment indexが一致しなければならない。reflection、pipeline contract、
+  descriptor layoutは同じcompiled値を検証する
+- local variantはpublic関数のUV/LOD引数を保つが、意味論上は現在画素だけを読む。
+  generated image accessorは現在floating-point `vec4`契約で、UINT/SINT input attachment、
+  history、material subresourceは後続境界とする
+- 詳細は
+  [`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
+  を正とする
+
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
 
 **「シェーダがインターフェースを宣言し、マテリアルは値を与える」**。

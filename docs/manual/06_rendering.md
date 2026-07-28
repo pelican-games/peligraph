@@ -545,15 +545,18 @@ format/usageが非対応、後段readがある、MSAAである、または`conse
 
 #### 自動 tile-local attachment / same-pixel local read
 
-`optimized` profileでは、producerがattachmentへ書いた値を直後のfullscreen passが
-`same_pixel`で読む区間を、自動的に一つのphysical rendering scopeへ融合できます。
+`optimized` profileでは、producerがattachmentへ書いた値を直後のfullscreenまたは
+material raster passが`same_pixel`で読む区間を、自動的に一つのphysical rendering
+scopeへ融合できます。
 通常のrendering configへstorage modeやVulkan layoutを追加する必要はありません。
 
 自動選択には次の条件がすべて必要です。
 
 - resourceはnon-history、single-sampleのcolor/depth attachmentである
 - producerはそのresourceをattachmentとしてwriteする
-- すべてのconsumerは非rasterのrender passで、read footprintが`same_pixel`である
+- すべてのconsumerは対応済みfullscreen/material passで、read footprintが
+  `same_pixel`である
+- material image resourceはfragment-onlyである
 - consumerの全attachmentとlocal-read resourceのphysical extentが一致し、scope内に
   swapchain attachmentを含まない
 - deviceが`VK_KHR_dynamic_rendering_local_read`のextension/featureを有効化できる
@@ -564,16 +567,26 @@ format/usageが非対応、後段readがある、MSAAである、または`conse
 実行されます。compilerはattachment locationとinput attachment indexを固定し、pass間に
 BY_REGIONのlocal-read dependencyを入れます。fullscreen shaderの
 `PELICAN_DECLARE_INPUT_N` / `PELICAN_SAMPLE_INPUT`は同じsourceのまま、選択されたpipelineだけ
-`subpassInput` variantへコンパイルされます。scope外へ値を残さないためproducerのStoreは
+`subpassInput` variantへコンパイルされます。materialの
+`pelican_screen_<name>()` / `pelican_sample_<name>()`も公開sourceを変えず、
+samplerまたはinput attachmentへ物理解決されます。descriptor bindingと
+input attachment indexは別の番号空間です。scope外へ値を残さないためproducerのStoreは
 Discardです。allocatorは`INPUT_ATTACHMENT | TRANSIENT_ATTACHMENT`を付け、lazy memoryを
 優先します。local-read対象だけを`RENDERING_LOCAL_READ_KHR` layoutへ置き、同じscopeの
 output-only attachmentは通常のcolor/depth attachment layoutを保ちます。
 
-extension/feature/format非対応、material/custom/raster consumer、`neighborhood` /
-`arbitrary` / `temporal` read、extent不一致、MSAAではmaterialized planへ自動fallbackします。
+extension/feature/format非対応、未対応のraster pass kind、`neighborhood` /
+`arbitrary` / `temporal` read、history、extent不一致、MSAAではmaterialized planへ
+自動fallbackします。
 同名targetを複数graphが共有し、一方がscope外materializationを必要とする場合も
 `materialized_image`を優先します。ただしtile-local graphが同じtargetをinput attachmentとして
 読む契約は失わないため、runtime image usageには`INPUT_ATTACHMENT`が残ります。
+
+material shaderはrouteを共有する全active graph variantで、各inputのsampler/local種別と
+input attachment indexが一致する必要があります。local variantではUV/LOD引数は
+公開ABIを保つため残りますが、`subpassLoad()`は現在画素だけを読み引数を使いません。
+生成image accessorは現在`vec4`契約なので、UINT/SINT color input attachmentは
+typed accessorを追加するまで名前付きエラーになります。
 
 XRの2-view planでは、融合scopeも他のscopeと同じtyped view contractを継承します。
 multiview選択時は2-layer image、`viewMask=0b11`、execution count 1となり、sequential選択時は
@@ -727,7 +740,7 @@ MSAA・external・異なるattachment集合をまたぐscope融合、依存関�
 materialized single-sample surfaceに対するstore elision、barrier、queue、任意Vulkan flagです。
 production runtimeが実行する
 非materialized imageは、上記のwrite-only `transient_attachment`と、verified
-same-pixel fullscreen subsetの`tile_local_attachment`です。alias runtimeは現在、
+same-pixel fullscreen/material subsetの`tile_local_attachment`です。alias runtimeは現在、
 color attachment + sampled用途のmaterialized imageだけを対象とし、MSAA、history、depth、
 storage/transfer image、bufferとの混在はまだ受理しません。
 
@@ -870,7 +883,7 @@ blend constant/dual-source blendの境界は
 shader compiler を有効にした開発ビルドで使います。shaderc OFF の配布物は
 `dist-bake`（WP211）の生成物へ移す予定です。
 
-### compute/別passのresourceをmaterialから読む（✅WP207b）
+### compute/別passのresourceをmaterialから読む（✅WP207b/220）
 
 `.surface` はgraph固有名ではなく、再利用可能なsemantic portを宣言します。
 
@@ -897,7 +910,8 @@ material pass側で同名portをframe-graph resourceへ割り当てます。
     "resource": "simulation_color",
     "access": "sampled",
     "view": "shared_2d",
-    "sampling": {"filter": "linear", "address": "clamp_to_edge"}
+    "sampling": {"filter": "linear", "address": "clamp_to_edge"},
+    "footprint": "same_pixel"
   }
 }
 ```
@@ -907,8 +921,23 @@ bufferはreadonly std430 arrayで`pelican_load_<name>()` /
 `pelican_size_<name>()`を生成します。binding番号は書きません。
 `stage`は`vertex|fragment|vertex_fragment`、bufferの`element`は
 `float/vec*/int/ivec*/uint/uvec*/mat4`。image historyはresource名の
-`@history`で指定します。現在のimage accessorは`sampler2D`なのでshared 2Dと
-sequential per-view 2Dに対応し、layered multiviewは明示エラーです。
+`@history`で指定します。
+
+imageは通常`sampler2D`ですが、fragment-only portへ`footprint: "same_pixel"`を指定し、
+target plannerがtile-local scopeを選んだ場合は、同じ
+`pelican_sample_<name>()`が`subpassInput` + `subpassLoad()`へ自動loweringされます。
+このlocal variantではUV/LODは使わず、history/subresource/MSAAは利用できません。
+条件を満たさないdevice/graphでは通常のsampled imageへfallbackし、filter/address指定を
+そのまま使います。
+compute/storage producerの出力自体はmaterializedのままです。tile-local化されるのは、
+producerが同じresourceをraster attachmentとしてwriteするgraphだけです。
+
+shared 2Dとsequential per-view 2Dはsampler/local両経路で利用できます。
+layered multiviewはlocal input attachmentでは利用できますが、sampled image側の
+`sampler2DArray` accessorは未公開なので明示エラーです。現在のgenerated image accessorは
+floating-point `vec4`契約で、UINT/SINT input attachmentはtyped image port追加まで
+拒否します。全active graph variantはsampler/local種別と物理input indexが一致する
+必要があります。
 完全な契約は[シェーダ契約](../shader_contract.md)を参照してください。
 
 ### pelican.material — 値だけの JSON
@@ -1129,7 +1158,13 @@ TAA は**特権なしの標準 feature** です(エンジン本体は §6.8 冒�
 vec4 behind = pelican_screen_opaque_color(surface_input.uv + offset);
 ```
 
-(実物: `projects/example/shaders/refract.surface`)。v1 の制限: snapshot は **1 個だけ・不透明描画後の 1 点のみ**(透明描画後・`pelican_ui` 以後はエラー)、逐次屈折は非対応です。
+(実物: `projects/example/shaders/refract.surface`)。公開アクセサは物理descriptorを固定しません。
+組み込みcontractが`same_pixel`でtarget plannerもtile-localを選んだ入力は、
+同じ関数がinput attachment readになります。`opaque_color`は屈折offsetを許す
+`neighborhood` contractなので、この例は通常のsamplerを維持します。
+
+v1 の制限: snapshot は **1 個だけ・不透明描画後の 1 点のみ**(透明描画後・
+`pelican_ui` 以後はエラー)、逐次屈折は非対応です。
 
 ## 6.9 2D スプライト(✅S2D = WP103/104/106/109)
 
