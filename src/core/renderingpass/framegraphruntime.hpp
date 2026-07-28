@@ -38,6 +38,7 @@ struct CompiledMaterialRouteBinding {
     MaterialPassContract pass_contract =
         MaterialPassContract::deferred_geometry_v1;
     std::optional<MaterialOutputSchema> output_schema;
+    std::vector<MaterialOutputAttachmentState> output_states;
 };
 
 struct CompiledFrameGraphExecution {

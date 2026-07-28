@@ -147,6 +147,8 @@ DECLARE_MODULE(MaterialContainer) {
             vk::SampleCountFlagBits::e1;
         GraphicsPipelineRenderingLocalReadContract
             pipeline_local_read;
+        std::vector<MaterialOutputAttachmentState>
+            pipeline_output_states;
         std::vector<std::string> tags;
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;

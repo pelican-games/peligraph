@@ -42,6 +42,31 @@ struct GraphicsPipelineRenderingLocalReadContract {
         default;
 };
 
+struct GraphicsPipelineColorAttachmentState {
+    bool blend_enabled = false;
+    vk::BlendFactor source_color =
+        vk::BlendFactor::eOne;
+    vk::BlendFactor destination_color =
+        vk::BlendFactor::eZero;
+    vk::BlendOp color_operation =
+        vk::BlendOp::eAdd;
+    vk::BlendFactor source_alpha =
+        vk::BlendFactor::eOne;
+    vk::BlendFactor destination_alpha =
+        vk::BlendFactor::eZero;
+    vk::BlendOp alpha_operation =
+        vk::BlendOp::eAdd;
+    vk::ColorComponentFlags write_mask =
+        vk::ColorComponentFlagBits::eR |
+        vk::ColorComponentFlagBits::eG |
+        vk::ColorComponentFlagBits::eB |
+        vk::ColorComponentFlagBits::eA;
+
+    bool operator==(
+        const GraphicsPipelineColorAttachmentState &) const =
+        default;
+};
+
 struct GraphicsPipelineDesc {
     ShaderBundleId vert;
     std::optional<ShaderBundleId> frag;
@@ -64,6 +89,10 @@ struct GraphicsPipelineDesc {
     vk::BlendFactor src_alpha_blend_factor = vk::BlendFactor::eOne;
     vk::BlendFactor dst_alpha_blend_factor = vk::BlendFactor::eZero;
     vk::BlendOp alpha_blend_op = vk::BlendOp::eAdd;
+    // Empty preserves the legacy pass-wide fields above. Otherwise this must
+    // align one-to-one with color_formats.
+    std::vector<GraphicsPipelineColorAttachmentState>
+        color_attachment_states;
     vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;

@@ -4680,8 +4680,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
 }
 
 TEST_CASE(
-    "WP218 project material writes a sixth typed G-buffer target through the runtime pipeline",
-    "[wp218][headless][render][gbuffer][mrt]") {
+    "WP218 and WP219 project material writes typed G-buffer targets with independent attachment state",
+    "[wp218][wp219][headless][render][gbuffer][mrt][attachment-state]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
@@ -4701,13 +4701,14 @@ TEST_CASE(
             temp_dir / "shaders" /
                 "object_id_present.frag",
             R"glsl(#version 450
-layout(set = 1, binding = 0) uniform usampler2D objectIds;
+layout(set = 1, binding = 0) uniform sampler2D albedo;
+layout(set = 1, binding = 1) uniform usampler2D objectIds;
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 void main() {
     uint objectId = texture(objectIds, inUV).r;
     outColor = objectId == 73u
-        ? vec4(0.0, 1.0, 0.0, 1.0)
+        ? vec4(texture(albedo, inUV).rgb, 1.0)
         : objectId == 0xffffffffu
               ? vec4(1.0, 0.0, 0.0, 1.0)
               : vec4(0.0, 0.0, 0.0, 1.0);
@@ -4773,7 +4774,32 @@ void main() {
                   {"source", "custom"}},
              })},
         };
+        (*deferred)["material_output_states"] = {
+            {"albedo",
+             {
+                 {"blend",
+                  {
+                      {"color",
+                       {{"src", "one"},
+                        {"dst", "one"},
+                        {"op", "add"}}},
+                      {"alpha",
+                       {{"src", "one"},
+                        {"dst", "one"},
+                        {"op", "add"}}},
+                  }},
+                 {"write_mask", "r"},
+             }},
+            {"object_id",
+             {
+                 {"blend", "opaque"},
+                 {"write_mask", "r"},
+             }},
+        };
         (*deferred)["clear_colors"] = {
+            {"gbuffer_albedo",
+             nlohmann::json::array(
+                 {0.25, 0.75, 0.5, 0.0})},
             {"gbuffer_object_id",
              nlohmann::json::array(
                  {4294967295.0, 0, 0, 0})},
@@ -4788,11 +4814,15 @@ void main() {
         REQUIRE(present != passes.end());
         (*present)["input"] =
             nlohmann::json::array(
-                {"gbuffer_object_id"});
+                {"gbuffer_albedo",
+                 "gbuffer_object_id"});
         (*present)["input_sampling"] =
-            nlohmann::json::array(
-                {{{"filter", "nearest"},
-                  {"address", "clamp_to_edge"}}});
+            nlohmann::json::array({
+                {{"filter", "nearest"},
+                 {"address", "clamp_to_edge"}},
+                {{"filter", "nearest"},
+                 {"address", "clamp_to_edge"}},
+            });
         (*present)["shader"]["fragment"] =
             "project://shaders/object_id_present";
         writeTextFile(
@@ -4820,6 +4850,16 @@ void main() {
                 .getPhysDevice();
         const auto limits =
             physical_device.getProperties().limits;
+        if (!GET_MODULE(VulkanManageCore)
+                 .getRuntimeCapabilities()
+                 .independent_blend) {
+            std::filesystem::remove_all(temp_dir);
+            temp_dir.clear();
+            SKIP(
+                "device does not expose independentBlend; "
+                "per-attachment state is rejected before pipeline "
+                "creation");
+        }
         if (limits.maxColorAttachments < 6) {
             std::filesystem::remove_all(temp_dir);
             temp_dir.clear();
@@ -4888,7 +4928,7 @@ void main() {
 void pelican_surface_v1(
     in PelicanSurfaceInputV1 input_data,
     inout PelicanSurfaceV1 surface) {
-    surface.base_color = vec4(0.8, 0.2, 0.1, 1.0);
+    surface.base_color = vec4(0.25, 0.1, 0.1, 1.0);
 }
 
 void pelican_material_outputs_v1(
@@ -5014,9 +5054,12 @@ void pelican_material_outputs_v1(
         const auto center =
             (16u * 32u + 16u) * 4u;
         const auto corner = 0u;
-        REQUIRE(pixels[center] < 16);
-        REQUIRE(pixels[center + 1] > 224);
-        REQUIRE(pixels[center + 2] < 16);
+        REQUIRE(pixels[center] > 176);
+        REQUIRE(pixels[center] < 200);
+        REQUIRE(pixels[center + 1] > 216);
+        REQUIRE(pixels[center + 1] < 236);
+        REQUIRE(pixels[center + 2] > 176);
+        REQUIRE(pixels[center + 2] < 200);
         REQUIRE(pixels[corner] > 224);
         REQUIRE(pixels[corner + 1] < 16);
         REQUIRE(pixels[corner + 2] < 16);
@@ -5031,6 +5074,10 @@ void pelican_material_outputs_v1(
             frame_plan.dump().find(
                 "headless.extended_gbuffer") !=
             std::string::npos);
+        REQUIRE(
+            frame_plan.dump().find(
+                "pelican.material_output_states@1") !=
+            std::string::npos);
 
         auto &runtime =
             GET_MODULE(
@@ -5039,6 +5086,40 @@ void pelican_material_outputs_v1(
             runtime.snapshot();
         REQUIRE(
             published_generation != nullptr);
+        auto incompatible_state_reload = config;
+        auto &state_reload_passes =
+            incompatible_state_reload
+                ["rendering_passes"][0]
+                ["passes"];
+        const auto state_reload_deferred =
+            std::find_if(
+                state_reload_passes.begin(),
+                state_reload_passes.end(),
+                [](const auto &pass) {
+                    return pass.at("name") ==
+                           "deferred_geometry";
+                });
+        REQUIRE(
+            state_reload_deferred !=
+            state_reload_passes.end());
+        (*state_reload_deferred)
+            ["material_output_states"]["albedo"]
+            ["write_mask"] = "rg";
+        writeTextFile(
+            temp_dir / "extended_gbuffer.json",
+            incompatible_state_reload.dump(2));
+        REQUIRE_FALSE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "extended_gbuffer.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(
+            runtime.snapshot() ==
+            published_generation);
+
         auto incompatible_reload = config;
         auto &reload_passes =
             incompatible_reload
@@ -5068,7 +5149,7 @@ void pelican_material_outputs_v1(
                         watch::makeAssetKey(
                             "extended_gbuffer.json"),
                         watch::ReloadKind::modified,
-                        {}, 1}));
+                        {}, 2}));
         REQUIRE(
             runtime.snapshot() ==
             published_generation);
@@ -5080,13 +5161,17 @@ void pelican_material_outputs_v1(
             GET_MODULE(RenderTarget)
                 .readbackLastFrameRGBA8();
         REQUIRE(
-            rollback_pixels[center] < 16);
+            rollback_pixels[center] > 176);
         REQUIRE(
-            rollback_pixels[center + 1] >
-            224);
+            rollback_pixels[center] < 200);
         REQUIRE(
-            rollback_pixels[center + 2] <
-            16);
+            rollback_pixels[center + 1] > 216);
+        REQUIRE(
+            rollback_pixels[center + 1] < 236);
+        REQUIRE(
+            rollback_pixels[center + 2] > 176);
+        REQUIRE(
+            rollback_pixels[center + 2] < 200);
 
         std::filesystem::remove_all(
             temp_dir);

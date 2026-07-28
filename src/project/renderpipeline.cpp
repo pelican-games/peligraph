@@ -811,6 +811,9 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
         std::optional<MaterialOutputSchema>
             selected_output_schema;
         bool selected_output_schema_initialized = false;
+        std::vector<MaterialOutputAttachmentState>
+            selected_output_states;
+        bool selected_output_states_initialized = false;
         for (const auto &pass_set : composed_config.at("rendering_passes")) {
             const auto *pass = findPass(pass_set, pass_name);
             const auto set_name = pass_set.value("name", std::string{"<unnamed>"});
@@ -847,6 +850,25 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
                             pass_name +
                             "' material_outputs");
             }
+            std::vector<MaterialOutputAttachmentState>
+                pass_output_states;
+            if (pass->contains("material_output_states")) {
+                if (!pass_output_schema) {
+                    throw std::runtime_error(
+                        "material_routing pass '" +
+                        pass_name +
+                        "' material_output_states requires "
+                        "material_outputs");
+                }
+                pass_output_states =
+                    parseMaterialOutputAttachmentStates(
+                        pass->at(
+                            "material_output_states"),
+                        *pass_output_schema,
+                        "material_routing pass '" +
+                            pass_name +
+                            "' material_output_states");
+            }
             if (!selected_output_schema_initialized) {
                 selected_output_schema =
                     pass_output_schema;
@@ -861,6 +883,20 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
                     "' pass '" + pass_name +
                     "' has different material_outputs "
                     "schemas across rendering pass variants");
+            }
+            if (!selected_output_states_initialized) {
+                selected_output_states =
+                    std::move(pass_output_states);
+                selected_output_states_initialized = true;
+            } else if (
+                selected_output_states !=
+                pass_output_states) {
+                throw std::runtime_error(
+                    "material_routing route '" +
+                    std::string{route_name} +
+                    "' pass '" + pass_name +
+                    "' has different material_output_states "
+                    "across rendering pass variants");
             }
         }
         auto resolved_route = nlohmann::json{
@@ -877,6 +913,17 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
             resolved_route["output_schema_fingerprint"] =
                 materialOutputSchemaFingerprint(
                     *selected_output_schema);
+            if (!selected_output_states.empty()) {
+                resolved_route["output_states"] =
+                    materialOutputAttachmentStatesToJson(
+                        selected_output_states,
+                        *selected_output_schema);
+                resolved_route[
+                    "output_states_fingerprint"] =
+                    materialOutputAttachmentStatesFingerprint(
+                        selected_output_states,
+                        *selected_output_schema);
+            }
         }
         resolved_routes[route_name] =
             std::move(resolved_route);
@@ -1483,7 +1530,9 @@ CompiledMaterialRouting compileMaterialRouting(
         requireOnlyKeys(*entry,
                         {"pass", "contract", "shader_contract", "phase",
                          "output_schema",
-                         "output_schema_fingerprint"},
+                         "output_schema_fingerprint",
+                         "output_states",
+                         "output_states_fingerprint"},
                         route_context);
         const auto pass_name = requireString(*entry, "pass", route_context);
         if (!selected_passes.insert(pass_name).second) {
@@ -1543,10 +1592,47 @@ CompiledMaterialRouting compileMaterialRouting(
                     "output_schema");
             }
         }
+        std::vector<MaterialOutputAttachmentState>
+            output_states;
+        const auto encoded_output_states =
+            entry->find("output_states");
+        const auto encoded_states_fingerprint =
+            entry->find("output_states_fingerprint");
+        if ((encoded_output_states == entry->end()) !=
+            (encoded_states_fingerprint == entry->end())) {
+            throw std::runtime_error(
+                route_context +
+                " must provide output_states and "
+                "output_states_fingerprint together");
+        }
+        if (encoded_output_states != entry->end()) {
+            if (!output_schema) {
+                throw std::runtime_error(
+                    route_context +
+                    " output_states requires output_schema");
+            }
+            output_states =
+                parseMaterialOutputAttachmentStates(
+                    *encoded_output_states,
+                    *output_schema,
+                    route_context + " output_states");
+            if (!encoded_states_fingerprint->is_string() ||
+                encoded_states_fingerprint
+                        ->get<std::string>() !=
+                    materialOutputAttachmentStatesFingerprint(
+                        output_states,
+                        *output_schema)) {
+                throw std::runtime_error(
+                    route_context +
+                    " output_states_fingerprint does not match "
+                    "output_states");
+            }
+        }
         result.routes.push_back(
             CompiledMaterialRoute{
                 route, pass_name, expected,
-                std::move(output_schema)});
+                std::move(output_schema),
+                std::move(output_states)});
     }
     return result;
 }
@@ -1894,6 +1980,17 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
                 declaration["output_schema_fingerprint"] =
                     materialOutputSchemaFingerprint(
                         *route.output_schema);
+                if (!route.output_states.empty()) {
+                    declaration["output_states"] =
+                        materialOutputAttachmentStatesToJson(
+                            route.output_states,
+                            *route.output_schema);
+                    declaration[
+                        "output_states_fingerprint"] =
+                        materialOutputAttachmentStatesFingerprint(
+                            route.output_states,
+                            *route.output_schema);
+                }
             }
             routes[materialRouteClassName(route.route)] =
                 std::move(declaration);

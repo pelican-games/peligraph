@@ -145,6 +145,13 @@ void validateFrameBindings(const ShaderReflection &reflection) {
 }
 
 void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderReflection &reflection) {
+    if (!desc.color_attachment_states.empty() &&
+        desc.color_attachment_states.size() !=
+            desc.color_formats.size()) {
+        throw std::runtime_error(
+            "GraphicsPipelineDesc color_attachment_states count "
+            "must match color_formats");
+    }
     if (desc.view.execution ==
         GraphicsPipelineViewExecution::single_view) {
         if (desc.view.view_count != 1 ||
@@ -197,16 +204,46 @@ void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderRe
 std::vector<vk::PipelineColorBlendAttachmentState> makeBlendAttachments(const GraphicsPipelineDesc &desc,
                                                                         size_t count) {
     std::vector<vk::PipelineColorBlendAttachmentState> attachments(count);
-    for (auto &attachment : attachments) {
-        attachment.blendEnable = desc.blend;
-        attachment.srcColorBlendFactor = desc.src_color_blend_factor;
-        attachment.dstColorBlendFactor = desc.dst_color_blend_factor;
-        attachment.colorBlendOp = desc.color_blend_op;
-        attachment.srcAlphaBlendFactor = desc.src_alpha_blend_factor;
-        attachment.dstAlphaBlendFactor = desc.dst_alpha_blend_factor;
-        attachment.alphaBlendOp = desc.alpha_blend_op;
-        attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
-                                    vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+    for (std::size_t index = 0; index < count; ++index) {
+        auto &attachment = attachments[index];
+        if (desc.color_attachment_states.empty()) {
+            attachment.blendEnable = desc.blend;
+            attachment.srcColorBlendFactor =
+                desc.src_color_blend_factor;
+            attachment.dstColorBlendFactor =
+                desc.dst_color_blend_factor;
+            attachment.colorBlendOp =
+                desc.color_blend_op;
+            attachment.srcAlphaBlendFactor =
+                desc.src_alpha_blend_factor;
+            attachment.dstAlphaBlendFactor =
+                desc.dst_alpha_blend_factor;
+            attachment.alphaBlendOp =
+                desc.alpha_blend_op;
+            attachment.colorWriteMask =
+                vk::ColorComponentFlagBits::eA |
+                vk::ColorComponentFlagBits::eR |
+                vk::ColorComponentFlagBits::eG |
+                vk::ColorComponentFlagBits::eB;
+            continue;
+        }
+        const auto &state =
+            desc.color_attachment_states[index];
+        attachment.blendEnable = state.blend_enabled;
+        attachment.srcColorBlendFactor =
+            state.source_color;
+        attachment.dstColorBlendFactor =
+            state.destination_color;
+        attachment.colorBlendOp =
+            state.color_operation;
+        attachment.srcAlphaBlendFactor =
+            state.source_alpha;
+        attachment.dstAlphaBlendFactor =
+            state.destination_alpha;
+        attachment.alphaBlendOp =
+            state.alpha_operation;
+        attachment.colorWriteMask =
+            state.write_mask;
     }
     return attachments;
 }

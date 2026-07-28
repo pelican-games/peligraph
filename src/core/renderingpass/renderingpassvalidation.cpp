@@ -213,7 +213,19 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
     const auto contract = pass_def.materialInfo().contract;
     const auto &output_schema =
         pass_def.materialInfo().output_schema;
+    const auto &output_states =
+        pass_def.materialInfo().output_states;
+    if (!output_states.empty() && !output_schema) {
+        throw std::runtime_error(
+            "Material pass material_output_states requires "
+            "material_outputs: " +
+            pass_def.name);
+    }
     if (output_schema) {
+        validateMaterialOutputAttachmentStates(
+            output_states, *output_schema,
+            "Material pass '" + pass_def.name +
+                "' material_output_states");
         if (contract ==
             MaterialPassContract::legacy_gbuffer_v1) {
             throw std::runtime_error(
@@ -393,6 +405,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         pass_json.contains("material_outputs")) {
         throw std::runtime_error(
             "Only material passes support material_outputs: " +
+            pass_def.name);
+    }
+    if (!pass_def.isMaterial() &&
+        pass_json.contains("material_output_states")) {
+        throw std::runtime_error(
+            "Only material passes support material_output_states: " +
             pass_def.name);
     }
     if (!pass_def.isMaterial() && pass_json.contains("screen_inputs")) {

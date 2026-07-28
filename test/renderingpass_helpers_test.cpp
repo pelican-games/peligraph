@@ -2438,6 +2438,131 @@ TEST_CASE(
             "cannot use lighting.scene_color"));
 }
 
+TEST_CASE(
+    "material output attachment state is sparse typed and schema keyed",
+    "[renderingpass][material-output-state][wp219]") {
+    const auto schema = parseMaterialOutputSchema(
+        nlohmann::json{
+            {"schema", "pelican.material_outputs"},
+            {"version", 1},
+            {"name", "project.weighted_oit"},
+            {"outputs",
+             nlohmann::json::array({
+                 {{"name", "accum"},
+                  {"type", "vec4"},
+                  {"source", "surface.base_color"}},
+                 {{"name", "revealage"},
+                  {"type", "float"},
+                  {"source", "custom"}},
+                 {{"name", "object_id"},
+                  {"type", "uint"},
+                  {"source", "custom"}},
+             })},
+        });
+    const nlohmann::json declaration{
+        {"revealage",
+         {
+             {"blend",
+              {
+                  {"color",
+                   {{"src", "zero"},
+                    {"dst", "one_minus_src_color"},
+                    {"op", "add"}}},
+                  {"alpha",
+                   {{"src", "zero"},
+                    {"dst", "one_minus_src_alpha"},
+                    {"op", "add"}}},
+              }},
+             {"write_mask", "r"},
+         }},
+        {"accum",
+         {
+             {"blend",
+              {
+                  {"color",
+                   {{"src", "one"},
+                    {"dst", "one"},
+                    {"op", "add"}}},
+                  {"alpha",
+                   {{"src", "one"},
+                    {"dst", "one"},
+                    {"op", "add"}}},
+              }},
+         }},
+        {"object_id",
+         {
+             {"blend", "opaque"},
+             {"write_mask", "r"},
+         }},
+    };
+    const auto states =
+        parseMaterialOutputAttachmentStates(
+            declaration, schema);
+    REQUIRE(states.size() == 3);
+    REQUIRE(states[0].output == "accum");
+    REQUIRE(states[1].output == "revealage");
+    REQUIRE(states[2].output == "object_id");
+    REQUIRE(states[0].blend);
+    REQUIRE(states[0].blend->enabled);
+    REQUIRE(
+        states[0].blend->color.destination ==
+        MaterialOutputBlendFactor::one);
+    REQUIRE(states[1].write_mask ==
+            materialOutputWriteRed);
+    REQUIRE(states[2].blend);
+    REQUIRE_FALSE(states[2].blend->enabled);
+
+    const auto canonical =
+        materialOutputAttachmentStatesToJson(
+            states, schema);
+    REQUIRE(
+        parseMaterialOutputAttachmentStates(
+            canonical, schema) == states);
+    REQUIRE(
+        materialOutputAttachmentStatesFingerprint(
+            states, schema)
+            .starts_with(
+                "pelican.material_output_states@1:"));
+
+    auto invalid = declaration;
+    invalid["object_id"]["blend"] = "additive";
+    REQUIRE_THROWS_WITH(
+        parseMaterialOutputAttachmentStates(
+            invalid, schema),
+        Catch::Matchers::ContainsSubstring(
+            "cannot enable blending for an integer output"));
+
+    invalid = declaration;
+    invalid["accum"]["write_mask"] = "rr";
+    REQUIRE_THROWS_WITH(
+        parseMaterialOutputAttachmentStates(
+            invalid, schema),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate channel"));
+
+    invalid = declaration;
+    invalid["unknown"] = {
+        {"write_mask", "rgba"}};
+    REQUIRE_THROWS_WITH(
+        parseMaterialOutputAttachmentStates(
+            invalid, schema),
+        Catch::Matchers::ContainsSubstring(
+            "references unknown output"));
+
+    PassDefinition pass;
+    pass.name = "missing_schema";
+    pass.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(
+            pass,
+            nlohmann::json{
+                {"material_output_states",
+                 nlohmann::json::object()},
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "requires material_outputs"));
+}
+
 TEST_CASE("material pass availability distinguishes fullscreen-only graphs",
           "[renderingpass][material-routing]") {
     RenderingPassContainer container;

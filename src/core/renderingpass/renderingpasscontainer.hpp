@@ -23,6 +23,7 @@ struct MaterialPassRenderingBinding {
         vk::SampleCountFlagBits::e1;
     CompiledPassRenderingContract rendering;
     std::optional<MaterialOutputSchema> output_schema;
+    std::vector<MaterialOutputAttachmentState> output_states;
 
     bool operator==(
         const MaterialPassRenderingBinding &) const =

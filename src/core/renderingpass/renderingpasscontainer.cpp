@@ -194,6 +194,9 @@ RenderingPassContainer::materialPassRenderingBindings(
                         .output_schema =
                             pass.materialInfo()
                                 .output_schema,
+                        .output_states =
+                            pass.materialInfo()
+                                .output_states,
                     });
             }
         };

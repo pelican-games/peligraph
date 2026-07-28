@@ -136,6 +136,31 @@ Json hybridPassSet(std::string name,
     };
 }
 
+Json weightedOutputStates() {
+    return {
+        {"base_color",
+         {
+             {"blend",
+              {
+                  {"color",
+                   {{"src", "one"},
+                    {"dst", "one"},
+                    {"op", "add"}}},
+                  {"alpha",
+                   {{"src", "one"},
+                    {"dst", "one"},
+                    {"op", "add"}}},
+              }},
+             {"write_mask", "rgba"},
+         }},
+        {"object_id",
+         {
+             {"blend", "opaque"},
+             {"write_mask", "r"},
+         }},
+    };
+}
+
 } // namespace
 
 TEST_CASE(
@@ -205,6 +230,90 @@ TEST_CASE(
         resolveMaterialRoutingTable(config),
         Catch::Matchers::ContainsSubstring(
             "different material_outputs schemas"));
+}
+
+TEST_CASE(
+    "WP219 material routing carries attachment state across graph variants",
+    "[wp219][render-pipeline][material-output-state]") {
+    auto flat =
+        hybridPassSet(
+            "flat", extendedGbufferSchema());
+    auto xr =
+        hybridPassSet(
+            "xr", extendedGbufferSchema());
+    flat["passes"][0]["material_output_states"] =
+        weightedOutputStates();
+    xr["passes"][0]["material_output_states"] =
+        weightedOutputStates();
+    auto config = Json{
+        {"material_routing",
+         {
+             {"policy", "hybrid_auto_v1"},
+             {"routes",
+              {
+                  {"deferred_geometry",
+                   "deferred_geometry"},
+                  {"forward_opaque",
+                   "forward_opaque"},
+                  {"forward_transparent",
+                   "forward_transparent"},
+              }},
+         }},
+        {"rendering_passes",
+         Json::array({flat, xr})},
+    };
+
+    const auto routing =
+        resolveMaterialRoutingTable(config);
+    const auto &deferred =
+        routing.at("routes")
+            .at("deferred_geometry");
+    REQUIRE(
+        deferred.at("output_states")
+            .contains("base_color"));
+    REQUIRE(
+        deferred.at("output_states_fingerprint")
+            .get<std::string>()
+            .starts_with(
+                "pelican.material_output_states@1:"));
+
+    ResolvedRenderPipeline resolved;
+    resolved.material_routing = routing;
+    const auto compiled =
+        compileRenderPipeline(resolved);
+    REQUIRE(compiled.material_routing);
+    REQUIRE(
+        compiled.material_routing->routes.front()
+            .output_states.size() == 2);
+    const auto dumped =
+        serializeCompiledRenderPipelineMetadata(
+            compiled);
+    REQUIRE(
+        dumped.at("material_routing")
+            .at("routes")
+            .at("deferred_geometry")
+            .at("output_states")
+            .contains("object_id"));
+
+    config["rendering_passes"][1]["passes"][0]
+          ["material_output_states"]["base_color"]
+          ["write_mask"] = "rgb";
+    REQUIRE_THROWS_WITH(
+        resolveMaterialRoutingTable(config),
+        Catch::Matchers::ContainsSubstring(
+            "different material_output_states"));
+
+    auto tampered = routing;
+    tampered["routes"]["deferred_geometry"]
+            ["output_states_fingerprint"] =
+        "tampered";
+    ResolvedRenderPipeline tampered_resolved;
+    tampered_resolved.material_routing =
+        std::move(tampered);
+    REQUIRE_THROWS_WITH(
+        compileRenderPipeline(tampered_resolved),
+        Catch::Matchers::ContainsSubstring(
+            "output_states_fingerprint does not match"));
 }
 
 TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",

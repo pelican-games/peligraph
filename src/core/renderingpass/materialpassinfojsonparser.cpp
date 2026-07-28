@@ -456,6 +456,19 @@ void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::jso
                 "Material pass '" + pass_def.name +
                     "' material_outputs");
     }
+    if (pass_json.contains("material_output_states")) {
+        if (!material_info.output_schema) {
+            throw std::runtime_error(
+                "Material pass '" + pass_def.name +
+                "' material_output_states requires material_outputs");
+        }
+        material_info.output_states =
+            parseMaterialOutputAttachmentStates(
+                pass_json.at("material_output_states"),
+                *material_info.output_schema,
+                "Material pass '" + pass_def.name +
+                    "' material_output_states");
+    }
 
     if (pass_json.contains("material_variant")) {
         const auto &variant = pass_json.at("material_variant");

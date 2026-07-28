@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -62,6 +63,72 @@ struct MaterialOutputSchema {
     bool operator==(const MaterialOutputSchema &) const = default;
 };
 
+// Fixed-function names deliberately live above Vulkan. Render strategies can
+// author portable attachment state while the device compiler remains free to
+// lower it to another graphics API.
+enum class MaterialOutputBlendFactor {
+    zero,
+    one,
+    source_color,
+    one_minus_source_color,
+    destination_color,
+    one_minus_destination_color,
+    source_alpha,
+    one_minus_source_alpha,
+    destination_alpha,
+    one_minus_destination_alpha,
+    source_alpha_saturate,
+};
+
+enum class MaterialOutputBlendOperation {
+    add,
+    subtract,
+    reverse_subtract,
+    minimum,
+    maximum,
+};
+
+struct MaterialOutputBlendEquation {
+    MaterialOutputBlendFactor source =
+        MaterialOutputBlendFactor::one;
+    MaterialOutputBlendFactor destination =
+        MaterialOutputBlendFactor::zero;
+    MaterialOutputBlendOperation operation =
+        MaterialOutputBlendOperation::add;
+
+    bool operator==(
+        const MaterialOutputBlendEquation &) const = default;
+};
+
+struct MaterialOutputBlendState {
+    bool enabled = false;
+    MaterialOutputBlendEquation color;
+    MaterialOutputBlendEquation alpha;
+
+    bool operator==(
+        const MaterialOutputBlendState &) const = default;
+};
+
+inline constexpr std::uint8_t materialOutputWriteRed = 1u << 0;
+inline constexpr std::uint8_t materialOutputWriteGreen = 1u << 1;
+inline constexpr std::uint8_t materialOutputWriteBlue = 1u << 2;
+inline constexpr std::uint8_t materialOutputWriteAlpha = 1u << 3;
+inline constexpr std::uint8_t materialOutputWriteRgba =
+    materialOutputWriteRed | materialOutputWriteGreen |
+    materialOutputWriteBlue | materialOutputWriteAlpha;
+
+// Sparse pass-owned overrides keyed by the logical output field name. Missing
+// state inherits the material's render_state; missing members inherit only
+// that member. The vector is canonicalized to schema order by the parser.
+struct MaterialOutputAttachmentState {
+    std::string output;
+    std::optional<MaterialOutputBlendState> blend;
+    std::optional<std::uint8_t> write_mask;
+
+    bool operator==(
+        const MaterialOutputAttachmentState &) const = default;
+};
+
 std::string_view materialOutputTypeName(MaterialOutputType type);
 std::optional<MaterialOutputType>
 materialOutputTypeFromName(std::string_view name);
@@ -85,6 +152,35 @@ void validateMaterialOutputSchema(
 std::string materialOutputSchemaFingerprint(
     const MaterialOutputSchema &schema);
 nlohmann::json materialOutputSchemaToJson(
+    const MaterialOutputSchema &schema);
+
+std::string_view materialOutputBlendFactorName(
+    MaterialOutputBlendFactor factor);
+std::optional<MaterialOutputBlendFactor>
+materialOutputBlendFactorFromName(std::string_view name);
+std::string_view materialOutputBlendOperationName(
+    MaterialOutputBlendOperation operation);
+std::optional<MaterialOutputBlendOperation>
+materialOutputBlendOperationFromName(std::string_view name);
+
+// Parses a material_output_states object. Keys are output field names from the
+// supplied schema. Blend accepts the convenience presets opaque/blend/
+// additive or an explicit {color, alpha} equation. write_mask is any
+// channel subset such as "rgba", "rgb", "r", or "none".
+std::vector<MaterialOutputAttachmentState>
+parseMaterialOutputAttachmentStates(
+    const nlohmann::json &declaration,
+    const MaterialOutputSchema &schema,
+    std::string_view context = "material_output_states");
+void validateMaterialOutputAttachmentStates(
+    const std::vector<MaterialOutputAttachmentState> &states,
+    const MaterialOutputSchema &schema,
+    std::string_view context = "material_output_states");
+std::string materialOutputAttachmentStatesFingerprint(
+    const std::vector<MaterialOutputAttachmentState> &states,
+    const MaterialOutputSchema &schema);
+nlohmann::json materialOutputAttachmentStatesToJson(
+    const std::vector<MaterialOutputAttachmentState> &states,
     const MaterialOutputSchema &schema);
 
 } // namespace Pelican

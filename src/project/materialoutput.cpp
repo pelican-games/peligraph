@@ -59,6 +59,189 @@ bool isFloating(MaterialOutputType type) {
            MaterialOutputNumericClass::floating;
 }
 
+MaterialOutputBlendEquation parseBlendEquation(
+    const nlohmann::json &declaration,
+    std::string_view context) {
+    if (!declaration.is_object()) {
+        throw std::runtime_error(
+            std::string{context} + " must be an object");
+    }
+    requireOnlyFields(
+        declaration, {"src", "dst", "op"}, context);
+    const auto source_name =
+        requireString(declaration, "src", context);
+    const auto destination_name =
+        requireString(declaration, "dst", context);
+    const auto operation_name =
+        requireString(declaration, "op", context);
+    const auto source =
+        materialOutputBlendFactorFromName(source_name);
+    const auto destination =
+        materialOutputBlendFactorFromName(destination_name);
+    const auto operation =
+        materialOutputBlendOperationFromName(operation_name);
+    if (!source) {
+        throw std::runtime_error(
+            std::string{context} +
+            " has unknown src blend factor '" +
+            source_name + "'");
+    }
+    if (!destination) {
+        throw std::runtime_error(
+            std::string{context} +
+            " has unknown dst blend factor '" +
+            destination_name + "'");
+    }
+    if (!operation) {
+        throw std::runtime_error(
+            std::string{context} +
+            " has unknown blend operation '" +
+            operation_name + "'");
+    }
+    return {*source, *destination, *operation};
+}
+
+MaterialOutputBlendState blendPreset(
+    std::string_view name, std::string_view context) {
+    MaterialOutputBlendState result;
+    if (name == "opaque") return result;
+    result.enabled = true;
+    if (name == "blend") {
+        result.color = {
+            MaterialOutputBlendFactor::source_alpha,
+            MaterialOutputBlendFactor::
+                one_minus_source_alpha,
+            MaterialOutputBlendOperation::add};
+        result.alpha = {
+            MaterialOutputBlendFactor::one,
+            MaterialOutputBlendFactor::
+                one_minus_source_alpha,
+            MaterialOutputBlendOperation::add};
+        return result;
+    }
+    if (name == "additive") {
+        result.color = {
+            MaterialOutputBlendFactor::source_alpha,
+            MaterialOutputBlendFactor::one,
+            MaterialOutputBlendOperation::add};
+        result.alpha = {
+            MaterialOutputBlendFactor::one,
+            MaterialOutputBlendFactor::one,
+            MaterialOutputBlendOperation::add};
+        return result;
+    }
+    throw std::runtime_error(
+        std::string{context} +
+        " has unknown blend preset '" +
+        std::string{name} + "'");
+}
+
+MaterialOutputBlendState parseBlendState(
+    const nlohmann::json &declaration,
+    std::string_view context) {
+    if (declaration.is_string()) {
+        return blendPreset(
+            declaration.get<std::string>(), context);
+    }
+    if (!declaration.is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " must be opaque, blend, additive, or an object");
+    }
+    requireOnlyFields(
+        declaration, {"color", "alpha"}, context);
+    const auto color = declaration.find("color");
+    const auto alpha = declaration.find("alpha");
+    if (color == declaration.end() ||
+        alpha == declaration.end()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires color and alpha equations");
+    }
+    return {
+        true,
+        parseBlendEquation(
+            *color, std::string{context} + " color"),
+        parseBlendEquation(
+            *alpha, std::string{context} + " alpha"),
+    };
+}
+
+std::uint8_t parseWriteMask(
+    const nlohmann::json &declaration,
+    std::string_view context) {
+    if (!declaration.is_string()) {
+        throw std::runtime_error(
+            std::string{context} + " must be a string");
+    }
+    const auto value =
+        declaration.get<std::string>();
+    if (value == "none") return 0;
+    if (value.empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " must use 'none' for an empty mask");
+    }
+    std::uint8_t result = 0;
+    for (const auto channel : value) {
+        std::uint8_t bit = 0;
+        switch (channel) {
+        case 'r': bit = materialOutputWriteRed; break;
+        case 'g': bit = materialOutputWriteGreen; break;
+        case 'b': bit = materialOutputWriteBlue; break;
+        case 'a': bit = materialOutputWriteAlpha; break;
+        default:
+            throw std::runtime_error(
+                std::string{context} +
+                " contains unknown channel '" +
+                std::string{channel} + "'");
+        }
+        if ((result & bit) != 0) {
+            throw std::runtime_error(
+                std::string{context} +
+                " contains duplicate channel '" +
+                std::string{channel} + "'");
+        }
+        result |= bit;
+    }
+    return result;
+}
+
+std::string writeMaskName(std::uint8_t mask) {
+    if (mask == 0) return "none";
+    std::string result;
+    if ((mask & materialOutputWriteRed) != 0)
+        result.push_back('r');
+    if ((mask & materialOutputWriteGreen) != 0)
+        result.push_back('g');
+    if ((mask & materialOutputWriteBlue) != 0)
+        result.push_back('b');
+    if ((mask & materialOutputWriteAlpha) != 0)
+        result.push_back('a');
+    return result;
+}
+
+nlohmann::json blendEquationToJson(
+    const MaterialOutputBlendEquation &equation) {
+    return {
+        {"src", materialOutputBlendFactorName(
+                    equation.source)},
+        {"dst", materialOutputBlendFactorName(
+                    equation.destination)},
+        {"op", materialOutputBlendOperationName(
+                   equation.operation)},
+    };
+}
+
+nlohmann::json blendStateToJson(
+    const MaterialOutputBlendState &state) {
+    if (!state.enabled) return "opaque";
+    return {
+        {"color", blendEquationToJson(state.color)},
+        {"alpha", blendEquationToJson(state.alpha)},
+    };
+}
+
 } // namespace
 
 std::string_view materialOutputTypeName(
@@ -322,6 +505,278 @@ nlohmann::json materialOutputSchemaToJson(
         {"name", schema.name},
         {"outputs", std::move(outputs)},
     };
+}
+
+std::string_view materialOutputBlendFactorName(
+    MaterialOutputBlendFactor factor) {
+    switch (factor) {
+    case MaterialOutputBlendFactor::zero: return "zero";
+    case MaterialOutputBlendFactor::one: return "one";
+    case MaterialOutputBlendFactor::source_color:
+        return "src_color";
+    case MaterialOutputBlendFactor::one_minus_source_color:
+        return "one_minus_src_color";
+    case MaterialOutputBlendFactor::destination_color:
+        return "dst_color";
+    case MaterialOutputBlendFactor::
+        one_minus_destination_color:
+        return "one_minus_dst_color";
+    case MaterialOutputBlendFactor::source_alpha:
+        return "src_alpha";
+    case MaterialOutputBlendFactor::one_minus_source_alpha:
+        return "one_minus_src_alpha";
+    case MaterialOutputBlendFactor::destination_alpha:
+        return "dst_alpha";
+    case MaterialOutputBlendFactor::
+        one_minus_destination_alpha:
+        return "one_minus_dst_alpha";
+    case MaterialOutputBlendFactor::source_alpha_saturate:
+        return "src_alpha_saturate";
+    }
+    throw std::runtime_error(
+        "unknown material output blend factor");
+}
+
+std::optional<MaterialOutputBlendFactor>
+materialOutputBlendFactorFromName(std::string_view name) {
+    if (name == "zero")
+        return MaterialOutputBlendFactor::zero;
+    if (name == "one")
+        return MaterialOutputBlendFactor::one;
+    if (name == "src_color")
+        return MaterialOutputBlendFactor::source_color;
+    if (name == "one_minus_src_color")
+        return MaterialOutputBlendFactor::
+            one_minus_source_color;
+    if (name == "dst_color")
+        return MaterialOutputBlendFactor::destination_color;
+    if (name == "one_minus_dst_color")
+        return MaterialOutputBlendFactor::
+            one_minus_destination_color;
+    if (name == "src_alpha")
+        return MaterialOutputBlendFactor::source_alpha;
+    if (name == "one_minus_src_alpha")
+        return MaterialOutputBlendFactor::
+            one_minus_source_alpha;
+    if (name == "dst_alpha")
+        return MaterialOutputBlendFactor::destination_alpha;
+    if (name == "one_minus_dst_alpha")
+        return MaterialOutputBlendFactor::
+            one_minus_destination_alpha;
+    if (name == "src_alpha_saturate")
+        return MaterialOutputBlendFactor::
+            source_alpha_saturate;
+    return std::nullopt;
+}
+
+std::string_view materialOutputBlendOperationName(
+    MaterialOutputBlendOperation operation) {
+    switch (operation) {
+    case MaterialOutputBlendOperation::add: return "add";
+    case MaterialOutputBlendOperation::subtract:
+        return "subtract";
+    case MaterialOutputBlendOperation::reverse_subtract:
+        return "reverse_subtract";
+    case MaterialOutputBlendOperation::minimum: return "min";
+    case MaterialOutputBlendOperation::maximum: return "max";
+    }
+    throw std::runtime_error(
+        "unknown material output blend operation");
+}
+
+std::optional<MaterialOutputBlendOperation>
+materialOutputBlendOperationFromName(std::string_view name) {
+    if (name == "add")
+        return MaterialOutputBlendOperation::add;
+    if (name == "subtract")
+        return MaterialOutputBlendOperation::subtract;
+    if (name == "reverse_subtract")
+        return MaterialOutputBlendOperation::reverse_subtract;
+    if (name == "min")
+        return MaterialOutputBlendOperation::minimum;
+    if (name == "max")
+        return MaterialOutputBlendOperation::maximum;
+    return std::nullopt;
+}
+
+void validateMaterialOutputAttachmentStates(
+    const std::vector<MaterialOutputAttachmentState> &states,
+    const MaterialOutputSchema &schema,
+    std::string_view context) {
+    validateMaterialOutputSchema(schema, context);
+    std::unordered_set<std::string> names;
+    std::size_t previous_location = 0;
+    bool has_previous = false;
+    for (const auto &state : states) {
+        const auto found = std::find_if(
+            schema.outputs.begin(), schema.outputs.end(),
+            [&](const auto &output) {
+                return output.name == state.output;
+            });
+        if (found == schema.outputs.end()) {
+            throw std::runtime_error(
+                std::string{context} +
+                " references unknown output '" +
+                state.output + "'");
+        }
+        if (!names.insert(state.output).second) {
+            throw std::runtime_error(
+                std::string{context} +
+                " contains duplicate output '" +
+                state.output + "'");
+        }
+        const auto location = static_cast<std::size_t>(
+            std::distance(schema.outputs.begin(), found));
+        if (has_previous && location <= previous_location) {
+            throw std::runtime_error(
+                std::string{context} +
+                " states must be stored in material output order");
+        }
+        previous_location = location;
+        has_previous = true;
+        if (!state.blend && !state.write_mask) {
+            throw std::runtime_error(
+                std::string{context} + " output '" +
+                state.output +
+                "' must override blend or write_mask");
+        }
+        if (state.write_mask &&
+            (*state.write_mask &
+             static_cast<std::uint8_t>(
+                 ~materialOutputWriteRgba)) !=
+                0) {
+            throw std::runtime_error(
+                std::string{context} + " output '" +
+                state.output +
+                "' has invalid write_mask bits");
+        }
+        if (state.blend && state.blend->enabled &&
+            materialOutputNumericClass(found->type) !=
+                MaterialOutputNumericClass::floating) {
+            throw std::runtime_error(
+                std::string{context} + " output '" +
+                state.output +
+                "' cannot enable blending for an integer output");
+        }
+    }
+}
+
+std::vector<MaterialOutputAttachmentState>
+parseMaterialOutputAttachmentStates(
+    const nlohmann::json &declaration,
+    const MaterialOutputSchema &schema,
+    std::string_view context) {
+    if (!declaration.is_object()) {
+        throw std::runtime_error(
+            std::string{context} + " must be an object");
+    }
+    std::vector<MaterialOutputAttachmentState> result;
+    result.reserve(declaration.size());
+    for (const auto &output : schema.outputs) {
+        const auto encoded =
+            declaration.find(output.name);
+        if (encoded == declaration.end()) continue;
+        const auto output_context =
+            std::string{context} + " output '" +
+            output.name + "'";
+        if (!encoded->is_object()) {
+            throw std::runtime_error(
+                output_context + " must be an object");
+        }
+        requireOnlyFields(
+            *encoded, {"blend", "write_mask"},
+            output_context);
+        MaterialOutputAttachmentState state{
+            .output = output.name};
+        if (const auto blend = encoded->find("blend");
+            blend != encoded->end()) {
+            state.blend = parseBlendState(
+                *blend, output_context + " blend");
+        }
+        if (const auto write_mask =
+                encoded->find("write_mask");
+            write_mask != encoded->end()) {
+            state.write_mask = parseWriteMask(
+                *write_mask,
+                output_context + " write_mask");
+        }
+        result.push_back(std::move(state));
+    }
+    for (auto entry = declaration.begin();
+         entry != declaration.end(); ++entry) {
+        const auto known = std::any_of(
+            schema.outputs.begin(), schema.outputs.end(),
+            [&](const auto &output) {
+                return output.name == entry.key();
+            });
+        if (!known) {
+            throw std::runtime_error(
+                std::string{context} +
+                " references unknown output '" +
+                entry.key() + "'");
+        }
+    }
+    validateMaterialOutputAttachmentStates(
+        result, schema, context);
+    return result;
+}
+
+std::string materialOutputAttachmentStatesFingerprint(
+    const std::vector<MaterialOutputAttachmentState> &states,
+    const MaterialOutputSchema &schema) {
+    validateMaterialOutputAttachmentStates(states, schema);
+    std::ostringstream result;
+    result << "pelican.material_output_states@1:"
+           << materialOutputSchemaFingerprint(schema);
+    for (const auto &state : states) {
+        result << ';' << state.output;
+        if (state.blend) {
+            result << ":blend="
+                   << state.blend->enabled;
+            if (state.blend->enabled) {
+                const auto append_equation =
+                    [&](const auto &equation) {
+                        result << ','
+                               << materialOutputBlendFactorName(
+                                      equation.source)
+                               << ','
+                               << materialOutputBlendFactorName(
+                                      equation.destination)
+                               << ','
+                               << materialOutputBlendOperationName(
+                                      equation.operation);
+                    };
+                append_equation(state.blend->color);
+                append_equation(state.blend->alpha);
+            }
+        }
+        if (state.write_mask) {
+            result << ":write="
+                   << writeMaskName(
+                          *state.write_mask);
+        }
+    }
+    return result.str();
+}
+
+nlohmann::json materialOutputAttachmentStatesToJson(
+    const std::vector<MaterialOutputAttachmentState> &states,
+    const MaterialOutputSchema &schema) {
+    validateMaterialOutputAttachmentStates(states, schema);
+    nlohmann::json result = nlohmann::json::object();
+    for (const auto &state : states) {
+        nlohmann::json encoded = nlohmann::json::object();
+        if (state.blend) {
+            encoded["blend"] =
+                blendStateToJson(*state.blend);
+        }
+        if (state.write_mask) {
+            encoded["write_mask"] =
+                writeMaskName(*state.write_mask);
+        }
+        result[state.output] = std::move(encoded);
+    }
+    return result;
 }
 
 } // namespace Pelican

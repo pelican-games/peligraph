@@ -265,6 +265,7 @@ struct DeviceFeatureSupport {
     bool multiview = false;
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
+    bool independent_blend = false;
     bool swapchain_maintenance1 = false;
     bool draw_indirect_count = false;
 };
@@ -300,6 +301,8 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         .multiview = vk11.multiview == VK_TRUE,
         .sampler_anisotropy =
             core.samplerAnisotropy == VK_TRUE,
+        .independent_blend =
+            core.independentBlend == VK_TRUE,
         .draw_indirect_count =
             draw_indirect_count_core &&
             vk12.drawIndirectCount == VK_TRUE,
@@ -462,6 +465,9 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     features.features.samplerAnisotropy =
         feature_support.sampler_anisotropy ? VK_TRUE
                                            : VK_FALSE;
+    features.features.independentBlend =
+        feature_support.independent_blend ? VK_TRUE
+                                          : VK_FALSE;
     vk::PhysicalDeviceVulkan11Features vk11features;
     vk11features.shaderDrawParameters = true; // necessary for using gl_BaseInstance in shaders
     // Enable opportunistically when available. Target planning still
@@ -512,6 +518,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             feature_support.dynamic_rendering_local_read,
         .sampler_anisotropy =
             feature_support.sampler_anisotropy,
+        .independent_blend =
+            feature_support.independent_blend,
         .swapchain_maintenance1 =
             swapchain_maintenance1,
         .draw_indirect_count =
@@ -722,11 +730,13 @@ VulkanManageCore::VulkanManageCore() {
     LOG_INFO(logger,
              "Vulkan optional features: timeline_semaphore={}, multiview={}, "
              "dynamic_rendering_local_read={}, sampler_anisotropy={}, "
+             "independent_blend={}, "
              "swapchain_maintenance1={}, draw_indirect_count={}",
              runtime_capabilities.timeline_semaphore,
              runtime_capabilities.multiview,
              runtime_capabilities.dynamic_rendering_local_read,
              runtime_capabilities.sampler_anisotropy,
+             runtime_capabilities.independent_blend,
              runtime_capabilities.swapchain_maintenance1,
              runtime_capabilities.draw_indirect_count);
     LOG_INFO(logger, "vulkan core initialized");

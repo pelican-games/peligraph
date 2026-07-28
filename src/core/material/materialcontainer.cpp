@@ -62,6 +62,8 @@ struct MaterialPipelineRenderingContract {
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
     GraphicsPipelineRenderingLocalReadContract local_read;
+    std::vector<MaterialOutputAttachmentState>
+        output_states;
 
     bool operator==(
         const MaterialPipelineRenderingContract &) const =
@@ -112,14 +114,18 @@ resolveMaterialPassRenderingBinding(
     const MaterialPassRenderingBinding &binding,
     MaterialShaderContract shader_contract) {
     if (binding.rendering.color_attachments.empty()) {
-        return defaultMaterialPipelineRenderingContract(
-            shader_contract,
-            binding.rasterization_samples);
+        auto result =
+            defaultMaterialPipelineRenderingContract(
+                shader_contract,
+                binding.rasterization_samples);
+        result.output_states = binding.output_states;
+        return result;
     }
 
     MaterialPipelineRenderingContract result;
     result.rasterization_samples =
         binding.rasterization_samples;
+    result.output_states = binding.output_states;
     result.color_formats.reserve(
         binding.rendering.color_attachments.size());
     for (const auto target :
@@ -308,6 +314,19 @@ static std::string makePipelineKey(
     key << ":depth_input="
         << rendering.local_read
                .depth_attachment_input_index;
+    key << ":attachment_states=";
+    if (!rendering.output_states.empty()) {
+        if (!info.output_schema) {
+            throw std::logic_error(
+                "material output attachment states require an "
+                "output schema");
+        }
+        key << materialOutputAttachmentStatesFingerprint(
+            rendering.output_states,
+            *info.output_schema);
+    } else {
+        key << "inherit";
+    }
     return key.str();
 }
 
@@ -451,6 +470,177 @@ resolveMaterialResourceInterface(
     return result;
 }
 
+static vk::BlendFactor toVkBlendFactor(
+    MaterialOutputBlendFactor factor) {
+    switch (factor) {
+    case MaterialOutputBlendFactor::zero:
+        return vk::BlendFactor::eZero;
+    case MaterialOutputBlendFactor::one:
+        return vk::BlendFactor::eOne;
+    case MaterialOutputBlendFactor::source_color:
+        return vk::BlendFactor::eSrcColor;
+    case MaterialOutputBlendFactor::one_minus_source_color:
+        return vk::BlendFactor::eOneMinusSrcColor;
+    case MaterialOutputBlendFactor::destination_color:
+        return vk::BlendFactor::eDstColor;
+    case MaterialOutputBlendFactor::
+        one_minus_destination_color:
+        return vk::BlendFactor::eOneMinusDstColor;
+    case MaterialOutputBlendFactor::source_alpha:
+        return vk::BlendFactor::eSrcAlpha;
+    case MaterialOutputBlendFactor::one_minus_source_alpha:
+        return vk::BlendFactor::eOneMinusSrcAlpha;
+    case MaterialOutputBlendFactor::destination_alpha:
+        return vk::BlendFactor::eDstAlpha;
+    case MaterialOutputBlendFactor::
+        one_minus_destination_alpha:
+        return vk::BlendFactor::eOneMinusDstAlpha;
+    case MaterialOutputBlendFactor::source_alpha_saturate:
+        return vk::BlendFactor::eSrcAlphaSaturate;
+    }
+    throw std::runtime_error(
+        "unknown material output blend factor");
+}
+
+static vk::BlendOp toVkBlendOperation(
+    MaterialOutputBlendOperation operation) {
+    switch (operation) {
+    case MaterialOutputBlendOperation::add:
+        return vk::BlendOp::eAdd;
+    case MaterialOutputBlendOperation::subtract:
+        return vk::BlendOp::eSubtract;
+    case MaterialOutputBlendOperation::reverse_subtract:
+        return vk::BlendOp::eReverseSubtract;
+    case MaterialOutputBlendOperation::minimum:
+        return vk::BlendOp::eMin;
+    case MaterialOutputBlendOperation::maximum:
+        return vk::BlendOp::eMax;
+    }
+    throw std::runtime_error(
+        "unknown material output blend operation");
+}
+
+static vk::ColorComponentFlags toVkWriteMask(
+    std::uint8_t mask) {
+    vk::ColorComponentFlags result;
+    if ((mask & materialOutputWriteRed) != 0)
+        result |= vk::ColorComponentFlagBits::eR;
+    if ((mask & materialOutputWriteGreen) != 0)
+        result |= vk::ColorComponentFlagBits::eG;
+    if ((mask & materialOutputWriteBlue) != 0)
+        result |= vk::ColorComponentFlagBits::eB;
+    if ((mask & materialOutputWriteAlpha) != 0)
+        result |= vk::ColorComponentFlagBits::eA;
+    return result;
+}
+
+static GraphicsPipelineColorAttachmentState
+defaultMaterialColorAttachmentState(
+    SurfaceBlendMode blend) {
+    GraphicsPipelineColorAttachmentState result;
+    if (blend == SurfaceBlendMode::blend) {
+        result.blend_enabled = true;
+        result.source_color =
+            vk::BlendFactor::eSrcAlpha;
+        result.destination_color =
+            vk::BlendFactor::eOneMinusSrcAlpha;
+        result.source_alpha =
+            vk::BlendFactor::eOne;
+        result.destination_alpha =
+            vk::BlendFactor::eOneMinusSrcAlpha;
+    } else if (blend ==
+               SurfaceBlendMode::additive) {
+        result.blend_enabled = true;
+        result.source_color =
+            vk::BlendFactor::eSrcAlpha;
+        result.destination_color =
+            vk::BlendFactor::eOne;
+        result.source_alpha =
+            vk::BlendFactor::eOne;
+        result.destination_alpha =
+            vk::BlendFactor::eOne;
+    }
+    return result;
+}
+
+static std::vector<GraphicsPipelineColorAttachmentState>
+resolveMaterialColorAttachmentStates(
+    const MaterialInfo &info,
+    const MaterialPipelineRenderingContract &rendering) {
+    std::vector<GraphicsPipelineColorAttachmentState>
+        result(
+            rendering.color_formats.size(),
+            defaultMaterialColorAttachmentState(
+                info.render_state.blend));
+    if (rendering.output_states.empty()) {
+        return result;
+    }
+    if (!info.output_schema) {
+        throw std::logic_error(
+            "material output attachment states require an "
+            "output schema");
+    }
+    if (info.output_schema->outputs.size() !=
+        result.size()) {
+        throw std::runtime_error(
+            "material output attachment state count is "
+            "incompatible with the physical color attachments");
+    }
+    validateMaterialOutputAttachmentStates(
+        rendering.output_states,
+        *info.output_schema,
+        "material pipeline output states");
+    for (const auto &override :
+         rendering.output_states) {
+        const auto output = std::find_if(
+            info.output_schema->outputs.begin(),
+            info.output_schema->outputs.end(),
+            [&](const auto &field) {
+                return field.name == override.output;
+            });
+        if (output ==
+            info.output_schema->outputs.end()) {
+            throw std::logic_error(
+                "validated material output state is absent "
+                "from its schema");
+        }
+        const auto location =
+            static_cast<std::size_t>(
+                std::distance(
+                    info.output_schema->outputs.begin(),
+                    output));
+        auto &state = result[location];
+        if (override.blend) {
+            state.blend_enabled =
+                override.blend->enabled;
+            state.source_color =
+                toVkBlendFactor(
+                    override.blend->color.source);
+            state.destination_color =
+                toVkBlendFactor(
+                    override.blend->color.destination);
+            state.color_operation =
+                toVkBlendOperation(
+                    override.blend->color.operation);
+            state.source_alpha =
+                toVkBlendFactor(
+                    override.blend->alpha.source);
+            state.destination_alpha =
+                toVkBlendFactor(
+                    override.blend->alpha.destination);
+            state.alpha_operation =
+                toVkBlendOperation(
+                    override.blend->alpha.operation);
+        }
+        if (override.write_mask) {
+            state.write_mask =
+                toVkWriteMask(
+                    *override.write_mask);
+        }
+    }
+    return result;
+}
+
 static GraphicsPipelineDesc makeMaterialPipelineDesc(
     const MaterialInfo &info,
     const MaterialPipelineRenderingContract
@@ -474,6 +664,11 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     desc.local_read = rendering.local_read;
     desc.resource_interface =
         std::move(resource_interface);
+    if (!rendering.output_states.empty()) {
+        desc.color_attachment_states =
+            resolveMaterialColorAttachmentStates(
+                info, rendering);
+    }
     if (info.render_state.blend == SurfaceBlendMode::blend) {
         desc.blend = true;
         desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
@@ -520,7 +715,31 @@ static void validateMaterialCapabilities(
         throw std::runtime_error(
             "material render_state requests depth_write while depth_test is disabled");
     }
-    for (const auto format : rendering.color_formats) {
+    const auto attachment_states =
+        resolveMaterialColorAttachmentStates(
+            info, rendering);
+    const auto independent_states =
+        attachment_states.size() > 1 &&
+        std::any_of(
+            attachment_states.begin() + 1,
+            attachment_states.end(),
+            [&](const auto &state) {
+                return state !=
+                       attachment_states.front();
+            });
+    if (independent_states &&
+        !GET_MODULE(VulkanManageCore)
+             .getRuntimeCapabilities()
+             .independent_blend) {
+        throw std::runtime_error(
+            "material output attachment states differ but the "
+            "device does not support independentBlend");
+    }
+    for (std::size_t location = 0;
+         location < rendering.color_formats.size();
+         ++location) {
+        const auto format =
+            rendering.color_formats[location];
         const auto features =
             physical_device.getFormatProperties(format)
                 .optimalTilingFeatures;
@@ -532,11 +751,15 @@ static void validateMaterialCapabilities(
                 "attachment capability: " +
                 vk::to_string(format));
         }
-        if (info.render_state.blend !=
-            SurfaceBlendMode::opaque) {
+        if (attachment_states[location]
+                .blend_enabled) {
             if (!(features & vk::FormatFeatureFlagBits::eColorAttachmentBlend)) {
-                throw std::runtime_error("material render_state blend lacks device capability for color format " +
-                                         vk::to_string(format));
+                throw std::runtime_error(
+                    "material output blend lacks device "
+                    "capability for color format " +
+                    vk::to_string(format) +
+                    " at attachment " +
+                    std::to_string(location));
             }
         }
     }
@@ -1604,6 +1827,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             rendering.rasterization_samples,
         .pipeline_local_read =
             rendering.local_read,
+        .pipeline_output_states =
+            rendering.output_states,
         .tags = std::move(info.tags),
         .route = info.route,
         .shader_contract = info.shader_contract,
@@ -2401,6 +2626,9 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
                             .output_schema =
                                 pass.materialInfo()
                                     .output_schema,
+                            .output_states =
+                                pass.materialInfo()
+                                    .output_states,
                         });
                 }
             }
@@ -2438,6 +2666,8 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
                         .pipeline_rasterization_samples,
                 .local_read =
                     material.pipeline_local_read,
+                .output_states =
+                    material.pipeline_output_states,
             };
             for (const auto &binding : bindings) {
                 if (binding.output_schema !=
@@ -2479,7 +2709,8 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
                         "contract of live material " +
                         std::to_string(material_id.value) +
                         "; color/depth formats, sample count, "
-                        "or local-read mapping require a "
+                        "local-read mapping, or attachment "
+                        "state require a "
                         "transactional material pipeline "
                         "rebuild");
                 }

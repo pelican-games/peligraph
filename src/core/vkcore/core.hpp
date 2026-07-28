@@ -31,6 +31,7 @@ struct VulkanRuntimeCapabilities {
     bool multiview = false;
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
+    bool independent_blend = false;
     bool swapchain_maintenance1 = false;
     bool draw_indirect_count = false;
 };

@@ -150,6 +150,9 @@ struct MaterialPassInfo {
     // The engine imposes no attachment-count constant; target planning checks
     // the concrete device's maxColorAttachments budget.
     std::optional<MaterialOutputSchema> output_schema;
+    // Sparse fixed-function overrides keyed by output_schema field name.
+    // Missing attachments inherit the material surface render_state.
+    std::vector<MaterialOutputAttachmentState> output_states;
     std::optional<MaterialDrawTagFilter> material_filter;
     // Opaque project-authored name selecting an alternate material resource.
     // The name carries no engine technique semantics.
