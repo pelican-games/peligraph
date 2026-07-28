@@ -11,9 +11,9 @@ topology/probe、immutable/disposable lowering seam、desktop/tile physical plan
 scope orderへloweringし、version 3 fragmentのreorderと限定rendering-scope fusionを実行時まで
 接続した。これは既存GPU domain内の合流であり、汎用CPU task scheduler、異種execution
 linker、動画encode/decodeは未実装である。後者は必要性と計測を確認してから個別WPにする。
-WP221ではrendererのflat/XR compileを一つの内部`RenderCompilerProgram`へ束ね、
+WP221ではrendererのflat/preview/XR compileを一つの内部`RenderCompilerProgram`へ束ね、
 共通plannerを使わないbackend-native programもopenなVulkan physical packageへ
-収束できる最初の実行境界を追加した。
+収束できる実行境界を追加した。previewは同じinvocationのdata-only artifactである。
 
 本書は、renderer 固有の [`design_render_graph_compiler.md`](design_render_graph_compiler.md)
 と、現行 render / GPU compute 依存グラフの
@@ -81,7 +81,7 @@ logical color / depth、material、tile GPU、Vulkan physical plan の詳細は�
 20. 複数のartifact段階は、一つの固定compiler algorithmを強制しない。最上位
     `RenderCompilerProgram`はportable helperを組み合わせても、隣接dialectを一つの
     source programで連続loweringしても、backend-native packageを直接作ってもよい。
-    必須なのはpublish時のbackend package closureとprovenanceである。
+    必須なのはruntime publish時のbackend package closureと、全artifactのprovenanceである。
 
 ## 1. 用語
 
@@ -99,7 +99,7 @@ logical color / depth、material、tile GPU、Vulkan physical plan の詳細は�
 | bridge obligation | CPU↔GPU、backend↔backend 等を接続する必要があるという data-only 契約 |
 | physical plan | backend object を作る直前まで具体化した immutable data |
 | prepared plan | object 作成済みだが未 publish で、失敗時に破棄できる candidate |
-| compiler program | 一回のtransactionでvariant family全体をphysical packageまで制御する最上位実装 |
+| compiler program | 一回のtransactionでvariant family全体のruntime/data-only artifactを制御する最上位実装 |
 
 本書で「tree」と呼ばないのは、実際の依存が fan-in / fan-out、共有 value、effect edge を
 持つ DAG / hypergraph だからである。UI 上の所有階層や region tree は、実行依存とは別の
@@ -194,6 +194,11 @@ immutable artifact を作る兄弟 compiler とし、graph compiler は snapshot
 execution linker/finalizerを通す。engineはprovider snapshot、program selection、
 prepare/publish/rollback/retireを所有する。programのmode
 (`portable | mixed | backend_native`)はdiagnostic/provenanceであり、別runtime bypassではない。
+
+rendererのvariant requestは`runtime_package | data_only`を区別する。runtime artifactは
+backend physical packageを必須とし、data-only artifactはphysical packageを禁止して
+request-local consumerへ渡す。現在のpreviewは後者としてflat/XRと同じprogram invocationと
+provider snapshotを使うが、共有GPU registrationへは合流しない。
 
 ## 3. 共通 typed IR kernel と dialect
 

@@ -108,7 +108,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP218 | strategy-private arbitrary material outputs / typed MRT | ✅ 完了（2026-07-28）。任意長schema、UINT実GPU、MSAA、typed clear、reflection、reload rollback |
 | WP219 | material output attachment state | ✅ 完了（2026-07-28）。output別blend/write-mask、device capability、実GPU、reload rollback |
 | WP220 | material same-pixel local-read ABI | ✅ 完了（2026-07-29）。screen/resource input、sampler/input-attachment自動lowering、実GPU |
-| WP221 | top-level render compiler program / open backend package | ✅ 内部slice完了（2026-07-29）。flat/XR一括compile、mixed/native Vulkan package、provenance、実GPU |
+| WP221 | top-level render compiler program / open backend package | ✅ 内部slice完了（2026-07-29）。flat/preview/XR一括compile、runtime/data-only artifact、mixed/native Vulkan package、provenance、実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -193,9 +193,10 @@ typed integer image accessor、WP211 dist-bake、Quest/物理HMD gateである�
 ### WP221: top-level render compiler program / open backend package
 
 flat/XRのrender-config登録に固定されていたresolve、strategy、graph transform、
-subgraph replacement、frame/target planningを、一回の`RenderCompilerProgram` invocationへ
-抽出した。built-in programは従来の共通plannerとVulkan loweringを使う`mixed` modeであり、
-描画挙動を変えない。
+subgraph replacement、frame/target planningと、別経路だったpreview resolveを、一回の
+`RenderCompilerProgram` invocationへ抽出した。runtime variantでは従来の共通plannerと
+Vulkan loweringを使う`mixed` modeであり、描画挙動を変えない。previewは同じinvocationと
+provider snapshotを使う`data_only` artifactで、request-local executorだけが消費する。
 
 共通interfaceはopenなbackend context / physical packageだけを所有し、Vulkan format、
 physical device、render-target definition、target planは
@@ -206,8 +207,9 @@ program selectionはengineが`CompiledRenderPipeline`へstampし、dump metadata
 
 受け入れ結果と残した境界は
 [`design_reviews/2026-07-29_wp221_render_compiler_program_report.md`](design_reviews/2026-07-29_wp221_render_compiler_program_report.md)
-を正とする。preview統合、complete raw Vulkan plan / `NativeScope`、Metal package、
-CPU/external linker、公開game-DLL ABIは後続である。
+を正とする。previewへのruntime transform / tagged subgraph / physical-plan表示、
+complete raw Vulkan plan / `NativeScope`、Metal package、CPU/external linker、
+公開game-DLL ABIは後続である。
 
 ### XR2b 分割 WP の逐語条件と所有権
 

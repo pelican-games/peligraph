@@ -67,6 +67,7 @@ surface変更はlogical authoringを書き換えず、変更されたtarget fact
 v2.6 / WP221は、標準二段階facadeを必須言語にせず、一つの内部
 `RenderCompilerProgram`からportable / mixed / backend-nativeの各実装を選べる境界を追加した。
 全modeはopenなbackend physical package、既存GPU arena、単一publicationへ収束する。
+flat/preview/XRは同じinvocationへ入り、previewは共有GPU登録を持たないdata-only artifactとする。
 
 関連文書:
 
@@ -184,11 +185,16 @@ project JSON / preset / feature / settings
 CPU を Vulkan compiler の上下へ挿入しない。graphics / GPU compute / transfer は同じ
 Vulkan physical plan で resource と synchronization を全体解決する。
 
-WP221時点では、この図全体のflat/XR制御を`RenderCompilerProgram::compile()`の一回の
+WP221時点では、この図全体のflat/preview/XR制御を`RenderCompilerProgram::compile()`の一回の
 invocationが所有する。built-in programはlogical helperとVulkan target compilerを使う
 `mixed`実装である。別programは同じhelperを組み替えても、最初から
 `VulkanRenderCompilerPhysicalPackage`を構築してもよい。backend packageはclosed enumでなく
 open interfaceであり、将来Metalを加える際もVulkan物理型の共通最小公倍数へ丸めない。
+preview requestは同じprovider snapshotとprogram provenanceを使うが、request-local
+`PreviewExecutor`向けなのでphysical packageを返さずGPU arenaへ登録しない。
+現在のdata-only adapterはfeature / graph-variant / strategy resolveまでを共有し、runtime
+host addition、logical transform、tagged subgraph、device physical planningは適用しない。
+これらのpreview表示が必要になるまでは、target storageを仮定するruntime処理へ接続しない。
 
 論理グラフは物理グラフの完全なモデルではない。一つの logical value が物理 image を
 持たない場合、複数 logical pass が一つの rendering scope へ融合される場合、または
@@ -562,8 +568,9 @@ light-data use、port、resource、effect、target plan、Vulkan handleは変更
 contract fingerprintとprovider owner / identity / generation / version / capabilityは
 `PassImplementationSelection`としてcompiled passに残す。
 
-flat / preview / XRを一括prepareするtransactionは、一つのimmutable registry snapshotを
-全variantの解決からpublication CAS完了まで保持する。owner release / DLL unloadはsnapshot
+flat / preview / XRを一括prepareするtransactionは、一つのprogram invocationとimmutable
+registry snapshotを全variantの解決からpublication CAS完了まで保持する。owner release /
+DLL unloadはsnapshot
 解放を待つ。callback内からregister / unregisterを再入してはならず、入力pointerを保持しては
 ならない。出力stringは入力rangeをaliasしてよい。それ以外はprovider unregisterまで有効な
 immutable storageに置き、engineはlease解放前にcopyする。
@@ -987,7 +994,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE12b / WP204 tile-local-runtime slice（済 2026-07-26） | same-pixel read、physical scope fusion、dynamic rendering local read | input-attachment shader ABI、single-view/multiview、materialized fallback |
 | RPE12b / WP204 alias-runtime slice（済 2026-07-26） | lifetime非重複imageのruntime group、VMA allocation共有、alias memory dependency | variant完全合意、generation分離、rollback/recreate、headless実描画 |
 | RPE12b / WP204 dependency-safe-scope slice（済 2026-07-26） | version 3 scope mode、dependency-preserving reorder、materialized scope fusion | lifetime再計算、physical-order scheduler、単一dynamic-rendering instance、compute/render headless hot reload、multiview回帰 |
-| RPE12c / WP221（済 2026-07-29、内部slice） | variant-family単位の`RenderCompilerProgram`、open backend context/package、Vulkan-native bypass、trusted provenance | backend-native CPU fixture、backend/graph/index reject、custom headless registration、hybrid/GPU arena回帰 |
+| RPE12c / WP221（済 2026-07-29、内部slice） | flat/preview/XR variant-family単位の`RenderCompilerProgram`、runtime/data-only artifact、open backend context/package、Vulkan-native bypass、trusted provenance | backend-native CPU fixture、backend/graph/index reject、custom headless registration、coordinated preview reload、hybrid/GPU arena回帰 |
 
 ### 12.1 いま着手する範囲
 

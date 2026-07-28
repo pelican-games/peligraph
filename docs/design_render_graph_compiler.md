@@ -14,9 +14,9 @@ v1.1 は CPU、GPU compute、将来の specialized device operation を縦の co
 増やさず、共通 typed dialect と横方向の backend domain へ接続する境界を明記した。異種
 execution 全体の正は
 [`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) とする。
-WP221ではflat/XRの既存compile列を一つの内部`RenderCompilerProgram`へ抽出し、
+WP221ではflat/preview/XRの既存compile入口を一つの内部`RenderCompilerProgram`へ抽出し、
 共通plannerを使う標準経路とVulkan-only経路が、同じ検証済みbackend physical packageへ
-合流できる最初のruntime sliceを追加した。
+合流できるruntime sliceを追加した。previewは同じinvocation内のdata-only artifactである。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -198,6 +198,11 @@ programには次の三つの実装modeを記録する。
 | `mixed` | 一つのprogram内で共通plannerとbackend固有passを組み合わせる |
 | `backend_native` | 共通plannerを必須入力にせず、backend固有physical packageを直接構築する |
 
+variant requestは`runtime_package | data_only`のartifact kindを持つ。前者だけがbackend
+physical packageを要求して共有GPU registrationへ進み、後者は同じprovider snapshotと
+program provenanceを使いながらrequest-local consumerへ渡る。現在のpreviewは後者である。
+verifierはruntime packageの欠落とdata-onlyへのphysical package混入をともに拒否する。
+
 modeは安全性等級ではなくprovenanceである。どのmodeでも、backend名、variant集合、
 frame graph集合、backend package内部indexをengine verifierが検査し、programの
 name / implementation / backend / modeを`CompiledRenderPipeline`へ信頼済みprovenanceとして
@@ -215,10 +220,12 @@ GPU registry checkpoint、runtime prepare、単一publication、rollback/retire�
 compiler programはlive moduleやGPU objectを所有しない。標準programが必要なhost-owned
 logical追加は明示callbackで受け、candidate内にだけ適用する。
 
-WP221時点の実装範囲はflat/XRの内部C++ seamとVulkan packageである。preview compiler、
-complete raw Vulkan plan builder、`NativeScope`、Metal package、CPU/external linker、
-game-DLL向け安定ABIは未統合である。backend-native programも現runtime adapterが必要とする
-normalized pass config、frame plan、buffer/compute definitionは現在返す必要がある。
+WP221時点の実装範囲はflat/preview/XRの内部C++ seamとVulkan packageである。previewは
+同じprogram invocationでcompileされるが、data-only adapterはfeature / graph-variant /
+strategy resolve後で止まり、runtime transform、tagged subgraph、device physical planningへ
+入らない。complete raw Vulkan plan builder、`NativeScope`、Metal package、CPU/external
+linker、game-DLL向け安定ABIも未統合である。backend-native programは現runtime adapterが
+必要とするnormalized pass config、frame plan、buffer/compute definitionを現在返す必要がある。
 
 ## 2. 論理型: 閉じた構造と開いた意味
 
@@ -1520,11 +1527,11 @@ gate:
 
 ### RPE12c — top-level compiler program / open backend package
 
-状態: **WP221の最初のruntime sliceを実装済み(2026-07-29)**。
+状態: **WP221のruntime / coordinated preview sliceを実装済み(2026-07-29)**。
 `renderingpassconfigregistration`に固定されていたauthoring resolve、strategy、
-graph transform、tagged subgraph、frame/target planningの列を、flat/XR variant familyを
-一度に受ける`RenderCompilerProgram`へ移した。built-inは従来列を使う`mixed` modeであり、
-既定描画結果を変えない。
+graph transform、tagged subgraph、frame/target planningの列を、flat/preview/XR variant
+familyを一度に受ける`RenderCompilerProgram`へ移した。built-inはruntime variantで従来列を
+使う`mixed` modeであり、既定描画結果を変えない。
 
 共通program headerはbackend context / physical packageのopen interfaceだけを持ち、
 Vulkan context/packageを別headerへ分けた。Vulkan packageはrender-target definition、
@@ -1536,6 +1543,11 @@ source-levelの差し替えprogramは標準plannerを呼ばずに同じVulkan pa
 また標準programへ委譲しつつ前後に独自logicを置ける。どちらも既存GPU arena、
 prepare-generation、単一publish、rollback/retireを迂回しない。
 
+preview requestは`data_only` artifactとしてruntime request列と同じinvocationへ入り、
+typed compiled pipelineとprogram provenanceを保持する。physical packageを返すことは禁止し、
+request-local `PreviewExecutor`だけが消費する。reloadではruntime GPU candidateの採用が
+完了した場合だけ対応するpreviewを採用し、失敗時は両方の旧generationを維持する。
+
 gate:
 
 - backend-native fixtureがcommon plannerを呼ばずにVulkan packageを返せる
@@ -1543,10 +1555,12 @@ gate:
 - custom programを実headless registrationへ注入し、一回だけvariant familyをcompileする
 - program provenanceがpublished `CompiledRenderPipeline`へ残る
 - built-in `hybrid_v1`描画とGPU arena rollback/replacementを維持する
+- previewとruntimeが同じprogram provenanceを持つ
+- valid reloadで両方を更新し、invalid reloadで両方を旧generationへ戻す
 
 未完了:
 
-- preview compileを同じprogram invocationへ統合
+- previewへのruntime transform / tagged subgraph / physical-plan表示
 - complete raw Vulkan plan builderと`NativeScope`
 - Metal backend context/packageと共通planner再利用fixture
 - CPU/external physical packageとexecution linker
