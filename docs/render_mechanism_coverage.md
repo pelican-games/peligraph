@@ -1,14 +1,16 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v8)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v10)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v9(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v10(2026-07-28)**。84 行の技法候補を現行コードとテストへ再照合し、
 WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
-mip/layer/subresource viewまで反映した。
+mip/layer/subresource view、WP218の任意長・型付きmaterial output ABIまで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
-3D/cube targetとraster attachment subresourceは後続である。監査記録は
-[`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
+3D/cube targetとraster attachment subresource、attachment別blend/local-read material inputは
+後続である。監査記録は
+[`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md) と
+[`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)。
 
 ## 0. 判定規則
 
@@ -34,7 +36,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | 機構 | 現在の契約 | 根拠 |
 |---|---|---|
 | render target | fixed/output-relative extent、format/class/role、usage、history、format candidates、fixed/full mip、array layers、fullscreen/compute subresource view | [rendertargetjsonparser.cpp](../src/core/renderingpass/rendertargetjsonparser.cpp) |
-| MRT / MSAA | material/fullscreen の複数 color、typed sample-count resolve | [renderingsamplecount.cpp](../src/core/renderingpass/renderingsamplecount.cpp) |
+| MRT / MSAA | materialは版付きschemaで任意長のfloat/SINT/UINT color output、typed sample-count resolve、target別typed clear。上限はdeviceの`maxColorAttachments`だけ。fullscreenは現在1 color/pass | [materialoutput.hpp](../src/project/materialoutput.hpp) |
 | fullscreen input | image **および storage buffer**、image は filter/address 指定 | [fullscreenpasscontainer.cpp:281](../src/core/fullscreenpass/fullscreenpasscontainer.cpp) |
 | material surface | `displace` / `surface` / `brdf` / `lighting`、custom params/texture、generated accessor | [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp) |
 | material render state | opaque/blend/**additive**、none/**front**/back cull、depth test/write/compare | [surfaceformat.cpp:530](../src/project/surfaceformat.cpp) |
@@ -56,6 +58,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
 | object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
+| material output state | output枚数・順序・型・sourceは公開済み。attachment別blend/write-maskは未公開(G17)、material/custom rasterからのsame-pixel local-readは未公開(G18) |
 
 ## 2. 技法別判定(84 行)
 
@@ -133,7 +136,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | F2 | TAA | **○** | bundled feature 実装 |
 | F3 | temporal upscale | **○** | history/velocity/jitter と render/output resolution 分離を実装済み。品質algorithmはuser-space |
 | F4 | SSAO/HBAO | **○** | example 実装 |
-| F5 | GTAO + bent normal | **△** | AO は可。G-buffer/lighting consumer の追加が必要 |
+| F5 | GTAO + bent normal | **△** | 追加G-buffer output自体はWP218で可能。AO producerとlighting consumerのproject dogfoodが未作成 |
 | F6 | depth of field | **△** | fullscreen/downsample で構成可能。実 feature 未作成 |
 | F7 | motion blur | **△** | velocity は実装済み。blur feature 未作成 |
 | F8 | LUT color grading | **○** | 2D stripとstatic 3D LUTを利用可能(WP209a) |
@@ -147,11 +150,11 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 |---|---|---|---|
 | G1t | sorted transparency | **○** | `forward_transparent_v1` + draw sort provider |
 | G2t | inverted-hull outline | **○** | WP206bのproject-owned surface/pass dogfoodで、entity/mesh/base material/draw複製なしにfront-cull forward overlayを実GPU描画 |
-| G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式もmultipass/MRT routeのdogfoodが必要。PPLLはfragment write/atomic、descriptor table、custom geometry contract不足(G9/G15) |
+| G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式の複数typed outputは可能だがattachment別blend/write-mask(G17)とdogfoodが必要。PPLLはfragment write/atomic、descriptor table、custom geometry contract不足(G9/G15) |
 | G4t | stochastic transparency | **△** | dither/mask は可。TAA integration の品質調整が必要 |
 | G5t | refraction/glass | **○** | material screen input 実配線・描画済み |
 | G6t | additive effect | **○** | `.surface render_state.blend: additive` 実装・test済み |
-| G7t | deferred decal | **△** | ping-pong/fullscreenとmaterial tag選別は可。instance単位選別とG-buffer更新方式にG14/G15 |
+| G7t | deferred decal | **△** | G-buffer schema拡張とping-pong/fullscreenは可。mesh decalにはinstance単位選別(G14)とmaterial local-read/選択write(G17/G18)が必要 |
 
 ### H. geometry / performance
 
@@ -222,11 +225,14 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G14** | material-owned stable tag/filterは実装済みだが、instance/draw-owned tag/layerが未公開 | 同じmaterialを共有するinstanceの個別SSS/outline/decal/reflection |
 | **G15** | material/geometry pass contractがv1閉集合 | custom geometry stage/output |
 | **G16** | stencil state/resource semanticsが未公開 | stencil mask/portal |
+| **G17** | material outputごとのblend equation / write maskが未公開。現pipelineは全color attachmentへ同じstateを複製する | weighted OIT、選択的G-buffer更新 |
+| **G18** | fullscreen same-pixel local-read subsetは実装済みだが、material/custom raster shaderのinput-attachment ABIが未公開 | tile GPU上のdeferred lighting/decal、subpass相当の融合 |
 
 ## 4. dogfood の扱い
 
-v2 の raster tiled lighting例は `R32G32B32A32_UINT` がformat parserに無く、
-標準light inventoryも32灯なので、動作証明になっていなかった。今後は次の順で判定する。
+v2 の raster tiled lighting例は当時 `R32G32B32A32_UINT` がformat parserに無く、
+標準light inventoryも32灯なので動作証明になっていなかった。formatとUINT material outputは
+WP218、light inventoryはWP208で解消したが、個別技法は引き続き次の順で判定する。
 
 1. project-owned feature/surface/shaderだけで最小fixtureを書く。
 2. compile/plan dumpだけでなく、headless Vulkanの画素またはbuffer結果を検証する。

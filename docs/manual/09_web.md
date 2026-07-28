@@ -59,9 +59,9 @@ pelican2 のプロジェクト(`project.json` + passes/scenes/assets)は、ネ�
 
 ### rendering config の web 対応範囲
 
-web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 10 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、G-buffer 5 枚契約(native と同一の検証)。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` は web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
+web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
 
-括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-21 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマット 10 種とパス 8 種の完全な一覧は [第6章](06_rendering.md) を参照してください。
+括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-28 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマットとパス種別の説明は [第6章](06_rendering.md) を参照してください。
 
 ## 9.4 シェーダ stem 規約 — 可搬シェーダの書き方
 

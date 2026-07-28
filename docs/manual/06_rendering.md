@@ -60,7 +60,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `name` | ✔ | `"swapchain"` は予約名(書くとエラー) |
 | `extent_scale` | ✔ | ウィンドウ(swapchain)サイズ × scale。> 0 |
 | `width` / `height` | 任意(両方セット) | 固定サイズ RT(シャドウマップ等)。片方だけはエラー |
-| `format` | ✔ | `B8G8R8A8_UNORM` / `B8G8R8A8_SRGB` / `R8G8B8A8_UNORM` / `R8G8B8A8_SRGB` / `R8_UNORM` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `R32_SFLOAT` / `D32_SFLOAT` / `D24_UNORM_S8_UINT` / `D16_UNORM` |
+| `format` | ✔ | 45 種。8/16/32-bit の `R` / `RG` / `RGBA` に対する UNORM・SNORM・UINT・SINT・SFLOAT、sRGB、10/11-bit packed、depth を受理する。完全な正は [`renderingpassjsonhelpers.cpp`](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) の `format_names` |
 | `format_candidates` | 任意 string 配列 | verified Vulkan physical fragment が選択してよい追加 format。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
 | `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバが実 format を決める(§6.3)✅WP73 |
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
@@ -83,13 +83,14 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
 | `clear_color` | 任意 | `[0,0,0,1]` | 4 要素固定 |
+| `clear_colors` | 任意 | — | `output.color` の RT 名をキーにした attachment 別 clear。未指定の attachment は `clear_color` を使う。UINT/SINT RT では整数範囲・整数値を起動時検証 |
 | `after` / `before` | 任意 | — | フレームグラフの明示エッジ(§6.6) |
 
 主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 RT は同一サイズ / 同一 RT の入出力同時使用は不可 / input に書いた RT は先行パスが出力していること。
 
 ### type 別の要点
 
-- **`material`** — シーン内の全モデルを描く G-buffer パス。**color 出力はちょうど 5 枚**。カラーパイプライン移行後の契約は SDR 時 `B8G8R8A8_SRGB(albedo), R16G16B16A16F(normal), R8G8B8A8_UNORM(material), R16G16B16A16F(worldpos), B8G8R8A8_SRGB(emissive)`、depth は `D32_SFLOAT` 固定(HDR 時は albedo/emissive が float16 変種)。`shader` は書けません。
+- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。明示した場合は**順序・枚数・数値型を任意に定義**でき、固定のエンジン上限はありません。実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
 - **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む(最大 8 入力)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
@@ -755,6 +756,73 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 s
 - **フック梯子 v1(凍結)**: `pelican_vertex_displace_v1` / `pelican_surface_v1` / `pelican_brdf_v1` / `pelican_ambient_v1` / `pelican_lighting_v1`。書いた関数がそのまま宣言になります。`brdf` と `lighting` は排他、未知の `pelican_` 関数定義やフックゼロはロードエラー。
 - スニペットはエンジン所有テンプレート(`engine://shaders/material/surface_v1.{vert,frag}`)へ逆 include され、エラーは `#line` で元ファイル名・行番号に翻訳されます。パラメータへは自動生成アクセサ `pelican_param_<name>()` / `pelican_sample_<name>(uv)` でアクセスします。
 - 同梱の standard / toon ライティングも**同じ公開経路**で書かれています(特権なし standard library。dogfooding)。
+
+### 任意 G-buffer / material output ABI（✅WP218）
+
+G-buffer はエンジン固定の5スロットではありません。material pass が
+`pelican.material_outputs` v1 を宣言すると、`outputs[]` の配列順が fragment shader の
+`location = 0..N-1` と `output.color` の RT 順になります。`N` にエンジン独自の上限はなく、
+Vulkan デバイスの `maxColorAttachments` と、選択した format / MSAA の capability だけを
+検証します。
+
+```json
+{
+  "name": "deferred_geometry",
+  "type": "material",
+  "material_contract": "deferred_geometry_v1",
+  "material_outputs": {
+    "schema": "pelican.material_outputs",
+    "version": 1,
+    "name": "my_renderer.extended_gbuffer",
+    "outputs": [
+      { "name": "albedo",    "type": "vec4", "source": "surface.base_color" },
+      { "name": "normal",    "type": "vec4", "source": "surface.normal_encoded" },
+      { "name": "material",  "type": "vec4", "source": "surface.material" },
+      { "name": "world_pos", "type": "vec4", "source": "input.world_position" },
+      { "name": "emissive",  "type": "vec4", "source": "surface.emissive" },
+      { "name": "object_id", "type": "uint", "source": "custom" }
+    ]
+  },
+  "output": {
+    "color": [
+      "gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+      "gbuffer_world_pos", "gbuffer_emissive", "gbuffer_object_id"
+    ],
+    "depth": "offscreen_depth"
+  },
+  "clear_colors": {
+    "gbuffer_object_id": [4294967295, 0, 0, 0]
+  }
+}
+```
+
+`type` は `float/vec2/vec3/vec4`、`int/ivec2/ivec3/ivec4`、
+`uint/uvec2/uvec3/uvec4`。RT format と floating / SINT / UINT の数値クラスが一致しない
+設定は GPU pipeline 作成前に拒否します。組み込み `source` は
+`surface.base_color`、`surface.normal`、`surface.normal_encoded`、
+`surface.material`、`input.world_position`、`surface.emissive`、
+`lighting.scene_color`。独自の packing や object ID は `custom` にして `.surface` から
+名前付きフィールドへ代入します。
+
+```glsl
+void pelican_material_outputs_v1(
+    in PelicanSurfaceInputV1 input_data,
+    in PelicanSurfaceV1 surface,
+    inout PelicanMaterialOutputsV1 outputs) {
+    outputs.object_id = 73u;
+}
+```
+
+生成後の SPIR-V reflection は全 location と数値型を宣言スキーマへ照合します。
+flat / XR variant は同じ route に同一スキーマを要求します。graph の hot reload で
+生存中 material の schema・format・MSAA・local-read contract を変える場合、現状は
+候補世代を拒否して旧世代を維持します。これは不整合 pipeline を公開しないための境界で、
+graph と material surface を同時に再構築する将来の coordinated transaction とは別です。
+
+`material_outputs` を省略した pass は既存プロジェクト向けの内蔵5-MRT/1-color ABIを
+維持します。独自スキーマは生成 fragment shader が必要なため、現時点では runtime
+shader compiler を有効にした開発ビルドで使います。shaderc OFF の配布物は
+`dist-bake`（WP211）の生成物へ移す予定です。
 
 ### compute/別passのresourceをmaterialから読む（✅WP207b）
 

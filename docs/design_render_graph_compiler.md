@@ -986,6 +986,45 @@ gate:
 - current runtimeは明示したtransient/tile-local/alias subsetの外を実装済みと偽らない
 - standard/hybrid headless、feature composition、XR回帰、全CTestが成功する
 
+### RPE8c / WP218 — strategy-private material output ABI
+
+状態: **実装済み（2026-07-28）**。WP191は任意名・追加枚数のtarget topologyを
+physical planへ運べたが、material fragment shaderとgraphics pipelineには従来の
+5-MRT ABIが残っていた。WP218でこの最後の固定境界を、版付き
+`pelican.material_outputs` schemaへ置き換えた。
+
+compile順序は次で固定する。
+
+1. renderer strategy / material passが、順序付きoutput名、GLSL型、builtin/custom sourceを
+   data-only schemaとして宣言する
+2. graph compilerがschema順と`output.color`順、route variant間のschema同一性、
+   target numeric classを照合する
+3. target plannerがattachment component、physical format、sample count、resolveを決め、
+   deviceの`maxColorAttachments`とformat/sample capabilityを検証する
+4. surface compilerがschemaからfragment output struct/location/writeを生成し、
+   shader reflectionが全location/typeを宣言へ照合する
+5. material pipelineはcompiled routeの実color/depth format、MSAA、local-read mappingを
+   snapshotする。hot reload candidateがこのcontractを変える場合はpublish前に拒否し、
+   旧runtime generationを維持する
+
+logical schemaにengine-ownedな枚数上限はない。Vulkan deviceの物理上限を超えた入力は
+診断付きで失敗し、compilerが暗黙のmultipassへ分割してsemanticを変えない。
+schema省略時だけ既存5-MRT/1-color pathを使うため、標準presetへ常時の詳細記述を要求しない。
+integer output、target別clear、history初期化は最終formatのSINT/UINT classで値を作る。
+
+gate:
+
+- 6枚目の`R32_UINT` custom G-bufferをgenerated `.surface` shaderから実GPU描画する
+- schemaのlocation/type、pass output順、physical plan targetを相互照合する
+- MSAA requestを同じattachment componentへlowerし、resolve後のUINT sampleを確認する
+- target別UINT clearとmaterial-written IDを同じframeで区別してreadbackする
+- incompatible hot reloadはcandidateをrollbackし、同一の旧generationで次frameも描画する
+- flat/XR schema不一致、device上限超過、numeric class不一致をGPU pipeline作成前に拒否する
+
+後続境界は、coordinated graph+surface hot reload、shaderc OFF向けdist-bake、
+material local-read input ABI、attachment別blend/write-maskである。これらはoutput枚数を
+再固定せず、同じschema/physical-contract seamへ追加する。
+
 ### それ以後
 
 RPE9 / WP192 では XR / preview の ad-hoc callback を typed

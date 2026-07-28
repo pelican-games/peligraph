@@ -339,6 +339,23 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface,
 未知の `pelican_` 定義、terminal hook 併存、空または既知 hook ゼロの snippet は、
 surface 名を含むロードエラーになる。
 
+material passが`pelican.material_outputs` v1を宣言した場合だけ、strategy-privateな
+追加hookを生成する。
+
+```glsl
+void pelican_material_outputs_v1(
+    in PelicanSurfaceInputV1 surface_input,
+    in PelicanSurfaceV1 surface,
+    inout PelicanMaterialOutputsV1 outputs);
+```
+
+`PelicanMaterialOutputsV1`のfield列はbase ABIの固定structではなく、pass schemaから
+materialごとに生成される。field名・GLSL型・順序はschemaがauthorityであり、fragment
+locationと`output.color`順へ同時にlowerする。hookを書かない場合もbuiltin sourceと
+型付きzero defaultで全fieldを初期化する。hookを書けるのは対応schemaを持つpassへ
+compileするときだけで、schemaなしのlegacy shaderでは未知hookとして拒否する。
+reflectionは全output locationのnumeric typeをschemaへ照合する。
+
 公開 source library は `engine://shaders/include/pelican_surface_v1.glsl` と
 `engine://shaders/include/pelican_lighting_v1.glsl` である。後者は
 `pelican_light_count()`、`pelican_light(i, world_position)`、

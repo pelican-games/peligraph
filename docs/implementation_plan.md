@@ -105,6 +105,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP215 | transactional window output root / frame token | 実装済み |
 | WP216 | nonblocking SwapchainEpoch / XR mirror retirement | 実装済み・XR実機 gate待ち |
 | WP217 | SurfaceEpoch recreation / present support revalidation | 実装済み・live fault gate済み・manual platform gate待ち |
+| WP218 | strategy-private arbitrary material outputs / typed MRT | ✅ 完了（2026-07-28）。任意長schema、UINT実GPU、MSAA、typed clear、reflection、reload rollback |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -122,7 +123,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP214、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP218、2026-07-28。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -134,6 +135,19 @@ Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 - [`design_reviews/2026-07-26_wp213_report.md`](design_reviews/2026-07-26_wp213_report.md)
 - [`design_reviews/2026-07-26_wp214_report.md`](design_reviews/2026-07-26_wp214_report.md)
+
+### WP218: strategy-private arbitrary material outputs
+
+固定5-MRTの既定動作を残しつつ、renderer strategyが順序・枚数・型を定義できる
+`pelican.material_outputs` v1を実装した。logical schemaにengine上限はなく、
+physical compile時にdeviceの`maxColorAttachments`とformat/sample capabilityを照合する。
+generated surface shader、SPIR-V reflection、material route、frame graph、MSAA resolve、
+SINT/UINT clear/history、flat/XR整合性、hot reload rollbackを同じcontractへ接続した。
+
+受け入れ結果と意図的に残した境界は
+[`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)
+を正とする。次にこの境界へ追加する候補は、attachment別blend/write-mask、
+material local-read input、graph+surface coordinated reload、WP211 dist-bakeである。
 
 ### XR2b 分割 WP の逐語条件と所有権
 

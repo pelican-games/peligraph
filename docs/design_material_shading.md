@@ -305,8 +305,8 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
    コンテンツ)への別名**で、任意の stem も指せる(surface と同じ spv-link
    機構・同じ言語自由)。同梱はこの 2 個で打ち止め — 髪・布等は
    プロジェクト側スニペットの領分。注記: IBL/環境項は独自 BRDF と厳密には
-   整合しない(v1 は標準近似)。独自 BRDF は forward 専用(将来 deferred の
-   G-buffer は固定モデル前提)
+   整合しない(v1 は標準近似)。独自 BRDF は既定で forward。deferred に載せる場合は
+   renderer strategy が独自の encode schema と lighting consumer を対で定義する
 3. **スクリーン入力 = 名前付きスナップショット(v1.2 改訂)**: マテリアルが
    資源名を並べて自動配線させる方式は**廃止**(Godot の SCREEN_TEXTURE が
    踏んだ「コピーは 1 回だけ・透明は写らない・重なる屈折は前の結果を見ない」
@@ -447,6 +447,30 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
 - 詳細は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2〜§6 を正とする
 - artifact順序は
   [`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) §4.7を正とする
+
+**strategy-private material output ABI 追補（WP218、2026-07-28）**:
+
+- 上記の「G-buffer schema は strategy-private」を
+  `pelican.material_outputs` v1として実装した。schemaは名前と順序付き
+  `{name, type, source}`列からなり、配列位置がfragment output locationと
+  passの`output.color`位置を同時に決める。canonicalな「albedoはlocation 0」のような
+  engine enumは追加していない
+- output数にengine定数を置かない。logical schemaは任意長で、physical compile時に
+  deviceの`maxColorAttachments`、各targetのformat/sample capabilityを照合する。
+  物理上限を超えるschemaを自動multipass化して意味を変えることはしない
+- 型はfloating / SINT / UINTの3 numeric classと1〜4 componentを持つ。
+  builtin sourceはsurface/input/lightingの既知値を生成コードへ写し、`custom`は
+  `.surface`の`pelican_material_outputs_v1()`が名前付きfieldへ書く。
+  SPIR-V reflectionは宣言location/typeの一致確認だけを担当する
+- schemaを省略したpassだけは既存のdeferred 5-MRT / forward 1-color ABIへlowerする。
+  これは既定設定の記述量を増やさないcompatibility pathであり、新しいschemaの上限ではない
+- pass-wide `clear_color`に加え、target名で指定する`clear_colors`を持つ。
+  clearとhistory初期化は最終physical formatのnumeric classへ変換し、integer attachmentを
+  float unionとして解釈しない
+- flat/XR route間のschema差はcompile時に拒否する。hot reload時はlive material pipelineの
+  schema・format・MSAA・local-read contractを候補generationと照合し、不一致なら
+  candidateをpublishせず旧generationを保つ。graphとsurfaceを同時に再構築するtransactionは
+  後続境界として残す
 
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
 
