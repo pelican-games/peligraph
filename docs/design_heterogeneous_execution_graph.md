@@ -11,6 +11,9 @@ topology/probe、immutable/disposable lowering seam、desktop/tile physical plan
 scope orderへloweringし、version 3 fragmentのreorderと限定rendering-scope fusionを実行時まで
 接続した。これは既存GPU domain内の合流であり、汎用CPU task scheduler、異種execution
 linker、動画encode/decodeは未実装である。後者は必要性と計測を確認してから個別WPにする。
+WP221ではrendererのflat/XR compileを一つの内部`RenderCompilerProgram`へ束ね、
+共通plannerを使わないbackend-native programもopenなVulkan physical packageへ
+収束できる最初の実行境界を追加した。
 
 本書は、renderer 固有の [`design_render_graph_compiler.md`](design_render_graph_compiler.md)
 と、現行 render / GPU compute 依存グラフの
@@ -75,6 +78,10 @@ logical color / depth、material、tile GPU、Vulkan physical plan の詳細は�
     contract として信頼し、依存がなければ reorder / parallelize / fuse / alias の候補にする。
     `serial` / `exclusive` / `no_alias` / `isolate` は必要な作者だけが明示し、保守実行は
     debug / CI の診断 profile に限定する。
+20. 複数のartifact段階は、一つの固定compiler algorithmを強制しない。最上位
+    `RenderCompilerProgram`はportable helperを組み合わせても、隣接dialectを一つの
+    source programで連続loweringしても、backend-native packageを直接作ってもよい。
+    必須なのはpublish時のbackend package closureとprovenanceである。
 
 ## 1. 用語
 
@@ -92,6 +99,7 @@ logical color / depth、material、tile GPU、Vulkan physical plan の詳細は�
 | bridge obligation | CPU↔GPU、backend↔backend 等を接続する必要があるという data-only 契約 |
 | physical plan | backend object を作る直前まで具体化した immutable data |
 | prepared plan | object 作成済みだが未 publish で、失敗時に破棄できる candidate |
+| compiler program | 一回のtransactionでvariant family全体をphysical packageまで制御する最上位実装 |
 
 本書で「tree」と呼ばないのは、実際の依存が fan-in / fan-out、共有 value、effect edge を
 持つ DAG / hypergraph だからである。UI 上の所有階層や region tree は、実行依存とは別の
@@ -168,6 +176,25 @@ material / shader compiler はこの直列段階へ押し込まない。material
 contract と finite implementation candidate、shader compiler は SPIR-V / reflection 等の
 immutable artifact を作る兄弟 compiler とし、graph compiler は snapshot を参照する。
 
+### 2.2 artifact境界とprogram境界
+
+`CanonicalLogicalGraph`等のartifact境界は、すべてのprogramが同じ中間言語を生成しなければ
+ならないという規則ではない。標準programは共通typed kernel、target planner、backend lowererを
+再利用する。別programは次のいずれでもよい。
+
+- portable helperだけを組み替え、backend lowererへ渡す
+- logicalとbackend factsを同じ制御programから読み、複数passを連続実行する
+- common logical artifactを要求せず、backend-native physical packageを直接構築する
+
+共通plannerは**再利用可能な標準ライブラリ**であって、全backendが書かなければならない
+共通シェーディング言語やRHIではない。backend固有のcontext/packageはopenな名前空間と
+型で追加する。共通側に`CPU | Vulkan | Metal | Video`の閉じたpayload unionを置かない。
+
+どのprogramも、GPU objectを作らないCPU candidateを返し、backend package自身のverifierと
+execution linker/finalizerを通す。engineはprovider snapshot、program selection、
+prepare/publish/rollback/retireを所有する。programのmode
+(`portable | mixed | backend_native`)はdiagnostic/provenanceであり、別runtime bypassではない。
+
 ## 3. 共通 typed IR kernel と dialect
 
 ### 3.1 共通にする機構
@@ -202,9 +229,11 @@ dialect が合法な constructor、parameter の組、effect を verifier で定
 新しい semantic feature は private namespaced dialect から開始できる。二つ以上の独立実装が
 共有し、engine が変換の意味を理解する必要が生じたものだけを canonical dialect へ昇格する。
 
-### 3.3 隣接 dialect だけを同時に扱う
+### 3.3 artifact passは隣接dialectを基本にする
 
-lowering pass は source と直下の target dialect だけを同時に扱う。
+再利用可能な単独lowering passは、sourceと直下のtarget dialectだけを同時に扱うのを
+基本とする。これはartifactの責務を保つ規則であり、最上位compiler programのsource fileや
+制御関数を一段ごとに分断する規則ではない。
 
 ```text
 開始時: logical のみ legal
@@ -228,6 +257,13 @@ preserves           = { boundary types, effects, user pins }
 完了後の scheduler が上位 dialect object を参照し続けてはならない。診断用には stable origin
 id と provenance を残す。下位でも必要な上位情報は、明示的な constraint / hint / effect へ
 lower する。
+
+`mixed` programは、immutable canonical logical inputとbackend factsを同時に参照し、
+backend physical outputまで連続loweringしてよい。途中の上位operationを破壊したい場合は
+canonical graphを変更せず、unique-ownedな`TargetLoweringGraph` cloneだけを破壊する。
+engine追加nodeを含めてeliminateしてよいが、logical rewriteが後から必要になった時は
+lowered physical stateを逆変換せず、canonical inputからcandidateを作り直す。最終packageへ
+上位operationがlive参照として漏れないことをbackend verifierが確認する。
 
 ### 3.4 上位 operation と semantic evidence を分ける
 

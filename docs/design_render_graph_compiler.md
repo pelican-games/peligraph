@@ -1,8 +1,8 @@
-# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1.1)
+# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1.2)
 
 対象読者: レンダラ実装者、独自描画方式・最適化・Vulkan backend を実装する人。
 
-ステータス: v1.1 設計方針(2026-07-24)。公開 ABI は未凍結。RPE1〜RPE9と
+ステータス: v1.2 設計方針(2026-07-29)。公開 ABI は未凍結。RPE1〜RPE9と
 RPE10a runtime publication rootまで実装済み。
 RPE6b0の純CPU logical graph、RPE6b1のcolor/depth screen-input contractに加え、
 RPE6c0/1でdata-only topology/probe、`ResourcePattern`、desktop/tile physical plan fixture、
@@ -14,6 +14,9 @@ v1.1 は CPU、GPU compute、将来の specialized device operation を縦の co
 増やさず、共通 typed dialect と横方向の backend domain へ接続する境界を明記した。異種
 execution 全体の正は
 [`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) とする。
+WP221ではflat/XRの既存compile列を一つの内部`RenderCompilerProgram`へ抽出し、
+共通plannerを使う標準経路とVulkan-only経路が、同じ検証済みbackend physical packageへ
+合流できる最初のruntime sliceを追加した。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -50,6 +53,10 @@ execution 全体の正は
     CPU や specialized GPU 機能を `PassKind` の閉じた enum へ足し続けない。
 12. 中間層では typed `GraphFragment`、全層では非連結 component を許す。publish 前の
     physical execution plan は connected でなく closed であることを要求する。
+13. 外から見えるcompile rootは一つの`RenderCompilerProgram`とする。共通plannerは既定実装が
+    再利用するライブラリであって必須言語ではない。portable、logical/physical混在、
+    backend-nativeのいずれもbackend固有physical packageへ収束し、同じprepare / publish
+    transactionを通る。
 
 本設計は Vulkan を隠す RHI の設計ではない。現在の backend は Vulkan 専用であり、
 物理計画も Vulkan の能力を完全に利用できる。論理層はその部分集合を移植可能に
@@ -175,6 +182,43 @@ RenderRuntime               publish 済み plan の実行
 
 現行 `CompiledRenderPipeline` は policy manifest の実装まで完了しており、
 `CompiledLogicalGraph` を段階的に追加する。新 root 型へ一括 rename しない。
+
+### 1.5 一つの`RenderCompilerProgram`
+
+段階が複数あることと、利用者が複数のcompilerを個別に起動することは別である。
+`RenderCompilerProgram`は、同時公開するflat/XR等のvariant familyとimmutable provider
+snapshot、target/backend contextを一度に受け、一組のCPU candidateを返す最上位の制御単位に
+する。実装ファイルは責務別に分けてよいが、選択されたprogramから見るcompileは一本である。
+
+programには次の三つの実装modeを記録する。
+
+| mode | 意味 |
+|------|------|
+| `portable` | 共通logical / execution planningを主に使い、backend lowererへ委譲する |
+| `mixed` | 一つのprogram内で共通plannerとbackend固有passを組み合わせる |
+| `backend_native` | 共通plannerを必須入力にせず、backend固有physical packageを直接構築する |
+
+modeは安全性等級ではなくprovenanceである。どのmodeでも、backend名、variant集合、
+frame graph集合、backend package内部indexをengine verifierが検査し、programの
+name / implementation / backend / modeを`CompiledRenderPipeline`へ信頼済みprovenanceとして
+stampする。programが自己申告したpipeline metadataをそのまま信用しない。
+
+共通側は閉じた`Vulkan | Metal | ...` variantを持たない。
+`RenderCompilerBackendContext`と`RenderCompilerBackendPhysicalPackage`はbackend名を持つ
+open境界であり、Vulkanのformat、device、target plan、render-target descriptionは
+`VulkanRenderCompiler...`側が所有する。将来Metalを実装するときは共通plannerの候補生成や
+cost logicをライブラリとして共有できるが、Metal固有表現をVulkan型へ丸めない。
+逆にVulkanだけを試したいprogramは共通logical言語を記述せず、Vulkan packageを直接返せる。
+
+engine composition rootは引き続きprovider snapshot取得、backend context取得、
+GPU registry checkpoint、runtime prepare、単一publication、rollback/retireを所有する。
+compiler programはlive moduleやGPU objectを所有しない。標準programが必要なhost-owned
+logical追加は明示callbackで受け、candidate内にだけ適用する。
+
+WP221時点の実装範囲はflat/XRの内部C++ seamとVulkan packageである。preview compiler、
+complete raw Vulkan plan builder、`NativeScope`、Metal package、CPU/external linker、
+game-DLL向け安定ABIは未統合である。backend-native programも現runtime adapterが必要とする
+normalized pass config、frame plan、buffer/compute definitionは現在返す必要がある。
 
 ## 2. 論理型: 閉じた構造と開いた意味
 
@@ -690,19 +734,26 @@ dump する。まず CPU-only mock profile で両計画を検証し、その後 
 ### 7.2 三つの入口
 
 ```text
-通常:
-  Request -> Logical -> VulkanPhysicalPlan -> Prepared
+通常(`portable` / `mixed`):
+  Request -> optional common planning -> VulkanPhysicalPackage
+          -> backend verifier -> Prepared
 
-物理グラフ直書き:
-  PhysicalPipelinePackage -> validate -> Prepared
+Vulkan-only(`backend_native`):
+  VulkanPhysicalPackage -> backend verifier -> Prepared
 
 生 Vulkan:
-  Logical/Physical graph -> NativeScope -> Prepared/Runtime
+  optional Logical/Physical graph -> NativeScope
+          -> VulkanPhysicalPackage -> backend verifier -> Prepared/Runtime
 ```
 
 `PhysicalPipelinePackage` は logical graph 全体を要求せず、外部へ公開する入力・出力・effect
 の `BoundaryContract` を持つ。engine は boundary と外側の lifetime / synchronization を
 検証し、内部を logical optimizer へ持ち上げない。
+
+共通plannerを使うかどうかはprogram実装の選択であり、publish contractではない。
+標準programのhelperを一部だけ再利用することも、Vulkan-only programが最初から
+Vulkan packageを作ることもできる。両者を分けるのはsource codeの見通しとprovenanceであり、
+runtimeへ未検証の別経路を増やすことではない。
 
 package は link 前の open physical fragment であってよいが、publish される plan では必須
 import、resource ownership、completion がすべて解決済みでなければならない。独立した
@@ -782,6 +833,8 @@ logical graph へ戻す round-trip は保証しない。
   prepare 完了まで世代 lease を保持する。
 - compile は side state で行い、logical + physical + material route + GPU candidate を一括
   prepare して frame boundary publish する。
+- 同時公開するvariant familyは一つの`RenderCompilerProgram` invocationでcompileし、
+  program selectionもgeneration metadataへ残す。variantごとに別programを混ぜない。
 - provider unload は新 lease を止め、compile / frame が持つ generation の終了後に retire
   する。
 - 未選択 recipe / strategy / implementation は runtime resource を作らない。
@@ -801,6 +854,8 @@ logical graph へ戻す round-trip は保証しない。
 | `RenderTargetLayoutTracker` | 現行 Vulkan 遷移を所有 | physical synchronization plan の唯一の executor |
 | `FeatureCompose` | verbose config を生成 | recipe / graph transform authoring への互換 frontend |
 | `MaterialRouteClass` | `hybrid_v1` の固定 enum | namespaced route tag への adapter |
+| `renderingpassconfigregistration`内の固定compile列 | flat/XRのCPU候補を順番に構築 | `RenderCompilerProgram`がvariant family全体を制御 |
+| `RenderingTargetPlanCompilation` | Vulkan planとruntime assignmentが直置き | `VulkanRenderCompilerPhysicalPackage`のbackend-owned payload |
 
 移行中に新旧 planner が同時に Vulkan barrier を発行してはならない。shadow compile は
 plan dump と比較だけを行い、実行所有権を切り替える WP で単一 executor を選ぶ。
@@ -1463,13 +1518,48 @@ gate:
 - headless hot reloadで独立compute scopeのreorder、materialized rendering scopeの単一instance化、
   Load保持pixelを実描画し、synthetic Vulkan multiview回帰を維持する
 
+### RPE12c — top-level compiler program / open backend package
+
+状態: **WP221の最初のruntime sliceを実装済み(2026-07-29)**。
+`renderingpassconfigregistration`に固定されていたauthoring resolve、strategy、
+graph transform、tagged subgraph、frame/target planningの列を、flat/XR variant familyを
+一度に受ける`RenderCompilerProgram`へ移した。built-inは従来列を使う`mixed` modeであり、
+既定描画結果を変えない。
+
+共通program headerはbackend context / physical packageのopen interfaceだけを持ち、
+Vulkan context/packageを別headerへ分けた。Vulkan packageはrender-target definition、
+`RenderingTargetPlanCompilation`、graph名indexを所有し、GPU registryを触る前にnull、
+duplicate、frame/target graph集合、index identityを検証する。program選択はengineが
+compiled pipelineへstampし、dump metadataから観測できる。
+
+source-levelの差し替えprogramは標準plannerを呼ばずに同じVulkan packageを構築できる。
+また標準programへ委譲しつつ前後に独自logicを置ける。どちらも既存GPU arena、
+prepare-generation、単一publish、rollback/retireを迂回しない。
+
+gate:
+
+- backend-native fixtureがcommon plannerを呼ばずにVulkan packageを返せる
+- backend identity、variant順、buffer index、frame/target graph集合の不一致をCPUでrejectする
+- custom programを実headless registrationへ注入し、一回だけvariant familyをcompileする
+- program provenanceがpublished `CompiledRenderPipeline`へ残る
+- built-in `hybrid_v1`描画とGPU arena rollback/replacementを維持する
+
+未完了:
+
+- preview compileを同じprogram invocationへ統合
+- complete raw Vulkan plan builderと`NativeScope`
+- Metal backend context/packageと共通planner再利用fixture
+- CPU/external physical packageとexecution linker
+- game-DLL向けversioned/noexcept ABI、owner lease、hot reload
+
 次の候補:
 
 1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
 2. WP204 後続 — MSAA/external/異種attachmentを含む広いscope fusion、一般のload-store /
    queue / barrierのaggressive physical verifier、MSAA/history/depth/storage/transfer/bufferを
    含むalias範囲拡張、対象GPU実測gate
-3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+3. WP221後続 — complete raw Vulkan plan / `NativeScope`は具体的なVulkan-only使用例と
+   verifier fixtureを得てから公開形式・ABIを設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 

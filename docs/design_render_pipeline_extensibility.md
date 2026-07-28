@@ -1,8 +1,8 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2.5)
+# レンダーパイプライン拡張境界とポリシー統合(v2.6)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2.5 実装方針(2026-07-27。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.6 実装方針(2026-07-29。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
@@ -64,6 +64,9 @@ in-place更新せず、既存renderer publication rootへ
 surface変更はlogical authoringを書き換えず、変更されたtarget factsだけを
 再lowerする。WSIの状態機械、present lifetime、failure-contained cutoverは
 [`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md)を正とする。
+v2.6 / WP221は、標準二段階facadeを必須言語にせず、一つの内部
+`RenderCompilerProgram`からportable / mixed / backend-nativeの各実装を選べる境界を追加した。
+全modeはopenなbackend physical package、既存GPU arena、単一publicationへ収束する。
 
 関連文書:
 
@@ -103,6 +106,8 @@ subgraph、global transform、renderer strategy、Vulkan physical plan、`Native
 renderer facade を維持し、物理層を直接所有する利用者は logical compile を迂回できる。
 内部では target compile を `TargetExecutionCompiler` と `VulkanLowerer` の data-only seam
 で分けられるようにし、CPU / external backend は sibling lowerer として追加する。
+この全体を起動する入口は一つの`RenderCompilerProgram`であり、共通plannerは任意に
+呼び出せる標準ライブラリとして扱う。Vulkan-only programに共通層記述を強制しない。
 
 本設計の非目標:
 
@@ -178,6 +183,12 @@ project JSON / preset / feature / settings
 `CompiledLogicalGraph -> TargetExecutionCompiler -> execution.gpu -> VulkanLowerer` と分け、
 CPU を Vulkan compiler の上下へ挿入しない。graphics / GPU compute / transfer は同じ
 Vulkan physical plan で resource と synchronization を全体解決する。
+
+WP221時点では、この図全体のflat/XR制御を`RenderCompilerProgram::compile()`の一回の
+invocationが所有する。built-in programはlogical helperとVulkan target compilerを使う
+`mixed`実装である。別programは同じhelperを組み替えても、最初から
+`VulkanRenderCompilerPhysicalPackage`を構築してもよい。backend packageはclosed enumでなく
+open interfaceであり、将来Metalを加える際もVulkan物理型の共通最小公倍数へ丸めない。
 
 論理グラフは物理グラフの完全なモデルではない。一つの logical value が物理 image を
 持たない場合、複数 logical pass が一つの rendering scope へ融合される場合、または
@@ -288,6 +299,13 @@ swapchain、OpenXR session、Vulkan command recording、未知の pass kind 等�
 または engine source の変更になる。これを通常の logical content pass と同じ安全性・
 移植性・自動最適化範囲だとは扱わない。
 
+内部source extensionの最初の入口として、WP221は
+`RenderingPassConfigRegistrationDependencies::Options::render_compiler_program`を追加した。
+nullはbuilt-in mixed program、非nullはtransaction内の全variantで同じprogramを使う。
+programはCPU candidateだけを返し、GPU object作成、runtime publication、rollbackを直接
+行えない。これはgame-DLL ABIではなく、complete raw plan / NativeScope fixtureが揃うまで
+source-level seamとして扱う。
+
 したがって、**content pass はすべて eject 後に変更可能**だが、present、
 canonical output transform、XR frame lifecycle、barrier 実行は普通の content
 pass ではない。全 envelope を交換したい利用者には source / backend 境界を示す。
@@ -303,6 +321,10 @@ logical policy provider、physical lowering、native extension は権限が異�
 一つの巨大 provider ABI に統合しない。公開 ABI は各段階の game-DLL fixture が成立して
 から個別に凍結する。
 
+`RenderCompilerProgram`はこのladderにもう一段を足すものではなく、選んだ深さの実装群を
+一本に編成するrootである。標準programの一部だけを再利用することも、backend-native
+programに全面交換することも同じroot selectionとして記録する。
+
 ## 4. `CompiledRenderPipeline` の契約
 
 `CompiledRenderPipeline` は論理 compiler の immutable root とする。最終形では少なくとも
@@ -317,6 +339,7 @@ logical policy provider、physical lowering、native extension は権限が異�
 - opaque / transparent の `ResolvedDrawSortPolicy`
 - logical resource ごとの semantic type、read footprint、materialization requirement
 - excluded feature と fallback を含む structured diagnostics
+- compiler programのname / implementation / backend / mode provenance
 
 concrete format、resource lifetime、Vulkan barrier、load/store、resolve、queue、aliasing は
 `VulkanPhysicalPlan` が持つ。現在の `FramePlanBarrier` は dependency の診断表現であり、
@@ -964,6 +987,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE12b / WP204 tile-local-runtime slice（済 2026-07-26） | same-pixel read、physical scope fusion、dynamic rendering local read | input-attachment shader ABI、single-view/multiview、materialized fallback |
 | RPE12b / WP204 alias-runtime slice（済 2026-07-26） | lifetime非重複imageのruntime group、VMA allocation共有、alias memory dependency | variant完全合意、generation分離、rollback/recreate、headless実描画 |
 | RPE12b / WP204 dependency-safe-scope slice（済 2026-07-26） | version 3 scope mode、dependency-preserving reorder、materialized scope fusion | lifetime再計算、physical-order scheduler、単一dynamic-rendering instance、compute/render headless hot reload、multiview回帰 |
+| RPE12c / WP221（済 2026-07-29、内部slice） | variant-family単位の`RenderCompilerProgram`、open backend context/package、Vulkan-native bypass、trusted provenance | backend-native CPU fixture、backend/graph/index reject、custom headless registration、hybrid/GPU arena回帰 |
 
 ### 12.1 いま着手する範囲
 
