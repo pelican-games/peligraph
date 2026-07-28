@@ -1,16 +1,18 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v10)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v11)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v10(2026-07-28)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v11(2026-07-28)**。84 行の技法候補を現行コードとテストへ再照合し、
 WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
-mip/layer/subresource view、WP218の任意長・型付きmaterial output ABIまで反映した。
+mip/layer/subresource view、WP218の任意長・型付きmaterial output ABI、
+WP219のoutput別blend/write-maskまで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
-3D/cube targetとraster attachment subresource、attachment別blend/local-read material inputは
+3D/cube targetとraster attachment subresource、material local-read inputは
 後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md) と
-[`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)。
+[`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)、
+[`design_reviews/2026-07-28_wp219_material_output_states_report.md`](design_reviews/2026-07-28_wp219_material_output_states_report.md)。
 
 ## 0. 判定規則
 
@@ -24,7 +26,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 |---|---|
 | **○** | 実装済み、または既存の直接的な public hook/input だけで完結する |
 | **△** | 回避策、固定上限、外部 bake、未 dogfood の組み合わせが必要 |
-| **✕** | 下記 G1〜G16 のうち未解消の具体的な機構不足がある |
+| **✕** | 下記 G1〜G18 のうち未解消の具体的な機構不足がある |
 
 単に「GLSL なら計算式を書ける」は ○ の根拠にしない。複数技法を一行にまとめた項目は
 個別判定を併記するため、○/△/✕の単純合計を優先順位に使わない。
@@ -58,7 +60,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
 | object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
-| material output state | output枚数・順序・型・sourceは公開済み。attachment別blend/write-maskは未公開(G17)、material/custom rasterからのsame-pixel local-readは未公開(G18) |
+| material output state | output枚数・順序・型・sourceに加え、field名別のblend equation/write-maskを公開済み。material/custom rasterからのsame-pixel local-readは未公開(G18) |
 
 ## 2. 技法別判定(84 行)
 
@@ -150,11 +152,11 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 |---|---|---|---|
 | G1t | sorted transparency | **○** | `forward_transparent_v1` + draw sort provider |
 | G2t | inverted-hull outline | **○** | WP206bのproject-owned surface/pass dogfoodで、entity/mesh/base material/draw複製なしにfront-cull forward overlayを実GPU描画 |
-| G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式の複数typed outputは可能だがattachment別blend/write-mask(G17)とdogfoodが必要。PPLLはfragment write/atomic、descriptor table、custom geometry contract不足(G9/G15) |
+| G3t | order-independent transparency | **weighted △ / PPLL ✕** | weighted方式に必要な複数typed outputとattachment別blend/write-maskは実装済み。残りはfeature/compositeのdogfood。PPLLはfragment write/atomic、descriptor table、custom geometry contract不足(G9/G15) |
 | G4t | stochastic transparency | **△** | dither/mask は可。TAA integration の品質調整が必要 |
 | G5t | refraction/glass | **○** | material screen input 実配線・描画済み |
 | G6t | additive effect | **○** | `.surface render_state.blend: additive` 実装・test済み |
-| G7t | deferred decal | **△** | G-buffer schema拡張とping-pong/fullscreenは可。mesh decalにはinstance単位選別(G14)とmaterial local-read/選択write(G17/G18)が必要 |
+| G7t | deferred decal | **△** | G-buffer schema拡張、選択write、ping-pong/fullscreenは可。mesh decalにはinstance単位選別(G14)とmaterial local-read(G18)が必要 |
 
 ### H. geometry / performance
 
@@ -225,7 +227,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G14** | material-owned stable tag/filterは実装済みだが、instance/draw-owned tag/layerが未公開 | 同じmaterialを共有するinstanceの個別SSS/outline/decal/reflection |
 | **G15** | material/geometry pass contractがv1閉集合 | custom geometry stage/output |
 | **G16** | stencil state/resource semanticsが未公開 | stencil mask/portal |
-| **G17** | material outputごとのblend equation / write maskが未公開。現pipelineは全color attachmentへ同じstateを複製する | weighted OIT、選択的G-buffer更新 |
+| **G17（解消済み、WP219）** | `material_output_states`でschema field名ごとのblend equation / write maskを公開。省略fieldはsurface render_stateを継承し、variant整合性・pipeline key・hot reload・`independentBlend`/format capabilityまで検証 | weighted OIT、選択的G-buffer更新 |
 | **G18** | fullscreen same-pixel local-read subsetは実装済みだが、material/custom raster shaderのinput-attachment ABIが未公開 | tile GPU上のdeferred lighting/decal、subpass相当の融合 |
 
 ## 4. dogfood の扱い

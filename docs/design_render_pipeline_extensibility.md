@@ -945,6 +945,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE8 runtime slice / WP190（済 2026-07-23） | attachment-connected MSAA transform + image/pipeline sample count + color/depth resolve | 1x互換、実4x hybrid headless、depth capability gate、validation errorなし |
 | RPE8b / WP191（済 2026-07-23） | WP189 physical target planner と WP190 runtime bridge の single lowering path | JSON/DSU重複削除、physical resource/scope sample contract、materialized runtime consume、追加G-buffer、desktop/tile/headless |
 | RPE8c / WP218（済 2026-07-28） | strategy-private `pelican.material_outputs` schema、任意長・typed material MRT、generated shader ABI | 6枚目UINT G-buffer実GPU、MSAA resolve、target別typed clear、reflection、device上限、XR同一性、hot reload rollback |
+| RPE8d / WP219（済 2026-07-28） | schema field名別のblend equation / write mask、surface state継承、typed lowering | additive + R-only write実GPU、integer blend拒否、`independentBlend`/format capability、XR同一性、hot reload rollback |
 | RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
 | RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |

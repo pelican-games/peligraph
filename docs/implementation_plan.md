@@ -149,6 +149,26 @@ SINT/UINT clear/history、flat/XR整合性、hot reload rollbackを同じcontrac
 を正とする。次にこの境界へ追加する候補は、attachment別blend/write-mask、
 material local-read input、graph+surface coordinated reload、WP211 dist-bakeである。
 
+### WP219: material output attachment state
+
+WP218のordered output schemaへ、field名をキーにした疎な
+`material_output_states`を追加した。未指定fieldはsurfaceの`render_state.blend`と
+RGBA writeを継承するため標準materialの記述量は増えない。指定fieldは
+`opaque` / `blend` / `additive` preset、またはcolor/alpha別のsrc/dst/op、
+およびchannel write maskを持てる。
+
+logical enumからVulkan stateへのlowering、flat/XR route整合性、compiled metadataの
+fingerprint、pipeline cache key、live material hot reload rollbackを一つのcontractへ
+接続した。device compilerは異なるattachment stateに`independentBlend`、blend対象formatに
+`COLOR_ATTACHMENT_BLEND`を要求し、integer outputのblendはpipeline作成前に拒否する。
+実GPU gateは6-MRT + MSAAで、albedoのadditive blendとR-only write、および
+`R32_UINT` object IDのblend無効化を同時に検証する。
+
+受け入れ結果と公開構文は
+[`design_reviews/2026-07-28_wp219_material_output_states_report.md`](design_reviews/2026-07-28_wp219_material_output_states_report.md)
+を正とする。次はmaterial/custom raster local-read input ABIを同じ
+physical rendering contractへ追加する。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:

@@ -90,7 +90,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 ### type 別の要点
 
-- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。明示した場合は**順序・枚数・数値型を任意に定義**でき、固定のエンジン上限はありません。実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
+- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
 - **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む(最大 8 入力)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
@@ -757,7 +757,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 s
 - スニペットはエンジン所有テンプレート(`engine://shaders/material/surface_v1.{vert,frag}`)へ逆 include され、エラーは `#line` で元ファイル名・行番号に翻訳されます。パラメータへは自動生成アクセサ `pelican_param_<name>()` / `pelican_sample_<name>(uv)` でアクセスします。
 - 同梱の standard / toon ライティングも**同じ公開経路**で書かれています(特権なし standard library。dogfooding)。
 
-### 任意 G-buffer / material output ABI（✅WP218）
+### 任意 G-buffer / material output ABI・attachment state（✅WP218/219）
 
 G-buffer はエンジン固定の5スロットではありません。material pass が
 `pelican.material_outputs` v1 を宣言すると、`outputs[]` の配列順が fragment shader の
@@ -815,9 +815,55 @@ void pelican_material_outputs_v1(
 
 生成後の SPIR-V reflection は全 location と数値型を宣言スキーマへ照合します。
 flat / XR variant は同じ route に同一スキーマを要求します。graph の hot reload で
-生存中 material の schema・format・MSAA・local-read contract を変える場合、現状は
+生存中 material の schema・format・MSAA・local-read・attachment state contract を
+変える場合、現状は
 候補世代を拒否して旧世代を維持します。これは不整合 pipeline を公開しないための境界で、
 graph と material surface を同時に再構築する将来の coordinated transaction とは別です。
+
+outputごとにblendまたは書き込みchannelを変える場合は、同じpassへ
+`material_output_states`を追加します。キーはRT名やlocation番号ではなく
+`material_outputs.outputs[].name`です。書かなかったoutputは`.surface`の
+`render_state.blend`と`rgba` writeを継承します。
+
+```json
+"material_output_states": {
+  "accum": {
+    "blend": {
+      "color": { "src": "one", "dst": "one", "op": "add" },
+      "alpha": { "src": "one", "dst": "one", "op": "add" }
+    },
+    "write_mask": "rgba"
+  },
+  "revealage": {
+    "blend": {
+      "color": {
+        "src": "zero",
+        "dst": "one_minus_src_color",
+        "op": "add"
+      },
+      "alpha": {
+        "src": "zero",
+        "dst": "one_minus_src_alpha",
+        "op": "add"
+      }
+    },
+    "write_mask": "r"
+  },
+  "object_id": {
+    "blend": "opaque",
+    "write_mask": "r"
+  }
+}
+```
+
+`blend`には`opaque` / `blend` / `additive` preset、またはcolor/alpha別の
+`src` / `dst` / `op`を指定できます。write maskは`rgba`の任意部分集合または
+`none`です。integer outputでblendを有効にする設定は拒否します。attachment間で
+stateが異なる場合はdeviceの`independentBlend`、blend対象formatには
+`COLOR_ATTACHMENT_BLEND` capabilityが必要です。全factor/opと現在含めていない
+blend constant/dual-source blendの境界は
+[WP219実装報告](../design_reviews/2026-07-28_wp219_material_output_states_report.md)
+を参照してください。
 
 `material_outputs` を省略した pass は既存プロジェクト向けの内蔵5-MRT/1-color ABIを
 維持します。独自スキーマは生成 fragment shader が必要なため、現時点では runtime

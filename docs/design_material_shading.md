@@ -472,6 +472,17 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   candidateをpublishせず旧generationを保つ。graphとsurfaceを同時に再構築するtransactionは
   後続境界として残す
 
+**attachment state追補（WP219、2026-07-28）**:
+
+- passの`material_output_states`はschema field名をキーに、blend equationとwrite maskを
+  疎に上書きする。省略fieldはsurface `render_state.blend`とRGBA writeを継承する
+- stateはlogical enumで保持し、material physical contractでのみVulkanへlowerする。
+  route variant、pipeline key、live material snapshotへ同じ値を運び、別系統のslot定数を作らない
+- integer outputのblend、formatのblend capability不足、異なるattachment stateに対する
+  `independentBlend`不足をpipeline作成前に拒否する
+- blend constant、dual-source blend、logic op、advanced blendは、それぞれ必要な
+  pipeline/shader/device contractと同時に追加する。factor名だけを先行公開しない
+
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
 
 **「シェーダがインターフェースを宣言し、マテリアルは値を与える」**。

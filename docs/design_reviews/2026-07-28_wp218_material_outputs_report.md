@@ -125,10 +125,11 @@ deviceが6 color attachmentsまたは対象format/sampleを持たない場合は
 
 優先度順の次候補は次である。
 
-1. **attachment別blend / color write mask**
+1. **attachment別blend / color write mask（WP219で解消）**
 
-   現在は全color attachmentsへ同じblend stateを複製する。weighted OITや
-   選択的G-buffer更新にはschemaのfield/target名へstateを対応付ける必要がある。
+   `material_output_states`をschema field名へ対応付け、route/pipeline/hot reloadと
+   `independentBlend` capabilityまで接続した。詳細は
+   [`2026-07-28_wp219_material_output_states_report.md`](2026-07-28_wp219_material_output_states_report.md)。
 2. **material/custom raster local-read input ABI**
 
    fullscreen same-pixel local-readはあるが、material shaderからinput attachmentを読む

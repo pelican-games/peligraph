@@ -1021,8 +1021,10 @@ gate:
 - incompatible hot reloadはcandidateをrollbackし、同一の旧generationで次frameも描画する
 - flat/XR schema不一致、device上限超過、numeric class不一致をGPU pipeline作成前に拒否する
 
+WP219では同じseamへfield名別のblend equation/write-maskを追加し、
+route variant整合性、pipeline key、device capability、hot reload rollbackまで接続した。
 後続境界は、coordinated graph+surface hot reload、shaderc OFF向けdist-bake、
-material local-read input ABI、attachment別blend/write-maskである。これらはoutput枚数を
+material local-read input ABIである。これらはoutput枚数を
 再固定せず、同じschema/physical-contract seamへ追加する。
 
 ### それ以後
