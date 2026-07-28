@@ -277,6 +277,31 @@ struct CompiledDrawSorting {
     bool authored = false;
 };
 
+enum class RenderCompilerProgramMode : std::uint8_t {
+    portable,
+    mixed,
+    backend_native,
+};
+
+std::string_view renderCompilerProgramModeName(
+    RenderCompilerProgramMode mode);
+
+// Identifies the one top-level compiler program which produced a runtime
+// candidate. The backend is an open, namespaced identity rather than a
+// closed GPU API enum; the current executable backend is "vulkan".
+struct RenderCompilerProgramSelection {
+    std::uint32_t schema_version = 1;
+    std::string name;
+    std::string implementation;
+    std::string backend;
+    RenderCompilerProgramMode mode =
+        RenderCompilerProgramMode::portable;
+
+    bool operator==(
+        const RenderCompilerProgramSelection &) const =
+        default;
+};
+
 // Immutable after publication.  It deliberately contains neither the
 // normalized authoring JSON nor GPU/container state.  Runtime owners publish
 // it through shared_ptr<const CompiledRenderPipeline>; JSON is reconstructed
@@ -308,6 +333,8 @@ struct CompiledRenderPipeline {
         graph_transforms;
     std::optional<RenderStrategySelection>
         render_strategy;
+    std::optional<RenderCompilerProgramSelection>
+        render_compiler_program;
     std::vector<RenderPipelineDiagnostic> diagnostics;
     bool used_features = false;
 };

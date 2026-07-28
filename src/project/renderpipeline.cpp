@@ -1102,6 +1102,19 @@ std::string_view drawSortXrViewPolicyName(DrawSortXrViewPolicy policy) {
     return "unknown";
 }
 
+std::string_view renderCompilerProgramModeName(
+    RenderCompilerProgramMode mode) {
+    switch (mode) {
+    case RenderCompilerProgramMode::portable:
+        return "portable";
+    case RenderCompilerProgramMode::mixed:
+        return "mixed";
+    case RenderCompilerProgramMode::backend_native:
+        return "backend_native";
+    }
+    return "unknown";
+}
+
 namespace {
 
 CompiledProjectionJitter compileProjectionJitter(
@@ -1799,6 +1812,21 @@ CompiledRenderPipeline compileRenderPipeline(
 nlohmann::json serializeCompiledRenderPipelineMetadata(
     const CompiledRenderPipeline &pipeline) {
     nlohmann::json metadata = nlohmann::json::object();
+    if (pipeline.render_compiler_program) {
+        const auto &selection =
+            *pipeline.render_compiler_program;
+        metadata["render_compiler_program"] = {
+            {"schema_version",
+             selection.schema_version},
+            {"name", selection.name},
+            {"implementation",
+             selection.implementation},
+            {"backend", selection.backend},
+            {"mode",
+             renderCompilerProgramModeName(
+                 selection.mode)},
+        };
+    }
     if (pipeline.render_strategy) {
         const auto &selection =
             *pipeline.render_strategy;

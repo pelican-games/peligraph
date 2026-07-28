@@ -6,6 +6,8 @@ target_sources(pelican_core PRIVATE
     framegraphruntime.cpp
     graphtransformregistry.cpp
     renderstrategyregistry.cpp
+    rendercompilerprogram.cpp
+    vulkanrendercompilerprogram.cpp
     renderpipelinegpuarena.cpp
     logicalframegraphadapter.cpp
     fullscreenpassinfojsonparser.cpp

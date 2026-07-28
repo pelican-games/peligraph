@@ -1216,6 +1216,7 @@ target_compile_definitions(pelican_test_featurecompose_test PRIVATE
 )
 
 pelican_define_test(renderpipeline_resolve_test pelican_core)
+pelican_define_test(rendercompilerprogram_test pelican_core)
 pelican_define_test(renderingsamplecount_test pelican_core)
 
 pelican_define_test(shader_defines_test pelican_core)

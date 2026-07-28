@@ -24,6 +24,7 @@ class FrameGraphRuntimeContainer;
 struct RendererRuntimeGeneration;
 class PathResolver;
 class PipelineFactory;
+class RenderCompilerProgram;
 class RenderingPassContainer;
 class RenderTarget;
 class RenderTargetContainer;
@@ -68,6 +69,11 @@ struct RenderingPassConfigRegistrationDependencies {
     struct Options {
         RenderPipelineGraphVariant graph_variant =
             RenderPipelineGraphVariant::flat;
+        // Source-level compiler seam. Null selects the built-in mixed
+        // logical/Vulkan program. A supplied program must be shared by every
+        // variant participating in one publication transaction.
+        const RenderCompilerProgram
+            *render_compiler_program = nullptr;
         // WP203b production wiring is enabled only for targets that can
         // provide one command context spanning the complete view family.
         // OpenXR enables this after its array-swapchain target is installed.

@@ -6,6 +6,7 @@
 #include "graphtransformregistry.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "passimplementationregistry.hpp"
+#include "rendercompilerprogram.hpp"
 #include "renderpipelinegpuarena.hpp"
 #include "renderstrategyregistry.hpp"
 #include "renderingpassconfigjsonparser.hpp"
@@ -14,6 +15,7 @@
 #include "renderingpassruntimecompiler.hpp"
 #include "renderingsamplecount.hpp"
 #include "subgraphreplacementregistry.hpp"
+#include "vulkanrendercompilerpackage.hpp"
 #include "rendertargetconfigregistration.hpp"
 #include "rendertargetcontainer.hpp"
 #include "rendertargetimageviewresolver.hpp"
@@ -31,12 +33,10 @@
 #include "../launchconfig.hpp"
 #endif
 #include <algorithm>
-#include <array>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -111,178 +111,6 @@ std::string gpuOwnerScope(
     return "render_pipeline/" +
            std::string{renderPipelineGraphVariantName(
                options.graph_variant)};
-}
-
-std::optional<VulkanViewExecutionPlanRequest>
-targetViewExecutionRequest(
-    const CompiledRenderPipeline &pipeline,
-    const nlohmann::json &config,
-    std::span<const FrameGraphDefinition> graphs,
-    std::span<const ComputeTaskDefinition> compute_tasks,
-    bool enable_multiview_runtime) {
-    if (pipeline.graph_variant_policy.variant !=
-        RenderPipelineGraphVariant::xr) {
-        return std::nullopt;
-    }
-    if (!pipeline.xr_target_policy.active ||
-        pipeline.graph_variant_policy.view_count == 0) {
-        throw std::runtime_error(
-            "compiled XR pipeline lacks an active target-view "
-            "policy");
-    }
-    VulkanViewExecutionPlanRequest request{
-        .view_count =
-            pipeline.graph_variant_policy.view_count,
-        .preference =
-            pipeline.xr_target_policy.view_execution,
-        .automatic_policy =
-            pipeline.xr_target_policy.multiview_auto,
-    };
-    std::set<std::string, std::less<>> capable_candidates;
-    std::set<std::string, std::less<>> independent_candidates;
-    const auto builtin_fragment =
-        [](std::string_view reference) {
-            static constexpr std::array known{
-                std::string_view{"engine://fullscreen"},
-                std::string_view{"engine://ssao"},
-                std::string_view{"engine://ssao_blur"},
-                std::string_view{"engine://scene_present"},
-                std::string_view{"engine://output_transform"},
-            };
-            return std::find(known.begin(), known.end(),
-                             reference) != known.end();
-        };
-    if (config.contains("rendering_passes") &&
-        config.at("rendering_passes").is_array()) {
-        for (const auto &rendering_pass :
-             config.at("rendering_passes")) {
-            if (!rendering_pass.is_object() ||
-                !rendering_pass.contains("passes") ||
-                !rendering_pass.at("passes").is_array()) {
-                continue;
-            }
-            for (const auto &pass :
-                 rendering_pass.at("passes")) {
-                if (!pass.is_object() ||
-                    !pass.contains("name") ||
-                    !pass.at("name").is_string() ||
-                    !pass.contains("type") ||
-                    !pass.at("type").is_string()) {
-                    continue;
-                }
-                const auto name =
-                    pass.at("name").get<std::string>();
-                const auto type =
-                    pass.at("type").get<std::string>();
-                if (type == "shadow_depth") {
-                    independent_candidates.insert(name);
-                    continue;
-                }
-                if (type != "fullscreen" ||
-                    pass.contains("implementation") ||
-                    !pass.contains("shader") ||
-                    !pass.at("shader").is_object()) {
-                    continue;
-                }
-                const auto &shader = pass.at("shader");
-                if (!shader.contains("vertex") ||
-                    !shader.at("vertex").is_string() ||
-                    !shader.contains("fragment") ||
-                    !shader.at("fragment").is_string()) {
-                    continue;
-                }
-                const auto vertex =
-                    shader.at("vertex").get<std::string>();
-                const auto fragment =
-                    shader.at("fragment").get<std::string>();
-                if (enable_multiview_runtime &&
-                    vertex == "engine://fullscreen" &&
-                    builtin_fragment(fragment)) {
-                    capable_candidates.insert(name);
-                }
-            }
-        }
-    }
-    for (const auto &task : compute_tasks) {
-        if (task.schedule ==
-            ComputeTaskSchedule::per_frame) {
-            independent_candidates.insert(task.name);
-        }
-    }
-    const bool sprite_enabled =
-        std::find(pipeline.feature_names.begin(),
-                  pipeline.feature_names.end(),
-                  "sprite") !=
-        pipeline.feature_names.end();
-    for (const auto &graph : graphs) {
-        for (const auto &node : graph.nodes) {
-            if (node.kind == FramePlanNodeKind::anchor &&
-                (!sprite_enabled ||
-                 node.name != "__anchor_sprite")) {
-                independent_candidates.insert(node.name);
-            }
-        }
-    }
-
-    // One request is currently shared by every rendering graph in a variant.
-    // Advertise only names present in all graphs; graph-specific work safely
-    // remains sequential instead of making another graph's plan invalid.
-    const auto present_in_every_graph =
-        [&](const std::string &name) {
-            return !graphs.empty() &&
-                   std::all_of(
-                       graphs.begin(), graphs.end(),
-                       [&](const FrameGraphDefinition &graph) {
-                           return std::find_if(
-                                      graph.nodes.begin(),
-                                      graph.nodes.end(),
-                                      [&](const auto &node) {
-                                          return node.name == name;
-                                      }) != graph.nodes.end();
-                       });
-        };
-    for (const auto &name : capable_candidates) {
-        if (present_in_every_graph(name)) {
-            request.multiview_capable_nodes.push_back(name);
-        }
-    }
-    for (const auto &name : independent_candidates) {
-        if (present_in_every_graph(name)) {
-            request.view_independent_nodes.push_back(name);
-        }
-    }
-    return request;
-}
-
-std::unordered_map<std::string, FramePlan> framePlansByName(
-    const std::vector<FrameGraphDefinition> &definitions) {
-    std::unordered_map<std::string, FramePlan> by_name;
-    for (const auto &definition : definitions) {
-        auto plan = planFrameGraph(definition);
-        const auto name = plan.name;
-        if (!by_name.emplace(name, std::move(plan)).second) {
-            throw std::runtime_error("Duplicate frame graph definition: " +
-                                     name);
-        }
-    }
-    return by_name;
-}
-
-std::unordered_map<std::string,
-                   std::shared_ptr<const VulkanTargetPlan>>
-targetPlansByName(
-    const RenderingTargetPlanCompilation &compilation) {
-    std::unordered_map<std::string,
-                       std::shared_ptr<const VulkanTargetPlan>>
-        by_name;
-    for (const auto &plan : compilation.plans) {
-        if (plan == nullptr ||
-            !by_name.emplace(plan->graph, plan).second) {
-            throw std::runtime_error(
-                "Duplicate or null physical target plan");
-        }
-    }
-    return by_name;
 }
 
 std::vector<CompiledComputeTask> compileComputeTasks(
@@ -417,46 +245,8 @@ std::vector<CompiledComputeTask> compileComputeTasks(
     return compiled;
 }
 
-void namespaceComputeTasks(std::vector<ComputeTaskDefinition> &tasks,
-                           std::vector<FrameGraphDefinition> &graphs,
-                           std::string_view suffix) {
-    if (suffix.empty() || tasks.empty()) return;
-    std::unordered_map<std::string, std::string> renamed;
-    for (auto &task : tasks) {
-        auto next = task.name + std::string{suffix};
-        renamed.emplace(task.name, next);
-        task.name = std::move(next);
-    }
-    const auto rename = [&renamed](std::string &name) {
-        if (const auto found = renamed.find(name); found != renamed.end()) {
-            name = found->second;
-        }
-    };
-    for (auto &graph : graphs) {
-        for (auto &node : graph.nodes) {
-            if (node.kind == FramePlanNodeKind::compute) rename(node.name);
-            for (auto &after : node.after) rename(after);
-            for (auto &before : node.before) rename(before);
-        }
-    }
-}
-
-struct PreparedRenderingPassConfigVariant {
-    std::shared_ptr<const CompiledRenderPipeline> compiled_pipeline;
-    nlohmann::json normalized_config;
-    std::vector<RenderTargetDefinition> render_target_definitions;
-    std::vector<FrameGraphBufferDefinition> buffer_definitions;
-    std::unordered_set<std::string> buffer_names;
-    std::vector<ComputeTaskDefinition> compute_task_definitions;
-    std::unordered_map<std::string, FramePlan> frame_plans;
-    RenderingTargetPlanCompilation target_plan_compilation;
-    std::unordered_map<std::string,
-                       std::shared_ptr<const VulkanTargetPlan>>
-        target_plans;
-};
-
 void mergeVariantRenderTargetPhysicalRequirements(
-    std::span<PreparedRenderingPassConfigVariant>
+    std::span<RenderCompilerProgramVariantOutput>
         variants) {
     struct Requirements {
         std::uint32_t maximum_layers = 1;
@@ -473,8 +263,11 @@ void mergeVariantRenderTargetPhysicalRequirements(
     std::unordered_map<std::string, Requirements>
         requirements;
     for (const auto &variant : variants) {
+        const auto &physical =
+            requireVulkanRenderCompilerPhysicalPackage(
+                *variant.physical_package);
         for (const auto &target :
-             variant.render_target_definitions) {
+             physical.render_target_definitions) {
             auto &merged =
                 requirements[target.name];
             merged.maximum_layers = std::max(
@@ -535,8 +328,11 @@ void mergeVariantRenderTargetPhysicalRequirements(
         }
     }
     for (auto &variant : variants) {
+        auto &physical =
+            requireVulkanRenderCompilerPhysicalPackage(
+                *variant.physical_package);
         for (auto &target :
-             variant.render_target_definitions) {
+             physical.render_target_definitions) {
             const auto &merged =
                 requirements.at(target.name);
             target.array_layers =
@@ -555,184 +351,26 @@ void mergeVariantRenderTargetPhysicalRequirements(
     }
 }
 
-PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
-    const nlohmann::json &rendering_pass_data,
-    RenderingPassConfigRegistrationDependencies &dependencies,
-    const GraphTransformRegistrySnapshot
-        &graph_transform_providers,
-    const RenderStrategyRegistrySnapshot
-        &render_strategy_providers,
-    const SubgraphReplacementRegistrySnapshot
-        &subgraph_replacement_providers) {
-    const auto swapchain_format =
-        dependencies.runtime.render_target.getSwapchainFormat();
-    const auto target_extent = dependencies.runtime.render_target.getExtent();
-#if PELICAN_RUNTIME_SHADER_COMPILER
-    constexpr bool runtime_shader_compiler_enabled = true;
-#else
-    constexpr bool runtime_shader_compiler_enabled = false;
-#endif
-    std::optional<RenderStrategySelection>
-        resolved_render_strategy;
-    auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{rendering_pass_data,
-                              "rendering pass registration"},
-        RenderEnvironmentCapabilities{
-            runtime_shader_compiler_enabled,
-            dependencies.options.graph_variant,
-        },
-        RenderPipelineResolveDependencies{
-            .load_feature_json = [&dependencies](std::string_view ref) {
-                return dependencies.runtime.path_resolver.loadText(ref);
-            },
-            .load_pipeline_json = [&dependencies](std::string_view ref) {
-                return dependencies.runtime.path_resolver.loadText(ref);
-            },
-            .normalize_config = [swapchain_format, target_extent](
-                const nlohmann::json &config,
-                const std::vector<std::string> &feature_names) {
-                const bool hdr_enabled =
-                    std::find(feature_names.begin(), feature_names.end(),
-                              "hdr") != feature_names.end();
-                return resolveRenderTargetFormatClassesV2(
-                    config, swapchain_format, target_extent, hdr_enabled);
-            },
-            .resolve_render_strategy =
-                [&render_strategy_providers,
-                 &resolved_render_strategy,
-                 runtime_shader_compiler_enabled](
-                    const nlohmann::json &config,
-                    const CompiledGraphVariantPolicy
-                        &graph_variant_policy) {
-                    auto generated =
-                        resolveRenderStrategy(
-                            config,
-                            graph_variant_policy,
-                            runtime_shader_compiler_enabled,
-                            render_strategy_providers);
-                    resolved_render_strategy =
-                        generated.selection;
-                    return std::move(generated.config);
-                },
-        });
-    auto compiled_pipeline_value =
-        compileRenderPipeline(resolved);
-    dependencies.runtime.shader_defines =
-        compiled_pipeline_value.shader_defines;
-    auto composed_rendering_pass_data = std::move(resolved.normalized_config);
-#if PELICAN_WITH_IMGUI
-    if (resolved.graph_variant_policy
-            .rendering_pass_name_suffix.empty()) {
-        invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
-            appendImGuiPassToCanonicalGraphs(composed_rendering_pass_data);
-        });
-    }
-#endif
-    auto resolved_transforms =
-        resolveLogicalGraphTransforms(
-            composed_rendering_pass_data,
-            graph_transform_providers);
-    composed_rendering_pass_data =
-        std::move(resolved_transforms.config);
-    validateGraphVariantConfig(
-        resolved.graph_variant_policy,
-        composed_rendering_pass_data);
-    auto resolved_subgraphs =
-        resolveTaggedSubgraphReplacements(
-            composed_rendering_pass_data,
-            subgraph_replacement_providers);
-    composed_rendering_pass_data =
-        std::move(resolved_subgraphs.config);
-    auto render_target_definitions =
-        parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
-    auto buffer_definitions =
-        parseFrameGraphBufferDefinitionsFromJson(composed_rendering_pass_data);
-    auto buffer_names = frameGraphBufferNameSet(buffer_definitions);
-    auto compute_task_definitions =
-        parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
-    validateComputeTaskBufferContracts(
-        buffer_definitions,
-        compute_task_definitions);
-    validateGpuDrawSourceBufferContracts(
-        composed_rendering_pass_data,
-        buffer_definitions);
-    auto graph_definition_list =
-        parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
-    applyResolvedLogicalGraphTransformSelections(
-        graph_definition_list,
-        resolved_transforms.selections);
-    applyResolvedRenderStrategySelection(
-        graph_definition_list,
-        resolved_render_strategy);
-    applyResolvedTaggedSubgraphSelections(
-        graph_definition_list,
-        resolved_subgraphs.graphs);
-    compiled_pipeline_value.graph_transforms =
-        resolved_transforms.selections;
-    compiled_pipeline_value.render_strategy =
-        resolved_render_strategy;
-    auto compiled_pipeline =
-        std::make_shared<const CompiledRenderPipeline>(
-            std::move(compiled_pipeline_value));
-    namespaceComputeTasks(compute_task_definitions, graph_definition_list,
-                          compiled_pipeline->graph_variant_policy
-                              .rendering_pass_name_suffix);
-    auto target_plan_compilation =
-        compileRenderingTargetPlansForVulkanDevice(
-            graph_definition_list, render_target_definitions,
-            compiled_pipeline->sample_count_policy,
-            swapchain_format,
-            GET_MODULE(VulkanManageCore).getPhysDevice(),
-            targetViewExecutionRequest(
-                *compiled_pipeline,
-                composed_rendering_pass_data,
-                graph_definition_list,
-                compute_task_definitions,
-                dependencies.options
-                    .enable_multiview_runtime),
-            dependencies.options
-                    .enable_external_depth_export
-                ? std::optional{
-                      VulkanExternalDepthExportRequest{}}
-                : std::nullopt,
-            compiled_pipeline->target_planning,
-            compiled_pipeline->vulkan_plan_pins,
-            compiled_pipeline
-                ->vulkan_physical_fragments);
-    applyRenderingTargetPlan(render_target_definitions,
-                             target_plan_compilation);
-    auto target_plans =
-        targetPlansByName(target_plan_compilation);
-    auto frame_plans = framePlansByName(graph_definition_list);
-    return {
-        std::move(compiled_pipeline),
-        std::move(composed_rendering_pass_data),
-        std::move(render_target_definitions),
-        std::move(buffer_definitions),
-        std::move(buffer_names),
-        std::move(compute_task_definitions),
-        std::move(frame_plans),
-        std::move(target_plan_compilation),
-        std::move(target_plans),
-    };
-}
-
 std::vector<RenderPipelineProgramPreparation>
 registerPreparedRenderingPassConfigVariant(
-    PreparedRenderingPassConfigVariant &prepared,
+    RenderCompilerProgramVariantOutput &prepared,
     vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies &dependencies,
     RenderPipelineGpuRegistrationArena &gpu_arena,
     const PassImplementationRegistrySnapshot
         &pass_implementation_providers,
     RenderingPassConfigRegistrationResult &result) {
+    auto &physical =
+        requireVulkanRenderCompilerPhysicalPackage(
+            *prepared.physical_package);
     if (dependencies.options
             .prepare_additional_gpu_resources) {
         dependencies.options
             .prepare_additional_gpu_resources();
     }
     registerRenderTargetDefinitions(
-        prepared.render_target_definitions, base_extent,
+        physical.render_target_definitions,
+        base_extent,
         dependencies.render_targets.render_target_container);
     injectGpuRegistrationFault(
         dependencies.options,
@@ -761,9 +399,9 @@ registerPreparedRenderingPassConfigVariant(
             rt_resolver, rt_metadata, prepared.buffer_names);
     for (auto &definition : pass_definitions) {
         const auto target_plan =
-            prepared.target_plans.find(definition.name);
+            physical.target_plans.find(definition.name);
         if (target_plan ==
-                prepared.target_plans.end() ||
+                physical.target_plans.end() ||
             target_plan->second == nullptr) {
             throw std::runtime_error(
                 "Physical target plan not found while resolving pass "
@@ -776,9 +414,9 @@ registerPreparedRenderingPassConfigVariant(
     }
     auto compiled_compute_tasks =
         compileComputeTasks(
-                            prepared.compute_task_definitions,
-                            prepared.target_plans,
-                            dependencies);
+            prepared.compute_task_definitions,
+            physical.target_plans,
+            dependencies);
     injectGpuRegistrationFault(
         dependencies.options,
         RenderPipelineGpuRegistrationFaultPoint::
@@ -787,8 +425,8 @@ registerPreparedRenderingPassConfigVariant(
     compiled_passes.reserve(pass_definitions.size());
     for (const auto &definition : pass_definitions) {
         const auto target_plan =
-            prepared.target_plans.find(definition.name);
-        if (target_plan == prepared.target_plans.end() ||
+            physical.target_plans.find(definition.name);
+        if (target_plan == physical.target_plans.end() ||
             target_plan->second == nullptr) {
             throw std::runtime_error(
                 "Physical target plan not found while compiling rendering "
@@ -816,7 +454,7 @@ registerPreparedRenderingPassConfigVariant(
     result.excluded_feature_names =
         prepared.compiled_pipeline->excluded_feature_names;
     result.target_plans =
-        prepared.target_plan_compilation.plans;
+        physical.target_plan_compilation.plans;
     if (!result.target_plans.empty() &&
         result.target_plans.front()->sample_count_plan) {
         result.sample_count_plan =
@@ -848,9 +486,9 @@ registerPreparedRenderingPassConfigVariant(
                 pass_name);
         }
         const auto found_target_plan =
-            prepared.target_plans.find(pass_name);
+            physical.target_plans.find(pass_name);
         if (found_target_plan ==
-            prepared.target_plans.end()) {
+            physical.target_plans.end()) {
             throw std::runtime_error(
                 "Physical target plan not found for rendering pass: " +
                 pass_name);
@@ -872,6 +510,16 @@ registerPreparedRenderingPassConfigVariant(
             });
     }
     return program_preparations;
+}
+
+const RenderCompilerProgram &
+effectiveRenderCompilerProgram(
+    const RenderingPassConfigRegistrationDependencies::Options
+        &options) {
+    if (options.render_compiler_program != nullptr) {
+        return *options.render_compiler_program;
+    }
+    return defaultVulkanRenderCompilerProgram();
 }
 
 void requireSameRegistrationDomain(
@@ -901,7 +549,10 @@ void requireSameRegistrationDomain(
         &first.frame_graph_runtime ==
             &candidate.frame_graph_runtime &&
         &first.pass_container ==
-            &candidate.pass_container;
+            &candidate.pass_container &&
+        &effectiveRenderCompilerProgram(first.options) ==
+            &effectiveRenderCompilerProgram(
+                candidate.options);
     if (!same) {
         throw std::runtime_error(
             "Render pipeline variant transaction spans different registration domains");
@@ -957,18 +608,91 @@ registerRenderingPassConfigVariantsData(
     auto render_strategy_providers =
         renderStrategyRegistry().snapshot();
 
-    // Every pure CPU candidate is completed before any mutable GPU registry
-    // checkpoint is opened.
-    std::vector<PreparedRenderingPassConfigVariant>
-        prepared_variants;
-    prepared_variants.reserve(dependencies.size());
-    for (auto &variant : dependencies) {
-        prepared_variants.push_back(
-            prepareRenderingPassConfigVariant(
-                rendering_pass_data, variant,
-                graph_transform_providers,
-                render_strategy_providers,
-                subgraph_replacement_providers));
+    // One top-level program sees and compiles the complete variant family.
+    // Its backend package structure is checked before any mutable GPU
+    // registry checkpoint is opened. The default program preserves the prior
+    // logical + Vulkan sequence; a backend-native program can directly
+    // construct the same physical package. Runtime object preparation retains
+    // the existing rollback checks below.
+    std::vector<RenderCompilerProgramVariantRequest>
+        variant_requests;
+    variant_requests.reserve(dependencies.size());
+    for (const auto &variant : dependencies) {
+        RenderCompilerProgramVariantRequest request{
+            .graph_variant =
+                variant.options.graph_variant,
+            .enable_multiview_runtime =
+                variant.options
+                    .enable_multiview_runtime,
+            .enable_external_depth_export =
+                variant.options
+                    .enable_external_depth_export,
+        };
+#if PELICAN_WITH_IMGUI
+        if (request.graph_variant ==
+            RenderPipelineGraphVariant::flat) {
+            request.compose_runtime_config =
+                [](nlohmann::json &config) {
+                    invokeImGuiRuntimeCallback(
+                        GET_MODULE(EngineLaunchConfig),
+                        [&config] {
+                            appendImGuiPassToCanonicalGraphs(
+                                config);
+                        });
+                };
+        }
+#endif
+        variant_requests.push_back(
+            std::move(request));
+    }
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr bool runtime_shader_compiler_enabled =
+        true;
+#else
+    constexpr bool runtime_shader_compiler_enabled =
+        false;
+#endif
+    const VulkanRenderCompilerBackendContext
+        backend_context{
+            dependencies.front()
+                .runtime.render_target
+                .getSwapchainFormat(),
+            dependencies.front()
+                .runtime.render_target
+                .getExtent(),
+            GET_MODULE(VulkanManageCore)
+                .getPhysDevice(),
+        };
+    const RenderCompilerProgramInput compiler_input{
+        .rendering_config = rendering_pass_data,
+        .source_name =
+            "rendering pass registration",
+        .path_resolver =
+            dependencies.front()
+                .runtime.path_resolver,
+        .runtime_shader_compiler_enabled =
+            runtime_shader_compiler_enabled,
+        .graph_transforms =
+            graph_transform_providers,
+        .render_strategies =
+            render_strategy_providers,
+        .subgraph_replacements =
+            subgraph_replacement_providers,
+        .backend_context = backend_context,
+        .variants = variant_requests,
+    };
+    auto compiler_output =
+        runRenderCompilerProgram(
+            effectiveRenderCompilerProgram(
+                dependencies.front().options),
+            compiler_input);
+    auto prepared_variants =
+        std::move(compiler_output.variants);
+    for (std::size_t index = 0;
+         index < dependencies.size(); ++index) {
+        dependencies[index].runtime.shader_defines =
+            prepared_variants[index]
+                .compiled_pipeline->shader_defines;
     }
     // Flat and XR variants may share logical target names. Allocate the union
     // of image usage plus the maximum layer count before the first mutable

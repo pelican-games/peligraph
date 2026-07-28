@@ -22,12 +22,14 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/core/renderingpass/rendercompilerprogram.hpp"
 #include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
 #include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/rendertargetconfigregistration.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -1283,6 +1285,33 @@ gpuArenaRegistrationDependencies(
         std::move(options),
     };
 }
+
+class DelegatingVulkanCompilerProgram final
+    : public RenderCompilerProgram {
+  public:
+    mutable std::size_t compile_calls = 0;
+
+    RenderCompilerProgramSelection selection(
+        const RenderCompilerBackendContext
+            &backend_context) const override {
+        auto selected =
+            defaultVulkanRenderCompilerProgram()
+                .selection(backend_context);
+        selected.name =
+            "test.delegating_vulkan";
+        selected.implementation =
+            "test.default_delegate_v1";
+        return selected;
+    }
+
+    RenderCompilerProgramOutput compile(
+        const RenderCompilerProgramInput
+            &input) const override {
+        ++compile_calls;
+        return defaultVulkanRenderCompilerProgram()
+            .compile(input);
+    }
+};
 
 RenderPipelineGpuRegistrationDependencies
 gpuArenaRegistryDependencies() {
@@ -5927,10 +5956,18 @@ TEST_CASE(
                     .value < 0);
         }
 
+        DelegatingVulkanCompilerProgram
+            compiler_program;
+        RenderingPassConfigRegistrationDependencies::
+            Options compiler_options;
+        compiler_options.render_compiler_program =
+            &compiler_program;
         const auto registered =
             registerRenderingPassConfigFromJsonData(
                 config, {16, 16},
-                gpuArenaRegistrationDependencies({}));
+                gpuArenaRegistrationDependencies(
+                    std::move(compiler_options)));
+        REQUIRE(compiler_program.compile_calls == 1);
         REQUIRE(registered.runtime_generation == 1);
         REQUIRE(registered.target_plans.size() == 1);
         REQUIRE(
@@ -5966,6 +6003,21 @@ TEST_CASE(
         auto generation = runtime.snapshot();
         REQUIRE(generation != nullptr);
         REQUIRE(generation->generation == 1);
+        const auto *compiled_program =
+            generation->find(
+                generation->name_to_id.at(
+                    "gpu_arena_main"));
+        REQUIRE(compiled_program != nullptr);
+        REQUIRE(
+            compiled_program->frame_graph
+                .render_pipeline
+                ->render_compiler_program
+                .has_value());
+        CHECK(
+            compiled_program->frame_graph
+                .render_pipeline
+                ->render_compiler_program->name ==
+            "test.delegating_vulkan");
         REQUIRE(generation->gpu_arena != nullptr);
         REQUIRE(
             generation->gpu_arena->runtime_generation ==
