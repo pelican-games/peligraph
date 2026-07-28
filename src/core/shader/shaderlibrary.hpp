@@ -40,6 +40,11 @@ struct ShaderBundle {
     std::string cache_key;
     bool cache_hit = false;
     std::vector<std::filesystem::path> dependency_paths;
+    // Present only for generated material fragment shaders. This identity is
+    // carried into material registration instead of being reconstructed from
+    // attachment formats.
+    std::optional<MaterialOutputSchema>
+        material_output_schema;
 };
 
 struct SurfaceShaderBundleIds {
@@ -90,6 +95,8 @@ DECLARE_MODULE(ShaderLibrary) {
         std::string source_name;
         SurfacePass pass = SurfacePass::main;
         std::vector<std::string> defines;
+        std::optional<MaterialOutputSchema>
+            material_output_schema;
     };
     struct ReloadUnit {
         std::variant<FileReloadRecipe, SurfaceReloadRecipe> recipe;
@@ -145,7 +152,9 @@ DECLARE_MODULE(ShaderLibrary) {
                                    watch::AssetKey source,
                                    std::string source_name,
                                    SurfacePass pass,
-                                   std::vector<std::string> defines);
+                                   std::vector<std::string> defines,
+                                   std::optional<MaterialOutputSchema>
+                                       material_output_schema);
     void rebuildReverseDependencies();
     PreparedShaderReload prepareUnits(const std::set<std::size_t> &units,
                                       std::vector<watch::AssetKey> changed_keys) const;
@@ -181,7 +190,10 @@ DECLARE_MODULE(ShaderLibrary) {
     SurfaceShaderBundleIds loadFromSurface(const SurfaceFormatDocument &surface,
                                            std::string_view source_name,
                                            SurfacePass pass = SurfacePass::main,
-                                           std::vector<std::string> defines = {});
+                                           std::vector<std::string> defines = {},
+                                           std::optional<MaterialOutputSchema>
+                                               material_output_schema =
+                                                   std::nullopt);
     // Selects the fragment-output ABI and generated model defines together,
     // preventing a routed material from accidentally pairing a forward shader
     // with a G-buffer pipeline (or vice versa).

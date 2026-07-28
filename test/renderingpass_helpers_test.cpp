@@ -10,6 +10,8 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
+#include "../src/core/renderingpass/renderingpassvalidation.hpp"
+#include "../src/core/renderingpass/rendertargetconfigregistration.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -19,6 +21,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <unordered_set>
@@ -103,10 +106,10 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
             "empty or too long"));
 
     const auto clear_color = jsonToClearColor(nlohmann::json::array({1.0f, 0.5f, 0.25f, 1.0f}));
-    REQUIRE(clear_color.float32[0] == 1.0f);
-    REQUIRE(clear_color.float32[1] == 0.5f);
-    REQUIRE(clear_color.float32[2] == 0.25f);
-    REQUIRE(clear_color.float32[3] == 1.0f);
+    REQUIRE(clear_color[0] == 1.0);
+    REQUIRE(clear_color[1] == 0.5);
+    REQUIRE(clear_color[2] == 0.25);
+    REQUIRE(clear_color[3] == 1.0);
 }
 
 TEST_CASE("render target JSON parser returns target definitions", "[renderingpass]") {
@@ -194,8 +197,45 @@ TEST_CASE("render target JSON parser accepts history and its declarative clear",
     });
     REQUIRE(definitions.size() == 1);
     REQUIRE(definitions.front().history);
-    REQUIRE(definitions.front().history_clear_color.float32[0] == Catch::Approx(0.1f));
-    REQUIRE(definitions.front().history_clear_color.float32[3] == Catch::Approx(1.0f));
+    REQUIRE(definitions.front().history_clear_color[0] == Catch::Approx(0.1));
+    REQUIRE(definitions.front().history_clear_color[3] == Catch::Approx(1.0));
+}
+
+TEST_CASE(
+    "history clear is encoded after integer target format selection",
+    "[renderingpass][temporal][typed-clear][wp218]") {
+    const auto definitions =
+        parseRenderTargetDefinitionsFromJson(
+            nlohmann::json{
+                {"render_targets",
+                 nlohmann::json::array(
+                     {{{"name", "history_id"},
+                       {"extent_scale", 1.0},
+                       {"format", "R32_UINT"},
+                       {"usage",
+                        nlohmann::json::array(
+                            {"COLOR_ATTACHMENT",
+                             "SAMPLED"})},
+                       {"history", true},
+                       {"clear_color",
+                        {4294967295.0, 3, 0, 0}}}})}});
+    REQUIRE(definitions.size() == 1);
+    const auto physical =
+        physicalRenderTargetHistoryClearColor(
+            definitions.front());
+    REQUIRE(
+        physical.uint32[0] ==
+        std::numeric_limits<
+            std::uint32_t>::max());
+    REQUIRE(physical.uint32[1] == 3u);
+
+    auto invalid = definitions.front();
+    invalid.history_clear_color[0] = 0.5;
+    REQUIRE_THROWS_WITH(
+        physicalRenderTargetHistoryClearColor(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "fractional or out of range"));
 }
 
 TEST_CASE("resolver v2 selects B8 SRGB scene/display and float HDR", "[renderingpass][color-c1b]") {
@@ -1651,14 +1691,56 @@ TEST_CASE("pass attachment options parser applies explicit color attachment opti
 
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
 
-    REQUIRE(pass_def.clear_color.float32[0] == 0.25f);
-    REQUIRE(pass_def.clear_color.float32[1] == 0.5f);
-    REQUIRE(pass_def.clear_color.float32[2] == 0.75f);
-    REQUIRE(pass_def.clear_color.float32[3] == 1.0f);
+    REQUIRE(pass_def.clear_color[0] == 0.25);
+    REQUIRE(pass_def.clear_color[1] == 0.5);
+    REQUIRE(pass_def.clear_color[2] == 0.75);
+    REQUIRE(pass_def.clear_color[3] == 1.0);
     REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
     REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eDontCare);
     REQUIRE(pass_def.depth_load_op == vk::AttachmentLoadOp::eClear);
     REQUIRE(pass_def.depth_store_op == vk::AttachmentStoreOp::eStore);
+}
+
+TEST_CASE(
+    "pass attachment options apply sparse per-target clear colors",
+    "[renderingpass][typed-clear][wp218]") {
+    PassDefinition pass_def;
+    pass_def.name = "extended_geometry";
+    pass_def.output_color = {
+        GlobalRenderTargetId{0},
+        GlobalRenderTargetId{1},
+    };
+    const nlohmann::json pass_json{
+        {"output",
+         {{"color",
+           nlohmann::json::array(
+               {"albedo", "object_id"})},
+          {"depth", "depth"}}},
+        {"clear_color", {0.0, 0.0, 0.0, 1.0}},
+        {"clear_colors",
+         {{"object_id",
+           {4294967295.0, 0.0, 0.0, 0.0}}}},
+    };
+
+    parsePassAttachmentOptionsFromJson(
+        pass_def, pass_json);
+    REQUIRE(
+        pass_def.logicalColorClearValue(0) ==
+        std::array<double, 4>{
+            0.0, 0.0, 0.0, 1.0});
+    REQUIRE(
+        pass_def.logicalColorClearValue(1) ==
+        std::array<double, 4>{
+            4294967295.0, 0.0, 0.0, 0.0});
+
+    auto invalid = pass_json;
+    invalid["clear_colors"] = {
+        {"not_an_output", {0, 0, 0, 0}}};
+    REQUIRE_THROWS_WITH(
+        parsePassAttachmentOptionsFromJson(
+            pass_def, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "non-output render target"));
 }
 
 TEST_CASE("pass attachment options parser preserves defaults when fields are omitted", "[renderingpass]") {
@@ -1667,10 +1749,10 @@ TEST_CASE("pass attachment options parser preserves defaults when fields are omi
 
     parsePassAttachmentOptionsFromJson(pass_def, nlohmann::json::object());
 
-    REQUIRE(pass_def.clear_color.float32[0] == 0.0f);
-    REQUIRE(pass_def.clear_color.float32[1] == 0.0f);
-    REQUIRE(pass_def.clear_color.float32[2] == 0.0f);
-    REQUIRE(pass_def.clear_color.float32[3] == 1.0f);
+    REQUIRE(pass_def.clear_color[0] == 0.0);
+    REQUIRE(pass_def.clear_color[1] == 0.0);
+    REQUIRE(pass_def.clear_color[2] == 0.0);
+    REQUIRE(pass_def.clear_color[3] == 1.0);
     REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eClear);
     REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
 }
@@ -2182,6 +2264,180 @@ TEST_CASE("material pass contracts parse and filter independently of local pass 
         MaterialShaderContract::forward_scene_color_v1));
 }
 
+TEST_CASE(
+    "material output schemas remove the engine MRT count while preserving "
+    "typed attachment validation",
+    "[renderingpass][material-output][wp218]") {
+    const nlohmann::json declaration{
+        {"schema", "pelican.material_outputs"},
+        {"version", 1},
+        {"name", "project.extended_gbuffer"},
+        {"outputs",
+         {
+             {{"name", "base_color"},
+              {"type", "vec4"},
+              {"source", "surface.base_color"}},
+             {{"name", "normal"},
+              {"type", "vec4"},
+              {"source", "surface.normal_encoded"}},
+             {{"name", "material"},
+              {"type", "vec4"},
+              {"source", "surface.material"}},
+             {{"name", "world_position"},
+              {"type", "vec4"},
+              {"source", "input.world_position"}},
+             {{"name", "emissive"},
+              {"type", "vec4"},
+              {"source", "surface.emissive"}},
+             {{"name", "object_id"},
+              {"type", "uint"},
+              {"source", "custom"}},
+             {{"name", "reactive_mask"},
+              {"type", "float"},
+              {"source", "custom"}},
+         }},
+    };
+
+    PassDefinition pass;
+    pass.name = "extended_geometry";
+    pass.pass_info = MaterialPassInfo{};
+    parseMaterialPassInfoFromJson(
+        pass,
+        nlohmann::json{
+            {"material_contract",
+             "deferred_geometry_v1"},
+            {"material_outputs", declaration},
+        });
+    REQUIRE(pass.materialInfo().output_schema);
+    REQUIRE(
+        pass.materialInfo().output_schema->outputs.size() ==
+        7);
+    REQUIRE(
+        materialOutputSchemaFingerprint(
+            *pass.materialInfo().output_schema)
+            .starts_with(
+                "pelican.material_outputs@1:"
+                "project.extended_gbuffer"));
+
+    for (int index = 0; index < 7; ++index) {
+        pass.output_color.push_back(
+            GlobalRenderTargetId{index});
+    }
+    pass.output_depth = GlobalRenderTargetId{7};
+    const RenderTargetMetadataResolver metadata{
+        [](GlobalRenderTargetId id) {
+            return RenderTargetMetadata{
+                .name =
+                    id.value == 7
+                        ? "depth"
+                        : "gbuffer_" +
+                              std::to_string(id.value),
+                .usage =
+                    id.value == 7
+                        ? vk::ImageUsageFlagBits::
+                              eDepthStencilAttachment
+                        : vk::ImageUsageFlagBits::
+                              eColorAttachment,
+                .format =
+                    id.value == 7
+                        ? vk::Format::eD16Unorm
+                        : id.value == 5
+                              ? vk::Format::eR32Uint
+                              : vk::Format::
+                                    eR16G16B16A16Sfloat,
+                .extent = {1280, 720},
+            };
+        }};
+    REQUIRE_NOTHROW(
+        validateMaterialPassAttachments(
+            pass, metadata));
+    REQUIRE(
+        pass.colorClearValue(5).numeric_class ==
+        MaterialOutputNumericClass::unsigned_integer);
+    REQUIRE(
+        pass.colorClearValue(5)
+            .vulkan()
+            .uint32[3] == 1u);
+
+    pass.output_color.pop_back();
+    REQUIRE_THROWS_WITH(
+        validateMaterialPassAttachments(pass, metadata),
+        Catch::Matchers::ContainsSubstring(
+            "output.color count must match"));
+
+    auto invalid = declaration;
+    invalid["outputs"][0]["type"] = "uint";
+    invalid["outputs"][0]["source"] = "custom";
+    pass.output_color.push_back(GlobalRenderTargetId{6});
+    pass.materialInfo().output_schema =
+        parseMaterialOutputSchema(invalid);
+    REQUIRE_THROWS_WITH(
+        validateMaterialPassAttachments(pass, metadata),
+        Catch::Matchers::ContainsSubstring(
+            "numeric class is incompatible"));
+}
+
+TEST_CASE(
+    "material output schema rejects duplicate names and lit data in deferred",
+    "[renderingpass][material-output][wp218]") {
+    nlohmann::json declaration{
+        {"schema", "pelican.material_outputs"},
+        {"version", 1},
+        {"name", "project.invalid"},
+        {"outputs",
+         {
+             {{"name", "same"},
+              {"type", "vec4"},
+              {"source", "surface.base_color"}},
+             {{"name", "same"},
+              {"type", "vec4"},
+              {"source", "surface.emissive"}},
+         }},
+    };
+    REQUIRE_THROWS_WITH(
+        parseMaterialOutputSchema(declaration),
+        Catch::Matchers::ContainsSubstring(
+            "output names must be unique"));
+
+    declaration["outputs"].erase(
+        declaration["outputs"].begin() + 1);
+    declaration["outputs"][0]["name"] = "lit";
+    declaration["outputs"][0]["source"] =
+        "lighting.scene_color";
+    PassDefinition pass;
+    pass.name = "deferred";
+    pass.pass_info = MaterialPassInfo{};
+    pass.materialInfo().contract =
+        MaterialPassContract::deferred_geometry_v1;
+    pass.materialInfo().output_schema =
+        parseMaterialOutputSchema(declaration);
+    pass.output_color = {GlobalRenderTargetId{0}};
+    pass.output_depth = GlobalRenderTargetId{1};
+    const RenderTargetMetadataResolver metadata{
+        [](GlobalRenderTargetId id) {
+            return RenderTargetMetadata{
+                .name =
+                    id.value == 0 ? "color" : "depth",
+                .usage =
+                    id.value == 0
+                        ? vk::ImageUsageFlagBits::
+                              eColorAttachment
+                        : vk::ImageUsageFlagBits::
+                              eDepthStencilAttachment,
+                .format =
+                    id.value == 0
+                        ? vk::Format::
+                              eR16G16B16A16Sfloat
+                        : vk::Format::eD32Sfloat,
+                .extent = {1, 1},
+            };
+        }};
+    REQUIRE_THROWS_WITH(
+        validateMaterialPassAttachments(pass, metadata),
+        Catch::Matchers::ContainsSubstring(
+            "cannot use lighting.scene_color"));
+}
+
 TEST_CASE("material pass availability distinguishes fullscreen-only graphs",
           "[renderingpass][material-routing]") {
     RenderingPassContainer container;
@@ -2238,6 +2494,52 @@ TEST_CASE("material pass availability distinguishes fullscreen-only graphs",
               std::optional<std::string>{
                   "another_geometry"})
               .empty());
+}
+
+TEST_CASE(
+    "material pass container resolves one output ABI across runtime variants",
+    "[renderingpass][material-output][wp218]") {
+    RenderingPassContainer container;
+    const MaterialOutputSchema schema{
+        .name = "project.runtime_gbuffer",
+        .outputs = {
+            {"base_color", MaterialOutputType::vec4,
+             MaterialOutputSource::surface_base_color},
+            {"object_id",
+             MaterialOutputType::unsigned_integer,
+             MaterialOutputSource::custom},
+        },
+    };
+    PassDefinition flat;
+    flat.name = "deferred_geometry";
+    flat.pass_info = MaterialPassInfo{
+        .contract =
+            MaterialPassContract::
+                deferred_geometry_v1,
+        .output_schema = schema,
+    };
+    container.registerCompiledRenderingPass(
+        CompiledRenderingPass{
+            "flat", {{flat, PassId{0}}}, {}});
+    REQUIRE(
+        container.materialOutputSchema(
+            MaterialRouteClass::deferred_geometry) ==
+        schema);
+    REQUIRE_FALSE(
+        container.materialOutputSchema(
+            MaterialRouteClass::forward_opaque));
+
+    auto xr = flat;
+    xr.materialInfo().output_schema->name =
+        "project.xr_drift";
+    container.registerCompiledRenderingPass(
+        CompiledRenderingPass{
+            "xr", {{xr, PassId{0}}}, {}});
+    REQUIRE_THROWS_WITH(
+        container.materialOutputSchema(
+            MaterialRouteClass::deferred_geometry),
+        Catch::Matchers::ContainsSubstring(
+            "different material_outputs schemas"));
 }
 
 TEST_CASE("material pass info parser preserves defaults when material range is omitted", "[renderingpass]") {
@@ -2405,6 +2707,69 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "runtime target format selects typed clear values independently of material schema",
+    "[renderingpass][material-output][typed-clear][wp218]") {
+    const GlobalRenderTargetId object_id{0};
+    const RenderTargetMetadataResolver metadata{
+        [=](GlobalRenderTargetId id) {
+            REQUIRE(id == object_id);
+            return RenderTargetMetadata{
+                .name = "object_id",
+                .usage =
+                    vk::ImageUsageFlagBits::
+                        eColorAttachment,
+                .format = vk::Format::eR32Uint,
+                .extent = {64, 64},
+            };
+        }};
+    PassDefinition pass;
+    pass.name = "clear_object_id";
+    pass.pass_info = UiPassInfo{};
+    pass.output_color = {object_id};
+    pass.clear_color = {
+        4294967295.0, 7.0, 0.0, 1.0};
+
+    const auto compiled =
+        compileRenderingPassRuntime(
+            RenderingPassDefinition{
+                .name = "typed_clear",
+                .passes = {pass},
+            },
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata =
+                    &metadata,
+            });
+    const auto &physical =
+        compiled.passes.front().definition;
+    REQUIRE(
+        physical
+            .physical_color_numeric_classes ==
+        std::vector<MaterialOutputNumericClass>{
+            MaterialOutputNumericClass::
+                unsigned_integer});
+    const auto clear =
+        physical.colorClearValue(0);
+    REQUIRE(
+        clear.numeric_class ==
+        MaterialOutputNumericClass::
+            unsigned_integer);
+    REQUIRE(
+        clear.vulkan().uint32[0] ==
+        std::numeric_limits<
+            std::uint32_t>::max());
+    REQUIRE(clear.vulkan().uint32[1] == 7u);
+
+    PassDefinition floating;
+    floating.output_color = {object_id};
+    floating.clear_color = {
+        std::numeric_limits<double>::max(),
+        0.0, 0.0, 0.0};
+    REQUIRE_THROWS_WITH(
+        floating.colorClearValue(0),
+        "floating color clear value is out of range");
+}
+
+TEST_CASE(
     "rendering pass runtime compiler expands fused attachment mappings",
     "[renderingpass][physical-scope][local-read]") {
     const GlobalRenderTargetId gbuffer{0};
@@ -2443,8 +2808,7 @@ TEST_CASE(
     geometry.pass_info = MaterialPassInfo{};
     geometry.output_color = {gbuffer};
     geometry.clear_color =
-        vk::ClearColorValue{
-            std::array{0.25f, 0.5f, 0.75f, 1.0f}};
+        {0.25, 0.5, 0.75, 1.0};
 
     PassDefinition lighting;
     lighting.name = "lighting";
@@ -2453,8 +2817,7 @@ TEST_CASE(
     lighting.input_target_history = {false};
     lighting.output_color = {lit};
     lighting.clear_color =
-        vk::ClearColorValue{
-            std::array{0.0f, 0.0f, 0.0f, 1.0f}};
+        {0.0, 0.0, 0.0, 1.0};
 
     const RenderingPassDefinition definition{
         .name = "main",
@@ -2572,9 +2935,23 @@ TEST_CASE(
             .scope_color_attachment_operations ==
         expected_scope_operations);
     const auto expected_scope_clear_values =
-        std::vector<std::array<float, 4>>{
-            {0.25f, 0.5f, 0.75f, 1.0f},
-            {0.0f, 0.0f, 0.0f, 1.0f},
+        std::vector<PhysicalColorClearValue>{
+            {
+                .numeric_class =
+                    MaterialOutputNumericClass::floating,
+                .floating =
+                    {0.25f, 0.5f, 0.75f, 1.0f},
+                .signed_integer = {},
+                .unsigned_integer = {},
+            },
+            {
+                .numeric_class =
+                    MaterialOutputNumericClass::floating,
+                .floating =
+                    {0.0f, 0.0f, 0.0f, 1.0f},
+                .signed_integer = {},
+                .unsigned_integer = {},
+            },
         };
     REQUIRE(
         geometry_contract.scope_color_clear_values ==

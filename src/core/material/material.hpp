@@ -71,6 +71,7 @@ struct MaterialInfo {
     SurfaceRenderState render_state;
     MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
     MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
+    std::optional<MaterialOutputSchema> output_schema;
     std::optional<std::string> exact_pass;
     std::vector<MaterialScreenInputContract> screen_inputs;
     std::vector<SurfaceResourcePortDefinition> resource_ports;

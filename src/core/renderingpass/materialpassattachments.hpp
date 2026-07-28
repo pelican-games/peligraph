@@ -5,6 +5,9 @@
 
 namespace Pelican {
 
+// Compatibility defaults used only when a material pass omits the
+// pelican.material_outputs schema. Explicit schemas carry an arbitrary ordered
+// attachment list and are limited only by the selected Vulkan device.
 inline constexpr std::array<vk::Format, 5> materialPassColorAttachmentFormatsSdr = {
     vk::Format::eB8G8R8A8Srgb,
     vk::Format::eR16G16B16A16Sfloat,

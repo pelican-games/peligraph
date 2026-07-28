@@ -11,6 +11,7 @@ add_library(pelican_project
     logicalrendergraph.cpp
     logicalrendertype.cpp
     materialscreeninput.cpp
+    materialoutput.cpp
     materiallowering.cpp
     materialformat.cpp
     openpbrmapping.cpp

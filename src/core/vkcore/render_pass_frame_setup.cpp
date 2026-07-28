@@ -180,7 +180,8 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
         color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
         color_att.loadOp = operations.load_op;
         color_att.storeOp = operations.store_op;
-        color_att.clearValue.color = pass_def.clear_color;
+        color_att.clearValue.color =
+            pass_def.colorClearValue(index).vulkan();
         color_attachments.push_back(color_att);
     }
 
@@ -553,9 +554,9 @@ createLocalReadScopeColorAttachments(
         attachment.loadOp = operations.load_op;
         attachment.storeOp = operations.store_op;
         attachment.clearValue.color =
-            vk::ClearColorValue{
-                rendering
-                    .scope_color_clear_values[index]};
+            rendering
+                .scope_color_clear_values[index]
+                .vulkan();
         result.push_back(attachment);
     }
     (void)frame;

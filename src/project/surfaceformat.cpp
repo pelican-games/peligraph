@@ -1147,6 +1147,7 @@ SurfaceHookSet validateSurfaceHooks(std::string_view code, std::string_view sour
         }
         if (name == "pelican_vertex_displace_v1") hooks.vertex_displace_v1 = true;
         else if (name == "pelican_surface_v1") hooks.surface_v1 = true;
+        else if (name == "pelican_material_outputs_v1") hooks.material_outputs_v1 = true;
         else if (name == "pelican_brdf_v1") hooks.brdf_v1 = true;
         else if (name == "pelican_ambient_v1") hooks.ambient_v1 = true;
         else if (name == "pelican_lighting_v1") hooks.lighting_v1 = true;
@@ -1228,6 +1229,7 @@ std::vector<std::string_view> surfaceHookNames(const SurfaceHookSet &hooks) {
     std::vector<std::string_view> names;
     if (hooks.vertex_displace_v1) names.push_back("pelican_vertex_displace_v1");
     if (hooks.surface_v1) names.push_back("pelican_surface_v1");
+    if (hooks.material_outputs_v1) names.push_back("pelican_material_outputs_v1");
     if (hooks.brdf_v1) names.push_back("pelican_brdf_v1");
     if (hooks.ambient_v1) names.push_back("pelican_ambient_v1");
     if (hooks.lighting_v1) names.push_back("pelican_lighting_v1");

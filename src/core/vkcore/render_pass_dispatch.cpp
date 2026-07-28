@@ -107,7 +107,10 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
                                                            .target_format = target_format,
                                                            .load_op = operations.load_op,
                                                            .store_op = operations.store_op,
-                                                           .clear_color = pass_def.clear_color,
+                                                           .clear_color =
+                                                               pass_def
+                                                                   .colorClearValue(0)
+                                                                   .vulkan(),
                                                            .resolve_view = resolve_view,
                                                            .samples = pass_def.rasterization_samples,
                                                            .resolve_mode =
@@ -141,7 +144,7 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
         swapchain ? dependencies.swapchain_color_format : rt_container.getMetadata(target).format,
         operations.load_op,
         operations.store_op,
-        pass_def.clear_color,
+        pass_def.colorClearValue(0).vulkan(),
         !swapchain && rt_container.hasSeparateAttachment(target)
             ? rt_container.getImageView(target)
             : vk::ImageView{},

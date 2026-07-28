@@ -2,6 +2,7 @@
 #include "renderingpassjsonhelpers.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -29,23 +30,30 @@ std::optional<vk::Extent2D> parseFixedExtent(const nlohmann::json &rt_json,
     return vk::Extent2D{width, height};
 }
 
-vk::ClearColorValue parseHistoryClearColor(const nlohmann::json &rt_json,
-                                           const std::string &name) {
+std::array<double, 4>
+parseHistoryClearColor(const nlohmann::json &rt_json,
+                       const std::string &name) {
     if (!rt_json.contains("clear_color")) {
-        return vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}};
+        return {};
     }
     const auto &value = rt_json.at("clear_color");
     if (!value.is_array() || value.size() != 4) {
         throw std::runtime_error("Render target clear_color must contain four numbers: " + name);
     }
-    std::array<float, 4> color{};
+    std::array<double, 4> color{};
     for (size_t i = 0; i < color.size(); ++i) {
         if (!value.at(i).is_number()) {
             throw std::runtime_error("Render target clear_color must contain four numbers: " + name);
         }
-        color[i] = value.at(i).get<float>();
+        color[i] = value.at(i).get<double>();
+        if (!std::isfinite(color[i])) {
+            throw std::runtime_error(
+                "Render target clear_color must contain finite "
+                "numbers: " +
+                name);
+        }
     }
-    return vk::ClearColorValue{color};
+    return color;
 }
 
 std::vector<vk::Format> parseFormatCandidates(

@@ -3,11 +3,13 @@
 #include "shadercompiler.hpp"
 #include "shaderresourceinterface.hpp"
 #include "spvlink.hpp"
+#include "../../project/materialoutput.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/surfaceformat.hpp"
 
 #include <string>
 #include <string_view>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -28,6 +30,8 @@ struct SurfaceShaderComposition {
     std::vector<std::string> defines;
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;
+    std::optional<MaterialOutputSchema>
+        material_output_schema;
 };
 
 struct SurfaceCompileResult {
@@ -43,13 +47,19 @@ struct SurfaceCompileResult {
 SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surface,
                                                 std::string_view source_name,
                                                 SurfacePass pass = SurfacePass::main,
-                                                std::vector<std::string> defines = {});
+                                                std::vector<std::string> defines = {},
+                                                std::optional<MaterialOutputSchema>
+                                                    material_output_schema =
+                                                        std::nullopt);
 
 SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                            const SurfaceFormatDocument &surface,
                                            std::string_view source_name,
                                            SurfacePass pass = SurfacePass::main,
-                                           std::vector<std::string> defines = {});
+                                           std::vector<std::string> defines = {},
+                                           std::optional<MaterialOutputSchema>
+                                               material_output_schema =
+                                                   std::nullopt);
 
 std::string_view surfacePassName(SurfacePass pass);
 SurfacePass surfacePassForMaterialRoute(MaterialRouteClass route);

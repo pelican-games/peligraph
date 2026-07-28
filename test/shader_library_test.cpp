@@ -370,4 +370,77 @@ TEST_CASE("shader library tracks watcher keys and reloads every include and surf
 #endif
 }
 
+TEST_CASE(
+    "WP218 surface hot reload retains the selected material output ABI",
+    "[shader][hot-reload][material-output][wp218]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    FastModuleContainer modules;
+    ShaderSandbox sandbox;
+    GET_MODULE(PathResolver).setup(
+        sandbox.root, false);
+    const auto path =
+        sandbox.root / "shaders" /
+        "extended_gbuffer.surface";
+    const auto source = [](std::string_view object_id) {
+        return std::string{
+                   "//! pelican.surface v1\n"
+                   "//! language: glsl\n\n"
+                   "void pelican_surface_v1("
+                   "in PelicanSurfaceInputV1 i, "
+                   "inout PelicanSurfaceV1 s) { "
+                   "s.roughness = 0.4; }\n"
+                   "void pelican_material_outputs_v1("
+                   "in PelicanSurfaceInputV1 i, "
+                   "in PelicanSurfaceV1 s, "
+                   "inout PelicanMaterialOutputsV1 o) { "
+                   "o.object_id = "} +
+               std::string{object_id} + "; }\n";
+    };
+    writeText(path, source("7u"));
+    const auto document = parseSurfaceFormat(
+        readText(path),
+        "project://shaders/extended_gbuffer.surface");
+    const MaterialOutputSchema schema{
+        .name = "project.reloadable_gbuffer",
+        .outputs = {
+            {"base_color", MaterialOutputType::vec4,
+             MaterialOutputSource::surface_base_color},
+            {"object_id",
+             MaterialOutputType::unsigned_integer,
+             MaterialOutputSource::custom},
+        },
+    };
+    ShaderLibrary library{
+        ShaderLibraryModuleMode::reflection_only};
+    const auto ids = library.loadFromSurface(
+        document,
+        "project://shaders/extended_gbuffer.surface",
+        SurfacePass::deferred_geometry, {}, schema);
+    REQUIRE(
+        library.get(ids.fragment)
+            .material_output_schema == schema);
+    REQUIRE(
+        library.get(ids.fragment)
+            .reflection.fragment_outputs.size() == 2);
+
+    writeText(path, source("11u"));
+    REQUIRE(library.reload(ids.fragment));
+    REQUIRE(library.get(ids.fragment).version == 2);
+    REQUIRE(
+        library.get(ids.fragment)
+            .material_output_schema == schema);
+    REQUIRE(
+        library.get(ids.fragment)
+            .reflection.fragment_outputs[1]
+            .format == vk::Format::eR32Uint);
+
+    writeText(path, source("vec4(1.0)"));
+    REQUIRE_FALSE(library.reload(ids.fragment));
+    REQUIRE(library.get(ids.fragment).version == 2);
+    REQUIRE(
+        library.get(ids.fragment)
+            .material_output_schema == schema);
+#endif
+}
+
 } // namespace Pelican

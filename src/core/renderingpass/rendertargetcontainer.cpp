@@ -220,8 +220,11 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
         }
     }
     if (usage & vk::ImageUsageFlagBits::eSampled) {
-        required |= vk::FormatFeatureFlagBits::eSampledImage |
-                    vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+        // Sampling support and filtering support are separate Vulkan
+        // capabilities. Integer/data targets are commonly sampleable only
+        // with nearest filtering, so the consuming pass validates its
+        // authored sampler instead of imposing linear filtering here.
+        required |= vk::FormatFeatureFlagBits::eSampledImage;
     }
     if (usage & vk::ImageUsageFlagBits::eStorage) {
         required |=

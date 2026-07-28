@@ -572,9 +572,11 @@ std::string trackedLayoutName(GlobalRenderTargetId rt_id, vk::ImageLayout specia
                           : special_layout);
 }
 
-nlohmann::json clearColorJson(const vk::ClearColorValue &clear_color) {
-    return nlohmann::json::array({clear_color.float32[0], clear_color.float32[1], clear_color.float32[2],
-                                  clear_color.float32[3]});
+nlohmann::json clearColorJson(
+    const std::array<double, 4> &clear_color) {
+    return nlohmann::json::array(
+        {clear_color[0], clear_color[1],
+         clear_color[2], clear_color[3]});
 }
 
 nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
@@ -605,7 +607,11 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         };
         if (operations.load_op ==
             vk::AttachmentLoadOp::eClear) {
-            attachment["clear"] = clearColorJson(definition.clear_color);
+            attachment["clear"] =
+                clearColorJson(
+                    definition
+                        .logicalColorClearValue(
+                            index));
         }
         attachments.push_back(std::move(attachment));
     }
@@ -660,18 +666,57 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
 
 std::size_t formatTexelBytes(vk::Format format) {
     switch (format) {
-    case vk::Format::eR8Unorm: return 1;
+    case vk::Format::eR8Unorm:
+    case vk::Format::eR8Snorm:
+    case vk::Format::eR8Uint:
+    case vk::Format::eR8Sint:
+        return 1;
+    case vk::Format::eR8G8Unorm:
+    case vk::Format::eR8G8Snorm:
+    case vk::Format::eR8G8Uint:
+    case vk::Format::eR8G8Sint:
     case vk::Format::eR16Sfloat:
-    case vk::Format::eD16Unorm: return 2;
+    case vk::Format::eR16Unorm:
+    case vk::Format::eR16Snorm:
+    case vk::Format::eR16Uint:
+    case vk::Format::eR16Sint:
+    case vk::Format::eD16Unorm:
+        return 2;
     case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Snorm:
+    case vk::Format::eR8G8B8A8Uint:
+    case vk::Format::eR8G8B8A8Sint:
     case vk::Format::eR8G8B8A8Srgb:
     case vk::Format::eB8G8R8A8Unorm:
-    case vk::Format::eB8G8R8A8Srgb: return 4;
+    case vk::Format::eB8G8R8A8Srgb:
+    case vk::Format::eA2B10G10R10UnormPack32:
+    case vk::Format::eA2R10G10B10UnormPack32:
+    case vk::Format::eB10G11R11UfloatPack32:
+    case vk::Format::eR16G16Unorm:
+    case vk::Format::eR16G16Snorm:
+    case vk::Format::eR16G16Uint:
+    case vk::Format::eR16G16Sint:
     case vk::Format::eR16G16Sfloat:
+    case vk::Format::eR32Uint:
+    case vk::Format::eR32Sint:
+    case vk::Format::eR32Sfloat:
     case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32Sfloat: return 4;
+    case vk::Format::eD32Sfloat:
+        return 4;
+    case vk::Format::eR16G16B16A16Unorm:
+    case vk::Format::eR16G16B16A16Snorm:
+    case vk::Format::eR16G16B16A16Uint:
+    case vk::Format::eR16G16B16A16Sint:
     case vk::Format::eR16G16B16A16Sfloat:
-    case vk::Format::eD32SfloatS8Uint: return 8;
+    case vk::Format::eR32G32Uint:
+    case vk::Format::eR32G32Sint:
+    case vk::Format::eR32G32Sfloat:
+    case vk::Format::eD32SfloatS8Uint:
+        return 8;
+    case vk::Format::eR32G32B32A32Uint:
+    case vk::Format::eR32G32B32A32Sint:
+    case vk::Format::eR32G32B32A32Sfloat:
+        return 16;
     default: return 0;
     }
 }

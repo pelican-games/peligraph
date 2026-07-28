@@ -58,8 +58,16 @@ std::vector<CompiledMaterialRouteBinding> bindMaterialRoutes(
                 "Compiled material route contract mismatch for pass: " +
                 route.pass_name);
         }
+        if (selected->definition.materialInfo().output_schema !=
+            route.output_schema) {
+            throw std::runtime_error(
+                "Compiled material route material_outputs "
+                "schema mismatch for pass: " +
+                route.pass_name);
+        }
         bindings.push_back(CompiledMaterialRouteBinding{
-            route.route, selected->pass_id, route.pass_contract});
+            route.route, selected->pass_id,
+            route.pass_contract, route.output_schema});
     }
     return bindings;
 }

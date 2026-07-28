@@ -449,6 +449,13 @@ void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::jso
         }
         material_info.contract = *parsed;
     }
+    if (pass_json.contains("material_outputs")) {
+        material_info.output_schema =
+            parseMaterialOutputSchema(
+                pass_json.at("material_outputs"),
+                "Material pass '" + pass_def.name +
+                    "' material_outputs");
+    }
 
     if (pass_json.contains("material_variant")) {
         const auto &variant = pass_json.at("material_variant");

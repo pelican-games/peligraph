@@ -22,6 +22,7 @@ struct MaterialPassRenderingBinding {
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
     CompiledPassRenderingContract rendering;
+    std::optional<MaterialOutputSchema> output_schema;
 
     bool operator==(
         const MaterialPassRenderingBinding &) const =
@@ -65,6 +66,13 @@ DECLARE_MODULE(RenderingPassContainer) {
     materialPassRenderingBindings(
         MaterialRouteClass route,
         MaterialShaderContract shader_contract,
+        const std::optional<std::string> &exact_pass =
+            std::nullopt) const;
+    // Resolves the strategy-private fragment-output ABI selected by a route.
+    // All graph variants visible to the container must agree.
+    std::optional<MaterialOutputSchema>
+    materialOutputSchema(
+        MaterialRouteClass route,
         const std::optional<std::string> &exact_pass =
             std::nullopt) const;
     vk::SampleCountFlagBits materialRasterizationSamples(

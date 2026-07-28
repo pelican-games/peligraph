@@ -215,6 +215,26 @@ resolveMaterialPipelineRenderingContract(
                     info.shader_contract));
     }
 
+    for (const auto &binding : bindings) {
+        if (binding.output_schema !=
+            info.output_schema) {
+            const auto shader_schema =
+                info.output_schema
+                    ? "'" + info.output_schema->name + "'"
+                    : std::string{"<built-in>"};
+            const auto pass_schema =
+                binding.output_schema
+                    ? "'" + binding.output_schema->name + "'"
+                    : std::string{"<built-in>"};
+            throw std::runtime_error(
+                "material fragment-output schema " +
+                shader_schema +
+                " is incompatible with pass '" +
+                binding.pass_name + "' schema " +
+                pass_schema);
+        }
+    }
+
     auto result =
         resolveMaterialPassRenderingBinding(
             bindings.front(),
@@ -251,7 +271,14 @@ static std::string makePipelineKey(
         << ":samples="
         << static_cast<std::uint32_t>(
                rendering.rasterization_samples)
-        << ":colors=";
+        << ":outputs=";
+    if (info.output_schema) {
+        key << materialOutputSchemaFingerprint(
+            *info.output_schema);
+    } else {
+        key << "built-in";
+    }
+    key << ":colors=";
     for (const auto format :
          rendering.color_formats) {
         key << static_cast<std::uint32_t>(format)
@@ -469,6 +496,16 @@ static void validateMaterialCapabilities(
         &rendering) {
     const auto physical_device = GET_MODULE(VulkanManageCore).getPhysDevice();
     const auto limits = physical_device.getProperties().limits;
+    if (rendering.color_formats.size() >
+        limits.maxColorAttachments) {
+        throw std::runtime_error(
+            "material output schema requires " +
+            std::to_string(
+                rendering.color_formats.size()) +
+            " color attachments but device "
+            "maxColorAttachments is " +
+            std::to_string(limits.maxColorAttachments));
+    }
     const auto reserved = info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
     const auto sampler_count = static_cast<std::uint32_t>(reserved + info.custom_textures.size());
     if (sampler_count > limits.maxPerStageDescriptorSamplers ||
@@ -483,22 +520,46 @@ static void validateMaterialCapabilities(
         throw std::runtime_error(
             "material render_state requests depth_write while depth_test is disabled");
     }
-    if (info.render_state.blend != SurfaceBlendMode::opaque) {
-        for (const auto format :
-             rendering.color_formats) {
-            const auto features = physical_device.getFormatProperties(format).optimalTilingFeatures;
+    for (const auto format : rendering.color_formats) {
+        const auto features =
+            physical_device.getFormatProperties(format)
+                .optimalTilingFeatures;
+        if (!(features &
+              vk::FormatFeatureFlagBits::
+                  eColorAttachment)) {
+            throw std::runtime_error(
+                "material output format lacks device color "
+                "attachment capability: " +
+                vk::to_string(format));
+        }
+        if (info.render_state.blend !=
+            SurfaceBlendMode::opaque) {
             if (!(features & vk::FormatFeatureFlagBits::eColorAttachmentBlend)) {
                 throw std::runtime_error("material render_state blend lacks device capability for color format " +
                                          vk::to_string(format));
             }
         }
     }
-    const auto depth_features = physical_device.getFormatProperties(materialPassDepthAttachmentFormat)
-                                    .optimalTilingFeatures;
-    if ((info.render_state.depth_test || info.render_state.depth_write) &&
-        !(depth_features & vk::FormatFeatureFlagBits::eDepthStencilAttachment)) {
-        throw std::runtime_error("material render_state depth lacks device capability for format " +
-                                 vk::to_string(materialPassDepthAttachmentFormat));
+    if (info.render_state.depth_test ||
+        info.render_state.depth_write) {
+        if (!rendering.depth_format) {
+            throw std::runtime_error(
+                "material render_state requires a depth attachment");
+        }
+        const auto depth_features =
+            physical_device
+                .getFormatProperties(
+                    *rendering.depth_format)
+                .optimalTilingFeatures;
+        if (!(depth_features &
+              vk::FormatFeatureFlagBits::
+                  eDepthStencilAttachment)) {
+            throw std::runtime_error(
+                "material render_state depth lacks device "
+                "capability for format " +
+                vk::to_string(
+                    *rendering.depth_format));
+        }
     }
 }
 
@@ -1297,6 +1358,26 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
     info.tags = canonicalizeMaterialDrawTags(
         std::move(info.tags), "registered material");
+    const auto &fragment_bundle =
+        GET_MODULE(ShaderLibrary).get(info.frag_shader);
+    if (info.output_schema &&
+        fragment_bundle.material_output_schema &&
+        info.output_schema !=
+            fragment_bundle.material_output_schema) {
+        throw std::runtime_error(
+            "material registration output_schema disagrees "
+            "with the generated fragment shader");
+    }
+    if (!info.output_schema) {
+        info.output_schema =
+            fragment_bundle.material_output_schema;
+    }
+    if (info.output_schema) {
+        validateFragmentOutputSchema(
+            fragment_bundle.reflection,
+            *info.output_schema,
+            "registered material fragment shader");
+    }
     const auto rendering =
         resolveMaterialPipelineRenderingContract(info);
     validateMaterialCapabilities(info, rendering);
@@ -1515,9 +1596,19 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
         .pipeline = pipeline,
+        .pipeline_color_formats =
+            rendering.color_formats,
+        .pipeline_depth_format =
+            rendering.depth_format,
+        .pipeline_rasterization_samples =
+            rendering.rasterization_samples,
+        .pipeline_local_read =
+            rendering.local_read,
         .tags = std::move(info.tags),
         .route = info.route,
         .shader_contract = info.shader_contract,
+        .output_schema =
+            std::move(info.output_schema),
         .exact_pass = std::move(info.exact_pass),
         .pass_inputs = std::move(pass_inputs),
         .resource_interface =
@@ -2273,6 +2364,129 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
+void MaterialContainer::validateRuntimeGenerationCompatibility(
+    const RendererRuntimeGeneration &generation) const {
+    const auto bindings_for =
+        [&generation](
+            MaterialRouteClass route,
+            MaterialShaderContract shader_contract,
+            const std::optional<std::string> &exact_pass) {
+            std::vector<MaterialPassRenderingBinding> bindings;
+            for (const auto rendering_pass_id :
+                 generation.rendering_pass_ids) {
+                const auto *program =
+                    generation.find(rendering_pass_id);
+                if (program == nullptr) {
+                    throw std::logic_error(
+                        "Render-pipeline candidate pass table is "
+                        "inconsistent");
+                }
+                for (const auto &compiled :
+                     program->rendering_pass.passes) {
+                    const auto &pass = compiled.definition;
+                    if (!pass.isMaterial() ||
+                        !materialPassAcceptsMaterial(
+                            pass.materialInfo().contract,
+                            pass.name, route,
+                            shader_contract, exact_pass)) {
+                        continue;
+                    }
+                    bindings.push_back(
+                        MaterialPassRenderingBinding{
+                            .pass_name = pass.name,
+                            .rasterization_samples =
+                                pass.rasterization_samples,
+                            .rendering =
+                                compiled.rendering,
+                            .output_schema =
+                                pass.materialInfo()
+                                    .output_schema,
+                        });
+                }
+            }
+            return bindings;
+        };
+
+    materials.forEach(
+        [&](GlobalMaterialId material_id,
+            const InternalMaterialInfo &material) {
+            const auto bindings = bindings_for(
+                material.route,
+                material.shader_contract,
+                material.exact_pass);
+            if (bindings.empty()) {
+                throw std::runtime_error(
+                    "render-pipeline candidate has no compatible "
+                    "pass for live material " +
+                    std::to_string(material_id.value) +
+                    " (route '" +
+                    std::string{materialRouteClassName(
+                        material.route)} +
+                    "', shader contract '" +
+                    std::string{materialShaderContractName(
+                        material.shader_contract)} +
+                    "')");
+            }
+
+            const MaterialPipelineRenderingContract live{
+                .color_formats =
+                    material.pipeline_color_formats,
+                .depth_format =
+                    material.pipeline_depth_format,
+                .rasterization_samples =
+                    material
+                        .pipeline_rasterization_samples,
+                .local_read =
+                    material.pipeline_local_read,
+            };
+            for (const auto &binding : bindings) {
+                if (binding.output_schema !=
+                    material.output_schema) {
+                    const auto live_schema =
+                        material.output_schema
+                            ? "'" +
+                                  material.output_schema
+                                      ->name +
+                                  "'"
+                            : std::string{"<built-in>"};
+                    const auto candidate_schema =
+                        binding.output_schema
+                            ? "'" +
+                                  binding.output_schema->name +
+                                  "'"
+                            : std::string{"<built-in>"};
+                    throw std::runtime_error(
+                        "render-pipeline candidate pass '" +
+                        binding.pass_name +
+                        "' changes live material " +
+                        std::to_string(material_id.value) +
+                        " output schema from " +
+                        live_schema + " to " +
+                        candidate_schema +
+                        "; reload the material surface "
+                        "transactionally with the graph");
+                }
+
+                const auto candidate =
+                    resolveMaterialPassRenderingBinding(
+                        binding,
+                        material.shader_contract);
+                if (candidate != live) {
+                    throw std::runtime_error(
+                        "render-pipeline candidate pass '" +
+                        binding.pass_name +
+                        "' changes the physical rendering "
+                        "contract of live material " +
+                        std::to_string(material_id.value) +
+                        "; color/depth formats, sample count, "
+                        "or local-read mapping require a "
+                        "transactional material pipeline "
+                        "rebuild");
+                }
+            }
+        });
+}
+
 bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
                                          GlobalMaterialId material_id) const {
     if (!pass.isMaterial()) return false;
@@ -2294,7 +2508,9 @@ bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
     const auto &material = materials.get(effective);
     const auto contract = pass.materialInfo().contract;
     return materialPassAcceptsMaterial(contract, pass.name, material.route,
-                                       material.shader_contract, material.exact_pass);
+                                       material.shader_contract, material.exact_pass) &&
+           pass.materialInfo().output_schema ==
+               material.output_schema;
 }
 
 GlobalMaterialId MaterialContainer::resolveMaterialForPass(
@@ -2568,7 +2784,9 @@ MaterialContainer::ensureScreenInputDescriptor(
     if (!pass.isMaterial() ||
         !materialPassAcceptsMaterial(pass.materialInfo().contract, pass.name,
                                      material.route, material.shader_contract,
-                                     material.exact_pass)) {
+                                     material.exact_pass) ||
+        pass.materialInfo().output_schema !=
+            material.output_schema) {
         throw std::runtime_error(
             "material screen inputs requested for an incompatible pass: " +
             pass.name);

@@ -25,8 +25,10 @@ struct RenderTargetDefinition {
     std::vector<vk::Format> format_candidates;
     vk::ImageUsageFlags usage;
     bool history = false;
-    vk::ClearColorValue history_clear_color =
-        vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}};
+    // Kept logical until the physical format is selected so an alternate
+    // SINT/UINT target does not retain a float-tagged Vulkan union.
+    std::array<double, 4> history_clear_color{
+        0.0, 0.0, 0.0, 0.0};
     std::uint32_t samples = 1;
     ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;

@@ -136,7 +136,11 @@ vk::UniqueSampler createSampler(
     vk::SamplerCreateInfo create_info;
     create_info.magFilter = filter;
     create_info.minFilter = filter;
-    create_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
+    create_info.mipmapMode =
+        sampling.filter ==
+                FullscreenInputFilter::nearest
+            ? vk::SamplerMipmapMode::eNearest
+            : vk::SamplerMipmapMode::eLinear;
     create_info.addressModeU = address_mode;
     create_info.addressModeV = address_mode;
     create_info.addressModeW = address_mode;

@@ -1,4 +1,7 @@
 #include "standardmaterialresource.hpp"
+#include "../../project/materiallowering.hpp"
+#include "../../project/surfaceformat.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "battery/embed.hpp"
 #include "materialcontainer.hpp"
@@ -24,6 +27,46 @@ StandardMaterialResource::StandardMaterialResource() {
 
     const auto frag_shader = b::embed<"default.frag.spv">();
     std_frag = shader_library.loadFromBytes(frag_shader.length(), frag_shader.data(), "default.frag.spv");
+
+    const auto output_schema =
+        GET_MODULE(RenderingPassContainer)
+            .materialOutputSchema(
+                MaterialRouteClass::
+                    deferred_geometry,
+                std::nullopt);
+    if (output_schema) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+        constexpr std::string_view source_name =
+            "generated://standard_material.surface";
+        const auto surface = parseSurfaceFormat(
+            R"surface(//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+}
+)surface",
+            source_name);
+        const auto lowered =
+            lowerSurfaceDefaults(
+                surface, source_name);
+        const auto generated =
+            shader_library
+                .loadFromSurfaceForMaterial(
+                    surface, source_name,
+                    lowered,
+                    {"PELICAN_COMPACT_STANDARD_VERTEX_ABI"});
+        // The built-in standard/skinned/VAT vertex shaders intentionally use
+        // the compact six-varying ABI. The generated fragment retains that
+        // input ABI while adopting the project-selected output schema.
+        std_frag = generated.fragment;
+#else
+        throw std::runtime_error(
+            "project material_outputs requires the runtime "
+            "shader compiler for the standard material");
+#endif
+    }
 
     uint8_t texdata_transparent[4 * 16];
     for (int i = 0; i < 16; i++) {

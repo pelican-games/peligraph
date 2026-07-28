@@ -4680,6 +4680,430 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
 }
 
 TEST_CASE(
+    "WP218 project material writes a sixth typed G-buffer target through the runtime pipeline",
+    "[wp218][headless][render][gbuffer][mrt]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "object_id_present.frag",
+            R"glsl(#version 450
+layout(set = 1, binding = 0) uniform usampler2D objectIds;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    uint objectId = texture(objectIds, inUV).r;
+    outColor = objectId == 73u
+        ? vec4(0.0, 1.0, 0.0, 1.0)
+        : objectId == 0xffffffffu
+              ? vec4(1.0, 0.0, 0.0, 1.0)
+              : vec4(0.0, 0.0, 0.0, 1.0);
+}
+)glsl");
+
+        auto pipeline_document =
+            nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "render_pipelines/hybrid_v1.json"));
+        auto config =
+            pipeline_document.at("config");
+        config["multisampling"] = {
+            {"samples", 4},
+            {"fallback", "lower_supported"},
+            {"scope", "geometry"},
+        };
+        config["render_targets"].push_back({
+            {"name", "gbuffer_object_id"},
+            {"extent_scale", 1.0},
+            {"format", "R32_UINT"},
+            {"format_class", "data"},
+            {"usage",
+             nlohmann::json::array(
+                 {"COLOR_ATTACHMENT", "SAMPLED"})},
+        });
+
+        auto &passes =
+            config["rendering_passes"][0]["passes"];
+        const auto deferred =
+            std::find_if(
+                passes.begin(), passes.end(),
+                [](const auto &pass) {
+                    return pass.at("name") ==
+                           "deferred_geometry";
+                });
+        REQUIRE(deferred != passes.end());
+        (*deferred)["output"]["color"].push_back(
+            "gbuffer_object_id");
+        (*deferred)["material_outputs"] = {
+            {"schema", "pelican.material_outputs"},
+            {"version", 1},
+            {"name", "headless.extended_gbuffer"},
+            {"outputs",
+             nlohmann::json::array({
+                 {{"name", "albedo"},
+                  {"type", "vec4"},
+                  {"source", "surface.base_color"}},
+                 {{"name", "normal"},
+                  {"type", "vec4"},
+                  {"source", "surface.normal_encoded"}},
+                 {{"name", "material"},
+                  {"type", "vec4"},
+                  {"source", "surface.material"}},
+                 {{"name", "world_position"},
+                  {"type", "vec4"},
+                  {"source", "input.world_position"}},
+                 {{"name", "emissive"},
+                  {"type", "vec4"},
+                  {"source", "surface.emissive"}},
+                 {{"name", "object_id"},
+                  {"type", "uint"},
+                  {"source", "custom"}},
+             })},
+        };
+        (*deferred)["clear_colors"] = {
+            {"gbuffer_object_id",
+             nlohmann::json::array(
+                 {4294967295.0, 0, 0, 0})},
+        };
+        const auto present =
+            std::find_if(
+                passes.begin(), passes.end(),
+                [](const auto &pass) {
+                    return pass.at("name") ==
+                           "scene_present";
+                });
+        REQUIRE(present != passes.end());
+        (*present)["input"] =
+            nlohmann::json::array(
+                {"gbuffer_object_id"});
+        (*present)["input_sampling"] =
+            nlohmann::json::array(
+                {{{"filter", "nearest"},
+                  {"address", "clamp_to_edge"}}});
+        (*present)["shader"]["fragment"] =
+            "project://shaders/object_id_present";
+        writeTextFile(
+            temp_dir / "extended_gbuffer.json",
+            config.dump(2));
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "extended_gbuffer.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource).setSourceByData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+
+        const auto physical_device =
+            GET_MODULE(VulkanManageCore)
+                .getPhysDevice();
+        const auto limits =
+            physical_device.getProperties().limits;
+        if (limits.maxColorAttachments < 6) {
+            std::filesystem::remove_all(temp_dir);
+            temp_dir.clear();
+            SKIP(
+                "device exposes fewer than six color attachments; "
+                "the runtime correctly treats maxColorAttachments "
+                "as the physical limit");
+        }
+        const auto object_id_features =
+            physical_device
+                .getFormatProperties(
+                    vk::Format::eR32Uint)
+                .optimalTilingFeatures;
+        const auto required_features =
+            vk::FormatFeatureFlagBits::eColorAttachment |
+            vk::FormatFeatureFlagBits::eSampledImage;
+        if ((object_id_features & required_features) !=
+            required_features) {
+            std::filesystem::remove_all(temp_dir);
+            temp_dir.clear();
+            SKIP(
+                "device cannot use R32_UINT as both a color "
+                "attachment and sampled image");
+        }
+
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto main_render_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "main_render");
+        const auto execution =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .find(main_render_id);
+        REQUIRE(execution != nullptr);
+        REQUIRE(
+            execution->render_pipeline != nullptr);
+
+        const auto schema =
+            GET_MODULE(RenderingPassContainer)
+                .materialOutputSchema(
+                    MaterialRouteClass::
+                        deferred_geometry);
+        REQUIRE(schema);
+        REQUIRE(schema->name ==
+                "headless.extended_gbuffer");
+        REQUIRE(schema->outputs.size() == 6);
+        REQUIRE(
+            schema->outputs.back().type ==
+            MaterialOutputType::
+                unsigned_integer);
+
+        constexpr std::string_view surface_source =
+            R"surface(//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(0.8, 0.2, 0.1, 1.0);
+}
+
+void pelican_material_outputs_v1(
+    in PelicanSurfaceInputV1 input_data,
+    in PelicanSurfaceV1 surface,
+    inout PelicanMaterialOutputsV1 outputs) {
+    outputs.object_id = 73u;
+}
+)surface";
+        constexpr std::string_view surface_reference =
+            "project://shaders/extended_gbuffer.surface";
+        const auto surface = parseSurfaceFormat(
+            surface_source, surface_reference);
+        const auto lowered = lowerSurfaceDefaults(
+            surface, surface_reference);
+        REQUIRE(
+            lowered.route ==
+            MaterialRouteClass::
+                deferred_geometry);
+        const auto shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    surface, surface_reference,
+                    lowered,
+                    execution->render_pipeline
+                        ->shader_defines);
+        const auto &fragment =
+            GET_MODULE(ShaderLibrary)
+                .get(shaders.fragment);
+        REQUIRE(
+            fragment.material_output_schema ==
+            schema);
+        REQUIRE(
+            fragment.reflection
+                .fragment_outputs.size() == 6);
+        REQUIRE(
+            fragment.reflection
+                .fragment_outputs.back()
+                .format ==
+            vk::Format::eR32Uint);
+
+        auto &standard =
+            GET_MODULE(StandardMaterialResource);
+        MaterialInfo material{
+            .vert_shader = shaders.vertex,
+            .frag_shader = shaders.fragment,
+            .base_color_texture =
+                standard.whiteTexture(),
+            .metallic_roughness_texture =
+                standard
+                    .metallicRoughnessDefaultTexture(),
+            .normal_texture =
+                standard.normalDefaultTexture(),
+            .emissive_texture =
+                standard.emissiveDefaultTexture(),
+        };
+        applyLoweredMaterialForRoute(
+            material, lowered);
+        const auto material_id =
+            GET_MODULE(MaterialContainer)
+                .registerMaterial(
+                    std::move(material));
+        REQUIRE(
+            isValidMaterialId(material_id));
+
+        const auto object_id_target =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "gbuffer_object_id");
+        const auto object_id_metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(
+                    object_id_target);
+        REQUIRE(
+            object_id_metadata.format ==
+            vk::Format::eR32Uint);
+        if (object_id_metadata.samples > 1) {
+            REQUIRE(
+                GET_MODULE(
+                    RenderTargetContainer)
+                    .hasSeparateAttachment(
+                        object_id_target));
+        }
+
+        auto &geometry =
+            GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{218};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material_id,
+                .primitives = {
+                    geometry.addPrimitiveEntry(
+                        makeScreenQuad(
+                            0.4f, 0.0f))},
+                .source_material_index = 0},
+        };
+        const auto model_instance =
+            GET_MODULE(
+                PolygonInstanceContainer)
+                .placeModelInstance(model);
+        REQUIRE(
+            GET_MODULE(
+                PolygonInstanceContainer)
+                .isModelInstanceAlive(
+                    model_instance));
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos(
+            {0.0f, 0.0f, 2.0f});
+        camera.setDir(
+            {0.0f, 0.0f, -1.0f});
+        camera.setUp(
+            {0.0f, 1.0f, 0.0f});
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            pixels.size() ==
+            32u * 32u * 4u);
+        const auto center =
+            (16u * 32u + 16u) * 4u;
+        const auto corner = 0u;
+        REQUIRE(pixels[center] < 16);
+        REQUIRE(pixels[center + 1] > 224);
+        REQUIRE(pixels[center + 2] < 16);
+        REQUIRE(pixels[corner] > 224);
+        REQUIRE(pixels[corner + 1] < 16);
+        REQUIRE(pixels[corner + 2] < 16);
+
+        const auto frame_plan =
+            renderer.currentFramePlanJson();
+        REQUIRE(
+            frame_plan.dump().find(
+                "gbuffer_object_id") !=
+            std::string::npos);
+        REQUIRE(
+            frame_plan.dump().find(
+                "headless.extended_gbuffer") !=
+            std::string::npos);
+
+        auto &runtime =
+            GET_MODULE(
+                FrameGraphRuntimeContainer);
+        const auto published_generation =
+            runtime.snapshot();
+        REQUIRE(
+            published_generation != nullptr);
+        auto incompatible_reload = config;
+        auto &reload_passes =
+            incompatible_reload
+                ["rendering_passes"][0]
+                ["passes"];
+        const auto reload_deferred =
+            std::find_if(
+                reload_passes.begin(),
+                reload_passes.end(),
+                [](const auto &pass) {
+                    return pass.at("name") ==
+                           "deferred_geometry";
+                });
+        REQUIRE(
+            reload_deferred !=
+            reload_passes.end());
+        (*reload_deferred)
+            ["material_outputs"]["name"] =
+            "headless.incompatible_reload";
+        writeTextFile(
+            temp_dir / "extended_gbuffer.json",
+            incompatible_reload.dump(2));
+        REQUIRE_FALSE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "extended_gbuffer.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(
+            runtime.snapshot() ==
+            published_generation);
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore)
+            .waitIdle();
+        const auto rollback_pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            rollback_pixels[center] < 16);
+        REQUIRE(
+            rollback_pixels[center + 1] >
+            224);
+        REQUIRE(
+            rollback_pixels[center + 2] <
+            16);
+
+        std::filesystem::remove_all(
+            temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan extended G-buffer rendering unavailable: "} +
+            error.what());
+    }
+#endif
+}
+
+TEST_CASE(
     "WP196 pipeline watcher coalesces dependencies and preserves the active generation on failure",
     "[wp196][headless][render-pipeline][hot-reload][coalesce][rollback]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

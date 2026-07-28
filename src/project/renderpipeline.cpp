@@ -808,6 +808,9 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
             composed_config.at("rendering_passes").empty()) {
             throw std::runtime_error("material_routing requires rendering_passes");
         }
+        std::optional<MaterialOutputSchema>
+            selected_output_schema;
+        bool selected_output_schema_initialized = false;
         for (const auto &pass_set : composed_config.at("rendering_passes")) {
             const auto *pass = findPass(pass_set, pass_name);
             const auto set_name = pass_set.value("name", std::string{"<unnamed>"});
@@ -834,14 +837,49 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
                                          "' requires contract '" +
                                          std::string{materialPassContractName(expected)} + "'");
             }
+            std::optional<MaterialOutputSchema>
+                pass_output_schema;
+            if (pass->contains("material_outputs")) {
+                pass_output_schema =
+                    parseMaterialOutputSchema(
+                        pass->at("material_outputs"),
+                        "material_routing pass '" +
+                            pass_name +
+                            "' material_outputs");
+            }
+            if (!selected_output_schema_initialized) {
+                selected_output_schema =
+                    pass_output_schema;
+                selected_output_schema_initialized =
+                    true;
+            } else if (
+                selected_output_schema !=
+                pass_output_schema) {
+                throw std::runtime_error(
+                    "material_routing route '" +
+                    std::string{route_name} +
+                    "' pass '" + pass_name +
+                    "' has different material_outputs "
+                    "schemas across rendering pass variants");
+            }
         }
-        resolved_routes[route_name] = {
+        auto resolved_route = nlohmann::json{
             {"pass", pass_name},
             {"contract", materialPassContractName(expected)},
             {"shader_contract", materialShaderContractName(
                                     materialPassShaderContract(expected))},
             {"phase", materialPhaseName(materialPassPhase(expected))},
         };
+        if (selected_output_schema) {
+            resolved_route["output_schema"] =
+                materialOutputSchemaToJson(
+                    *selected_output_schema);
+            resolved_route["output_schema_fingerprint"] =
+                materialOutputSchemaFingerprint(
+                    *selected_output_schema);
+        }
+        resolved_routes[route_name] =
+            std::move(resolved_route);
     }
     return {
         {"policy", policy},
@@ -1443,7 +1481,9 @@ CompiledMaterialRouting compileMaterialRouting(
         const auto route_context = "resolved material_routing route '" +
                                    std::string{route_name} + "'";
         requireOnlyKeys(*entry,
-                        {"pass", "contract", "shader_contract", "phase"},
+                        {"pass", "contract", "shader_contract", "phase",
+                         "output_schema",
+                         "output_schema_fingerprint"},
                         route_context);
         const auto pass_name = requireString(*entry, "pass", route_context);
         if (!selected_passes.insert(pass_name).second) {
@@ -1476,8 +1516,37 @@ CompiledMaterialRouting compileMaterialRouting(
             throw std::runtime_error(route_context + " requires phase '" +
                                      std::string{expected_phase} + "'");
         }
+        std::optional<MaterialOutputSchema>
+            output_schema;
+        const auto encoded_output_schema =
+            entry->find("output_schema");
+        const auto encoded_fingerprint =
+            entry->find("output_schema_fingerprint");
+        if ((encoded_output_schema == entry->end()) !=
+            (encoded_fingerprint == entry->end())) {
+            throw std::runtime_error(
+                route_context +
+                " must provide output_schema and "
+                "output_schema_fingerprint together");
+        }
+        if (encoded_output_schema != entry->end()) {
+            output_schema = parseMaterialOutputSchema(
+                *encoded_output_schema,
+                route_context + " output_schema");
+            if (!encoded_fingerprint->is_string() ||
+                encoded_fingerprint->get<std::string>() !=
+                    materialOutputSchemaFingerprint(
+                        *output_schema)) {
+                throw std::runtime_error(
+                    route_context +
+                    " output_schema_fingerprint does not match "
+                    "output_schema");
+            }
+        }
         result.routes.push_back(
-            CompiledMaterialRoute{route, pass_name, expected});
+            CompiledMaterialRoute{
+                route, pass_name, expected,
+                std::move(output_schema)});
     }
     return result;
 }
@@ -1809,7 +1878,7 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
     if (pipeline.material_routing) {
         nlohmann::json routes = nlohmann::json::object();
         for (const auto &route : pipeline.material_routing->routes) {
-            routes[materialRouteClassName(route.route)] = {
+            auto declaration = nlohmann::json{
                 {"pass", route.pass_name},
                 {"contract", materialPassContractName(route.pass_contract)},
                 {"shader_contract",
@@ -1818,6 +1887,16 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
                 {"phase",
                  materialPhaseName(materialPassPhase(route.pass_contract))},
             };
+            if (route.output_schema) {
+                declaration["output_schema"] =
+                    materialOutputSchemaToJson(
+                        *route.output_schema);
+                declaration["output_schema_fingerprint"] =
+                    materialOutputSchemaFingerprint(
+                        *route.output_schema);
+            }
+            routes[materialRouteClassName(route.route)] =
+                std::move(declaration);
         }
         metadata["material_routing"] = {
             {"policy",

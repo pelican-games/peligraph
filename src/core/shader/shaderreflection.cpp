@@ -87,6 +87,44 @@ void sortReflection(ShaderReflection &reflection) {
     std::sort(reflection.vertex_inputs.begin(), reflection.vertex_inputs.end(), [](const auto &lhs, const auto &rhs) {
         return lhs.location < rhs.location;
     });
+    std::sort(
+        reflection.fragment_outputs.begin(),
+        reflection.fragment_outputs.end(),
+        [](const auto &lhs, const auto &rhs) {
+            return lhs.location < rhs.location;
+        });
+}
+
+vk::Format reflectedFormatForMaterialOutput(
+    MaterialOutputType type) {
+    switch (type) {
+    case MaterialOutputType::floating:
+        return vk::Format::eR32Sfloat;
+    case MaterialOutputType::vec2:
+        return vk::Format::eR32G32Sfloat;
+    case MaterialOutputType::vec3:
+        return vk::Format::eR32G32B32Sfloat;
+    case MaterialOutputType::vec4:
+        return vk::Format::eR32G32B32A32Sfloat;
+    case MaterialOutputType::integer:
+        return vk::Format::eR32Sint;
+    case MaterialOutputType::ivec2:
+        return vk::Format::eR32G32Sint;
+    case MaterialOutputType::ivec3:
+        return vk::Format::eR32G32B32Sint;
+    case MaterialOutputType::ivec4:
+        return vk::Format::eR32G32B32A32Sint;
+    case MaterialOutputType::unsigned_integer:
+        return vk::Format::eR32Uint;
+    case MaterialOutputType::uvec2:
+        return vk::Format::eR32G32Uint;
+    case MaterialOutputType::uvec3:
+        return vk::Format::eR32G32B32Uint;
+    case MaterialOutputType::uvec4:
+        return vk::Format::eR32G32B32A32Uint;
+    }
+    throw std::runtime_error(
+        "unknown material output type while validating reflection");
 }
 
 } // namespace
@@ -194,6 +232,34 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
         }
     }
 
+    if (module->shader_stage ==
+        SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT) {
+        uint32_t output_count = 0;
+        result = spvReflectEnumerateOutputVariables(
+            module.operator->(), &output_count, nullptr);
+        if (result != SPV_REFLECT_RESULT_SUCCESS) {
+            throw std::runtime_error(
+                "Failed to enumerate fragment outputs");
+        }
+        std::vector<SpvReflectInterfaceVariable *>
+            output_variables(output_count);
+        result = spvReflectEnumerateOutputVariables(
+            module.operator->(), &output_count,
+            output_variables.data());
+        if (result != SPV_REFLECT_RESULT_SUCCESS) {
+            throw std::runtime_error(
+                "Failed to read fragment outputs");
+        }
+        for (const auto *output : output_variables) {
+            if (output->built_in != -1) continue;
+            reflection.fragment_outputs.push_back({
+                output->location,
+                static_cast<vk::Format>(output->format),
+                output->name != nullptr ? output->name : "",
+            });
+        }
+    }
+
     if (module->shader_stage == SPV_REFLECT_SHADER_STAGE_COMPUTE_BIT && module->entry_point_count > 0) {
         const auto &entry = module->entry_points[0];
         reflection.local_size = {entry.local_size.x, entry.local_size.y, entry.local_size.z};
@@ -238,6 +304,15 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
                                      stage.push_constants.end());
 
         merged.vertex_inputs.insert(merged.vertex_inputs.end(), stage.vertex_inputs.begin(), stage.vertex_inputs.end());
+        if (!stage.fragment_outputs.empty()) {
+            if (!merged.fragment_outputs.empty()) {
+                throw std::runtime_error(
+                    "Multiple fragment shader output interfaces "
+                    "cannot be merged");
+            }
+            merged.fragment_outputs =
+                stage.fragment_outputs;
+        }
 
         if (hasLocalSize(stage.local_size)) {
             if (hasLocalSize(merged.local_size) && merged.local_size != stage.local_size) {
@@ -249,6 +324,46 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
 
     sortReflection(merged);
     return merged;
+}
+
+void validateFragmentOutputSchema(
+    const ShaderReflection &reflection,
+    const MaterialOutputSchema &schema,
+    std::string_view context) {
+    validateMaterialOutputSchema(schema, context);
+    if (reflection.fragment_outputs.size() !=
+        schema.outputs.size()) {
+        throw std::runtime_error(
+            std::string{context} + " exposes " +
+            std::to_string(
+                reflection.fragment_outputs.size()) +
+            " fragment outputs but material output schema '" +
+            schema.name + "' requires " +
+            std::to_string(schema.outputs.size()));
+    }
+    for (std::size_t location = 0;
+         location < schema.outputs.size(); ++location) {
+        const auto &reflected =
+            reflection.fragment_outputs[location];
+        const auto expected =
+            reflectedFormatForMaterialOutput(
+                schema.outputs[location].type);
+        if (reflected.location != location ||
+            reflected.format != expected) {
+            throw std::runtime_error(
+                std::string{context} +
+                " fragment output location " +
+                std::to_string(location) +
+                " does not match schema field '" +
+                schema.outputs[location].name + "' type " +
+                std::string{materialOutputTypeName(
+                    schema.outputs[location].type)} +
+                "; reflected location=" +
+                std::to_string(reflected.location) +
+                ", format=" +
+                vk::to_string(reflected.format));
+        }
+    }
 }
 
 std::vector<vk::DescriptorSetLayoutBinding> makeDescriptorSetLayoutBindings(const ShaderReflection &reflection,

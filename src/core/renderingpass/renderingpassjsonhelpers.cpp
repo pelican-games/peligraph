@@ -1,5 +1,6 @@
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/logicalrendergraph.hpp"
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <set>
@@ -8,54 +9,94 @@
 
 namespace Pelican {
 
-vk::Format stringToFormat(const std::string &format_str) {
-    static const std::unordered_map<std::string, vk::Format> format_map = {
-        {"B8G8R8A8_UNORM", vk::Format::eB8G8R8A8Unorm},
-        {"B8G8R8A8_SRGB", vk::Format::eB8G8R8A8Srgb},
-        {"R8G8B8A8_UNORM", vk::Format::eR8G8B8A8Unorm},
-        {"R8G8B8A8_SRGB", vk::Format::eR8G8B8A8Srgb},
-        {"R8_UNORM", vk::Format::eR8Unorm},
-        {"R16G16_SFLOAT", vk::Format::eR16G16Sfloat},
-        {"R16G16B16A16_SFLOAT", vk::Format::eR16G16B16A16Sfloat},
-        {"R32_SFLOAT", vk::Format::eR32Sfloat},
-        {"D32_SFLOAT", vk::Format::eD32Sfloat},
-        {"D24_UNORM_S8_UINT", vk::Format::eD24UnormS8Uint},
-        {"D16_UNORM", vk::Format::eD16Unorm},
-    };
+namespace {
 
-    if (auto it = format_map.find(format_str); it != format_map.end()) {
-        return it->second;
+constexpr std::array format_names{
+    std::pair{"R8_UNORM", vk::Format::eR8Unorm},
+    std::pair{"R8_SNORM", vk::Format::eR8Snorm},
+    std::pair{"R8_UINT", vk::Format::eR8Uint},
+    std::pair{"R8_SINT", vk::Format::eR8Sint},
+    std::pair{"R8G8_UNORM", vk::Format::eR8G8Unorm},
+    std::pair{"R8G8_SNORM", vk::Format::eR8G8Snorm},
+    std::pair{"R8G8_UINT", vk::Format::eR8G8Uint},
+    std::pair{"R8G8_SINT", vk::Format::eR8G8Sint},
+    std::pair{"R8G8B8A8_UNORM", vk::Format::eR8G8B8A8Unorm},
+    std::pair{"R8G8B8A8_SNORM", vk::Format::eR8G8B8A8Snorm},
+    std::pair{"R8G8B8A8_UINT", vk::Format::eR8G8B8A8Uint},
+    std::pair{"R8G8B8A8_SINT", vk::Format::eR8G8B8A8Sint},
+    std::pair{"R8G8B8A8_SRGB", vk::Format::eR8G8B8A8Srgb},
+    std::pair{"B8G8R8A8_UNORM", vk::Format::eB8G8R8A8Unorm},
+    std::pair{"B8G8R8A8_SRGB", vk::Format::eB8G8R8A8Srgb},
+    std::pair{"A2B10G10R10_UNORM_PACK32",
+              vk::Format::eA2B10G10R10UnormPack32},
+    std::pair{"A2R10G10B10_UNORM_PACK32",
+              vk::Format::eA2R10G10B10UnormPack32},
+    std::pair{"B10G11R11_UFLOAT_PACK32",
+              vk::Format::eB10G11R11UfloatPack32},
+    std::pair{"R16_UNORM", vk::Format::eR16Unorm},
+    std::pair{"R16_SNORM", vk::Format::eR16Snorm},
+    std::pair{"R16_UINT", vk::Format::eR16Uint},
+    std::pair{"R16_SINT", vk::Format::eR16Sint},
+    std::pair{"R16_SFLOAT", vk::Format::eR16Sfloat},
+    std::pair{"R16G16_UNORM", vk::Format::eR16G16Unorm},
+    std::pair{"R16G16_SNORM", vk::Format::eR16G16Snorm},
+    std::pair{"R16G16_UINT", vk::Format::eR16G16Uint},
+    std::pair{"R16G16_SINT", vk::Format::eR16G16Sint},
+    std::pair{"R16G16_SFLOAT", vk::Format::eR16G16Sfloat},
+    std::pair{"R16G16B16A16_UNORM",
+              vk::Format::eR16G16B16A16Unorm},
+    std::pair{"R16G16B16A16_SNORM",
+              vk::Format::eR16G16B16A16Snorm},
+    std::pair{"R16G16B16A16_UINT",
+              vk::Format::eR16G16B16A16Uint},
+    std::pair{"R16G16B16A16_SINT",
+              vk::Format::eR16G16B16A16Sint},
+    std::pair{"R16G16B16A16_SFLOAT",
+              vk::Format::eR16G16B16A16Sfloat},
+    std::pair{"R32_UINT", vk::Format::eR32Uint},
+    std::pair{"R32_SINT", vk::Format::eR32Sint},
+    std::pair{"R32_SFLOAT", vk::Format::eR32Sfloat},
+    std::pair{"R32G32_UINT", vk::Format::eR32G32Uint},
+    std::pair{"R32G32_SINT", vk::Format::eR32G32Sint},
+    std::pair{"R32G32_SFLOAT", vk::Format::eR32G32Sfloat},
+    std::pair{"R32G32B32A32_UINT",
+              vk::Format::eR32G32B32A32Uint},
+    std::pair{"R32G32B32A32_SINT",
+              vk::Format::eR32G32B32A32Sint},
+    std::pair{"R32G32B32A32_SFLOAT",
+              vk::Format::eR32G32B32A32Sfloat},
+    std::pair{"D16_UNORM", vk::Format::eD16Unorm},
+    std::pair{"D24_UNORM_S8_UINT",
+              vk::Format::eD24UnormS8Uint},
+    std::pair{"D32_SFLOAT", vk::Format::eD32Sfloat},
+};
+
+} // namespace
+
+vk::Format stringToFormat(const std::string &format_str) {
+    const auto found = std::find_if(
+        format_names.begin(), format_names.end(),
+        [&](const auto &entry) {
+            return entry.first == format_str;
+        });
+    if (found != format_names.end()) {
+        return found->second;
     }
     throw std::runtime_error("Unknown format: " + format_str);
 }
 
 std::string formatToString(vk::Format format) {
-    switch (format) {
-    case vk::Format::eB8G8R8A8Unorm:
-        return "B8G8R8A8_UNORM";
-    case vk::Format::eB8G8R8A8Srgb:
-        return "B8G8R8A8_SRGB";
-    case vk::Format::eR8G8B8A8Unorm:
-        return "R8G8B8A8_UNORM";
-    case vk::Format::eR8G8B8A8Srgb:
-        return "R8G8B8A8_SRGB";
-    case vk::Format::eR8Unorm:
-        return "R8_UNORM";
-    case vk::Format::eR16G16Sfloat:
-        return "R16G16_SFLOAT";
-    case vk::Format::eR16G16B16A16Sfloat:
-        return "R16G16B16A16_SFLOAT";
-    case vk::Format::eR32Sfloat:
-        return "R32_SFLOAT";
-    case vk::Format::eD32Sfloat:
-        return "D32_SFLOAT";
-    case vk::Format::eD24UnormS8Uint:
-        return "D24_UNORM_S8_UINT";
-    case vk::Format::eD16Unorm:
-        return "D16_UNORM";
-    default:
-        throw std::runtime_error("Unsupported resolver v2 format: " + vk::to_string(format));
+    const auto found = std::find_if(
+        format_names.begin(), format_names.end(),
+        [format](const auto &entry) {
+            return entry.second == format;
+        });
+    if (found != format_names.end()) {
+        return std::string{found->first};
     }
+    throw std::runtime_error(
+        "Unsupported resolver v2 format: " +
+        vk::to_string(format));
 }
 
 vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs) {
@@ -305,22 +346,23 @@ uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_n
     return static_cast<uint32_t>(value);
 }
 
-vk::ClearColorValue jsonToClearColor(const nlohmann::json &json) {
+std::array<double, 4>
+jsonToClearColor(const nlohmann::json &json) {
     if (!json.is_array() || json.size() != 4) {
-        throw std::runtime_error("clear_color must be an array of four floats");
+        throw std::runtime_error("clear_color must be an array of four numbers");
     }
     for (const auto &value_json : json) {
         if (!value_json.is_number()) {
-            throw std::runtime_error("clear_color must be an array of four floats");
+            throw std::runtime_error("clear_color must be an array of four numbers");
         }
     }
 
-    return vk::ClearColorValue{std::array{
-        json.at(0).get<float>(),
-        json.at(1).get<float>(),
-        json.at(2).get<float>(),
-        json.at(3).get<float>(),
-    }};
+    return {
+        json.at(0).get<double>(),
+        json.at(1).get<double>(),
+        json.at(2).get<double>(),
+        json.at(3).get<double>(),
+    };
 }
 
 } // namespace Pelican

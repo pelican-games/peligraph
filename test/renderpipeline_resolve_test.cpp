@@ -86,7 +86,126 @@ Json hybridRouting() {
     };
 }
 
+Json extendedGbufferSchema(std::string name =
+                               "project.extended_gbuffer") {
+    return {
+        {"schema", "pelican.material_outputs"},
+        {"version", 1},
+        {"name", std::move(name)},
+        {"outputs",
+         {
+             {{"name", "base_color"},
+              {"type", "vec4"},
+              {"source", "surface.base_color"}},
+             {{"name", "normal"},
+              {"type", "vec2"},
+              {"source", "custom"}},
+             {{"name", "object_id"},
+              {"type", "uint"},
+              {"source", "custom"}},
+         }},
+    };
+}
+
+Json hybridPassSet(std::string name,
+                   const Json &output_schema) {
+    return {
+        {"name", std::move(name)},
+        {"passes",
+         Json::array({
+             {
+                 {"name", "deferred_geometry"},
+                 {"type", "material"},
+                 {"material_contract",
+                  "deferred_geometry_v1"},
+                 {"material_outputs", output_schema},
+             },
+             {
+                 {"name", "forward_opaque"},
+                 {"type", "material"},
+                 {"material_contract",
+                  "forward_opaque_v1"},
+             },
+             {
+                 {"name", "forward_transparent"},
+                 {"type", "material"},
+                 {"material_contract",
+                  "forward_transparent_v1"},
+             },
+         })},
+    };
+}
+
 } // namespace
+
+TEST_CASE(
+    "WP218 material routing carries one output schema across graph variants",
+    "[wp218][render-pipeline][material-output]") {
+    auto config = Json{
+        {"material_routing",
+         {
+             {"policy", "hybrid_auto_v1"},
+             {"routes",
+              {
+                  {"deferred_geometry",
+                   "deferred_geometry"},
+                  {"forward_opaque",
+                   "forward_opaque"},
+                  {"forward_transparent",
+                   "forward_transparent"},
+              }},
+         }},
+        {"rendering_passes",
+         Json::array({
+             hybridPassSet(
+                 "flat",
+                 extendedGbufferSchema()),
+             hybridPassSet(
+                 "xr",
+                 extendedGbufferSchema()),
+         })},
+    };
+    const auto routing =
+        resolveMaterialRoutingTable(config);
+    const auto &deferred =
+        routing.at("routes").at(
+            "deferred_geometry");
+    REQUIRE(
+        deferred.at("output_schema").at("outputs").size() ==
+        3);
+    REQUIRE(
+        deferred.at("output_schema_fingerprint")
+            .get<std::string>()
+            .starts_with(
+                "pelican.material_outputs@1:"
+                "project.extended_gbuffer"));
+
+    ResolvedRenderPipeline resolved;
+    resolved.material_routing = routing;
+    const auto compiled =
+        compileRenderPipeline(resolved);
+    REQUIRE(compiled.material_routing);
+    REQUIRE(
+        compiled.material_routing->routes.front()
+            .output_schema);
+    const auto dumped =
+        serializeCompiledRenderPipelineMetadata(
+            compiled);
+    REQUIRE(
+        dumped.at("material_routing")
+            .at("routes")
+            .at("deferred_geometry")
+            .at("output_schema") ==
+        extendedGbufferSchema());
+
+    config["rendering_passes"][1]["passes"][0]
+          ["material_outputs"]["name"] =
+        "project.xr_only_schema";
+    REQUIRE_THROWS_WITH(
+        resolveMaterialRoutingTable(config),
+        Catch::Matchers::ContainsSubstring(
+            "different material_outputs schemas"));
+}
 
 TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",
           "[wp180][render-pipeline][resolve][flat]") {

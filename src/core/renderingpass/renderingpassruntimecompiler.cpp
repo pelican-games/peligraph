@@ -13,6 +13,7 @@
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../shader/shaderresourceinterface.hpp"
+#include "../vkcore/core.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <algorithm>
 #include <limits>
@@ -297,8 +298,37 @@ PassDefinition applyPhysicalPassContract(
     auto result = source;
     result.physical_color_attachment_operations
         .clear();
+    result.physical_color_numeric_classes.clear();
     result.physical_depth_attachment_operations
         .reset();
+    if (metadata != nullptr) {
+        result.physical_color_numeric_classes.reserve(
+            result.output_color.size());
+        for (const auto target : result.output_color) {
+            if (isConcreteRenderTarget(target)) {
+                const auto format_name =
+                    vk::to_string(
+                        metadata->get(target).format);
+                result.physical_color_numeric_classes
+                    .push_back(
+                        format_name.ends_with("Sint")
+                            ? MaterialOutputNumericClass::
+                                  signed_integer
+                            : format_name.ends_with("Uint")
+                                  ? MaterialOutputNumericClass::
+                                        unsigned_integer
+                                  : MaterialOutputNumericClass::
+                                        floating);
+            } else {
+                // Window/XR composition color formats are normalized
+                // floating-point outputs at the shader interface.
+                result.physical_color_numeric_classes
+                    .push_back(
+                        MaterialOutputNumericClass::
+                            floating);
+            }
+        }
+    }
     result.input_target_views.clear();
     result.input_target_views.reserve(
         result.input_targets.size());
@@ -503,13 +533,6 @@ PassAttachmentOperations scopeDepthAttachmentOperations(
         physicalTargetName(
             pass.output_depth, metadata),
         VulkanPhysicalAttachmentAspect::depth);
-}
-
-std::array<float, 4> clearColorFloats(
-    const vk::ClearColorValue &value) {
-    return {
-        value.float32[0], value.float32[1],
-        value.float32[2], value.float32[3]};
 }
 
 const VulkanPhysicalResourcePlan &
@@ -863,8 +886,8 @@ compilePassRenderingContract(
                 first_operations.load_op,
                 last_operations.store_op});
         result.scope_color_clear_values.push_back(
-            clearColorFloats(
-                first_writer->clear_color));
+            first_writer->colorClearValue(
+                first_color_index));
     }
 
     if (isConcreteRenderTarget(
@@ -1348,6 +1371,60 @@ FullscreenInputSampling fullscreenSampling(
     };
 }
 
+void validateFullscreenSamplingCapabilities(
+    const PassDefinition &pass,
+    const FullscreenRuntimeDependencies &dependencies,
+    std::span<const FullscreenInputSampling> sampling,
+    const std::vector<bool> &local_reads) {
+    if (sampling.size() !=
+            pass.input_targets.size() ||
+        local_reads.size() !=
+            pass.input_targets.size()) {
+        throw std::runtime_error(
+            "fullscreen input sampling capability validation "
+            "received inconsistent metadata: " +
+            pass.name);
+    }
+    const auto physical_device =
+        GET_MODULE(VulkanManageCore)
+            .getPhysDevice();
+    for (std::size_t input = 0;
+         input < pass.input_targets.size(); ++input) {
+        if (local_reads[input]) continue;
+        const auto metadata =
+            dependencies.render_target_metadata.get(
+                pass.input_targets[input]);
+        if (!(metadata.usage &
+              vk::ImageUsageFlagBits::eSampled)) {
+            throw std::runtime_error(
+                "Fullscreen pass sampled input '" +
+                metadata.name +
+                "' lacks SAMPLED usage: " +
+                pass.name);
+        }
+        if (sampling[input].filter !=
+            FullscreenInputFilter::linear) {
+            continue;
+        }
+        const auto features =
+            physical_device
+                .getFormatProperties(
+                    metadata.format)
+                .optimalTilingFeatures;
+        if (!(features &
+              vk::FormatFeatureFlagBits::
+                  eSampledImageFilterLinear)) {
+            throw std::runtime_error(
+                "Fullscreen pass input '" +
+                metadata.name + "' format " +
+                vk::to_string(metadata.format) +
+                " does not support linear filtering; author "
+                "input_sampling filter 'nearest': " +
+                pass.name);
+        }
+    }
+}
+
 CompiledFullscreenResourceInterface
 compileFullscreenResourceInterface(
     const PassDefinition &pass,
@@ -1358,9 +1435,18 @@ compileFullscreenResourceInterface(
     CompiledFullscreenResourceInterface result;
     const auto &ports =
         pass.fullscreenInfo().resource_ports;
+    const auto local_reads =
+        localReadInputMask(pass, rendering);
     if (ports.empty()) {
         result.sampling =
-            pass.fullscreenInfo().input_sampling;
+            pass.fullscreenInfo().input_sampling.empty()
+                ? std::vector<FullscreenInputSampling>(
+                      pass.input_targets.size())
+                : pass.fullscreenInfo()
+                      .input_sampling;
+        validateFullscreenSamplingCapabilities(
+            pass, dependencies,
+            result.sampling, local_reads);
         return result;
     }
 
@@ -1369,8 +1455,6 @@ compileFullscreenResourceInterface(
         pass.input_targets.size());
     result.subresources.resize(
         pass.input_targets.size());
-    const auto local_reads =
-        localReadInputMask(pass, rendering);
     std::size_t matched_ports = 0;
     for (std::size_t input = 0;
          input < pass.input_targets.size(); ++input) {
@@ -1591,6 +1675,9 @@ compileFullscreenResourceInterface(
             "' (resource '" + unmatched->resource +
             "') is not a fullscreen input");
     }
+    validateFullscreenSamplingCapabilities(
+        pass, dependencies,
+        result.sampling, local_reads);
     return result;
 }
 

@@ -174,6 +174,9 @@ enum class SurfaceDepthCompare {
 struct SurfaceHookSet {
     bool vertex_displace_v1 = false;
     bool surface_v1 = false;
+    // Optional strategy-private fragment-output encoder. It is available only
+    // when the selected material pass declares material_outputs.
+    bool material_outputs_v1 = false;
     bool brdf_v1 = false;
     bool ambient_v1 = false;
     bool lighting_v1 = false;

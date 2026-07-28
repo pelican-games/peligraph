@@ -34,6 +34,7 @@ std::vector<std::string> parseOptionalRegionTags(
     const nlohmann::json &json, const std::string &context);
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context);
-vk::ClearColorValue jsonToClearColor(const nlohmann::json &json);
+std::array<double, 4>
+jsonToClearColor(const nlohmann::json &json);
 
 } // namespace Pelican

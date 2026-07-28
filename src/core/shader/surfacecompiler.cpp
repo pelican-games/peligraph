@@ -13,6 +13,8 @@ namespace {
 
 constexpr std::string_view userIncludeName = "__pelican_user_surface.glsl";
 constexpr std::string_view paramsIncludeName = "__pelican_surface_params.glsl";
+constexpr std::string_view materialOutputsIncludeName =
+    "__pelican_material_outputs.glsl";
 
 std::string diagnosticSourceName(std::string_view source_name) {
     std::string result{source_name};
@@ -382,10 +384,129 @@ bool hasDefine(
         });
 }
 
+std::string materialOutputZero(
+    MaterialOutputType type) {
+    switch (type) {
+    case MaterialOutputType::floating: return "0.0";
+    case MaterialOutputType::vec2: return "vec2(0.0)";
+    case MaterialOutputType::vec3: return "vec3(0.0)";
+    case MaterialOutputType::vec4: return "vec4(0.0)";
+    case MaterialOutputType::integer: return "0";
+    case MaterialOutputType::ivec2: return "ivec2(0)";
+    case MaterialOutputType::ivec3: return "ivec3(0)";
+    case MaterialOutputType::ivec4: return "ivec4(0)";
+    case MaterialOutputType::unsigned_integer: return "0u";
+    case MaterialOutputType::uvec2: return "uvec2(0u)";
+    case MaterialOutputType::uvec3: return "uvec3(0u)";
+    case MaterialOutputType::uvec4: return "uvec4(0u)";
+    }
+    throw std::runtime_error(
+        "unknown material output type while generating GLSL");
+}
+
+std::string materialOutputFloatingValue(
+    std::string expression, MaterialOutputType type) {
+    switch (type) {
+    case MaterialOutputType::floating:
+        return "(" + expression + ").x";
+    case MaterialOutputType::vec2:
+        return "(" + expression + ").xy";
+    case MaterialOutputType::vec3:
+        return "(" + expression + ").xyz";
+    case MaterialOutputType::vec4:
+        return expression;
+    default:
+        throw std::runtime_error(
+            "built-in material output source requires a "
+            "floating output type");
+    }
+}
+
+std::string materialOutputDefaultValue(
+    const MaterialOutputField &field) {
+    std::string expression;
+    switch (field.source) {
+    case MaterialOutputSource::custom:
+        return materialOutputZero(field.type);
+    case MaterialOutputSource::surface_base_color:
+        expression = "surface.base_color";
+        break;
+    case MaterialOutputSource::surface_normal:
+        expression = "vec4(surface.normal, 1.0)";
+        break;
+    case MaterialOutputSource::surface_normal_encoded:
+        expression =
+            "vec4(surface.normal * 0.5 + 0.5, 1.0)";
+        break;
+    case MaterialOutputSource::surface_material:
+        expression =
+            "vec4(surface.roughness, surface.metallic, "
+            "surface.occlusion, shading_model)";
+        break;
+    case MaterialOutputSource::input_world_position:
+        expression =
+            "vec4(input_data.world_position, 1.0)";
+        break;
+    case MaterialOutputSource::surface_emissive:
+        expression = "vec4(surface.emissive, 1.0)";
+        break;
+    case MaterialOutputSource::lighting_scene_color:
+        expression = "scene_color";
+        break;
+    }
+    return materialOutputFloatingValue(
+        std::move(expression), field.type);
+}
+
+std::string makeMaterialOutputsInclude(
+    const MaterialOutputSchema &schema) {
+    validateMaterialOutputSchema(schema);
+    std::ostringstream source;
+    source << "struct PelicanMaterialOutputsV1 {\n";
+    for (const auto &output : schema.outputs) {
+        source << "    " << materialOutputTypeName(output.type)
+               << ' ' << output.name << ";\n";
+    }
+    source << "};\n"
+              "#ifndef PELICAN_MATERIAL_OUTPUT_TYPES_ONLY\n";
+    for (std::size_t location = 0;
+         location < schema.outputs.size(); ++location) {
+        const auto &output = schema.outputs[location];
+        source << "layout(location = " << location << ") out "
+               << materialOutputTypeName(output.type)
+               << " pelican_material_output_" << location
+               << ";\n";
+    }
+    source << "void pelican_initialize_material_outputs_v1(\n"
+              "    out PelicanMaterialOutputsV1 outputs,\n"
+              "    in PelicanSurfaceInputV1 input_data,\n"
+              "    in PelicanSurfaceV1 surface,\n"
+              "    in vec4 scene_color,\n"
+              "    in float shading_model) {\n";
+    for (const auto &output : schema.outputs) {
+        source << "    outputs." << output.name << " = "
+               << materialOutputDefaultValue(output) << ";\n";
+    }
+    source << "}\n"
+              "void pelican_store_material_outputs_v1(\n"
+              "    in PelicanMaterialOutputsV1 outputs) {\n";
+    for (std::size_t location = 0;
+         location < schema.outputs.size(); ++location) {
+        source << "    pelican_material_output_" << location
+               << " = outputs."
+               << schema.outputs[location].name << ";\n";
+    }
+    source << "}\n"
+              "#endif\n";
+    return source.str();
+}
+
 SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &surface,
                                                     std::string_view source_name, SurfacePass pass,
                                                     std::vector<std::string> defines,
-                                                    bool split_samplers) {
+                                                    bool split_samplers,
+                                                    std::optional<MaterialOutputSchema>
+                                                        material_output_schema) {
     if (surface.language != SurfaceLanguage::glsl) {
         throw std::runtime_error("surface '" + std::string{source_name} +
                                  "' uses a non-GLSL language; the M3a source backend accepts GLSL only");
@@ -393,6 +514,17 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
 
     if (surface.hooks.vertex_displace_v1) appendUnique(defines, "PELICAN_HAS_VERTEX_DISPLACE_V1");
     if (surface.hooks.surface_v1) appendUnique(defines, "PELICAN_HAS_SURFACE_V1");
+    if (surface.hooks.material_outputs_v1) {
+        if (!material_output_schema) {
+            throw std::runtime_error(
+                "surface '" + std::string{source_name} +
+                "' defines pelican_material_outputs_v1 but the "
+                "selected material pass has no material_outputs "
+                "schema");
+        }
+        appendUnique(
+            defines, "PELICAN_HAS_MATERIAL_OUTPUTS_V1");
+    }
     if (surface.hooks.brdf_v1) appendUnique(defines, "PELICAN_HAS_BRDF_V1");
     if (surface.hooks.ambient_v1) appendUnique(defines, "PELICAN_HAS_AMBIENT_V1");
     if (surface.hooks.lighting_v1) appendUnique(defines, "PELICAN_HAS_LIGHTING_V1");
@@ -401,6 +533,34 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
     if (pass == SurfacePass::forward) appendUnique(defines, "PELICAN_PASS_FORWARD");
     if (pass == SurfacePass::depth) appendUnique(defines, "PELICAN_PASS_DEPTH");
     if (pass == SurfacePass::velocity) appendUnique(defines, "PELICAN_PASS_VELOCITY");
+    if (material_output_schema) {
+        if (pass == SurfacePass::depth ||
+            pass == SurfacePass::velocity) {
+            throw std::runtime_error(
+                "material_outputs is unavailable for surface pass '" +
+                std::string{surfacePassName(pass)} + "'");
+        }
+        validateMaterialOutputSchema(
+            *material_output_schema,
+            "surface '" + std::string{source_name} +
+                "' material_outputs");
+        if (pass == SurfacePass::deferred_geometry &&
+            std::any_of(
+                material_output_schema->outputs.begin(),
+                material_output_schema->outputs.end(),
+                [](const auto &output) {
+                    return output.source ==
+                           MaterialOutputSource::
+                               lighting_scene_color;
+                })) {
+            throw std::runtime_error(
+                "surface '" + std::string{source_name} +
+                "' deferred material_outputs cannot use "
+                "lighting.scene_color");
+        }
+        appendUnique(
+            defines, "PELICAN_CUSTOM_MATERIAL_OUTPUTS_V1");
+    }
     if (pass == SurfacePass::forward &&
         hasDefine(defines, "PELICAN_FEATURE_SHADOW")) {
         appendUnique(
@@ -436,9 +596,17 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
         makeParamsInclude(
             surface, resource_interface,
             split_samplers));
+    if (material_output_schema) {
+        composition.virtual_includes.emplace_back(
+            materialOutputsIncludeName,
+            makeMaterialOutputsInclude(
+                *material_output_schema));
+    }
     composition.defines = std::move(defines);
     composition.resource_interface =
         std::move(resource_interface);
+    composition.material_output_schema =
+        std::move(material_output_schema);
     return composition;
 }
 
@@ -482,6 +650,13 @@ std::string makeTemplateHookStubs(const SurfaceFormatDocument &surface, vk::Shad
             source << "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
                       "inout PelicanSurfaceV1 surface) {" << keep_alive.str() << "}\n";
         }
+        if (surface.hooks.material_outputs_v1) {
+            source << "void pelican_material_outputs_v1("
+                      "in PelicanSurfaceInputV1 input_data, "
+                      "in PelicanSurfaceV1 surface, "
+                      "inout PelicanMaterialOutputsV1 outputs) {"
+                   << keep_alive.str() << "}\n";
+        }
         if (surface.hooks.brdf_v1) {
             source << "vec3 pelican_brdf_v1(in PelicanSurfaceV1 surface, vec3 light_dir, "
                       "vec3 view_dir, vec3 radiance) {" << keep_alive.str()
@@ -508,6 +683,9 @@ std::vector<std::string> stageHookNames(const SurfaceFormatDocument &surface,
         return names;
     }
     if (surface.hooks.surface_v1) names.emplace_back("pelican_surface_v1");
+    if (surface.hooks.material_outputs_v1) {
+        names.emplace_back("pelican_material_outputs_v1");
+    }
     if (surface.hooks.brdf_v1) names.emplace_back("pelican_brdf_v1");
     if (surface.hooks.ambient_v1) names.emplace_back("pelican_ambient_v1");
     if (surface.hooks.lighting_v1) names.emplace_back("pelican_lighting_v1");
@@ -592,7 +770,12 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     source << "#version 460\n"
               "#extension GL_GOOGLE_include_directive : enable\n"
               "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
-              "#include \"pelican_surface_v1.glsl\"\n";
+              "#include \"pelican_surface_v1.glsl\"\n"
+              "#ifdef PELICAN_CUSTOM_MATERIAL_OUTPUTS_V1\n"
+              "#define PELICAN_MATERIAL_OUTPUT_TYPES_ONLY 1\n"
+              "#include \"__pelican_material_outputs.glsl\"\n"
+              "#undef PELICAN_MATERIAL_OUTPUT_TYPES_ONLY\n"
+              "#endif\n";
     for (const auto &param : surface.params) {
         source << accessorType(param.type) << " pelican_param_" << param.name
                << "() { return " << defaultValueForAccessor(param.type) << "; }\n";
@@ -654,6 +837,10 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     } else {
         source << "PelicanSurfaceInputV1 input_data; PelicanSurfaceV1 surface; vec3 sink;\n";
         if (surface.hooks.surface_v1) source << "pelican_surface_v1(input_data, surface);\n";
+        if (surface.hooks.material_outputs_v1) {
+            source << "PelicanMaterialOutputsV1 outputs; "
+                      "pelican_material_outputs_v1(input_data, surface, outputs);\n";
+        }
         if (surface.hooks.brdf_v1) {
             source << "sink = pelican_brdf_v1(surface, vec3(0.0), vec3(0.0), vec3(0.0));\n";
         }
@@ -746,8 +933,8 @@ ShaderCompileResult compileExperimentalStage(ShaderCompiler &compiler,
 
     ShaderCompileOptions user_options;
     user_options.defines = composition.defines;
-    user_options.virtual_includes.emplace_back(userIncludeName,
-                                               makeUserInclude(surface, source_name));
+    user_options.virtual_includes =
+        composition.virtual_includes;
     auto user_result = compiler.compileSource(makeUserLibrarySource(surface, source_name, stage),
                                               stage, std::string{source_name} + "#spvlink-user",
                                               user_options);
@@ -820,17 +1007,24 @@ SurfacePass surfacePassForMaterialRoute(MaterialRouteClass route) {
 
 SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surface,
                                                 std::string_view source_name, SurfacePass pass,
-                                                std::vector<std::string> defines) {
-    return composeSurfaceShadersImpl(surface, source_name, pass, std::move(defines), false);
+                                                std::vector<std::string> defines,
+                                                std::optional<MaterialOutputSchema>
+                                                    material_output_schema) {
+    return composeSurfaceShadersImpl(
+        surface, source_name, pass, std::move(defines), false,
+        std::move(material_output_schema));
 }
 
 SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                            const SurfaceFormatDocument &surface,
                                            std::string_view source_name, SurfacePass pass,
-                                           std::vector<std::string> defines) {
+                                           std::vector<std::string> defines,
+                                           std::optional<MaterialOutputSchema>
+                                               material_output_schema) {
     if (surfaceSpvLinkExperimentalEnabled()) {
-        const auto composition = composeSurfaceShadersImpl(surface, source_name, pass,
-                                                           std::move(defines), true);
+        const auto composition = composeSurfaceShadersImpl(
+            surface, source_name, pass, std::move(defines), true,
+            std::move(material_output_schema));
         SurfaceCompileResult result;
         result.experimental_spv_link = true;
         result.vertex = compileExperimentalStage(compiler, surface, source_name, composition,
@@ -844,7 +1038,9 @@ SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                                    result.fragment_cache_key);
         return result;
     }
-    const auto composition = composeSurfaceShaders(surface, source_name, pass, std::move(defines));
+    const auto composition = composeSurfaceShaders(
+        surface, source_name, pass, std::move(defines),
+        std::move(material_output_schema));
     ShaderCompileOptions options;
     options.defines = composition.defines;
     options.virtual_includes = composition.virtual_includes;

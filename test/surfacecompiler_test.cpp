@@ -180,6 +180,86 @@ TEST_CASE("surface source composition compiles routed main depth and velocity va
 #endif
 }
 
+TEST_CASE(
+    "surface compiler emits and reflects an arbitrary material output schema",
+    "[surface-compiler][material-output][wp218]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ScopedSpvLinkEnvironment environment{nullptr};
+    const auto surface = parseSurfaceFormat(
+        R"surface(//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    surface.roughness = 0.25;
+}
+
+void pelican_material_outputs_v1(
+    in PelicanSurfaceInputV1 input_data,
+    in PelicanSurfaceV1 surface,
+    inout PelicanMaterialOutputsV1 outputs) {
+    outputs.object_id = 73u;
+    outputs.reactive_mask = surface.base_color.a;
+}
+)surface",
+        "extended_gbuffer.surface");
+    const MaterialOutputSchema schema{
+        .name = "project.extended_gbuffer",
+        .outputs = {
+            {"base_color", MaterialOutputType::vec4,
+             MaterialOutputSource::surface_base_color},
+            {"normal", MaterialOutputType::vec4,
+             MaterialOutputSource::
+                 surface_normal_encoded},
+            {"material", MaterialOutputType::vec4,
+             MaterialOutputSource::surface_material},
+            {"world_position", MaterialOutputType::vec4,
+             MaterialOutputSource::input_world_position},
+            {"emissive", MaterialOutputType::vec4,
+             MaterialOutputSource::surface_emissive},
+            {"object_id",
+             MaterialOutputType::unsigned_integer,
+             MaterialOutputSource::custom},
+            {"reactive_mask",
+             MaterialOutputType::floating,
+             MaterialOutputSource::custom},
+        },
+    };
+
+    ShaderCompiler compiler;
+    const auto result = compileSurfaceShaders(
+        compiler, surface, "extended_gbuffer.surface",
+        SurfacePass::deferred_geometry, {}, schema);
+    requireCompiled(result);
+    const auto reflection =
+        reflect(result.fragment.spirv);
+    REQUIRE(reflection.fragment_outputs.size() == 7);
+    REQUIRE(reflection.fragment_outputs[5].format ==
+            vk::Format::eR32Uint);
+    REQUIRE(reflection.fragment_outputs[6].format ==
+            vk::Format::eR32Sfloat);
+    REQUIRE_NOTHROW(validateFragmentOutputSchema(
+        reflection, schema, "extended G-buffer"));
+
+    const auto composition = composeSurfaceShaders(
+        surface, "extended_gbuffer.surface",
+        SurfacePass::deferred_geometry, {}, schema);
+    REQUIRE(
+        std::find(
+            composition.defines.begin(),
+            composition.defines.end(),
+            "PELICAN_CUSTOM_MATERIAL_OUTPUTS_V1") !=
+        composition.defines.end());
+    REQUIRE(
+        std::find(
+            composition.defines.begin(),
+            composition.defines.end(),
+            "PELICAN_HAS_MATERIAL_OUTPUTS_V1") !=
+        composition.defines.end());
+#endif
+}
+
 TEST_CASE("surface resource ports generate vertex buffer and fragment image accessors",
           "[surface-compiler][resource-port][wp207b]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

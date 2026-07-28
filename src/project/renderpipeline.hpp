@@ -4,6 +4,7 @@
 #include "lightingdata.hpp"
 #include "logicalrendergraph.hpp"
 #include "materialscreeninput.hpp"
+#include "materialoutput.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 #include "targetrenderplanning.hpp"
@@ -248,6 +249,7 @@ struct CompiledMaterialRoute {
     std::string pass_name;
     MaterialPassContract pass_contract =
         MaterialPassContract::deferred_geometry_v1;
+    std::optional<MaterialOutputSchema> output_schema;
 };
 
 struct CompiledMaterialRouting {

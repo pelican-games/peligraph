@@ -211,6 +211,84 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
     }
 
     const auto contract = pass_def.materialInfo().contract;
+    const auto &output_schema =
+        pass_def.materialInfo().output_schema;
+    if (output_schema) {
+        if (contract ==
+            MaterialPassContract::legacy_gbuffer_v1) {
+            throw std::runtime_error(
+                "Material pass material_outputs requires an "
+                "explicit non-legacy material_contract: " +
+                pass_def.name);
+        }
+        if (contract ==
+                MaterialPassContract::
+                    deferred_geometry_v1 &&
+            std::any_of(
+                output_schema->outputs.begin(),
+                output_schema->outputs.end(),
+                [](const auto &output) {
+                    return output.source ==
+                           MaterialOutputSource::
+                               lighting_scene_color;
+                })) {
+            throw std::runtime_error(
+                "Deferred material pass material_outputs cannot "
+                "use lighting.scene_color: " +
+                pass_def.name);
+        }
+        if (pass_def.output_color.size() !=
+            output_schema->outputs.size()) {
+            throw std::runtime_error(
+                "Material pass output.color count must match "
+                "material_outputs.outputs count (" +
+                std::to_string(
+                    output_schema->outputs.size()) +
+                "): " + pass_def.name);
+        }
+        if (!isConcreteRenderTarget(pass_def.output_depth)) {
+            throw std::runtime_error(
+                "Material pass requires depth output: " +
+                pass_def.name);
+        }
+        for (std::size_t location = 0;
+             location < pass_def.output_color.size();
+             ++location) {
+            const auto target =
+                pass_def.output_color[location];
+            if (isSpecialRenderTarget(target)) {
+                throw std::runtime_error(
+                    "Material pass does not support swapchain "
+                    "color output: " +
+                    pass_def.name);
+            }
+            const auto metadata = rt_metadata.get(target);
+            const auto format_name =
+                vk::to_string(metadata.format);
+            const auto format_class =
+                format_name.ends_with("Sint")
+                    ? MaterialOutputNumericClass::
+                          signed_integer
+                    : format_name.ends_with("Uint")
+                          ? MaterialOutputNumericClass::
+                                unsigned_integer
+                          : MaterialOutputNumericClass::
+                                floating;
+            const auto output_class =
+                materialOutputNumericClass(
+                    output_schema->outputs[location].type);
+            if (format_class != output_class) {
+                throw std::runtime_error(
+                    "Material pass output '" +
+                    output_schema->outputs[location].name +
+                    "' numeric class is incompatible with render "
+                    "target format " +
+                    format_name + ": " + metadata.name +
+                    " in pass: " + pass_def.name);
+            }
+        }
+        return;
+    }
     const bool forward = materialPassShaderContract(contract) ==
                          MaterialShaderContract::forward_scene_color_v1;
     const auto expected_color_count = forward ? std::size_t{1}
@@ -309,6 +387,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         pass_json.contains("material_variant")) {
         throw std::runtime_error(
             "Only material passes support material_variant: " +
+            pass_def.name);
+    }
+    if (!pass_def.isMaterial() &&
+        pass_json.contains("material_outputs")) {
+        throw std::runtime_error(
+            "Only material passes support material_outputs: " +
             pass_def.name);
     }
     if (!pass_def.isMaterial() && pass_json.contains("screen_inputs")) {

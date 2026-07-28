@@ -61,6 +61,12 @@ template <typename THandle, typename TResource> class ResourceContainer {
     const auto &get(THandle handle) const { return kv.at(handle); }
     bool contains(THandle handle) const { return kv.contains(handle); }
     size_t size() const { return kv.size(); }
+    template <typename TVisitor>
+    void forEach(TVisitor &&visitor) const {
+        for (const auto &[handle, resource] : kv) {
+            visitor(handle, resource);
+        }
+    }
 };
 
 } // namespace Pelican

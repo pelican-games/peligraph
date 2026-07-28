@@ -1,4 +1,5 @@
 #include "shaderlibrary.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
 #include "shadercompiler.hpp"
 #include "../loader/engineresources.hpp"
 #include "../loader/fileio.hpp"
@@ -199,7 +200,9 @@ void ShaderLibrary::registerSurfaceReloadUnit(
     SurfaceShaderBundleIds ids, const ShaderBundle &vertex_bundle,
     const ShaderBundle &fragment_bundle, std::filesystem::path path,
     watch::AssetKey source, std::string source_name, SurfacePass pass,
-    std::vector<std::string> defines) {
+    std::vector<std::string> defines,
+    std::optional<MaterialOutputSchema>
+        material_output_schema) {
     auto dependencies = logicalDependencies(vertex_bundle, source);
     auto fragment_dependencies = logicalDependencies(fragment_bundle, source);
     dependencies.insert(dependencies.end(), fragment_dependencies.begin(),
@@ -209,7 +212,8 @@ void ShaderLibrary::registerSurfaceReloadUnit(
                        dependencies.end());
     ReloadUnit unit{
         SurfaceReloadRecipe{std::move(path), source, std::move(source_name), pass,
-                            std::move(defines)},
+                            std::move(defines),
+                            std::move(material_output_schema)},
         {ids.vertex, ids.fragment},
         source,
         std::move(dependencies),
@@ -483,13 +487,21 @@ ShaderBundleId ShaderLibrary::loadFromSpirv(std::span<const uint32_t> spirv, std
 SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocument &surface,
                                                       std::string_view source_name,
                                                       SurfacePass pass,
-                                                      std::vector<std::string> defines) {
+                                                      std::vector<std::string> defines,
+                                                      std::optional<MaterialOutputSchema>
+                                                          material_output_schema) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     const auto requested_defines = defines;
+    const auto requested_output_schema =
+        material_output_schema;
     const auto reloadable = resolveReloadableSurface(source_name);
     const auto source_path = reloadable ? reloadable->first : std::filesystem::path{};
-    const auto composition = composeSurfaceShaders(surface, source_name, pass, defines);
-    const auto result = compileSurfaceShaders(compiler, surface, source_name, pass, defines);
+    const auto composition = composeSurfaceShaders(
+        surface, source_name, pass, defines,
+        material_output_schema);
+    const auto result = compileSurfaceShaders(
+        compiler, surface, source_name, pass, defines,
+        material_output_schema);
     if (!result.vertex.ok || !result.fragment.ok) {
         std::ostringstream message;
         message << "Surface shader compile failed: " << source_name << " ("
@@ -513,6 +525,14 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
     appendPathUnique(vertex_bundle.dependency_paths, source_path);
     auto fragment_bundle = buildFromSpirv(result.fragment.spirv, source_path, 1, fragment_name,
                                           composition.defines);
+    if (composition.material_output_schema) {
+        validateFragmentOutputSchema(
+            fragment_bundle.reflection,
+            *composition.material_output_schema,
+            fragment_name);
+        fragment_bundle.material_output_schema =
+            composition.material_output_schema;
+    }
     fragment_bundle.binding_table = result.fragment_bindings;
     fragment_bundle.cache_key = result.fragment_cache_key.empty()
                                     ? result.fragment.cache_key : result.fragment_cache_key;
@@ -528,13 +548,16 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
     if (reloadable) {
         registerSurfaceReloadUnit(ids, bundles.get(vertex), bundles.get(fragment),
                                   reloadable->first, reloadable->second,
-                                  std::string{source_name}, pass, requested_defines);
+                                  std::string{source_name}, pass,
+                                  requested_defines,
+                                  requested_output_schema);
     }
     return ids;
 #else
     (void)surface;
     (void)pass;
     (void)defines;
+    (void)material_output_schema;
     throw std::runtime_error("Runtime shader compiler is disabled; B-layer surface source is unavailable: " +
                              std::string{source_name});
 #endif
@@ -591,10 +614,12 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
         }
         const auto composition = composeSurfaceShaders(
             surface->second, surface_recipe.source_name, surface_recipe.pass,
-            surface_recipe.defines);
+            surface_recipe.defines,
+            surface_recipe.material_output_schema);
         const auto compiled = compileSurfaceShaders(
             compiler, surface->second, surface_recipe.source_name,
-            surface_recipe.pass, surface_recipe.defines);
+            surface_recipe.pass, surface_recipe.defines,
+            surface_recipe.material_output_schema);
         if (!compiled.vertex.ok || !compiled.fragment.ok) {
             std::ostringstream message;
             message << "Surface shader compile failed: " << surface_recipe.source_name
@@ -625,6 +650,15 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
             surface_recipe.source_name + "#" +
                 std::string{surfacePassName(surface_recipe.pass)} + ".frag",
             composition.defines);
+        if (surface_recipe.material_output_schema) {
+            validateFragmentOutputSchema(
+                fragment.reflection,
+                *surface_recipe.material_output_schema,
+                surface_recipe.source_name +
+                    "#reload.frag");
+            fragment.material_output_schema =
+                surface_recipe.material_output_schema;
+        }
         fragment.binding_table = compiled.fragment_bindings;
         fragment.cache_key = compiled.fragment_cache_key.empty()
                                  ? compiled.fragment.cache_key : compiled.fragment_cache_key;
@@ -648,9 +682,17 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
             defines.push_back(std::move(define));
         }
     }
-    return loadFromSurface(surface, source_name,
-                           surfacePassForMaterialRoute(material.route),
-                           std::move(defines));
+    std::optional<MaterialOutputSchema> output_schema;
+    if (const auto *passes =
+            FastModuleContainer::tryGet<
+                RenderingPassContainer>()) {
+        output_schema = passes->materialOutputSchema(
+            material.route, material.exact_pass);
+    }
+    return loadFromSurface(
+        surface, source_name,
+        surfacePassForMaterialRoute(material.route),
+        std::move(defines), std::move(output_schema));
 }
 
 bool ShaderLibrary::handlesReload(const watch::AssetKey &key) const {

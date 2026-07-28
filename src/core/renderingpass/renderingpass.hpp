@@ -5,14 +5,17 @@
 #include "../shader/graphicsviewcontract.hpp"
 #include "../shader/shaderreference.hpp"
 #include "../../project/materialdrawtag.hpp"
+#include "../../project/materialoutput.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include "../../project/shaderresourceport.hpp"
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
@@ -142,6 +145,11 @@ struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
     MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
+    // Absent preserves the built-in legacy/standard contract. When present,
+    // outputs map one-to-one and in order to PassDefinition::output_color.
+    // The engine imposes no attachment-count constant; target planning checks
+    // the concrete device's maxColorAttachments budget.
+    std::optional<MaterialOutputSchema> output_schema;
     std::optional<MaterialDrawTagFilter> material_filter;
     // Opaque project-authored name selecting an alternate material resource.
     // The name carries no engine technique semantics.
@@ -270,6 +278,29 @@ struct PassAttachmentOperations {
         const PassAttachmentOperations &) const = default;
 };
 
+struct PhysicalColorClearValue {
+    MaterialOutputNumericClass numeric_class =
+        MaterialOutputNumericClass::floating;
+    std::array<float, 4> floating{};
+    std::array<std::int32_t, 4> signed_integer{};
+    std::array<std::uint32_t, 4> unsigned_integer{};
+
+    vk::ClearColorValue vulkan() const {
+        switch (numeric_class) {
+        case MaterialOutputNumericClass::floating:
+            return vk::ClearColorValue{floating};
+        case MaterialOutputNumericClass::signed_integer:
+            return vk::ClearColorValue{signed_integer};
+        case MaterialOutputNumericClass::unsigned_integer:
+            return vk::ClearColorValue{unsigned_integer};
+        }
+        return vk::ClearColorValue{floating};
+    }
+
+    bool operator==(const PhysicalColorClearValue &) const =
+        default;
+};
+
 // A pass labels the resolution space in which its raster work is defined.
 // The compiler uses the scene domain to derive the camera/jitter render
 // extent. Output and independent work (for example UI and shadow maps) do not
@@ -310,9 +341,23 @@ struct PassDefinition {
     // individual attachments and may safely override selected entries.
     std::vector<PassAttachmentOperations>
         physical_color_attachment_operations;
+    // Runtime-only numeric classes derived from the selected target formats.
+    // This also covers fullscreen/UI/custom passes writing integer targets;
+    // material_outputs remains a logical shader contract, not the source of
+    // physical clear-value interpretation.
+    std::vector<MaterialOutputNumericClass>
+        physical_color_numeric_classes;
     std::optional<PassAttachmentOperations>
         physical_depth_attachment_operations;
-    vk::ClearColorValue clear_color = vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
+    // Logical numeric values are converted independently for each attachment.
+    // double preserves every uint32 value exactly and permits mixed
+    // float/integer MRTs to share the compact pass-wide default.
+    std::array<double, 4> clear_color{
+        0.0, 0.0, 0.0, 1.0};
+    // Optional authored overrides aligned with output_color. Empty retains
+    // clear_color for every attachment.
+    std::vector<std::array<double, 4>>
+        color_clear_values;
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
     RenderResolutionDomain resolution_domain =
@@ -346,6 +391,96 @@ struct PassDefinition {
                 depth_load_op,
                 depth_store_op,
             });
+    }
+
+    PhysicalColorClearValue colorClearValue(
+        std::size_t index) const {
+        auto numeric_class =
+            MaterialOutputNumericClass::floating;
+        if (!physical_color_numeric_classes.empty()) {
+            numeric_class =
+                physical_color_numeric_classes.at(index);
+        } else if (isMaterial() &&
+            materialInfo().output_schema) {
+            numeric_class = materialOutputNumericClass(
+                materialInfo()
+                    .output_schema->outputs.at(index)
+                    .type);
+        }
+        PhysicalColorClearValue result;
+        result.numeric_class = numeric_class;
+        const auto &logical_clear =
+            color_clear_values.empty()
+                ? clear_color
+                : color_clear_values.at(index);
+        for (std::size_t component = 0;
+             component < logical_clear.size(); ++component) {
+            const auto value = logical_clear[component];
+            if (!std::isfinite(value)) {
+                throw std::runtime_error(
+                    "color clear value must be finite");
+            }
+            if (numeric_class ==
+                    MaterialOutputNumericClass::
+                        signed_integer &&
+                (std::trunc(value) != value ||
+                 value <
+                     static_cast<double>(
+                         std::numeric_limits<
+                             std::int32_t>::min()) ||
+                 value >
+                     static_cast<double>(
+                         std::numeric_limits<
+                             std::int32_t>::max()))) {
+                throw std::runtime_error(
+                    "signed integer color clear value is "
+                    "fractional or out of range");
+            }
+            if (numeric_class ==
+                    MaterialOutputNumericClass::
+                        unsigned_integer &&
+                (std::trunc(value) != value ||
+                 value < 0.0 ||
+                 value >
+                     static_cast<double>(
+                         std::numeric_limits<
+                             std::uint32_t>::max()))) {
+                throw std::runtime_error(
+                    "unsigned integer color clear value is "
+                    "fractional or out of range");
+            }
+            switch (numeric_class) {
+            case MaterialOutputNumericClass::floating:
+                if (value <
+                        -static_cast<double>(
+                            std::numeric_limits<float>::max()) ||
+                    value >
+                        static_cast<double>(
+                            std::numeric_limits<float>::max())) {
+                    throw std::runtime_error(
+                        "floating color clear value is out of range");
+                }
+                result.floating[component] =
+                    static_cast<float>(value);
+                break;
+            case MaterialOutputNumericClass::signed_integer:
+                result.signed_integer[component] =
+                    static_cast<std::int32_t>(value);
+                break;
+            case MaterialOutputNumericClass::unsigned_integer:
+                result.unsigned_integer[component] =
+                    static_cast<std::uint32_t>(value);
+                break;
+            }
+        }
+        return result;
+    }
+
+    const std::array<double, 4> &logicalColorClearValue(
+        std::size_t index) const {
+        return color_clear_values.empty()
+                   ? clear_color
+                   : color_clear_values.at(index);
     }
 
     MaterialPassInfo &materialInfo() { return std::get<MaterialPassInfo>(pass_info); }
@@ -445,7 +580,7 @@ struct CompiledPassRenderingContract {
     // by color_attachments and are identical on every pass in the scope.
     std::vector<PassAttachmentOperations>
         scope_color_attachment_operations;
-    std::vector<std::array<float, 4>>
+    std::vector<PhysicalColorClearValue>
         scope_color_clear_values;
     std::optional<PassAttachmentOperations>
         scope_depth_attachment_operations;

@@ -22,16 +22,74 @@ StorageImageFormat storageImageFormat(
     switch (format) {
     case vk::Format::eR8Unorm:
         return {"r8", "vec4"};
-    case vk::Format::eR16G16Sfloat:
-        return {"rg16f", "vec4"};
+    case vk::Format::eR8Snorm:
+        return {"r8_snorm", "vec4"};
+    case vk::Format::eR8Uint:
+        return {"r8ui", "uvec4"};
+    case vk::Format::eR8Sint:
+        return {"r8i", "ivec4"};
+    case vk::Format::eR8G8Unorm:
+        return {"rg8", "vec4"};
+    case vk::Format::eR8G8Snorm:
+        return {"rg8_snorm", "vec4"};
+    case vk::Format::eR8G8Uint:
+        return {"rg8ui", "uvec4"};
+    case vk::Format::eR8G8Sint:
+        return {"rg8i", "ivec4"};
     case vk::Format::eR8G8B8A8Unorm:
         return {"rgba8", "vec4"};
+    case vk::Format::eR8G8B8A8Snorm:
+        return {"rgba8_snorm", "vec4"};
+    case vk::Format::eR8G8B8A8Uint:
+        return {"rgba8ui", "uvec4"};
+    case vk::Format::eR8G8B8A8Sint:
+        return {"rgba8i", "ivec4"};
+    case vk::Format::eR16Unorm:
+        return {"r16", "vec4"};
+    case vk::Format::eR16Snorm:
+        return {"r16_snorm", "vec4"};
+    case vk::Format::eR16Uint:
+        return {"r16ui", "uvec4"};
+    case vk::Format::eR16Sint:
+        return {"r16i", "ivec4"};
+    case vk::Format::eR16Sfloat:
+        return {"r16f", "vec4"};
+    case vk::Format::eR16G16Unorm:
+        return {"rg16", "vec4"};
+    case vk::Format::eR16G16Snorm:
+        return {"rg16_snorm", "vec4"};
+    case vk::Format::eR16G16Uint:
+        return {"rg16ui", "uvec4"};
+    case vk::Format::eR16G16Sint:
+        return {"rg16i", "ivec4"};
+    case vk::Format::eR16G16Sfloat:
+        return {"rg16f", "vec4"};
+    case vk::Format::eR16G16B16A16Unorm:
+        return {"rgba16", "vec4"};
+    case vk::Format::eR16G16B16A16Snorm:
+        return {"rgba16_snorm", "vec4"};
+    case vk::Format::eR16G16B16A16Uint:
+        return {"rgba16ui", "uvec4"};
+    case vk::Format::eR16G16B16A16Sint:
+        return {"rgba16i", "ivec4"};
     case vk::Format::eR16G16B16A16Sfloat:
         return {"rgba16f", "vec4"};
+    case vk::Format::eR32Uint:
+        return {"r32ui", "uvec4"};
+    case vk::Format::eR32Sint:
+        return {"r32i", "ivec4"};
     case vk::Format::eR32Sfloat:
         return {"r32f", "vec4"};
+    case vk::Format::eR32G32Uint:
+        return {"rg32ui", "uvec4"};
+    case vk::Format::eR32G32Sint:
+        return {"rg32i", "ivec4"};
     case vk::Format::eR32G32Sfloat:
         return {"rg32f", "vec4"};
+    case vk::Format::eR32G32B32A32Uint:
+        return {"rgba32ui", "uvec4"};
+    case vk::Format::eR32G32B32A32Sint:
+        return {"rgba32i", "ivec4"};
     case vk::Format::eR32G32B32A32Sfloat:
         return {"rgba32f", "vec4"};
     default:

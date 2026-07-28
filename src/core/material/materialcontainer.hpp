@@ -31,6 +31,7 @@
 namespace Pelican {
 
 struct LoadedImage;
+struct RendererRuntimeGeneration;
 class TextureReloadHandler;
 class MaterialValuesReloadHandler;
 class RenderTargetImageViewResolver;
@@ -140,9 +141,16 @@ DECLARE_MODULE(MaterialContainer) {
         };
 
         PipelineHandle pipeline;
+        std::vector<vk::Format> pipeline_color_formats;
+        std::optional<vk::Format> pipeline_depth_format;
+        vk::SampleCountFlagBits pipeline_rasterization_samples =
+            vk::SampleCountFlagBits::e1;
+        GraphicsPipelineRenderingLocalReadContract
+            pipeline_local_read;
         std::vector<std::string> tags;
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
+        std::optional<MaterialOutputSchema> output_schema;
         std::optional<std::string> exact_pass;
         std::vector<MaterialPassInputContract> pass_inputs;
         std::vector<ShaderResourceInterfaceBinding>
@@ -309,6 +317,12 @@ DECLARE_MODULE(MaterialContainer) {
     std::function<void()> prepareSurfaceMaterialReload(
         const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
         std::span<const watch::AssetKey> material_documents);
+
+    // A render-pipeline candidate is still private when this runs. Rejecting
+    // it therefore preserves every live material/pipeline descriptor and the
+    // previously published frame-graph generation.
+    void validateRuntimeGenerationCompatibility(
+        const RendererRuntimeGeneration &generation) const;
 
     bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
     GlobalMaterialId resolveMaterialForPass(

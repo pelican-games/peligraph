@@ -191,7 +191,62 @@ RenderingPassContainer::materialPassRenderingBindings(
                             pass.rasterization_samples,
                         .rendering =
                             compiled.rendering,
+                        .output_schema =
+                            pass.materialInfo()
+                                .output_schema,
                     });
+            }
+        };
+    if (const auto generation = snapshot()) {
+        visitPublishedRenderingPasses(
+            *generation, collect);
+    } else {
+        for (const auto rendering_pass_id :
+             registered_pass_ids) {
+            collect(rendering_passes.get(
+                rendering_pass_id));
+        }
+    }
+    return result;
+}
+
+std::optional<MaterialOutputSchema>
+RenderingPassContainer::materialOutputSchema(
+    MaterialRouteClass route,
+    const std::optional<std::string> &exact_pass) const {
+    std::optional<MaterialOutputSchema> result;
+    bool selected = false;
+    const auto collect =
+        [&](const CompiledRenderingPass &rendering_pass) {
+            for (const auto &compiled :
+                 rendering_pass.passes) {
+                const auto &pass = compiled.definition;
+                if (!pass.isMaterial() ||
+                    (exact_pass &&
+                     pass.name != *exact_pass)) {
+                    continue;
+                }
+                const auto pass_route =
+                    materialPassRoute(
+                        pass.materialInfo().contract);
+                if (!pass_route || *pass_route != route) {
+                    continue;
+                }
+                const auto &candidate =
+                    pass.materialInfo().output_schema;
+                if (!selected) {
+                    result = candidate;
+                    selected = true;
+                    continue;
+                }
+                if (result != candidate) {
+                    throw std::runtime_error(
+                        "material route '" +
+                        std::string{
+                            materialRouteClassName(route)} +
+                        "' resolves to different material_outputs "
+                        "schemas across graph variants");
+                }
             }
         };
     if (const auto generation = snapshot()) {

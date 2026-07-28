@@ -14,6 +14,7 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
     // is the legacy lit-material contract, even though it has the same
     // attachment count as the deferred G-buffer variant.
     destination.shader_contract = MaterialShaderContract::legacy_gbuffer_v1;
+    destination.output_schema.reset();
     destination.exact_pass = lowered.exact_pass;
     destination.screen_inputs = lowered.screen_input_contracts;
     destination.resource_ports = lowered.resource_ports;

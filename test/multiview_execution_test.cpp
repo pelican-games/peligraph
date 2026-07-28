@@ -1053,8 +1053,12 @@ TEST_CASE(
             vk::AttachmentStoreOp::eStore,
         }};
     native_local_contract.scope_color_clear_values = {
-        {0.0f, 0.0f, 0.0f, 1.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f}};
+        {.floating = {0.0f, 0.0f, 0.0f, 1.0f},
+         .signed_integer = {0, 0, 0, 1},
+         .unsigned_integer = {0, 0, 0, 1}},
+        {.floating = {0.0f, 0.0f, 0.0f, 1.0f},
+         .signed_integer = {0, 0, 0, 1},
+         .unsigned_integer = {0, 0, 0, 1}}};
     native_local_contract.local_read_scope = true;
 
     auto local_commands = vkcore.allocCmdBufs(1);

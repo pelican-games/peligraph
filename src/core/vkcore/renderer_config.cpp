@@ -4,6 +4,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../launchconfig.hpp"
 #include "../log.hpp"
+#include "../material/materialcontainer.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
@@ -256,6 +257,13 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
                                 default_pass_name);
             validateFrozenRuntimeFeatureModules(
                 generation);
+            if (auto *materials =
+                    FastModuleContainer::tryGet<
+                        MaterialContainer>()) {
+                materials
+                    ->validateRuntimeGenerationCompatibility(
+                        generation);
+            }
         };
 #if PELICAN_WITH_OPENXR
     const bool xr_active =
