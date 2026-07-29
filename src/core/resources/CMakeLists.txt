@@ -14,6 +14,7 @@ function(embed_shader file_name)
                 shaders/include/pelican_material.glsl
                 shaders/include/pelican_material_instance.glsl
                 shaders/include/pelican_features.glsl
+                shaders/include/pelican_shadow_cascade.glsl
                 shaders/include/pelican_skinning.glsl
                 shaders/include/pelican_morph.glsl
         OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
@@ -81,6 +82,7 @@ b_embed(pelican_resources shaders/include/pelican_features.glsl)
 b_embed(pelican_resources shaders/include/pelican_surface_v1.glsl)
 b_embed(pelican_resources shaders/include/pelican_lighting_v1.glsl)
 b_embed(pelican_resources shaders/include/pelican_lighting_v2.glsl)
+b_embed(pelican_resources shaders/include/pelican_shadow_cascade.glsl)
 b_embed(pelican_resources shaders/include/pelican_skinning.glsl)
 b_embed(pelican_resources shaders/include/pelican_morph.glsl)
 b_embed(pelican_resources shaders/material/standard_lighting.glsl)

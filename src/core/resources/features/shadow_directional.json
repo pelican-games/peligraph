@@ -50,7 +50,7 @@
       "format": "D32_SFLOAT",
       "format_class": "data",
       "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
-      "array_layers": "$cascade_count"
+      "layers": "$cascade_count"
     }
   ],
   "passes": [

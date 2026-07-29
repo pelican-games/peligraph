@@ -2,14 +2,9 @@
 
 #include "viewfamily.hpp"
 
-#include <cstdint>
-
 #include <glm/glm.hpp>
 
 namespace Pelican {
-
-inline constexpr std::uint32_t
-    maximumDirectionalShadowCascades = 8;
 
 struct DirectionalShadowCascadeSettings {
     std::uint32_t cascade_count = 1;

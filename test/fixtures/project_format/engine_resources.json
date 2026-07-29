@@ -50,6 +50,7 @@
     "shaders/include/pelican_surface_v1.glsl",
     "shaders/include/pelican_lighting_v1.glsl",
     "shaders/include/pelican_lighting_v2.glsl",
+    "shaders/include/pelican_shadow_cascade.glsl",
     "shaders/include/pelican_skinning.glsl",
     "shaders/include/pelican_morph.glsl",
     "shaders/material/standard_lighting.glsl",

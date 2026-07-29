@@ -6,6 +6,7 @@
 #include "../vkcore/buf.hpp"
 
 #include <string>
+#include <span>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include <vulkan/vulkan.hpp>
@@ -44,6 +45,11 @@ namespace Pelican
 		void load(const std::vector<LightLoadEntry>& lights);
 		void update();
 		void update(const glm::mat4& shadow_view_projection);
+		void update(
+			std::span<const glm::mat4>
+				shadow_view_projections,
+			std::span<const float>
+				cascade_far_distances);
 
 		bool setDirectionalLightDirection(const std::string& name, glm::vec3 direction);
 		bool setDirectionalLightIntensity(const std::string& name, float intensity);

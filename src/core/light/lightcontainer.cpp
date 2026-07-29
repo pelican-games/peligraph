@@ -3,7 +3,9 @@
 #include "../userpublic/color.hpp"
 #include "../vkcore/core.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
@@ -338,8 +340,46 @@ namespace Pelican
 
 	void LightContainer::update(
 		const glm::mat4& shadow_view_projection)
-		    	{
-		    		LightUBO ubo{};
+	{
+		const std::array projections{
+			shadow_view_projection};
+		update(projections, {});
+	}
+
+	void LightContainer::update(
+		std::span<const glm::mat4>
+			shadow_view_projections,
+		std::span<const float>
+			cascade_far_distances)
+	{
+		if (shadow_view_projections.empty() ||
+			shadow_view_projections.size() >
+				maximumDirectionalShadowCascades)
+		{
+			throw std::runtime_error(
+				"directional shadow projection count is outside the LightUBO ABI");
+		}
+		if (!cascade_far_distances.empty() &&
+			cascade_far_distances.size() !=
+				shadow_view_projections.size())
+		{
+			throw std::runtime_error(
+				"directional shadow split count does not match the projection count");
+		}
+		float prior_far = 0.0f;
+		for (const auto far_distance :
+			cascade_far_distances)
+		{
+			if (!std::isfinite(far_distance) ||
+				far_distance <= prior_far)
+			{
+				throw std::runtime_error(
+					"directional shadow cascade far distances must be finite and strictly increasing");
+			}
+			prior_far = far_distance;
+		}
+
+		LightUBO ubo{};
                 ubo.directionalLightCount =
                     std::min<uint32_t>(static_cast<uint32_t>(m_DirectionalLights.size()), MAX_DIRECTIONAL_LIGHTS);
                 for (size_t i = 0; i < ubo.directionalLightCount; ++i)
@@ -367,9 +407,36 @@ namespace Pelican
 		    			ubo.spotLights[i].innerConeAngle = cos(glm::radians(m_SpotLights[i].innerConeAngle));
 		    			ubo.spotLights[i].outerConeAngle = cos(glm::radians(m_SpotLights[i].outerConeAngle));
 		    		}
-				ubo.shadowViewProjection =
-					shadow_view_projection;
-		
-		    		GET_MODULE(VulkanManageCore).writeBuf(m_LightUBO, &ubo, 0, sizeof(ubo));
-		    	}
-		    }
+		ubo.directionalShadowCascadeCount =
+			static_cast<uint32_t>(
+				shadow_view_projections.size());
+		for (auto &split :
+			ubo.directionalShadowCascadeSplits)
+		{
+			split =
+				glm::vec4{
+					std::numeric_limits<float>::max()};
+		}
+		for (auto &projection :
+			ubo.shadowViewProjections)
+		{
+			projection = glm::mat4{1.0f};
+		}
+		for (std::size_t index = 0;
+			index < shadow_view_projections.size();
+			++index)
+		{
+			ubo.shadowViewProjections[index] =
+				shadow_view_projections[index];
+			if (!cascade_far_distances.empty())
+			{
+				ubo.directionalShadowCascadeSplits[
+					index / 4][index % 4] =
+					cascade_far_distances[index];
+			}
+		}
+
+		GET_MODULE(VulkanManageCore).writeBuf(
+			m_LightUBO, &ubo, 0, sizeof(ubo));
+	}
+}

@@ -31,6 +31,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -676,8 +677,60 @@ TEST_CASE(
         &light_data, light_bytes.data(),
         sizeof(light_data));
     REQUIRE(
-        light_data.shadowViewProjection ==
+        light_data.directionalShadowCascadeCount ==
+        1);
+    REQUIRE(
+        light_data.shadowViewProjections[0] ==
         shadow_view_projection);
+    REQUIRE(
+        light_data
+            .directionalShadowCascadeSplits[0][0] >
+        1.0e30f);
+
+    std::array<glm::mat4, 3>
+        cascade_projections{
+            glm::mat4{1.0f},
+            glm::mat4{2.0f},
+            glm::mat4{3.0f},
+        };
+    const std::array<float, 3>
+        cascade_far_distances{
+            5.0f, 15.0f, 40.0f};
+    light_container.update(
+        cascade_projections,
+        cascade_far_distances);
+    const auto cascade_light_bytes =
+        vkcore.readBuf(
+            light_container.lightBuffer(),
+            sizeof(LightUBO));
+    std::memcpy(
+        &light_data,
+        cascade_light_bytes.data(),
+        sizeof(light_data));
+    REQUIRE(
+        light_data.directionalShadowCascadeCount ==
+        3);
+    REQUIRE(
+        light_data
+            .directionalShadowCascadeSplits[0] ==
+        glm::vec4{
+            5.0f, 15.0f, 40.0f,
+            std::numeric_limits<float>::max()});
+    REQUIRE(
+        light_data.shadowViewProjections[0] ==
+        cascade_projections[0]);
+    REQUIRE(
+        light_data.shadowViewProjections[1] ==
+        cascade_projections[1]);
+    REQUIRE(
+        light_data.shadowViewProjections[2] ==
+        cascade_projections[2]);
+    REQUIRE_THROWS(
+        light_container.update(
+            cascade_projections,
+            std::span<const float>{
+                cascade_far_distances}
+                .first(2)));
 
     frame_resources.beginLogicalFrame(
         stereo_view_count);

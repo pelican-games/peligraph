@@ -16,6 +16,8 @@ inline constexpr std::string_view
 inline constexpr std::string_view
     directionalShadowRenderViewId =
         "$cascade/0";
+inline constexpr std::uint32_t
+    maximumDirectionalShadowCascades = 8;
 inline constexpr std::size_t
     maximumRenderViewFamilyIdBytes = 255;
 

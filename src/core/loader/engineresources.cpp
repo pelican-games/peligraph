@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 91;
+constexpr size_t registeredResourceCount = 92;
 #else
-constexpr size_t registeredResourceCount = 90;
+constexpr size_t registeredResourceCount = 91;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -65,6 +65,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/include/pelican_surface_v1.glsl",
     "shaders/include/pelican_lighting_v1.glsl",
     "shaders/include/pelican_lighting_v2.glsl",
+    "shaders/include/pelican_shadow_cascade.glsl",
     "shaders/include/pelican_skinning.glsl",
     "shaders/include/pelican_morph.glsl",
     "shaders/material/standard_lighting.glsl",
@@ -191,6 +192,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_surface_v1.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_lighting_v1.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_lighting_v2.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_shadow_cascade.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_skinning.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_morph.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/standard_lighting.glsl")

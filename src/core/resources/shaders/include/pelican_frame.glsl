@@ -119,7 +119,12 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_LIGHT_UBO_BINDING, std140) uni
     PelicanDirectionalLight directionalLights[8];
     PelicanPointLight pointLights[16];
     PelicanSpotLight spotLights[8];
-    mat4 shadowViewProjection;
+    uint directionalShadowCascadeCount;
+    uint directionalShadowPadding0;
+    uint directionalShadowPadding1;
+    uint directionalShadowPadding2;
+    vec4 directionalShadowCascadeSplits[2];
+    mat4 shadowViewProjections[8];
 } pelicanLights;
 
 #endif

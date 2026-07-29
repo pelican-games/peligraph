@@ -1,5 +1,10 @@
 #pragma once
 
+#include "../../project/viewfamilyrelation.hpp"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
 
@@ -71,8 +76,40 @@ namespace Pelican
 		DirectionalLight_UBO directionalLights[MAX_DIRECTIONAL_LIGHTS];
 		PointLight_UBO pointLights[MAX_POINT_LIGHTS];
 		SpotLight_UBO spotLights[MAX_SPOT_LIGHTS];
-		glm::mat4 shadowViewProjection;
+		alignas(16) uint32_t directionalShadowCascadeCount;
+		uint32_t directionalShadowPadding0;
+		uint32_t directionalShadowPadding1;
+		uint32_t directionalShadowPadding2;
+		std::array<glm::vec4, 2> directionalShadowCascadeSplits;
+		std::array<
+			glm::mat4,
+			maximumDirectionalShadowCascades>
+			shadowViewProjections;
 	};
+
+	static_assert(
+		offsetof(
+			LightUBO,
+			directionalShadowCascadeCount) %
+				16 ==
+			0);
+	static_assert(
+		offsetof(
+			LightUBO,
+			directionalShadowCascadeSplits) ==
+		offsetof(
+			LightUBO,
+			directionalShadowCascadeCount) +
+			16);
+	static_assert(
+		offsetof(
+			LightUBO,
+			shadowViewProjections) ==
+		offsetof(
+			LightUBO,
+			directionalShadowCascadeSplits) +
+			sizeof(glm::vec4) * 2);
+	static_assert(sizeof(LightUBO) % 16 == 0);
 
 	struct DirectionalShadowView
 	{

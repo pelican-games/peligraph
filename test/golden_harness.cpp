@@ -7,6 +7,7 @@
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/projectsrc.hpp"
@@ -144,6 +145,11 @@ struct RenderedCase {
     std::vector<int>
         gpu_selected_segment_materials;
 };
+
+std::vector<std::uint8_t>
+readDepthTargetBytes(
+    GlobalRenderTargetId target_id,
+    std::uint32_t array_layer = 0);
 
 struct Tolerance {
     double average = 0.0;
@@ -3345,7 +3351,8 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
     writeShadowProject(root, false);
 
     std::string feature_reference;
-    if (mode == "shadow_b_layer_engine") {
+    if (mode == "shadow_b_layer_engine" ||
+        mode == "shadow_b_layer_cascaded") {
         feature_reference =
             "engine://features/shadow_directional.json";
     } else if (mode == "shadow_b_layer_project") {
@@ -3361,9 +3368,43 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
             std::string{mode});
     }
 
+    auto config =
+        makeBLayerShadowRenderingConfig(
+            feature_reference);
+    if (mode ==
+        "shadow_b_layer_cascaded") {
+        writeTextFile(
+            root / "features" /
+                "shadow_probe.json",
+            R"json({
+              "schema":"pelican.render_feature",
+              "version":1,
+              "name":"shadow_probe",
+              "render_target_overrides":{
+                "shadow_map":{
+                  "usage":["TRANSFER_SRC"]
+                }
+              }
+            })json");
+        config["features"] =
+            nlohmann::json::array({
+                {
+                    {"ref", feature_reference},
+                    {"parameters",
+                     {
+                         {"cascade_count", 3},
+                         {"resolution", 64},
+                         {"max_distance", 20.0},
+                         {"split_lambda", 0.7},
+                         {"stabilize", true},
+                    }},
+                },
+                "project://features/shadow_probe.json",
+            });
+    }
     writeTextFile(
         root / "passes" / "main.json",
-        makeBLayerShadowRenderingConfig(feature_reference).dump(2));
+        config.dump(2));
 }
 
 void writeMorphSkinnedShadowProject(const std::filesystem::path &root) {
@@ -4143,6 +4184,112 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
     }
 
     renderShadowFrame(render_target);
+    if (mode ==
+        "shadow_b_layer_cascaded") {
+        const auto shadow =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "shadow_map");
+        const auto metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(shadow);
+        REQUIRE(
+            metadata.array_layers == 3);
+        REQUIRE(
+            metadata.extent ==
+            vk::Extent2D{64, 64});
+
+        const auto light_bytes =
+            GET_MODULE(VulkanManageCore)
+                .readBuf(
+                    GET_MODULE(LightContainer)
+                        .lightBuffer(),
+                    sizeof(LightUBO));
+        LightUBO light_data{};
+        std::memcpy(
+            &light_data,
+            light_bytes.data(),
+            sizeof(light_data));
+        REQUIRE(
+            light_data
+                .directionalShadowCascadeCount ==
+            3);
+        REQUIRE(
+            light_data
+                    .directionalShadowCascadeSplits
+                    [0][0] <
+            light_data
+                    .directionalShadowCascadeSplits
+                    [0][1]);
+        REQUIRE(
+            light_data
+                    .directionalShadowCascadeSplits
+                    [0][1] <
+            light_data
+                    .directionalShadowCascadeSplits
+                    [0][2]);
+        REQUIRE(
+            light_data
+                    .directionalShadowCascadeSplits
+                    [0][2] ==
+            Catch::Approx(20.0f)
+                .margin(0.01f));
+
+        std::array<std::size_t, 3>
+            invocations{};
+        for (const auto &node :
+             GET_MODULE(Renderer)
+                 .lastExecutionTraceForTesting()
+                 .at("nodes")) {
+            if (node.at("name") !=
+                "shadow_depth") {
+                continue;
+            }
+            REQUIRE(
+                node.at("view_family") ==
+                std::string{
+                    directionalShadowRenderViewFamilyId});
+            REQUIRE(
+                node.at("view_execution") ==
+                "sequential");
+            const auto view_index =
+                node.at("view_index")
+                    .get<std::uint32_t>();
+            REQUIRE(view_index < 3);
+            ++invocations[view_index];
+        }
+        REQUIRE(
+            invocations ==
+            std::array<std::size_t, 3>{
+                1, 1, 1});
+
+        for (std::uint32_t layer = 0;
+             layer < 3;
+             ++layer) {
+            const auto bytes =
+                readDepthTargetBytes(
+                    shadow, layer);
+            REQUIRE(
+                bytes.size() ==
+                64u * 64u *
+                    sizeof(float));
+            bool has_written_depth = false;
+            for (std::size_t offset = 0;
+                 offset < bytes.size();
+                 offset += sizeof(float)) {
+                float depth = 1.0f;
+                std::memcpy(
+                    &depth,
+                    bytes.data() + offset,
+                    sizeof(depth));
+                has_written_depth =
+                    has_written_depth ||
+                    depth < 0.9999f;
+            }
+            INFO("cascade layer " << layer);
+            REQUIRE(has_written_depth);
+        }
+    }
 #else
     (void)render_target;
     (void)mode;
@@ -4523,7 +4670,8 @@ bool isBLayerShadowGoldenMode(
     const std::string &mode) {
     return mode == "shadow_b_layer_off" ||
            mode == "shadow_b_layer_engine" ||
-           mode == "shadow_b_layer_project";
+           mode == "shadow_b_layer_project" ||
+           mode == "shadow_b_layer_cascaded";
 }
 
 bool isTaaGoldenMode(const std::string &mode) {
@@ -5231,11 +5379,16 @@ JitterCapture captureJitterFrames(std::string_view run_name,
     return capture;
 }
 
-std::vector<std::uint8_t> readDepthTargetBytes(GlobalRenderTargetId target_id) {
+std::vector<std::uint8_t>
+readDepthTargetBytes(
+    GlobalRenderTargetId target_id,
+    std::uint32_t array_layer) {
     auto &targets = GET_MODULE(RenderTargetContainer);
     const auto metadata = targets.getMetadata(target_id);
     if (metadata.format != vk::Format::eD32Sfloat ||
-        !(metadata.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+        !(metadata.usage &
+          vk::ImageUsageFlagBits::eTransferSrc) ||
+        array_layer >= metadata.array_layers) {
         throw std::runtime_error("shadow probe requires a transfer-src D32 target");
     }
     const auto &image = targets.getImage(target_id);
@@ -5256,7 +5409,11 @@ std::vector<std::uint8_t> readDepthTargetBytes(GlobalRenderTargetId target_id) {
                  .src_access = vk::AccessFlagBits::eShaderRead,
                  .dst_access = vk::AccessFlagBits::eTransferRead});
             vk::BufferImageCopy copy;
-            copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1};
+            copy.imageSubresource = {
+                vk::ImageAspectFlagBits::eDepth,
+                0,
+                array_layer,
+                1};
             copy.imageExtent = image.extent;
             command.copyImageToBuffer(image.image.get(), vk::ImageLayout::eTransferSrcOptimal,
                                       staging.buffer.get(), copy);
@@ -6464,6 +6621,12 @@ void GoldenHarness::runBLayerShadowEquivalence() {
         golden_root / "shadow_b_layer_project",
         goldenWidth,
         goldenHeight});
+    const auto cascaded = renderCase(GoldenCase{
+        "shadow_b_layer_cascaded_runtime",
+        "shadow_b_layer_cascaded",
+        golden_root / "shadow_b_layer_engine",
+        goldenWidth,
+        goldenHeight});
 
     REQUIRE(engine.image.width == project.image.width);
     REQUIRE(engine.image.height == project.image.height);
@@ -6472,6 +6635,18 @@ void GoldenHarness::runBLayerShadowEquivalence() {
     REQUIRE(engine.image.pixels.size() ==
             off.image.pixels.size());
     REQUIRE(engine.image.pixels != off.image.pixels);
+    REQUIRE(
+        cascaded.image.width ==
+        engine.image.width);
+    REQUIRE(
+        cascaded.image.height ==
+        engine.image.height);
+    REQUIRE(
+        cascaded.image.pixels.size() ==
+        engine.image.pixels.size());
+    REQUIRE(
+        cascaded.image.pixels !=
+        off.image.pixels);
 
     std::size_t changed_bytes = 0;
     for (std::size_t index = 0;

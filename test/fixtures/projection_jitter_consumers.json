@@ -135,13 +135,13 @@
       "source": "src/core/light/light.hpp",
       "consumer": "shadow",
       "role": "LightUBO ABI storage",
-      "needles": ["glm::mat4 shadowViewProjection;"]
+      "needles": ["directionalShadowCascadeSplits;", "shadowViewProjections;"]
     },
     {
       "source": "src/core/light/lightcontainer.cpp",
       "consumer": "shadow",
       "role": "directional shadow view-family provider and LightUBO transport",
-      "needles": ["DirectionalShadowView LightContainer::directionalShadowView() const", "void LightContainer::update(", "ubo.shadowViewProjection =", "shadow_view_projection;"]
+      "needles": ["DirectionalShadowView LightContainer::directionalShadowView() const", "void LightContainer::update(", "ubo.directionalShadowCascadeCount =", "ubo.shadowViewProjections[index] ="]
     },
     {
       "source": "src/core/light/lightcontainer.hpp",
@@ -279,7 +279,7 @@
       "source": "src/core/resources/fullscreen.frag",
       "consumer": "shadow",
       "role": "light-space shadow projection consumer",
-      "needles": ["vec4 shadowClip = pelicanLights.shadowViewProjection * vec4(worldPos, 1.0);"]
+      "needles": ["float directionalShadowVisibility(", "pelican_directional_shadow_cascade(", "float(cascade)"]
     },
     {
       "source": "src/core/resources/fullscreen.vert",

@@ -932,7 +932,7 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
     REQUIRE(shadow_map.at("name").get<std::string>() == "shadow_map");
     REQUIRE(shadow_map.at("width").get<int>() == 2048);
     REQUIRE(shadow_map.at("height").get<int>() == 2048);
-    REQUIRE(shadow_map.at("array_layers").get<int>() == 1);
+    REQUIRE(shadow_map.at("layers").get<int>() == 1);
     REQUIRE(
         result.feature_instances.at(0)
             .at("parameters")
@@ -992,7 +992,7 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
         cascaded_target.at("height") ==
         1024);
     REQUIRE(
-        cascaded_target.at("array_layers") ==
+        cascaded_target.at("layers") ==
         3);
     REQUIRE(
         cascaded.shader_defines ==
@@ -1389,7 +1389,7 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
         "format_class":"data",
         "usage":["SAMPLED"],
         "history":"$enabled",
-        "array_layers":"$iterations"
+        "layers":"$iterations"
       }]
     })json");
     const auto composeFor = [&](nlohmann::json parameters) {
@@ -1417,7 +1417,7 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
     REQUIRE(first_target.at("extent_scale") == 0.1);
     REQUIRE(first_target.at("width") == 9);
     REQUIRE(first_target.at("height") == 7);
-    REQUIRE(first_target.at("array_layers") == 7);
+    REQUIRE(first_target.at("layers") == 7);
     REQUIRE(first_target.at("history") == false);
 
     const auto graphs = parseFrameGraphDefinitionsFromConfigJson(first.config);

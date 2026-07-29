@@ -394,6 +394,66 @@ directionalShadowRuntimeContract(
     return result;
 }
 
+void validateDirectionalShadowRuntimeFamily(
+    const RenderViewFamilies &families,
+    const DirectionalShadowRuntimeContract
+        &contract) {
+    const auto *family =
+        families.find(
+            directionalShadowRenderViewFamilyId);
+    if (family == nullptr) {
+        return;
+    }
+    if (family->views.empty() ||
+        family->views.size() >
+            maximumDirectionalShadowCascades) {
+        throw std::runtime_error(
+            "directional shadow view family cardinality is outside the "
+            "LightUBO ABI");
+    }
+    if (contract.target &&
+        family->views.size() >
+            contract.target->array_layers) {
+        throw std::runtime_error(
+            "directional shadow view family has more views than the "
+            "shadow target has array layers");
+    }
+    if (family->views.size() == 1) {
+        return;
+    }
+    float prior_far = 0.0f;
+    for (std::size_t index = 0;
+         index < family->views.size();
+         ++index) {
+        const auto &view =
+            family->views[index];
+        if (!view.depth_range) {
+            throw std::runtime_error(
+                "multi-view directional shadow families require a "
+                "depth_range for every cascade");
+        }
+        if (index != 0) {
+            const auto tolerance =
+                std::max(
+                    1.0e-4f,
+                    std::abs(prior_far) *
+                        1.0e-5f);
+            if (std::abs(
+                    view.depth_range
+                            ->near_distance -
+                    prior_far) >
+                tolerance) {
+                throw std::runtime_error(
+                    "directional shadow cascade depth ranges must be "
+                    "contiguous");
+            }
+        }
+        prior_far =
+            view.depth_range
+                ->far_distance;
+    }
+}
+
 RenderViewFamily directionalShadowViewFamily(
     const LightContainer &lights,
     const RenderViewFamily &main_family,
@@ -588,13 +648,31 @@ void updateFrameLights(
     if (const auto *shadow_family =
             view_families.find(
                 directionalShadowRenderViewFamilyId);
-        shadow_family != nullptr &&
-        shadow_family->views.size() == 1) {
-        const auto &shadow_view =
-            shadow_family->views.front();
+        shadow_family != nullptr) {
+        std::vector<glm::mat4>
+            view_projections;
+        std::vector<float>
+            cascade_far_distances;
+        view_projections.reserve(
+            shadow_family->views.size());
+        cascade_far_distances.reserve(
+            shadow_family->views.size());
+        for (const auto &shadow_view :
+             shadow_family->views) {
+            view_projections.push_back(
+                shadow_view.projection *
+                shadow_view.view);
+            cascade_far_distances.push_back(
+                shadow_view.depth_range
+                    ? shadow_view
+                          .depth_range
+                          ->far_distance
+                    : std::numeric_limits<
+                          float>::max());
+        }
         light_container.update(
-            shadow_view.projection *
-            shadow_view.view);
+            view_projections,
+            cascade_far_distances);
     } else {
         light_container.update();
     }
@@ -3669,6 +3747,11 @@ void Renderer::renderLogicalFrame(
     validateRenderViewFamilies(
         resolved_view_families,
         graph_variant_policy);
+    validateDirectionalShadowRuntimeFamily(
+        resolved_view_families,
+        directionalShadowRuntimeContract(
+            frame_graph,
+            modules.render_target_container));
     const auto &view_family =
         resolved_view_families.require(
             mainRenderViewFamilyId);

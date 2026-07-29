@@ -15,6 +15,7 @@ PELICAN_DECLARE_INPUT_3(worldPosSampler);
 PELICAN_DECLARE_INPUT_4(emissiveSampler);
 PELICAN_DECLARE_INPUT_5(ssaoSampler);
 #ifdef PELICAN_FEATURE_SHADOW
+#include "pelican_shadow_cascade.glsl"
 PELICAN_DECLARE_INPUT_6(shadowMapSampler);
 #endif
 
@@ -90,7 +91,18 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 
 #ifdef PELICAN_FEATURE_SHADOW
 float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
-    vec4 shadowClip = pelicanLights.shadowViewProjection * vec4(worldPos, 1.0);
+    uint cascade =
+        pelican_directional_shadow_cascade(
+            worldPos);
+    if (cascade >=
+        pelicanLights
+            .directionalShadowCascadeCount) {
+        return 1.0;
+    }
+    vec4 shadowClip =
+        pelicanLights
+            .shadowViewProjections[cascade] *
+        vec4(worldPos, 1.0);
     if (shadowClip.w <= 0.0) {
         return 1.0;
     }
@@ -103,7 +115,12 @@ float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
     }
 
     float storedDepth =
-        texture(shadowMapSampler, vec3(shadowUv, 0.0)).r;
+        texture(
+            shadowMapSampler,
+            vec3(
+                shadowUv,
+                float(cascade)))
+            .r;
     float bias = max(0.0025 * (1.0 - dot(normal, lightDir)), 0.0008);
     return shadowNdc.z - bias <= storedDepth ? 1.0 : 0.35;
 }

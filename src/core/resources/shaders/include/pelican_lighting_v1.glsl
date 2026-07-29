@@ -5,6 +5,7 @@
 #include "pelican_surface_v1.glsl"
 
 #if defined(PELICAN_FEATURE_SHADOW) && defined(PELICAN_PASS_FORWARD)
+#include "pelican_shadow_cascade.glsl"
 #ifndef PELICAN_DIRECTIONAL_SHADOW_BINDING
 #error "directional shadow requires PELICAN_DIRECTIONAL_SHADOW_BINDING"
 #endif
@@ -76,8 +77,17 @@ float pelican_shadow(uint light_index, vec3 world_position) {
         return 1.0;
     }
 
+    uint cascade =
+        pelican_directional_shadow_cascade(
+            world_position);
+    if (cascade >=
+        pelicanLights
+            .directionalShadowCascadeCount) {
+        return 1.0;
+    }
     vec4 shadow_clip =
-        pelicanLights.shadowViewProjection *
+        pelicanLights
+            .shadowViewProjections[cascade] *
         vec4(world_position, 1.0);
     if (shadow_clip.w <= 0.0) {
         return 1.0;
@@ -95,7 +105,9 @@ float pelican_shadow(uint light_index, vec3 world_position) {
     float stored_depth =
         texture(
             pelican_directional_shadow_texture,
-            vec3(shadow_uv, 0.0))
+            vec3(
+                shadow_uv,
+                float(cascade)))
             .r;
     const float bias = 0.0015;
     return shadow_ndc.z - bias <= stored_depth
