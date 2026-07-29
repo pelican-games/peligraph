@@ -58,9 +58,33 @@ struct PreparedShaderBundle {
     std::size_t reload_unit = 0;
 };
 
+// Compiler-owned portions of a generated material shader may change with the
+// render graph even when the authored .surface source does not. The fragment
+// bundle identifies the existing reload unit; public material defines remain
+// untouched while these physical defines and the output ABI are replaced.
+struct SurfaceShaderReloadOverride {
+    ShaderBundleId fragment;
+    std::vector<std::string> physical_defines;
+    std::optional<MaterialOutputSchema>
+        material_output_schema;
+
+    bool operator==(
+        const SurfaceShaderReloadOverride &) const =
+        default;
+};
+
+struct PreparedSurfaceShaderRecipeUpdate {
+    std::size_t reload_unit = 0;
+    std::vector<std::string> defines;
+    std::optional<MaterialOutputSchema>
+        material_output_schema;
+};
+
 struct PreparedShaderReload {
     std::vector<PreparedShaderBundle> candidates;
     std::map<watch::AssetKey, SurfaceFormatDocument> surface_documents;
+    std::vector<PreparedSurfaceShaderRecipeUpdate>
+        surface_recipe_updates;
     std::vector<watch::AssetKey> changed_keys;
     std::size_t cache_hits = 0;
     std::size_t cache_misses = 0;
@@ -97,6 +121,11 @@ DECLARE_MODULE(ShaderLibrary) {
         std::vector<std::string> defines;
         std::optional<MaterialOutputSchema>
             material_output_schema;
+        // Generated and engine-owned surfaces have no reloadable file, but
+        // their compiler recipe must still be available when a render-graph
+        // ABI change requires regeneration.
+        std::optional<SurfaceFormatDocument>
+            embedded_surface;
     };
     struct ReloadUnit {
         std::variant<FileReloadRecipe, SurfaceReloadRecipe> recipe;
@@ -154,10 +183,15 @@ DECLARE_MODULE(ShaderLibrary) {
                                    SurfacePass pass,
                                    std::vector<std::string> defines,
                                    std::optional<MaterialOutputSchema>
-                                       material_output_schema);
+                                       material_output_schema,
+                                   std::optional<SurfaceFormatDocument>
+                                       embedded_surface = std::nullopt);
     void rebuildReverseDependencies();
-    PreparedShaderReload prepareUnits(const std::set<std::size_t> &units,
-                                      std::vector<watch::AssetKey> changed_keys) const;
+    PreparedShaderReload prepareUnits(
+        const std::set<std::size_t> &units,
+        std::vector<watch::AssetKey> changed_keys,
+        std::span<const SurfaceShaderReloadOverride>
+            surface_overrides = {}) const;
     void activatePrepared(PreparedShaderReload &prepared);
     void finalizePrepared(const PreparedShaderReload &prepared);
     void markDirty(ShaderBundleId id);
@@ -206,6 +240,10 @@ DECLARE_MODULE(ShaderLibrary) {
     bool reload(ShaderBundleId id);
     bool handlesReload(const watch::AssetKey &key) const;
     PreparedShaderReload prepareReload(std::span<const watch::AssetKey> changed_keys) const;
+    PreparedShaderReload prepareReload(
+        std::span<const watch::AssetKey> changed_keys,
+        std::span<const SurfaceShaderReloadOverride>
+            surface_overrides) const;
     PreparedShaderReload prepareReloadAll() const;
     void recordReloadFailure(std::span<const watch::AssetKey> changed_keys,
                              std::string_view error);

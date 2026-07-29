@@ -647,11 +647,44 @@ const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const
     return pipelines.get(handle).reflection;
 }
 
+GraphicsPipelineDesc PipelineFactory::graphicsDesc(
+    PipelineHandle handle) const {
+    const auto &record = pipelines.get(handle);
+    const auto *desc =
+        std::get_if<GraphicsPipelineDesc>(
+            &record.desc);
+    if (desc == nullptr) {
+        throw std::runtime_error(
+            "pipeline is not a graphics pipeline");
+    }
+    return *desc;
+}
+
 PipelineRebuildResult PipelineFactory::rebuildPrepared(
-    PreparedShaderReload prepared, const std::function<void()> &before_publish) {
+    PreparedShaderReload prepared,
+    const std::function<void()> &before_publish,
+    std::span<const GraphicsPipelineReloadOverride>
+        graphics_overrides) {
     const auto affected_shaders = prepared.affectedBundleIds();
     PipelineRebuildResult result{.dirty_shaders = affected_shaders.size()};
-    if (affected_shaders.empty()) return result;
+    if (affected_shaders.empty() &&
+        graphics_overrides.empty() &&
+        !before_publish) {
+        return result;
+    }
+    for (std::size_t left = 0;
+         left < graphics_overrides.size(); ++left) {
+        for (std::size_t right = left + 1;
+             right < graphics_overrides.size();
+             ++right) {
+            if (graphics_overrides[left].handle ==
+                graphics_overrides[right].handle) {
+                throw std::runtime_error(
+                    "graphics pipeline reload override is "
+                    "duplicated");
+            }
+        }
+    }
 
     struct PreparedPipeline {
         PipelineHandle handle;
@@ -680,19 +713,69 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
     try {
         for (const auto handle : pipeline_handles) {
             const auto &record = pipelines.get(handle);
-            if (!pipelineUsesShader(record.desc, affected_shaders)) continue;
+            const auto override = std::find_if(
+                graphics_overrides.begin(),
+                graphics_overrides.end(),
+                [handle](const auto &candidate) {
+                    return candidate.handle == handle;
+                });
+            if (override ==
+                    graphics_overrides.end() &&
+                !pipelineUsesShader(
+                    record.desc,
+                    affected_shaders)) {
+                continue;
+            }
+            if (override !=
+                    graphics_overrides.end() &&
+                !std::holds_alternative<
+                    GraphicsPipelineDesc>(
+                    record.desc)) {
+                throw std::runtime_error(
+                    "graphics pipeline reload override "
+                    "references a compute pipeline");
+            }
             ++result.attempted_pipelines;
-            auto replacement = std::visit(
-                [this](const auto &pipeline_desc) {
-                    using Desc = std::decay_t<decltype(pipeline_desc)>;
-                    if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
-                        return buildGraphicsPipeline(pipeline_desc);
-                    } else {
-                        return buildComputePipeline(pipeline_desc);
-                    }
-                },
-                record.desc);
+            auto replacement =
+                override !=
+                        graphics_overrides.end()
+                    ? buildGraphicsPipeline(
+                          override->desc)
+                    : std::visit(
+                          [this](
+                              const auto
+                                  &pipeline_desc) {
+                              using Desc =
+                                  std::decay_t<
+                                      decltype(
+                                          pipeline_desc)>;
+                              if constexpr (
+                                  std::is_same_v<
+                                      Desc,
+                                      GraphicsPipelineDesc>) {
+                                  return buildGraphicsPipeline(
+                                      pipeline_desc);
+                              } else {
+                                  return buildComputePipeline(
+                                      pipeline_desc);
+                              }
+                          },
+                          record.desc);
             replacements.push_back({handle, std::move(replacement)});
+        }
+        for (const auto &override :
+             graphics_overrides) {
+            if (std::none_of(
+                    pipeline_handles.begin(),
+                    pipeline_handles.end(),
+                    [&](const auto handle) {
+                        return handle ==
+                               override.handle;
+                    })) {
+                throw std::runtime_error(
+                    "graphics pipeline reload override "
+                    "references an unknown pipeline");
+            }
         }
     } catch (const std::exception &error) {
         replacements.clear();

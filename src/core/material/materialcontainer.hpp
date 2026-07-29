@@ -54,6 +54,19 @@ struct MaterialIndexPushConstant {
 
 static_assert(sizeof(MaterialIndexPushConstant) <= PELICAN_PUSH_SHADER_BYTES);
 
+struct MaterialRuntimeGenerationReloadPlan {
+    std::vector<SurfaceShaderReloadOverride>
+        shader_overrides;
+    std::vector<GraphicsPipelineReloadOverride>
+        pipeline_overrides;
+    std::function<void()> commit;
+
+    bool changesPipelineAbi() const noexcept {
+        return !shader_overrides.empty() ||
+               !pipeline_overrides.empty();
+    }
+};
+
 DECLARE_MODULE(MaterialContainer) {
 
     friend class TextureReloadHandler;
@@ -169,10 +182,18 @@ DECLARE_MODULE(MaterialContainer) {
                     eCombinedImageSampler;
             std::optional<std::uint32_t>
                 input_attachment_index;
+
+            bool operator==(const PassInput &) const =
+                default;
         };
         std::vector<PassInput> pass_inputs;
         std::vector<ShaderResourceInterfaceBinding>
             resource_interface;
+        std::vector<MaterialScreenInputContract>
+            declared_screen_inputs;
+        std::vector<SurfaceResourcePortDefinition>
+            declared_resource_ports;
+        SurfaceRenderState render_state;
         bool skinned = false;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
@@ -320,6 +341,11 @@ DECLARE_MODULE(MaterialContainer) {
     }
     std::vector<std::byte> materialGpuValuesForTesting(GlobalMaterialId material) const;
     std::vector<std::byte> materialGpuRecordForTesting(GlobalMaterialId material) const;
+    std::optional<MaterialOutputSchema>
+    materialOutputSchemaForTesting(
+        GlobalMaterialId material) const {
+        return materials.get(material).output_schema;
+    }
     bool handlesTextureReload(const watch::AssetKey &key) const;
     bool enqueueTextureReload(const watch::ReloadRequest &request,
                               watch::ReloadCoordinator &coordinator);
@@ -341,6 +367,13 @@ DECLARE_MODULE(MaterialContainer) {
     // previously published frame-graph generation.
     void validateRuntimeGenerationCompatibility(
         const RendererRuntimeGeneration &generation) const;
+    // Resolves every live material against a private render generation and
+    // prepares shader/pipeline ABI replacements without mutating live state.
+    // The commit callback is invoked only after all shader and Vulkan
+    // pipeline candidates have been built successfully.
+    MaterialRuntimeGenerationReloadPlan
+    prepareRuntimeGenerationReload(
+        const RendererRuntimeGeneration &generation);
 
     bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
     GlobalMaterialId resolveMaterialForPass(

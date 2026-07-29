@@ -1951,6 +1951,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .pass_inputs = std::move(pass_inputs),
         .resource_interface =
             std::move(resource_interface),
+        .declared_screen_inputs =
+            std::move(info.screen_inputs),
+        .declared_resource_ports =
+            std::move(info.resource_ports),
+        .render_state = info.render_state,
         .skinned = info.skinned,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
@@ -2702,57 +2707,209 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
+static std::vector<MaterialPassRenderingBinding>
+materialBindingsForGeneration(
+    const RendererRuntimeGeneration &generation,
+    MaterialRouteClass route,
+    MaterialShaderContract shader_contract,
+    const std::optional<std::string> &exact_pass) {
+    std::vector<MaterialPassRenderingBinding> bindings;
+    for (const auto rendering_pass_id :
+         generation.rendering_pass_ids) {
+        const auto *program =
+            generation.find(rendering_pass_id);
+        if (program == nullptr) {
+            throw std::logic_error(
+                "Render-pipeline candidate pass table is "
+                "inconsistent");
+        }
+        for (const auto &compiled :
+             program->rendering_pass.passes) {
+            const auto &pass = compiled.definition;
+            if (!pass.isMaterial() ||
+                !materialPassAcceptsMaterial(
+                    pass.materialInfo().contract,
+                    pass.name, route,
+                    shader_contract, exact_pass)) {
+                continue;
+            }
+
+            std::vector<MaterialPassShaderInputBinding>
+                shader_inputs;
+            const auto input_attachment_index =
+                [&](GlobalRenderTargetId target,
+                    bool history,
+                    const LogicalReadFootprint &footprint)
+                -> std::optional<std::uint32_t> {
+                if (history) {
+                    return std::nullopt;
+                }
+                const auto target_position = std::find(
+                    pass.input_targets.begin(),
+                    pass.input_targets.end(), target);
+                if (target_position ==
+                    pass.input_targets.end()) {
+                    throw std::runtime_error(
+                        "material pass input is absent from "
+                        "the positional physical input table: " +
+                        pass.name);
+                }
+                const auto index =
+                    static_cast<std::uint32_t>(
+                        target_position -
+                        pass.input_targets.begin());
+                const auto local =
+                    std::find(
+                        compiled.rendering
+                            .color_attachment_input_indices
+                            .begin(),
+                        compiled.rendering
+                            .color_attachment_input_indices
+                            .end(),
+                        index) !=
+                        compiled.rendering
+                            .color_attachment_input_indices
+                            .end() ||
+                    compiled.rendering
+                            .depth_attachment_input_index ==
+                        index;
+                if (!local) {
+                    return std::nullopt;
+                }
+                if (footprint.kind !=
+                    LogicalReadFootprintKind::same_pixel) {
+                    throw std::logic_error(
+                        "material pass selected a local "
+                        "attachment for a non-same-pixel "
+                        "input: " +
+                        pass.name);
+                }
+                return index;
+            };
+            const auto append_input =
+                [&](MaterialPassShaderInputKind kind,
+                    std::string name,
+                    GlobalRenderTargetId target,
+                    bool history,
+                    const LogicalReadFootprint &footprint) {
+                    shader_inputs.push_back({
+                        .input = {
+                            .kind = kind,
+                            .name = std::move(name),
+                        },
+                        .input_attachment_index =
+                            input_attachment_index(
+                                target, history,
+                                footprint),
+                    });
+                };
+            for (const auto &input :
+                 pass.materialInfo().screen_inputs) {
+                append_input(
+                    MaterialPassShaderInputKind::
+                        screen_input,
+                    input.contract.name, input.target,
+                    input.history,
+                    input.contract.footprint);
+            }
+            for (const auto &resource :
+                 pass.materialInfo()
+                     .material_resources) {
+                if (!resource.isImage()) {
+                    continue;
+                }
+                append_input(
+                    MaterialPassShaderInputKind::
+                        material_resource,
+                    resource.port.name,
+                    resource.target,
+                    resource.history,
+                    resource.footprint);
+            }
+
+            bindings.push_back(
+                MaterialPassRenderingBinding{
+                    .pass_name = pass.name,
+                    .rasterization_samples =
+                        pass.rasterization_samples,
+                    .rendering = compiled.rendering,
+                    .output_schema =
+                        pass.materialInfo()
+                            .output_schema,
+                    .output_states =
+                        pass.materialInfo()
+                            .output_states,
+                    .shader_inputs =
+                        std::move(shader_inputs),
+                });
+        }
+    }
+    return bindings;
+}
+
+static std::vector<MaterialPassShaderInputBinding>
+resolveGenerationShaderInputs(
+    std::span<const MaterialPassRenderingBinding> passes,
+    std::span<const MaterialPassShaderInputRequest> inputs) {
+    std::vector<MaterialPassShaderInputBinding> result;
+    result.reserve(inputs.size());
+    for (const auto &input : inputs) {
+        result.push_back({
+            .input = input,
+            .input_attachment_index = std::nullopt,
+        });
+    }
+    if (passes.empty()) {
+        return result;
+    }
+
+    for (std::size_t input_index = 0;
+         input_index < inputs.size(); ++input_index) {
+        std::optional<std::uint32_t> expected;
+        bool initialized = false;
+        for (const auto &pass : passes) {
+            const auto found = std::find_if(
+                pass.shader_inputs.begin(),
+                pass.shader_inputs.end(),
+                [&](const auto &candidate) {
+                    return candidate.input ==
+                           inputs[input_index];
+                });
+            if (found == pass.shader_inputs.end()) {
+                throw std::runtime_error(
+                    "material pass '" + pass.pass_name +
+                    "' does not provide shader input '" +
+                    inputs[input_index].name + "'");
+            }
+            if (!initialized) {
+                expected =
+                    found->input_attachment_index;
+                initialized = true;
+                continue;
+            }
+            if (expected !=
+                found->input_attachment_index) {
+                throw std::runtime_error(
+                    "material shader input '" +
+                    inputs[input_index].name +
+                    "' resolves to different sampled/local-read "
+                    "ABIs across render graph variants");
+            }
+        }
+        result[input_index].input_attachment_index =
+            expected;
+    }
+    return result;
+}
+
 void MaterialContainer::validateRuntimeGenerationCompatibility(
     const RendererRuntimeGeneration &generation) const {
-    const auto bindings_for =
-        [&generation](
-            MaterialRouteClass route,
-            MaterialShaderContract shader_contract,
-            const std::optional<std::string> &exact_pass) {
-            std::vector<MaterialPassRenderingBinding> bindings;
-            for (const auto rendering_pass_id :
-                 generation.rendering_pass_ids) {
-                const auto *program =
-                    generation.find(rendering_pass_id);
-                if (program == nullptr) {
-                    throw std::logic_error(
-                        "Render-pipeline candidate pass table is "
-                        "inconsistent");
-                }
-                for (const auto &compiled :
-                     program->rendering_pass.passes) {
-                    const auto &pass = compiled.definition;
-                    if (!pass.isMaterial() ||
-                        !materialPassAcceptsMaterial(
-                            pass.materialInfo().contract,
-                            pass.name, route,
-                            shader_contract, exact_pass)) {
-                        continue;
-                    }
-                    bindings.push_back(
-                        MaterialPassRenderingBinding{
-                            .pass_name = pass.name,
-                            .rasterization_samples =
-                                pass.rasterization_samples,
-                            .rendering =
-                                compiled.rendering,
-                            .output_schema =
-                                pass.materialInfo()
-                                    .output_schema,
-                            .output_states =
-                                pass.materialInfo()
-                                    .output_states,
-                        });
-                }
-            }
-            return bindings;
-        };
-
     materials.forEach(
         [&](GlobalMaterialId material_id,
             const InternalMaterialInfo &material) {
-            const auto bindings = bindings_for(
-                material.route,
+            const auto bindings =
+                materialBindingsForGeneration(
+                    generation, material.route,
                 material.shader_contract,
                 material.exact_pass);
             if (bindings.empty()) {
@@ -2829,6 +2986,472 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
                 }
             }
         });
+}
+
+MaterialRuntimeGenerationReloadPlan
+MaterialContainer::prepareRuntimeGenerationReload(
+    const RendererRuntimeGeneration &generation) {
+    struct MetadataUpdate {
+        GlobalMaterialId material;
+        std::optional<MaterialOutputSchema>
+            output_schema;
+        MaterialPipelineRenderingContract rendering;
+        std::vector<InternalMaterialInfo::PassInput>
+            pass_inputs;
+        std::vector<ShaderResourceInterfaceBinding>
+            resource_interface;
+        bool descriptor_abi_changed = false;
+    };
+
+    MaterialRuntimeGenerationReloadPlan plan;
+    std::vector<MetadataUpdate> metadata_updates;
+    auto &pipeline_factory =
+        GET_MODULE(PipelineFactory);
+
+    const auto append_shader_override =
+        [&](SurfaceShaderReloadOverride candidate) {
+            const auto found = std::find_if(
+                plan.shader_overrides.begin(),
+                plan.shader_overrides.end(),
+                [&](const auto &existing) {
+                    return existing.fragment ==
+                           candidate.fragment;
+                });
+            if (found ==
+                plan.shader_overrides.end()) {
+                plan.shader_overrides.push_back(
+                    std::move(candidate));
+                return;
+            }
+            if (*found != candidate) {
+                throw std::runtime_error(
+                    "live materials sharing fragment shader " +
+                    std::to_string(
+                        candidate.fragment.value) +
+                    " require incompatible render-graph "
+                    "ABIs");
+            }
+        };
+    const auto append_pipeline_override =
+        [&](GraphicsPipelineReloadOverride candidate) {
+            const auto found = std::find_if(
+                plan.pipeline_overrides.begin(),
+                plan.pipeline_overrides.end(),
+                [&](const auto &existing) {
+                    return existing.handle ==
+                           candidate.handle;
+                });
+            if (found ==
+                plan.pipeline_overrides.end()) {
+                plan.pipeline_overrides.push_back(
+                    std::move(candidate));
+                return;
+            }
+            if (found->desc != candidate.desc) {
+                throw std::runtime_error(
+                    "live materials sharing pipeline " +
+                    std::to_string(
+                        candidate.handle.value) +
+                    " require incompatible render-graph "
+                    "contracts");
+            }
+        };
+
+    materials.forEach(
+        [&](GlobalMaterialId material_id,
+            const InternalMaterialInfo &material) {
+            const auto bindings =
+                materialBindingsForGeneration(
+                    generation, material.route,
+                    material.shader_contract,
+                    material.exact_pass);
+            if (bindings.empty()) {
+                throw std::runtime_error(
+                    "render-pipeline candidate has no compatible "
+                    "pass for live material " +
+                    std::to_string(material_id.value) +
+                    " (route '" +
+                    std::string{materialRouteClassName(
+                        material.route)} +
+                    "', shader contract '" +
+                    std::string{
+                        materialShaderContractName(
+                            material.shader_contract)} +
+                    "')");
+            }
+
+            const auto candidate_schema =
+                bindings.front().output_schema;
+            auto candidate_rendering =
+                resolveMaterialPassRenderingBinding(
+                    bindings.front(),
+                    material.shader_contract);
+            for (std::size_t index = 1;
+                 index < bindings.size(); ++index) {
+                if (bindings[index].output_schema !=
+                    candidate_schema) {
+                    throw std::runtime_error(
+                        "material route resolves to different "
+                        "output schemas across render graph "
+                        "variants: " +
+                        bindings.front().pass_name + " and " +
+                        bindings[index].pass_name);
+                }
+                const auto rendering =
+                    resolveMaterialPassRenderingBinding(
+                        bindings[index],
+                        material.shader_contract);
+                if (rendering !=
+                    candidate_rendering) {
+                    throw std::runtime_error(
+                        "material route resolves to "
+                        "pipeline-incompatible physical rendering "
+                        "contracts: " +
+                        bindings.front().pass_name + " and " +
+                        bindings[index].pass_name);
+                }
+            }
+
+            std::vector<MaterialPassShaderInputRequest>
+                requested_inputs;
+            requested_inputs.reserve(
+                material.declared_screen_inputs.size() +
+                material.declared_resource_ports.size());
+            for (const auto &input :
+                 material.declared_screen_inputs) {
+                requested_inputs.push_back({
+                    .kind =
+                        MaterialPassShaderInputKind::
+                            screen_input,
+                    .name = input.name,
+                });
+            }
+            std::vector<std::size_t>
+                image_resource_indices;
+            for (std::size_t index = 0;
+                 index <
+                 material.declared_resource_ports.size();
+                 ++index) {
+                const auto &resource =
+                    material
+                        .declared_resource_ports[index];
+                if (resource.kind !=
+                    SurfaceResourcePortKind::image) {
+                    continue;
+                }
+                requested_inputs.push_back({
+                    .kind =
+                        MaterialPassShaderInputKind::
+                            material_resource,
+                    .name = resource.name,
+                });
+                image_resource_indices.push_back(index);
+            }
+            const auto physical_inputs =
+                resolveGenerationShaderInputs(
+                    bindings, requested_inputs);
+
+            std::vector<std::string>
+                current_physical_defines;
+            std::vector<std::string>
+                candidate_physical_defines;
+            auto candidate_pass_inputs =
+                material.pass_inputs;
+            for (std::size_t index = 0;
+                 index <
+                 material.declared_screen_inputs.size();
+                 ++index) {
+                const auto &declared =
+                    material.declared_screen_inputs[index];
+                const auto current = std::find_if(
+                    material.pass_inputs.begin(),
+                    material.pass_inputs.end(),
+                    [&](const auto &input) {
+                        return input.contract.name ==
+                               declared.name;
+                    });
+                const auto candidate = std::find_if(
+                    candidate_pass_inputs.begin(),
+                    candidate_pass_inputs.end(),
+                    [&](const auto &input) {
+                        return input.contract.name ==
+                               declared.name;
+                    });
+                if (current ==
+                        material.pass_inputs.end() ||
+                    candidate ==
+                        candidate_pass_inputs.end()) {
+                    throw std::runtime_error(
+                        "live material screen-input metadata is "
+                        "incomplete for '" +
+                        declared.name + "'");
+                }
+                if (current
+                        ->input_attachment_index) {
+                    current_physical_defines.push_back(
+                        makeSurfaceScreenInputLocalReadDefine(
+                            index,
+                            *current
+                                 ->input_attachment_index));
+                }
+                const auto attachment =
+                    physical_inputs.at(index)
+                        .input_attachment_index;
+                candidate->descriptor_type =
+                    attachment
+                        ? vk::DescriptorType::
+                              eInputAttachment
+                        : vk::DescriptorType::
+                              eCombinedImageSampler;
+                candidate->input_attachment_index =
+                    attachment;
+                if (attachment) {
+                    candidate_physical_defines.push_back(
+                        makeSurfaceScreenInputLocalReadDefine(
+                            index, *attachment));
+                }
+            }
+
+            auto candidate_resource_interface =
+                material.resource_interface;
+            for (std::size_t position = 0;
+                 position <
+                 image_resource_indices.size();
+                 ++position) {
+                const auto resource_index =
+                    image_resource_indices[position];
+                const auto &declared =
+                    material.declared_resource_ports
+                        [resource_index];
+                const auto current = std::find_if(
+                    material.resource_interface.begin(),
+                    material.resource_interface.end(),
+                    [&](const auto &resource) {
+                        return resource.port.name ==
+                               declared.name;
+                    });
+                const auto candidate = std::find_if(
+                    candidate_resource_interface.begin(),
+                    candidate_resource_interface.end(),
+                    [&](const auto &resource) {
+                        return resource.port.name ==
+                               declared.name;
+                    });
+                if (current ==
+                        material.resource_interface.end() ||
+                    candidate ==
+                        candidate_resource_interface.end()) {
+                    throw std::runtime_error(
+                        "live material resource metadata is "
+                        "incomplete for '" +
+                        declared.name + "'");
+                }
+                if (current
+                        ->input_attachment_index) {
+                    current_physical_defines.push_back(
+                        makeSurfaceResourceLocalReadDefine(
+                            resource_index,
+                            *current
+                                 ->input_attachment_index));
+                }
+                const auto attachment =
+                    physical_inputs
+                        .at(
+                            material
+                                .declared_screen_inputs
+                                .size() +
+                            position)
+                        .input_attachment_index;
+                candidate->descriptor =
+                    attachment
+                        ? ShaderResourceDescriptorKind::
+                              input_attachment
+                        : ShaderResourceDescriptorKind::
+                              combined_image_sampler;
+                candidate->input_attachment_index =
+                    attachment;
+                if (attachment) {
+                    candidate_physical_defines.push_back(
+                        makeSurfaceResourceLocalReadDefine(
+                            resource_index,
+                            *attachment));
+                }
+            }
+
+            auto pipeline_desc =
+                pipeline_factory.graphicsDesc(
+                    material.pipeline);
+            if (!pipeline_desc.frag) {
+                throw std::logic_error(
+                    "material pipeline has no fragment shader");
+            }
+            if (candidate_schema !=
+                    material.output_schema ||
+                candidate_physical_defines !=
+                    current_physical_defines) {
+                append_shader_override({
+                    .fragment =
+                        *pipeline_desc.frag,
+                    .physical_defines =
+                        std::move(
+                            candidate_physical_defines),
+                    .material_output_schema =
+                        candidate_schema,
+                });
+            }
+
+            MaterialInfo validation_info;
+            validation_info.output_schema =
+                candidate_schema;
+            validation_info.render_state =
+                material.render_state;
+            validation_info.vat = material.vat;
+            validation_info.custom_textures.resize(
+                material
+                    .custom_sampler_resolutions
+                    .size());
+            validateMaterialCapabilities(
+                validation_info,
+                candidate_rendering);
+
+            auto candidate_pipeline_desc =
+                pipeline_desc;
+            candidate_pipeline_desc.color_formats =
+                candidate_rendering.color_formats;
+            candidate_pipeline_desc.depth_format =
+                candidate_rendering.depth_format;
+            candidate_pipeline_desc
+                .rasterization_samples =
+                candidate_rendering
+                    .rasterization_samples;
+            candidate_pipeline_desc.local_read =
+                candidate_rendering.local_read;
+            candidate_pipeline_desc.resource_interface =
+                candidate_resource_interface;
+            candidate_pipeline_desc
+                .color_attachment_states =
+                candidate_rendering
+                        .output_states.empty()
+                    ? std::vector<
+                          GraphicsPipelineColorAttachmentState>{}
+                    : resolveMaterialColorAttachmentStates(
+                          validation_info,
+                          candidate_rendering);
+            if (candidate_pipeline_desc !=
+                pipeline_desc) {
+                append_pipeline_override({
+                    .handle = material.pipeline,
+                    .desc = std::move(
+                        candidate_pipeline_desc),
+                });
+            }
+
+            const MaterialPipelineRenderingContract live{
+                .color_formats =
+                    material.pipeline_color_formats,
+                .depth_format =
+                    material.pipeline_depth_format,
+                .rasterization_samples =
+                    material
+                        .pipeline_rasterization_samples,
+                .local_read =
+                    material.pipeline_local_read,
+                .output_states =
+                    material.pipeline_output_states,
+            };
+            const auto descriptor_abi_changed =
+                candidate_pass_inputs !=
+                    material.pass_inputs ||
+                candidate_resource_interface !=
+                    material.resource_interface;
+            if (candidate_schema !=
+                    material.output_schema ||
+                candidate_rendering != live ||
+                descriptor_abi_changed) {
+                metadata_updates.push_back({
+                    .material = material_id,
+                    .output_schema =
+                        candidate_schema,
+                    .rendering =
+                        std::move(
+                            candidate_rendering),
+                    .pass_inputs =
+                        std::move(
+                            candidate_pass_inputs),
+                    .resource_interface =
+                        std::move(
+                            candidate_resource_interface),
+                    .descriptor_abi_changed =
+                        descriptor_abi_changed,
+                });
+            }
+        });
+
+    const auto overridden_pipelines =
+        plan.pipeline_overrides;
+    plan.commit =
+        [this,
+         updates = std::move(metadata_updates),
+         overridden_pipelines]() mutable {
+            const auto descriptor_abi_changed =
+                std::any_of(
+                    updates.begin(), updates.end(),
+                    [](const auto &update) {
+                        return update
+                            .descriptor_abi_changed;
+                    });
+            if (descriptor_abi_changed) {
+                GET_MODULE(VulkanManageCore)
+                    .waitIdle();
+            }
+            for (auto &update : updates) {
+                auto &material =
+                    materials.get(update.material);
+                material.output_schema =
+                    std::move(
+                        update.output_schema);
+                material.pipeline_color_formats =
+                    std::move(
+                        update.rendering
+                            .color_formats);
+                material.pipeline_depth_format =
+                    update.rendering.depth_format;
+                material
+                    .pipeline_rasterization_samples =
+                    update.rendering
+                        .rasterization_samples;
+                material.pipeline_local_read =
+                    std::move(
+                        update.rendering.local_read);
+                material.pipeline_output_states =
+                    std::move(
+                        update.rendering
+                            .output_states);
+                material.pass_inputs =
+                    std::move(update.pass_inputs);
+                material.resource_interface =
+                    std::move(
+                        update.resource_interface);
+                if (update.descriptor_abi_changed) {
+                    material
+                        .screen_input_descriptors
+                        .clear();
+                    ++material.descriptor_revision;
+                }
+            }
+            std::erase_if(
+                pipelines,
+                [&](const auto &entry) {
+                    return std::any_of(
+                        overridden_pipelines.begin(),
+                        overridden_pipelines.end(),
+                        [&](const auto &override) {
+                            return entry.second ==
+                                   override.handle;
+                        });
+                });
+        };
+    return plan;
 }
 
 bool MaterialContainer::isRenderRequired(const PassDefinition &pass,

@@ -11,6 +11,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -103,6 +104,9 @@ struct GraphicsPipelineDesc {
     // their reflected ABI here so every hot-reload rebuild revalidates it.
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;
+
+    bool operator==(
+        const GraphicsPipelineDesc &) const = default;
 };
 
 struct ComputePipelineDesc {
@@ -113,6 +117,11 @@ struct ComputePipelineDesc {
 };
 
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);
+
+struct GraphicsPipelineReloadOverride {
+    PipelineHandle handle;
+    GraphicsPipelineDesc desc;
+};
 
 struct PipelineRebuildResult {
     size_t dirty_shaders = 0;
@@ -182,13 +191,17 @@ DECLARE_MODULE(PipelineFactory) {
     vk::DescriptorSetLayout descriptorSetLayout(PipelineHandle handle, uint32_t set) const;
     vk::DescriptorSetLayout frameDescriptorSetLayout();
     const ShaderReflection &reflection(PipelineHandle handle) const;
+    GraphicsPipelineDesc graphicsDesc(
+        PipelineHandle handle) const;
 
     // Builds every dependent pipeline while prepared shader bundles are only
     // temporarily visible. Publication happens once, after all candidates and
     // the optional cross-domain callback have succeeded.
     PipelineRebuildResult rebuildPrepared(
         PreparedShaderReload prepared,
-        const std::function<void()> &before_publish = {});
+        const std::function<void()> &before_publish = {},
+        std::span<const GraphicsPipelineReloadOverride>
+            graphics_overrides = {});
     PipelineRebuildResult rebuildDirty();
 
     RegistrationCheckpoint checkpointRegistrations() const;

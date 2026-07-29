@@ -111,6 +111,14 @@ void appendPathUnique(std::vector<std::filesystem::path> &paths,
     }
 }
 
+bool isCompilerOwnedSurfaceDefine(
+    std::string_view define) {
+    return define.starts_with(
+               surfaceScreenInputLocalReadDefinePrefix) ||
+           define.starts_with(
+               surfaceResourceLocalReadDefinePrefix);
+}
+
 } // namespace
 
 std::vector<ShaderBundleId> PreparedShaderReload::affectedBundleIds() const {
@@ -202,7 +210,9 @@ void ShaderLibrary::registerSurfaceReloadUnit(
     watch::AssetKey source, std::string source_name, SurfacePass pass,
     std::vector<std::string> defines,
     std::optional<MaterialOutputSchema>
-        material_output_schema) {
+        material_output_schema,
+    std::optional<SurfaceFormatDocument>
+        embedded_surface) {
     auto dependencies = logicalDependencies(vertex_bundle, source);
     auto fragment_dependencies = logicalDependencies(fragment_bundle, source);
     dependencies.insert(dependencies.end(), fragment_dependencies.begin(),
@@ -213,7 +223,8 @@ void ShaderLibrary::registerSurfaceReloadUnit(
     ReloadUnit unit{
         SurfaceReloadRecipe{std::move(path), source, std::move(source_name), pass,
                             std::move(defines),
-                            std::move(material_output_schema)},
+                            std::move(material_output_schema),
+                            std::move(embedded_surface)},
         {ids.vertex, ids.fragment},
         source,
         std::move(dependencies),
@@ -551,6 +562,18 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
                                   std::string{source_name}, pass,
                                   requested_defines,
                                   requested_output_schema);
+    } else {
+        // A generated surface cannot be file-triggered, but it remains a
+        // compiler input and must participate when the graph changes the
+        // strategy-private material ABI.
+        registerSurfaceReloadUnit(
+            ids, bundles.get(vertex),
+            bundles.get(fragment), {},
+            watch::AssetKey{
+                .path = std::string{source_name}},
+            std::string{source_name}, pass,
+            requested_defines,
+            requested_output_schema, surface);
     }
     return ids;
 #else
@@ -567,7 +590,9 @@ const ShaderBundle &ShaderLibrary::get(ShaderBundleId id) const { return bundles
 
 PreparedShaderReload
 ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
-                            std::vector<watch::AssetKey> changed_keys) const {
+                            std::vector<watch::AssetKey> changed_keys,
+                            std::span<const SurfaceShaderReloadOverride>
+                                surface_overrides) const {
     PreparedShaderReload prepared;
     prepared.changed_keys = std::move(changed_keys);
     std::ranges::sort(prepared.changed_keys);
@@ -604,22 +629,77 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
         if (unit.bundle_ids.size() != 2) {
             throw std::runtime_error("surface shader reload unit is malformed");
         }
+        const auto fragment_id = unit.bundle_ids[1];
+        const auto override = std::find_if(
+            surface_overrides.begin(),
+            surface_overrides.end(),
+            [fragment_id](const auto &candidate) {
+                return candidate.fragment == fragment_id;
+            });
+        auto effective_defines =
+            surface_recipe.defines;
+        auto effective_output_schema =
+            surface_recipe.material_output_schema;
+        if (override != surface_overrides.end()) {
+            std::erase_if(
+                effective_defines,
+                [](const auto &define) {
+                    return isCompilerOwnedSurfaceDefine(
+                        define);
+                });
+            for (const auto &define :
+                 override->physical_defines) {
+                if (std::find(
+                        effective_defines.begin(),
+                        effective_defines.end(),
+                        define) ==
+                    effective_defines.end()) {
+                    effective_defines.push_back(
+                        define);
+                }
+            }
+            effective_output_schema =
+                override->material_output_schema;
+            prepared.surface_recipe_updates.push_back({
+                .reload_unit = unit_index,
+                .defines = effective_defines,
+                .material_output_schema =
+                    effective_output_schema,
+            });
+        }
         auto surface = prepared.surface_documents.find(surface_recipe.source);
         if (surface == prepared.surface_documents.end()) {
-            const auto source = readBinaryFile(surface_recipe.path.string());
-            surface = prepared.surface_documents
-                          .emplace(surface_recipe.source,
-                                   parseSurfaceFormat(source, surface_recipe.source_name))
-                          .first;
+            if (surface_recipe.embedded_surface) {
+                surface =
+                    prepared.surface_documents
+                        .emplace(
+                            surface_recipe.source,
+                            *surface_recipe
+                                 .embedded_surface)
+                        .first;
+            } else {
+                const auto source =
+                    readBinaryFile(
+                        surface_recipe.path.string());
+                surface =
+                    prepared.surface_documents
+                        .emplace(
+                            surface_recipe.source,
+                            parseSurfaceFormat(
+                                source,
+                                surface_recipe
+                                    .source_name))
+                        .first;
+            }
         }
         const auto composition = composeSurfaceShaders(
             surface->second, surface_recipe.source_name, surface_recipe.pass,
-            surface_recipe.defines,
-            surface_recipe.material_output_schema);
+            effective_defines,
+            effective_output_schema);
         const auto compiled = compileSurfaceShaders(
             compiler, surface->second, surface_recipe.source_name,
-            surface_recipe.pass, surface_recipe.defines,
-            surface_recipe.material_output_schema);
+            surface_recipe.pass, effective_defines,
+            effective_output_schema);
         if (!compiled.vertex.ok || !compiled.fragment.ok) {
             std::ostringstream message;
             message << "Surface shader compile failed: " << surface_recipe.source_name
@@ -630,7 +710,6 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
         }
 
         const auto vertex_id = unit.bundle_ids[0];
-        const auto fragment_id = unit.bundle_ids[1];
         auto vertex = buildFromSpirv(
             compiled.vertex.spirv, surface_recipe.path,
             bundles.get(vertex_id).version + 1,
@@ -650,14 +729,14 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
             surface_recipe.source_name + "#" +
                 std::string{surfacePassName(surface_recipe.pass)} + ".frag",
             composition.defines);
-        if (surface_recipe.material_output_schema) {
+        if (effective_output_schema) {
             validateFragmentOutputSchema(
                 fragment.reflection,
-                *surface_recipe.material_output_schema,
+                *effective_output_schema,
                 surface_recipe.source_name +
                     "#reload.frag");
             fragment.material_output_schema =
-                surface_recipe.material_output_schema;
+                effective_output_schema;
         }
         fragment.binding_table = compiled.fragment_bindings;
         fragment.cache_key = compiled.fragment_cache_key.empty()
@@ -682,16 +761,9 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
             defines.push_back(std::move(define));
         }
     }
-    const auto reserved_physical_define =
-        [](std::string_view define) {
-            return define.starts_with(
-                       surfaceScreenInputLocalReadDefinePrefix) ||
-                   define.starts_with(
-                       surfaceResourceLocalReadDefinePrefix);
-        };
     if (std::any_of(
             defines.begin(), defines.end(),
-            reserved_physical_define)) {
+            isCompilerOwnedSurfaceDefine)) {
         throw std::runtime_error(
             "material defines cannot override the compiler-owned "
             "local-read shader ABI");
@@ -780,13 +852,54 @@ bool ShaderLibrary::handlesReload(const watch::AssetKey &key) const {
 
 PreparedShaderReload
 ShaderLibrary::prepareReload(std::span<const watch::AssetKey> changed_keys) const {
+    return prepareReload(changed_keys, {});
+}
+
+PreparedShaderReload ShaderLibrary::prepareReload(
+    std::span<const watch::AssetKey> changed_keys,
+    std::span<const SurfaceShaderReloadOverride>
+        surface_overrides) const {
     std::set<std::size_t> units;
     for (const auto &key : changed_keys) {
         const auto found = units_by_dependency.find(key);
         if (found == units_by_dependency.end()) continue;
         units.insert(found->second.begin(), found->second.end());
     }
-    return prepareUnits(units, {changed_keys.begin(), changed_keys.end()});
+    std::vector<watch::AssetKey> effective_changed{
+        changed_keys.begin(), changed_keys.end()};
+    std::set<ShaderBundleId> override_fragments;
+    for (const auto &override : surface_overrides) {
+        if (!override_fragments.insert(
+                override.fragment).second) {
+            throw std::runtime_error(
+                "surface shader reload override is duplicated");
+        }
+        const auto found =
+            unit_by_bundle.find(override.fragment);
+        if (found == unit_by_bundle.end()) {
+            throw std::runtime_error(
+                "material shader requires a graph-coordinated "
+                "recompile but has no retained surface compiler "
+                "recipe");
+        }
+        const auto unit_index = found->second;
+        const auto &unit = reload_units.at(unit_index);
+        if (unit.bundle_ids.size() != 2 ||
+            unit.bundle_ids[1] !=
+                override.fragment ||
+            !std::holds_alternative<
+                SurfaceReloadRecipe>(unit.recipe)) {
+            throw std::runtime_error(
+                "surface shader reload override does not "
+                "identify a fragment reload unit");
+        }
+        units.insert(unit_index);
+        effective_changed.push_back(
+            unit.primary_source);
+    }
+    return prepareUnits(
+        units, std::move(effective_changed),
+        surface_overrides);
 }
 
 PreparedShaderReload ShaderLibrary::prepareReloadAll() const {
@@ -807,6 +920,25 @@ void ShaderLibrary::activatePrepared(PreparedShaderReload &prepared) {
 }
 
 void ShaderLibrary::finalizePrepared(const PreparedShaderReload &prepared) {
+    for (const auto &update :
+         prepared.surface_recipe_updates) {
+        if (update.reload_unit >=
+            reload_units.size()) {
+            throw std::runtime_error(
+                "prepared surface shader recipe is stale");
+        }
+        auto *recipe = std::get_if<
+            SurfaceReloadRecipe>(
+            &reload_units[update.reload_unit]
+                 .recipe);
+        if (recipe == nullptr) {
+            throw std::runtime_error(
+                "prepared surface shader recipe changed kind");
+        }
+        recipe->defines = update.defines;
+        recipe->material_output_schema =
+            update.material_output_schema;
+    }
     std::set<std::size_t> affected_units;
     for (const auto &candidate : prepared.candidates) {
         affected_units.insert(candidate.reload_unit);
