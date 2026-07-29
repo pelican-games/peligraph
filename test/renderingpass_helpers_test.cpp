@@ -3611,7 +3611,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "view-family scheduler binds secondary families without repeating them per main view",
+    "view-family scheduler expands secondary families without repeating them per main view",
     "[renderingpass][view-execution][schedule][secondary-family]") {
     const std::vector<FrameGraphExecutionNode> nodes{
         {
@@ -3647,24 +3647,48 @@ TEST_CASE(
             mainRenderViewFamilyId, 2},
         LogicalFrameViewFamilyCardinality{
             directionalShadowRenderViewFamilyId,
-            1},
+            3},
     };
 
     const auto schedule =
         buildLogicalFrameViewFamilySchedule(
             nodes, plan, families);
-    REQUIRE(schedule.size() == 3);
+    REQUIRE(schedule.size() == 5);
+    for (std::uint32_t cascade = 0;
+         cascade < 3; ++cascade) {
+        INFO("cascade " << cascade);
+        REQUIRE(
+            schedule[cascade].view_family ==
+            "$shadow/directional");
+        REQUIRE(
+            schedule[cascade].execution ==
+            VulkanScopeViewExecution::sequential);
+        REQUIRE(
+            schedule[cascade].logical_view_count ==
+            3);
+        REQUIRE(
+            schedule[cascade].view_index ==
+            cascade);
+        REQUIRE(
+            schedule[cascade].execution_index ==
+            cascade);
+        REQUIRE(
+            schedule[cascade].execution_count ==
+            3);
+    }
+    REQUIRE(schedule[0].firstExecution());
+    REQUIRE_FALSE(schedule[0].lastExecution());
+    REQUIRE_FALSE(schedule[1].firstExecution());
+    REQUIRE_FALSE(schedule[1].lastExecution());
+    REQUIRE_FALSE(schedule[2].firstExecution());
+    REQUIRE(schedule[2].lastExecution());
     REQUIRE(
-        schedule[0].view_family ==
-        "$shadow/directional");
-    REQUIRE(
-        schedule[0].logical_view_count ==
-        1);
-    REQUIRE(
-        schedule[1].view_family ==
+        schedule[3].view_family ==
         "$main");
     REQUIRE(
-        schedule[2].view_index == 1);
+        schedule[3].view_index == 0);
+    REQUIRE(
+        schedule[4].view_index == 1);
 
     const auto first_view =
         selectLogicalFrameSequentialViewSchedule(
@@ -3672,10 +3696,15 @@ TEST_CASE(
     const auto second_view =
         selectLogicalFrameSequentialViewSchedule(
             schedule, 1, 2);
-    REQUIRE(first_view.size() == 2);
+    REQUIRE(first_view.size() == 4);
     REQUIRE(
         first_view.front().view_family ==
         "$shadow/directional");
+    REQUIRE(
+        first_view[2].view_index == 2);
+    REQUIRE(
+        first_view.back().view_family ==
+        "$main");
     REQUIRE(second_view.size() == 1);
     REQUIRE(
         second_view.front().view_family ==
@@ -3704,6 +3733,17 @@ TEST_CASE(
             nodes, mixed, families),
         Catch::Matchers::ContainsSubstring(
             "mixes view families"));
+
+    auto non_template = plan;
+    non_template.scopes.front().view_execution =
+        VulkanScopeViewExecution::sequential;
+    non_template.scopes.front().view_count = 3;
+    non_template.scopes.front().execution_count = 3;
+    REQUIRE_THROWS_WITH(
+        buildLogicalFrameViewFamilySchedule(
+            nodes, non_template, families),
+        Catch::Matchers::ContainsSubstring(
+            "must be a single-view template"));
 }
 
 TEST_CASE(

@@ -172,6 +172,9 @@ buildLogicalFrameViewFamilySchedule(
     struct ScopeFamily {
         std::string_view family_id;
         std::uint32_t view_count = 1;
+        VulkanScopeViewExecution execution =
+            VulkanScopeViewExecution::single_view;
+        std::uint32_t execution_count = 1;
     };
     std::vector<ScopeFamily> scope_families;
     scope_families.reserve(
@@ -219,45 +222,64 @@ buildLogicalFrameViewFamilySchedule(
         const bool main_scope =
             *scope_family_id ==
             mainRenderViewFamilyId;
-        if (!main_scope &&
-            (family->second != 1 ||
-             scope.view_execution !=
-                 VulkanScopeViewExecution::single_view)) {
-            throw std::runtime_error(
-                "secondary view family '" +
-                std::string{*scope_family_id} +
-                "' currently requires one single-view scope");
-        }
         const auto scope_logical_view_count =
             main_scope
                 ? logical_view_count
                 : family->second;
-        const auto expected_execution_count =
-            scope.view_execution ==
-                    VulkanScopeViewExecution::sequential
-                ? scope_logical_view_count
-                : 1u;
-        const auto expected_view_count =
-            scope.view_execution ==
-                    VulkanScopeViewExecution::single_view
-                ? 1u
-                : scope_logical_view_count;
-        if (scope.execution_count !=
-                expected_execution_count ||
-            scope.view_count != expected_view_count ||
-            (scope.view_execution ==
-                     VulkanScopeViewExecution::multiview
-                 ? scope.view_mask == 0
-                 : scope.view_mask != 0)) {
-            throw std::runtime_error(
-                "physical scope has an inconsistent view-execution "
-                "contract: " +
-                scope.id);
+        VulkanScopeViewExecution execution =
+            scope.view_execution;
+        std::uint32_t execution_count = 1;
+        if (main_scope) {
+            execution_count =
+                scope.view_execution ==
+                        VulkanScopeViewExecution::sequential
+                    ? scope_logical_view_count
+                    : 1u;
+            const auto expected_view_count =
+                scope.view_execution ==
+                        VulkanScopeViewExecution::single_view
+                    ? 1u
+                    : scope_logical_view_count;
+            if (scope.execution_count !=
+                    execution_count ||
+                scope.view_count != expected_view_count ||
+                (scope.view_execution ==
+                         VulkanScopeViewExecution::multiview
+                     ? scope.view_mask == 0
+                     : scope.view_mask != 0)) {
+                throw std::runtime_error(
+                    "physical scope has an inconsistent view-execution "
+                    "contract: " +
+                    scope.id);
+            }
+        } else {
+            // A secondary-family physical scope describes one scalar
+            // rendering instance. Runtime family cardinality expands that
+            // template sequentially, so the target compiler does not need to
+            // know how many shadow/reflection views a provider will supply.
+            if (scope.view_execution !=
+                    VulkanScopeViewExecution::single_view ||
+                scope.view_count != 1 ||
+                scope.execution_count != 1 ||
+                scope.view_mask != 0) {
+                throw std::runtime_error(
+                    "secondary view-family physical scope must be a "
+                    "single-view template: " +
+                    scope.id);
+            }
+            if (scope_logical_view_count > 1) {
+                execution =
+                    VulkanScopeViewExecution::sequential;
+                execution_count =
+                    scope_logical_view_count;
+            }
         }
         scope_families.push_back(
             ScopeFamily{
                 *scope_family_id,
-                scope_logical_view_count});
+                scope_logical_view_count,
+                execution,
+                execution_count});
         for (const auto &node : scope.nodes) {
             if (!scope_by_node.emplace(node, scope_index).second) {
                 throw std::runtime_error(
@@ -298,10 +320,7 @@ buildLogicalFrameViewFamilySchedule(
             scope_nodes.push_back(found->second);
         }
         const auto execution_count =
-            scope.view_execution ==
-                    VulkanScopeViewExecution::sequential
-                ? scope_family.view_count
-                : 1u;
+            scope_family.execution_count;
         for (std::uint32_t execution_index = 0;
              execution_index < execution_count;
              ++execution_index) {
@@ -319,12 +338,12 @@ buildLogicalFrameViewFamilySchedule(
                         .scope_node_count =
                             scope_nodes.size(),
                         .execution =
-                            scope.view_execution,
+                            scope_family.execution,
                         .logical_view_count =
                             scope_family
                                 .view_count,
                         .view_index =
-                            scope.view_execution ==
+                            scope_family.execution ==
                                     VulkanScopeViewExecution::
                                         sequential
                                 ? execution_index
