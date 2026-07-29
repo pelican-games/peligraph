@@ -73,16 +73,25 @@ std::vector<std::byte> packFrameResolutionViews(
 }
 
 FrameResources::FrameResources() : device{GET_MODULE(VulkanManageCore).getDevice()} {
-    configureViewCount(1);
+    configureViewCount(1, 1);
 }
 
 FrameResources::~FrameResources() = default;
 
-void FrameResources::configureViewCount(std::uint32_t count) {
+void FrameResources::configureViewCount(
+    std::uint32_t count,
+    std::uint32_t sequential_count) {
     if (count == 0) {
         throw std::runtime_error("FrameResources requires at least one view");
     }
-    if (view_count == count) {
+    if (sequential_count < count) {
+        throw std::runtime_error(
+            "FrameResources sequential view capacity cannot be smaller "
+            "than the main view count");
+    }
+    if (view_count == count &&
+        sequential_view_count ==
+            sequential_count) {
         return;
     }
 
@@ -94,7 +103,7 @@ void FrameResources::configureViewCount(std::uint32_t count) {
     const auto sequential_slot_count =
         static_cast<std::uint32_t>(
             in_flight_frames_num) *
-        count;
+        sequential_count;
     const auto multiview_slot_count =
         count > 1
             ? static_cast<std::uint32_t>(
@@ -130,8 +139,10 @@ void FrameResources::configureViewCount(std::uint32_t count) {
                     eHostAccessSequentialWrite);
         frame_slot.descriptor_set = std::move(descriptor_sets[slot]);
 
-        const auto frame_index = slot / count;
-        const auto view_index = slot % count;
+        const auto frame_index =
+            slot / sequential_count;
+        const auto view_index =
+            slot % sequential_count;
         const auto base = "frame/in_flight/" + std::to_string(frame_index) +
                           "/view/" + std::to_string(view_index);
         const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
@@ -249,6 +260,8 @@ void FrameResources::configureViewCount(std::uint32_t count) {
     }
 
     view_count = count;
+    sequential_view_count =
+        sequential_count;
     active_slot = 0;
     active_multiview_slot = false;
     updateSceneDescriptors();
@@ -303,18 +316,45 @@ void FrameResources::setSceneBuffers(const BufferWrapper &objects,
 }
 
 void FrameResources::beginLogicalFrame(std::uint32_t count) {
-    configureViewCount(count);
+    beginLogicalFrame(count, count);
+}
+
+void FrameResources::beginLogicalFrame(
+    std::uint32_t main_view_count,
+    std::uint32_t sequential_count) {
+    configureViewCount(
+        main_view_count,
+        sequential_count);
 }
 
 void FrameResources::selectView(std::uint32_t in_flight_frame_index,
                                 std::uint32_t view_index) {
-    if (in_flight_frame_index >= in_flight_frames_num) {
-        throw std::runtime_error("FrameResources in-flight frame index is out of range");
-    }
     if (view_index >= view_count) {
         throw std::runtime_error("FrameResources view index is out of range");
     }
-    active_slot = static_cast<std::size_t>(in_flight_frame_index) * view_count + view_index;
+    selectSequentialView(
+        in_flight_frame_index,
+        view_index);
+}
+
+void FrameResources::selectSequentialView(
+    std::uint32_t in_flight_frame_index,
+    std::uint32_t sequential_view_index) {
+    if (in_flight_frame_index >=
+        in_flight_frames_num) {
+        throw std::runtime_error(
+            "FrameResources in-flight frame index is out of range");
+    }
+    if (sequential_view_index >=
+        sequential_view_count) {
+        throw std::runtime_error(
+            "FrameResources sequential view index is out of range");
+    }
+    active_slot =
+        static_cast<std::size_t>(
+            in_flight_frame_index) *
+            sequential_view_count +
+        sequential_view_index;
     active_multiview_slot = false;
 }
 
@@ -429,19 +469,29 @@ void FrameResources::bindCompute(
 
 vk::Buffer FrameResources::slotBufferForTesting(std::uint32_t in_flight_frame_index,
                                                 std::uint32_t view_index) const {
-    if (in_flight_frame_index >= in_flight_frames_num || view_index >= view_count) {
+    if (in_flight_frame_index >= in_flight_frames_num ||
+        view_index >= sequential_view_count) {
         throw std::out_of_range("FrameResources testing slot is out of range");
     }
-    const auto slot = static_cast<std::size_t>(in_flight_frame_index) * view_count + view_index;
+    const auto slot =
+        static_cast<std::size_t>(
+            in_flight_frame_index) *
+            sequential_view_count +
+        view_index;
     return frame_slots.at(slot).frame_buffer.buffer.get();
 }
 
 const FrameUniformData &FrameResources::slotDataForTesting(
     std::uint32_t in_flight_frame_index, std::uint32_t view_index) const {
-    if (in_flight_frame_index >= in_flight_frames_num || view_index >= view_count) {
+    if (in_flight_frame_index >= in_flight_frames_num ||
+        view_index >= sequential_view_count) {
         throw std::out_of_range("FrameResources testing slot is out of range");
     }
-    const auto slot = static_cast<std::size_t>(in_flight_frame_index) * view_count + view_index;
+    const auto slot =
+        static_cast<std::size_t>(
+            in_flight_frame_index) *
+            sequential_view_count +
+        view_index;
     return frame_slots.at(slot).last_data;
 }
 
@@ -450,14 +500,14 @@ FrameResources::slotResolutionForTesting(
     std::uint32_t in_flight_frame_index,
     std::uint32_t view_index) const {
     if (in_flight_frame_index >= in_flight_frames_num ||
-        view_index >= view_count) {
+        view_index >= sequential_view_count) {
         throw std::out_of_range(
             "FrameResources testing resolution slot is out of range");
     }
     const auto slot =
         static_cast<std::size_t>(
             in_flight_frame_index) *
-            view_count +
+            sequential_view_count +
         view_index;
     return frame_slots.at(slot).last_resolution;
 }

@@ -94,10 +94,13 @@ DECLARE_MODULE(FrameResources) {
     vk::Buffer previous_object_buffer;
     vk::Buffer light_buffer;
     std::uint32_t view_count = 0;
+    std::uint32_t sequential_view_count = 0;
     std::size_t active_slot = 0;
     bool active_multiview_slot = false;
 
-    void configureViewCount(std::uint32_t count);
+    void configureViewCount(
+        std::uint32_t count,
+        std::uint32_t sequential_count);
     void updateSceneDescriptors();
 
   public:
@@ -107,7 +110,13 @@ DECLARE_MODULE(FrameResources) {
     void setSceneBuffers(const BufferWrapper &objects, const BufferWrapper &previous_objects,
                          const BufferWrapper &lights);
     void beginLogicalFrame(std::uint32_t count);
+    void beginLogicalFrame(
+        std::uint32_t main_view_count,
+        std::uint32_t sequential_count);
     void selectView(std::uint32_t in_flight_frame_index, std::uint32_t view_index);
+    void selectSequentialView(
+        std::uint32_t in_flight_frame_index,
+        std::uint32_t sequential_view_index);
     void selectMultiview(
         std::uint32_t in_flight_frame_index);
     void update(const FrameUniformData &data);
@@ -122,6 +131,9 @@ DECLARE_MODULE(FrameResources) {
                      vk::PipelineLayout pipeline_layout) const;
 
     std::uint32_t viewCountForTesting() const { return view_count; }
+    std::uint32_t sequentialViewCountForTesting() const {
+        return sequential_view_count;
+    }
     std::size_t slotCountForTesting() const { return frame_slots.size(); }
     vk::Buffer slotBufferForTesting(std::uint32_t in_flight_frame_index,
                                     std::uint32_t view_index) const;

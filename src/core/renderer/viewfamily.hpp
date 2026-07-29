@@ -30,15 +30,30 @@ struct RenderViewParameters {
     std::string view_id;
 };
 
-// The logical unit supplied to one graph execution. A render graph normally
-// consumes $main; later passes may name shadow, reflection, or capture
-// families without extending Camera or the Vulkan execution path.
+// One provider-owned family. RenderViewFamilies supplies the set consumed by
+// a graph execution: $main plus any shadow, reflection, or capture families.
 struct RenderViewFamily {
     std::string family_id{mainRenderViewFamilyId};
     std::vector<RenderViewParameters> views;
 };
 
 RenderViewFamily makeMainRenderViewFamily(RenderViewParameters view);
+
+struct RenderViewFamilies {
+    std::vector<RenderViewFamily> families;
+
+    const RenderViewFamily *find(
+        std::string_view family_id) const noexcept;
+    const RenderViewFamily &require(
+        std::string_view family_id) const;
+};
+
+RenderViewFamilies makeMainRenderViewFamilies(
+    RenderViewFamily main_family);
+
+void validateRenderViewFamilies(
+    const RenderViewFamilies &families,
+    const CompiledGraphVariantPolicy &policy);
 
 void validateRenderViewFamily(
     const RenderViewFamily &family,

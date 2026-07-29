@@ -11,10 +11,9 @@ namespace {
 
 std::set<std::string, std::less<>> validatedViewIds(
     const RenderViewFamily &family) {
-    if (family.family_id.empty()) {
-        throw std::runtime_error(
-            "render view family requires a non-empty family_id");
-    }
+    validateRenderViewFamilyId(
+        family.family_id,
+        "render view family");
     if (family.views.empty()) {
         throw std::runtime_error(
             "render view family '" + family.family_id +
@@ -55,6 +54,66 @@ RenderViewFamily makeMainRenderViewFamily(RenderViewParameters view) {
     };
     result.views.push_back(std::move(view));
     return result;
+}
+
+const RenderViewFamily *RenderViewFamilies::find(
+    std::string_view family_id) const noexcept {
+    const auto found = std::find_if(
+        families.begin(), families.end(),
+        [family_id](const RenderViewFamily &family) {
+            return family.family_id == family_id;
+        });
+    return found != families.end()
+               ? &*found
+               : nullptr;
+}
+
+const RenderViewFamily &RenderViewFamilies::require(
+    std::string_view family_id) const {
+    if (const auto *family = find(family_id)) {
+        return *family;
+    }
+    throw std::runtime_error(
+        "render view families do not provide family '" +
+        std::string{family_id} + "'");
+}
+
+RenderViewFamilies makeMainRenderViewFamilies(
+    RenderViewFamily main_family) {
+    if (main_family.family_id !=
+        mainRenderViewFamilyId) {
+        throw std::runtime_error(
+            "main render view family must use family_id '$main'");
+    }
+    RenderViewFamilies result;
+    result.families.push_back(
+        std::move(main_family));
+    return result;
+}
+
+void validateRenderViewFamilies(
+    const RenderViewFamilies &families,
+    const CompiledGraphVariantPolicy &policy) {
+    if (families.families.empty()) {
+        throw std::runtime_error(
+            "render view families require '$main'");
+    }
+    std::set<std::string, std::less<>>
+        family_ids;
+    for (const auto &family : families.families) {
+        (void)validatedViewIds(family);
+        if (!family_ids.insert(
+                 family.family_id)
+                 .second) {
+            throw std::runtime_error(
+                "render view families contain duplicate family_id '" +
+                family.family_id + "'");
+        }
+    }
+    validateRenderViewFamily(
+        families.require(
+            mainRenderViewFamilyId),
+        policy);
 }
 
 void validateRenderViewFamily(
@@ -143,7 +202,12 @@ std::vector<RenderFrameSnapshot> buildRenderViewFamilySnapshots(
     std::uint32_t render_width,
     std::uint32_t render_height,
     bool reset_requested) {
-    validateRenderViewFamily(family, policy);
+    (void)validatedViewIds(family);
+    if (family.family_id ==
+        mainRenderViewFamilyId) {
+        validateRenderViewFamily(
+            family, policy);
+    }
     if (history.family_id != family.family_id) {
         throw std::runtime_error(
             "render view family history was not synchronized for family '" +

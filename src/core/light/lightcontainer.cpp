@@ -116,7 +116,7 @@ namespace Pelican
 	{
 	}
 
-	glm::mat4 LightContainer::shadowViewProjection() const
+	DirectionalShadowView LightContainer::directionalShadowView() const
 	{
 		const auto direction = safeLightDirection(m_DirectionalLights);
 		const glm::vec3 center{0.0f, 0.0f, 0.0f};
@@ -127,7 +127,17 @@ namespace Pelican
 				: glm::vec3{0.0f, 1.0f, 0.0f};
 		const auto view = glm::lookAt(eye, center, world_up);
 		const auto projection = vulkanOrtho(-6.0f, 6.0f, -6.0f, 6.0f, 0.1f, 30.0f);
-		return projection * view;
+		return DirectionalShadowView{
+			.view = view,
+			.projection = projection,
+			.camera_position = eye,
+		};
+	}
+
+	glm::mat4 LightContainer::shadowViewProjection() const
+	{
+		const auto shadow_view = directionalShadowView();
+		return shadow_view.projection * shadow_view.view;
 	}
 
 	PackedLightInventoryV2
@@ -317,6 +327,12 @@ namespace Pelican
 	}
 		
 	void LightContainer::update()
+	{
+		update(shadowViewProjection());
+	}
+
+	void LightContainer::update(
+		const glm::mat4& shadow_view_projection)
 		    	{
 		    		LightUBO ubo{};
                 ubo.directionalLightCount =
@@ -346,7 +362,8 @@ namespace Pelican
 		    			ubo.spotLights[i].innerConeAngle = cos(glm::radians(m_SpotLights[i].innerConeAngle));
 		    			ubo.spotLights[i].outerConeAngle = cos(glm::radians(m_SpotLights[i].outerConeAngle));
 		    		}
-				ubo.shadowViewProjection = shadowViewProjection();
+				ubo.shadowViewProjection =
+					shadow_view_projection;
 		
 		    		GET_MODULE(VulkanManageCore).writeBuf(m_LightUBO, &ubo, 0, sizeof(ubo));
 		    	}

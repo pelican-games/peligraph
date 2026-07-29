@@ -4,6 +4,7 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
@@ -624,6 +625,60 @@ TEST_CASE(
 
     auto &frame_resources =
         GET_MODULE(FrameResources);
+    constexpr std::uint32_t shadow_view_slot =
+        stereo_view_count;
+    frame_resources.beginLogicalFrame(
+        stereo_view_count,
+        stereo_view_count + 1);
+    REQUIRE(
+        frame_resources.viewCountForTesting() ==
+        stereo_view_count);
+    REQUIRE(
+        frame_resources
+            .sequentialViewCountForTesting() ==
+        stereo_view_count + 1);
+    REQUIRE(
+        frame_resources.slotCountForTesting() ==
+        in_flight_frames_num *
+            (stereo_view_count + 1));
+    auto shadow_frame = frames[0];
+    shadow_frame.camera_position =
+        {4.0f, 5.0f, 6.0f, 1.0f};
+    shadow_frame.view_index = 0;
+    shadow_frame.view_count = 1;
+    frame_resources.selectSequentialView(
+        0, shadow_view_slot);
+    frame_resources.update(shadow_frame);
+    REQUIRE(
+        frame_resources
+            .slotDataForTesting(
+                0, shadow_view_slot)
+            .camera_position ==
+        shadow_frame.camera_position);
+    REQUIRE_THROWS(
+        frame_resources.selectView(
+            0, shadow_view_slot));
+
+    auto shadow_view_projection =
+        glm::mat4{1.0f};
+    shadow_view_projection[0][0] = 4.0f;
+    shadow_view_projection[1][1] = 5.0f;
+    auto &light_container =
+        GET_MODULE(LightContainer);
+    light_container.update(
+        shadow_view_projection);
+    const auto light_bytes =
+        vkcore.readBuf(
+            light_container.lightBuffer(),
+            sizeof(LightUBO));
+    LightUBO light_data{};
+    std::memcpy(
+        &light_data, light_bytes.data(),
+        sizeof(light_data));
+    REQUIRE(
+        light_data.shadowViewProjection ==
+        shadow_view_projection);
+
     frame_resources.beginLogicalFrame(
         stereo_view_count);
     frame_resources.selectMultiview(0);

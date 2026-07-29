@@ -73,4 +73,11 @@ namespace Pelican
 		SpotLight_UBO spotLights[MAX_SPOT_LIGHTS];
 		glm::mat4 shadowViewProjection;
 	};
+
+	struct DirectionalShadowView
+	{
+		glm::mat4 view{1.0f};
+		glm::mat4 projection{1.0f};
+		glm::vec3 camera_position{0.0f};
+	};
 }

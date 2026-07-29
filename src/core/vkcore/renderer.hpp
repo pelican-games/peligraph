@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -89,6 +90,9 @@ DECLARE_MODULE(Renderer) {
     RenderGraphVariant active_graph_variant = RenderGraphVariant::flat;
     TemporalViewFamilyHistory flat_temporal_history;
     TemporalViewFamilyHistory xr_temporal_history;
+    std::map<std::string, TemporalViewFamilyHistory,
+             std::less<>>
+        secondary_temporal_histories;
     std::vector<RenderFrameSnapshot> last_view_snapshots;
     bool temporal_reset_requested = true;
     std::uint64_t observed_time_set_revision = 0;
@@ -149,6 +153,9 @@ DECLARE_MODULE(Renderer) {
     void renderLogicalFrame(
         ILogicalFrameTarget &target,
         const RenderViewFamily &view_family);
+    void renderLogicalFrame(
+        ILogicalFrameTarget &target,
+        const RenderViewFamilies &view_families);
     void render();
 };
 

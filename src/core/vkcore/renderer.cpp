@@ -168,6 +168,98 @@ struct RenderFrameModules {
     SpriteRenderModules sprite;
 };
 
+struct RenderViewFamilyExecutionState {
+    const RenderViewFamily *family = nullptr;
+    std::vector<RenderFrameSnapshot> snapshots;
+    std::vector<FrameUniformData> frame_uniforms;
+    std::vector<FrameResolutionUniformData>
+        frame_resolutions;
+    std::uint32_t sequential_slot_base = 0;
+};
+
+const RenderViewFamilyExecutionState &
+requireRenderViewFamilyExecutionState(
+    std::span<const RenderViewFamilyExecutionState>
+        states,
+    std::string_view family_id) {
+    const auto found = std::find_if(
+        states.begin(), states.end(),
+        [family_id](
+            const RenderViewFamilyExecutionState
+                &state) {
+            return state.family != nullptr &&
+                   state.family->family_id ==
+                       family_id;
+        });
+    if (found == states.end()) {
+        throw std::runtime_error(
+            "render execution has no prepared view family '" +
+            std::string{family_id} + "'");
+    }
+    return *found;
+}
+
+RenderViewFamily directionalShadowViewFamily(
+    const LightContainer &lights) {
+    const auto source =
+        lights.directionalShadowView();
+    return RenderViewFamily{
+        .family_id =
+            std::string{
+                directionalShadowRenderViewFamilyId},
+        .views =
+            {RenderViewParameters{
+                .view = source.view,
+                .projection = source.projection,
+                .camera_position =
+                    source.camera_position,
+                .first_person_view = false,
+                .view_id =
+                    std::string{
+                        directionalShadowRenderViewId},
+            }},
+    };
+}
+
+RenderViewFamilies resolveFrameViewFamilies(
+    const RenderViewFamilies &authored,
+    const CompiledFrameGraphExecution &frame_graph,
+    const LightContainer &lights) {
+    RenderViewFamilies result;
+    result.families.push_back(
+        authored.require(
+            mainRenderViewFamilyId));
+    for (const auto &family :
+         authored.families) {
+        if (family.family_id ==
+            mainRenderViewFamilyId) {
+            continue;
+        }
+        result.families.push_back(
+            family);
+    }
+    for (const auto &node :
+         frame_graph.nodes) {
+        if (result.find(
+                node.view_family) != nullptr) {
+            continue;
+        }
+        if (node.view_family ==
+            directionalShadowRenderViewFamilyId) {
+            result.families.push_back(
+                directionalShadowViewFamily(
+                    lights));
+            continue;
+        }
+        throw std::runtime_error(
+            "compiled frame graph node '" +
+            node.name +
+            "' requires unavailable view family '" +
+            node.view_family + "'");
+    }
+    return result;
+}
+
 SpriteRenderModules resolveSpriteRenderModules(const RenderingPassContainer &rendering_pass_container) {
     if (!rendering_pass_container.isFeatureEnabled("sprite")) return {};
 
@@ -256,8 +348,22 @@ RenderFrameModules resolveRenderFrameModules() {
 void updateFrameLights(
     LightContainer &light_container,
     FrameGraphResourceContainer
-        &frame_graph_resources) {
-    light_container.update();
+        &frame_graph_resources,
+    const RenderViewFamilies
+        &view_families) {
+    if (const auto *shadow_family =
+            view_families.find(
+                directionalShadowRenderViewFamilyId);
+        shadow_family != nullptr &&
+        shadow_family->views.size() == 1) {
+        const auto &shadow_view =
+            shadow_family->views.front();
+        light_container.update(
+            shadow_view.projection *
+            shadow_view.view);
+    } else {
+        light_container.update();
+    }
     constexpr auto source =
         FrameGraphHostBufferSource::scene_lights_v2;
     if (!frame_graph_resources
@@ -1148,18 +1254,32 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         for (std::size_t node_index = 0;
              node_index < frame_graph.nodes.size();
              ++node_index) {
+            const auto &node =
+                frame_graph.nodes[node_index];
+            const bool main_family =
+                node.view_family ==
+                mainRenderViewFamilyId;
+            if (!main_family &&
+                view_index != 0) {
+                continue;
+            }
             fallback_schedule.push_back(
                 LogicalFrameNodeInvocation{
                     .node_index = node_index,
                     .execution =
-                        logical_view_count > 1
+                        main_family &&
+                                logical_view_count > 1
                             ? VulkanScopeViewExecution::
                                   sequential
                             : VulkanScopeViewExecution::
                                   single_view,
                     .logical_view_count =
-                        logical_view_count,
+                        main_family
+                            ? logical_view_count
+                            : 1u,
                     .view_index = view_index,
+                    .view_family =
+                        node.view_family,
                 });
         }
         authored_schedule = fallback_schedule;
@@ -1248,10 +1368,17 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             throw std::logic_error(
                 "scheduled frame-graph node has no GPU timing query slot");
         }
+        const auto &execution_node =
+            frame_graph.nodes[node_index];
+        if (scheduled.view_family !=
+            execution_node.view_family) {
+            throw std::runtime_error(
+                "logical-frame schedule view family does not match node '" +
+                execution_node.name + "'");
+        }
         if (prepare_invocation) {
             prepare_invocation(scheduled);
         }
-        const auto &execution_node = frame_graph.nodes[node_index];
         if (node_index >= frame_graph.plan.nodes.size() ||
             frame_graph.plan.nodes[node_index].name != execution_node.name ||
             frame_graph.plan.nodes[node_index].kind != execution_node.kind) {
@@ -1759,6 +1886,11 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 scheduled.view_index;
             trace["logical_view_count"] =
                 scheduled.logical_view_count;
+            if (scheduled.view_family !=
+                mainRenderViewFamilyId) {
+                trace["view_family"] =
+                    scheduled.view_family;
+            }
         }
 
         if (modules.render_timing != nullptr &&
@@ -1788,8 +1920,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             const CompiledRenderingPass &rendering_pass,
                             const CompiledFrameGraphExecution &frame_graph,
                             RenderFrameModules &modules,
-                            std::span<const RenderFrameSnapshot> snapshots,
-                            std::span<const RenderViewParameters> views,
+                            std::span<const RenderViewFamilyExecutionState>
+                                view_family_states,
                             vk::Format frame_target_format,
                             RenderTargetLayoutTracker &layout_tracker,
                             nlohmann::json *node_trace,
@@ -1800,12 +1932,23 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             bool per_view_sort,
                             std::span<const LogicalFrameNodeInvocation>
                                 authored_schedule = {}) {
-    if (snapshots.empty() ||
-        views.size() != logical_view_count ||
-        default_view_index >= snapshots.size()) {
+    const auto &main_state =
+        requireRenderViewFamilyExecutionState(
+            view_family_states,
+            mainRenderViewFamilyId);
+    if (main_state.family == nullptr ||
+        main_state.snapshots.empty() ||
+        main_state.family->views.size() !=
+            logical_view_count ||
+        default_view_index >=
+            main_state.snapshots.size()) {
         throw std::runtime_error(
             "render execution view state is incomplete");
     }
+    const auto &views =
+        main_state.family->views;
+    const auto &snapshots =
+        main_state.snapshots;
     const auto &default_snapshot =
         snapshots[default_view_index];
     MaterialRendererDependencies material_renderer_dependencies{
@@ -1852,27 +1995,47 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         prepare_invocation =
             [&](const LogicalFrameNodeInvocation
                     &invocation) {
-                if (invocation.view_index >=
-                    snapshots.size()) {
-                    throw std::runtime_error(
-                        "logical-frame execution selected an "
-                        "unavailable view state");
-                }
                 const auto state_view =
                     invocation.view_index;
+                const auto &family_state =
+                    requireRenderViewFamilyExecutionState(
+                        view_family_states,
+                        invocation
+                            .view_family);
+                if (state_view >=
+                        family_state
+                            .snapshots.size() ||
+                    family_state.family ==
+                        nullptr ||
+                    state_view >=
+                        family_state.family
+                            ->views.size()) {
+                    throw std::runtime_error(
+                        "logical-frame execution selected an "
+                        "unavailable family view state");
+                }
                 const auto &snapshot =
-                    snapshots[state_view];
+                    family_state
+                        .snapshots[state_view];
+                const auto &family_view =
+                    family_state.family
+                        ->views[state_view];
                 material_renderer_dependencies
                     .view_projection =
                     snapshot
                         .view_projection_jittered;
                 material_renderer_dependencies
                     .first_person_view =
-                    views[state_view]
+                    family_view
                         .first_person_view;
                 material_renderer_dependencies
                     .draw_sort_view_index =
-                    per_view_sort ? state_view : 0u;
+                    per_view_sort &&
+                            invocation
+                                    .view_family ==
+                                mainRenderViewFamilyId
+                        ? state_view
+                        : 0u;
                 pass_dispatch_dependencies
                     .view_projection =
                     snapshot
@@ -1880,16 +2043,25 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                 if (invocation.execution ==
                     VulkanScopeViewExecution::
                         multiview) {
+                    if (invocation
+                            .view_family !=
+                        mainRenderViewFamilyId) {
+                        throw std::runtime_error(
+                            "secondary multiview family execution is not "
+                            "implemented");
+                    }
                     modules.frame_resources
                         .selectMultiview(
                             render_ctx
                                 .in_flight_frame_index);
                 } else {
                     modules.frame_resources
-                        .selectView(
+                        .selectSequentialView(
                             render_ctx
                                 .in_flight_frame_index,
-                            state_view);
+                            family_state
+                                    .sequential_slot_base +
+                                state_view);
                 }
             };
     }
@@ -3121,16 +3293,15 @@ void Renderer::prepareRuntimeModules() {
 void Renderer::renderLogicalFrame(
     ILogicalFrameTarget &target,
     const RenderViewFamily &view_family) {
-    const auto &views = view_family.views;
-    if (views.size() > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::runtime_error(
-            "Renderer logical frame view count exceeds the public index range");
-    }
-    const auto view_count = static_cast<std::uint32_t>(views.size());
-    if (view_count == 0) {
-        throw std::runtime_error("Renderer logical frame requires at least one view");
-    }
+    renderLogicalFrame(
+        target,
+        makeMainRenderViewFamilies(
+            view_family));
+}
 
+void Renderer::renderLogicalFrame(
+    ILogicalFrameTarget &target,
+    const RenderViewFamilies &view_families) {
     auto &deletion_queue = resolveFrameDeletionQueue();
 
     auto modules = resolveRenderFrameModules();
@@ -3203,8 +3374,41 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "Renderer selected graph does not match its compiled graph variant policy");
     }
-    validateRenderViewFamily(
-        view_family, graph_variant_policy);
+    validateRenderViewFamilies(
+        view_families,
+        graph_variant_policy);
+    const auto resolved_view_families =
+        resolveFrameViewFamilies(
+            view_families, frame_graph,
+            modules.light_container);
+    validateRenderViewFamilies(
+        resolved_view_families,
+        graph_variant_policy);
+    const auto &view_family =
+        resolved_view_families.require(
+            mainRenderViewFamilyId);
+    const auto &views =
+        view_family.views;
+    if (views.size() >
+        std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            "Renderer logical frame view count exceeds the public index range");
+    }
+    const auto view_count =
+        static_cast<std::uint32_t>(
+            views.size());
+    std::uint64_t sequential_view_count = 0;
+    for (const auto &family :
+         resolved_view_families.families) {
+        sequential_view_count +=
+            family.views.size();
+    }
+    if (sequential_view_count >
+        std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            "Renderer logical frame family views exceed the frame-resource "
+            "slot range");
+    }
 
     if (modules.render_timing != nullptr) {
         std::size_t max_nodes = 0;
@@ -3238,7 +3442,22 @@ void Renderer::renderLogicalFrame(
         }
         temporal_reset_requested = true;
     }
-    modules.frame_resources.beginLogicalFrame(view_count);
+    for (const auto &family :
+         resolved_view_families.families) {
+        if (family.family_id ==
+            mainRenderViewFamilyId) {
+            continue;
+        }
+        auto &history =
+            secondary_temporal_histories[
+                family.family_id];
+        (void)synchronizeTemporalViewFamilyHistory(
+            history, family);
+    }
+    modules.frame_resources.beginLogicalFrame(
+        view_count,
+        static_cast<std::uint32_t>(
+            sequential_view_count));
 
     auto shader_hot_reload = resolveShaderHotReloadModules();
     if (consumeShaderReloadPublication(shader_hot_reload)) {
@@ -3261,7 +3480,8 @@ void Renderer::renderLogicalFrame(
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
     updateFrameLights(
         modules.light_container,
-        modules.frame_graph_resources);
+        modules.frame_graph_resources,
+        resolved_view_families);
 
     const auto &draw_sorting =
         frame_graph.render_pipeline->draw_sorting;
@@ -3346,12 +3566,103 @@ void Renderer::renderLogicalFrame(
                         static_cast<float>(forward.z)},
         });
     }
-    std::vector<RenderFrameSnapshot> snapshots;
-    snapshots.reserve(view_count);
+    std::vector<RenderViewFamilyExecutionState>
+        view_family_states;
+    view_family_states.reserve(
+        resolved_view_families
+            .families.size());
     const RenderViewFamilyProjectionModifiers
         view_family_modifiers{
             .projection_jitter =
                 frame_projection_jitter,
+        };
+    const auto prepare_view_family_states =
+        [&](std::uint32_t in_flight_frame,
+            const FrameResolutionExtents
+                &resolution_extents) {
+            if (!view_family_states.empty()) {
+                throw std::logic_error(
+                    "render view families were prepared more than once");
+            }
+            std::uint32_t slot_base = 0;
+            for (const auto &family :
+                 resolved_view_families
+                     .families) {
+                auto &history =
+                    family.family_id ==
+                            mainRenderViewFamilyId
+                        ? temporal_history
+                        : secondary_temporal_histories
+                              .at(
+                                  family.family_id);
+                const auto modifiers =
+                    family.family_id ==
+                            mainRenderViewFamilyId
+                        ? view_family_modifiers
+                        : RenderViewFamilyProjectionModifiers{};
+                RenderViewFamilyExecutionState
+                    state{
+                        .family = &family,
+                        .snapshots =
+                            buildRenderViewFamilySnapshots(
+                                history,
+                                family,
+                                modifiers,
+                                graph_variant_policy,
+                                engine_time
+                                    .frameIndex(),
+                                resolution_extents
+                                    .render.width,
+                                resolution_extents
+                                    .render.height,
+                                temporal_reset_requested),
+                        .sequential_slot_base =
+                            slot_base,
+                    };
+                const auto family_view_count =
+                    static_cast<std::uint32_t>(
+                        family.views.size());
+                state.frame_uniforms.reserve(
+                    family_view_count);
+                state.frame_resolutions.reserve(
+                    family_view_count);
+                for (std::uint32_t
+                         family_view_index = 0;
+                     family_view_index <
+                     family_view_count;
+                     ++family_view_index) {
+                    modules.frame_resources
+                        .selectSequentialView(
+                            in_flight_frame,
+                            slot_base +
+                                family_view_index);
+                    state.frame_uniforms
+                        .push_back(
+                            updateFrameResources(
+                                modules,
+                                engine_time,
+                                resolution_extents
+                                    .render,
+                                resolution_extents
+                                    .output,
+                                state.snapshots
+                                    .at(
+                                        family_view_index),
+                                family_view_index,
+                                family_view_count));
+                    state.frame_resolutions
+                        .push_back(
+                            frameResolutionData(
+                                resolution_extents
+                                    .render,
+                                resolution_extents
+                                    .output));
+                }
+                slot_base +=
+                    family_view_count;
+                view_family_states.push_back(
+                    std::move(state));
+            }
         };
     nlohmann::json view_traces = nlohmann::json::array();
     std::optional<std::uint32_t> logical_in_flight_frame;
@@ -3370,11 +3681,27 @@ void Renderer::renderLogicalFrame(
     std::vector<LogicalFrameNodeInvocation>
         logical_frame_schedule;
     if (frame_graph.target_plan != nullptr) {
+        std::vector<
+            LogicalFrameViewFamilyCardinality>
+            family_cardinalities;
+        family_cardinalities.reserve(
+            resolved_view_families
+                .families.size());
+        for (const auto &family :
+             resolved_view_families
+                 .families) {
+            family_cardinalities.push_back(
+                {
+                    family.family_id,
+                    static_cast<std::uint32_t>(
+                        family.views.size()),
+                });
+        }
         logical_frame_schedule =
             buildLogicalFrameViewFamilySchedule(
                 frame_graph.nodes,
                 *frame_graph.target_plan,
-                view_count);
+                family_cardinalities);
     }
 
     const auto external_depth_export =
@@ -3476,49 +3803,24 @@ void Renderer::renderLogicalFrame(
                 frame_graph,
                 modules.render_target_container,
                 render_ctx.extent);
-        std::vector<FrameUniformData>
-            frame_uniforms;
-        std::vector<FrameResolutionUniformData>
-            frame_resolutions;
-        frame_uniforms.reserve(view_count);
-        frame_resolutions.reserve(view_count);
-        snapshots =
-            buildRenderViewFamilySnapshots(
-                temporal_history, view_family,
-                view_family_modifiers,
-                graph_variant_policy,
-                engine_time.frameIndex(),
-                resolution_extents.render.width,
-                resolution_extents.render.height,
-                temporal_reset_requested);
-        for (std::uint32_t view_index = 0;
-             view_index < view_count;
-             ++view_index) {
-            modules.frame_resources.selectView(
-                render_ctx
-                    .in_flight_frame_index,
-                view_index);
-            frame_uniforms.push_back(
-                updateFrameResources(
-                     modules, engine_time,
-                     resolution_extents.render,
-                     resolution_extents.output,
-                     snapshots.at(view_index),
-                     view_index, view_count));
-            frame_resolutions.push_back(
-                frameResolutionData(
-                    resolution_extents.render,
-                    resolution_extents.output));
-        }
+        prepare_view_family_states(
+            render_ctx
+                .in_flight_frame_index,
+            resolution_extents);
+        const auto &main_state =
+            requireRenderViewFamilyExecutionState(
+                view_family_states,
+                mainRenderViewFamilyId);
         modules.frame_resources
             .selectMultiview(
                 render_ctx
                     .in_flight_frame_index);
         modules.frame_resources
-            .updateMultiview(frame_uniforms);
+            .updateMultiview(
+                main_state.frame_uniforms);
         modules.frame_resources
             .updateMultiviewResolutions(
-                frame_resolutions);
+                main_state.frame_resolutions);
 
         nlohmann::json node_trace;
         nlohmann::json *node_trace_ptr =
@@ -3530,8 +3832,9 @@ void Renderer::renderLogicalFrame(
         }
         executeRenderingPasses(
             render_ctx, rendering_pass,
-            frame_graph, modules, snapshots,
-            views, frame_target_format,
+            frame_graph, modules,
+            view_family_states,
+            frame_target_format,
             render_target_layout_tracker,
             node_trace_ptr,
             engine_time.frameIndex(),
@@ -3633,26 +3936,19 @@ void Renderer::renderLogicalFrame(
                 modules.render_target_container,
                 render_ctx.extent);
         if (view_index == 0) {
-            snapshots =
-                buildRenderViewFamilySnapshots(
-                    temporal_history,
-                    view_family,
-                    view_family_modifiers,
-                    graph_variant_policy,
-                    engine_time.frameIndex(),
-                    resolution_extents.render.width,
-                    resolution_extents.render.height,
-                    temporal_reset_requested);
+            prepare_view_family_states(
+                render_ctx
+                    .in_flight_frame_index,
+                resolution_extents);
         }
-        const auto &snapshot =
-            snapshots.at(view_index);
-
-        modules.frame_resources.selectView(render_ctx.in_flight_frame_index, view_index);
-        updateFrameResources(
-            modules, engine_time,
-            resolution_extents.render,
-            resolution_extents.output, snapshot,
-            view_index, view_count);
+        const auto &main_state =
+            requireRenderViewFamilyExecutionState(
+                view_family_states,
+                mainRenderViewFamilyId);
+        modules.frame_resources.selectSequentialView(
+            render_ctx.in_flight_frame_index,
+            main_state.sequential_slot_base +
+                view_index);
 
         nlohmann::json node_trace;
         nlohmann::json *node_trace_ptr = nullptr;
@@ -3661,8 +3957,7 @@ void Renderer::renderLogicalFrame(
             node_trace_ptr = &node_trace;
         }
         executeRenderingPasses(render_ctx, rendering_pass, frame_graph, modules,
-                               snapshots,
-                               views,
+                               view_family_states,
                                frame_target_format,
                                render_target_layout_tracker,
                                node_trace_ptr, engine_time.frameIndex(),
@@ -3730,9 +4025,25 @@ void Renderer::renderLogicalFrame(
 
     modules.render_target_container.advanceHistoryFrame();
     modules.instance_container.advanceTemporalHistoryAfterRender();
-    commitRenderViewFamilySnapshots(
-        temporal_history, view_family, snapshots);
-    last_view_snapshots = std::move(snapshots);
+    for (const auto &state :
+         view_family_states) {
+        auto &history =
+            state.family->family_id ==
+                    mainRenderViewFamilyId
+                ? temporal_history
+                : secondary_temporal_histories
+                      .at(
+                          state.family
+                              ->family_id);
+        commitRenderViewFamilySnapshots(
+            history, *state.family,
+            state.snapshots);
+    }
+    last_view_snapshots =
+        requireRenderViewFamilyExecutionState(
+            view_family_states,
+            mainRenderViewFamilyId)
+            .snapshots;
     temporal_reset_requested = false;
     if (pending_graph_transition) {
         auto &transition = graph_variant_transition_trace.at(*pending_graph_transition);

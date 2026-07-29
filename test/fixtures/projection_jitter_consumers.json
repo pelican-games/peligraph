@@ -140,14 +140,14 @@
     {
       "source": "src/core/light/lightcontainer.cpp",
       "consumer": "shadow",
-      "role": "light view-projection producer and UBO transport",
-      "needles": ["glm::mat4 LightContainer::shadowViewProjection() const", "ubo.shadowViewProjection = shadowViewProjection();"]
+      "role": "directional shadow view-family provider and LightUBO transport",
+      "needles": ["DirectionalShadowView LightContainer::directionalShadowView() const", "void LightContainer::update(", "ubo.shadowViewProjection =", "shadow_view_projection;"]
     },
     {
       "source": "src/core/light/lightcontainer.hpp",
       "consumer": "shadow",
-      "role": "light view-projection API",
-      "needles": ["glm::mat4 shadowViewProjection() const;"]
+      "role": "directional shadow view-family source API",
+      "needles": ["void update(const glm::mat4& shadow_view_projection);", "DirectionalShadowView directionalShadowView() const;", "glm::mat4 shadowViewProjection() const;"]
     },
     {
       "source": "src/core/loader/editorpreviewprojection.cpp",
@@ -206,8 +206,8 @@
     {
       "source": "src/core/renderer/materialrender.cpp",
       "consumer": "main_material",
-      "role": "jittered view-projection push and shadow push",
-      "needles": ["const PushConstantStruct engine_push{dependencies.view_projection};", "push_constant.mvp = dependencies.light_container.shadowViewProjection();"]
+      "role": "family-selected view-projection push for main and shadow draws",
+      "needles": ["const PushConstantStruct engine_push{dependencies.view_projection};", "push_constant.mvp =", "dependencies.view_projection;"]
     },
     {
       "source": "src/core/renderer/materialrender.hpp",

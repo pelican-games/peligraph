@@ -72,6 +72,77 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "render view family collection separates main cardinality from secondary families",
+    "[view-family][collection][secondary]") {
+    const auto xr_policy =
+        compileGraphVariantPolicy({
+            .variant =
+                RenderPipelineGraphVariant::xr,
+        });
+    auto main = stereoFamily(
+        view("$xr/0", 1.0f),
+        view("$xr/1", 2.0f));
+    RenderViewFamily shadow{
+        .family_id =
+            std::string{
+                directionalShadowRenderViewFamilyId},
+        .views = {
+            view(
+                std::string{
+                    directionalShadowRenderViewId},
+                3.0f),
+        },
+    };
+    RenderViewFamilies families{
+        .families = {main, shadow},
+    };
+
+    REQUIRE_NOTHROW(
+        validateRenderViewFamilies(
+            families, xr_policy));
+    REQUIRE(
+        families.require(
+            mainRenderViewFamilyId)
+            .views.size() == 2);
+    REQUIRE(
+        families.require(
+            directionalShadowRenderViewFamilyId)
+            .views.size() == 1);
+
+    TemporalViewFamilyHistory shadow_history;
+    REQUIRE(
+        synchronizeTemporalViewFamilyHistory(
+            shadow_history, shadow) ==
+        TemporalViewFamilyChange::topology);
+    const auto snapshots =
+        buildRenderViewFamilySnapshots(
+            shadow_history, shadow, {},
+            xr_policy, 1, 2048, 2048,
+            true);
+    REQUIRE(snapshots.size() == 1);
+    REQUIRE(
+        snapshots.front()
+            .projection_non_jittered[0][0] ==
+        3.0f);
+
+    families.families.push_back(shadow);
+    REQUIRE_THROWS_WITH(
+        validateRenderViewFamilies(
+            families, xr_policy),
+        "render view families contain duplicate family_id "
+        "'$shadow/directional'");
+
+    RenderViewFamilies missing_main{
+        .families = {shadow},
+    };
+    REQUIRE_THROWS_WITH(
+        validateRenderViewFamilies(
+            missing_main, xr_policy),
+        Catch::Matchers::ContainsSubstring(
+            "do not provide family '$main'"));
+}
+
+TEST_CASE(
     "temporal view family follows stable ids across execution reordering",
     "[view-family][history]") {
     const auto policy =

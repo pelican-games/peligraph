@@ -341,7 +341,8 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
         instance_container.bindDeformation(cmd_buf, pipeline_layout, draw_call.skinned);
         PushConstantStruct push_constant{};
-        push_constant.mvp = dependencies.light_container.shadowViewProjection();
+        push_constant.mvp =
+            dependencies.view_projection;
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
                               sizeof(push_constant), &push_constant);
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,

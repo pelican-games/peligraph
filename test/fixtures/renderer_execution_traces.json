@@ -232,8 +232,23 @@
       {
         "kind": "compute",
         "logical_view_count": 1,
-        "name": "write_color",
+        "name": "build_dispatch",
         "order": 4,
+        "reads": [],
+        "view_execution": "single_view",
+        "view_index": 0,
+        "writes": [
+          {
+            "kind": "buffer",
+            "resource": "dispatch_arguments"
+          }
+        ]
+      },
+      {
+        "kind": "compute",
+        "logical_view_count": 1,
+        "name": "write_color",
+        "order": 5,
         "reads": [],
         "view_execution": "single_view",
         "view_index": 0,
@@ -270,14 +285,6 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
         "order": 6,
         "view_execution": "single_view",
         "view_index": 0
@@ -285,7 +292,7 @@
       {
         "kind": "anchor",
         "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 7,
         "view_execution": "single_view",
         "view_index": 0
@@ -293,7 +300,7 @@
       {
         "kind": "anchor",
         "logical_view_count": 1,
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 8,
         "view_execution": "single_view",
         "view_index": 0
@@ -301,8 +308,16 @@
       {
         "kind": "anchor",
         "logical_view_count": 1,
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 9,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "kind": "anchor",
+        "logical_view_count": 1,
+        "name": "__anchor_imgui",
+        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -323,7 +338,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 11,
         "paired_storage_edges": [
           "present:display->output_transform"
         ],
@@ -2433,6 +2448,7 @@
         "name": "shadow_depth",
         "order": 0,
         "view_execution": "single_view",
+        "view_family": "$shadow/directional",
         "view_index": 0
       },
       {
@@ -3335,6 +3351,7 @@
         "name": "shadow_depth",
         "order": 0,
         "view_execution": "single_view",
+        "view_family": "$shadow/directional",
         "view_index": 0
       },
       {
@@ -4515,6 +4532,7 @@
         "name": "shadow_depth",
         "order": 0,
         "view_execution": "single_view",
+        "view_family": "$shadow/directional",
         "view_index": 0
       },
       {
@@ -5451,6 +5469,7 @@
         "name": "shadow_depth",
         "order": 0,
         "view_execution": "single_view",
+        "view_family": "$shadow/directional",
         "view_index": 0
       },
       {

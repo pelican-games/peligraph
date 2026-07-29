@@ -43,12 +43,14 @@ namespace Pelican
 		void publishPrepared(PreparedLoad&& prepared) noexcept;
 		void load(const std::vector<LightLoadEntry>& lights);
 		void update();
+		void update(const glm::mat4& shadow_view_projection);
 
 		bool setDirectionalLightDirection(const std::string& name, glm::vec3 direction);
 		bool setDirectionalLightIntensity(const std::string& name, float intensity);
 		bool setPointLightPosition(const std::string& name, glm::vec3 position);
 		bool setSpotLightDirection(const std::string& name, glm::vec3 direction);
 
+		DirectionalShadowView directionalShadowView() const;
 		glm::mat4 shadowViewProjection() const;
 		const BufferWrapper& lightBuffer() const { return m_LightUBO; }
 		PackedLightInventoryV2 lightInventoryV2(
