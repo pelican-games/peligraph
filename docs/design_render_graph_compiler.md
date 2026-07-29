@@ -36,6 +36,9 @@ WP227ではcanonical passの最終bindingを別view familyの再描画passへ継
 `inherit_bindings_from`を追加し、standard planar reflectionがDeferredだけでなく
 Forward opaqueもcaptureするようにした。shadow/clustered featureの記述順に依存せず、
 同じmaterial contractのresource ABIを再利用する。
+WP228ではtransparent queueをsecondary family viewごとに同じ公開sort providerで再評価し、
+reflection-local opaque color/depth snapshotを入力にForward transparentをcaptureする。
+これによりmain viewのdepth順を流用せず、attachment自己samplingも避ける。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -614,11 +617,25 @@ interfaceとしてShaderBundleに保持し、materialが宣言したportとrunti
 使用せずLightUBOの固定selectionへfallbackする。family-local cluster生成を実装した時点で
 この判定をprovider capabilityへ置換する。
 
+secondary familyに`forward_transparent_v1` material passがある場合、draw preparationは
+canonical resolved itemを再利用しつつ、そのfamilyの各viewから`DrawQueueSortView`を作る。
+main viewと同じopaque/transparent sort provider名、material filter、phase partitionを用いて
+`CompiledDrawQueueSet`を再構築し、family/view固有のindirect commandとmaterial draw rangeを
+対で保持する。透明passを持たないshadow familyなどはcanonical queueを共有するため、局所sortは
+要求したfamilyにだけ発生する。provider registryを通すので、projectがsort algorithmを置換した
+場合もmain/secondaryの両方に適用される。
+
+planar reflectionはForward opaque後にcolor/depthを同じextent・layer構成のsampled targetへ
+snapshot copyする。transparent captureはそのreflection-local snapshotをscene color/depth
+inputとして読み、reflection color/depth attachmentをloadして描画する。継承される
+`planar_reflection` material resourceもopaque color snapshotへ局所overrideし、現在書き込み中の
+attachmentをsampleする再帰feedbackを防ぐ。透明surfaceのdepth write規則はcanonical
+`forward_transparent_v1`と同じであり、reflection depthはopaque段階から変化しない。
+
 残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiview、
-family別transparent sort、transparent geometryのreflection captureである。CSMやreflectionを
-単なる特殊passへ戻さず、これらもstable family relationを通して拡張する。planar reflection
-側にはさらにoblique near-plane projection、family-local clustered selection、roughness
-prefilter/sampling policyが残る。
+family-local clustered selectionである。CSMやreflectionを単なる特殊passへ戻さず、これらも
+stable family relationを通して拡張する。planar reflection側にはさらにoblique near-plane
+projection、roughness prefilter/sampling policyが残る。
 
 ## 4. scene、material、light の contract
 

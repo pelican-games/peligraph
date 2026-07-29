@@ -115,6 +115,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP225 | cascaded secondary ViewFamily | ✅ 完了（2026-07-29）。CSM provider、array target、sequential schedule、LightUBO、cascade別culling、実GPU |
 | WP226 | planar reflection ViewFamily / generic secondary culling | ✅ 完了（2026-07-29）。reflection provider、clip plane ABI、独立解像度feature、汎用secondary culling、実GPU |
 | WP227 | planar reflection Forward opaque capture / pass binding inheritance | ✅ 完了（2026-07-29）。Forward再描画、late binding継承、clustered compiler ABI、実GPU |
+| WP228 | secondary ViewFamily transparent capture / family-local sort | ✅ 完了（2026-07-29）。同一sort providerのview別再評価、reflection-local snapshot、Forward transparent再描画、実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -937,6 +938,24 @@ Forward objectがG-bufferへ入らずreflection color/depthだけを変えるこ
 selectionはmain-view空間なのでclip planeを持つsecondary viewではLightUBO selectionへ
 fallbackする。family-local cluster生成は品質・性能の後続である。詳細は
 [`2026-07-29_wp227_planar_forward_capture_report.md`](design_reviews/2026-07-29_wp227_planar_forward_capture_report.md)
+を参照する。
+
+WP228でsecondary ViewFamilyのtransparent drawをcanonical main-view順序の使い回しから分離した。
+compiled planに`forward_transparent_v1`のsecondary material passがあるfamilyだけを対象に、
+同じ公開draw-sort provider、material filter、opaque/transparent phase規則を各family viewの
+camera origin/forwardで再評価する。生成したper-view queueはindirect commandだけでなく
+material draw rangeも一緒に選択されるため、固定state segmentを壊さずmain viewと反射viewで
+異なるback-to-front順序を持てる。shadowや透明passを持たないsecondary familyはcanonical
+queueを共有し、通常のCSMへ追加sortコストを課さない。
+
+標準planar reflectionはForward opaque後のcolor/depthを同解像度・同layerのsampled snapshotへ
+コピーし、そのsnapshotをreflection-local screen inputとして
+`planar_reflection_forward_transparent`へ渡す。transparent passはreflection color/depthを
+loadして再描画するが、reflection texture port自体はopaque color snapshotへ局所overrideするため、
+描画中attachmentへの自己samplingを作らない。実Vulkan fixtureではmain cameraと鏡映cameraで
+透明二物体のdepth順が反転する配置を使い、Deferred-only、Forward opaque、Forward transparentの
+三段差分、depth非更新、G-buffer不変、8 node実行を検証した。詳細は
+[`2026-07-29_wp228_planar_transparent_capture_report.md`](design_reviews/2026-07-29_wp228_planar_transparent_capture_report.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)
