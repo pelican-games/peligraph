@@ -1328,7 +1328,18 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
           {"name":"enabled","type":"bool","default":true}
         ]
       },
-      "shader_defines":["PELICAN_FEATURE_TAA"]
+      "shader_defines":["PELICAN_FEATURE_TAA"],
+      "render_targets":[{
+        "name":"scalar_target",
+        "extent_scale":"$alpha",
+        "width":"$iterations",
+        "height":"$iterations",
+        "format":"R8_UNORM",
+        "format_class":"data",
+        "usage":["SAMPLED"],
+        "history":"$enabled",
+        "array_layers":"$iterations"
+      }]
     })json");
     const auto composeFor = [&](nlohmann::json parameters) {
         auto config = baseConfigWithFeature("taa.json");
@@ -1349,6 +1360,13 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
     REQUIRE(first.config.at("shader_defines") == first.shader_defines);
     REQUIRE(first.feature_instances.at(0).at("parameters") == nlohmann::json{
         {"alpha", 0.1}, {"enabled", false}, {"iterations", 7}, {"source", "lit_color"}});
+    const auto &first_target =
+        first.config.at("render_targets").back();
+    REQUIRE(first_target.at("extent_scale") == 0.1);
+    REQUIRE(first_target.at("width") == 7);
+    REQUIRE(first_target.at("height") == 7);
+    REQUIRE(first_target.at("array_layers") == 7);
+    REQUIRE(first_target.at("history") == false);
 
     const auto graphs = parseFrameGraphDefinitionsFromConfigJson(first.config);
     REQUIRE(graphs.size() == 1);

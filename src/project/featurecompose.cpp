@@ -1066,6 +1066,37 @@ void replaceBoundTargetValue(nlohmann::json &value,
     }
 }
 
+void replaceBoundScalarValues(
+    nlohmann::json &value,
+    const std::unordered_map<std::string, nlohmann::json>
+        &bindings) {
+    if (value.is_string()) {
+        const auto &text =
+            value.get_ref<const std::string &>();
+        if (text.size() > 1 && text.front() == '$') {
+            const auto found =
+                bindings.find(text.substr(1));
+            if (found != bindings.end()) {
+                value = found->second;
+            }
+        }
+        return;
+    }
+    if (value.is_array()) {
+        for (auto &entry : value) {
+            replaceBoundScalarValues(
+                entry, bindings);
+        }
+        return;
+    }
+    if (value.is_object()) {
+        for (auto &entry : value.items()) {
+            replaceBoundScalarValues(
+                entry.value(), bindings);
+        }
+    }
+}
+
 nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
                                      const nlohmann::json &instance_parameters,
                                      const nlohmann::json &config,
@@ -1121,6 +1152,10 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
                                            ? std::string{}
                                            : "PELICAN_FEATURE_" +
                                                  upperIdentifier(feature_name, feature_name) + "_";
+    std::unordered_map<std::string, nlohmann::json>
+        scalar_bindings;
+    scalar_bindings.reserve(
+        declarations.scalars.size());
     for (const auto &declaration : declarations.scalars) {
         const auto supplied = instance_parameters.find(declaration.name);
         const auto &value = supplied != instance_parameters.end()
@@ -1129,6 +1164,8 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         validateScalarValue(value, declaration, feature_name,
                             supplied != instance_parameters.end() ? "value" : "default");
         resolved_parameters[declaration.name] = value;
+        scalar_bindings.emplace(
+            declaration.name, value);
         scalar_defines.push_back(feature_define_prefix +
                                  upperIdentifier(declaration.name, feature_name) + "=" +
                                  scalarDefineValue(value, declaration, feature_name));
@@ -1136,6 +1173,11 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
 
     auto feature = authored_feature;
     feature.erase("parameters");
+    // Exact "$name" scalar placeholders preserve the parameter's JSON type.
+    // This lets one typed value configure both shader defines and physical
+    // declarations such as fixed extent or array-layer count.
+    replaceBoundScalarValues(
+        feature, scalar_bindings);
     if (feature.contains("passes")) {
         for (auto &entry : feature.at("passes")) {
             auto &pass = entry.at("pass");
