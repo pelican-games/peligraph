@@ -117,6 +117,11 @@ struct PlanarReflectionProbe {
     std::vector<std::uint8_t> albedo_bytes;
     std::vector<std::uint8_t> depth_bytes;
     std::vector<std::uint8_t> color_bytes;
+    std::vector<std::uint8_t>
+        filtered_color_bytes;
+    std::vector<
+        std::array<std::uint32_t, 3>>
+        filter_dispatch_groups;
     std::vector<std::uint32_t>
         light_selection_words;
     std::size_t prepared_view_count = 0;
@@ -173,7 +178,8 @@ readDepthTargetBytes(
 std::vector<std::uint8_t>
 readColorTargetBytes(
     GlobalRenderTargetId target_id,
-    std::uint32_t array_layer = 0);
+    std::uint32_t array_layer = 0,
+    std::uint32_t mip_level = 0);
 
 struct Tolerance {
     double average = 0.0;
@@ -4446,10 +4452,61 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
     const auto transparent_surface_reference =
         std::string{
             "engine://surfaces/openpbr/blend_single.surface"};
+    auto transparent_surface_source =
+        engineResourceOrThrow(
+            "surfaces/openpbr/blend_single.surface");
+    const auto planar_sampling_surface =
+        deferred_material &&
+        mixed_forward_material &&
+        mixed_transparent_material;
+    if (planar_sampling_surface) {
+        constexpr std::string_view language_line =
+            "//! language: glsl";
+        const auto language_position =
+            transparent_surface_source.find(
+                language_line);
+        const auto language_line_end =
+            language_position == std::string::npos
+                ? std::string::npos
+                : transparent_surface_source.find(
+                      '\n', language_position);
+        if (language_line_end ==
+            std::string::npos) {
+            throw std::runtime_error(
+                "planar reflection transparent fixture could not "
+                "extend the OpenPBR surface header");
+        }
+        transparent_surface_source.insert(
+            language_line_end + 1,
+            "//! resource_ports:\n"
+            "//!   - { name: planar_reflection, kind: image, "
+            "stage: fragment }\n");
+        constexpr std::string_view lighting_return =
+            "    return pelican_openpbr_lighting_v1(surface, input_data);";
+        const auto lighting_position =
+            transparent_surface_source.find(
+                lighting_return);
+        if (lighting_position ==
+            std::string::npos) {
+            throw std::runtime_error(
+                "planar reflection transparent fixture could not "
+                "extend the OpenPBR lighting hook");
+        }
+        transparent_surface_source.replace(
+            lighting_position,
+            lighting_return.size(),
+            "    vec3 lighting = "
+            "pelican_openpbr_lighting_v1(surface, input_data);\n"
+            "    float roughness_lod = surface.roughness * "
+            "surface.roughness * float(max("
+            "pelican_mip_count_planar_reflection(), 1u) - 1u);\n"
+            "    vec3 reflected = pelican_sample_lod_planar_reflection("
+            "input_data.uv, roughness_lod).rgb;\n"
+            "    return lighting + reflected * 0.001;");
+    }
     const auto transparent_surface =
         parseSurfaceFormat(
-            engineResourceOrThrow(
-                "surfaces/openpbr/blend_single.surface"),
+            transparent_surface_source,
             transparent_surface_reference);
     MaterialSurfaceCatalog surfaces{
         {surface_reference, surface},
@@ -4677,6 +4734,36 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                             transparent_surface_reference,
                             transparent_lowered,
                             pipeline.shader_defines);
+                if (planar_sampling_surface) {
+                    const auto &shader =
+                        GET_MODULE(ShaderLibrary)
+                            .get(
+                                transparent_shaders
+                                    .fragment);
+                    const auto reflection =
+                        std::find_if(
+                            shader.reflection
+                                .bindings.begin(),
+                            shader.reflection
+                                .bindings.end(),
+                            [](const auto &binding) {
+                                return binding.set == 1 &&
+                                       binding.name ==
+                                           "pelican_resource_"
+                                           "planar_reflection";
+                            });
+                    if (reflection ==
+                            shader.reflection
+                                .bindings.end() ||
+                        reflection
+                                ->image_view_dimension !=
+                            ReflectedImageViewDimension::
+                                two_d_array) {
+                        throw std::runtime_error(
+                            "planar reflection material resource did not "
+                            "compile to a sampled 2D-array ABI");
+                    }
+                }
                 MaterialInfo info{
                     .vert_shader =
                         transparent_shaders.vertex,
@@ -5977,6 +6064,23 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         auto &instances =
             GET_MODULE(
                 PolygonInstanceContainer);
+        std::vector<
+            std::array<std::uint32_t, 3>>
+            filter_dispatch_groups;
+        auto &compute_tasks =
+            GET_MODULE(
+                ComputeTaskContainer);
+        for (std::uint32_t mip = 1;
+             mip < 7; ++mip) {
+            filter_dispatch_groups.push_back(
+                compute_tasks
+                    .dispatchGroupsForTesting(
+                        compute_tasks
+                            .getComputeTaskIdByName(
+                                "planar_reflection_filter_mip_" +
+                                std::to_string(
+                                    mip))));
+        }
         planar_reflection =
             PlanarReflectionProbe{
                 .albedo =
@@ -5999,6 +6103,12 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                 .color_bytes =
                     readColorTargetBytes(
                         color),
+                .filtered_color_bytes =
+                    readColorTargetBytes(
+                        color, 0, 6),
+                .filter_dispatch_groups =
+                    std::move(
+                        filter_dispatch_groups),
                 .light_selection_words =
                     readFrameGraphUint32Buffer(
                         "planar_reflection_light_selection"),
@@ -6274,7 +6384,8 @@ readDepthTargetBytes(
 std::vector<std::uint8_t>
 readColorTargetBytes(
     GlobalRenderTargetId target_id,
-    std::uint32_t array_layer) {
+    std::uint32_t array_layer,
+    std::uint32_t mip_level) {
     auto &targets =
         GET_MODULE(RenderTargetContainer);
     const auto metadata =
@@ -6298,18 +6409,32 @@ readColorTargetBytes(
           vk::ImageUsageFlagBits::
               eTransferSrc) ||
         array_layer >=
-            metadata.array_layers) {
+            metadata.array_layers ||
+        mip_level >=
+            metadata.mip_levels) {
         throw std::runtime_error(
             "color probe requires a transfer-src "
-            "RGBA8 or RGBA16F target");
+            "RGBA8 or RGBA16F target subresource");
     }
 
     const auto &image =
         targets.getImage(target_id);
+    const auto mip_extent =
+        vk::Extent3D{
+            std::max(
+                1u,
+                metadata.extent.width >>
+                    mip_level),
+            std::max(
+                1u,
+                metadata.extent.height >>
+                    mip_level),
+            1u,
+        };
     const auto byte_count =
         static_cast<vk::DeviceSize>(
-            metadata.extent.width) *
-        metadata.extent.height *
+            mip_extent.width) *
+        mip_extent.height *
         bytes_per_texel;
     auto &vkcore =
         GET_MODULE(VulkanManageCore);
@@ -6350,12 +6475,12 @@ readColorTargetBytes(
             copy.imageSubresource = {
                 vk::ImageAspectFlagBits::
                     eColor,
-                0,
+                mip_level,
                 array_layer,
                 1,
             };
             copy.imageExtent =
-                image.extent;
+                mip_extent;
             command.copyImageToBuffer(
                 image.image.get(),
                 vk::ImageLayout::
@@ -7692,6 +7817,11 @@ void GoldenHarness::runPlanarReflection() {
         vk::Format::
             eR16G16B16A16Sfloat);
     REQUIRE(
+        probe.color.mip_levels == 7);
+    REQUIRE(
+        probe.color.usage &
+        vk::ImageUsageFlagBits::eStorage);
+    REQUIRE(
         probe.prepared_view_count ==
         1);
     REQUIRE(
@@ -7753,6 +7883,9 @@ void GoldenHarness::runPlanarReflection() {
         probe.color_bytes.size() ==
         64u * 64u * 8u);
     REQUIRE(
+        probe.filtered_color_bytes.size() ==
+        8u);
+    REQUIRE(
         std::any_of(
             probe.albedo_bytes.begin(),
             probe.albedo_bytes.end(),
@@ -7782,6 +7915,24 @@ void GoldenHarness::runPlanarReflection() {
             [](std::uint8_t value) {
                 return value != 0;
             }));
+    REQUIRE(
+        std::any_of(
+            probe.filtered_color_bytes.begin(),
+            probe.filtered_color_bytes.end(),
+            [](std::uint8_t value) {
+                return value != 0;
+            }));
+    REQUIRE(
+        probe.filter_dispatch_groups ==
+        (std::vector<
+            std::array<std::uint32_t, 3>>{
+            {4, 4, 1},
+            {2, 2, 1},
+            {1, 1, 1},
+            {1, 1, 1},
+            {1, 1, 1},
+            {1, 1, 1},
+        }));
     REQUIRE(
         probe.albedo_bytes ==
         deferred_probe.albedo_bytes);
@@ -7873,6 +8024,12 @@ void GoldenHarness::runPlanarReflection() {
             "planar_reflection_snapshot_opaque_color",
             "planar_reflection_snapshot_opaque_depth",
             "planar_reflection_forward_transparent",
+            "planar_reflection_filter_mip_1",
+            "planar_reflection_filter_mip_2",
+            "planar_reflection_filter_mip_3",
+            "planar_reflection_filter_mip_4",
+            "planar_reflection_filter_mip_5",
+            "planar_reflection_filter_mip_6",
         });
 #else
     SKIP(

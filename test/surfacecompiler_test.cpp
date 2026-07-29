@@ -1206,6 +1206,50 @@ void pelican_surface_v1(
         ShaderResourceDescriptorKind::
             combined_image_sampler);
 
+    const std::vector<std::string> layered_defines{
+        makeSurfaceResourceLayeredDefine(0),
+    };
+    const auto layered = composeSurfaceShaders(
+        surface, source_name,
+        SurfacePass::forward, layered_defines);
+    REQUIRE(
+        layered.resource_interface.front()
+            .image_view_dimension ==
+        ReflectedImageViewDimension::
+            two_d_array);
+    const auto layered_params = std::find_if(
+        layered.virtual_includes.begin(),
+        layered.virtual_includes.end(),
+        [](const auto &include) {
+            return include.first ==
+                   "__pelican_surface_params.glsl";
+        });
+    REQUIRE(
+        layered_params !=
+        layered.virtual_includes.end());
+    REQUIRE(
+        layered_params->second.find(
+            "uniform sampler2DArray "
+            "pelican_resource_gbuffer_normal") !=
+        std::string::npos);
+    REQUIRE(
+        layered_params->second.find(
+            "pelican_sample_gbuffer_normal"
+            "(uv, pelican_view_index())") !=
+        std::string::npos);
+    REQUIRE_THROWS_WITH(
+        composeSurfaceShaders(
+            surface, source_name,
+            SurfacePass::forward,
+            {
+                makeSurfaceResourceLocalReadDefine(
+                    0, 5),
+                makeSurfaceResourceLayeredDefine(0),
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "cannot select input-attachment and layered sampled "
+            "ABIs simultaneously"));
+
 #if PELICAN_RUNTIME_SHADER_COMPILER
     ShaderCompiler compiler;
     const auto compiled = compileSurfaceShaders(
@@ -1237,6 +1281,40 @@ void pelican_surface_v1(
         };
     require_input_attachment(0, 3);
     require_input_attachment(1, 5);
+
+    const auto layered_compiled =
+        compileSurfaceShaders(
+            compiler, surface, source_name,
+            SurfacePass::forward,
+            layered_defines);
+    requireCompiled(layered_compiled);
+    const auto layered_fragment =
+        reflect(
+            layered_compiled.fragment.spirv);
+    const auto layered_binding =
+        std::find_if(
+            layered_fragment.bindings.begin(),
+            layered_fragment.bindings.end(),
+            [](const auto &candidate) {
+                return candidate.set == 1 &&
+                       candidate.binding == 1;
+            });
+    REQUIRE(
+        layered_binding !=
+        layered_fragment.bindings.end());
+    REQUIRE(
+        layered_binding->type ==
+        vk::DescriptorType::
+            eCombinedImageSampler);
+    REQUIRE(
+        layered_binding
+            ->image_view_dimension ==
+        ReflectedImageViewDimension::
+            two_d_array);
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            layered.resource_interface,
+            layered_fragment));
 #endif
 }
 

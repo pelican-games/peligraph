@@ -144,7 +144,8 @@
       "layers": 2,
       "format": "R16G16B16A16_SFLOAT",
       "format_class": "explicit(R16G16B16A16_SFLOAT)",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+      "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "mip_levels": 7
     },
     {
       "name": "planar_reflection_opaque_color",
@@ -317,7 +318,16 @@
           "linear_view_depth": "planar_reflection_opaque_depth"
         },
         "material_resources": {
-          "planar_reflection": "planar_reflection_opaque_color"
+          "planar_reflection": {
+            "resource": "planar_reflection_opaque_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "footprint": "arbitrary"
+          }
         },
         "output": {
           "color": ["planar_reflection_color"],
@@ -329,10 +339,250 @@
       }
     }
   ],
+  "compute_tasks": [
+    {
+      "name": "planar_reflection_filter_mip_1",
+      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "reads": ["planar_reflection_color"],
+      "writes": ["planar_reflection_color"],
+      "schedule": "per_view",
+      "view_family": "$reflection/planar",
+      "resource_ports": {
+        "source_color": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 0,
+            "layer": 0
+          }
+        },
+        "filtered_color": {
+          "resource": "planar_reflection_color",
+          "access": "storage",
+          "view": "family_array",
+          "subresource": {
+            "mip": 1,
+            "layer": 0
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "filtered_color"
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_filter_mip_2",
+      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "reads": ["planar_reflection_color"],
+      "writes": ["planar_reflection_color"],
+      "schedule": "per_view",
+      "view_family": "$reflection/planar",
+      "resource_ports": {
+        "source_color": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 1,
+            "layer": 0
+          }
+        },
+        "filtered_color": {
+          "resource": "planar_reflection_color",
+          "access": "storage",
+          "view": "family_array",
+          "subresource": {
+            "mip": 2,
+            "layer": 0
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "filtered_color"
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_filter_mip_3",
+      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "reads": ["planar_reflection_color"],
+      "writes": ["planar_reflection_color"],
+      "schedule": "per_view",
+      "view_family": "$reflection/planar",
+      "resource_ports": {
+        "source_color": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 2,
+            "layer": 0
+          }
+        },
+        "filtered_color": {
+          "resource": "planar_reflection_color",
+          "access": "storage",
+          "view": "family_array",
+          "subresource": {
+            "mip": 3,
+            "layer": 0
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "filtered_color"
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_filter_mip_4",
+      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "reads": ["planar_reflection_color"],
+      "writes": ["planar_reflection_color"],
+      "schedule": "per_view",
+      "view_family": "$reflection/planar",
+      "resource_ports": {
+        "source_color": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 3,
+            "layer": 0
+          }
+        },
+        "filtered_color": {
+          "resource": "planar_reflection_color",
+          "access": "storage",
+          "view": "family_array",
+          "subresource": {
+            "mip": 4,
+            "layer": 0
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "filtered_color"
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_filter_mip_5",
+      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "reads": ["planar_reflection_color"],
+      "writes": ["planar_reflection_color"],
+      "schedule": "per_view",
+      "view_family": "$reflection/planar",
+      "resource_ports": {
+        "source_color": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 4,
+            "layer": 0
+          }
+        },
+        "filtered_color": {
+          "resource": "planar_reflection_color",
+          "access": "storage",
+          "view": "family_array",
+          "subresource": {
+            "mip": 5,
+            "layer": 0
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "filtered_color"
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_filter_mip_6",
+      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "reads": ["planar_reflection_color"],
+      "writes": ["planar_reflection_color"],
+      "schedule": "per_view",
+      "view_family": "$reflection/planar",
+      "before": ["forward_transparent"],
+      "resource_ports": {
+        "source_color": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 5,
+            "layer": 0
+          }
+        },
+        "filtered_color": {
+          "resource": "planar_reflection_color",
+          "access": "storage",
+          "view": "family_array",
+          "subresource": {
+            "mip": 6,
+            "layer": 0
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "filtered_color"
+        }
+      }
+    }
+  ],
   "pass_overrides": {
     "forward_transparent": {
       "material_resources": {
-        "planar_reflection": "planar_reflection_color"
+        "planar_reflection": {
+          "resource": "planar_reflection_color",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "linear",
+            "address": "clamp_to_edge"
+          },
+          "subresource": {
+            "mip": 0,
+            "mip_count": "remaining",
+            "layer": 0,
+            "layer_count": 1
+          },
+          "footprint": "arbitrary"
+        }
       }
     }
   }

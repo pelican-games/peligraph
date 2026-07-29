@@ -118,6 +118,13 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP228 | secondary ViewFamily transparent capture / family-local sort | ✅ 完了（2026-07-29）。同一sort providerのview別再評価、reflection-local snapshot、Forward transparent再描画、実GPU |
 | WP229 | ViewFamily-local clustered light selection | ✅ 完了（2026-07-29）。selection ABI v2、family token、XR左右眼領域、cross-feature integration、reflection多灯実GPU |
 | WP230 | planar reflection oblique near-plane projection | ✅ 完了（2026-07-29）。Vulkan ZO一般式、透視/非対称/正射影/X反転、fallback、実GPU |
+| WP231 / 231b | image extent dispatch / remaining-mip material view | ✅ 完了（2026-07-29）。typed output extent、local-size ceil divide、remaining mip descriptor、resize/実GPU |
+| WP232 | planar reflection mip filter / family-array material ABI | ✅ 完了（2026-07-29）。7-level low-pass、pass-owned view lowering、scalar-family adapter、roughness sampling実GPU |
+
+WP231〜232の受け入れ詳細:
+[`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
+[`WP231b`](design_reviews/2026-07-29_wp231b_remaining_mip_material_ports.md)、
+[`WP232`](design_reviews/2026-07-29_wp232_planar_reflection_mip_filter_report.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。

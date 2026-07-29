@@ -41,6 +41,8 @@ std::string makeSurfaceScreenInputLocalReadDefine(
 std::string makeSurfaceResourceLocalReadDefine(
     std::size_t resource,
     std::uint32_t input_attachment_index);
+std::string makeSurfaceResourceLayeredDefine(
+    std::size_t resource);
 
 struct SurfaceShaderComposition {
     std::string vertex_source;

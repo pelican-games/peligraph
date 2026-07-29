@@ -656,10 +656,23 @@ inputとして読み、reflection color/depth attachmentをloadして描画す�
 attachmentをsampleする再帰feedbackを防ぐ。透明surfaceのdepth write規則はcanonical
 `forward_transparent_v1`と同じであり、reflection depthはopaque段階から変化しない。
 
+公開reflection colorは7 mipを持つstorage/sampled imageで、capture後の6 compute nodeが
+明示subresource portを使ってmip N-1からNを生成する。dispatch groupは書き込みportの実extentと
+shader local sizeから導出するため、algorithmは解像度やVulkan dispatch値を持たない。
+family-array portのlayer countはphysical family cardinalityへ展開され、descriptor/view生成と
+hazard trackingは同じtyped subresourceを使う。
+
+material surfaceは`planar_reflection`というsemantic portとsampling algorithmだけを宣言し、
+material passの`family_array` policyをcompiler-owned physical defineへloweringする。同じsurfaceが
+scalarなsecondary family passとarrayなmain-family passへ割り当てられる場合は、前者へ1-layer
+array viewを作って`sampler2DArray` ABIを統一する。これはfeature固有のVulkan分岐ではなく、
+material resource port全般のview-shape adapterである。
+
 残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiviewである。
 CSMやreflectionを単なる特殊passへ戻さず、これらも
 stable family relationを通して拡張する。planar reflection側はoblique near-planeを実装済みで、
-roughness prefilter/sampling policyが残る。
+標準7-level low-pass mip chainも実装済みである。残るreflection quality項目はGGX等の
+BRDF-aware prefilter、複数plane/probeの選択、secondary multiviewである。
 
 ## 4. scene、material、light の contract
 

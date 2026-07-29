@@ -263,7 +263,46 @@ RenderingPassContainer::materialPassRenderingBindings(
                                     GlobalRenderTargetId target,
                                     bool history,
                                     const LogicalReadFootprint
-                                        &footprint) {
+                                        &footprint,
+                                    std::optional<
+                                        ShaderResourcePortView>
+                                        resource_view =
+                                            std::nullopt) {
+                                    const auto target_position =
+                                        std::find(
+                                            pass.input_targets.begin(),
+                                            pass.input_targets.end(),
+                                            target);
+                                    auto view_dimension =
+                                        target_position !=
+                                                    pass.input_targets.end() &&
+                                                pass.input_target_views.size() ==
+                                                    pass.input_targets.size()
+                                            ? pass.input_target_views.at(
+                                                  static_cast<std::size_t>(
+                                                      target_position -
+                                                      pass.input_targets
+                                                          .begin()))
+                                            : PassInputViewDimension::
+                                                  shared_2d;
+                                    if (resource_view ==
+                                        ShaderResourcePortView::
+                                            family_array) {
+                                        // family_array is an algorithm ABI,
+                                        // even when a one-view family is
+                                        // physically represented by a
+                                        // scalar image.
+                                        view_dimension =
+                                            PassInputViewDimension::
+                                                family_2d_array;
+                                    } else if (
+                                        resource_view ==
+                                        ShaderResourcePortView::
+                                            shared_2d) {
+                                        view_dimension =
+                                            PassInputViewDimension::
+                                                shared_2d;
+                                    }
                                     inputs.push_back(
                                         MaterialPassShaderInputBinding{
                                             .input = {
@@ -275,6 +314,8 @@ RenderingPassContainer::materialPassRenderingBindings(
                                                 input_attachment_index(
                                                     target, history,
                                                     footprint),
+                                            .view_dimension =
+                                                view_dimension,
                                         });
                                 };
                             for (const auto &input :
@@ -299,7 +340,8 @@ RenderingPassContainer::materialPassRenderingBindings(
                                     resource.port.name,
                                     resource.target,
                                     resource.history,
-                                    resource.footprint);
+                                    resource.footprint,
+                                    resource.port.view);
                             }
                             return inputs;
                         }(),
@@ -331,6 +373,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
         result.push_back({
             .input = input,
             .input_attachment_index = std::nullopt,
+            .view_dimension =
+                PassInputViewDimension::shared_2d,
         });
     }
 
@@ -342,6 +386,9 @@ RenderingPassContainer::materialPassShaderInputBindings(
     for (std::size_t input_index = 0;
          input_index < inputs.size(); ++input_index) {
         std::optional<std::uint32_t> expected;
+        auto expected_view =
+            PassInputViewDimension::shared_2d;
+        std::string expected_pass;
         bool initialized = false;
         for (const auto &pass : passes) {
             const auto found = std::find_if(
@@ -360,20 +407,38 @@ RenderingPassContainer::materialPassShaderInputBindings(
             if (!initialized) {
                 expected =
                     found->input_attachment_index;
+                expected_view =
+                    found->view_dimension;
+                expected_pass =
+                    pass.pass_name;
                 initialized = true;
                 continue;
             }
             if (expected !=
-                found->input_attachment_index) {
+                    found->input_attachment_index ||
+                expected_view !=
+                    found->view_dimension) {
                 throw std::runtime_error(
                     "material shader input '" +
                     inputs[input_index].name +
-                    "' resolves to different sampled/local-read "
-                    "ABIs across render graph variants");
+                    "' resolves to different sampled/local-read ABIs "
+                    "or image-view ABIs across render graph variants: '" +
+                    expected_pass + "' (view " +
+                    std::to_string(
+                        static_cast<int>(
+                            expected_view)) +
+                    ") and '" + pass.pass_name +
+                    "' (view " +
+                    std::to_string(
+                        static_cast<int>(
+                            found->view_dimension)) +
+                    ")");
             }
         }
         result[input_index].input_attachment_index =
             expected;
+        result[input_index].view_dimension =
+            expected_view;
     }
     return result;
 }

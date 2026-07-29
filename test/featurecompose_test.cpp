@@ -118,6 +118,21 @@ const nlohmann::json &passByName(const nlohmann::json &config, std::string_view 
     throw std::runtime_error("pass not found: " + std::string{name});
 }
 
+const nlohmann::json &computeTaskByName(
+    const nlohmann::json &config,
+    std::string_view name) {
+    for (const auto &task :
+         config.at("compute_tasks")) {
+        if (task.value("name", std::string{}) ==
+            name) {
+            return task;
+        }
+    }
+    throw std::runtime_error(
+        "compute task not found: " +
+        std::string{name});
+}
+
 void requireErrorKind(std::string_view message, std::string_view error_kind) {
     if (error_kind == "render_target_collision") {
         REQUIRE(contains(message, "render target name collides"));
@@ -818,6 +833,18 @@ TEST_CASE(
         REQUIRE(target->at("height") == 64);
         REQUIRE(target->at("layers") == 2);
         REQUIRE(target->at("extent_scale") == 1.0);
+        if (target_name ==
+            std::string_view{
+                "planar_reflection_color"}) {
+            REQUIRE(
+                target->at("mip_levels") == 7);
+            REQUIRE(
+                std::find(
+                    target->at("usage").begin(),
+                    target->at("usage").end(),
+                    "STORAGE") !=
+                target->at("usage").end());
+        }
     }
     for (const auto pass_name : {
              "planar_reflection_geometry",
@@ -898,21 +925,100 @@ TEST_CASE(
             "screen_inputs")
             .at("opaque_depth") ==
         "planar_reflection_opaque_depth");
+    const auto reflection_feedback_binding =
+        nlohmann::json{
+            {"resource",
+             "planar_reflection_opaque_color"},
+            {"access", "sampled"},
+            {"view", "family_array"},
+            {"sampling",
+             {
+                 {"filter", "linear"},
+                 {"address", "clamp_to_edge"},
+             }},
+            {"footprint", "arbitrary"},
+        };
     REQUIRE(
         transparent_capture.at(
             "material_resources")
             .at("planar_reflection") ==
-        "planar_reflection_opaque_color");
+        reflection_feedback_binding);
     REQUIRE_FALSE(
         transparent_capture.contains(
             "inherit_bindings_from"));
-    REQUIRE(
+    const auto &main_reflection =
         passByName(
             result.config,
             "forward_transparent")
             .at("material_resources")
-            .at("planar_reflection") ==
+            .at("planar_reflection");
+    REQUIRE(
+        main_reflection.at("resource") ==
         "planar_reflection_color");
+    REQUIRE(
+        main_reflection.at("view") ==
+        "family_array");
+    const auto remaining_mips =
+        nlohmann::json{
+            {"mip", 0},
+            {"mip_count", "remaining"},
+            {"layer", 0},
+            {"layer_count", 1},
+        };
+    REQUIRE(
+        main_reflection.at("subresource") ==
+        remaining_mips);
+    REQUIRE(
+        result.config.at("compute_tasks")
+            .size() == 6);
+    for (std::uint32_t mip = 1;
+         mip < 7; ++mip) {
+        const auto &task =
+            computeTaskByName(
+                result.config,
+                "planar_reflection_filter_mip_" +
+                    std::to_string(mip));
+        REQUIRE(
+            task.at("schedule") ==
+            "per_view");
+        REQUIRE(
+            task.at("view_family") ==
+            "$reflection/planar");
+        REQUIRE(
+            task.at("resource_ports")
+                .at("source_color")
+                .at("view") ==
+            "family_array");
+        REQUIRE(
+            task.at("resource_ports")
+                .at("filtered_color")
+                .at("view") ==
+            "family_array");
+        REQUIRE(
+            task.at("resource_ports")
+                .at("source_color")
+                .at("subresource")
+                .at("mip") ==
+            mip - 1);
+        REQUIRE(
+            task.at("resource_ports")
+                .at("filtered_color")
+                .at("subresource")
+                .at("mip") ==
+            mip);
+        REQUIRE(
+            task.at("dispatch")
+                .at("groups_from")
+                .at("port") ==
+            "filtered_color");
+    }
+    REQUIRE(
+        computeTaskByName(
+            result.config,
+            "planar_reflection_filter_mip_6")
+            .at("before") ==
+        nlohmann::json::array(
+            {"forward_transparent"}));
 
     const auto compiled =
         compileComposition(result);
@@ -1070,7 +1176,9 @@ TEST_CASE(
         REQUIRE(
             transparent_resources.at(
                 "planar_reflection") ==
-            "planar_reflection_opaque_color");
+            transparent_capture.at(
+                "material_resources")
+                .at("planar_reflection"));
         const auto &buffers =
             combined.config.at("buffers");
         REQUIRE(

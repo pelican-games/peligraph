@@ -192,14 +192,21 @@ reflectionは両方を照合する。local variantは意味論上現在画素だ
 関数のUV/LOD引数を使わない。history、material subresource、MSAAはlocal化せず、
 条件不成立時はsamplerへfallbackする。
 
-shared 2Dとsequential per-view 2Dは両variantで利用できる。layered multiviewは
-input attachment variantだけ2D-array attachment viewをbindできる。sampled側は
-`sampler2DArray` accessorをまだ公開しないため名前付きで拒否する。
-generated image accessorは現在floating-point `vec4`契約であり、UINT/SINT
-input attachmentはtyped image portを追加するまで拒否する。
+shared 2Dとsequential per-view 2Dは両variantで利用できる。pass mappingが
+`view: "family_array"`を宣言したsampled portは`sampler2DArray`へloweringする。
+surface側の`pelican_sample_<port>(vec2)`と`pelican_sample_lod_<port>(vec2, float)`は
+`pelican_view_index()`で現在のfamily memberを選び、view index付きoverloadは任意layerを
+明示できる。surface宣言へ物理view型は追加せず、semantic interfaceとsampling algorithmを
+pass/backend loweringから分離する。1-view familyがscalar 2D imageへ物理化された場合は
+runtimeが1-layer 2D-array viewを生成し、複数material passで一つのshader ABIを共有する。
+
+consumer-owned layered multiviewの一般sampled inputは未対応で、input attachment variantだけ
+2D-array attachment viewをbindできる。generated image accessorは現在floating-point
+`vec4`契約であり、UINT/SINT input attachmentはtyped image portを追加するまで拒否する。
 
 一つのmaterial shader/pipelineを共有するactive graph variantは、各portの
-sampler/input-attachment種別とinput attachment indexが一致する必要がある。
+sampler/input-attachment種別、input attachment index、正規化後のshader image-view ABIが
+一致する必要がある。
 graph-only hot reloadでこの物理契約が変わる場合も、WP222のcoordinated transactionが
 保持済みsurface compiler recipeからshaderを再生成し、依存pipelineとmaterial metadataを
 候補generationへ合わせる。全candidateの構築完了後だけgraphと同時公開し、

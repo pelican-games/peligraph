@@ -943,6 +943,56 @@ TEST_CASE(
                     capacity_target, 1)});
     REQUIRE(
         per_view_left != per_view_right);
+    auto family_array_task =
+        per_view_task;
+    family_array_task.name =
+        "family_array_descriptor_probe";
+    family_array_task
+        .resource_ports.front().view =
+        ShaderResourcePortView::
+            family_array;
+    family_array_task
+        .resource_ports.front().subresource =
+        ImageSubresourceRange{
+            .base_array_layer = 0,
+            .layer_count = 1,
+        };
+    const std::unordered_map<
+        std::string,
+        VulkanResourceViewLayout>
+        family_array_resource_views{
+            {"wp209b_layer_capacity_target",
+             VulkanResourceViewLayout::
+                 family_2d_array},
+        };
+    const auto family_array_task_id =
+        GET_MODULE(ComputeTaskContainer)
+            .registerComputeTask(
+                family_array_task,
+                ComputeTaskRuntimeDependencies{
+                    library,
+                    GET_MODULE(PathResolver),
+                    render_targets,
+                    frame_graph_resources,
+                    &family_array_resource_views,
+                    &compute_resource_view_counts,
+                });
+    const auto family_array_views =
+        GET_MODULE(ComputeTaskContainer)
+            .boundImageViewsForTesting(
+                family_array_task_id, 0, 0);
+    REQUIRE(
+        family_array_views ==
+        std::vector<vk::ImageView>{
+            render_targets
+                .getImageSubresourceView(
+                    capacity_target,
+                    ImageSubresourceRange{
+                        .base_array_layer = 0,
+                        .layer_count =
+                            stereo_view_count,
+                    },
+                    true)});
     const auto local_source =
         render_targets.registerRenderTarget(
             "wp203b_tile_local_source",

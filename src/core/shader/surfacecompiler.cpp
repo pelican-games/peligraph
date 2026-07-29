@@ -29,6 +29,13 @@ std::string makeSurfaceResourceLocalReadDefine(
            std::to_string(input_attachment_index);
 }
 
+std::string makeSurfaceResourceLayeredDefine(
+    std::size_t resource) {
+    return std::string{
+               surfaceResourceLocalReadDefinePrefix} +
+           std::to_string(resource) + "_LAYERED=1";
+}
+
 namespace {
 
 constexpr std::string_view userIncludeName = "__pelican_user_surface.glsl";
@@ -69,6 +76,38 @@ physicalLocalReadIndex(
         result = value;
     }
     return result;
+}
+
+bool physicalLayeredResource(
+    std::span<const std::string> defines,
+    std::size_t index) {
+    const auto key =
+        std::string{
+            surfaceResourceLocalReadDefinePrefix} +
+        std::to_string(index) + "_LAYERED=";
+    std::optional<bool> result;
+    for (const auto &define : defines) {
+        if (!define.starts_with(key)) {
+            continue;
+        }
+        if (result) {
+            throw std::runtime_error(
+                "surface physical layered-view define is duplicated: " +
+                key);
+        }
+        const auto encoded =
+            std::string_view{define}.substr(key.size());
+        if (encoded == "0") {
+            result = false;
+        } else if (encoded == "1") {
+            result = true;
+        } else {
+            throw std::runtime_error(
+                "surface physical layered-view define must be 0 or 1: " +
+                define);
+        }
+    }
+    return result.value_or(false);
 }
 
 std::string diagnosticSourceName(std::string_view source_name) {
@@ -242,6 +281,16 @@ makeSurfaceResourceInterface(
                       surfaceResourceLocalReadDefinePrefix,
                       index)
                 : std::nullopt;
+        const auto layered =
+            image &&
+            physicalLayeredResource(
+                defines, index);
+        if (local_read && layered) {
+            throw std::runtime_error(
+                "surface resource port '" + port.name +
+                "' cannot select input-attachment and layered sampled "
+                "ABIs simultaneously");
+        }
         if (local_read &&
             port.stage !=
                 SurfaceResourcePortStage::fragment) {
@@ -269,6 +318,12 @@ makeSurfaceResourceInterface(
                             image
                                 ? ShaderResourcePortAccess::sampled
                                 : ShaderResourcePortAccess::storage,
+                        .view =
+                            layered
+                                ? ShaderResourcePortView::
+                                      family_array
+                                : ShaderResourcePortView::
+                                      shared_2d,
                     },
                 .binding =
                     first_binding +
@@ -284,7 +339,11 @@ makeSurfaceResourceInterface(
                               storage_buffer,
                 .image_view_dimension =
                     image
-                                ? ReflectedImageViewDimension::two_d
+                                ? layered
+                                      ? ReflectedImageViewDimension::
+                                            two_d_array
+                                      : ReflectedImageViewDimension::
+                                            two_d
                                 : ReflectedImageViewDimension::none,
                 .input_attachment_index =
                     local_read,
@@ -471,6 +530,33 @@ std::string makeParamsInclude(
     if (!resource_interface.empty()) {
         source << generateShaderResourcePortInclude(
             resource_interface);
+        // A .surface owns the sampling algorithm, while the active material
+        // pass owns the physical view shape. Preserve the scalar accessor
+        // across that lowering boundary: array-backed variants select the
+        // current logical view automatically, and the generated indexed
+        // overload remains available for algorithms that intentionally
+        // address another family member.
+        for (const auto &resource :
+             resource_interface) {
+            if (resource.descriptor !=
+                    ShaderResourceDescriptorKind::
+                        combined_image_sampler ||
+                resource.image_view_dimension !=
+                    ReflectedImageViewDimension::
+                        two_d_array) {
+                continue;
+            }
+            source << "vec4 pelican_sample_"
+                   << resource.port.name
+                   << "(vec2 uv) { return pelican_sample_"
+                   << resource.port.name
+                   << "(uv, pelican_view_index()); }\n"
+                   << "vec4 pelican_sample_lod_"
+                   << resource.port.name
+                   << "(vec2 uv, float lod) { return pelican_sample_lod_"
+                   << resource.port.name
+                   << "(uv, pelican_view_index(), lod); }\n";
+        }
     }
     return source.str();
 }

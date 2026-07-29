@@ -795,7 +795,7 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
             isCompilerOwnedSurfaceDefine)) {
         throw std::runtime_error(
             "material defines cannot override the compiler-owned "
-            "local-read shader ABI");
+            "physical shader ABI");
     }
     std::optional<MaterialOutputSchema> output_schema;
     if (const auto *passes =
@@ -866,6 +866,18 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
                         image_resource_indices[index],
                         *physical_inputs[physical_index]
                              .input_attachment_index));
+            } else if (
+                physical_inputs[physical_index]
+                        .view_dimension ==
+                    PassInputViewDimension::
+                        layered_2d_array ||
+                physical_inputs[physical_index]
+                        .view_dimension ==
+                    PassInputViewDimension::
+                        family_2d_array) {
+                defines.push_back(
+                    makeSurfaceResourceLayeredDefine(
+                        image_resource_indices[index]));
             }
         }
     }

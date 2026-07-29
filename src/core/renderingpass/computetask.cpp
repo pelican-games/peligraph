@@ -662,13 +662,25 @@ makeComputeResourceInterface(
             }
             auto resolved_port = port;
             if (resolved_port.subresource &&
-                resolved_port.view ==
-                    ShaderResourcePortView::per_view &&
                 dimension ==
                     ReflectedImageViewDimension::
-                        two_d_array) {
+                        two_d_array &&
+                (resolved_port.view ==
+                     ShaderResourcePortView::per_view ||
+                 resolved_port.view ==
+                     ShaderResourcePortView::
+                         family_array)) {
                 if (resolved_port.subresource
                         ->layer_count == 1) {
+                    if (resolved_port.subresource
+                            ->base_array_layer != 0) {
+                        throw std::runtime_error(
+                            "Shader resource port '" +
+                            port.name + "' (resource '" +
+                            port.resource +
+                            "') expandable family subresource must "
+                            "start at array layer zero");
+                    }
                     resolved_port.subresource
                         ->layer_count =
                         resource
@@ -682,7 +694,7 @@ makeComputeResourceInterface(
                         "Shader resource port '" +
                         port.name + "' (resource '" +
                         port.resource +
-                        "') per_view subresource must select one "
+                        "') family image subresource must select one "
                         "expandable layer or exactly the logical view count");
                 }
             }
@@ -731,7 +743,7 @@ makeComputeResourceInterface(
                         "Shader resource port '" +
                         port.name + "' (resource '" +
                         port.resource +
-                        "') per_view subresource must select exactly "
+                        "') family image subresource must select exactly "
                         "the logical view count");
                 }
             }

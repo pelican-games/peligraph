@@ -497,7 +497,9 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
 - local variantはpublic関数のUV/LOD引数を保つが、意味論上は現在画素だけを読む。
   generated image accessorは現在floating-point `vec4`契約で、UINT/SINT input attachmentと
   historyは後続境界とする。material subresourceはWP231bでsampled descriptorに対応したが、
-  local input attachmentへはlowerしない
+  local input attachmentへはlowerしない。WP232で`family_array` sampled portは
+  `sampler2DArray`へloweringし、surfaceのscalar accessorが現在のlogical viewを自動選択する。
+  1-view familyのscalar imageは1-layer array viewへadaptする
 - 詳細は
   [`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
   を正とする

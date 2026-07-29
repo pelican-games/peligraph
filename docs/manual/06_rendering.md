@@ -292,8 +292,25 @@ main cameraと鏡映cameraで奥行き順が異なってもmain-view順序を流
 公開結果targetは`planar_reflection_color`で、canonical `forward_transparent` passでは同名の
 `planar_reflection` material resource portへ自動bindingされます。reflection内のtransparent
 passではこのportをopaque color snapshotへ切り替えるため、書き込み中のreflection attachmentを
-同時にsampleしません。Fresnel、歪み、roughness filterなどのsampling policyはmaterial側に
-書きます。
+同時にsampleしません。公開targetは7 mipを持ち、capture後に6個のimage-extent compute taskが
+前段mipをlinear box filterして後段mipを生成します。taskは`$reflection/planar` family単位で
+実行され、flatのscalar imageもXRのfamily arrayも同じtyped portからloweringされます。
+
+surfaceはgraph/view形状を宣言せず、semantic portとsampling algorithmだけを書きます。
+material pass側の`view: "family_array"`が`sampler2DArray` ABIを選び、
+`pelican_sample_*()`は現在のlogical viewを自動選択します。必要ならview index付きoverloadも
+利用できます。たとえばroughnessから標準mip列を読む最小形は次です。
+
+```glsl
+float lod = roughness * roughness *
+    float(max(pelican_mip_count_planar_reflection(), 1u) - 1u);
+vec3 reflected =
+    pelican_sample_lod_planar_reflection(screen_uv, lod).rgb;
+```
+
+Fresnel、法線由来の歪み、GGX importance-sampled convolutionはmaterial/project側の
+置換可能なalgorithmです。標準filterはboundedな7-level low-passであり、物理BRDF積分そのもの
+ではありません。
 
 project featureでcanonical passと同じmaterial bindingを別target/viewへ再利用するときは、
 composer helperの`"inherit_bindings_from": "<pass-name>"`を指定できます。全featureの
@@ -1061,11 +1078,15 @@ compute/storage producerの出力自体はmaterializedのままです。tile-loc
 producerが同じresourceをraster attachmentとしてwriteするgraphだけです。
 
 shared 2Dとsequential per-view 2Dはsampler/local両経路で利用できます。
-layered multiviewはlocal input attachmentでは利用できますが、sampled image側の
-`sampler2DArray` accessorは未公開なので明示エラーです。現在のgenerated image accessorは
-floating-point `vec4`契約で、UINT/SINT input attachmentはtyped image port追加まで
-拒否します。全active graph variantはsampler/local種別と物理input indexが一致する
-必要があります。
+material passが`view: "family_array"`を宣言したsampled imageは`sampler2DArray`へloweringされ、
+`pelican_sample_<name>(uv)` / `pelican_sample_lod_<name>(uv, lod)`は現在のlogical viewを
+自動選択します。明示的に別viewを読む場合はview index付きoverloadを使います。1-view familyが
+scalar 2D imageへ物理化された場合も、runtimeが1-layer array viewを作るため同じsurface ABIを
+維持できます。consumer-owned layered multiviewの一般sampled inputはまだ未対応で、
+local input attachment経路だけを利用できます。現在のgenerated image accessorは
+floating-point `vec4`契約で、UINT/SINT input attachmentはtyped image port追加まで拒否します。
+全active graph variantはsampler/local種別、input attachment index、正規化後のshader view ABIが
+一致する必要があります。
 完全な契約は[シェーダ契約](../shader_contract.md)を参照してください。
 
 ### pelican.material — 値だけの JSON

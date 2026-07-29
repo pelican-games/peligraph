@@ -1015,6 +1015,8 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE13f / WP228（済 2026-07-29） | secondary familyのview-local draw sort、reflection-local opaque snapshot、Forward transparent再描画 | main/reflectionで逆転する透明順、三段color差分、depth/G-buffer不変、8-node実GPU |
 | RPE13g / WP229（済 2026-07-29） | ViewFamily-affine GPU buffer ABI、late cross-feature integration、family-local clustered selector | flat/XR二眼/planar reflectionのheader token、70灯overflow、feature順序・pass縮小回帰、実GPU |
 | RPE13h / WP230（済 2026-07-29） | planar reflectionのVulkan ZO oblique near-plane、標準feature opt-out、semantic clip fallback | 透視/非対称/正射影/X反転CPU契約、Deferred + Forward + clustered reflection実GPU |
+| RPE13i / WP231・231b（済 2026-07-29） | image-port extent由来compute dispatch、remaining-mip material subresource | local-size ceil divide、resize、full mip descriptor、実GPU |
+| RPE13j / WP232（済 2026-07-29） | planar 7-level mip filter、pass-owned family-array material ABI、scalar-family adapter | mip別dispatch/bytes、Surface sampler2DArray reflection、scalar/array両pass共有、実GPU |
 
 ### 12.1 いま着手する範囲
 
