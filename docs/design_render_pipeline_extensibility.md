@@ -1007,6 +1007,10 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE12b / WP204 alias-runtime slice（済 2026-07-26） | lifetime非重複imageのruntime group、VMA allocation共有、alias memory dependency | variant完全合意、generation分離、rollback/recreate、headless実描画 |
 | RPE12b / WP204 dependency-safe-scope slice（済 2026-07-26） | version 3 scope mode、dependency-preserving reorder、materialized scope fusion | lifetime再計算、physical-order scheduler、単一dynamic-rendering instance、compute/render headless hot reload、multiview回帰 |
 | RPE12c / WP221（済 2026-07-29、内部slice） | flat/preview/XR variant-family単位の`RenderCompilerProgram`、runtime/data-only artifact、open backend context/package、Vulkan-native bypass、trusted provenance | backend-native CPU fixture、backend/graph/index reject、custom headless registration、coordinated preview reload、hybrid/GPU arena回帰 |
+| RPE13a / WP223（済 2026-07-29） | stable runtime `RenderViewFamily`、Camera/OpenXR provider、projection modifier、family/view temporal identity | flat/XR cardinality、stable view reorder/reset、jitter一回、Frame snapshot回帰 |
+| RPE13b / WP224（済 2026-07-29） | pass/taskの`view_family` relationをlogical IRからVulkan scopeまで運搬、family別FrameUBO | mixed-family scheduling、caller provider置換、directional shadow実GPU |
+| RPE13c / WP225（済 2026-07-29） | secondary multi-view sequential lowering、directional CSM provider/array target/LightUBO/cascade draw compaction | XR frustum union、3-layer depth、全cascade invocation、遠方caster除外の実GPU |
+| RPE13d / WP226（済 2026-07-29） | planar reflection provider、per-view clip plane、独立解像度standard feature、generic secondary culling | reflection G-buffer/depth/color、family invocation、shadow/reflection共通submissionの実GPU |
 
 ### 12.1 いま着手する範囲
 

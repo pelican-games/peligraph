@@ -110,6 +110,10 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP220 | material same-pixel local-read ABI | ✅ 完了（2026-07-29）。screen/resource input、sampler/input-attachment自動lowering、実GPU |
 | WP221 | top-level render compiler program / open backend package | ✅ 内部slice完了（2026-07-29）。flat/preview/XR一括compile、runtime/data-only artifact、mixed/native Vulkan package、provenance、実GPU |
 | WP222 | coordinated render graph / surface / material pipeline reload | ✅ 完了（2026-07-29）。候補ABI再解決、surface/pipeline再構築、material values併合、単一publication、実GPU rollback |
+| WP223 | runtime ViewFamily foundation | ✅ 完了（2026-07-29）。stable family/view ID、Camera/OpenXR provider、jitter modifier、family別temporal identity |
+| WP224 | secondary ViewFamily relation/runtime | ✅ 完了（2026-07-29）。logical〜Vulkan relation、family別FrameUBO、directional shadow provider、mixed-family実行 |
+| WP225 | cascaded secondary ViewFamily | ✅ 完了（2026-07-29）。CSM provider、array target、sequential schedule、LightUBO、cascade別culling、実GPU |
+| WP226 | planar reflection ViewFamily / generic secondary culling | ✅ 完了（2026-07-29）。reflection provider、clip plane ABI、独立解像度feature、汎用secondary culling、実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -898,6 +902,22 @@ material/skinned rangeを保った密なindirect bufferへ再配置する。3-la
 point/spot cube shadow、planar reflection、secondary multiviewはこの一般化を再利用する
 後続項目であり、WP225には含めない。実装境界と検証結果は
 [`2026-07-29_wp225_cascaded_secondary_view_family_report.md`](design_reviews/2026-07-29_wp225_cascaded_secondary_view_family_report.md)
+を参照する。
+
+WP226でplanar reflectionを二つ目のsecondary-family consumerとして縦切りした。
+標準`planar_reflection` featureはplaneと独立解像度からstable
+`$reflection/planar/$mirror/<source-view>` familyを自動生成し、反射view、world clip plane、
+2-layer deferred G-buffer、SSAO、lighting、forward transparent向けresource portを接続する。
+callerが同名familyを渡した場合はbuiltin providerを置換できる。
+FrameUBOのper-view clip planeは標準surfaceから反射面の反対側を除外し、reflectionとCSMは
+同じgeneric secondary-family indirect preparationを使う。canonical draw rangeを保ったまま
+frustum/clip-plane外の既知AABBだけを`instanceCount=0`にするため、material/skinned phaseを
+壊さず未知boundsも保守的に残す。実Vulkan goldenで64×64のG-buffer/depth/color、
+reflection invocation、draw preparationを検証した。
+現時点の標準captureはdeferred-route opaqueを対象とする。forward opaqueのcapture、
+secondary multiview、point/spot cube family、family別transparent sortは後続とする。
+実装境界と検証結果は
+[`2026-07-29_wp226_planar_reflection_report.md`](design_reviews/2026-07-29_wp226_planar_reflection_report.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

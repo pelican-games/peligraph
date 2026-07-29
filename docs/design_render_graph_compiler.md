@@ -28,6 +28,10 @@ WP225ではsecondary familyの複数viewをsequential scheduleへlowerし、dire
 dogfoodした。stable `$cascade/N`、family固有extent、array-layer attachment、
 LightUBOのmatrix/split、main-depth cascade選択、cascade別draw compactionが同じ
 `view_family + view_index` relationで接続される。
+WP226ではplanar reflectionを二つ目のconsumerとして追加した。stable
+`$mirror/<source-view>`、反射view、per-view world clip plane、独立解像度target、
+standard deferred captureを同じrelationへ接続し、secondary draw preparationを
+shadow専用実装からfrustum/clip-plane対応の汎用family経路へ一般化した。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -578,15 +582,21 @@ LightUBOの最大8 matrixとsplit、shaderのmain-view depth selectionは同じ
 family-selected viewを使う。familyごとのtemporal matrix履歴とin-flight FrameUBO slotも
 分離する。受光点が最終splitより遠い場合はshadow sampleを行わずfully litとする。
 
-draw submissionはcanonical scene draw candidateとworld AABBを再利用する。各cascadeの
-Vulkan zero-to-one clip volumeに完全に外れるAABBだけを除外し、交差またはbounds不明の
-drawは残す。material/skinned fixed-state rangeを維持したまま、cascadeごとの独立領域へ
-密な`vk::DrawIndexedIndirectCommand`列を作る。これは現時点ではdirectional shadowの
-runtime consumerであり、汎用family culling policyへ早まって固定していない。
+draw submissionはcanonical scene draw candidateとworld AABBを再利用する。secondary
+familyごとのVulkan zero-to-one clip volume、または任意のworld clip planeに完全に外れる
+AABBだけを除外し、交差またはbounds不明のdrawは残す。canonical command layoutと
+material/skinned fixed-state rangeを維持し、除外commandの`instanceCount`だけを0にする。
+CSMとplanar reflectionは同じprepared indirect bufferを使い、family/viewごとのbyte offsetで
+選択する。最大prepared view数を超えるfamilyはcanonical queueへ安全側fallbackする。
 
-残るG6bはpoint shadowのcube face、planar reflection/capture provider、汎用family
-culling/sort、secondary multiviewである。CSMを単なるLightUBO行列配列へ戻さず、これらも
-stable family relationを通して拡張する。
+planar reflectionのbuiltin providerはmain familyの各viewを指定planeで反転し、stable
+`$mirror/<source-view>` identityと同じplaneのclip情報を付ける。標準featureは独立解像度の
+deferred G-buffer、SSAO、lightingをreflection familyで実行し、結果をnamed material resource
+portとして公開する。同名familyをcallerが与えた場合はbuiltin providerを使わない。
+
+残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiview、
+family別transparent sort、forward-route geometryのreflection captureである。CSMやreflectionを
+単なる特殊passへ戻さず、これらもstable family relationを通して拡張する。
 
 ## 4. scene、material、light の contract
 
