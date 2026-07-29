@@ -24,6 +24,10 @@ WP224ではpass/taskの`view_family` relationをlogical IRからVulkan physical 
 `RenderViewFamilies`からfamily別snapshot・FrameUBO slotを準備するmixed-family runtimeを
 接続した。標準directional shadowは`$shadow/directional/$cascade/0`を使い、`$main`の
 mono/stereo cardinalityと独立して一回だけ実行する。
+WP225ではsecondary familyの複数viewをsequential scheduleへlowerし、directional CSMで
+dogfoodした。stable `$cascade/N`、family固有extent、array-layer attachment、
+LightUBOのmatrix/split、main-depth cascade選択、cascade別draw compactionが同じ
+`view_family + view_index` relationで接続される。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -562,16 +566,27 @@ frame-graph node、logical IR、FramePlan、Vulkan execution nodeが同じ`view_
 familyごとのcardinalityを受け取り、sequential targetではsecondary familyをmain view 0で
 一回だけ、view-family targetでは同じcommand context内で一回だけ実行する。
 
-標準directional shadow passは`$shadow/directional`を明示し、LightContainerが
-`$cascade/0`の非jitter viewを供給する。project/runtimeが同じIDのfamilyを明示すれば
-builtin providerを置換でき、shadow drawのpush constantとstandard lighting用LightUBOは
-同じfamily-selected view-projectionを使う。familyごとのtemporal matrix履歴と
-in-flight FrameUBO slotは分離する。
+標準directional shadow passは`$shadow/directional`を明示する。builtin providerは
+feature parameterから1〜8個の非jitter view `$cascade/N`を生成し、hybrid
+log/uniform splitと任意のtexel stabilizationを適用する。XRの複数main viewは
+各splitで一つのfrustum unionへ畳み、eyeごとのshadow familyを作らない。
+project/runtimeが同じfamily IDを明示すればbuiltin providerを置換できる。
 
-現時点のsecondary familyはsingle-view scopeだけをproduction runtimeで受理する。
-CSMの複数cascade、point shadowのcube face、reflection/capture固有extent、
-family別draw culling/sort、secondary multiviewは後続である。したがってG6bは
-directional mono縦切りまで部分解消であり、単にLightUBOの行列配列へ戻して拡張しない。
+schedulerはsecondary familyの全viewをsequential invocationへ展開し、各viewをfamily固有
+raster extentのarray layerへ結ぶ。shadow drawのpush constant、standard lighting用
+LightUBOの最大8 matrixとsplit、shaderのmain-view depth selectionは同じ
+family-selected viewを使う。familyごとのtemporal matrix履歴とin-flight FrameUBO slotも
+分離する。受光点が最終splitより遠い場合はshadow sampleを行わずfully litとする。
+
+draw submissionはcanonical scene draw candidateとworld AABBを再利用する。各cascadeの
+Vulkan zero-to-one clip volumeに完全に外れるAABBだけを除外し、交差またはbounds不明の
+drawは残す。material/skinned fixed-state rangeを維持したまま、cascadeごとの独立領域へ
+密な`vk::DrawIndexedIndirectCommand`列を作る。これは現時点ではdirectional shadowの
+runtime consumerであり、汎用family culling policyへ早まって固定していない。
+
+残るG6bはpoint shadowのcube face、planar reflection/capture provider、汎用family
+culling/sort、secondary multiviewである。CSMを単なるLightUBO行列配列へ戻さず、これらも
+stable family relationを通して拡張する。
 
 ## 4. scene、material、light の contract
 

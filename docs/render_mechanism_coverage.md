@@ -102,11 +102,11 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | C1 | B-layer material shadow reception | **○** | WP205でpublic shadow relation、project-copy同値、feature-off purge、実Vulkan goldenまで固定 |
-| C2 | cascaded shadow map | **△** | WP223/224でstable family/view ID、pass relation、secondary scheduling、`$cascade/0`実行まで追加。複数cascade、cascade別target/culling/light ABIは未実装(G6b) |
-| C3 | point/spot shadow | **✕** | named family relationとstatic cube/arrayは利用可能。secondary multi-view/cube-face実行、point/spot provider、light schemaが不足(G5/G6b) |
+| C2 | cascaded shadow map | **○** | WP225でstable `$cascade/N`、hybrid split、XR frustum union、D32 array target、最大8 cascade LightUBO、main-depth選択、cascade別conservative draw compactionを接続。3-layer実Vulkan goldenで全layerと遠方caster除外を検証 |
+| C3 | point/spot shadow | **✕** | named multi-view familyのsequential実行とstatic cube/arrayは利用可能。point/spot view provider、runtime cube-face attachment、light shadow schemaが不足(G5/G6b/G10b) |
 | C4 | PCSS / PCF | **△** | public shadow resourceとmanual depth compareは利用可能。標準filtered algorithm、comparison sampler利用、品質goldenは未作成 |
 | C5 | screen-space contact shadow | **△** | fullscreen depth ray march で構成可能。実 feature/golden 未作成 |
-| C6 | shadow cache / virtual shadow map | **✕** | mip/layer viewとnamed view-family relationは解消。page/cascade target policy、GPU-driven execution、residencyが不足(G6b/G8/G9) |
+| C6 | shadow cache / virtual shadow map | **✕** | mip/layer view、named view-family、cascade array targetは解消。page table、GPU-driven page execution、residencyが不足(G8/G9) |
 | C7 | capsule shadow | **△** | 固定/baked data は可能。動的 capsule inventory の public data channel は G5 |
 
 ### D. reflection / environment
@@ -118,7 +118,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | D3 | parallax-corrected reflection probe | **△** | baked texture + hook。probe selection/data は material単位または G5 |
 | D4 | post SSR | **△** | scene color + depth fullscreen で構成可能。実 feature 未作成 |
 | D5 | material SSR/refraction integration | **○** | typed screen input と実 Vulkan refraction test 済み |
-| D6 | planar reflection | **✕** | passはnamed familyを要求できるが、reflection provider、family固有target extent/culling、標準featureが無い(G6b) |
+| D6 | planar reflection | **✕** | passはnamed familyとfamily固有extentを使えるが、reflection provider、汎用family culling/clip-plane、標準featureが無い(G6b) |
 | D7 | hybrid RT reflection | **✕** | acceleration structure/RT pipeline と descriptor path が無い(G7/G9) |
 
 ### E. volumetric / atmosphere
@@ -216,7 +216,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a（解消済み、WP205）** | public directional shadow resource/light relation、generated `pelican_shadow()`、project-copy同値とpurgeを実装 | filtered PCF/PCSSは品質algorithm側の残件 |
-| **G6b（部分解消: WP223/224）** | stable ID付きruntime ViewFamily、pass/task relation、physical scope分離、secondary mono scheduling、directional providerを実装。複数view secondary family、family固有extent/culling、cube/reflection providerが未完 | CSM、point shadow、planar reflection |
+| **G6b（部分解消: WP223〜225）** | stable ID付きruntime ViewFamily、pass/task relation、physical scope分離、複数view secondary sequential scheduling、family固有extentを実装。directional CSM provider/array target/cascade別cullingは完了。汎用family culling、secondary multiview、cube/reflection providerが未完 | point shadow、planar reflection、runtime capture |
 | **G7** | acceleration structure / RT shader/pipeline contractが無い | K1/K2 |
 | **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
@@ -248,7 +248,7 @@ upscale resolution contract、public directional shadow receptionである。
 
 次の dogfood は以下を推奨する。
 
-1. ~~public directional shadow reception~~（WP205で実GPU dogfood済み、WP224でnamed secondary ViewFamilyへ移行）
+1. ~~public directional shadow reception / CSM~~（WP205で受光、WP224でnamed secondary ViewFamily、WP225で3-cascade実GPU dogfood済み）
 2. ~~実装済みtag選択 + pass-local variantによる inverted-hull outline~~（WP206bで実GPU dogfood済み）
 3. compute result → material vertex displacement
 4. ~~scalable light inventoryを使う raster/compute clustered lighting~~（WP208で実GPU dogfood済み）
@@ -264,7 +264,7 @@ upscale resolution contract、public directional shadow receptionである。
 推奨順は次である。
 
 1. WP204 runtime sliceは完了
-2. G6a public shadow contractはWP205で完了。G6bはWP223/224でdirectional monoまで進み、次は複数cascadeとfamily固有target/culling
+2. G6a public shadow contractはWP205、directional CSMはWP225で完了。G6bの次はpoint/spot cube providerかplanar reflectionで汎用secondary family境界をdogfood
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了

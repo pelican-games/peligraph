@@ -172,7 +172,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | feature | 内容 |
 |---|---|
 | `hdr.json` | `format_class: scene` の RT を float16 化(切替はエンジンの色リゾルバが feature の有無で行う)し、`scene_ldr_in` を挟んでトーンマップパスを `after:tonemap` アンカーに挿入 |
-| `shadow_directional.json` | 2048×2048 シャドウマップ + `shadow_depth` パス挿入 + `lighting_pass` へ入力追加 |
+| `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
 | `velocity.json` | モーションベクタ RT(`R16G16_SFLOAT`)+ `velocity` パスを `before:post_main` に挿入(✅WP88) |
 | `taa.json` | **標準 TAA**(resolve + composite の二パス + halton23/8 の jitter provider + スカラーパラメータ。§6.8)✅WP113 |
@@ -199,6 +199,30 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 - feature 本文の中では **`$<パラメータ名>`** プレースホルダで参照します(`$scene_color@history` も可)。未解決・型不適合は feature 名・パラメータ名入りの compose エラー。
 - スカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower されます(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
 - 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
+
+directional shadowは同じ仕組みでCSMを有効化できます。指定を省けば従来互換の1 cascadeです。
+
+```json
+"features": [
+  {
+    "ref": "engine://features/shadow_directional.json",
+    "parameters": {
+      "cascade_count": 4,
+      "resolution": 2048,
+      "max_distance": 120.0,
+      "split_lambda": 0.7,
+      "stabilize": true
+    }
+  }
+]
+```
+
+`cascade_count`は1〜8、`resolution`は64〜8192、`split_lambda`は0〜1です。
+各cascadeはstable view ID `$cascade/N`を持ち、`shadow_map`の同じ番号のarray layerへ
+sequentialに描画されます。splitはmain cameraのlinear depthで選択し、`max_distance`より
+遠いsurfaceはshadow外として扱います。XRでもshadow familyは一つで、左右眼frustumの
+unionを覆うため左右別にshadow mapを重複生成しません。world boundsが分かるdrawは
+cascadeごとに保守的にsubmission cullingされ、境界交差またはbounds不明のdrawは残ります。
 
 ### canonical anchor(✅WP73)
 
@@ -1238,7 +1262,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
-- **論理フレーム / ViewFamily(WP128/WP223/224)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional/$cascade/0`としてmain cameraから独立して一回だけ実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロット制で相互汚染を防ぎます。複数cascadeなどsecondary familyの複数view実行は未対応です。
+- **論理フレーム / ViewFamily(WP128/WP223〜225)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロット制で相互汚染を防ぎます。secondary familyの複数viewはsequential実行に対応し、secondary multiviewとcube-face providerは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
 - **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
 - **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。

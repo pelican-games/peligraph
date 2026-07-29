@@ -887,12 +887,18 @@ relation、family cardinality scheduler、`RenderViewFamilies`、family別FrameU
 LightUBOが同じfamily-selected行列を使う。callerは同名familyを渡して標準providerを
 置換できる。flat/XR temporal、mixed multiview、shadow画像、全renderer traceを回帰した。
 
-次のViewFamily縦切りはWP225とする。secondary familyを複数viewへ一般化し、CSMを
-最初のdogfoodにする。受け入れ順は、(1) stable `$cascade/N` providerとsplit policy、
-(2) family固有shadow extentとarray-layer target、(3) secondary sequential schedule、
-(4) cascade matrix/splitのlight ABI、(5) family view別culling、(6) flatとXRで同じ
-cascade回数・画像を得る実Vulkan goldenである。point/spot cube shadowとplanar
-reflectionはこの一般化を再利用するが、WP225へ混ぜない。
+WP225でsecondary familyを複数viewへ一般化し、CSMを最初のdogfoodとして閉じた。
+`cascade_count` / `resolution` / `max_distance` / `split_lambda` / `stabilize`からstable
+`$cascade/N` familyを生成し、family固有extent、D32 array-layer target、secondary
+sequential schedule、最大8 cascadeのLightUBO ABI、main-view depthによる受光cascade選択を
+接続した。XRでは左右frustumのunionから一つのshadow familyを作り、main viewごとにshadowを
+重複生成しない。さらにworld AABBを各cascadeのzero-to-one clip volumeへ保守的に判定し、
+material/skinned rangeを保った密なindirect bufferへ再配置する。3-layer実Vulkan goldenで
+全layer書き込み、split、invocation、遠方casterのsubmission除外を検証済みである。
+point/spot cube shadow、planar reflection、secondary multiviewはこの一般化を再利用する
+後続項目であり、WP225には含めない。実装境界と検証結果は
+[`2026-07-29_wp225_cascaded_secondary_view_family_report.md`](design_reviews/2026-07-29_wp225_cascaded_secondary_view_family_report.md)
+を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
