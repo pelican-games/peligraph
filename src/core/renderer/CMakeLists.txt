@@ -11,8 +11,9 @@ target_sources(pelican_core PRIVATE
     polygoninstancecontainer.cpp
     projectionjitter.cpp
     viewfamily.cpp
+    viewfamilyproviderregistry.cpp
+    directionalshadowviewprovider.cpp
     directionalshadowcascade.cpp
-    planarreflectionview.cpp
     materialrender.cpp
     uicontainer.cpp
     uirenderer.cpp

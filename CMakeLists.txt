@@ -43,7 +43,7 @@ option(PELICAN_WITH_OPENXR "Enable the private OpenXR runtime unit" ON)
 option(PELICAN_WITH_RENDERDOC "Enable passive RenderDoc in-application capture integration" ON)
 option(
   PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
-  "Embed Pelican's replaceable standard render algorithm package"
+  "Build Pelican's replaceable standard render algorithm package"
   ON
 )
 cmake_dependent_option(

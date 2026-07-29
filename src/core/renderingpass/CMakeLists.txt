@@ -9,6 +9,7 @@ target_sources(pelican_core PRIVATE
     rendercompilerprogram.cpp
     vulkanrendercompilerprogram.cpp
     renderpipelinegpuarena.cpp
+    renderfeatureparameteraccess.cpp
     logicalframegraphadapter.cpp
     fullscreenpassinfojsonparser.cpp
     materialpassinfojsonparser.cpp

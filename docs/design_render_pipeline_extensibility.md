@@ -307,11 +307,19 @@ scene queryを所有するpolicyはprovider、GPU kernelだけを変える場合
 execution semanticsを変える場合はcompiler/backend境界を使う。この三者を一つの巨大
 algorithm ABIへ統合しない。
 
-engine既定shader群は任意のstandard algorithm packageに置ける。packageのbuild flagは
-実装asset/registry entryだけを除外し、typed graph/compiler mechanismは除外しない。
+engine既定shader群と、それに属するC++ policy/providerは任意のstandard algorithm packageに
+置ける。packageのbuild flagは実装asset/registry entry/source/objectを除外し、
+typed graph/compiler、runtime provider registry、scheduler、backend mechanismは除外しない。
 したがってinstance単位の差替えとbinary単位のpurgeは直交し、標準packageを外したbinaryでも
-project assetを選べば同じlogical/physical contractを利用できる。最初のdogfoodはWP233の
-planar prefilterである。
+project assetとcaller-authored familyまたはsource-built host providerを選べば同じ
+logical/physical contractを利用できる。最初のshader dogfoodはWP233のplanar prefilter、
+C++ policy dogfoodはWP234のplanar ViewFamily providerである。
+
+runtime family providerはlogical view dataだけを返すsource-level seamとする。Vulkan command、
+resource lifetime、temporal advanceを渡さず、technique固有family IDの分岐も`Renderer`へ
+戻さない。game DLLから動的に差し替える段階では、既存provider registry群と同様に
+owner/generation/lease/rollbackを追加する。それまではcaller-authored familyが安全な
+runtime置換境界である。
 
 ### 3.4 Backend / source extension — 実行機構を交換する入口
 
@@ -1029,6 +1037,8 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE13h / WP230（済 2026-07-29） | planar reflectionのVulkan ZO oblique near-plane、標準feature opt-out、semantic clip fallback | 透視/非対称/正射影/X反転CPU契約、Deferred + Forward + clustered reflection実GPU |
 | RPE13i / WP231・231b（済 2026-07-29） | image-port extent由来compute dispatch、remaining-mip material subresource | local-size ceil divide、resize、full mip descriptor、実GPU |
 | RPE13j / WP232（済 2026-07-29） | planar 7-level mip filter、pass-owned family-array material ABI、scalar-family adapter | mip別dispatch/bytes、Surface sampler2DArray reflection、scalar/array両pass共有、実GPU |
+| RPE13k / WP233（済 2026-07-29） | typed shader asset parameter、標準render algorithm resource package | project shader差替え、標準asset build purge、ON/OFF reflection実GPU |
+| RPE13l / WP234（済 2026-07-29） | stable-ID runtime ViewFamily provider registry、標準planar C++ package | caller優先解決、planar source/object purge、shadow/reflection ON/OFF実GPU |
 
 ### 12.1 いま着手する範囲
 

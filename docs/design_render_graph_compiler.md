@@ -49,6 +49,9 @@ WP233ではfilter shaderをstage付きfeature asset parameterへ移し、feature
 graph-selected base mip/layerをcompute ABIへ渡した。標準kernelは独立manifestと
 `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`でproject差替え・build purgeでき、generic
 graph/compiler/backendにはplanar filter名を追加しない。
+WP234ではruntime ViewFamily生成もstable family ID keyed provider registryへ移し、
+caller-authored familyを最優先して未解決familyだけをproviderで補う。planar camera/
+oblique policyは標準packageへ移動し、OFF buildからC++ objectごと除外できる。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -587,11 +590,12 @@ frame-graph node、logical IR、FramePlan、Vulkan execution nodeが同じ`view_
 familyごとのcardinalityを受け取り、sequential targetではsecondary familyをmain view 0で
 一回だけ、view-family targetでは同じcommand context内で一回だけ実行する。
 
-標準directional shadow passは`$shadow/directional`を明示する。builtin providerは
+標準directional shadow passは`$shadow/directional`を明示する。engine providerは
+汎用runtime family registryへ登録され、
 feature parameterから1〜8個の非jitter view `$cascade/N`を生成し、hybrid
 log/uniform splitと任意のtexel stabilizationを適用する。XRの複数main viewは
 各splitで一つのfrustum unionへ畳み、eyeごとのshadow familyを作らない。
-project/runtimeが同じfamily IDを明示すればbuiltin providerを置換できる。
+project/runtimeが同じfamily IDを明示すればproviderによる生成を置換できる。
 
 schedulerはsecondary familyの全viewをsequential invocationへ展開し、各viewをfamily固有
 raster extentのarray layerへ結ぶ。shadow drawのpush constant、standard lighting用
@@ -606,13 +610,20 @@ material/skinned fixed-state rangeを維持し、除外commandの`instanceCount`
 CSMとplanar reflectionは同じprepared indirect bufferを使い、family/viewごとのbyte offsetで
 選択する。最大prepared view数を超えるfamilyはcanonical queueへ安全側fallbackする。
 
-planar reflectionのbuiltin providerはmain familyの各viewを指定planeで反転し、stable
+runtime family resolverはgraph nodeの`view_family`をstable keyとして汎用registryを引く。
+caller-authored familyが存在すればそれを保持し、未解決familyにだけproviderを実行する。
+directional shadowもplanar reflectionも同じ経路を使い、`Renderer`は個別technique名を
+分岐しない。providerはlogical view dataだけを返し、resource、schedule、temporal state、
+backend loweringは引き続きcoreが所有する。
+
+標準packageのplanar providerはmain familyの各viewを指定planeで反転し、stable
 `$mirror/<source-view>` identityと同じplaneのclip情報を付ける。標準featureは独立解像度の
 deferred G-buffer、SSAO、lightingに続いてForward opaqueをreflection familyで再描画し、
 結果をnamed material resource portとして公開する。同名familyをcallerが与えた場合は
-builtin providerを使わない。
+providerによる生成を使わない。packageをbuildから除外した場合は、callerまたは
+project source providerが同じstable familyを供給する。
 
-標準providerは反射viewとraster winding補正後の非jitter projectionに対して、world planeを
+この標準providerは反射viewとraster winding補正後の非jitter projectionに対して、world planeを
 Vulkan forward-Zのoblique near planeへ変換する。near row以外を維持し、near/far面8隅の
 逆投影で向きを検証してfar面からscaleを求めるため、透視/正射影、非対称projection、X反転を
 特別分岐なしで扱う。retained
@@ -672,9 +683,9 @@ filter algorithmはfeatureの`stage: "compute"`な`shader_assets` parameterで�
 `engine://render_algorithms/planar_reflection/standard_prefilter`とproject shaderが同じ
 port contractを消費する。generated `pelican_base_mip_*` / `pelican_base_layer_*`は
 graph-selected subresourceを返し、feature scalar defineもcompute compile recipeへ入るため、
-algorithmはtask名、固定mip番号、Vulkan image viewを参照しない。標準asset packageをbuildから
-外してもgraph/compiler/runtime機構は残り、project implementationだけで同じphysical planへ
-loweringできる。
+algorithmはtask名、固定mip番号、Vulkan image viewを参照しない。標準algorithm packageを
+buildから外してもgraph/compiler/runtime機構は残り、project shaderとproject-authored
+ViewFamilyだけで同じphysical planへloweringできる。
 
 material surfaceは`planar_reflection`というsemantic portとsampling algorithmだけを宣言し、
 material passの`family_array` policyをcompiler-owned physical defineへloweringする。同じsurfaceが

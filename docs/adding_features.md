@@ -172,11 +172,14 @@ DLL境界は作らない。
    `PELICAN_ENGINE_RESOURCE(...)` 行
 3. `test/fixtures/project_format/engine_resources.json` — id 追加
 
-ただし交換可能な標準描画algorithmはfeature固有のC++登録を増やさず、
+ただし交換可能な標準描画algorithm assetはgeneric resource loaderへfeature固有の登録を増やさず、
 `src/core/resources/render_algorithms/standard_algorithms.cmake`のpackage manifestへ追加する。
-生成registryが`engineResource()`とID一覧の両方へ展開し、
-`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`ではasset/object/registry entryをまとめて除外する。
-project側はfeatureのtyped `shader_assets` parameterへ`project://`参照を渡して置換する。
+CPU側の標準policy/providerが必要なら`src/core/render_algorithms/`へ置き、package aggregatorから
+汎用registryへ登録する。generic rendererへtechnique名の分岐を追加しない。
+生成resource registryが`engineResource()`とID一覧の両方へ展開し、
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`ではasset/source/object/registry entryを
+まとめて除外する。project側はtyped `shader_assets` parameterへ`project://`参照を渡し、
+必要なruntime ViewFamilyをcallerまたはsource buildしたhost providerから供給して置換する。
    (レジストリ一致テストがズレを検出する)
 4. (web が同じ id を提供する場合のみ)my_webpage の `engineAssets.ts` —
    **web は鏡像サブセット**: エンジンに無い id を web に足すのは禁止

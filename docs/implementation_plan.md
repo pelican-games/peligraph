@@ -121,12 +121,14 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP231 / 231b | image extent dispatch / remaining-mip material view | ✅ 完了（2026-07-29）。typed output extent、local-size ceil divide、remaining mip descriptor、resize/実GPU |
 | WP232 | planar reflection mip filter / family-array material ABI | ✅ 完了（2026-07-29）。7-level low-pass、pass-owned view lowering、scalar-family adapter、roughness sampling実GPU |
 | WP233 | replaceable render algorithm asset/package | ✅ 完了（2026-07-29）。typed shader asset parameter、compute define/subresource ABI、標準packageのproject差替え・build purge、ON/OFF実GPU |
+| WP234 | runtime ViewFamily provider package | ✅ 完了（2026-07-29）。汎用family registry、caller優先解決、planar C++ policyのbuild purge、shadow/reflection ON/OFF実GPU |
 
-WP231〜233の受け入れ詳細:
+WP231〜234の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
 [`WP231b`](design_reviews/2026-07-29_wp231b_remaining_mip_material_ports.md)、
 [`WP232`](design_reviews/2026-07-29_wp232_planar_reflection_mip_filter_report.md)、
-[`WP233`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)。
+[`WP233`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)、
+[`WP234`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -996,6 +998,20 @@ planeがcamera前方に無い場合やfar面と交差しない場合はprojectio
 clip-plane culling/fragment discardへfallbackする。標準featureは既定ONだがparameterで
 無効化でき、caller-authored familyの置換境界も維持した。詳細は
 [`2026-07-29_wp230_planar_oblique_projection_report.md`](design_reviews/2026-07-29_wp230_planar_oblique_projection_report.md)
+を参照する。
+
+WP234でsecondary ViewFamily生成を`Renderer`のfamily ID別分岐から汎用provider registryへ
+移した。callerが渡したfamilyを最優先し、graphが要求する未解決familyだけをstable IDで
+providerへ問い合わせる。directional shadowも同じresolverを通るため、後続のcube/probe
+providerをrenderer本体へ分岐追加せず接続できる。
+
+planar reflectionのcamera reflection、winding補正、oblique projection、feature parameter
+解決は`src/core/render_algorithms`へ移し、標準shaderと同じ
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`でsource/objectごと除外する。OFF buildでも
+project shaderとcaller-authored `$reflection/planar` familyを渡せば、同じgraph compiler、
+scheduler、Vulkan backendで実描画できる。現registryはsource-level seamであり、
+game DLL hot reload向けowner/generation/lease ABIは後続とする。詳細は
+[`2026-07-29_wp234_runtime_view_family_provider_package.md`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

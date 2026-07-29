@@ -1,5 +1,8 @@
 #include "planarreflectionview.hpp"
 
+// Standard planar-reflection camera policy lives with the removable render
+// algorithm package; only RenderViewFamily data crosses back into the engine.
+
 #include <algorithm>
 #include <cmath>
 #include <limits>

@@ -24,8 +24,7 @@
 #include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
-#include "../renderer/directionalshadowcascade.hpp"
-#include "../renderer/planarreflectionview.hpp"
+#include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -200,462 +199,6 @@ requireRenderViewFamilyExecutionState(
             std::string{family_id} + "'");
     }
     return *found;
-}
-
-const CompiledRenderFeatureParameter *
-findFeatureParameter(
-    const CompiledRenderFeatureInstance &feature,
-    std::string_view name) {
-    const auto found = std::find_if(
-        feature.parameters.begin(),
-        feature.parameters.end(),
-        [name](
-            const CompiledRenderFeatureParameter
-                &parameter) {
-            return parameter.name == name;
-        });
-    return found != feature.parameters.end()
-               ? &*found
-               : nullptr;
-}
-
-std::uint32_t featureUnsigned(
-    const CompiledRenderFeatureInstance &feature,
-    std::string_view name,
-    std::uint32_t fallback) {
-    const auto *parameter =
-        findFeatureParameter(feature, name);
-    if (parameter == nullptr) return fallback;
-    if (const auto *value =
-            std::get_if<std::uint64_t>(
-                &parameter->value)) {
-        if (*value <=
-            std::numeric_limits<
-                std::uint32_t>::max()) {
-            return static_cast<
-                std::uint32_t>(*value);
-        }
-    }
-    if (const auto *value =
-            std::get_if<std::int64_t>(
-                &parameter->value)) {
-        if (*value >= 0 &&
-            static_cast<std::uint64_t>(
-                *value) <=
-                std::numeric_limits<
-                    std::uint32_t>::max()) {
-            return static_cast<
-                std::uint32_t>(*value);
-        }
-    }
-    throw std::runtime_error(
-        "render feature '" + feature.feature +
-        "' parameter '" + std::string{name} +
-        "' is not an unsigned 32-bit integer");
-}
-
-float featureFloat(
-    const CompiledRenderFeatureInstance &feature,
-    std::string_view name,
-    float fallback) {
-    const auto *parameter =
-        findFeatureParameter(feature, name);
-    if (parameter == nullptr) return fallback;
-    double value = 0.0;
-    if (const auto *floating =
-            std::get_if<double>(
-                &parameter->value)) {
-        value = *floating;
-    } else if (const auto *integer =
-                   std::get_if<std::int64_t>(
-                       &parameter->value)) {
-        value = static_cast<double>(*integer);
-    } else if (const auto *integer =
-                   std::get_if<std::uint64_t>(
-                       &parameter->value)) {
-        value = static_cast<double>(*integer);
-    } else {
-        throw std::runtime_error(
-            "render feature '" + feature.feature +
-            "' parameter '" + std::string{name} +
-            "' is not numeric");
-    }
-    if (!std::isfinite(value) ||
-        value <
-            -static_cast<double>(
-                std::numeric_limits<float>::max()) ||
-        value >
-            static_cast<double>(
-                std::numeric_limits<float>::max())) {
-        throw std::runtime_error(
-            "render feature '" + feature.feature +
-            "' parameter '" + std::string{name} +
-            "' is outside the finite float range");
-    }
-    return static_cast<float>(value);
-}
-
-bool featureBool(
-    const CompiledRenderFeatureInstance &feature,
-    std::string_view name,
-    bool fallback) {
-    const auto *parameter =
-        findFeatureParameter(feature, name);
-    if (parameter == nullptr) return fallback;
-    if (const auto *value =
-            std::get_if<bool>(
-                &parameter->value)) {
-        return *value;
-    }
-    throw std::runtime_error(
-        "render feature '" + feature.feature +
-        "' parameter '" + std::string{name} +
-        "' is not boolean");
-}
-
-struct DirectionalShadowRuntimeContract {
-    DirectionalShadowCascadeSettings settings;
-    std::optional<RenderTargetMetadata>
-        target;
-};
-
-std::optional<PlanarReflectionViewSettings>
-planarReflectionRuntimeSettings(
-    const CompiledFrameGraphExecution
-        &frame_graph) {
-    if (!frame_graph.render_pipeline) {
-        return std::nullopt;
-    }
-    const auto feature = std::find_if(
-        frame_graph.render_pipeline
-            ->feature_instances.begin(),
-        frame_graph.render_pipeline
-            ->feature_instances.end(),
-        [](const CompiledRenderFeatureInstance
-               &candidate) {
-            return candidate.feature ==
-                   planarReflectionRenderFeatureName;
-        });
-    if (feature ==
-        frame_graph.render_pipeline
-            ->feature_instances.end()) {
-        return std::nullopt;
-    }
-    return PlanarReflectionViewSettings{
-        .clip_plane =
-            RenderViewClipPlane{
-                .normal =
-                    {
-                        featureFloat(
-                            *feature,
-                            "plane_x", 0.0f),
-                        featureFloat(
-                            *feature,
-                            "plane_y", 1.0f),
-                        featureFloat(
-                            *feature,
-                            "plane_z", 0.0f),
-                    },
-                .offset =
-                    featureFloat(
-                        *feature,
-                        "plane_offset", 0.0f),
-            },
-        .preserve_raster_winding =
-            featureBool(
-                *feature,
-                "preserve_raster_winding",
-                true),
-        .oblique_near_plane =
-            featureBool(
-                *feature,
-                "oblique_near_plane",
-                true),
-    };
-}
-
-DirectionalShadowRuntimeContract
-directionalShadowRuntimeContract(
-    const CompiledFrameGraphExecution
-        &frame_graph,
-    const RenderTargetContainer &targets) {
-    DirectionalShadowRuntimeContract result;
-    if (!frame_graph.render_pipeline) {
-        return result;
-    }
-    const auto contract = std::find_if(
-        frame_graph.render_pipeline
-            ->surface_resource_contracts
-            .begin(),
-        frame_graph.render_pipeline
-            ->surface_resource_contracts
-            .end(),
-        [](const CompiledSurfaceResourceContract
-               &candidate) {
-            return candidate.contract.name ==
-                   directionalShadowInputContractName;
-        });
-    if (contract ==
-        frame_graph.render_pipeline
-            ->surface_resource_contracts
-            .end()) {
-        return result;
-    }
-    const auto binding =
-        frame_graph.render_target_bindings.find(
-            contract->resource);
-    if (binding ==
-            frame_graph.render_target_bindings
-                .end() ||
-        !isConcreteRenderTarget(
-            binding->second)) {
-        throw std::runtime_error(
-            "directional shadow contract is not bound to a concrete "
-            "render target");
-    }
-    result.target =
-        targets.getMetadata(
-            binding->second);
-
-    const auto feature = std::find_if(
-        frame_graph.render_pipeline
-            ->feature_instances.begin(),
-        frame_graph.render_pipeline
-            ->feature_instances.end(),
-        [&](const CompiledRenderFeatureInstance
-                &candidate) {
-            return candidate.feature ==
-                   contract->provider_feature;
-        });
-    if (feature ==
-        frame_graph.render_pipeline
-            ->feature_instances.end()) {
-        return result;
-    }
-    result.settings.cascade_count =
-        featureUnsigned(
-            *feature, "cascade_count", 1);
-    result.settings.max_distance =
-        featureFloat(
-            *feature, "max_distance",
-            result.settings.max_distance);
-    result.settings.split_lambda =
-        featureFloat(
-            *feature, "split_lambda",
-            result.settings.split_lambda);
-    result.settings.stabilize =
-        featureBool(
-            *feature, "stabilize",
-            result.settings.stabilize);
-    return result;
-}
-
-void validateDirectionalShadowRuntimeFamily(
-    const RenderViewFamilies &families,
-    const DirectionalShadowRuntimeContract
-        &contract) {
-    const auto *family =
-        families.find(
-            directionalShadowRenderViewFamilyId);
-    if (family == nullptr) {
-        return;
-    }
-    if (family->views.empty() ||
-        family->views.size() >
-            maximumDirectionalShadowCascades) {
-        throw std::runtime_error(
-            "directional shadow view family cardinality is outside the "
-            "LightUBO ABI");
-    }
-    if (contract.target &&
-        family->views.size() >
-            contract.target->array_layers) {
-        throw std::runtime_error(
-            "directional shadow view family has more views than the "
-            "shadow target has array layers");
-    }
-    if (family->views.size() == 1) {
-        return;
-    }
-    float prior_far = 0.0f;
-    for (std::size_t index = 0;
-         index < family->views.size();
-         ++index) {
-        const auto &view =
-            family->views[index];
-        if (!view.depth_range) {
-            throw std::runtime_error(
-                "multi-view directional shadow families require a "
-                "depth_range for every cascade");
-        }
-        if (index != 0) {
-            const auto tolerance =
-                std::max(
-                    1.0e-4f,
-                    std::abs(prior_far) *
-                        1.0e-5f);
-            if (std::abs(
-                    view.depth_range
-                            ->near_distance -
-                    prior_far) >
-                tolerance) {
-                throw std::runtime_error(
-                    "directional shadow cascade depth ranges must be "
-                    "contiguous");
-            }
-        }
-        prior_far =
-            view.depth_range
-                ->far_distance;
-    }
-}
-
-void validatePlanarReflectionRuntimeFamily(
-    const RenderViewFamilies &families,
-    const std::optional<
-        PlanarReflectionViewSettings>
-        &settings) {
-    if (!settings) {
-        return;
-    }
-    const auto &main =
-        families.require(
-            mainRenderViewFamilyId);
-    const auto *reflection =
-        families.find(
-            planarReflectionRenderViewFamilyId);
-    if (reflection == nullptr ||
-        reflection->views.size() !=
-            main.views.size()) {
-        throw std::runtime_error(
-            "standard planar reflection requires one reflected view "
-            "for every main-family view");
-    }
-    for (const auto &view :
-         reflection->views) {
-        if (!view.clip_plane) {
-            throw std::runtime_error(
-                "standard planar reflection views require a clip plane");
-        }
-    }
-}
-
-RenderViewFamily directionalShadowViewFamily(
-    const LightContainer &lights,
-    const RenderViewFamily &main_family,
-    const DirectionalShadowRuntimeContract
-        &contract) {
-    if (contract.settings.cascade_count >
-        maximumDirectionalShadowCascades) {
-        throw std::runtime_error(
-            "directional shadow cascade_count exceeds the runtime ABI");
-    }
-    if (contract.target &&
-        contract.target->array_layers <
-            contract.settings
-                .cascade_count) {
-        throw std::runtime_error(
-            "directional shadow target has fewer array layers than the "
-            "configured cascade_count");
-    }
-    if (contract.settings.cascade_count >
-        1) {
-        if (!contract.target) {
-            throw std::runtime_error(
-                "cascaded directional shadows require a typed shadow "
-                "target contract");
-        }
-        return buildDirectionalShadowCascadeFamily(
-            main_family,
-            lights.directionalShadowDirection(),
-            {
-                contract.target->extent.width,
-                contract.target->extent.height,
-            },
-            contract.settings);
-    }
-    const auto source =
-        lights.directionalShadowView();
-    return RenderViewFamily{
-        .family_id =
-            std::string{
-                directionalShadowRenderViewFamilyId},
-        .views =
-            {RenderViewParameters{
-                .view = source.view,
-                .projection = source.projection,
-                .camera_position =
-                    source.camera_position,
-                .first_person_view = false,
-                .view_id =
-                    std::string{
-                        directionalShadowRenderViewId},
-            }},
-    };
-}
-
-RenderViewFamilies resolveFrameViewFamilies(
-    const RenderViewFamilies &authored,
-    const CompiledFrameGraphExecution &frame_graph,
-    const LightContainer &lights,
-    const RenderTargetContainer &targets) {
-    RenderViewFamilies result;
-    result.families.push_back(
-        authored.require(
-            mainRenderViewFamilyId));
-    for (const auto &family :
-         authored.families) {
-        if (family.family_id ==
-            mainRenderViewFamilyId) {
-            continue;
-        }
-        result.families.push_back(
-            family);
-    }
-    for (const auto &node :
-         frame_graph.nodes) {
-        if (result.find(
-                node.view_family) != nullptr) {
-            continue;
-        }
-        if (node.view_family ==
-            directionalShadowRenderViewFamilyId) {
-            const auto contract =
-                directionalShadowRuntimeContract(
-                    frame_graph, targets);
-            result.families.push_back(
-                directionalShadowViewFamily(
-                    lights,
-                    result.require(
-                        mainRenderViewFamilyId),
-                    contract));
-            continue;
-        }
-        if (node.view_family ==
-            planarReflectionRenderViewFamilyId) {
-            const auto settings =
-                planarReflectionRuntimeSettings(
-                    frame_graph);
-            if (!settings) {
-                throw std::runtime_error(
-                    "compiled frame graph requires '$reflection/planar' "
-                    "but no authored family or standard planar_reflection "
-                    "feature is available");
-            }
-            result.families.push_back(
-                buildPlanarReflectionViewFamily(
-                    result.require(
-                        mainRenderViewFamilyId),
-                    *settings));
-            continue;
-        }
-        throw std::runtime_error(
-            "compiled frame graph node '" +
-            node.name +
-            "' requires unavailable view family '" +
-            node.view_family + "'");
-    }
-    return result;
 }
 
 SpriteRenderModules resolveSpriteRenderModules(const RenderingPassContainer &rendering_pass_container) {
@@ -3898,23 +3441,25 @@ void Renderer::renderLogicalFrame(
     validateRenderViewFamilies(
         view_families,
         graph_variant_policy);
+    const RenderViewFamilyProviderContext
+        view_family_provider_context{
+            .frame_graph = frame_graph,
+            .lights =
+                modules.light_container,
+            .render_targets =
+                modules
+                    .render_target_container,
+        };
     const auto resolved_view_families =
-        resolveFrameViewFamilies(
-            view_families, frame_graph,
-            modules.light_container,
-            modules.render_target_container);
+        resolveRuntimeRenderViewFamilies(
+            view_families,
+            view_family_provider_context);
     validateRenderViewFamilies(
         resolved_view_families,
         graph_variant_policy);
-    validateDirectionalShadowRuntimeFamily(
+    validateRuntimeRenderViewFamilyProviderContracts(
         resolved_view_families,
-        directionalShadowRuntimeContract(
-            frame_graph,
-            modules.render_target_container));
-    validatePlanarReflectionRuntimeFamily(
-        resolved_view_families,
-        planarReflectionRuntimeSettings(
-            frame_graph));
+        view_family_provider_context);
     const auto &view_family =
         resolved_view_families.require(
             mainRenderViewFamilyId);
@@ -4591,21 +4136,16 @@ void Renderer::renderLogicalFrame(
     }
 }
 
-void Renderer::render() {
+void Renderer::render(
+    const RenderViewFamilies
+        &view_families) {
     selectGraphVariant(RenderGraphVariant::flat);
     FlatLogicalFrameTarget target{GET_MODULE(RenderTarget)};
-    const auto &camera = GET_MODULE(Camera);
-    auto view_family =
-        makeMainRenderViewFamily(
-        RenderViewParameters{
-            .view = camera.getViewMatrix(),
-            .projection = camera.getProjectionMatrix(),
-            .camera_position = camera.getPos(),
-        });
     for (std::uint32_t attempt = 0; attempt < 2;
          ++attempt) {
         try {
-            renderLogicalFrame(target, view_family);
+            renderLogicalFrame(
+                target, view_families);
             return;
         } catch (
             const OutputTemporarilyUnavailable &) {
@@ -4637,6 +4177,21 @@ void Renderer::render() {
     }
     throw std::runtime_error(
         "window output compile facts changed during re-lowering");
+}
+
+void Renderer::render() {
+    const auto &camera = GET_MODULE(Camera);
+    render(
+        makeMainRenderViewFamilies(
+            makeMainRenderViewFamily(
+                RenderViewParameters{
+                    .view =
+                        camera.getViewMatrix(),
+                    .projection =
+                        camera.getProjectionMatrix(),
+                    .camera_position =
+                        camera.getPos(),
+                })));
 }
 
 } // namespace Pelican

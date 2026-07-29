@@ -80,6 +80,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #define STB_IMAGE_STATIC
@@ -4421,7 +4422,77 @@ void renderFeatureFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
-void renderShadowFrame(RenderTarget &render_target) {
+#if !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+RenderViewFamilies
+projectPlanarReflectionViewFamilies(
+    const Camera &camera) {
+    auto main =
+        makeMainRenderViewFamily(
+            RenderViewParameters{
+                .view =
+                    camera.getViewMatrix(),
+                .projection =
+                    camera
+                        .getProjectionMatrix(),
+                .camera_position =
+                    camera.getPos(),
+            });
+    glm::mat4 reflection_matrix{1.0f};
+    reflection_matrix[1][1] = -1.0f;
+    glm::mat4 clip_x_flip{1.0f};
+    clip_x_flip[0][0] = -1.0f;
+
+    RenderViewFamily reflection{
+        .family_id =
+            std::string{
+                planarReflectionRenderViewFamilyId},
+    };
+    reflection.views.reserve(
+        main.views.size());
+    for (const auto &source :
+         main.views) {
+        const auto reflected_position =
+            reflection_matrix *
+            glm::vec4{
+                source.camera_position,
+                1.0f};
+        reflection.views.push_back(
+            RenderViewParameters{
+                .view =
+                    source.view *
+                    reflection_matrix,
+                .projection =
+                    clip_x_flip *
+                    source.projection,
+                .camera_position =
+                    glm::vec3{
+                        reflected_position},
+                .first_person_view =
+                    source.first_person_view,
+                .view_id =
+                    "$project-mirror/" +
+                    source.view_id,
+                .clip_plane =
+                    RenderViewClipPlane{
+                        .normal =
+                            {0.0f, 1.0f, 0.0f},
+                        .offset = 0.0f,
+                    },
+            });
+    }
+    RenderViewFamilies result =
+        makeMainRenderViewFamilies(
+            std::move(main));
+    result.families.push_back(
+        std::move(reflection));
+    return result;
+}
+#endif
+
+void renderShadowFrame(
+    RenderTarget &render_target,
+    bool supply_project_planar_family =
+        false) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
     GET_MODULE(ECSCore).update();
@@ -4434,7 +4505,19 @@ void renderShadowFrame(RenderTarget &render_target) {
     camera.setDir(glm::normalize(target - position));
     camera.setUp({0.0f, 1.0f, 0.0f});
 
-    GET_MODULE(Renderer).render();
+    auto &renderer = GET_MODULE(Renderer);
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    (void)supply_project_planar_family;
+    renderer.render();
+#else
+    if (supply_project_planar_family) {
+        renderer.render(
+            projectPlanarReflectionViewFamilies(
+                camera));
+    } else {
+        renderer.render();
+    }
+#endif
     GET_MODULE(VulkanManageCore).waitIdle();
     (void)render_target;
 }
@@ -4443,7 +4526,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                              std::string_view mode,
                              bool deferred_material = false,
                              bool mixed_forward_material = false,
-                             bool mixed_transparent_material = false) {
+                             bool mixed_transparent_material = false,
+                             bool planar_reflection_runtime = false) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     const bool shadow_enabled =
         mode != "shadow_b_layer_off";
@@ -4892,7 +4976,9 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         }
     }
 
-    renderShadowFrame(render_target);
+    renderShadowFrame(
+        render_target,
+        planar_reflection_runtime);
     if (mixed_forward_material) {
         const auto program =
             GET_MODULE(
@@ -5994,6 +6080,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         renderBLayerShadowFrame(
             render_target,
             "shadow_b_layer_off",
+            true,
             true,
             true,
             true);

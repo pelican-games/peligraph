@@ -249,7 +249,8 @@ sequentialに描画されます。splitはmain cameraのlinear depthで選択し
 unionを覆うため左右別にshadow mapを重複生成しません。world boundsが分かるdrawは
 cascadeごとに保守的にsubmission cullingされ、境界交差またはbounds不明のdrawは残ります。
 
-planar reflectionも同じparameter/provider境界で有効化できます。
+planar reflectionも同じparameter/provider境界で有効化できます。標準algorithm packageが
+有効なら、stable `$reflection/planar` familyのproviderも自動登録されます。
 
 ```json
 "features": [
@@ -274,9 +275,10 @@ main familyの各viewからstable `$mirror/<source-view>`を作ります。標�
 clip planeで反対側のgeometryを捨て、既知world boundsは同じplaneと反射frustumで
 submission cullingされます。targetは`resolution × resolution`、2 layers固定で、flatでは
 layer 0、XR sequentialでは対応eye layerを使います。同名`$reflection/planar` familyを
-runtime callerが渡すとbuiltin camera providerを置換できます。
+runtime callerが渡すと標準camera providerによる生成を置換できます。flatの通常出力でも
+`Renderer::render(const RenderViewFamilies&)`へmainとsecondary familyをまとめて渡せます。
 
-`oblique_near_plane`は既定で有効です。builtin providerは反射後の非jitter投影を
+`oblique_near_plane`は既定で有効です。標準package providerは反射後の非jitter投影を
 Vulkan forward-Zの`0 <= z <= w`規約で補正し、retained half-spaceのplaneをrasterizerの
 near境界へ移します。透視、非対称XR、正射影、`preserve_raster_winding`のX反転を同じ
 一般式で扱います。planeが反射cameraの前に無い、view方向へ後退する、またはfar面と
@@ -311,9 +313,12 @@ passではこのportをopaque color snapshotへ切り替えるため、書き込
 ```
 
 project compute shaderは同じ`source_color` / `filtered_color` port contractを使います。
-`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`で配布すると標準assetは埋め込み・登録されないため、
-planar reflectionを使う全instanceで`prefilter_shader`をproject実装へ指定してください。
-graph compiler、compute task、typed port、reflection camera providerはこのビルド設定では消えません。
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`で配布すると、標準assetに加えて
+planar camera reflection、winding補正、oblique projection、runtime providerのC++実装も
+source/objectごと除外されます。planar reflectionを使う全instanceで
+`prefilter_shader`をproject実装へ指定し、callerから`$reflection/planar` familyを渡すか、
+source buildしたhost側で同じstable IDのproviderを登録してください。graph compiler、compute task、
+typed port、汎用ViewFamily resolver、scheduler、Vulkan backendはこの設定でも残ります。
 
 surfaceはgraph/view形状を宣言せず、semantic portとsampling algorithmだけを書きます。
 material pass側の`view: "family_array"`が`sampler2DArray` ABIを選び、
@@ -1412,7 +1417,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
-- **論理フレーム / ViewFamily(WP128/WP223〜230)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。planar reflectionのbuiltin providerはclip planeをVulkan ZOのoblique near planeへ変換します。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
+- **論理フレーム / ViewFamily(WP128/WP223〜234)**: `renderLogicalFrame(target, view_families)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskの`view_family`は汎用runtime registryで解決され、caller-authored familyが常に優先されます。標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、標準planar reflection packageは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。標準planar providerはclip planeをVulkan ZOのoblique near planeへ変換し、package OFF時はcaller/project providerで全面置換できます。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
 - **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
 - **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。

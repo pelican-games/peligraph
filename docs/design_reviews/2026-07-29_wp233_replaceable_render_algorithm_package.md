@@ -2,6 +2,12 @@
 
 Status: implemented and verified (2026-07-29)
 
+WP234 follow-up: the same build option now removes the standard planar
+camera/view-family provider and its reflection/oblique-projection C++ code as
+well as the shader asset. The generic runtime provider mechanism remains in
+core. See
+[`2026-07-29_wp234_runtime_view_family_provider_package.md`](2026-07-29_wp234_runtime_view_family_provider_package.md).
+
 ## Goal
 
 WP232 proved that the graph can generate and sample a planar-reflection mip
@@ -92,11 +98,15 @@ The package manifest generates both embedding and engine-resource registry
 entries. `engineresources.cpp` has no planar-prefilter-specific registration.
 
 `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` removes the standard asset from
-the embed target and engine registry. It intentionally keeps the graph
-compiler, compute runtime, typed resource ports, and planar camera provider.
+the embed target and engine registry. Since WP234 it also removes the standard
+planar camera provider and its reflection/oblique-projection object code. It
+keeps the graph compiler, compute runtime, typed resource ports, generic
+ViewFamily provider registry, and Vulkan execution mechanism.
+
 Any planar-reflection feature instance in such a binary must select a
 `project://` prefilter; otherwise the unavailable default engine reference
-fails by name.
+fails by name. Its caller must also supply `$reflection/planar` explicitly or
+register a source-built host provider for that stable family ID.
 
 The standard kernel is a normalized 13-tap tent downsample whose radius grows
 with destination mip. It reduces shimmer more effectively than the former
@@ -114,15 +124,20 @@ is not described as GGX or direction-space BRDF convolution.
 - a standard-OFF build has an empty optional-resource registry and passes the
   same Vulkan reflection golden using only project kernels;
 - the build-unit smoke matrix checks that OFF builds retain neither the
-  standard source in build metadata nor a generated object/registry entry.
+  standard shader/provider sources in build metadata nor generated
+  object/registry entries;
+- the standard-OFF Vulkan reflection golden supplies both a project shader
+  and a project-authored reflected family while retaining the same generic
+  graph scheduler and Vulkan backend.
 
 ## Remaining boundaries
 
 - the six-task, seven-level chain is still the standard feature recipe; a
   project that needs an adaptive chain must replace or author the feature
   graph, not only the shader;
-- the planar `RenderViewFamily` camera provider remains core code and is not
-  part of this package;
+- runtime C++ provider registration is currently a source-level extension
+  seam. It does not yet provide owner/generation/lease semantics for
+  hot-reloaded game DLL providers;
 - whole-image hazard tracking stays conservative across distinct mips;
 - a physically based prefilter needs direction/normal/BRDF inputs and a
   different algorithm, which the new asset boundary permits but does not

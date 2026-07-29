@@ -156,6 +156,12 @@ DECLARE_MODULE(Renderer) {
     void renderLogicalFrame(
         ILogicalFrameTarget &target,
         const RenderViewFamilies &view_families);
+    // Windowed/headless flat-output convenience path with caller-authored
+    // secondary families. Supplying a family bypasses its registered runtime
+    // provider while preserving the normal graph scheduler and backend.
+    void render(
+        const RenderViewFamilies
+            &view_families);
     void render();
 };
 

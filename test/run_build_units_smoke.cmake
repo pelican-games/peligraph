@@ -530,9 +530,10 @@ function(verify_standard_render_algorithms_absent build_dir)
     )
     foreach(metadata IN LISTS build_metadata)
         file(READ "${metadata}" contents)
-        if(contents MATCHES "render_algorithms[/\\\\]planar_reflection[/\\\\]standard_prefilter[.]comp")
+        if(contents MATCHES
+            "render_algorithms[/\\\\](standardrenderalgorithms[.]cpp|planar_reflection[/\\\\](standard_prefilter[.]comp|planarreflectionview[.]cpp|planarreflectionviewprovider[.]cpp))")
             message(FATAL_ERROR
-                "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF retained the standard prefilter: ${metadata}")
+                "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF retained a standard algorithm source: ${metadata}")
         endif()
     endforeach()
 
@@ -540,9 +541,10 @@ function(verify_standard_render_algorithms_absent build_dir)
     foreach(artifact IN LISTS artifacts)
         get_filename_component(name "${artifact}" NAME)
         string(TOLOWER "${name}" lower_name)
-        if(lower_name MATCHES "standard_prefilter.*[.](obj|o|lib|a)$")
+        if(lower_name MATCHES
+            "(standard_prefilter|standardrenderalgorithms|planarreflectionview|planarreflectionviewprovider).*[.](obj|o|lib|a)$")
             message(FATAL_ERROR
-                "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF emitted a standard prefilter artifact: ${artifact}")
+                "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF emitted a standard algorithm artifact: ${artifact}")
         endif()
     endforeach()
 endfunction()
@@ -552,6 +554,7 @@ function(run_standard_render_algorithms_smoke)
         "standard_render_algorithms"
         "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS"
         standard_render_algorithms_build_dir
+        -DPELICAN_WITH_OPENXR=OFF
     )
     verify_standard_render_algorithms_absent(
         "${standard_render_algorithms_build_dir}")
@@ -564,6 +567,17 @@ function(run_standard_render_algorithms_smoke)
         "standard_render_algorithm_registry"
         TRUE
         "${standard_render_algorithms_probe}"
+        "[render-algorithm]"
+    )
+    find_built_executable(
+        "${standard_render_algorithms_build_dir}"
+        "pelican_test_viewfamily_test"
+        standard_render_algorithms_family_probe
+    )
+    run_process(
+        "standard_render_algorithm_provider_registry"
+        TRUE
+        "${standard_render_algorithms_family_probe}"
         "[render-algorithm]"
     )
     clean_successful_build("${standard_render_algorithms_build_dir}")

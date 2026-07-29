@@ -1,6 +1,9 @@
 #include "../src/core/renderer/viewfamily.hpp"
+#include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderer/directionalshadowcascade.hpp"
-#include "../src/core/renderer/planarreflectionview.hpp"
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+#include "../src/core/render_algorithms/planar_reflection/planarreflectionview.hpp"
+#endif
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -16,6 +19,73 @@
 
 namespace Pelican {
 namespace {
+
+TEST_CASE(
+    "runtime view-family providers expose a generic optional package boundary",
+    "[view-family][provider][render-algorithm]") {
+    const auto &providers =
+        renderViewFamilyProviderRegistry();
+    const auto *directional =
+        providers.find(
+            directionalShadowRenderViewFamilyId);
+    REQUIRE(directional != nullptr);
+    REQUIRE(
+        directional->name ==
+        "engine.directional_shadow_v1");
+
+    const auto *planar =
+        providers.find(
+            planarReflectionRenderViewFamilyId);
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    REQUIRE(planar != nullptr);
+    REQUIRE(
+        planar->name ==
+        "standard.planar_reflection_v1");
+#else
+    REQUIRE(planar == nullptr);
+#endif
+
+    RenderViewFamilyProviderRegistry
+        custom;
+    custom.registerProvider(
+        RenderViewFamilyProviderDefinition{
+            .name = "project.capture_v1",
+            .family_id =
+                "$project/capture",
+            .build =
+                [](const RenderViewFamilies &,
+                   const RenderViewFamilyProviderContext
+                       &) {
+                    return RenderViewFamily{
+                        .family_id =
+                            "$project/capture",
+                        .views =
+                            {RenderViewParameters{
+                                .view_id =
+                                    "$capture/0",
+                            }},
+                    };
+                },
+        });
+    REQUIRE(
+        custom.find("$project/capture") !=
+        nullptr);
+    REQUIRE_THROWS_AS(
+        custom.registerProvider(
+            RenderViewFamilyProviderDefinition{
+                .name =
+                    "project.duplicate_v1",
+                .family_id =
+                    "$project/capture",
+                .build =
+                    [](const RenderViewFamilies &,
+                       const RenderViewFamilyProviderContext
+                           &) {
+                        return RenderViewFamily{};
+                    },
+            }),
+        std::invalid_argument);
+}
 
 RenderViewParameters view(
     std::string id, float projection_x,
@@ -333,6 +403,7 @@ TEST_CASE(
         -1.0f);
 }
 
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 TEST_CASE(
     "planar reflection views preserve identity, clipping, and raster winding",
     "[view-family][reflection][clip-plane]") {
@@ -624,6 +695,7 @@ TEST_CASE(
             plane),
         std::invalid_argument);
 }
+#endif
 
 TEST_CASE(
     "view family projection jitter is one shared modifier sample",
