@@ -500,6 +500,9 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   local input attachmentへはlowerしない。WP232で`family_array` sampled portは
   `sampler2DArray`へloweringし、surfaceのscalar accessorが現在のlogical viewを自動選択する。
   1-view familyのscalar imageは1-layer array viewへadaptする
+- WP233でproducer側compute kernelはstage付きfeature `shader_assets` parameterから
+  `engine://` / `project://`を選べる。material semantic portやphysical view shapeは変えず、
+  standard planar prefilter packageだけをbuildからpurgeできる
 - 詳細は
   [`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
   を正とする

@@ -51,6 +51,9 @@ jobs:
           - name: PELICAN_WITH_RENDERDOC=OFF
             id: renderdoc
             kind: build-unit
+          - name: PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF
+            id: standard-render-algorithms
+            kind: build-unit
           - name: PELICAN_PROJECT project-code smoke
             id: project-code
             kind: project-code

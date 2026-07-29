@@ -207,6 +207,13 @@ TEST_CASE(
                     .view =
                         ShaderResourcePortView::
                             per_view,
+                    .subresource =
+                        ImageSubresourceRange{
+                            .base_mip_level = 3,
+                            .level_count = 1,
+                            .base_array_layer = 1,
+                            .layer_count = 1,
+                        },
                 },
             .binding = 1,
             .descriptor =
@@ -246,9 +253,19 @@ TEST_CASE(
         sourceRoot() /
         "src/core/resources/shaders/include");
     ShaderCompileOptions options;
-    options.virtual_includes.push_back(
+    const auto generated_ports =
         makeShaderResourcePortVirtualInclude(
-            bindings));
+            bindings);
+    REQUIRE(
+        generated_ports.second.find(
+            "pelican_base_mip_result() { return 3u; }") !=
+        std::string::npos);
+    REQUIRE(
+        generated_ports.second.find(
+            "pelican_base_layer_result() { return 1u; }") !=
+        std::string::npos);
+    options.virtual_includes.push_back(
+        generated_ports);
     const auto compiled =
         compiler.compileSource(
             R"glsl(
@@ -266,6 +283,10 @@ void main() {
     value += vec4(pelican_size_lod_scene_color(0), 0, 0) * 0.0;
     value += pelican_sample_lod_scene_layers(
         vec2(0.5), 0u, 0.0) * 0.001;
+    if (pelican_base_mip_result() != 3u ||
+        pelican_base_layer_result() != 1u) {
+        return;
+    }
     pelican_store_result(ivec2(0), 0u, value);
 }
 )glsl",

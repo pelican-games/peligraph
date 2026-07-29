@@ -2,6 +2,11 @@
 
 Status: implemented and verified (2026-07-29)
 
+WP233 follow-up: the kernel is now selected by a typed shader asset parameter
+and lives in a build-purgeable standard package. The current replacement and
+purge contract is documented in
+[`2026-07-29_wp233_replaceable_render_algorithm_package.md`](2026-07-29_wp233_replaceable_render_algorithm_package.md).
+
 ## Goal
 
 Close the standard planar-reflection sampling slice without coupling its
@@ -16,10 +21,13 @@ The slice has three deliberately separate parts:
      `family_array` contracts.
    - the graph owns ordering and read/write hazards.
 2. **Replaceable algorithm layer**
-   - `planar_reflection_filter.comp` performs one 2:1 linear low-pass step.
+   - `render_algorithms/planar_reflection/standard_prefilter.comp` performs
+     one roughness-aware 13-tap tent low-pass step.
    - six ordinary compute tasks form mip 0 -> 1 -> ... -> 6.
    - dispatch groups are derived from each destination mip extent and the
      reflected shader local size.
+   - a typed `prefilter_shader` feature parameter selects the standard or a
+     project-owned compute asset.
 3. **Physical/backend lowering**
    - explicit one-layer family subresources expand to the selected physical
      family cardinality.
@@ -115,7 +123,8 @@ filter kernels remain replaceable material/compute algorithms.
 ## Remaining boundaries
 
 - the standard feature fixes the chain at seven levels;
-- the filter is a linear box low-pass rather than BRDF-aware convolution;
+- the standard filter is a planar tent low-pass rather than BRDF-aware
+  direction-space convolution;
 - whole-image layout/hazard tracking remains conservative across disjoint
   mips;
 - general consumer-owned sampled layered-multiview inputs, secondary

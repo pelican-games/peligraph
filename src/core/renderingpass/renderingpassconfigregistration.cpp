@@ -239,6 +239,8 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 dependencies.frame_graph_resources,
                 &resource_views,
                 &resource_view_counts,
+                &dependencies.runtime
+                     .shader_defines,
             });
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }

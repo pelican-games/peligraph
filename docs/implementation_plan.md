@@ -120,11 +120,13 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP230 | planar reflection oblique near-plane projection | ✅ 完了（2026-07-29）。Vulkan ZO一般式、透視/非対称/正射影/X反転、fallback、実GPU |
 | WP231 / 231b | image extent dispatch / remaining-mip material view | ✅ 完了（2026-07-29）。typed output extent、local-size ceil divide、remaining mip descriptor、resize/実GPU |
 | WP232 | planar reflection mip filter / family-array material ABI | ✅ 完了（2026-07-29）。7-level low-pass、pass-owned view lowering、scalar-family adapter、roughness sampling実GPU |
+| WP233 | replaceable render algorithm asset/package | ✅ 完了（2026-07-29）。typed shader asset parameter、compute define/subresource ABI、標準packageのproject差替え・build purge、ON/OFF実GPU |
 
-WP231〜232の受け入れ詳細:
+WP231〜233の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
 [`WP231b`](design_reviews/2026-07-29_wp231b_remaining_mip_material_ports.md)、
-[`WP232`](design_reviews/2026-07-29_wp232_planar_reflection_mip_filter_report.md)。
+[`WP232`](design_reviews/2026-07-29_wp232_planar_reflection_mip_filter_report.md)、
+[`WP233`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。

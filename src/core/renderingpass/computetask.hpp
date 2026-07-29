@@ -42,6 +42,12 @@ struct ComputeTaskRuntimeDependencies {
     const std::unordered_map<
         std::string, std::uint32_t>
         *resource_view_counts = nullptr;
+    // Feature/pipeline defines are part of the compute shader recipe just as
+    // they are for graphics passes. Keeping the borrowed immutable set here
+    // also lets project-owned compute algorithms participate in coordinated
+    // reload without a second parameter transport.
+    const std::vector<std::string>
+        *shader_defines = nullptr;
 };
 
 struct ResolvedComputeResourceBinding {

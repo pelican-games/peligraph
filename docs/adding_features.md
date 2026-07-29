@@ -168,9 +168,15 @@ DLL境界は作らない。
 新しい埋め込みリソース(シェーダ・fragment・既定 JSON)を足すとき:
 
 1. `src/core/resources/CMakeLists.txt` — `b_embed(pelican_resources <id>)`
-2. `src/core/loader/engineresources.cpp` — `registered_ids` 配列(**サイズ定数も
-   更新**)+ `PELICAN_ENGINE_RESOURCE(...)` 行
+2. `src/core/loader/engineresources.cpp` — `registered_ids` 配列+
+   `PELICAN_ENGINE_RESOURCE(...)` 行
 3. `test/fixtures/project_format/engine_resources.json` — id 追加
+
+ただし交換可能な標準描画algorithmはfeature固有のC++登録を増やさず、
+`src/core/resources/render_algorithms/standard_algorithms.cmake`のpackage manifestへ追加する。
+生成registryが`engineResource()`とID一覧の両方へ展開し、
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`ではasset/object/registry entryをまとめて除外する。
+project側はfeatureのtyped `shader_assets` parameterへ`project://`参照を渡して置換する。
    (レジストリ一致テストがズレを検出する)
 4. (web が同じ id を提供する場合のみ)my_webpage の `engineAssets.ts` —
    **web は鏡像サブセット**: エンジンに無い id を web に足すのは禁止

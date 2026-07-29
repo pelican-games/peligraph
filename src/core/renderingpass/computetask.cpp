@@ -2200,16 +2200,23 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             makeShaderResourcePortVirtualIncludes(
                 resource_interface);
     }
+    const auto shader_defines =
+        dependencies.shader_defines != nullptr
+            ? *dependencies.shader_defines
+            : std::vector<std::string>{};
     const auto shader =
         shader_library.loadFromReference(
             definition.shader,
-            dependencies.path_resolver, true, {},
+            dependencies.path_resolver, true,
+            shader_defines,
             std::move(virtual_includes));
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline =
         pipeline_factory.createCompute(
             ComputePipelineDesc{
                 .shader = shader,
+                .shader_defines =
+                    shader_defines,
                 .resource_interface =
                     resource_interface,
             });

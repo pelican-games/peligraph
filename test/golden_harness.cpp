@@ -122,6 +122,7 @@ struct PlanarReflectionProbe {
     std::vector<
         std::array<std::uint32_t, 3>>
         filter_dispatch_groups;
+    std::string filter_shader;
     std::vector<std::uint32_t>
         light_selection_words;
     std::size_t prepared_view_count = 0;
@@ -3666,6 +3667,45 @@ void writePlanarReflectionProject(
             }
           }
         })json");
+    writeTextFile(
+        root / "shaders" /
+            "custom_planar_prefilter.comp",
+        R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#ifndef PELICAN_FEATURE_PLANAR_REFLECTION_PREFILTER_RADIUS
+#error Project prefilter did not receive the composed feature define
+#endif
+
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 output_size = pelican_size_filtered_color();
+    if (any(greaterThanEqual(coordinate, output_size))) {
+        return;
+    }
+    vec2 uv =
+        (vec2(coordinate) + vec2(0.5)) /
+        vec2(output_size);
+    uint view_index = pelican_view_index();
+    vec4 value =
+        pelican_sample_source_color(
+            uv, view_index);
+    // Keep both typed values live in this project-owned implementation. The
+    // zero multiplier avoids coupling this replacement contract test to a
+    // particular filter kernel.
+    value.rgb += vec3(
+        (float(pelican_base_mip_filtered_color()) +
+         PELICAN_FEATURE_PLANAR_REFLECTION_PREFILTER_RADIUS) *
+        0.0);
+    pelican_store_filtered_color(
+        coordinate, view_index, value);
+}
+)glsl");
 
     auto config =
         makeBLayerShadowRenderingConfig({});
@@ -3714,21 +3754,38 @@ void writePlanarReflectionProject(
                 "project://features/"} +
             file_name;
     }
+    auto reflection_parameters =
+        nlohmann::json{
+            {"resolution", 64},
+            {"plane_x", 0.0},
+            {"plane_y", 1.0},
+            {"plane_z", 0.0},
+            {"plane_offset", 0.0},
+            {"preserve_raster_winding", true},
+            {"oblique_near_plane", true},
+        };
+    const bool use_project_prefilter =
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+        forward_capture &&
+        !transparent_capture;
+#else
+        true;
+#endif
+    if (use_project_prefilter) {
+        reflection_parameters[
+            "prefilter_shader"] =
+            "project://shaders/custom_planar_prefilter";
+        reflection_parameters[
+            "prefilter_radius"] = 1.25;
+    }
     config["features"] =
         nlohmann::json::array({
             {
                 {"ref",
                  reflection_feature},
                 {"parameters",
-                 {
-                     {"resolution", 64},
-                     {"plane_x", 0.0},
-                     {"plane_y", 1.0},
-                     {"plane_z", 0.0},
-                     {"plane_offset", 0.0},
-                     {"preserve_raster_winding", true},
-                     {"oblique_near_plane", true},
-                 }},
+                 std::move(
+                     reflection_parameters)},
             },
             "engine://features/clustered_lighting.json",
             "project://features/planar_reflection_probe.json",
@@ -6070,6 +6127,10 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         auto &compute_tasks =
             GET_MODULE(
                 ComputeTaskContainer);
+        const auto first_filter_id =
+            compute_tasks
+                .getComputeTaskIdByName(
+                    "planar_reflection_filter_mip_1");
         for (std::uint32_t mip = 1;
              mip < 7; ++mip) {
             filter_dispatch_groups.push_back(
@@ -6109,6 +6170,11 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                 .filter_dispatch_groups =
                     std::move(
                         filter_dispatch_groups),
+                .filter_shader =
+                    compute_tasks
+                        .definition(
+                            first_filter_id)
+                        .shader.ref,
                 .light_selection_words =
                     readFrameGraphUint32Buffer(
                         "planar_reflection_light_selection"),
@@ -7790,6 +7856,27 @@ void GoldenHarness::runPlanarReflection() {
         *deferred_only.planar_reflection;
     const auto &opaque_probe =
         *opaque_only.planar_reflection;
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    REQUIRE(
+        probe.filter_shader ==
+        "engine://render_algorithms/planar_reflection/standard_prefilter");
+    REQUIRE(
+        deferred_probe.filter_shader ==
+        "engine://render_algorithms/planar_reflection/standard_prefilter");
+    REQUIRE(
+        opaque_probe.filter_shader ==
+        "project://shaders/custom_planar_prefilter");
+#else
+    REQUIRE(
+        probe.filter_shader ==
+        "project://shaders/custom_planar_prefilter");
+    REQUIRE(
+        deferred_probe.filter_shader ==
+        "project://shaders/custom_planar_prefilter");
+    REQUIRE(
+        opaque_probe.filter_shader ==
+        "project://shaders/custom_planar_prefilter");
+#endif
     for (const auto *metadata : {
              &probe.albedo,
              &probe.depth,

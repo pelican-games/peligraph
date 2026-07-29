@@ -85,6 +85,8 @@ port 名は GLSL identifier であり、shader は
 `#include "pelican_resource_ports.glsl"` を宣言する。generated interface は
 sampled port に `pelican_sample_<port>()` / `pelican_size_<port>()`、storage port に
 `pelican_load_<port>()` / `pelican_store_<port>()` / `pelican_size_<port>()` を作る。
+全image portはさらに`pelican_base_mip_<port>()` /
+`pelican_base_layer_<port>()`を持ち、graphが選んだ絶対base subresourceを返す。
 実 descriptor 変数は generated include の内部詳細であり、shader は set/binding を書かない。
 
 `view: "shared_2d"` は全 view 共通の `sampler2D` / `image2D` である。
@@ -122,7 +124,10 @@ optional `subresource`でview rangeを選ぶ。
 選択base mipから現在のtarget最終mipまでを表す`"remaining"`を受理する。後者はtarget
 resize/recreate時に新しいmip数へ再解決される。明示viewでは
 shaderから見たLOD 0が`mip`で選んだbase mipに対応し、`pelican_size_<port>()`も
-そのviewのサイズを返す。`shared_2d`の2D viewはlayer count 1、storage imageは
+そのviewのサイズを返す。`pelican_base_mip_<port>()`と
+`pelican_base_layer_<port>()`は正規化済みrangeの絶対baseを返すため、同じshaderが
+task名やbackend viewを見ずにmip/layer別のalgorithmを選べる。base layerはrangeの起点であり、
+現在のfamily memberは`pelican_view_index()`で別に取得する。`shared_2d`の2D viewはlayer count 1、storage imageは
 mip count 1が必要である。`per_view`がphysical layered viewへloweringされた場合だけ
 2D-array accessorになる。physical imageが論理view数より多いlayer容量を持っても、
 layered `per_view` descriptorは論理view数ぶんだけを公開する。明示rangeは1 layerから
@@ -137,6 +142,11 @@ portはsampler descriptor専用で、`same_pixel` local read/input attachmentへ
 
 layout/hazard trackingは現時点ではresource単位である。互いに素なrangeでもwhole imageを
 保守的に遷移し、subresource並列化は行わない。
+
+feature compositionが生成する値付きdefineはgraphicsだけでなくcompute shaderの
+compile/cache recipeにも同じ順序で入る。project-owned compute algorithmも
+`PELICAN_FEATURE_<FEATURE>_<PARAM>=<value>`を直接利用でき、pipeline recordはdefine集合を
+保持する。
 
 ### material/geometry resource port(WP207b / WP220)
 

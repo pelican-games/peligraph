@@ -96,7 +96,7 @@ configure/build/CTestログ、CTest JUnit、SKIP policy 結果、`LastTest.log`�
 
 構成 matrix は Windows/MSVC Debug で次を独立 runner に分ける。
 
-- `PELICAN_WITH_AUDIO/VAT/EXR/RPC/SEQPLAYER/IMGUI/OPENXR/RENDERDOC=OFF`
+- `PELICAN_WITH_AUDIO/VAT/EXR/RPC/SEQPLAYER/IMGUI/OPENXR/RENDERDOC/STANDARD_RENDER_ALGORITHMS=OFF`
 - `PELICAN_WITH_PHYSICS=OFF` と built-in/Jolt provider の排他構成
 - `PELICAN_PROJECT=projects/example` の project-code build と、tracked fixture だけで作る
   一時 project の headless smoke
@@ -127,7 +127,7 @@ build-unit / project-code smokeはPython不要である。clean-cloneの完全�
 Python 3.12を用意する。
 
 ```powershell
-# 9 entry を一括実行。個別実行は -DPELICAN_BUILD_UNIT_SMOKE_ONLY=audio 等を追加する。
+# 10 entry を一括実行。個別実行は -DPELICAN_BUILD_UNIT_SMOKE_ONLY=audio 等を追加する。
 cmake -DPELICAN_BUILD_UNIT_SMOKE_CONFIG=Debug `
   -P test/run_build_units_smoke.cmake
 

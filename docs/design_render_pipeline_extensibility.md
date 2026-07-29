@@ -301,6 +301,18 @@ draw sort のように「同じ execution mechanism の中で手法だけを交�
 版付き provider にする。engine builtin と game DLL provider は同じ registry を
 使う。provider を登録しなければ、その実装コードも状態も不要である。
 
+すべてをC++ providerにしない。typed graph portを消費するshader kernelはfeatureの
+stage付き`shader_assets` parameterで選び、`project://` assetへ差し替える。CPU状態や
+scene queryを所有するpolicyはprovider、GPU kernelだけを変える場合はasset parameter、
+execution semanticsを変える場合はcompiler/backend境界を使う。この三者を一つの巨大
+algorithm ABIへ統合しない。
+
+engine既定shader群は任意のstandard algorithm packageに置ける。packageのbuild flagは
+実装asset/registry entryだけを除外し、typed graph/compiler mechanismは除外しない。
+したがってinstance単位の差替えとbinary単位のpurgeは直交し、標準packageを外したbinaryでも
+project assetを選べば同じlogical/physical contractを利用できる。最初のdogfoodはWP233の
+planar prefilterである。
+
 ### 3.4 Backend / source extension — 実行機構を交換する入口
 
 swapchain、OpenXR session、Vulkan command recording、未知の pass kind 等を変える

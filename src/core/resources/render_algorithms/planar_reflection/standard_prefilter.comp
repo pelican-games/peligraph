@@ -1,0 +1,86 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#ifndef PELICAN_FEATURE_PLANAR_REFLECTION_PREFILTER_RADIUS
+#error PELICAN_FEATURE_PLANAR_REFLECTION_PREFILTER_RADIUS is required
+#endif
+
+vec3 pelican_prefilter_sample(
+    vec2 uv,
+    vec2 source_texel,
+    vec2 offset,
+    uint view_index) {
+    return pelican_sample_source_color(
+        uv + source_texel * offset,
+        view_index).rgb;
+}
+
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 output_size = pelican_size_filtered_color();
+    if (any(greaterThanEqual(coordinate, output_size))) {
+        return;
+    }
+
+    vec2 uv =
+        (vec2(coordinate) + vec2(0.5)) /
+        vec2(output_size);
+    vec2 source_texel =
+        1.0 / vec2(pelican_size_source_color());
+    uint view_index = pelican_view_index();
+
+    // The graph owns the selected subresource. Its generated typed accessor
+    // gives this replaceable algorithm the destination level without a
+    // task-name convention or Vulkan state.
+    float level = float(
+        pelican_base_mip_filtered_color());
+    float roughness = clamp(level / 6.0, 0.0, 1.0);
+    float radius =
+        max(PELICAN_FEATURE_PLANAR_REFLECTION_PREFILTER_RADIUS, 0.5) *
+        mix(0.75, 2.0, roughness * roughness);
+
+    // Energy-preserving 13-tap tent downsample. Compared with the old single
+    // bilinear tap it suppresses high-frequency shimmer and widens smoothly
+    // toward rough mips, while remaining a planar screen-space approximation
+    // rather than pretending to be a direction-space GGX convolution.
+    vec3 a = pelican_prefilter_sample(
+        uv, source_texel, vec2(-2.0, 2.0) * radius, view_index);
+    vec3 b = pelican_prefilter_sample(
+        uv, source_texel, vec2(0.0, 2.0) * radius, view_index);
+    vec3 c = pelican_prefilter_sample(
+        uv, source_texel, vec2(2.0, 2.0) * radius, view_index);
+    vec3 d = pelican_prefilter_sample(
+        uv, source_texel, vec2(-2.0, 0.0) * radius, view_index);
+    vec3 e = pelican_prefilter_sample(
+        uv, source_texel, vec2(0.0), view_index);
+    vec3 f = pelican_prefilter_sample(
+        uv, source_texel, vec2(2.0, 0.0) * radius, view_index);
+    vec3 g = pelican_prefilter_sample(
+        uv, source_texel, vec2(-2.0, -2.0) * radius, view_index);
+    vec3 h = pelican_prefilter_sample(
+        uv, source_texel, vec2(0.0, -2.0) * radius, view_index);
+    vec3 i = pelican_prefilter_sample(
+        uv, source_texel, vec2(2.0, -2.0) * radius, view_index);
+    vec3 j = pelican_prefilter_sample(
+        uv, source_texel, vec2(-1.0, 1.0) * radius, view_index);
+    vec3 k = pelican_prefilter_sample(
+        uv, source_texel, vec2(1.0, 1.0) * radius, view_index);
+    vec3 l = pelican_prefilter_sample(
+        uv, source_texel, vec2(-1.0, -1.0) * radius, view_index);
+    vec3 m = pelican_prefilter_sample(
+        uv, source_texel, vec2(1.0, -1.0) * radius, view_index);
+
+    vec3 filtered = e * 0.125;
+    filtered += (a + c + g + i) * 0.03125;
+    filtered += (b + d + f + h) * 0.0625;
+    filtered += (j + k + l + m) * 0.125;
+    pelican_store_filtered_color(
+        coordinate,
+        view_index,
+        vec4(filtered, 1.0));
+}

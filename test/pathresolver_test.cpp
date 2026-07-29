@@ -5,6 +5,7 @@
 #include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -189,7 +190,7 @@ TEST_CASE("PathResolver resolves engine resources before setup", "[pathresolver]
 }
 
 TEST_CASE("Engine resource registry matches project format fixture", "[pathresolver]") {
-#if !PELICAN_WITH_VAT
+#if !PELICAN_WITH_VAT || !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
     SKIP("engine resource registry fixture is validated only for the full resource set");
 #else
     const auto fixture = readJson(fixtureRoot() / "engine_resources.json");
@@ -203,6 +204,26 @@ TEST_CASE("Engine resource registry matches project format fixture", "[pathresol
     }
 
     REQUIRE(registered_ids == fixture_ids);
+#endif
+}
+
+TEST_CASE(
+    "Standard render algorithm package is a removable engine resource set",
+    "[pathresolver][render-algorithm]") {
+    constexpr std::string_view resource_id =
+        "render_algorithms/planar_reflection/standard_prefilter.comp";
+    const auto ids =
+        registeredEngineResourceIds();
+    const auto registered =
+        std::find(
+            ids.begin(), ids.end(),
+            resource_id);
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    REQUIRE(registered != ids.end());
+    REQUIRE(engineResource(resource_id));
+#else
+    REQUIRE(registered == ids.end());
+    REQUIRE_FALSE(engineResource(resource_id));
 #endif
 }
 

@@ -985,6 +985,9 @@ TEST_CASE(
             task.at("view_family") ==
             "$reflection/planar");
         REQUIRE(
+            task.at("shader") ==
+            "engine://render_algorithms/planar_reflection/standard_prefilter");
+        REQUIRE(
             task.at("resource_ports")
                 .at("source_color")
                 .at("view") ==
@@ -1019,6 +1022,12 @@ TEST_CASE(
             .at("before") ==
         nlohmann::json::array(
             {"forward_transparent"}));
+    REQUIRE(
+        std::find(
+            result.shader_defines.begin(),
+            result.shader_defines.end(),
+            "PELICAN_FEATURE_PLANAR_REFLECTION_PREFILTER_RADIUS=1") !=
+        result.shader_defines.end());
 
     const auto compiled =
         compileComposition(result);
@@ -1062,6 +1071,36 @@ TEST_CASE(
     REQUIRE(
         std::get<bool>(
             oblique_near_plane->value));
+    const auto prefilter_radius =
+        std::find_if(
+            feature->parameters.begin(),
+            feature->parameters.end(),
+            [](const auto &parameter) {
+                return parameter.name ==
+                       "prefilter_radius";
+            });
+    REQUIRE(
+        prefilter_radius !=
+        feature->parameters.end());
+    REQUIRE(
+        std::get<double>(
+            prefilter_radius->value) ==
+        Catch::Approx(1.0));
+    const auto prefilter_shader =
+        std::find_if(
+            feature->parameters.begin(),
+            feature->parameters.end(),
+            [](const auto &parameter) {
+                return parameter.name ==
+                       "prefilter_shader";
+            });
+    REQUIRE(
+        prefilter_shader !=
+        feature->parameters.end());
+    REQUIRE(
+        std::get<std::string>(
+            prefilter_shader->value) ==
+        "engine://render_algorithms/planar_reflection/standard_prefilter");
 
     for (const auto shadow_first :
          {false, true}) {
@@ -2080,6 +2119,203 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
     REQUIRE(second.feature_instances.at(0).at("parameters").at("iterations") == 4);
     REQUIRE(second.feature_instances.at(0).at("parameters").at("enabled") == true);
     REQUIRE(first.shader_defines != second.shader_defines);
+}
+
+TEST_CASE(
+    "shader asset feature parameters replace typed shader slots without "
+    "copying the feature",
+    "[render-feature][binding][shader-asset]") {
+    const auto feature =
+        nlohmann::json::parse(R"json({
+          "schema":"pelican.render_feature",
+          "version":1,
+          "name":"replaceable_filter",
+          "parameters":{
+            "schema":"pelican.render_feature_parameters",
+            "version":1,
+            "shader_assets":[
+              {
+                "name":"filter_shader",
+                "stage":"compute",
+                "default":"engine://render_algorithms/filter/default"
+              },
+              {
+                "name":"skinned_shader",
+                "stage":"vertex",
+                "default":"engine://velocity_skinned"
+              }
+            ]
+          },
+          "passes":[{
+            "insert":"end",
+            "pass":{
+              "name":"replaceable_velocity",
+              "type":"velocity",
+              "output":{"color":null,"depth":null},
+              "shader":{
+                "vertex":"engine://velocity",
+                "skinned_vertex":"$skinned_shader",
+                "fragment":"engine://velocity"
+              }
+            }
+          }],
+          "compute_tasks":[{
+            "name":"filter",
+            "shader":"$filter_shader",
+            "dispatch":{"groups":[1,1,1]}
+          }]
+        })json");
+    const auto compose =
+        [&](nlohmann::json parameters) {
+            return composeRenderFeatureConfig(
+                nlohmann::json{
+                    {"render_targets",
+                     nlohmann::json::array()},
+                    {"rendering_passes",
+                     nlohmann::json::array({
+                         {
+                             {"name", "main"},
+                             {"passes",
+                              nlohmann::json::array()},
+                         },
+                     })},
+                    {"features",
+                     nlohmann::json::array({
+                         {
+                             {"ref",
+                              "replaceable_filter.json"},
+                             {"parameters",
+                              std::move(parameters)},
+                         },
+                     })},
+                },
+                RenderFeatureComposeDependencies{
+                    [text = feature.dump()](
+                        std::string_view) {
+                        return text;
+                    },
+                    true,
+                });
+        };
+
+    const auto defaults =
+        compose(nlohmann::json::object());
+    REQUIRE(
+        computeTaskByName(
+            defaults.config, "filter")
+            .at("shader") ==
+        "engine://render_algorithms/filter/default");
+    REQUIRE(
+        defaults.feature_instances.at(0)
+            .at("parameters")
+            .at("filter_shader") ==
+        "engine://render_algorithms/filter/default");
+    REQUIRE(
+        passByName(
+            defaults.config,
+            "replaceable_velocity")
+            .at("shader")
+            .at("skinned_vertex") ==
+        "engine://velocity_skinned");
+
+    const auto replaced =
+        compose({
+            {"filter_shader",
+             "project://shaders/custom_filter"},
+            {"skinned_shader",
+             "project://shaders/custom_skin"},
+        });
+    REQUIRE(
+        computeTaskByName(
+            replaced.config, "filter")
+            .at("shader") ==
+        "project://shaders/custom_filter");
+    REQUIRE(
+        replaced.feature_instances.at(0)
+            .at("parameters")
+            .at("filter_shader") ==
+        "project://shaders/custom_filter");
+    REQUIRE(
+        passByName(
+            replaced.config,
+            "replaceable_velocity")
+            .at("shader")
+            .at("skinned_vertex") ==
+        "project://shaders/custom_skin");
+}
+
+TEST_CASE(
+    "shader asset parameters reject type and stage mismatches",
+    "[render-feature][binding][shader-asset]") {
+    const auto compose =
+        [](nlohmann::json feature,
+           nlohmann::json parameters =
+               nlohmann::json::object()) {
+            return composeRenderFeatureConfig(
+                nlohmann::json{
+                    {"render_targets",
+                     nlohmann::json::array()},
+                    {"rendering_passes",
+                     nlohmann::json::array()},
+                    {"features",
+                     nlohmann::json::array({
+                         {
+                             {"ref", "asset.json"},
+                             {"parameters",
+                              std::move(parameters)},
+                         },
+                     })},
+                },
+                RenderFeatureComposeDependencies{
+                    [text = feature.dump()](
+                        std::string_view) {
+                        return text;
+                    },
+                    true,
+                });
+        };
+    auto feature =
+        nlohmann::json::parse(R"json({
+          "schema":"pelican.render_feature",
+          "version":1,
+          "name":"asset_errors",
+          "parameters":{
+            "schema":"pelican.render_feature_parameters",
+            "version":1,
+            "shader_assets":[{
+              "name":"filter_shader",
+              "stage":"fragment",
+              "default":"project://shaders/filter"
+            }]
+          },
+          "compute_tasks":[{
+            "name":"filter",
+            "shader":"$filter_shader",
+            "dispatch":{"groups":[1,1,1]}
+          }]
+        })json");
+
+    REQUIRE_THROWS_WITH(
+        compose(feature),
+        Catch::Matchers::ContainsSubstring(
+            "declares stage 'fragment' but is used in a 'compute' slot"));
+    REQUIRE_THROWS_WITH(
+        compose(
+            feature,
+            {{"filter_shader", 7}}),
+        Catch::Matchers::ContainsSubstring(
+            "shader asset value must be a non-empty string reference"));
+
+    feature["parameters"]["shader_assets"][0]
+           ["stage"] = "compute";
+    feature["compute_tasks"][0]["name"] =
+        "$filter_shader";
+    feature["compute_tasks"][0]["shader"] =
+        "project://shaders/filter";
+    REQUIRE_THROWS_WITH(
+        compose(feature),
+        Catch::Matchers::ContainsSubstring(
+            "shader asset placeholder may only be used in a typed shader slot"));
 }
 
 TEST_CASE("scalar feature parameter declaration and instance errors name feature and parameter",

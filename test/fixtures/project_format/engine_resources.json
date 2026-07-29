@@ -60,6 +60,7 @@
     "shaders/material/surface_v1.vert",
     "shaders/material/surface_v1.frag",
     "shaders/compute/clustered_light_select.comp",
+    "render_algorithms/planar_reflection/standard_prefilter.comp",
     "surfaces/openpbr/manifest.json",
     "surfaces/openpbr/opaque_single.surface",
     "surfaces/openpbr/opaque_double.surface",

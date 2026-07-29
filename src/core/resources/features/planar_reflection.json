@@ -52,6 +52,19 @@
         "type": "bool",
         "default": true,
         "shader_define": false
+      },
+      {
+        "name": "prefilter_radius",
+        "type": "float",
+        "range": [0.5, 3.0],
+        "default": 1.0
+      }
+    ],
+    "shader_assets": [
+      {
+        "name": "prefilter_shader",
+        "stage": "compute",
+        "default": "engine://render_algorithms/planar_reflection/standard_prefilter"
       }
     ]
   },
@@ -342,7 +355,7 @@
   "compute_tasks": [
     {
       "name": "planar_reflection_filter_mip_1",
-      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
       "schedule": "per_view",
@@ -379,7 +392,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_2",
-      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
       "schedule": "per_view",
@@ -416,7 +429,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_3",
-      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
       "schedule": "per_view",
@@ -453,7 +466,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_4",
-      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
       "schedule": "per_view",
@@ -490,7 +503,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_5",
-      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
       "schedule": "per_view",
@@ -527,7 +540,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_6",
-      "shader": "engine://shaders/compute/planar_reflection_filter",
+      "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
       "schedule": "per_view",

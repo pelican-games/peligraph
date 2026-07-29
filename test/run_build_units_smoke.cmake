@@ -521,6 +521,54 @@ function(run_renderdoc_smoke)
     clean_successful_build("${renderdoc_build_dir}")
 endfunction()
 
+function(verify_standard_render_algorithms_absent build_dir)
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "render_algorithms[/\\\\]planar_reflection[/\\\\]standard_prefilter[.]comp")
+            message(FATAL_ERROR
+                "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF retained the standard prefilter: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "standard_prefilter.*[.](obj|o|lib|a)$")
+            message(FATAL_ERROR
+                "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF emitted a standard prefilter artifact: ${artifact}")
+        endif()
+    endforeach()
+endfunction()
+
+function(run_standard_render_algorithms_smoke)
+    configure_and_build(
+        "standard_render_algorithms"
+        "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS"
+        standard_render_algorithms_build_dir
+    )
+    verify_standard_render_algorithms_absent(
+        "${standard_render_algorithms_build_dir}")
+    find_built_executable(
+        "${standard_render_algorithms_build_dir}"
+        "pelican_test_pathresolver_test"
+        standard_render_algorithms_probe
+    )
+    run_process(
+        "standard_render_algorithm_registry"
+        TRUE
+        "${standard_render_algorithms_probe}"
+        "[render-algorithm]"
+    )
+    clean_successful_build("${standard_render_algorithms_build_dir}")
+endfunction()
+
 if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
     message(STATUS "build-unit OFF smoke fixture parsed successfully")
     return()
@@ -682,6 +730,8 @@ if(DEFINED PELICAN_BUILD_UNIT_SMOKE_ONLY)
         run_openxr_smoke()
     elseif(smoke_only STREQUAL "renderdoc")
         run_renderdoc_smoke()
+    elseif(smoke_only STREQUAL "standard-render-algorithms")
+        run_standard_render_algorithms_smoke()
     else()
         message(FATAL_ERROR "unsupported PELICAN_BUILD_UNIT_SMOKE_ONLY: ${PELICAN_BUILD_UNIT_SMOKE_ONLY}")
     endif()
@@ -699,5 +749,6 @@ run_imgui_smoke()
 run_physics_smoke()
 run_openxr_smoke()
 run_renderdoc_smoke()
+run_standard_render_algorithms_smoke()
 
-message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, PHYSICS, OPENXR, and RENDERDOC; provider-only and Jolt physics also passed")
+message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, PHYSICS, OPENXR, RENDERDOC, and STANDARD_RENDER_ALGORITHMS; provider-only and Jolt physics also passed")

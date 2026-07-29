@@ -43,6 +43,12 @@ WP229ではclustered selectionをViewFamily-affine ABI v2へ更新し、flat、X
 planar reflectionが同じscalable light inventoryからfamily/view固有のtile selectionを生成する。
 FrameUBOのstable family tokenで誤bindingや古いselectionをconsumer側でも拒否し、feature間の
 追加はbase合成後の宣言的`integrations`で順序非依存に接続する。
+WP230〜232ではoblique near-plane、typed image-extent dispatch、remaining-mip material view、
+family-array sampling、7-level planar prefilterを同じgraph/view relationへ接続した。
+WP233ではfilter shaderをstage付きfeature asset parameterへ移し、feature scalar defineと
+graph-selected base mip/layerをcompute ABIへ渡した。標準kernelは独立manifestと
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`でproject差替え・build purgeでき、generic
+graph/compiler/backendにはplanar filter名を追加しない。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -662,6 +668,14 @@ shader local sizeから導出するため、algorithmは解像度やVulkan dispa
 family-array portのlayer countはphysical family cardinalityへ展開され、descriptor/view生成と
 hazard trackingは同じtyped subresourceを使う。
 
+filter algorithmはfeatureの`stage: "compute"`な`shader_assets` parameterで選び、標準
+`engine://render_algorithms/planar_reflection/standard_prefilter`とproject shaderが同じ
+port contractを消費する。generated `pelican_base_mip_*` / `pelican_base_layer_*`は
+graph-selected subresourceを返し、feature scalar defineもcompute compile recipeへ入るため、
+algorithmはtask名、固定mip番号、Vulkan image viewを参照しない。標準asset packageをbuildから
+外してもgraph/compiler/runtime機構は残り、project implementationだけで同じphysical planへ
+loweringできる。
+
 material surfaceは`planar_reflection`というsemantic portとsampling algorithmだけを宣言し、
 material passの`family_array` policyをcompiler-owned physical defineへloweringする。同じsurfaceが
 scalarなsecondary family passとarrayなmain-family passへ割り当てられる場合は、前者へ1-layer
@@ -671,7 +685,7 @@ material resource port全般のview-shape adapterである。
 残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiviewである。
 CSMやreflectionを単なる特殊passへ戻さず、これらも
 stable family relationを通して拡張する。planar reflection側はoblique near-planeを実装済みで、
-標準7-level low-pass mip chainも実装済みである。残るreflection quality項目はGGX等の
+標準7-level roughness-aware tent mip chainを交換可能packageとして実装済みである。残るreflection quality項目はGGX等の
 BRDF-aware prefilter、複数plane/probeの選択、secondary multiviewである。
 
 ## 4. scene、material、light の contract

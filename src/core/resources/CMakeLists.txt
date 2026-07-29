@@ -92,7 +92,10 @@ b_embed(pelican_resources shaders/material/openpbr_lighting.glsl)
 b_embed(pelican_resources shaders/material/surface_v1.vert)
 b_embed(pelican_resources shaders/material/surface_v1.frag)
 b_embed(pelican_resources shaders/compute/clustered_light_select.comp)
-b_embed(pelican_resources shaders/compute/planar_reflection_filter.comp)
+set(PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS)
+if(PELICAN_WITH_STANDARD_RENDER_ALGORITHMS)
+  include(${CMAKE_CURRENT_LIST_DIR}/render_algorithms/standard_algorithms.cmake)
+endif()
 b_embed(pelican_resources surfaces/openpbr/manifest.json)
 b_embed(pelican_resources surfaces/openpbr/opaque_single.surface)
 b_embed(pelican_resources surfaces/openpbr/opaque_double.surface)
@@ -120,3 +123,18 @@ b_embed(pelican_resources velocity_skinned.vert)
 b_embed(pelican_resources velocity.frag)
 b_embed(pelican_resources taa_resolve.frag)
 b_embed(pelican_resources taa_composite.frag)
+
+set(PELICAN_OPTIONAL_ENGINE_RESOURCE_REGISTRY "")
+foreach(resource_id IN LISTS PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS)
+  string(APPEND PELICAN_OPTIONAL_ENGINE_RESOURCE_REGISTRY
+    "PELICAN_OPTIONAL_ENGINE_RESOURCE(\"${resource_id}\")\n")
+endforeach()
+configure_file(
+  engine_resource_registry.inc.in
+  ${CMAKE_CURRENT_BINARY_DIR}/pelican_optional_engine_resources.inc
+  @ONLY
+)
+target_include_directories(
+  pelican_core PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}
+)

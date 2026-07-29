@@ -207,7 +207,7 @@ fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buf
 integration fragmentは通常fragmentと同じ名前衝突・field検証を受けます。条件に無いfeatureや
 passへ暗黙fallbackしたり、既存bindingを上書きしたりはしません。
 
-### feature パラメータと named binding(✅WP112/114)
+### feature パラメータと named binding(✅WP112/114/233)
 
 feature は**パラメータ化**できます。`features` 配列は文字列のほかに `{ref, parameters}` のインスタンス形式を受理します:
 
@@ -219,9 +219,10 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 ]
 ```
 
-- feature 側は `parameters`(`pelican.render_feature_parameters` v1)で宣言します: `render_targets`(name / required / default / role / format_class / usage — **RT の named binding**)と `scalars`(`float` / `int` / `bool`。`default` 必須、float/int は `range: [min,max]` 必須)。
+- feature 側は `parameters`(`pelican.render_feature_parameters` v1)で宣言します: `render_targets`(name / required / default / role / format_class / usage — **RT の named binding**)、`scalars`(`float` / `int` / `bool`。`default` 必須、float/int は `range: [min,max]` 必須)、`shader_assets`(name / `stage: vertex|fragment|compute` / default)。
 - feature 本文の中では **`$<パラメータ名>`** プレースホルダで参照します(`$scene_color@history` も可)。未解決・型不適合は feature 名・パラメータ名入りの compose エラー。
-- スカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower されます(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
+- `shader_assets`は`shader`の型付きslotだけへ完全一致の`$name`として置けます。compute taskの文字列`shader`、またはgraphics passの`shader.vertex|skinned_vertex|fragment|compute`と宣言stageが一致しなければcompose時に拒否します。`skinned_vertex`は`vertex` stageです。instance値は`engine://`にも`project://`にもでき、feature JSONを複製せずalgorithm assetだけを交換できます。
+- スカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
 - 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
 
 directional shadowは同じ仕組みでCSMを有効化できます。指定を省けば従来互換の1 cascadeです。
@@ -261,7 +262,8 @@ planar reflectionも同じparameter/provider境界で有効化できます。
       "plane_z": 0.0,
       "plane_offset": 0.0,
       "preserve_raster_winding": true,
-      "oblique_near_plane": true
+      "oblique_near_plane": true,
+      "prefilter_radius": 1.0
     }
   }
 ]
@@ -293,8 +295,25 @@ main cameraと鏡映cameraで奥行き順が異なってもmain-view順序を流
 `planar_reflection` material resource portへ自動bindingされます。reflection内のtransparent
 passではこのportをopaque color snapshotへ切り替えるため、書き込み中のreflection attachmentを
 同時にsampleしません。公開targetは7 mipを持ち、capture後に6個のimage-extent compute taskが
-前段mipをlinear box filterして後段mipを生成します。taskは`$reflection/planar` family単位で
+前段mipをroughness-aware 13-tap tent filterして後段mipを生成します。taskは`$reflection/planar` family単位で
 実行され、flatのscalar imageもXRのfamily arrayも同じtyped portからloweringされます。
+
+標準filterはtyped shader asset parameterなので、feature全体をコピーせず差し替えられます。
+
+```json
+{
+  "ref": "engine://features/planar_reflection.json",
+  "parameters": {
+    "prefilter_shader": "project://shaders/my_planar_prefilter",
+    "prefilter_radius": 1.25
+  }
+}
+```
+
+project compute shaderは同じ`source_color` / `filtered_color` port contractを使います。
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`で配布すると標準assetは埋め込み・登録されないため、
+planar reflectionを使う全instanceで`prefilter_shader`をproject実装へ指定してください。
+graph compiler、compute task、typed port、reflection camera providerはこのビルド設定では消えません。
 
 surfaceはgraph/view形状を宣言せず、semantic portとsampling algorithmだけを書きます。
 material pass側の`view: "family_array"`が`sampler2DArray` ABIを選び、
@@ -309,8 +328,8 @@ vec3 reflected =
 ```
 
 Fresnel、法線由来の歪み、GGX importance-sampled convolutionはmaterial/project側の
-置換可能なalgorithmです。標準filterはboundedな7-level low-passであり、物理BRDF積分そのもの
-ではありません。
+置換可能なalgorithmです。標準filterはmipに応じて半径を広げるboundedな7-level tent
+low-passであり、方向空間の物理BRDF積分そのものではありません。
 
 project featureでcanonical passと同じmaterial bindingを別target/viewへ再利用するときは、
 composer helperの`"inherit_bindings_from": "<pass-name>"`を指定できます。全featureの
@@ -398,6 +417,10 @@ typed buffer未実装時や特殊descriptor用のescape hatchとして維持さ�
 subresource、2D viewの複数layer、storage viewの複数mipは起動時エラーです。
 material sampled portでも同じ指定を使えますが、subresource viewは`same_pixel` local readへ
 変換されずsamplerとして実行されます。
+generated image interfaceは`pelican_base_mip_<port>()`と
+`pelican_base_layer_<port>()`も公開します。これはgraphが選んだ絶対base subresourceであり、
+shaderがtask名やVulkan image viewを推測せず、mipごとのkernel parameterを決めるために使えます。
+現在実行中のlogical viewは引き続き`pelican_view_index()`で取得します。
 依存とlayout trackerは現在resource単位なので、rangeが離れていても実行順やbarrierを
 勝手に緩和せず、image全体を保守的に遷移します。
 
@@ -553,6 +576,8 @@ full mip chainをsampled resource portで読むshaderでは、生成accessor
 1枚再利用のsequential XRと2D-array loweringの両方で使えます。
 depth pyramidのmax/min reduction、mip選択、biasなどの
 アルゴリズムはengine固定ではなくproject側のcompute shaderで変更できます。
+選択viewの絶対base位置が必要なら`pelican_base_mip_<port>()` /
+`pelican_base_layer_<port>()`を使います。
 
 既定の`gpu_draw_source.layout`は`"fixed_state_v1"`で、**1つの
 `material_range` entryにpipeline、material descriptor、static/skinned vertex layoutを

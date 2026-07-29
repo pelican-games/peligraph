@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -691,9 +692,23 @@ struct ScalarParameterDeclaration {
     bool shader_define = true;
 };
 
+enum class ShaderAssetParameterStage {
+    vertex,
+    fragment,
+    compute,
+};
+
+struct ShaderAssetParameterDeclaration {
+    std::string name;
+    ShaderAssetParameterStage stage =
+        ShaderAssetParameterStage::compute;
+    std::string default_reference;
+};
+
 struct FeatureParameterDeclarations {
     std::vector<RenderTargetParameterDeclaration> render_targets;
     std::vector<ScalarParameterDeclaration> scalars;
+    std::vector<ShaderAssetParameterDeclaration> shader_assets;
 };
 
 [[noreturn]] void throwBindingError(const std::string &feature_name,
@@ -822,7 +837,8 @@ FeatureParameterDeclarations parseFeatureParameters(
     }
     for (auto field = parameters.begin(); field != parameters.end(); ++field) {
         if (field.key() != "schema" && field.key() != "version" &&
-            field.key() != "render_targets" && field.key() != "scalars") {
+            field.key() != "render_targets" && field.key() != "scalars" &&
+            field.key() != "shader_assets") {
             throw std::runtime_error("render feature '" + feature_name +
                                      "' parameters declaration has unknown field: " + field.key());
         }
@@ -976,6 +992,74 @@ FeatureParameterDeclarations parseFeatureParameters(
         validateScalarValue(declaration.default_value, declaration, feature_name, "default");
         declarations.scalars.push_back(std::move(declaration));
     }
+
+    const auto shader_assets =
+        parameters.contains("shader_assets")
+            ? parameters.at("shader_assets")
+            : nlohmann::json::array();
+    if (!shader_assets.is_array()) {
+        throw std::runtime_error(
+            "render feature parameters: " + feature_name +
+            " requires array field: shader_assets");
+    }
+    declarations.shader_assets.reserve(
+        shader_assets.size());
+    for (const auto &asset : shader_assets) {
+        if (!asset.is_object()) {
+            throw std::runtime_error(
+                "render feature '" + feature_name +
+                "' shader asset parameters must be objects");
+        }
+        for (auto field = asset.begin();
+             field != asset.end(); ++field) {
+            if (field.key() != "name" &&
+                field.key() != "stage" &&
+                field.key() != "default") {
+                throw std::runtime_error(
+                    "render feature '" + feature_name +
+                    "' shader asset parameter has unknown field: " +
+                    field.key());
+            }
+        }
+        const auto name = requireStringField(
+            asset, "name", "shader asset parameter");
+        if (!isIdentifier(name) ||
+            !names.insert(name).second) {
+            throw std::runtime_error(
+                "render feature '" + feature_name +
+                "' has invalid or duplicate parameter: " +
+                name);
+        }
+        const auto stage_name = requireStringField(
+            asset, "stage",
+            "shader asset parameter: " + name);
+        ShaderAssetParameterStage stage;
+        if (stage_name == "vertex") {
+            stage = ShaderAssetParameterStage::vertex;
+        } else if (stage_name == "fragment") {
+            stage = ShaderAssetParameterStage::fragment;
+        } else if (stage_name == "compute") {
+            stage = ShaderAssetParameterStage::compute;
+        } else {
+            throwParameterError(
+                feature_name, name,
+                "unknown shader asset stage: " +
+                    stage_name);
+        }
+        const auto default_reference =
+            requireStringField(
+                asset, "default",
+                "shader asset parameter: " + name);
+        if (default_reference.empty() ||
+            default_reference.front() == '$') {
+            throwParameterError(
+                feature_name, name,
+                "default must be a concrete non-empty shader reference");
+        }
+        declarations.shader_assets.push_back(
+            ShaderAssetParameterDeclaration{
+                name, stage, default_reference});
+    }
     return declarations;
 }
 
@@ -1110,6 +1194,121 @@ void replaceBoundScalarValues(
     }
 }
 
+std::string_view shaderAssetParameterStageName(
+    ShaderAssetParameterStage stage) {
+    switch (stage) {
+    case ShaderAssetParameterStage::vertex:
+        return "vertex";
+    case ShaderAssetParameterStage::fragment:
+        return "fragment";
+    case ShaderAssetParameterStage::compute:
+        return "compute";
+    }
+    return "unknown";
+}
+
+struct BoundShaderAsset {
+    ShaderAssetParameterStage stage =
+        ShaderAssetParameterStage::compute;
+    std::string reference;
+};
+
+void replaceBoundShaderAssetValues(
+    nlohmann::json &value,
+    const std::unordered_map<std::string, BoundShaderAsset>
+        &bindings,
+    const std::string &feature_name,
+    std::optional<ShaderAssetParameterStage>
+        shader_slot = std::nullopt) {
+    if (value.is_string()) {
+        const auto &text =
+            value.get_ref<const std::string &>();
+        if (text.size() <= 1 || text.front() != '$') {
+            return;
+        }
+        const auto found =
+            bindings.find(text.substr(1));
+        if (found == bindings.end()) {
+            return;
+        }
+        if (!shader_slot) {
+            throwParameterError(
+                feature_name, found->first,
+                "shader asset placeholder may only be used in a "
+                "typed shader slot");
+        }
+        if (*shader_slot != found->second.stage) {
+            throwParameterError(
+                feature_name, found->first,
+                "shader asset declares stage '" +
+                    std::string{
+                        shaderAssetParameterStageName(
+                            found->second.stage)} +
+                    "' but is used in a '" +
+                    std::string{
+                        shaderAssetParameterStageName(
+                            *shader_slot)} +
+                    "' slot");
+        }
+        value = found->second.reference;
+        return;
+    }
+    if (value.is_array()) {
+        for (auto &entry : value) {
+            replaceBoundShaderAssetValues(
+                entry, bindings, feature_name);
+        }
+        return;
+    }
+    if (!value.is_object()) {
+        return;
+    }
+
+    for (auto &entry : value.items()) {
+        if (entry.key() != "shader") {
+            replaceBoundShaderAssetValues(
+                entry.value(), bindings,
+                feature_name);
+            continue;
+        }
+        if (entry.value().is_string()) {
+            replaceBoundShaderAssetValues(
+                entry.value(), bindings,
+                feature_name,
+                ShaderAssetParameterStage::compute);
+            continue;
+        }
+        if (!entry.value().is_object()) {
+            replaceBoundShaderAssetValues(
+                entry.value(), bindings,
+                feature_name);
+            continue;
+        }
+        for (auto &stage :
+             entry.value().items()) {
+            std::optional<ShaderAssetParameterStage>
+                typed_stage;
+            if (stage.key() == "vertex" ||
+                stage.key() ==
+                    "skinned_vertex") {
+                typed_stage =
+                    ShaderAssetParameterStage::vertex;
+            } else if (
+                stage.key() == "fragment") {
+                typed_stage =
+                    ShaderAssetParameterStage::fragment;
+            } else if (
+                stage.key() == "compute") {
+                typed_stage =
+                    ShaderAssetParameterStage::compute;
+            }
+            replaceBoundShaderAssetValues(
+                stage.value(), bindings,
+                feature_name, typed_stage);
+        }
+    }
+}
+
 nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
                                      const nlohmann::json &instance_parameters,
                                      const nlohmann::json &config,
@@ -1125,8 +1324,20 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
     for (const auto &declaration : declarations.scalars) {
         scalars_by_name.emplace(declaration.name, &declaration);
     }
+    std::unordered_map<
+        std::string,
+        const ShaderAssetParameterDeclaration *>
+        shader_assets_by_name;
+    for (const auto &declaration :
+         declarations.shader_assets) {
+        shader_assets_by_name.emplace(
+            declaration.name, &declaration);
+    }
     for (auto parameter = instance_parameters.begin(); parameter != instance_parameters.end(); ++parameter) {
-        if (!by_name.contains(parameter.key()) && !scalars_by_name.contains(parameter.key())) {
+        if (!by_name.contains(parameter.key()) &&
+            !scalars_by_name.contains(parameter.key()) &&
+            !shader_assets_by_name.contains(
+                parameter.key())) {
             if (parameter.value().is_string()) {
                 throwBindingError(feature_name, parameter.key(),
                                   parameter.value().get<std::string>(), "unknown parameter");
@@ -1136,6 +1347,16 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         if (by_name.contains(parameter.key()) && !parameter.value().is_string()) {
             throwBindingError(feature_name, parameter.key(), "<non-string>",
                                "binding must name a render target");
+        }
+        if (shader_assets_by_name.contains(
+                parameter.key()) &&
+            (!parameter.value().is_string() ||
+             parameter.value()
+                 .get_ref<const std::string &>()
+                 .empty())) {
+            throwParameterError(
+                feature_name, parameter.key(),
+                "shader asset value must be a non-empty string reference");
         }
     }
 
@@ -1186,6 +1407,35 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         }
     }
 
+    std::unordered_map<std::string, BoundShaderAsset>
+        shader_asset_bindings;
+    shader_asset_bindings.reserve(
+        declarations.shader_assets.size());
+    for (const auto &declaration :
+         declarations.shader_assets) {
+        const auto supplied =
+            instance_parameters.find(
+                declaration.name);
+        const auto reference =
+            supplied != instance_parameters.end()
+                ? supplied->get<std::string>()
+                : declaration.default_reference;
+        if (reference.empty() ||
+            reference.front() == '$') {
+            throwParameterError(
+                feature_name, declaration.name,
+                "shader asset value must be a concrete non-empty "
+                "shader reference");
+        }
+        resolved_parameters[
+            declaration.name] = reference;
+        shader_asset_bindings.emplace(
+            declaration.name,
+            BoundShaderAsset{
+                declaration.stage,
+                reference});
+    }
+
     auto feature = authored_feature;
     feature.erase("parameters");
     // Exact "$name" scalar placeholders preserve the parameter's JSON type.
@@ -1193,6 +1443,9 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
     // declarations such as fixed extent or array-layer count.
     replaceBoundScalarValues(
         feature, scalar_bindings);
+    replaceBoundShaderAssetValues(
+        feature, shader_asset_bindings,
+        feature_name);
     if (feature.contains("passes")) {
         for (auto &entry : feature.at("passes")) {
             auto &pass = entry.at("pass");

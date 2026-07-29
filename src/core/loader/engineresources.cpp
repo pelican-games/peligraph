@@ -10,13 +10,8 @@ namespace Pelican {
 
 namespace {
 
-#if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 94;
-#else
-constexpr size_t registeredResourceCount = 93;
-#endif
-
-constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
+constexpr auto registered_ids =
+    std::to_array<std::string_view>({
     "bloom_blur_h.frag",
     "bloom_blur_h.frag.spv",
     "bloom_blur_v.frag",
@@ -75,7 +70,9 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/material/surface_v1.vert",
     "shaders/material/surface_v1.frag",
     "shaders/compute/clustered_light_select.comp",
-    "shaders/compute/planar_reflection_filter.comp",
+#define PELICAN_OPTIONAL_ENGINE_RESOURCE(resource_id) resource_id,
+#include "pelican_optional_engine_resources.inc"
+#undef PELICAN_OPTIONAL_ENGINE_RESOURCE
     "surfaces/openpbr/manifest.json",
     "surfaces/openpbr/opaque_single.surface",
     "surfaces/openpbr/opaque_double.surface",
@@ -113,7 +110,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
 #if PELICAN_WITH_VAT
     "vat.vert.spv",
 #endif
-};
+});
 
 } // namespace
 
@@ -204,7 +201,10 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.vert")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.frag")
     PELICAN_ENGINE_RESOURCE("shaders/compute/clustered_light_select.comp")
-    PELICAN_ENGINE_RESOURCE("shaders/compute/planar_reflection_filter.comp")
+#define PELICAN_OPTIONAL_ENGINE_RESOURCE(resource_id) \
+    PELICAN_ENGINE_RESOURCE(resource_id)
+#include "pelican_optional_engine_resources.inc"
+#undef PELICAN_OPTIONAL_ENGINE_RESOURCE
     PELICAN_ENGINE_RESOURCE("surfaces/openpbr/manifest.json")
     PELICAN_ENGINE_RESOURCE("surfaces/openpbr/opaque_single.surface")
     PELICAN_ENGINE_RESOURCE("surfaces/openpbr/opaque_double.surface")

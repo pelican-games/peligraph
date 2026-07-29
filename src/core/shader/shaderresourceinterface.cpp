@@ -160,6 +160,29 @@ std::string imageType(
         "2D-array image views");
 }
 
+void writeImageSubresourceAccessors(
+    std::ostringstream &stream,
+    const ShaderResourceInterfaceBinding &binding) {
+    const auto base_mip =
+        binding.port.subresource
+            ? binding.port.subresource
+                  ->base_mip_level
+            : 0u;
+    const auto base_layer =
+        binding.port.subresource
+            ? binding.port.subresource
+                  ->base_array_layer
+            : 0u;
+    stream << "uint pelican_base_mip_"
+           << binding.port.name
+           << "() { return " << base_mip
+           << "u; }\n"
+           << "uint pelican_base_layer_"
+           << binding.port.name
+           << "() { return " << base_layer
+           << "u; }\n";
+}
+
 void writeInputAttachmentAccessors(
     std::ostringstream &stream,
     const ShaderResourceInterfaceBinding &binding,
@@ -403,6 +426,8 @@ void writeInactiveStageAccessors(
                << "(int lod) { return ivec2(0); }\n"
                << "uint pelican_mip_count_" << name
                << "() { return 0u; }\n";
+        writeImageSubresourceAccessors(
+            stream, binding);
         return;
     }
     if (binding.descriptor ==
@@ -424,6 +449,8 @@ void writeInactiveStageAccessors(
                << "() { return 1u; }\n"
                << "uint pelican_view_count_" << name
                << "() { return 0u; }\n";
+        writeImageSubresourceAccessors(
+            stream, binding);
         return;
     }
     const auto value_type =
@@ -456,6 +483,8 @@ void writeInactiveStageAccessors(
         stream << "uint pelican_view_count_" << name
                << "() { return 1u; }\n";
     }
+    writeImageSubresourceAccessors(
+        stream, binding);
 }
 
 } // namespace
@@ -606,6 +635,8 @@ std::string generateShaderResourcePortInclude(
                 << " " << variable << ";\n";
             writeSampledAccessors(
                 stream, binding, variable);
+            writeImageSubresourceAccessors(
+                stream, binding);
             if (guarded) {
                 if (singleSurfaceStage(
                         binding.expected_stages)) {
@@ -649,6 +680,8 @@ std::string generateShaderResourcePortInclude(
                 << variable << ";\n";
             writeInputAttachmentAccessors(
                 stream, binding, variable);
+            writeImageSubresourceAccessors(
+                stream, binding);
             if (guarded) {
                 if (singleSurfaceStage(
                         binding.expected_stages)) {
@@ -681,6 +714,8 @@ std::string generateShaderResourcePortInclude(
         writeStorageAccessors(
             stream, binding, variable,
             format.value_type);
+        writeImageSubresourceAccessors(
+            stream, binding);
         if (guarded) {
             if (singleSurfaceStage(
                     binding.expected_stages)) {
