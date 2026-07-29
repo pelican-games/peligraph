@@ -212,6 +212,11 @@ struct DrawQueueSortView {
     std::array<float, 3> forward{0.0F, 0.0F, -1.0F};
 };
 
+// One canonical conversion is shared by main and secondary families so every
+// public draw-sort provider receives the same validated camera snapshot.
+DrawQueueSortView drawQueueSortView(
+    const RenderViewParameters &view);
+
 struct DrawQueueFramePlan {
     std::string_view opaque_provider =
         builtinStateBatchedDrawSortProvider;
@@ -247,10 +252,19 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         std::size_t slot_base = 0;
         std::vector<std::size_t>
             visible_draw_counts;
+        // Present when a secondary family owns a transparent material pass.
+        // Each entry is a complete one-view queue compiled with that view's
+        // camera snapshot, so custom opaque/transparent sort providers and
+        // material filters retain exactly the same contract as the main
+        // family.
+        std::vector<CompiledDrawQueueSet>
+            view_queues;
     };
 
     std::vector<DrawItemSnapshot> draw_inventory;
     CompiledDrawQueueSet compiled_draw_queue;
+    std::vector<MaterialDrawTagFilter>
+        draw_queue_material_filters;
     std::uint64_t next_draw_declaration_ordinal = 0;
     BufferWrapper indirect_buf;
     BufferWrapper view_family_indirect_buf;
@@ -368,17 +382,30 @@ DECLARE_MODULE(PolygonInstanceContainer) {
 
     const BufferWrapper &getIndirectBuf() const;
     // Builds conservative per-view indirect command regions for every
-    // secondary family that fits the bounded cache. Commands retain canonical
-    // offsets/state ranges; rejected draws become Vulkan zero-instance draws.
-    // A family that exceeds the cache simply uses the canonical CPU queue.
+    // secondary family that fits the bounded cache. Families named in
+    // locally_sorted_families compile their own one-view queue before
+    // culling, while other families retain the canonical main-view order.
+    // Rejected draws become Vulkan zero-instance draws. A family that exceeds
+    // the cache simply uses the canonical CPU queue.
     void prepareViewFamilyDraws(
-        const RenderViewFamilies &view_families);
+        const RenderViewFamilies &view_families,
+        std::span<const std::string>
+            locally_sorted_families = {});
     const BufferWrapper &
     viewFamilyIndirectBuffer() const;
     std::optional<vk::DeviceSize>
     viewFamilyDrawOffset(
         std::string_view family_id,
         std::uint32_t view_index) const;
+    const std::vector<DrawIndirectInfo> &
+    getViewFamilyDrawCalls(
+        std::string_view family_id,
+        std::uint32_t view_index,
+        bool first_person_view = false,
+        std::optional<MaterialPhase> phase =
+            std::nullopt,
+        std::optional<MaterialDrawTagFilterId>
+            material_filter = std::nullopt) const;
     SceneDrawCandidatesV1
     sceneDrawCandidatesForFrameGraph() const;
     const SceneDrawSegmentV1 &
@@ -438,6 +465,16 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     viewFamilyVisibleDrawCountForTesting(
         std::string_view family_id,
         std::uint32_t view_index) const;
+    std::vector<std::uint32_t>
+    drawOrderForTesting(
+        MaterialPhase phase,
+        std::uint32_t sort_view_index =
+            0) const;
+    std::vector<std::uint32_t>
+    viewFamilyDrawOrderForTesting(
+        std::string_view family_id,
+        std::uint32_t view_index,
+        MaterialPhase phase) const;
     ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
     ModelInstanceId forceGenerationForTesting(ModelInstanceId id,
                                                std::uint32_t generation);

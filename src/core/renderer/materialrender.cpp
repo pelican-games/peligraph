@@ -45,13 +45,6 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                   pass.materialInfo()
                       .material_filter->id}
             : std::nullopt;
-    const auto &draw_calls = instance_container.getDrawCalls(
-        dependencies.first_person_view, phase,
-        dependencies.draw_sort_view_index,
-        material_filter);
-    if (draw_calls.empty()) {
-        return;
-    }
 
     const BufferWrapper *indirect_buf =
         &instance_container.getIndirectBuf();
@@ -72,6 +65,26 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             use_prepared_view_family_draws =
                 true;
         }
+    }
+    const auto &draw_calls =
+        use_prepared_view_family_draws
+            ? instance_container
+                  .getViewFamilyDrawCalls(
+                      dependencies.view_family,
+                      *dependencies
+                           .secondary_view_index,
+                      dependencies
+                          .first_person_view,
+                      phase, material_filter)
+            : instance_container.getDrawCalls(
+                  dependencies
+                      .first_person_view,
+                  phase,
+                  dependencies
+                      .draw_sort_view_index,
+                  material_filter);
+    if (draw_calls.empty()) {
+        return;
     }
     const auto &gpu_draw_source =
         pass.materialInfo().gpu_draw_source;
@@ -347,17 +360,11 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
-    const auto &draw_calls =
-        instance_container.getDrawCalls(
-            dependencies.first_person_view,
-            std::nullopt,
-            dependencies.draw_sort_view_index);
-    if (draw_calls.empty()) {
-        return;
-    }
     const BufferWrapper *indirect_buf =
         &instance_container.getIndirectBuf();
     vk::DeviceSize indirect_offset_bias = 0;
+    bool use_prepared_view_family_draws =
+        false;
     if (dependencies.secondary_view_index) {
         if (const auto offset =
                 instance_container
@@ -369,7 +376,27 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                 &instance_container
                      .viewFamilyIndirectBuffer();
             indirect_offset_bias = *offset;
+            use_prepared_view_family_draws =
+                true;
         }
+    }
+    const auto &draw_calls =
+        use_prepared_view_family_draws
+            ? instance_container
+                  .getViewFamilyDrawCalls(
+                      dependencies.view_family,
+                      *dependencies
+                           .secondary_view_index,
+                      dependencies
+                          .first_person_view)
+            : instance_container.getDrawCalls(
+                  dependencies
+                      .first_person_view,
+                  std::nullopt,
+                  dependencies
+                      .draw_sort_view_index);
+    if (draw_calls.empty()) {
+        return;
     }
 
     for (const auto &draw_call : draw_calls) {
@@ -394,13 +421,11 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const VelocityPassContainer &velocity_pass_container,
                          const MaterialRendererDependencies &dependencies) {
     auto &instances = dependencies.instance_container;
-    const auto &draw_calls = instances.getDrawCalls(
-        dependencies.first_person_view, std::nullopt,
-        dependencies.draw_sort_view_index);
-    if (draw_calls.empty()) return;
     const BufferWrapper *indirect =
         &instances.getIndirectBuf();
     vk::DeviceSize indirect_offset_bias = 0;
+    bool use_prepared_view_family_draws =
+        false;
     if (dependencies.secondary_view_index) {
         if (const auto offset =
                 instances.viewFamilyDrawOffset(
@@ -411,8 +436,26 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                 &instances
                      .viewFamilyIndirectBuffer();
             indirect_offset_bias = *offset;
+            use_prepared_view_family_draws =
+                true;
         }
     }
+    const auto &draw_calls =
+        use_prepared_view_family_draws
+            ? instances
+                  .getViewFamilyDrawCalls(
+                      dependencies.view_family,
+                      *dependencies
+                           .secondary_view_index,
+                      dependencies
+                          .first_person_view)
+            : instances.getDrawCalls(
+                  dependencies
+                      .first_person_view,
+                  std::nullopt,
+                  dependencies
+                      .draw_sort_view_index);
+    if (draw_calls.empty()) return;
     for (const auto &draw_call : draw_calls) {
         const auto layout = velocity_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         velocity_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);

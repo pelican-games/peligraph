@@ -29,6 +29,58 @@ constexpr size_t maxPreparedSecondaryViewFamilyViews = 32;
 
 } // namespace
 
+DrawQueueSortView drawQueueSortView(
+    const RenderViewParameters &view) {
+    if (!std::isfinite(view.camera_position.x) ||
+        !std::isfinite(view.camera_position.y) ||
+        !std::isfinite(view.camera_position.z)) {
+        throw std::invalid_argument(
+            "draw sorting requires a finite camera position");
+    }
+    for (glm::length_t column = 0;
+         column < 4; ++column) {
+        for (glm::length_t row = 0;
+             row < 4; ++row) {
+            if (!std::isfinite(
+                    view.view[column][row])) {
+                throw std::invalid_argument(
+                    "draw sorting requires a finite view matrix");
+            }
+        }
+    }
+    const auto world_from_view =
+        glm::inverse(view.view);
+    auto forward =
+        -glm::vec3{world_from_view[2]};
+    const auto length = glm::length(forward);
+    if (!std::isfinite(length) ||
+        length <= 0.0F) {
+        throw std::invalid_argument(
+            "draw sorting requires a valid forward direction");
+    }
+    forward /= length;
+    return DrawQueueSortView{
+        .logical_view =
+            view.first_person_view
+                ? RenderPolicy::
+                      DrawSortLogicalViewV1::
+                          first_person
+                : RenderPolicy::
+                      DrawSortLogicalViewV1::
+                          third_person,
+        .origin = {
+            view.camera_position.x,
+            view.camera_position.y,
+            view.camera_position.z,
+        },
+        .forward = {
+            forward.x,
+            forward.y,
+            forward.z,
+        },
+    };
+}
+
 static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
     return vkcore.allocBuf(sizeof(RenderCommand) * num,
                            vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferSrc |
@@ -572,6 +624,9 @@ void PolygonInstanceContainer::triggerUpdate(
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
     prepared_view_family_draws.clear();
+    draw_queue_material_filters.assign(
+        frame_plan.material_filters.begin(),
+        frame_plan.material_filters.end());
 
     if (frame_plan.opaque_provider.empty() ||
         frame_plan.transparent_provider.empty()) {
@@ -1452,22 +1507,21 @@ glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
 
 void PolygonInstanceContainer::prepareViewFamilyDraws(
-    const RenderViewFamilies &view_families) {
+    const RenderViewFamilies &view_families,
+    std::span<const std::string>
+        locally_sorted_families) {
     prepared_view_family_draws.clear();
-    const auto candidates =
-        sceneDrawCandidatesForFrameGraph();
     const auto &canonical =
         compiled_draw_queue.indirectRecords();
     if (canonical.empty()) {
         return;
     }
-    if (candidates.bounds.size() !=
-            canonical.size() ||
-        compiled_draw_queue.sortViewCount() == 0) {
+    if (compiled_draw_queue.sortViewCount() ==
+        0) {
         throw std::runtime_error(
-            "view-family culling received misaligned canonical draws");
+            "view-family culling received an empty canonical sort view");
     }
-    const auto command_count =
+    const auto canonical_command_count =
         compiled_draw_queue
             .queue(
                 DrawQueuePhase::opaque, 0)
@@ -1476,13 +1530,140 @@ void PolygonInstanceContainer::prepareViewFamilyDraws(
             .queue(
                 DrawQueuePhase::transparent, 0)
             .indirectRecords().size();
-    if (command_count >
+    if (canonical_command_count >
             maxRenderCommands ||
-        command_count >
+        canonical_command_count >
             canonical.size()) {
         throw std::runtime_error(
             "view-family culling exceeds its canonical view region");
     }
+
+    std::unordered_set<std::string_view>
+        locally_sorted;
+    locally_sorted.reserve(
+        locally_sorted_families.size());
+    for (const auto &family_id :
+         locally_sorted_families) {
+        if (family_id.empty() ||
+            family_id ==
+                mainRenderViewFamilyId) {
+            throw std::invalid_argument(
+                "secondary local draw sorting requires a non-main family id");
+        }
+        locally_sorted.insert(family_id);
+        const auto found =
+            std::find_if(
+                view_families.families.begin(),
+                view_families.families.end(),
+                [&](const auto &family) {
+                    return family.family_id ==
+                           family_id;
+                });
+        if (found ==
+            view_families.families.end()) {
+            throw std::invalid_argument(
+                "secondary local draw sorting references an unavailable "
+                "view family: " +
+                family_id);
+        }
+    }
+
+    std::vector<DrawItemSnapshot>
+        local_sort_items;
+    DrawSortProviderLease opaque_provider;
+    DrawSortProviderLease transparent_provider;
+    std::uint32_t max_draw_indirect_count =
+        0;
+    if (!locally_sorted.empty()) {
+        const auto &opaque_queue =
+            compiled_draw_queue.queue(
+                DrawQueuePhase::opaque, 0);
+        const auto &transparent_queue =
+            compiled_draw_queue.queue(
+                DrawQueuePhase::transparent, 0);
+        local_sort_items.reserve(
+            opaque_queue.orderedItems().size() +
+            transparent_queue.orderedItems()
+                .size());
+        local_sort_items.insert(
+            local_sort_items.end(),
+            opaque_queue.orderedItems().begin(),
+            opaque_queue.orderedItems().end());
+        local_sort_items.insert(
+            local_sort_items.end(),
+            transparent_queue.orderedItems()
+                .begin(),
+            transparent_queue.orderedItems()
+                .end());
+        opaque_provider =
+            renderPolicyRegistry()
+                .resolveDrawSortProvider(
+                    opaque_queue.provider().name);
+        transparent_provider =
+            renderPolicyRegistry()
+                .resolveDrawSortProvider(
+                    transparent_queue
+                        .provider()
+                        .name);
+        max_draw_indirect_count =
+            GET_MODULE(VulkanManageCore)
+                .getPhysDevice()
+                .getProperties()
+                .limits
+                .maxDrawIndirectCount;
+    }
+
+    const auto build_local_queue =
+        [&](const RenderViewParameters &view) {
+            const auto sort_view =
+                drawQueueSortView(view);
+            const auto request =
+                [&](DrawQueuePhase phase) {
+                    return DrawQueueBuildRequest{
+                        .items =
+                            local_sort_items,
+                        .material_filters =
+                            draw_queue_material_filters,
+                        .max_draw_indirect_count =
+                            max_draw_indirect_count,
+                        .target_phase = phase,
+                        .logical_view =
+                            sort_view.logical_view,
+                        .logical_view_origin =
+                            sort_view.origin,
+                        .logical_view_forward =
+                            sort_view.forward,
+                    };
+                };
+            std::vector<CompiledDrawQueueVariant>
+                variants;
+            variants.reserve(2);
+            variants.push_back({
+                .phase =
+                    DrawQueuePhase::opaque,
+                .sort_view_index = 0,
+                .queue =
+                    DrawQueueBuilder::build(
+                        request(
+                            DrawQueuePhase::
+                                opaque),
+                        opaque_provider),
+            });
+            variants.push_back({
+                .phase =
+                    DrawQueuePhase::
+                        transparent,
+                .sort_view_index = 0,
+                .queue =
+                    DrawQueueBuilder::build(
+                        request(
+                            DrawQueuePhase::
+                                transparent),
+                        transparent_provider),
+            });
+            return CompiledDrawQueueSet::
+                combine(std::move(variants));
+        };
 
     const auto intersects_clip_plane =
         [](const DrawWorldBounds &bounds,
@@ -1528,6 +1709,13 @@ void PolygonInstanceContainer::prepareViewFamilyDraws(
                 std::vector<std::size_t>(
                     family.views.size(), 0),
         };
+        const auto local_sort =
+            locally_sorted.contains(
+                family.family_id);
+        if (local_sort) {
+            prepared.view_queues.reserve(
+                family.views.size());
+        }
         for (std::size_t view_index = 0;
              view_index < family.views.size();
              ++view_index) {
@@ -1549,51 +1737,96 @@ void PolygonInstanceContainer::prepareViewFamilyDraws(
                 }
             }
 
-            std::vector<RenderCommand> commands{
-                canonical.begin(),
-                canonical.begin() +
-                    static_cast<
-                        std::ptrdiff_t>(
-                        command_count)};
-            for (std::size_t command = 0;
-                 command < command_count;
-                 ++command) {
-                const auto &packed_bounds =
-                    candidates.bounds[command];
-                bool visible =
-                    packed_bounds.minimum[3] !=
-                    1.0F;
-                DrawWorldBounds bounds;
-                if (!visible) {
-                    bounds = {
-                        {packed_bounds.minimum[0],
-                         packed_bounds.minimum[1],
-                         packed_bounds.minimum[2]},
-                        {packed_bounds.maximum[0],
-                         packed_bounds.maximum[1],
-                         packed_bounds.maximum[2]},
-                    };
-                    visible =
-                        intersectsZeroToOneClipFrustum(
-                            bounds,
-                            view_projection);
-                    if (visible &&
-                        view.clip_plane) {
-                        visible =
-                            intersects_clip_plane(
-                                bounds,
-                                *view.clip_plane);
+            const CompiledDrawQueueSet
+                *view_queue =
+                    &compiled_draw_queue;
+            std::uint32_t sort_view_index =
+                0;
+            if (local_sort) {
+                prepared.view_queues.push_back(
+                    build_local_queue(view));
+                view_queue =
+                    &prepared.view_queues.back();
+            }
+            const auto &source_commands =
+                view_queue->indirectRecords();
+            const auto command_count =
+                view_queue
+                    ->queue(
+                        DrawQueuePhase::opaque,
+                        sort_view_index)
+                    .indirectRecords()
+                    .size() +
+                view_queue
+                    ->queue(
+                        DrawQueuePhase::
+                            transparent,
+                        sort_view_index)
+                    .indirectRecords()
+                    .size();
+            if (command_count >
+                    maxRenderCommands ||
+                command_count >
+                    source_commands.size()) {
+                throw std::runtime_error(
+                    "secondary sorted draw queue exceeds its prepared "
+                    "view slot");
+            }
+            std::vector<RenderCommand>
+                commands{
+                    source_commands.begin(),
+                    source_commands.begin() +
+                        static_cast<
+                            std::ptrdiff_t>(
+                            command_count)};
+            std::size_t command = 0;
+            for (const auto phase :
+                 {DrawQueuePhase::opaque,
+                  DrawQueuePhase::
+                      transparent}) {
+                for (const auto &item :
+                     view_queue
+                         ->queue(
+                             phase,
+                             sort_view_index)
+                         .orderedItems()) {
+                    if (command >=
+                        commands.size()) {
+                        throw std::runtime_error(
+                            "secondary draw queue items exceed command "
+                            "records");
                     }
+                    bool visible =
+                        !item.world_bounds
+                             .has_value();
+                    if (!visible) {
+                        visible =
+                            intersectsZeroToOneClipFrustum(
+                                *item.world_bounds,
+                                view_projection);
+                        if (visible &&
+                            view.clip_plane) {
+                            visible =
+                                intersects_clip_plane(
+                                    *item.world_bounds,
+                                    *view.clip_plane);
+                        }
+                    }
+                    if (visible) {
+                        ++prepared
+                              .visible_draw_counts
+                                  [view_index];
+                    } else {
+                        commands[command]
+                            .command
+                            .instanceCount = 0;
+                    }
+                    ++command;
                 }
-                if (visible) {
-                    ++prepared
-                          .visible_draw_counts
-                              [view_index];
-                } else {
-                    commands[command]
-                        .command.instanceCount =
-                        0;
-                }
+            }
+            if (command != commands.size()) {
+                throw std::runtime_error(
+                    "secondary draw queue command and item counts differ");
             }
             if (!commands.empty()) {
                 const auto slot =
@@ -1647,6 +1880,62 @@ PolygonInstanceContainer::viewFamilyDrawOffset(
            sizeof(RenderCommand);
 }
 
+const std::vector<DrawIndirectInfo> &
+PolygonInstanceContainer::
+    getViewFamilyDrawCalls(
+        std::string_view family_id,
+        std::uint32_t view_index,
+        bool first_person_view,
+        std::optional<MaterialPhase> phase,
+        std::optional<
+            MaterialDrawTagFilterId>
+            material_filter) const {
+    const auto found =
+        prepared_view_family_draws.find(
+            family_id);
+    if (found ==
+        prepared_view_family_draws.end()) {
+        throw std::out_of_range(
+            "prepared view-family draw queue is unavailable");
+    }
+    if (view_index >=
+        found->second
+            .visible_draw_counts.size()) {
+        throw std::out_of_range(
+            "prepared view-family draw queue index is out of range");
+    }
+    if (found->second.view_queues.empty()) {
+        return getDrawCalls(
+            first_person_view, phase, 0,
+            material_filter);
+    }
+    if (found->second.view_queues.size() !=
+        found->second
+            .visible_draw_counts.size()) {
+        throw std::runtime_error(
+            "prepared view-family local draw queues are incomplete");
+    }
+    const auto visibility =
+        first_person_view
+            ? DrawQueueView::first_person
+            : DrawQueueView::third_person;
+    const auto &queue =
+        found->second
+            .view_queues[view_index];
+    if (!phase) {
+        return queue.allDrawRanges(
+            0, visibility,
+            material_filter);
+    }
+    return queue.drawRanges(
+        *phase == MaterialPhase::opaque
+            ? DrawQueuePhase::opaque
+            : DrawQueuePhase::
+                  transparent,
+        0, visibility,
+        material_filter);
+}
+
 std::size_t PolygonInstanceContainer::
     viewFamilyDrawViewCountForTesting(
         std::string_view family_id) const {
@@ -1668,6 +1957,71 @@ std::size_t PolygonInstanceContainer::
         .at(std::string{family_id})
         .visible_draw_counts.at(
             view_index);
+}
+
+std::vector<std::uint32_t>
+PolygonInstanceContainer::
+    drawOrderForTesting(
+        MaterialPhase phase,
+        std::uint32_t sort_view_index) const {
+    const auto &items =
+        compiled_draw_queue
+            .queue(
+                phase ==
+                        MaterialPhase::opaque
+                    ? DrawQueuePhase::opaque
+                    : DrawQueuePhase::
+                          transparent,
+                sort_view_index)
+            .orderedItems();
+    std::vector<std::uint32_t> result;
+    result.reserve(items.size());
+    for (const auto &item : items) {
+        result.push_back(
+            item.stable_identity
+                .instance.index);
+    }
+    return result;
+}
+
+std::vector<std::uint32_t>
+PolygonInstanceContainer::
+    viewFamilyDrawOrderForTesting(
+        std::string_view family_id,
+        std::uint32_t view_index,
+        MaterialPhase phase) const {
+    const auto &prepared =
+        prepared_view_family_draws.at(
+            std::string{family_id});
+    if (view_index >=
+        prepared
+            .visible_draw_counts.size()) {
+        throw std::out_of_range(
+            "prepared view-family draw order index is out of range");
+    }
+    if (prepared.view_queues.empty()) {
+        return drawOrderForTesting(
+            phase, 0);
+    }
+    const auto &items =
+        prepared.view_queues
+            .at(view_index)
+            .queue(
+                phase ==
+                        MaterialPhase::opaque
+                    ? DrawQueuePhase::opaque
+                    : DrawQueuePhase::
+                          transparent,
+                0)
+            .orderedItems();
+    std::vector<std::uint32_t> result;
+    result.reserve(items.size());
+    for (const auto &item : items) {
+        result.push_back(
+            item.stable_identity
+                .instance.index);
+    }
+    return result;
 }
 
 SceneDrawCandidatesV1

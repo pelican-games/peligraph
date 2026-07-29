@@ -108,7 +108,7 @@
       "layers": 2,
       "format": "D32_SFLOAT",
       "format_class": "data",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"]
     },
     {
       "name": "planar_reflection_ao",
@@ -138,7 +138,27 @@
       "layers": 2,
       "format": "R16G16B16A16_SFLOAT",
       "format_class": "explicit(R16G16B16A16_SFLOAT)",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+    },
+    {
+      "name": "planar_reflection_opaque_color",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": ["TRANSFER_DST", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_opaque_depth",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["TRANSFER_DST", "SAMPLED"]
     }
   ],
   "passes": [
@@ -242,6 +262,57 @@
         "inherit_bindings_from": "forward_opaque",
         "resolution_domain": "independent",
         "view_family": "$reflection/planar",
+        "output": {
+          "color": ["planar_reflection_color"],
+          "depth": "planar_reflection_depth"
+        },
+        "color_load_op": "load",
+        "depth_load_op": "load",
+        "depth_store_op": "store"
+      }
+    },
+    {
+      "insert": "after:planar_reflection_forward_opaque",
+      "pass": {
+        "name": "planar_reflection_snapshot_opaque_color",
+        "type": "snapshot_copy",
+        "view_family": "$reflection/planar",
+        "source": "planar_reflection_color",
+        "destination": "planar_reflection_opaque_color",
+        "snapshot": "planar_reflection_opaque_color",
+        "snapshot_after": "planar_reflection_forward_opaque"
+      }
+    },
+    {
+      "insert": "after:planar_reflection_snapshot_opaque_color",
+      "pass": {
+        "name": "planar_reflection_snapshot_opaque_depth",
+        "type": "snapshot_copy",
+        "view_family": "$reflection/planar",
+        "source": "planar_reflection_depth",
+        "destination": "planar_reflection_opaque_depth",
+        "snapshot": "planar_reflection_opaque_depth",
+        "snapshot_after": "planar_reflection_forward_opaque"
+      }
+    },
+    {
+      "insert": "after:planar_reflection_snapshot_opaque_depth",
+      "pass": {
+        "name": "planar_reflection_forward_transparent",
+        "type": "material",
+        "material_contract": "forward_transparent_v1",
+        "inherit_bindings_from": "forward_transparent",
+        "resolution_domain": "independent",
+        "view_family": "$reflection/planar",
+        "screen_inputs": {
+          "opaque_color": "planar_reflection_opaque_color",
+          "opaque_depth": "planar_reflection_opaque_depth",
+          "scene_depth": "planar_reflection_opaque_depth",
+          "linear_view_depth": "planar_reflection_opaque_depth"
+        },
+        "material_resources": {
+          "planar_reflection": "planar_reflection_opaque_color"
+        },
         "output": {
           "color": ["planar_reflection_color"],
           "depth": "planar_reflection_depth"

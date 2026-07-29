@@ -784,6 +784,8 @@ TEST_CASE(
              "planar_reflection_ao",
              "planar_reflection_ao_blur",
              "planar_reflection_color",
+             "planar_reflection_opaque_color",
+             "planar_reflection_opaque_depth",
          }) {
         const auto target =
             std::find_if(
@@ -810,6 +812,7 @@ TEST_CASE(
              "planar_reflection_ssao_blur",
              "planar_reflection_lighting",
              "planar_reflection_forward_opaque",
+             "planar_reflection_forward_transparent",
          }) {
         REQUIRE(
             passByName(
@@ -821,6 +824,20 @@ TEST_CASE(
                 result.config, pass_name)
                 .at("resolution_domain") ==
             "independent");
+    }
+    for (const auto pass_name : {
+             "planar_reflection_snapshot_opaque_color",
+             "planar_reflection_snapshot_opaque_depth",
+         }) {
+        const auto &snapshot =
+            passByName(
+                result.config, pass_name);
+        REQUIRE(
+            snapshot.at("type") ==
+            "snapshot_copy");
+        REQUIRE(
+            snapshot.at("view_family") ==
+            "$reflection/planar");
     }
     const auto &forward_capture =
         passByName(
@@ -849,6 +866,32 @@ TEST_CASE(
         "load");
     REQUIRE_FALSE(
         forward_capture.contains(
+            "inherit_bindings_from"));
+    const auto &transparent_capture =
+        passByName(
+            result.config,
+            "planar_reflection_forward_transparent");
+    REQUIRE(
+        transparent_capture.at(
+            "material_contract") ==
+        "forward_transparent_v1");
+    REQUIRE(
+        transparent_capture.at(
+            "screen_inputs")
+            .at("opaque_color") ==
+        "planar_reflection_opaque_color");
+    REQUIRE(
+        transparent_capture.at(
+            "screen_inputs")
+            .at("opaque_depth") ==
+        "planar_reflection_opaque_depth");
+    REQUIRE(
+        transparent_capture.at(
+            "material_resources")
+            .at("planar_reflection") ==
+        "planar_reflection_opaque_color");
+    REQUIRE_FALSE(
+        transparent_capture.contains(
             "inherit_bindings_from"));
     REQUIRE(
         passByName(
@@ -920,6 +963,13 @@ TEST_CASE(
                 .at("surface_resources")
                 .at("directional_shadow") ==
             "shadow_map");
+        REQUIRE(
+            passByName(
+                combined.config,
+                "planar_reflection_forward_transparent")
+                .at("surface_resources")
+                .at("directional_shadow") ==
+            "shadow_map");
     }
 
     for (const auto clustered_first :
@@ -966,6 +1016,23 @@ TEST_CASE(
             resources.at(
                 "light_selection") ==
             "clustered_light_selection");
+        const auto &transparent_resources =
+            passByName(
+                combined.config,
+                "planar_reflection_forward_transparent")
+                .at("material_resources");
+        REQUIRE(
+            transparent_resources.at(
+                "light_inventory") ==
+            "clustered_light_inventory");
+        REQUIRE(
+            transparent_resources.at(
+                "light_selection") ==
+            "clustered_light_selection");
+        REQUIRE(
+            transparent_resources.at(
+                "planar_reflection") ==
+            "planar_reflection_opaque_color");
     }
 }
 

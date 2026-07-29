@@ -803,9 +803,12 @@ void updateFrameLights(
 
 void prepareSecondaryViewFamilyDraws(
     PolygonInstanceContainer &instances,
-    const RenderViewFamilies &view_families) {
+    const RenderViewFamilies &view_families,
+    std::span<const std::string>
+        locally_sorted_families) {
     instances.prepareViewFamilyDraws(
-        view_families);
+        view_families,
+        locally_sorted_families);
 }
 
 void updateFrameDrawCandidates(
@@ -3822,10 +3825,32 @@ void Renderer::renderLogicalFrame(
             runtime_generation);
     std::vector<MaterialDrawTagFilter>
         material_draw_filters;
+    std::vector<std::string>
+        locally_sorted_secondary_families;
     std::map<std::uint64_t, std::size_t>
         material_draw_filter_indices;
     for (const auto &pass :
          rendering_pass.passes) {
+        if (pass.definition.isMaterial() &&
+            pass.definition.materialInfo()
+                    .contract ==
+                MaterialPassContract::
+                    forward_transparent_v1 &&
+            pass.definition.view_family !=
+                mainRenderViewFamilyId &&
+            std::find(
+                locally_sorted_secondary_families
+                    .begin(),
+                locally_sorted_secondary_families
+                    .end(),
+                pass.definition.view_family) ==
+                locally_sorted_secondary_families
+                    .end()) {
+            locally_sorted_secondary_families
+                .push_back(
+                    pass.definition
+                        .view_family);
+        }
         if (!pass.definition.isMaterial() ||
             !pass.definition.materialInfo()
                  .material_filter) {
@@ -3989,51 +4014,20 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "XR per_view draw sorting requires exactly two views");
     }
-    const auto sort_view_for = [](const RenderViewParameters &view) {
-        if (!std::isfinite(view.camera_position.x) ||
-            !std::isfinite(view.camera_position.y) ||
-            !std::isfinite(view.camera_position.z)) {
-            throw std::runtime_error(
-                "render view has a non-finite camera position");
-        }
-        for (glm::length_t column = 0; column < 4; ++column) {
-            for (glm::length_t row = 0; row < 4; ++row) {
-                if (!std::isfinite(view.view[column][row])) {
-                    throw std::runtime_error(
-                        "render view has a non-finite view matrix");
-                }
-            }
-        }
-        const auto world_from_view = glm::inverse(view.view);
-        auto forward = -glm::vec3{world_from_view[2]};
-        const auto length = glm::length(forward);
-        if (!std::isfinite(length) || length <= 0.0F) {
-            throw std::runtime_error(
-                "render view has an invalid forward direction");
-        }
-        forward /= length;
-        return DrawQueueSortView{
-            .logical_view =
-                view.first_person_view
-                    ? RenderPolicy::DrawSortLogicalViewV1::first_person
-                    : RenderPolicy::DrawSortLogicalViewV1::third_person,
-            .origin = {view.camera_position.x, view.camera_position.y,
-                       view.camera_position.z},
-            .forward = {forward.x, forward.y, forward.z},
-        };
-    };
     std::vector<DrawQueueSortView> sort_views;
     if (per_view_sort) {
         sort_views.reserve(view_count);
         for (const auto &view : views)
-            sort_views.push_back(sort_view_for(view));
+            sort_views.push_back(
+                drawQueueSortView(view));
     } else {
         glm::dvec3 origin{0.0};
         glm::dvec3 forward{0.0};
         bool all_first_person = true;
         bool all_third_person = true;
         for (const auto &view : views) {
-            const auto snapshot = sort_view_for(view);
+            const auto snapshot =
+                drawQueueSortView(view);
             origin += glm::dvec3{snapshot.origin[0], snapshot.origin[1],
                                  snapshot.origin[2]};
             forward += glm::dvec3{snapshot.forward[0], snapshot.forward[1],
@@ -4296,7 +4290,8 @@ void Renderer::renderLogicalFrame(
             });
         prepareSecondaryViewFamilyDraws(
             modules.instance_container,
-            resolved_view_families);
+            resolved_view_families,
+            locally_sorted_secondary_families);
         updateFrameDrawCandidates(
             modules.instance_container,
             modules.frame_graph_resources);
@@ -4435,7 +4430,8 @@ void Renderer::renderLogicalFrame(
             });
             prepareSecondaryViewFamilyDraws(
                 modules.instance_container,
-                resolved_view_families);
+                resolved_view_families,
+                locally_sorted_secondary_families);
             updateFrameDrawCandidates(
                 modules.instance_container,
                 modules.frame_graph_resources);
