@@ -1478,6 +1478,91 @@ TEST_CASE(
         layered_attachment.front().imageView ==
         managed_layered);
 
+    const auto subresource_target =
+        render_targets.registerRenderTarget(
+            "wp235_subresource_target",
+            test_extent, "data", "data", 1.0f,
+            std::nullopt, test_format, usage,
+            vma::MemoryUsage::eAutoPreferDevice,
+            false, {}, 1,
+            ImageMipLevelCount{
+                .mode =
+                    ImageMipLevelMode::fixed,
+                .count = 3,
+            },
+            authored_layer_capacity);
+    PassDefinition subresource_pass;
+    subresource_pass.name =
+        "wp235_attachment_probe";
+    subresource_pass.output_color = {
+        RasterAttachmentView{
+            subresource_target,
+            ImageSubresourceRange{
+                .base_mip_level = 1,
+                .base_array_layer = 2,
+                .layer_count =
+                    stereo_view_count,
+            }},
+    };
+    const auto subresource_left =
+        createColorAttachments(
+            managed_frame, subresource_pass,
+            render_targets,
+            GraphicsPipelineViewContract{},
+            RenderPassViewInvocation{
+                stereo_view_count, 0});
+    const auto subresource_right =
+        createColorAttachments(
+            managed_frame, subresource_pass,
+            render_targets,
+            GraphicsPipelineViewContract{},
+            RenderPassViewInvocation{
+                stereo_view_count, 1});
+    const auto subresource_layered =
+        createColorAttachments(
+            managed_frame, subresource_pass,
+            render_targets,
+            GraphicsPipelineViewContract::multiview(
+                stereo_view_count),
+            RenderPassViewInvocation{
+                stereo_view_count, 0});
+    REQUIRE(
+        subresource_left.front().imageView ==
+        render_targets.getImageSubresourceView(
+            subresource_target,
+            ImageSubresourceRange{
+                .base_mip_level = 1,
+                .base_array_layer = 2,
+            },
+            false));
+    REQUIRE(
+        subresource_right.front().imageView ==
+        render_targets.getImageSubresourceView(
+            subresource_target,
+            ImageSubresourceRange{
+                .base_mip_level = 1,
+                .base_array_layer = 3,
+            },
+            false));
+    REQUIRE(
+        subresource_layered.front().imageView ==
+        render_targets.getImageSubresourceView(
+            subresource_target,
+            ImageSubresourceRange{
+                .base_mip_level = 1,
+                .base_array_layer = 2,
+                .layer_count =
+                    stereo_view_count,
+            },
+            true));
+    REQUIRE((
+        getRenderPassTargetExtent(
+            managed_frame, subresource_pass,
+            render_targets) ==
+        vk::Extent2D{
+            test_extent.width / 2,
+            test_extent.height / 2}));
+
     auto multiview_image = vkcore.allocImage(
         {test_extent.width, test_extent.height, 1},
         test_format, usage,

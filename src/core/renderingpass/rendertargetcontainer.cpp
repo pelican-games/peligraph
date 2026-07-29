@@ -1103,6 +1103,76 @@ RenderTargetContainer::getAttachmentImageLayerView(
     return views[array_layer].get();
 }
 
+vk::ImageView
+RenderTargetContainer::getAttachmentImageSubresourceView(
+    GlobalRenderTargetId id,
+    ImageSubresourceRange subresource,
+    bool array_view, bool history_read) const {
+    const auto &rt = render_targets.get(id);
+    if (rt.samples <= 1) {
+        return getImageSubresourceView(
+            id, subresource, array_view,
+            history_read);
+    }
+    const auto surface =
+        surfaceIndex(id, history_read);
+    subresource =
+        resolveImageSubresourceRange(
+            subresource,
+            rt.resources
+                ->attachment_images[surface]
+                .mip_levels,
+            rt.resources
+                ->attachment_images[surface]
+                .array_layers);
+    const ImageSubresourceViewKey key{
+        .range = subresource,
+        .array_view = array_view,
+    };
+    auto &views =
+        rt.resources
+            ->attachment_subresource_image_views[
+                surface];
+    if (const auto found = views.find(key);
+        found != views.end()) {
+        return found->second.get();
+    }
+    auto view = createImageView(
+        device,
+        rt.resources
+            ->attachment_images[surface],
+        array_view
+            ? vk::ImageViewType::e2DArray
+            : vk::ImageViewType::e2D,
+        subresource);
+    GET_MODULE(VulkanManageCore)
+        .getDebugUtils()
+        .nameImageView(
+            view.get(),
+            ("rt/" + rt.name + "/surface/" +
+             std::to_string(surface) +
+             "/msaa/mip/" +
+             std::to_string(
+                 subresource.base_mip_level) +
+             "/layer/" +
+             std::to_string(
+                 subresource.base_array_layer) +
+             "-" +
+             std::to_string(
+                 subresource.layer_count) +
+             (array_view ? "/array_view"
+                         : "/view"))
+                .c_str());
+    const auto [inserted, success] =
+        views.emplace(key, std::move(view));
+    if (!success) {
+        throw std::runtime_error(
+            "render target attachment subresource view cache "
+            "changed during creation");
+    }
+    return inserted->second.get();
+}
+
 vk::ImageView RenderTargetContainer::getLayeredImageView(
     GlobalRenderTargetId id, bool history_read) const {
     const auto &rt = render_targets.get(id);

@@ -1252,12 +1252,16 @@ bool isPhysicalScopeAttachment(
         boundRenderTarget(
             frame_graph, std::string{resource});
     return isConcreteRenderTarget(target) &&
-           (std::find(
+           (std::find_if(
                 rendering.color_attachments.begin(),
                 rendering.color_attachments.end(),
-                target) !=
+                [&](const auto &attachment) {
+                    return attachment.target.value ==
+                           target.value;
+                }) !=
                 rendering.color_attachments.end() ||
-            target == rendering.depth_attachment);
+            target.value ==
+                rendering.depth_attachment.target.value);
 }
 
 void executePlannedFrameGraph(const FrameRenderContext &render_ctx,

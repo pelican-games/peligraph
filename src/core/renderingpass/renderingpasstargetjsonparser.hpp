@@ -15,10 +15,12 @@ void parsePassOutputTargetsFromJson(PassDefinition &pass_def, const RenderTarget
 void parsePassInputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
                                    const nlohmann::json &pass_json,
                                    const std::unordered_set<std::string> &buffer_names = {});
-std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
-                                                                  nlohmann::json color_output);
-GlobalRenderTargetId parseDepthOutputTargetFromJson(const RenderTargetNameResolver &rt_resolver,
-                                                    const nlohmann::json &depth_output);
+std::vector<RasterAttachmentView> parseColorOutputTargetsFromJson(
+    const RenderTargetNameResolver &rt_resolver,
+    nlohmann::json color_output);
+RasterAttachmentView parseDepthOutputTargetFromJson(
+    const RenderTargetNameResolver &rt_resolver,
+    const nlohmann::json &depth_output);
 std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                             nlohmann::json input_output);
 void parseInputResourcesFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,

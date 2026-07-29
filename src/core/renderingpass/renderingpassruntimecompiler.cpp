@@ -252,6 +252,8 @@ PassAttachmentOperations physicalAttachmentOperations(
     const VulkanTargetPlan &plan,
     std::string_view pass,
     std::string_view resource,
+    const std::optional<ImageSubresourceRange>
+        &subresource,
     VulkanPhysicalAttachmentAspect aspect) {
     const VulkanPhysicalAttachmentPlan *result =
         nullptr;
@@ -259,7 +261,9 @@ PassAttachmentOperations physicalAttachmentOperations(
          plan.attachments) {
         if (attachment.node != pass ||
             attachment.logical_resource !=
-                resource) {
+                resource ||
+            attachment.subresource !=
+                subresource) {
             continue;
         }
         if (result != nullptr) {
@@ -480,6 +484,7 @@ PassDefinition applyPhysicalPassContract(
                     *plan, result.name,
                     physicalTargetName(
                         target, metadata),
+                    target.subresource,
                     VulkanPhysicalAttachmentAspect::
                         color));
     }
@@ -493,6 +498,7 @@ PassDefinition applyPhysicalPassContract(
                 physicalTargetName(
                     result.output_depth,
                     metadata),
+                result.output_depth.subresource,
                 VulkanPhysicalAttachmentAspect::
                     depth);
     }
@@ -500,8 +506,8 @@ PassDefinition applyPhysicalPassContract(
 }
 
 bool containsTarget(
-    std::span<const GlobalRenderTargetId> targets,
-    GlobalRenderTargetId target) {
+    std::span<const RasterAttachmentView> targets,
+    const RasterAttachmentView &target) {
     return std::find(
                targets.begin(), targets.end(),
                target) != targets.end();
@@ -520,6 +526,8 @@ PassAttachmentOperations scopeColorAttachmentOperations(
         physicalTargetName(
             pass.output_color.at(color_index),
             metadata),
+        pass.output_color.at(color_index)
+            .subresource,
         VulkanPhysicalAttachmentAspect::color);
 }
 
@@ -534,6 +542,7 @@ PassAttachmentOperations scopeDepthAttachmentOperations(
         plan, pass.name,
         physicalTargetName(
             pass.output_depth, metadata),
+        pass.output_depth.subresource,
         VulkanPhysicalAttachmentAspect::depth);
 }
 
@@ -674,7 +683,8 @@ compilePassRenderingContract(
             }
         }
         if (result.local_read_scope) {
-            std::map<int, PassAttachmentOperations>
+            std::map<RasterAttachmentView,
+                     PassAttachmentOperations>
                 previous_color_operations;
             std::optional<PassAttachmentOperations>
                 previous_depth_operations;
@@ -701,7 +711,7 @@ compilePassRenderingContract(
                             *plan, metadata);
                     const auto previous =
                         previous_color_operations.find(
-                            target.value);
+                            target);
                     if (previous !=
                             previous_color_operations.end() &&
                         (previous->second.store_op !=
@@ -717,7 +727,7 @@ compilePassRenderingContract(
                                 target, metadata));
                     }
                     previous_color_operations[
-                        target.value] = operations;
+                        target] = operations;
                 }
 
                 if (isConcreteRenderTarget(
@@ -980,10 +990,13 @@ compilePassRenderingContract(
                 pass.name + " -> " +
                 resource.logical_resource);
         }
-        const auto color = std::find(
+        const auto color = std::find_if(
             result.color_attachments.begin(),
             result.color_attachments.end(),
-            target);
+            [&](const auto &attachment) {
+                return attachment.target.value ==
+                       target.value;
+            });
         if (color !=
             result.color_attachments.end()) {
             result.color_attachment_input_indices[
@@ -994,8 +1007,8 @@ compilePassRenderingContract(
                     input_index);
             continue;
         }
-        if (target ==
-            result.depth_attachment) {
+        if (target.value ==
+            result.depth_attachment.target.value) {
             result.depth_attachment_input_index =
                 static_cast<std::uint32_t>(
                     input_index);
@@ -1110,6 +1123,124 @@ void validatePassInputViewContract(
             "multiview pass cannot consume a sequential-only input: " +
             pass.name);
     }
+}
+
+vk::Extent2D rasterAttachmentExtent(
+    vk::Extent2D extent,
+    const std::optional<ImageSubresourceRange>
+        &subresource) {
+    if (!subresource) return extent;
+    const auto mip = subresource->base_mip_level;
+    return {
+        std::max(1u, extent.width >> mip),
+        std::max(1u, extent.height >> mip),
+    };
+}
+
+void validatePassAttachmentViews(
+    const PassDefinition &pass,
+    const RenderTargetMetadataResolver *metadata,
+    std::uint32_t logical_view_count) {
+    if (logical_view_count == 0) {
+        throw std::runtime_error(
+            "render pass attachment validation requires a "
+            "non-zero logical view count: " +
+            pass.name);
+    }
+    std::optional<vk::Extent2D> concrete_extent;
+    std::vector<GlobalRenderTargetId> seen_targets;
+    const auto validate =
+        [&](const RasterAttachmentView &attachment,
+            std::string_view role) {
+            if (!isConcreteRenderTarget(
+                    attachment.target)) {
+                if (attachment.subresource) {
+                    throw std::runtime_error(
+                        std::string{role} +
+                        " attachment cannot select a subresource "
+                        "of a special target: " +
+                        pass.name);
+                }
+                return;
+            }
+            if (metadata == nullptr) {
+                if (attachment.subresource) {
+                    throw std::runtime_error(
+                        "render pass subresource attachment "
+                        "requires render-target metadata: " +
+                        pass.name);
+                }
+                return;
+            }
+            if (std::find(
+                    seen_targets.begin(),
+                    seen_targets.end(),
+                    attachment.target) !=
+                seen_targets.end()) {
+                throw std::runtime_error(
+                    "render pass cannot bind the same render "
+                    "target to more than one attachment slot: " +
+                    pass.name);
+            }
+            seen_targets.push_back(
+                attachment.target);
+
+            const auto target =
+                metadata->get(attachment.target);
+            if (attachment.subresource) {
+                const auto &range =
+                    *attachment.subresource;
+                if (range.mip_count_mode !=
+                        ImageSubresourceMipCountMode::fixed ||
+                    range.level_count != 1 ||
+                    !validImageSubresourceRange(
+                        range, target.mip_levels,
+                        target.array_layers)) {
+                    throw std::runtime_error(
+                        std::string{role} +
+                        " attachment has an out-of-range or "
+                        "multi-mip subresource: " +
+                        pass.name + " -> " +
+                        target.name);
+                }
+                if (range.layer_count !=
+                    logical_view_count) {
+                    throw std::runtime_error(
+                        std::string{role} +
+                        " attachment layer_count must match the "
+                        "logical view count: " +
+                        pass.name + " -> " +
+                        target.name);
+                }
+                if (target.samples > 1 &&
+                    range.base_mip_level != 0) {
+                    throw std::runtime_error(
+                        std::string{role} +
+                        " attachment cannot select a non-zero mip "
+                        "from an MSAA render target: " +
+                        pass.name + " -> " +
+                        target.name);
+                }
+            }
+            const auto extent =
+                rasterAttachmentExtent(
+                    target.extent,
+                    attachment.subresource);
+            if (concrete_extent &&
+                *concrete_extent != extent) {
+                throw std::runtime_error(
+                    "render pass attachments select different "
+                    "raster extents: " +
+                    pass.name);
+            }
+            concrete_extent = extent;
+        };
+
+    for (const auto &attachment :
+         pass.output_color) {
+        validate(attachment, "Color");
+    }
+    validate(pass.output_depth, "Depth");
 }
 
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
@@ -1880,17 +2011,25 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
     compiled_pass.passes.reserve(definition.passes.size());
 
     for (size_t i = 0; i < definition.passes.size(); ++i) {
+        const auto &source_pass =
+            definition.passes[i];
+        const auto view =
+            passViewContract(
+                dependencies.target_plan,
+                source_pass);
+        const auto logical_view_count =
+            passLogicalViewCount(
+                dependencies.target_plan,
+                source_pass);
+        validatePassAttachmentViews(
+            source_pass,
+            dependencies.render_target_metadata,
+            logical_view_count);
         auto pass_def = applyPhysicalPassContract(
-            definition.passes[i],
+            source_pass,
             dependencies.target_plan,
             dependencies.render_target_metadata,
             dependencies.frame_graph_resources);
-        const auto view =
-            passViewContract(
-                dependencies.target_plan, pass_def);
-        const auto logical_view_count =
-            passLogicalViewCount(
-                dependencies.target_plan, pass_def);
         validatePassInputViewContract(
             pass_def, view);
         const auto rendering =

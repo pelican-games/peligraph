@@ -1535,6 +1535,100 @@ TEST_CASE("rendering pass target JSON parser handles swapchain and omitted input
     REQUIRE(pass_def.input_targets.empty());
 }
 
+TEST_CASE(
+    "rendering pass target JSON parser preserves raster attachment subresources",
+    "[renderingpass][attachment-subresource][wp235]") {
+    const auto resolver =
+        RenderTargetNameResolver{
+            [](const std::string &name) {
+                if (name == "probe_color") {
+                    return GlobalRenderTargetId{3};
+                }
+                if (name == "probe_depth") {
+                    return GlobalRenderTargetId{4};
+                }
+                return noRenderTargetId();
+            }};
+    PassDefinition pass;
+    pass.name = "probe_face";
+    const auto authored = nlohmann::json{
+        {"output",
+         {
+             {"color",
+              {
+                  {
+                      {"target", "probe_color"},
+                      {"subresource",
+                       {
+                           {"mip", 2},
+                           {"layer", 6},
+                           {"layer_count", 4},
+                       }},
+                  },
+              }},
+             {"depth",
+              {
+                  {"target", "probe_depth"},
+                  {"subresource",
+                   {
+                       {"mip", 0},
+                       {"layer", 10},
+                       {"layer_count", 4},
+                   }},
+              }},
+         }},
+    };
+
+    parsePassOutputTargetsFromJson(
+        pass, resolver, authored);
+    REQUIRE(pass.output_color.size() == 1);
+    REQUIRE(
+        pass.output_color.front().target ==
+        GlobalRenderTargetId{3});
+    REQUIRE((
+        pass.output_color.front().subresource ==
+        std::optional<ImageSubresourceRange>{
+            ImageSubresourceRange{
+                .base_mip_level = 2,
+                .base_array_layer = 6,
+                .layer_count = 4,
+            }}));
+    REQUIRE(
+        pass.output_depth.target ==
+        GlobalRenderTargetId{4});
+    REQUIRE(
+        pass.output_depth.subresource
+            ->base_array_layer == 10);
+
+    auto invalid = authored;
+    invalid["output"]["color"][0]
+           ["subresource"]["mip_count"] =
+        "remaining";
+    REQUIRE_THROWS_WITH(
+        parsePassOutputTargetsFromJson(
+            pass, resolver, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "must select exactly one mip"));
+
+    invalid = authored;
+    invalid["output"]["color"][0]
+           ["unknown"] = true;
+    REQUIRE_THROWS_WITH(
+        parsePassOutputTargetsFromJson(
+            pass, resolver, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "unknown field"));
+
+    invalid = authored;
+    invalid["output"]["color"][0]
+           ["target"] = "swapchain";
+    REQUIRE_THROWS_WITH(
+        parsePassOutputTargetsFromJson(
+            pass, resolver, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "Swapchain output cannot select"));
+}
+
 TEST_CASE("rendering pass target JSON parser rejects malformed pass outputs", "[renderingpass]") {
     const auto resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
 
@@ -3297,7 +3391,7 @@ TEST_CASE(
         "geometry_lighting");
     REQUIRE(
         geometry_contract.color_attachments ==
-        std::vector<GlobalRenderTargetId>{
+        std::vector<RasterAttachmentView>{
             gbuffer, lit});
     REQUIRE(
         geometry_contract
@@ -3416,6 +3510,109 @@ TEST_CASE(
             }),
         Catch::Matchers::ContainsSubstring(
             "tile-local pass input is not declared"));
+}
+
+TEST_CASE(
+    "rendering pass runtime compiler carries raster subresources into the physical scope contract",
+    "[renderingpass][attachment-subresource][wp235]") {
+    const GlobalRenderTargetId probe{0};
+    const RenderTargetMetadataResolver metadata{
+        [=](GlobalRenderTargetId id) {
+            if (id != probe) {
+                throw std::runtime_error(
+                    "unexpected target");
+            }
+            return RenderTargetMetadata{
+                .name = "probe",
+                .usage =
+                    vk::ImageUsageFlagBits::
+                        eColorAttachment,
+                .format =
+                    vk::Format::eR8G8B8A8Unorm,
+                .extent = {64, 64},
+                .samples = 1,
+                .mip_levels = 4,
+                .array_layers = 8,
+            };
+        }};
+    const auto range = ImageSubresourceRange{
+        .base_mip_level = 2,
+        .base_array_layer = 3,
+        .layer_count = 2,
+    };
+    PassDefinition pass;
+    pass.name = "probe_pass";
+    pass.output_color = {
+        RasterAttachmentView{probe, range}};
+    RenderingPassDefinition definition{
+        .name = "probe_graph",
+        .passes = {pass},
+    };
+    VulkanTargetPlan plan;
+    plan.resources = {
+        VulkanPhysicalResourcePlan{
+            .logical_resource = "probe",
+            .format = "R8G8B8A8Unorm",
+            .mip_levels =
+                ImageMipLevelCount{
+                    .mode =
+                        ImageMipLevelMode::fixed,
+                    .count = 4,
+                },
+            .array_layers = 8,
+        },
+    };
+    plan.scopes = {
+        VulkanPhysicalScopePlan{
+            .id = "scope:probe",
+            .kind =
+                VulkanPhysicalScopeKind::rendering,
+            .nodes = {"probe_pass"},
+            .view_count = 2,
+            .execution_count = 2,
+        },
+    };
+    plan.attachments = {
+        VulkanPhysicalAttachmentPlan{
+            .node = "probe_pass",
+            .logical_resource = "probe",
+            .subresource = range,
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        },
+    };
+
+    const auto compiled =
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata = &metadata,
+                .target_plan = &plan,
+            });
+    REQUIRE(compiled.passes.size() == 1);
+    REQUIRE(
+        compiled.passes.front()
+            .rendering.color_attachments ==
+        std::vector<RasterAttachmentView>{
+            RasterAttachmentView{probe, range}});
+
+    auto invalid = definition;
+    invalid.passes.front()
+        .output_color.front()
+        .subresource->layer_count = 1;
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            invalid,
+            RenderingPassRuntimeDependencies{
+                .render_target_metadata = &metadata,
+                .target_plan = &plan,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "layer_count must match"));
 }
 
 TEST_CASE(

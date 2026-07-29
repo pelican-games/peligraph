@@ -39,6 +39,11 @@ struct RenderTargetResourceSet {
         attachment_image_layer_views;
     std::array<vk::UniqueImageView, 2>
         layered_attachment_image_views;
+    std::array<
+        std::map<ImageSubresourceViewKey,
+                 vk::UniqueImageView>,
+        2>
+        attachment_subresource_image_views;
 };
 
 class PreparedRenderTargetExtent {
@@ -164,6 +169,11 @@ DECLARE_MODULE(RenderTargetContainer) {
         GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getAttachmentImageLayerView(
         GlobalRenderTargetId id, std::uint32_t array_layer,
+        bool history_read = false) const;
+    vk::ImageView getAttachmentImageSubresourceView(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        bool array_view,
         bool history_read = false) const;
     vk::ImageView getLayeredImageView(
         GlobalRenderTargetId id, bool history_read = false) const;

@@ -1,5 +1,6 @@
 #include "targetrenderplanning.hpp"
 
+#include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
 
 #include <algorithm>
@@ -461,7 +462,7 @@ nlohmann::ordered_json physicalScopeToJson(
 
 nlohmann::ordered_json physicalAttachmentToJson(
     const VulkanPhysicalAttachmentPlan &attachment) {
-    return {
+    nlohmann::ordered_json result{
         {"node", attachment.node},
         {"logical_resource",
          attachment.logical_resource},
@@ -475,6 +476,12 @@ nlohmann::ordered_json physicalAttachmentToJson(
          vulkanPhysicalAttachmentStoreOpName(
              attachment.store_op)},
     };
+    if (attachment.subresource) {
+        result["subresource"] =
+            imageSubresourceToJson(
+                *attachment.subresource);
+    }
+    return result;
 }
 
 nlohmann::ordered_json automaticPlanPayload(
@@ -969,9 +976,10 @@ void validateAliasGroups(
 }
 
 using ScopeAttachmentContract =
-    std::vector<std::pair<
+    std::vector<std::tuple<
         std::string,
-        VulkanPhysicalAttachmentAspect>>;
+        VulkanPhysicalAttachmentAspect,
+        std::optional<ImageSubresourceRange>>>;
 
 ScopeAttachmentContract scopeAttachmentContract(
     const VulkanTargetPlan &plan,
@@ -981,7 +989,8 @@ ScopeAttachmentContract scopeAttachmentContract(
         if (attachment.node == node) {
             result.emplace_back(
                 attachment.logical_resource,
-                attachment.aspect);
+                attachment.aspect,
+                attachment.subresource);
         }
     }
     return result;
@@ -1129,8 +1138,10 @@ void validateCompatibleRenderingScopeFusion(
                 "fusion requires identical ordered attachments: " +
                 fragment.id);
         }
-        for (const auto &[resource, aspect] : contract) {
+        for (const auto &[resource, aspect, subresource] :
+             contract) {
             (void)aspect;
+            (void)subresource;
             const auto found = resources.find(resource);
             if (found == resources.end() ||
                 found->second->representation !=
@@ -1545,9 +1556,11 @@ void validateMaterializedRenderingScopeOperations(
             !scope.local_reads.empty();
         if (local_read_scope) {
             std::map<
-                std::pair<
+                std::tuple<
                     std::string,
-                    VulkanPhysicalAttachmentAspect>,
+                    VulkanPhysicalAttachmentAspect,
+                    std::optional<
+                        ImageSubresourceRange>>,
                 const VulkanPhysicalAttachmentPlan *>
                 previous_writers;
             for (const auto &node : scope.nodes) {
@@ -1561,9 +1574,10 @@ void validateMaterializedRenderingScopeOperations(
                                 .representation)) {
                         continue;
                     }
-                    const auto key = std::pair{
+                    const auto key = std::tuple{
                         attachment.logical_resource,
-                        attachment.aspect};
+                        attachment.aspect,
+                        attachment.subresource};
                     const auto previous =
                         previous_writers.find(key);
                     if (previous !=
@@ -1653,11 +1667,14 @@ void validateVulkanPhysicalAttachmentPlans(
     for (const auto &node : canonical_graph.nodes) {
         nodes.emplace(node.name, &node);
     }
-    std::set<std::string, std::less<>>
+    std::map<
+        std::string,
+        const VulkanPhysicalResourcePlan *,
+        std::less<>>
         physical_resources;
     for (const auto &resource : resources) {
-        physical_resources.insert(
-            resource.logical_resource);
+        physical_resources.emplace(
+            resource.logical_resource, &resource);
     }
     std::set<
         std::pair<std::string, std::string>>
@@ -1679,12 +1696,48 @@ void validateVulkanPhysicalAttachmentPlans(
                 attachment.node + " -> " +
                 attachment.logical_resource);
         }
-        if (!physical_resources.contains(
-                attachment.logical_resource)) {
+        const auto physical_resource =
+            physical_resources.find(
+                attachment.logical_resource);
+        if (physical_resource ==
+            physical_resources.end()) {
             throw std::runtime_error(
                 "Vulkan physical attachment plan references an "
                 "unknown physical resource: " +
                 attachment.logical_resource);
+        }
+        if (attachment.subresource) {
+            const auto &range =
+                *attachment.subresource;
+            if (attachment.logical_resource ==
+                    "swapchain" ||
+                range.mip_count_mode !=
+                    ImageSubresourceMipCountMode::fixed ||
+                range.level_count != 1 ||
+                range.layer_count == 0 ||
+                range.base_array_layer >=
+                    physical_resource->second
+                        ->array_layers ||
+                range.layer_count >
+                    physical_resource->second
+                            ->array_layers -
+                        range.base_array_layer ||
+                (physical_resource->second
+                         ->mip_levels.mode ==
+                     ImageMipLevelMode::fixed &&
+                 range.base_mip_level >=
+                     physical_resource->second
+                         ->mip_levels.count) ||
+                (physical_resource->second
+                         ->rasterization_samples >
+                     1 &&
+                 range.base_mip_level != 0)) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment plan has an "
+                    "unsupported image subresource: " +
+                    attachment.node + " -> " +
+                    attachment.logical_resource);
+            }
         }
         const auto found_node =
             nodes.find(attachment.node);

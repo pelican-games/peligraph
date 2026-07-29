@@ -278,6 +278,7 @@ std::string_view vulkanPhysicalAttachmentStoreOpName(
 struct VulkanPhysicalAttachmentPlan {
     std::string node;
     std::string logical_resource;
+    std::optional<ImageSubresourceRange> subresource;
     VulkanPhysicalAttachmentAspect aspect =
         VulkanPhysicalAttachmentAspect::color;
     VulkanPhysicalAttachmentLoadOp load_op =

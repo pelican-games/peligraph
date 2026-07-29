@@ -37,6 +37,7 @@ enum class FrameGraphAttachmentStoreOp {
 
 struct FrameGraphAttachmentDefinition {
     std::string resource;
+    std::optional<ImageSubresourceRange> subresource;
     FrameGraphAttachmentAspect aspect =
         FrameGraphAttachmentAspect::color;
     FrameGraphAttachmentLoadOp load_op =

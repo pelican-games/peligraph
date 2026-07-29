@@ -888,6 +888,84 @@ TEST_CASE(
         VulkanPhysicalAttachmentStoreOp::store);
 }
 
+TEST_CASE(
+    "physical attachment plans validate and serialize raster subresources",
+    "[target-render-planning][attachment-subresource][wp235]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        graphWithWriteOnlyAttachment(types);
+    std::vector resources{
+        VulkanPhysicalResourcePlan{
+            .logical_resource =
+                "write_only_scratch",
+            .format = "R8G8B8A8Unorm",
+            .mip_levels =
+                ImageMipLevelCount{
+                    .mode =
+                        ImageMipLevelMode::fixed,
+                    .count = 3,
+                },
+            .array_layers = 4,
+        },
+    };
+    const auto range =
+        ImageSubresourceRange{
+            .base_mip_level = 1,
+            .base_array_layer = 1,
+            .layer_count = 2,
+        };
+    std::vector attachments{
+        VulkanPhysicalAttachmentPlan{
+            .node = "Scratch",
+            .logical_resource =
+                "write_only_scratch",
+            .subresource = range,
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        },
+    };
+    REQUIRE_NOTHROW(
+        validateVulkanPhysicalAttachmentPlans(
+            graph, resources, attachments));
+
+    auto plan = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph));
+    plan.attachments = attachments;
+    const auto encoded =
+        vulkanTargetPlanToJson(plan);
+    REQUIRE(
+        encoded.at("attachments").at(0)
+            .at("subresource").at("mip") == 1);
+    REQUIRE(
+        encoded.at("attachments").at(0)
+            .at("subresource")
+            .at("layer_count") == 2);
+
+    attachments.front()
+        .subresource->base_array_layer = 3;
+    requireThrowsContaining(
+        [&] {
+            validateVulkanPhysicalAttachmentPlans(
+                graph, resources, attachments);
+        },
+        "unsupported image subresource");
+
+    attachments.front().subresource = range;
+    resources.front().rasterization_samples = 4;
+    requireThrowsContaining(
+        [&] {
+            validateVulkanPhysicalAttachmentPlans(
+                graph, resources, attachments);
+        },
+        "unsupported image subresource");
+}
+
 TEST_CASE("Vulkan target plan pins round-trip and bind a logical graph",
           "[target-render-planning][pin][eject]") {
     const auto types = makeBuiltinLogicalTypeRegistry();

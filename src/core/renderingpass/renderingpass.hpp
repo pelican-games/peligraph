@@ -10,6 +10,7 @@
 #include "../../project/materialscreeninput.hpp"
 #include "../../project/viewfamilyrelation.hpp"
 #include "../../project/shaderresourceport.hpp"
+#include "../../project/imagesubresource.hpp"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -18,6 +19,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -70,6 +72,38 @@ inline constexpr bool isSpecialRenderTarget(GlobalRenderTargetId rt_id) {
 inline constexpr bool isSwapchainRenderTarget(GlobalRenderTargetId rt_id) {
     return rt_id.value == swapchainRenderTargetIdValue;
 }
+
+// A raster attachment is a view of a render target, not necessarily its
+// implicit mip-zero/layer-zero surface. The converting constructor and
+// target-id conversion preserve the compact C++ authoring form used by
+// existing passes while compilers can retain the precise view contract.
+struct RasterAttachmentView {
+    GlobalRenderTargetId target = noRenderTargetId();
+    std::optional<ImageSubresourceRange> subresource;
+
+    RasterAttachmentView() = default;
+    RasterAttachmentView(GlobalRenderTargetId target_id)
+        : target{target_id} {}
+    RasterAttachmentView(
+        GlobalRenderTargetId target_id,
+        std::optional<ImageSubresourceRange> range)
+        : target{target_id},
+          subresource{std::move(range)} {}
+
+    operator GlobalRenderTargetId() const noexcept {
+        return target;
+    }
+
+    bool operator==(
+        const RasterAttachmentView &) const = default;
+    bool operator<(
+        const RasterAttachmentView &other) const {
+        if (target.value != other.target.value) {
+            return target.value < other.target.value;
+        }
+        return subresource < other.subresource;
+    }
+};
 
 struct MaterialPassInputBinding {
     MaterialPassInputContract contract;
@@ -322,8 +356,8 @@ struct PassDefinition {
 
     std::string name;
 
-    std::vector<GlobalRenderTargetId> output_color;
-    GlobalRenderTargetId output_depth;
+    std::vector<RasterAttachmentView> output_color;
+    RasterAttachmentView output_depth;
     std::vector<GlobalRenderTargetId> input_targets;
     std::vector<bool> input_target_history;
     // Runtime physical annotation aligned with input_targets. Parsed logical
@@ -584,10 +618,10 @@ struct CompiledPassRenderingContract {
     std::size_t scope_index =
         std::numeric_limits<std::size_t>::max();
     std::string scope_id;
-    std::vector<GlobalRenderTargetId>
+    std::vector<RasterAttachmentView>
         color_attachments;
-    GlobalRenderTargetId depth_attachment =
-        noRenderTargetId();
+    RasterAttachmentView depth_attachment{
+        noRenderTargetId()};
     std::vector<std::uint32_t>
         color_attachment_locations;
     std::vector<std::uint32_t>

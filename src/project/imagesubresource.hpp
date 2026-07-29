@@ -84,6 +84,26 @@ struct ImageSubresourceRange {
 
     bool operator==(
         const ImageSubresourceRange &) const = default;
+    bool operator<(
+        const ImageSubresourceRange &other) const {
+        if (base_mip_level != other.base_mip_level) {
+            return base_mip_level <
+                   other.base_mip_level;
+        }
+        if (level_count != other.level_count) {
+            return level_count < other.level_count;
+        }
+        if (base_array_layer !=
+            other.base_array_layer) {
+            return base_array_layer <
+                   other.base_array_layer;
+        }
+        if (layer_count != other.layer_count) {
+            return layer_count < other.layer_count;
+        }
+        return mip_count_mode <
+               other.mip_count_mode;
+    }
 };
 
 struct ImageSubresourceViewKey {

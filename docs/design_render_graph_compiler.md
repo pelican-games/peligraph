@@ -52,6 +52,10 @@ graph/compiler/backendにはplanar filter名を追加しない。
 WP234ではruntime ViewFamily生成もstable family ID keyed provider registryへ移し、
 caller-authored familyを最優先して未解決familyだけをproviderで補う。planar camera/
 oblique policyは標準packageへ移動し、OFF buildからC++ objectごと除外できる。
+WP235ではraster attachmentを`(target, optional image subresource)`のtyped valueへ変え、
+logical frame graph、Vulkan physical attachment plan、fingerprint、runtime image viewまで
+同じrangeを保持する。1 mipとlogical view数ぶんの連続layerを選択でき、選択mipのextentを
+render areaへ伝播する。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -678,6 +682,14 @@ attachmentをsampleする再帰feedbackを防ぐ。透明surfaceのdepth write�
 shader local sizeから導出するため、algorithmは解像度やVulkan dispatch値を持たない。
 family-array portのlayer countはphysical family cardinalityへ展開され、descriptor/view生成と
 hazard trackingは同じtyped subresourceを使う。
+
+raster outputも同じ`ImageSubresourceRange`語彙を使うが、attachment contractは1 mipへ
+正規化する。sequential view familyはbase layerからviewごとの2D viewを作り、multiviewは
+範囲全体の2D-array viewを作る。attachmentのidentityはtarget名だけでなくrangeを含むため、
+physical scope fusion、load/store lookup、automatic-plan fingerprintで別viewを混同しない。
+一方、依存、layout、allocation lifetimeはまだresource単位で保守的に扱う。same-pixel
+logical input portが同じrangeを表現できるまで、明示rangeのattachmentをtile-local
+candidateにはしない。
 
 filter algorithmはfeatureの`stage: "compute"`な`shader_assets` parameterで選び、標準
 `engine://render_algorithms/planar_reflection/standard_prefilter`とproject shaderが同じ

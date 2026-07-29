@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace Pelican {
@@ -75,21 +76,41 @@ void validateViewExecution(
     }
 
     const auto require_layers =
-        [&](GlobalRenderTargetId target) {
+        [&](GlobalRenderTargetId target,
+            const std::optional<
+                ImageSubresourceRange>
+                &subresource = std::nullopt) {
             if (!isConcreteRenderTarget(target)) return;
-            if (targets.getMetadata(target).array_layers <
-                view.view_count) {
+            const auto layers =
+                targets.getMetadata(target).array_layers;
+            const auto valid =
+                subresource
+                    ? subresource->layer_count ==
+                              view.view_count &&
+                          subresource
+                                  ->base_array_layer <=
+                              layers &&
+                          subresource->layer_count <=
+                              layers -
+                                  subresource
+                                      ->base_array_layer
+                    : layers >= view.view_count;
+            if (!valid) {
                 throw std::runtime_error(
                     "multiview pass target has too few "
                     "array layers: " +
                     pass.definition.name);
             }
         };
-    for (const auto target :
+    for (const auto &target :
          pass.definition.output_color) {
-        require_layers(target);
+        require_layers(
+            target.target,
+            target.subresource);
     }
-    require_layers(pass.definition.output_depth);
+    require_layers(
+        pass.definition.output_depth.target,
+        pass.definition.output_depth.subresource);
     for (std::size_t input_index = 0;
          input_index <
          pass.definition.input_targets.size();
@@ -105,7 +126,8 @@ void validateViewExecution(
         if (!consumer_independent) {
             require_layers(
                 pass.definition
-                    .input_targets[input_index]);
+                    .input_targets[input_index],
+                std::nullopt);
         }
     }
 }
@@ -230,17 +252,22 @@ void validateRenderingScope(
                 !pass->definition
                      .input_target_history.at(
                          input_index) &&
-                (std::find(
+                (std::find_if(
                      first.rendering
                          .color_attachments.begin(),
                      first.rendering
                          .color_attachments.end(),
-                     target) !=
+                     [&](const auto &attachment) {
+                         return attachment
+                                    .target.value ==
+                                target.value;
+                     }) !=
                      first.rendering
                          .color_attachments.end() ||
-                 target ==
+                 target.value ==
                      first.rendering
-                         .depth_attachment);
+                         .depth_attachment
+                         .target.value);
             if (same_frame_attachment && !local) {
                 throw std::runtime_error(
                     "fused rendering scope contains a same-frame "

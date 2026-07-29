@@ -1,9 +1,11 @@
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetnameresolver.hpp"
+#include "../../project/imagesubresourcejson.hpp"
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 namespace Pelican {
 
@@ -38,6 +40,78 @@ GlobalRenderTargetId resolveRenderTarget(const RenderTargetNameResolver &rt_reso
     return rt_id;
 }
 
+void validateRasterSubresource(
+    const std::optional<ImageSubresourceRange> &subresource,
+    std::string_view context) {
+    if (!subresource) return;
+    if (subresource->mip_count_mode !=
+            ImageSubresourceMipCountMode::fixed ||
+        subresource->level_count != 1) {
+        throw std::runtime_error(
+            std::string{context} +
+            ".subresource must select exactly one mip level");
+    }
+}
+
+RasterAttachmentView parseRasterAttachment(
+    const RenderTargetNameResolver &rt_resolver,
+    const nlohmann::json &encoded,
+    std::string_view role,
+    bool allow_swapchain) {
+    std::string name;
+    std::optional<ImageSubresourceRange> subresource;
+    if (encoded.is_string()) {
+        name = encoded.get<std::string>();
+    } else if (encoded.is_object()) {
+        for (auto field = encoded.begin();
+             field != encoded.end(); ++field) {
+            if (field.key() != "target" &&
+                field.key() != "subresource") {
+                throw std::runtime_error(
+                    std::string{role} +
+                    " output has unknown field '" +
+                    field.key() + "'");
+            }
+        }
+        if (!encoded.contains("target") ||
+            !encoded.at("target").is_string()) {
+            throw std::runtime_error(
+                std::string{role} +
+                " output object requires string field target");
+        }
+        name = encoded.at("target").get<std::string>();
+        subresource = parseOptionalImageSubresource(
+            encoded, std::string{role} + " output");
+        validateRasterSubresource(
+            subresource,
+            std::string{role} + " output");
+    } else {
+        throw std::runtime_error(
+            std::string{role} +
+            " output must be a render target name or object");
+    }
+
+    validateName(name, std::string{role} + " output target");
+    if (name == "swapchain") {
+        if (!allow_swapchain) {
+            throw std::runtime_error(
+                std::string{role} +
+                " output target cannot be swapchain");
+        }
+        if (subresource) {
+            throw std::runtime_error(
+                "Swapchain output cannot select a subresource");
+        }
+        return RasterAttachmentView{
+            swapchainRenderTargetId()};
+    }
+    return RasterAttachmentView{
+        resolveRenderTarget(
+            rt_resolver, name,
+            std::string{role}),
+        std::move(subresource)};
+}
+
 } // namespace
 
 void parsePassOutputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
@@ -68,8 +142,10 @@ void parsePassInputTargetsFromJson(PassDefinition &pass_def, const RenderTargetN
     parseInputResourcesFromJson(pass_def, rt_resolver, pass_json.at("input"), buffer_names);
 }
 
-std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
-                                                                  nlohmann::json color_output) {
+std::vector<RasterAttachmentView>
+parseColorOutputTargetsFromJson(
+    const RenderTargetNameResolver &rt_resolver,
+    nlohmann::json color_output) {
     if (color_output.is_null()) {
         return {};
     }
@@ -77,37 +153,24 @@ std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTa
         color_output = nlohmann::json::array({color_output});
     }
 
-    std::vector<GlobalRenderTargetId> output_color;
-    for (const auto &color_name_json : color_output) {
-        if (!color_name_json.is_string()) {
-            throw std::runtime_error("Color output must be a render target name");
-        }
-        const std::string color_name = color_name_json;
-        validateName(color_name, "Color output target");
-        if (color_name == "swapchain") {
-            output_color.push_back(swapchainRenderTargetId());
-        } else {
-            output_color.push_back(resolveRenderTarget(rt_resolver, color_name, "Color"));
-        }
+    std::vector<RasterAttachmentView> output_color;
+    output_color.reserve(color_output.size());
+    for (const auto &encoded : color_output) {
+        output_color.push_back(
+            parseRasterAttachment(
+                rt_resolver, encoded, "Color", true));
     }
     return output_color;
 }
 
-GlobalRenderTargetId parseDepthOutputTargetFromJson(const RenderTargetNameResolver &rt_resolver,
-                                                    const nlohmann::json &depth_output) {
+RasterAttachmentView parseDepthOutputTargetFromJson(
+    const RenderTargetNameResolver &rt_resolver,
+    const nlohmann::json &depth_output) {
     if (depth_output.is_null()) {
-        return noRenderTargetId();
+        return RasterAttachmentView{noRenderTargetId()};
     }
-    if (!depth_output.is_string()) {
-        throw std::runtime_error("Depth output must be null or a render target name");
-    }
-
-    const std::string depth_name = depth_output.get<std::string>();
-    validateName(depth_name, "Depth output target");
-    if (depth_name == "swapchain") {
-        throw std::runtime_error("Depth output target cannot be swapchain");
-    }
-    return resolveRenderTarget(rt_resolver, depth_name, "Depth");
+    return parseRasterAttachment(
+        rt_resolver, depth_output, "Depth", false);
 }
 
 std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,

@@ -1311,6 +1311,70 @@ TEST_CASE(
             malformed));
 }
 
+TEST_CASE(
+    "frame graph preserves raster attachment subresources for physical lowering",
+    "[frameplanner][attachment-subresource][wp235]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+      "name":"attachment_views",
+      "passes":[
+        {"name":"probe","type":"shadow_depth",
+         "output":{
+           "color":null,
+           "depth":{
+             "target":"probe_depth",
+             "subresource":{
+               "mip":1,
+               "layer":6,
+               "layer_count":6
+             }
+           }
+         }}
+      ]
+    })json"));
+    REQUIRE(graph.nodes.size() == 1);
+    REQUIRE(
+        graph.nodes.front().writes ==
+        std::vector<std::string>{"probe_depth"});
+    REQUIRE(
+        graph.nodes.front().attachments.size() ==
+        1);
+    const auto &attachment =
+        graph.nodes.front().attachments.front();
+    REQUIRE(
+        attachment.aspect ==
+        FrameGraphAttachmentAspect::depth);
+    REQUIRE(attachment.subresource.has_value());
+    REQUIRE(
+        attachment.subresource->base_mip_level ==
+        1);
+    REQUIRE(
+        attachment.subresource->base_array_layer ==
+        6);
+    REQUIRE(
+        attachment.subresource->layer_count == 6);
+
+    auto malformed = nlohmann::json::parse(R"json({
+      "name":"bad_attachment_views",
+      "passes":[
+        {"name":"probe","type":"shadow_depth",
+         "output":{
+           "color":null,
+           "depth":{
+             "target":"probe_depth",
+             "subresource":{"mip_count":2}
+           }
+         }}
+      ]
+    })json");
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphDefinitionFromJson(
+            malformed),
+        Catch::Matchers::ContainsSubstring(
+            "must select exactly one mip"));
+}
+
 TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
           "[wp181][frameplanner][render-pipeline]") {
     FrameGraphDefinition definition;

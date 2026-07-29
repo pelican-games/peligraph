@@ -76,7 +76,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 |---|---|---|---|
 | `name` | ✔ | — | パス列内で一意 |
 | `type` | ✔ | — | `material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
-| `output` | ✔ | — | `color`(null / 名前 / 名前配列)と `depth`(null / 名前)の**両キー必須**。`"swapchain"` は color のみ |
+| `output` | ✔ | — | `color`(null / attachment / attachment配列)と `depth`(null / attachment)の**両キー必須**。attachmentは従来の名前または`{target, subresource}`。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
 | `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
 | `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、mip/layer subresource、read footprintから依存とbarrierを導出する |
@@ -86,7 +86,42 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `clear_colors` | 任意 | — | `output.color` の RT 名をキーにした attachment 別 clear。未指定の attachment は `clear_color` を使う。UINT/SINT RT では整数範囲・整数値を起動時検証 |
 | `after` / `before` | 任意 | — | フレームグラフの明示エッジ(§6.6) |
 
-主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 RT は同一サイズ / 同一 RT の入出力同時使用は不可 / input に書いた RT は先行パスが出力していること。
+attachmentのmip/layerを明示する例:
+
+```json
+"output": {
+  "color": [{
+    "target": "reflection_color",
+    "subresource": {
+      "mip": 2,
+      "layer": 4,
+      "layer_count": 2
+    }
+  }],
+  "depth": {
+    "target": "reflection_depth",
+    "subresource": {
+      "mip": 2,
+      "layer": 4,
+      "layer_count": 2
+    }
+  }
+}
+```
+
+`subresource`の語彙はresource portと共通ですが、raster attachmentは厳密に1 mipだけです。
+`mip_count`の省略値は1で、複数値や`"remaining"`は使えません。`layer_count`はpassの
+logical view数と一致させます。sequential実行では`layer + view_index`の1-layer viewへ、
+multiviewでは指定範囲の2D-array viewへloweringされます。選択mipの実サイズがrender area、
+viewport、scissorになり、全color/depth attachmentで一致する必要があります。
+swapchainのsubresource、同一targetの複数attachment slot、範囲外、non-zero mipのMSAAは
+起動時エラーです。省略した従来の名前形式はmip 0と既存のview-index規則を保ちます。
+
+依存、barrier、layout trackingは現時点ではimage全体を保守的に扱います。明示subresourceの
+raster attachmentは、同じrangeを指名するsame-pixel input contractがまだ無いため
+tile-local化せずmaterialized imageとして実行されます。
+
+主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 attachment は同一実サイズ / 同一 RT の入出力同時使用は不可 / input に書いた RT は先行パスが出力していること。
 
 ### type 別の要点
 

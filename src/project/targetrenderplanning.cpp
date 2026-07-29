@@ -1,4 +1,5 @@
 #include "targetrenderplanning.hpp"
+#include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
 
 #include <algorithm>
@@ -1542,7 +1543,7 @@ bool canAppendMaterializedRenderingScope(
                  scope.nodes.rbegin();
              previous_node != scope.nodes.rend();
              ++previous_node) {
-            const auto previous_attachment =
+            const auto same_resource_view =
                 std::find_if(
                     attachments.begin(),
                     attachments.end(),
@@ -1553,6 +1554,26 @@ bool canAppendMaterializedRenderingScope(
                                    attachment.logical_resource &&
                                candidate.aspect ==
                                    attachment.aspect;
+                    });
+            if (same_resource_view !=
+                    attachments.end() &&
+                same_resource_view->subresource !=
+                    attachment.subresource) {
+                return false;
+            }
+            const auto previous_attachment =
+                std::find_if(
+                    attachments.begin(),
+                    attachments.end(),
+                    [&](const auto &candidate) {
+                        return candidate.node ==
+                                   *previous_node &&
+                               candidate.logical_resource ==
+                                   attachment.logical_resource &&
+                               candidate.aspect ==
+                                   attachment.aspect &&
+                               candidate.subresource ==
+                                   attachment.subresource;
                     });
             if (previous_attachment ==
                 attachments.end()) {
@@ -3556,21 +3577,27 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
             nlohmann::ordered_json::array();
         for (const auto &attachment :
              plan.attachments) {
+            nlohmann::ordered_json entry{
+                {"node", attachment.node},
+                {"logical_resource",
+                 attachment.logical_resource},
+                {"aspect",
+                 vulkanPhysicalAttachmentAspectName(
+                     attachment.aspect)},
+                {"load_op",
+                 vulkanPhysicalAttachmentLoadOpName(
+                     attachment.load_op)},
+                {"store_op",
+                 vulkanPhysicalAttachmentStoreOpName(
+                     attachment.store_op)},
+            };
+            if (attachment.subresource) {
+                entry["subresource"] =
+                    imageSubresourceToJson(
+                        *attachment.subresource);
+            }
             result["attachments"].push_back(
-                nlohmann::ordered_json{
-                    {"node", attachment.node},
-                    {"logical_resource",
-                     attachment.logical_resource},
-                    {"aspect",
-                     vulkanPhysicalAttachmentAspectName(
-                         attachment.aspect)},
-                    {"load_op",
-                     vulkanPhysicalAttachmentLoadOpName(
-                         attachment.load_op)},
-                    {"store_op",
-                     vulkanPhysicalAttachmentStoreOpName(
-                         attachment.store_op)},
-                });
+                std::move(entry));
         }
     }
     result["alias_groups"] =

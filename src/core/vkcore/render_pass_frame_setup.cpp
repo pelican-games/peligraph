@@ -9,11 +9,27 @@ namespace Pelican {
 namespace {
 
 std::uint32_t sequentialAttachmentLayer(
-    GlobalRenderTargetId id,
+    const RasterAttachmentView &attachment,
     const RenderTargetContainer &rt_container,
     RenderPassViewInvocation invocation) {
+    if (attachment.subresource) {
+        if (invocation.logical_view_count == 0 ||
+            invocation.view_index >=
+                invocation.logical_view_count ||
+            attachment.subresource->layer_count !=
+                invocation.logical_view_count) {
+            throw std::runtime_error(
+                "sequential render-pass invocation does not fit "
+                "the explicit attachment subresource");
+        }
+        return attachment.subresource
+                   ->base_array_layer +
+               invocation.view_index;
+    }
     const auto layers =
-        rt_container.getMetadata(id).array_layers;
+        rt_container
+            .getMetadata(attachment.target)
+            .array_layers;
     if (layers == 1) return 0;
     if (invocation.logical_view_count == 0 ||
         invocation.view_index >=
@@ -27,37 +43,131 @@ std::uint32_t sequentialAttachmentLayer(
 }
 
 vk::ImageView colorAttachmentView(
-    GlobalRenderTargetId id,
+    const RasterAttachmentView &attachment,
     RenderTargetContainer &rt_container,
     const GraphicsPipelineViewContract &view,
     RenderPassViewInvocation invocation,
     bool resolve) {
+    if (!attachment.subresource) {
+        if (view.execution ==
+            GraphicsPipelineViewExecution::multiview) {
+            return resolve
+                       ? rt_container
+                             .getLayeredImageView(
+                                 attachment.target)
+                       : rt_container
+                             .getLayeredAttachmentImageView(
+                                 attachment.target);
+        }
+        const auto layer =
+            sequentialAttachmentLayer(
+                attachment, rt_container,
+                invocation);
+        return resolve
+                   ? rt_container.getImageLayerView(
+                         attachment.target, layer)
+                   : rt_container
+                         .getAttachmentImageLayerView(
+                             attachment.target,
+                             layer);
+    }
+    const auto metadata =
+        rt_container.getMetadata(
+            attachment.target);
+    ImageSubresourceRange subresource;
     if (view.execution ==
         GraphicsPipelineViewExecution::multiview) {
+        subresource =
+            *attachment.subresource;
+        if (subresource.layer_count !=
+                view.view_count ||
+            !validImageSubresourceRange(
+                subresource,
+                metadata.mip_levels,
+                metadata.array_layers)) {
+            throw std::runtime_error(
+                "multiview render-pass attachment subresource "
+                "does not match the target/view contract");
+        }
         return resolve
-                   ? rt_container.getLayeredImageView(id)
+                   ? rt_container
+                         .getImageSubresourceView(
+                             attachment.target,
+                             subresource, true)
                    : rt_container
-                         .getLayeredAttachmentImageView(id);
+                         .getAttachmentImageSubresourceView(
+                             attachment.target,
+                             subresource, true);
     }
     const auto layer = sequentialAttachmentLayer(
-        id, rt_container, invocation);
+        attachment, rt_container, invocation);
+    subresource = *attachment.subresource;
+    subresource.base_array_layer = layer;
+    subresource.layer_count = 1;
     return resolve
-               ? rt_container.getImageLayerView(id, layer)
+               ? rt_container
+                     .getImageSubresourceView(
+                         attachment.target,
+                         subresource, false)
                : rt_container
-                     .getAttachmentImageLayerView(id, layer);
+                     .getAttachmentImageSubresourceView(
+                         attachment.target,
+                         subresource, false);
+}
+
+vk::Extent2D attachmentExtent(
+    vk::Extent2D base,
+    const RasterAttachmentView &attachment) {
+    if (!attachment.subresource) return base;
+    const auto mip =
+        attachment.subresource->base_mip_level;
+    return {
+        std::max(1u, base.width >> mip),
+        std::max(1u, base.height >> mip),
+    };
 }
 
 } // namespace
 
 vk::Extent2D getRenderPassTargetExtent(const FrameRenderContext &frame, const PassDefinition &pass_def,
                                        RenderTargetContainer &rt_container) {
-    for (const auto &rt_id : pass_def.output_color) {
-        if (isConcreteRenderTarget(rt_id)) {
-            return rt_container.getMetadata(rt_id).extent;
-        }
+    std::optional<vk::Extent2D> result;
+    const auto include =
+        [&](const RasterAttachmentView &attachment) {
+            if (isSwapchainRenderTarget(
+                    attachment.target)) {
+                if (result &&
+                    *result != frame.extent) {
+                    throw std::runtime_error(
+                        "render pass attachments have different "
+                        "runtime extents");
+                }
+                result = frame.extent;
+                return;
+            }
+            if (!isConcreteRenderTarget(
+                    attachment.target)) {
+                return;
+            }
+            const auto extent = attachmentExtent(
+                rt_container
+                    .getMetadata(attachment.target)
+                    .extent,
+                attachment);
+            if (result && *result != extent) {
+                throw std::runtime_error(
+                    "render pass attachments have different "
+                    "runtime extents");
+            }
+            result = extent;
+        };
+    for (const auto &attachment :
+         pass_def.output_color) {
+        include(attachment);
     }
-    if (isConcreteRenderTarget(pass_def.output_depth)) {
-        return rt_container.getMetadata(pass_def.output_depth).extent;
+    include(pass_def.output_depth);
+    if (result) {
+        return *result;
     }
     return frame.extent;
 }
@@ -69,7 +179,8 @@ void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const P
          index < pass_def.output_color.size();
          ++index) {
         const auto rt_id =
-            pass_def.output_color[index];
+            pass_def.output_color[index]
+                .target;
         if (isConcreteRenderTarget(rt_id) &&
             rt_container.hasSeparateAttachment(rt_id) &&
             pass_def
@@ -141,6 +252,9 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
          index < pass_def.output_color.size();
          ++index) {
         const auto rt_id =
+            pass_def.output_color[index]
+                .target;
+        const auto &attachment_view =
             pass_def.output_color[index];
         const auto operations =
             pass_def.colorAttachmentOperations(
@@ -164,13 +278,13 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
         } else {
             color_att.imageView =
                 colorAttachmentView(
-                    rt_id, rt_container, view,
+                    attachment_view, rt_container, view,
                     invocation, false);
             if (rt_container.hasSeparateAttachment(rt_id)) {
                 color_att.resolveMode = rt_container.resolveMode(rt_id);
                 color_att.resolveImageView =
                     colorAttachmentView(
-                        rt_id, rt_container, view,
+                        attachment_view, rt_container, view,
                         invocation, true);
                 color_att.resolveImageLayout =
                     vk::ImageLayout::eColorAttachmentOptimal;
@@ -306,7 +420,7 @@ vk::Extent2D getLocalReadScopeTargetExtent(
     RenderTargetContainer &rt_container) {
     std::optional<vk::Extent2D> result;
     const auto include =
-        [&](GlobalRenderTargetId target) {
+        [&](const RasterAttachmentView &target) {
             if (isSwapchainRenderTarget(target)) {
                 throw std::runtime_error(
                     "tile-local physical scopes do not yet support "
@@ -316,7 +430,11 @@ vk::Extent2D getLocalReadScopeTargetExtent(
                 return;
             }
             const auto extent =
-                rt_container.getMetadata(target).extent;
+                attachmentExtent(
+                    rt_container
+                        .getMetadata(target.target)
+                        .extent,
+                    target);
             if (result && *result != extent) {
                 throw std::runtime_error(
                     "tile-local physical scope attachments have "

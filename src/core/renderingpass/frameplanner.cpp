@@ -1,6 +1,7 @@
 #include "frameplanner.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "../../project/materialformat.hpp"
+#include "../../project/imagesubresourcejson.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include <algorithm>
@@ -565,18 +566,112 @@ vk::AttachmentStoreOp parseAttachmentStoreOp(
             "frame graph pass"));
 }
 
-std::vector<std::string> parseOutputColors(const nlohmann::json &output_json) {
+struct ParsedRasterAttachment {
+    std::string resource;
+    std::optional<ImageSubresourceRange> subresource;
+};
+
+ParsedRasterAttachment parseRasterAttachmentReference(
+    const nlohmann::json &encoded,
+    std::string_view context) {
+    ParsedRasterAttachment result;
+    if (encoded.is_string()) {
+        result.resource = encoded.get<std::string>();
+    } else if (encoded.is_object()) {
+        for (auto field = encoded.begin();
+             field != encoded.end(); ++field) {
+            if (field.key() != "target" &&
+                field.key() != "subresource") {
+                throw std::runtime_error(
+                    std::string{context} +
+                    " has unknown field '" +
+                    field.key() + "'");
+            }
+        }
+        if (!encoded.contains("target") ||
+            !encoded.at("target").is_string()) {
+            throw std::runtime_error(
+                std::string{context} +
+                " object requires string field target");
+        }
+        result.resource =
+            encoded.at("target").get<std::string>();
+        result.subresource =
+            parseOptionalImageSubresource(
+                encoded, context);
+        if (result.subresource &&
+            (result.subresource->mip_count_mode !=
+                 ImageSubresourceMipCountMode::fixed ||
+             result.subresource->level_count != 1)) {
+            throw std::runtime_error(
+                std::string{context} +
+                ".subresource must select exactly one mip level");
+        }
+    } else {
+        throw std::runtime_error(
+            std::string{context} +
+            " must be a render target name or object");
+    }
+    if (result.resource.empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " target must not be empty");
+    }
+    if (result.resource == "swapchain" &&
+        result.subresource) {
+        throw std::runtime_error(
+            "Swapchain output cannot select a subresource");
+    }
+    return result;
+}
+
+std::vector<ParsedRasterAttachment>
+parseRasterAttachmentList(
+    nlohmann::json encoded,
+    std::string_view context) {
+    if (encoded.is_null()) return {};
+    if (!encoded.is_array()) {
+        encoded = nlohmann::json::array(
+            {std::move(encoded)});
+    }
+    std::vector<ParsedRasterAttachment> result;
+    result.reserve(encoded.size());
+    for (const auto &entry : encoded) {
+        result.push_back(
+            parseRasterAttachmentReference(
+                entry, context));
+    }
+    return result;
+}
+
+std::vector<ParsedRasterAttachment>
+parseOutputColors(const nlohmann::json &output_json) {
     if (!output_json.contains("color")) {
         throw std::runtime_error("Frame graph pass output requires color field");
     }
-    return parseStringList(output_json.at("color"), "pass.output.color");
+    return parseRasterAttachmentList(
+        output_json.at("color"),
+        "pass.output.color");
 }
 
-std::vector<std::string> parseOutputDepth(const nlohmann::json &output_json) {
+std::vector<ParsedRasterAttachment>
+parseOutputDepth(const nlohmann::json &output_json) {
     if (!output_json.contains("depth")) {
         throw std::runtime_error("Frame graph pass output requires depth field");
     }
-    return parseStringList(output_json.at("depth"), "pass.output.depth");
+    auto result = parseRasterAttachmentList(
+        output_json.at("depth"),
+        "pass.output.depth");
+    if (result.size() > 1) {
+        throw std::runtime_error(
+            "Frame graph pass output depth accepts at most one attachment");
+    }
+    if (!result.empty() &&
+        result.front().resource == "swapchain") {
+        throw std::runtime_error(
+            "Depth output target cannot be swapchain");
+    }
+    return result;
 }
 
 FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json, size_t declaration_index) {
@@ -705,8 +800,14 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
     const auto depth_outputs = parseOutputDepth(output);
-    appendUnique(node.writes, color_outputs);
-    appendUnique(node.writes, depth_outputs);
+    for (const auto &attachment : color_outputs) {
+        appendUnique(
+            node.writes, attachment.resource);
+    }
+    for (const auto &attachment : depth_outputs) {
+        appendUnique(
+            node.writes, attachment.resource);
+    }
 
     const auto color_load = parseAttachmentLoadOp(
         pass_json, "color_load_op",
@@ -722,10 +823,12 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     const auto depth_store = parseAttachmentStoreOp(
         pass_json, "depth_store_op",
         vk::AttachmentStoreOp::eDontCare);
-    for (const auto &resource : color_outputs) {
+    for (const auto &attachment : color_outputs) {
         node.attachments.push_back(
             FrameGraphAttachmentDefinition{
-                .resource = resource,
+                .resource = attachment.resource,
+                .subresource =
+                    attachment.subresource,
                 .aspect =
                     FrameGraphAttachmentAspect::color,
                 .load_op =
@@ -736,10 +839,12 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
                         color_store),
             });
     }
-    for (const auto &resource : depth_outputs) {
+    for (const auto &attachment : depth_outputs) {
         node.attachments.push_back(
             FrameGraphAttachmentDefinition{
-                .resource = resource,
+                .resource = attachment.resource,
+                .subresource =
+                    attachment.subresource,
                 .aspect =
                     FrameGraphAttachmentAspect::depth,
                 .load_op =
@@ -752,19 +857,21 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
 
     if (color_load == vk::AttachmentLoadOp::eLoad) {
-        appendUnique(node.reads, color_outputs);
-        for (const auto &resource : color_outputs) {
+        for (const auto &attachment : color_outputs) {
+            appendUnique(
+                node.reads, attachment.resource);
             appendReadFootprint(
-                node, resource,
+                node, attachment.resource,
                 {LogicalReadFootprintKind::same_pixel,
                  std::nullopt});
         }
     }
     if (depth_load == vk::AttachmentLoadOp::eLoad) {
-        appendUnique(node.reads, depth_outputs);
-        for (const auto &resource : depth_outputs) {
+        for (const auto &attachment : depth_outputs) {
+            appendUnique(
+                node.reads, attachment.resource);
             appendReadFootprint(
-                node, resource,
+                node, attachment.resource,
                 {LogicalReadFootprintKind::same_pixel,
                  std::nullopt});
         }
@@ -1039,7 +1146,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         }
     }
     appendUnique(node.reads, pass.input_buffers);
-    for (const auto target : pass.output_color) {
+    for (const auto &attachment : pass.output_color) {
+        const auto target = attachment.target;
         const auto resource =
             renderTargetResourceName(target);
         appendUnique(node.writes, resource);
@@ -1047,6 +1155,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
             node.attachments.push_back(
                 FrameGraphAttachmentDefinition{
                     .resource = resource,
+                    .subresource =
+                        attachment.subresource,
                     .aspect =
                         FrameGraphAttachmentAspect::color,
                     .load_op =
@@ -1127,6 +1237,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         node.attachments.push_back(
             FrameGraphAttachmentDefinition{
                 .resource = depth_resource,
+                .subresource =
+                    pass.output_depth.subresource,
                 .aspect =
                     FrameGraphAttachmentAspect::depth,
                 .load_op =
@@ -1139,7 +1251,9 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     }
 
     if (pass.color_load_op == vk::AttachmentLoadOp::eLoad) {
-        for (const auto target : pass.output_color) {
+        for (const auto &attachment :
+             pass.output_color) {
+            const auto target = attachment.target;
             const auto resource =
                 renderTargetResourceName(target);
             appendUnique(node.reads, resource);

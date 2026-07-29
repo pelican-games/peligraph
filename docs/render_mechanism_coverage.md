@@ -1,17 +1,18 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v17)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v18)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v17(2026-07-29)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v18(2026-07-29)**。84 行の技法候補を現行コードとテストへ再照合し、
 WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
 mip/layer/subresource view、WP218の任意長・型付きmaterial output ABI、
 WP219のoutput別blend/write-mask、WP220のmaterial same-pixel local-read、
 WP228のplanar reflection Forward transparent capture/family-local sort、
 WP229のViewFamily-local clustered selection、WP233のtyped shader asset差替え、
-WP234のruntime ViewFamily provider registryと標準C++ algorithm package purgeまで反映した。
+WP234のruntime ViewFamily provider registryと標準C++ algorithm package purge、
+WP235のraster attachment mip/layer viewまで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
-3D/cube targetとraster attachment subresource、typed integer material image inputは
+3D/cube target、typed integer material image inputは
 後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md) と
 [`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)、
@@ -21,7 +22,8 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 [`design_reviews/2026-07-29_wp228_planar_transparent_capture_report.md`](design_reviews/2026-07-29_wp228_planar_transparent_capture_report.md)、
 [`design_reviews/2026-07-29_wp229_view_family_clustered_selection_report.md`](design_reviews/2026-07-29_wp229_view_family_clustered_selection_report.md)、
 [`design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)、
-[`design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)。
+[`design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)、
+[`design_reviews/2026-07-29_wp235_raster_attachment_subresource.md`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)。
 
 ## 0. 判定規則
 
@@ -46,7 +48,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 
 | 機構 | 現在の契約 | 根拠 |
 |---|---|---|
-| render target | fixed/output-relative extent、format/class/role、usage、history、format candidates、fixed/full mip、array layers、fullscreen/compute subresource view | [rendertargetjsonparser.cpp](../src/core/renderingpass/rendertargetjsonparser.cpp) |
+| render target | fixed/output-relative extent、format/class/role、usage、history、format candidates、fixed/full mip、array layers、fullscreen/compute/material/raster attachment subresource view | [rendertargetjsonparser.cpp](../src/core/renderingpass/rendertargetjsonparser.cpp) |
 | MRT / MSAA | materialは版付きschemaで任意長のfloat/SINT/UINT color output、typed sample-count resolve、target別typed clear。上限はdeviceの`maxColorAttachments`だけ。fullscreenは現在1 color/pass | [materialoutput.hpp](../src/project/materialoutput.hpp) |
 | fullscreen input | image **および storage buffer**、image は filter/address 指定 | [fullscreenpasscontainer.cpp:281](../src/core/fullscreenpass/fullscreenpasscontainer.cpp) |
 | material surface | `displace` / `surface` / `brdf` / `lighting`、custom params/texture、generated accessor | [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp) |
@@ -65,7 +67,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 |---|---|
 | graphics buffer input | fullscreen はraw storage buffer、material/geometryはtyped readonly storage bufferに対応。material write/atomicは未公開 |
 | sampler | fullscreen/compute named image port は filter/address 指定可。material custom texture は filter/mip-filter/address/compare/anisotropy を typed 宣言できる。compare の実 binding は compatible depth image provider待ち |
-| texture dimension | project authored KTX2 の 2D/cube/2D-array/3D、runtime 2D RTのmip/layerとsampled/storage部分viewは公開済み。runtime 3D/cube targetとraster attachment部分viewは未公開(G10b) |
+| texture dimension | project authored KTX2 の 2D/cube/2D-array/3D、runtime 2D RTのmip/layerとsampled/storage/raster attachment部分viewは公開済み。runtime 3D/cube targetは未公開(G10b) |
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
 | object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
@@ -111,7 +113,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 |---|---|---|---|
 | C1 | B-layer material shadow reception | **○** | WP205でpublic shadow relation、project-copy同値、feature-off purge、実Vulkan goldenまで固定 |
 | C2 | cascaded shadow map | **○** | WP225でstable `$cascade/N`、hybrid split、XR frustum union、D32 array target、最大8 cascade LightUBO、main-depth選択、cascade別conservative draw compactionを接続。3-layer実Vulkan goldenで全layerと遠方caster除外を検証 |
-| C3 | point/spot shadow | **✕** | named multi-view familyのsequential実行とstatic cube/arrayは利用可能。point/spot view provider、runtime cube-face attachment、light shadow schemaが不足(G5/G6b/G10b) |
+| C3 | point/spot shadow | **✕** | named multi-view familyのsequential実行、2D-array layer attachment、static cube/arrayは利用可能。point/spot view provider、runtime cube image/view、light shadow schemaが不足(G5/G6b/G10b) |
 | C4 | PCSS / PCF | **△** | public shadow resourceとmanual depth compareは利用可能。標準filtered algorithm、comparison sampler利用、品質goldenは未作成 |
 | C5 | screen-space contact shadow | **△** | fullscreen depth ray march で構成可能。実 feature/golden 未作成 |
 | C6 | shadow cache / virtual shadow map | **✕** | mip/layer view、named view-family、cascade array targetは解消。page table、GPU-driven page execution、residencyが不足(G8/G9) |
@@ -122,7 +124,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | D1 | prebaked IBL | **○** | 2D octahedral/stripに加えてnative cubemapをmaterialから利用可能(WP209a) |
-| D2 | runtime prefilter / dynamic environment | **✕** | 2D mip/subresourceは解消。capture viewとruntime cube targetが無い(G6b/G10b) |
+| D2 | runtime prefilter / dynamic environment | **✕** | 2D mipのsample/storage/raster出力は解消。capture viewとruntime cube targetが無い(G6b/G10b) |
 | D3 | parallax-corrected reflection probe | **△** | baked texture + hook。probe selection/data は material単位または G5 |
 | D4 | post SSR | **△** | scene color + depth fullscreen で構成可能。実 feature 未作成 |
 | D5 | material SSR/refraction integration | **○** | typed screen input と実 Vulkan refraction test 済み |
@@ -229,7 +231,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
 | **G10a（解消済み、WP209b）** | 2D runtime RTのfixed/full mip、array layer、fullscreen/compute sampled/storage subresource viewを実装 | depth pyramid、2D runtime LUT |
-| **G10b** | runtime 3D/cube targetとraster attachmentの任意mip/layer出力が無い | runtime IBL、froxel、raster mip generation |
+| **G10b（部分解消、WP235）** | raster attachmentの任意1 mip/連続layer出力を実装。runtime 3D/cube image/viewは未公開 | runtime IBL、froxel、cube capture |
 | **G11** | VRS/fragment density/foveation backend contractが無い | XR foveation |
 | **G12（authoring解消済み、WP209a）** | material samplerのfilter/mip-filter/address/compare/anisotropyを実装。hardware compareの実利用はcompatible depth image provider待ち | hardware PCF、special filtering |
 | **G13（解消済み、WP206b）** | pass-local named surface/render-state variantを実装。同一phase routeに対応し、opaque/transparent phase跨ぎだけをvariant-aware draw queueへ残す | duplicate-free inverted hull、special overlay |
@@ -272,11 +274,11 @@ upscale resolution contract、public directional shadow receptionである。
 推奨順は次である。
 
 1. WP204 runtime sliceは完了
-2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227、transparent capture/sortはWP228、family-local clustered selectionはWP229、oblique near-planeはWP230、extent-derived dispatch/material remaining-mip/family-array planar filterはWP231〜232、filter asset差替えはWP233、runtime family provider registryと標準C++ package purgeはWP234で完了。G6bの次はsecondary multiviewまたはpoint/spot cube provider
+2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227、transparent capture/sortはWP228、family-local clustered selectionはWP229、oblique near-planeはWP230、extent-derived dispatch/material remaining-mip/family-array planar filterはWP231〜232、filter asset差替えはWP233、runtime family provider registryと標準C++ package purgeはWP234、raster attachment mip/layer viewはWP235で完了。G6bの次はsecondary multiviewまたはpoint/spot cube provider
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了
-6. G4とG12 authoringはWP209a、G10aはWP209bのdepth pyramidで完了。G10bはruntime 3D/cubeまたはraster subresourceの実需要時
+6. G4とG12 authoringはWP209a、G10aはWP209bのdepth pyramidで完了。G10bのraster subresourceはWP235で部分解消し、次はruntime 3D/cubeの実需要時
 7. G8 fixed-state GPU-written draw arguments/countはWP210bで完了。次は実occlusion
    dogfoodと必要になったsegment metadata。G9 bindlessは実測需要時
 8. delivery laneとして`dist-bake`

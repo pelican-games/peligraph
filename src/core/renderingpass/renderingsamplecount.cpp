@@ -674,6 +674,8 @@ physicalAttachmentPlans(
                     .node = node.name,
                     .logical_resource =
                         attachment.resource,
+                    .subresource =
+                        attachment.subresource,
                     .aspect =
                         physicalAttachmentAspect(
                             attachment.aspect),
@@ -921,13 +923,21 @@ graphTileLocalAttachmentFormats(
                     name) != node.writes.end();
             if (writes) {
                 written = true;
-                if (std::none_of(
+                const auto attachment =
+                    std::find_if(
                         node.attachments.begin(),
                         node.attachments.end(),
                         [&](const auto &attachment) {
                             return attachment.resource ==
                                    name;
-                        })) {
+                        });
+                // Logical local-read ports currently identify an image
+                // resource, not one of its raster subresources. Keep an
+                // explicit attachment view materialized until that port
+                // contract can name the same range unambiguously.
+                if (attachment ==
+                        node.attachments.end() ||
+                    attachment->subresource) {
                     compatible = false;
                     break;
                 }

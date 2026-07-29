@@ -14,6 +14,10 @@ using ProducedRenderTargetSet = std::unordered_set<GlobalRenderTargetId, GlobalR
 
 void validatePassInputs(const PassDefinition &pass_def);
 void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata);
+void validateUniqueRenderTargets(const std::vector<RasterAttachmentView> &targets,
+                                 const std::string &target_kind,
+                                 const PassDefinition &pass_def,
+                                 const RenderTargetMetadataResolver &rt_metadata);
 void validateUniqueRenderTargets(const std::vector<GlobalRenderTargetId> &targets,
                                  const std::string &target_kind,
                                  const PassDefinition &pass_def,
