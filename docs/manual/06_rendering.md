@@ -147,7 +147,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 | 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 以降 = `.surface` の custom texture(宣言順) |
 | 3 | `PELICAN_SET_FREE` | 名前に反して**大半はエンジンが所有**します: binding 0/1 = debug_draw / debug_text、2/3 = スキンパレット(現 / 前フレーム)、4-8 = morph(instance / weight / previous weight / metadata / delta)、9-11 = per-instance マテリアルオーバーライド(§6.8) |
 
-`FrameUBO`(全シェーダから読める・352B): `time` / `dt` / 64bit `frame_index` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection` / `jitter_ndc` / `previous_jitter_ndc` / `temporal_reset_epoch` / `previous_temporal_reset_epoch`。projection jitter が無効な既定構成では jitter は `(0, 0)` です。
+`FrameUBO`(全シェーダから読める・368B): `time` / `dt` / 64bit `frame_index` / 64bit `view_family_token` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection` / `jitter_ndc` / `previous_jitter_ndc` / `temporal_reset_epoch` / `previous_temporal_reset_epoch` / `view_index` / `view_count` / `clip_plane`。GLSL上は`frame_index.xy`が論理frame番号、`.zw`がstable family tokenで、`pelican_view_family_token()`から読めます。projection jitter が無効な既定構成では jitter は `(0, 0)` です。
 
 push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン領域 offset 0..63 の `engineMvp` は**名前に反して MVP ではなく `view_projection_jittered`(world → jittered clip)**です — 独自 vertex シェーダは model 行列で作った world position にこれを 1 回掛けるだけにし、**jitter を後から足してはいけません**(§6.8 の projection jitter が二重適用になります)。この意味論・64B の範囲・symbol 名は v1 で凍結です([../shader_contract.md](../shader_contract.md) の「`engineMvp` v1 の規範意味論」)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
 
@@ -172,7 +172,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | feature | 内容 |
 |---|---|
 | `hdr.json` | `format_class: scene` の RT を float16 化(切替はエンジンの色リゾルバが feature の有無で行う)し、`scene_ldr_in` を挟んでトーンマップパスを `after:tonemap` アンカーに挿入 |
-| `clustered_lighting.json` | computeでcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入 |
+| `clustered_lighting.json` | computeでViewFamily/view別のcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入。planar reflection併用時はreflection-local selectorも自動合成 |
 | `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
 | `planar_reflection.json` | 指定world planeでmain viewを反転し、独立解像度のdeferred G-buffer/SSAO/lightingを`$reflection/planar` familyへ追加。結果をforward transparentの`planar_reflection` resource portへ割り当て |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
@@ -183,7 +183,29 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `debug_text.json` | ビットマップ文字 HUD([第7章](07_input_ui.md)) |
 | `gpu_timing.json` | パスなしの計測フラグ。フレームグラフの**ノードごとに `barriers` / `body` の GPU タイムスタンプ**を取り、ログ・`get_status.gpu_timing`・ImGui に出す(✅WP29/143。XR では左右眼とミラーを別 view として分離。§6.14) |
 
-fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)、`render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input / material resource追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**。`shadow_directional.json` の全文例は前版と同じです。
+fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)、`render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input / material resource追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**、**`integrations`(下記)**。`shadow_directional.json` の全文例は前版と同じです。
+
+別featureとの組合せでだけ必要なfragmentは`integrations`へ置けます。全base featureを合成した
+後に`requires`のfeature名がすべて存在するときだけ適用されるため、`features`配列の記述順へ
+依存しません。縮小版featureなど任意passの有無も`requires_passes`で条件化できます。
+
+```json
+"integrations": [{
+  "name": "planar_reflection_local_data",
+  "requires": ["planar_reflection"],
+  "requires_passes": ["planar_reflection_forward_opaque"],
+  "fragment": {
+    "pass_overrides": {
+      "planar_reflection_forward_opaque": {
+        "material_resources": {"selection": "reflection_selection"}
+      }
+    }
+  }
+}]
+```
+
+integration fragmentは通常fragmentと同じ名前衝突・field検証を受けます。条件に無いfeatureや
+passへ暗黙fallbackしたり、既存bindingを上書きしたりはしません。
 
 ### feature パラメータと named binding(✅WP112/114)
 
@@ -271,10 +293,13 @@ surface/material bindingが解決された後に継承されるため、shadow�
 material passは参照元と同じ`material_contract`である必要があり、未知pass、cycle、種類不一致は
 compile errorです。helperはcompose後に消えるのでruntime/backendのpass schemaには残りません。
 
-現行clustered light selectionはmain view用です。planar reflectionのようにclip planeを持つ
-secondary viewは、自動的にLightUBOの固定light selectionへfallbackします。描画の正しさは
-維持されますが、family-local cluster生成より多灯時の効率と選択精度は低くなります。
-secondary multiview、oblique near-plane projection、標準roughness prefilterは後続です。
+clustered light selection v2はViewFamily/viewごとに独立します。標準bufferは最大2 view分を
+持ち、各領域のheaderへtile情報、`view_index` / `view_count`、stable family tokenを書きます。
+flatは先頭領域、XR sequentialは左右眼の各領域を使います。planar reflection併用時は
+`$reflection/planar`専用buffer/taskがintegrationから追加され、scalable inventoryだけを
+main viewと共有します。headerが現在のFrameUBOと一致しない場合はLightUBOへ安全側fallback
+するため、別familyのselectionや未生成領域を誤用しません。secondary multiview、oblique
+near-plane projection、標準roughness prefilterは後続です。
 
 ### canonical anchor(✅WP73)
 
@@ -1314,7 +1339,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
-- **論理フレーム / ViewFamily(WP128/WP223〜228)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロット制で相互汚染を防ぎます。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
+- **論理フレーム / ViewFamily(WP128/WP223〜229)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
 - **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
 - **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。

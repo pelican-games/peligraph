@@ -39,6 +39,10 @@ Forward opaqueもcaptureするようにした。shadow/clustered featureの記�
 WP228ではtransparent queueをsecondary family viewごとに同じ公開sort providerで再評価し、
 reflection-local opaque color/depth snapshotを入力にForward transparentをcaptureする。
 これによりmain viewのdepth順を流用せず、attachment自己samplingも避ける。
+WP229ではclustered selectionをViewFamily-affine ABI v2へ更新し、flat、XRの各eye、
+planar reflectionが同じscalable light inventoryからfamily/view固有のtile selectionを生成する。
+FrameUBOのstable family tokenで誤bindingや古いselectionをconsumer側でも拒否し、feature間の
+追加はbase合成後の宣言的`integrations`で順序非依存に接続する。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -613,9 +617,21 @@ resource consumer解決後に展開し、material passでは同じ`material_cont
 clustered light inventory/selectionはForward surface compilerが生成するimplicit resource
 interfaceとしてShaderBundleに保持し、materialが宣言したportとruntime登録時に合成する。
 これにより標準passから継承したclustered bindingをSPIR-V reflectionまで一貫して検証できる。
-ただし現行selection bufferはmain-view cluster空間であり、clip planeを持つsecondary viewでは
-使用せずLightUBOの固定selectionへfallbackする。family-local cluster生成を実装した時点で
-この判定をprovider capabilityへ置換する。
+
+selection ABI v2は一つのbufferをbounded view領域へ分割する。各領域は12-word header
+（magic/version、tile shape、最大・総light数、view index/count、64-bit family token）と
+tileごとのcount + 最大64 indexを持つ。extent-derived bufferの`copies`はheaderを含む領域全体を
+反復し、標準clustered featureは2 copiesを確保する。selectorは`per_view`で、consumerは現在の
+FrameUBOにあるview index/count/family tokenとheaderが一致した場合だけselectionを使用する。
+不一致、破損、未生成領域では従来のLightUBOへ安全側fallbackする。
+
+feature間の任意組合せは、あるfeatureの通常fragmentへ相手feature名を直接仮定して混ぜず、
+base feature合成後に`integrations`を評価して追加する。integrationは`requires`でfeature、
+`requires_passes`でbase graphに実在する任意passを条件化し、通常fragmentと同じcollision・
+validation規則でtarget/buffer/pass/task/override/resource/defineを追加する。条件はintegrationが
+追加したpassではなくbase pass集合に対して評価するため、feature記述順やintegration順に
+依存しない。clustered + planar reflectionではこの境界からreflection-local buffer/taskを作り、
+inventoryだけを共有しselectionを共有しない。
 
 secondary familyに`forward_transparent_v1` material passがある場合、draw preparationは
 canonical resolved itemを再利用しつつ、そのfamilyの各viewから`DrawQueueSortView`を作る。
@@ -632,8 +648,8 @@ inputとして読み、reflection color/depth attachmentをloadして描画す�
 attachmentをsampleする再帰feedbackを防ぐ。透明surfaceのdepth write規則はcanonical
 `forward_transparent_v1`と同じであり、reflection depthはopaque段階から変化しない。
 
-残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiview、
-family-local clustered selectionである。CSMやreflectionを単なる特殊passへ戻さず、これらも
+残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiviewである。
+CSMやreflectionを単なる特殊passへ戻さず、これらも
 stable family relationを通して拡張する。planar reflection側にはさらにoblique near-plane
 projection、roughness prefilter/sampling policyが残る。
 

@@ -116,6 +116,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP226 | planar reflection ViewFamily / generic secondary culling | ✅ 完了（2026-07-29）。reflection provider、clip plane ABI、独立解像度feature、汎用secondary culling、実GPU |
 | WP227 | planar reflection Forward opaque capture / pass binding inheritance | ✅ 完了（2026-07-29）。Forward再描画、late binding継承、clustered compiler ABI、実GPU |
 | WP228 | secondary ViewFamily transparent capture / family-local sort | ✅ 完了（2026-07-29）。同一sort providerのview別再評価、reflection-local snapshot、Forward transparent再描画、実GPU |
+| WP229 | ViewFamily-local clustered light selection | ✅ 完了（2026-07-29）。selection ABI v2、family token、XR左右眼領域、cross-feature integration、reflection多灯実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -934,9 +935,9 @@ errorにする。
 clustered lightingを同時に有効化した実Vulkan fixtureではDeferredとForwardを左右に分け、
 Forward objectがG-bufferへ入らずreflection color/depthだけを変えることを検証した。
 このdogfoodで、非Forward surfaceへclustered defineが漏れる問題と、surface compilerが
-合成したimplicit resource portがmaterial runtimeへ失われる問題も修正した。現行のcluster
-selectionはmain-view空間なのでclip planeを持つsecondary viewではLightUBO selectionへ
-fallbackする。family-local cluster生成は品質・性能の後続である。詳細は
+合成したimplicit resource portがmaterial runtimeへ失われる問題も修正した。WP227時点の
+cluster selectionはmain-view空間だったため、clip planeを持つsecondary viewではLightUBOへ
+fallbackしていた。この残件はWP229でfamily-local selectionとして解消した。詳細は
 [`2026-07-29_wp227_planar_forward_capture_report.md`](design_reviews/2026-07-29_wp227_planar_forward_capture_report.md)
 を参照する。
 
@@ -956,6 +957,23 @@ loadして再描画するが、reflection texture port自体はopaque color snap
 透明二物体のdepth順が反転する配置を使い、Deferred-only、Forward opaque、Forward transparentの
 三段差分、depth非更新、G-buffer不変、8 node実行を検証した。詳細は
 [`2026-07-29_wp228_planar_transparent_capture_report.md`](design_reviews/2026-07-29_wp228_planar_transparent_capture_report.md)
+を参照する。
+
+WP229でclustered selectionをmain-view固定からViewFamily-localへ一般化した。
+selection ABI v2は各view領域のheaderへ`view_index` / `view_count`とstable 64-bit
+ViewFamily tokenを記録し、consumerは現在のFrameUBOと一致しないbufferを使用しない。
+`size_from_extent.copies`で最大2 view分のheader + tile payloadを確保し、selector taskを
+`per_view` scheduleへ変更した。flatでは先頭領域、XR sequentialでは左右眼の独立領域を
+同じshader ABIで生成する。
+
+feature composerには全base featureの合成後に評価する`integrations`を追加した。
+clustered featureはplanar reflectionが存在するときだけreflection-local selection bufferと
+`$reflection/planar` selectorを追加し、Deferred / Forward各consumerのselection bindingだけを
+局所上書きする。`requires_passes`により、Deferred-onlyやopaque-onlyへ縮小したproject版
+reflectionにも存在するpassだけを統合できる。41灯のreflection Vulkan fixture、70灯のflat +
+XR左右眼GPU readbackで、LightUBO上限を超えたinventory、family token、overflowを検証した。
+詳細は
+[`2026-07-29_wp229_view_family_clustered_selection_report.md`](design_reviews/2026-07-29_wp229_view_family_clustered_selection_report.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

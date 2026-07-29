@@ -1013,6 +1013,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE13d / WP226（済 2026-07-29） | planar reflection provider、per-view clip plane、独立解像度standard feature、generic secondary culling | reflection G-buffer/depth/color、family invocation、shadow/reflection共通submissionの実GPU |
 | RPE13e / WP227（済 2026-07-29） | canonical passのlate binding継承、planar reflection Forward opaque再描画、compiler-owned resource ABI | feature順序独立shadow/clustered binding、Deferred/Forward分離、reflection color/depth差分の実GPU |
 | RPE13f / WP228（済 2026-07-29） | secondary familyのview-local draw sort、reflection-local opaque snapshot、Forward transparent再描画 | main/reflectionで逆転する透明順、三段color差分、depth/G-buffer不変、8-node実GPU |
+| RPE13g / WP229（済 2026-07-29） | ViewFamily-affine GPU buffer ABI、late cross-feature integration、family-local clustered selector | flat/XR二眼/planar reflectionのheader token、70灯overflow、feature順序・pass縮小回帰、実GPU |
 
 ### 12.1 いま着手する範囲
 
