@@ -1206,6 +1206,109 @@ void main() {
 })json");
 }
 
+nlohmann::json makeLiveMaterialFixtureTargets() {
+    return nlohmann::json::array({
+        {
+            {"name", "gbuffer_albedo"},
+            {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_UNORM"},
+            {"format_class", "scene"},
+            {"usage",
+             nlohmann::json::array(
+                 {"COLOR_ATTACHMENT", "SAMPLED"})},
+        },
+        {
+            {"name", "gbuffer_normal"},
+            {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"},
+            {"format_class", "data"},
+            {"usage",
+             nlohmann::json::array(
+                 {"COLOR_ATTACHMENT", "SAMPLED"})},
+        },
+        {
+            {"name", "gbuffer_material"},
+            {"extent_scale", 1.0},
+            {"format", "R8G8B8A8_UNORM"},
+            {"format_class", "data"},
+            {"usage",
+             nlohmann::json::array(
+                 {"COLOR_ATTACHMENT", "SAMPLED"})},
+        },
+        {
+            {"name", "gbuffer_worldpos"},
+            {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"},
+            {"format_class", "data"},
+            {"usage",
+             nlohmann::json::array(
+                 {"COLOR_ATTACHMENT", "SAMPLED"})},
+        },
+        {
+            {"name", "g_emissive"},
+            {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_UNORM"},
+            {"format_class", "scene"},
+            {"usage",
+             nlohmann::json::array(
+                 {"COLOR_ATTACHMENT", "SAMPLED"})},
+        },
+        {
+            {"name", "scene_depth"},
+            {"extent_scale", 1.0},
+            {"format", "D32_SFLOAT"},
+            {"format_class", "data"},
+            {"usage",
+             nlohmann::json::array(
+                 {"DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"})},
+        },
+    });
+}
+
+nlohmann::json makeLiveMaterialFixturePass() {
+    return {
+        {"name", "deferred_geometry"},
+        {"type", "material"},
+        {"material_contract", "deferred_geometry_v1"},
+        {"output",
+         {
+             {"color",
+              nlohmann::json::array({
+                  "gbuffer_albedo",
+                  "gbuffer_normal",
+                  "gbuffer_material",
+                  "gbuffer_worldpos",
+                  "g_emissive",
+              })},
+             {"depth", "scene_depth"},
+         }},
+        {"depth_store_op", "store"},
+    };
+}
+
+nlohmann::json makeLiveMaterialFixtureConfig(
+    nlohmann::json terminal_pass,
+    nlohmann::json features = nlohmann::json::array()) {
+    auto passes = nlohmann::json::array();
+    passes.push_back(makeLiveMaterialFixturePass());
+    passes.push_back(std::move(terminal_pass));
+
+    auto config = nlohmann::json{
+        {"render_targets", makeLiveMaterialFixtureTargets()},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {
+                 {"name", "main"},
+                 {"passes", std::move(passes)},
+             },
+         })},
+    };
+    if (!features.empty()) {
+        config["features"] = std::move(features);
+    }
+    return config;
+}
+
 void writeLogicalFrameStereoProject(const std::filesystem::path &root) {
     auto project = makeFeatureProjectJson();
     project["name"] = "logical frame stereo fixture";
@@ -1250,15 +1353,25 @@ void main() {
     outColor = vec4(signal, signal, signal, 1.0);
 }
 )glsl");
-    writeTextFile(root / "passes" / "main.json", R"json({
-      "xr":{"view_execution":"sequential"},
-      "render_targets":[],
-      "rendering_passes":[{"name":"main","passes":[{
-        "name":"stereo_probe","type":"fullscreen",
-        "output":{"color":"swapchain","depth":null},
-        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/stereo_probe"}
-      }]}]
-    })json");
+    auto rendering_config = makeLiveMaterialFixtureConfig({
+        {"name", "stereo_probe"},
+        {"type", "fullscreen"},
+        {"output",
+         {
+             {"color", "swapchain"},
+             {"depth", nullptr},
+         }},
+        {"shader",
+         {
+             {"vertex", "shaders/fullscreen"},
+             {"fragment", "shaders/stereo_probe"},
+         }},
+    });
+    rendering_config["xr"] = {
+        {"view_execution", "sequential"},
+    };
+    writeTextFile(root / "passes" / "main.json",
+                  rendering_config.dump(2));
     std::filesystem::create_directories(root / "assets");
     std::filesystem::copy_file(sourceRoot() / "test" / "fixtures" / "ground.glb",
                                root / "assets" / "ground.glb",
@@ -1378,14 +1491,28 @@ void main() {
     outColor = vec4(velocity * 20.0, 0.0, 1.0);
 }
 )glsl");
-    writeTextFile(root / "passes" / "main.json", R"json({
-      "features":["engine://features/velocity.json"],"render_targets":[],
-      "rendering_passes":[{"name":"main","passes":[{
-        "name":"present","type":"fullscreen","input":["velocity"],
-        "output":{"color":"swapchain","depth":null},
-        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}
-      }]}]
-    })json");
+    writeTextFile(
+        root / "passes" / "main.json",
+        makeLiveMaterialFixtureConfig(
+            {
+                {"name", "present"},
+                {"type", "fullscreen"},
+                {"input",
+                 nlohmann::json::array({"velocity"})},
+                {"output",
+                 {
+                     {"color", "swapchain"},
+                     {"depth", nullptr},
+                 }},
+                {"shader",
+                 {
+                     {"vertex", "shaders/fullscreen"},
+                     {"fragment", "shaders/present"},
+                 }},
+            },
+            nlohmann::json::array(
+                {"engine://features/velocity.json"}))
+            .dump(2));
 }
 
 void writeMorphVelocityProject(const std::filesystem::path &root) {
@@ -1415,14 +1542,28 @@ void main() {
     outColor = vec4(abs(velocity) * 20.0, 0.0, 1.0);
 }
 )glsl");
-    writeTextFile(root / "passes" / "main.json", R"json({
-      "features":["engine://features/velocity.json"],"render_targets":[],
-      "rendering_passes":[{"name":"main","passes":[{
-        "name":"present","type":"fullscreen","input":["velocity"],
-        "output":{"color":"swapchain","depth":null},
-        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}
-      }]}]
-    })json");
+    writeTextFile(
+        root / "passes" / "main.json",
+        makeLiveMaterialFixtureConfig(
+            {
+                {"name", "present"},
+                {"type", "fullscreen"},
+                {"input",
+                 nlohmann::json::array({"velocity"})},
+                {"output",
+                 {
+                     {"color", "swapchain"},
+                     {"depth", nullptr},
+                 }},
+                {"shader",
+                 {
+                     {"vertex", "shaders/fullscreen"},
+                     {"fragment", "shaders/present"},
+                 }},
+            },
+            nlohmann::json::array(
+                {"engine://features/velocity.json"}))
+            .dump(2));
 }
 
 uint8_t maximumVelocitySignal(const std::vector<uint8_t> &rgba) {
