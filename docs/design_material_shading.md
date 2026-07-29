@@ -495,8 +495,9 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   input attachment indexが一致しなければならない。reflection、pipeline contract、
   descriptor layoutは同じcompiled値を検証する
 - local variantはpublic関数のUV/LOD引数を保つが、意味論上は現在画素だけを読む。
-  generated image accessorは現在floating-point `vec4`契約で、UINT/SINT input attachment、
-  history、material subresourceは後続境界とする
+  generated image accessorは現在floating-point `vec4`契約で、UINT/SINT input attachmentと
+  historyは後続境界とする。material subresourceはWP231bでsampled descriptorに対応したが、
+  local input attachmentへはlowerしない
 - 詳細は
   [`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
   を正とする

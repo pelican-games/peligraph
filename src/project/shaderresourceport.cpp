@@ -220,6 +220,30 @@ std::optional<ImageSubresourceRange> parseSubresource(
                 field.key() + "'");
         }
     }
+    auto mip_count_mode =
+        ImageSubresourceMipCountMode::fixed;
+    std::uint32_t mip_count = 1;
+    if (encoded.contains("mip_count") &&
+        encoded.at("mip_count").is_string()) {
+        const auto mode =
+            encoded.at("mip_count")
+                .get<std::string>();
+        if (mode != "remaining") {
+            throw std::runtime_error(
+                std::string{context} +
+                ".subresource.mip_count string must be "
+                "'remaining'");
+        }
+        mip_count_mode =
+            ImageSubresourceMipCountMode::
+                remaining;
+    } else {
+        mip_count =
+            parseSubresourceUint(
+                encoded, "mip_count", 1,
+                std::string{context} +
+                    ".subresource");
+    }
     ImageSubresourceRange result{
         .base_mip_level =
             parseSubresourceUint(
@@ -227,10 +251,7 @@ std::optional<ImageSubresourceRange> parseSubresource(
                 std::string{context} +
                     ".subresource"),
         .level_count =
-            parseSubresourceUint(
-                encoded, "mip_count", 1,
-                std::string{context} +
-                    ".subresource"),
+            mip_count,
         .base_array_layer =
             parseSubresourceUint(
                 encoded, "layer", 0,
@@ -241,26 +262,38 @@ std::optional<ImageSubresourceRange> parseSubresource(
                 encoded, "layer_count", 1,
                 std::string{context} +
                     ".subresource"),
+        .mip_count_mode =
+            mip_count_mode,
     };
-    if (result.level_count == 0 ||
+    if ((result.mip_count_mode ==
+             ImageSubresourceMipCountMode::
+                 fixed &&
+         result.level_count == 0) ||
         result.layer_count == 0) {
         throw std::runtime_error(
             std::string{context} +
             ".subresource counts must be positive");
     }
     const auto mip_end =
-        static_cast<std::uint64_t>(
-            result.base_mip_level) +
-        result.level_count;
+        result.mip_count_mode ==
+                ImageSubresourceMipCountMode::
+                    remaining
+            ? std::uint64_t{0}
+            : static_cast<std::uint64_t>(
+                  result.base_mip_level) +
+                  result.level_count;
     const auto layer_end =
         static_cast<std::uint64_t>(
             result.base_array_layer) +
         result.layer_count;
-    if (mip_end >
+    if ((result.mip_count_mode ==
+             ImageSubresourceMipCountMode::
+                 fixed &&
+         mip_end >
             std::uint64_t{
                 std::numeric_limits<
                     std::uint32_t>::max()} +
-                1u ||
+                1u) ||
         layer_end >
             std::uint64_t{
                 std::numeric_limits<

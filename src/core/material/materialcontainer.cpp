@@ -1264,7 +1264,10 @@ createMaterialResourceSampler(
     create_info.minFilter =
         create_info.magFilter;
     create_info.mipmapMode =
-        vk::SamplerMipmapMode::eNearest;
+        sampling.filter ==
+                ShaderResourcePortFilter::nearest
+            ? vk::SamplerMipmapMode::eNearest
+            : vk::SamplerMipmapMode::eLinear;
     create_info.addressModeU =
         materialResourceAddressMode(
             sampling.address_mode);
@@ -1273,7 +1276,7 @@ createMaterialResourceSampler(
     create_info.addressModeW =
         create_info.addressModeU;
     create_info.minLod = 0.0f;
-    create_info.maxLod = 0.0f;
+    create_info.maxLod = VK_LOD_CLAMP_NONE;
     return device.createSamplerUnique(
         create_info);
 }
@@ -3568,6 +3571,24 @@ static std::string makeScreenInputPassKey(const PassDefinition &pass) {
             << ":address="
             << static_cast<int>(
                    resource.port.sampling.address_mode);
+        if (resource.port.subresource) {
+            const auto &subresource =
+                *resource.port.subresource;
+            key << ":mip="
+                << subresource.base_mip_level
+                << ":mip_count=";
+            if (subresource.mip_count_mode ==
+                ImageSubresourceMipCountMode::
+                    remaining) {
+                key << "remaining";
+            } else {
+                key << subresource.level_count;
+            }
+            key << ":layer="
+                << subresource.base_array_layer
+                << ":layer_count="
+                << subresource.layer_count;
+        }
     }
     for (const auto view : pass.input_target_views) {
         key << ":view=" << static_cast<int>(view);
@@ -3680,6 +3701,26 @@ MaterialContainer::buildScreenInputDescriptor(
                 "material input attachment cannot read history: " +
                 resource.name);
         }
+        if (resource.isInputAttachment() &&
+            resource.subresource) {
+            throw std::runtime_error(
+                "material input attachment cannot select an image "
+                "subresource: " +
+                resource.name);
+        }
+        if (resource.isImage() &&
+            resource.subresource &&
+            !validImageSubresourceRange(
+                *resource.subresource,
+                rt_views.mipLevels(
+                    resource.target),
+                rt_views.arrayLayers(
+                    resource.target))) {
+            throw std::runtime_error(
+                "material image input has an out-of-range "
+                "subresource: " +
+                resource.name);
+        }
         if (resource.isBuffer() &&
             !GET_MODULE(FrameGraphResourceContainer)
                  .hasBuffer(resource.buffer)) {
@@ -3779,31 +3820,66 @@ MaterialContainer::buildScreenInputDescriptor(
                     writes.push_back(write);
                     continue;
                 }
-                const auto image_view =
+                const auto array_view =
                     resource.view_dimension ==
                             PassInputViewDimension::
                                 family_2d_array ||
-                        (resource.isInputAttachment() &&
-                         resource.view_dimension ==
-                             PassInputViewDimension::
-                                 layered_2d_array)
-                        ? rt_views
-                              .getLayeredImageViewForFrame(
-                                  resource.target,
-                                  resource.history,
-                                  parity)
-                    : resource.view_dimension ==
-                              PassInputViewDimension::
-                                  shared_2d
-                        ? rt_views.getImageViewForFrame(
-                              resource.target,
-                              resource.history, parity)
-                        : rt_views.getImageLayerViewForFrame(
-                              resource.target, variant,
-                              resource.history, parity);
+                    (resource.isInputAttachment() &&
+                     resource.view_dimension ==
+                         PassInputViewDimension::
+                             layered_2d_array);
+                vk::ImageView image_view;
+                if (resource.subresource) {
+                    auto subresource =
+                        *resource.subresource;
+                    if (!array_view &&
+                        resource.view_dimension !=
+                            PassInputViewDimension::
+                                shared_2d) {
+                        subresource
+                            .base_array_layer +=
+                            variant;
+                    }
+                    image_view =
+                        rt_views
+                            .getImageSubresourceViewForFrame(
+                                resource.target,
+                                subresource,
+                                array_view,
+                                resource.history,
+                                parity);
+                } else if (array_view) {
+                    image_view =
+                        rt_views
+                            .getLayeredImageViewForFrame(
+                                resource.target,
+                                resource.history,
+                                parity);
+                } else if (
+                    resource.view_dimension ==
+                    PassInputViewDimension::
+                        shared_2d) {
+                    image_view =
+                        rt_views
+                            .getImageViewForFrame(
+                                resource.target,
+                                resource.history,
+                                parity);
+                } else {
+                    image_view =
+                        rt_views
+                            .getImageLayerViewForFrame(
+                                resource.target,
+                                variant,
+                                resource.history,
+                                parity);
+                }
                 const auto sampler =
                     resource.isInputAttachment()
                         ? vk::Sampler{}
+                    : resource.material_resource
+                        ? materialResourceSampler(
+                              resource.sampling)
                     : resource.sampling.address_mode ==
                               ShaderResourcePortAddressMode::
                                   clamp_to_edge
@@ -4187,6 +4263,9 @@ MaterialContainer::ensureScreenInputDescriptor(
                         view_dimension,
                     .sampling =
                         binding->port.sampling,
+                    .subresource =
+                        binding->port
+                            .subresource,
                     .material_resource =
                         true,
                 });

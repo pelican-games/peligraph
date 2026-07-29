@@ -838,12 +838,6 @@ void parseMaterialPassResourcesFromJson(
                 "' must be a resource string or object: " +
                 pass_def.name);
         }
-        if (entry.value().contains("subresource")) {
-            throw std::runtime_error(
-                "Material resource '" + entry.key() +
-                "' does not yet support image subresource views: " +
-                pass_def.name);
-        }
         auto object = entry.value();
         object.erase("footprint");
         sanitized[entry.key()] = std::move(object);
@@ -900,6 +894,15 @@ void parseMaterialPassResourcesFromJson(
             throw std::runtime_error(
                 context +
                 " @history derives temporal footprint and cannot override it");
+        }
+        if (port.subresource &&
+            footprint.kind ==
+                LogicalReadFootprintKind::
+                    same_pixel) {
+            throw std::runtime_error(
+                context +
+                " image subresource views cannot use same_pixel "
+                "local-read footprint");
         }
 
         if (reference.history &&

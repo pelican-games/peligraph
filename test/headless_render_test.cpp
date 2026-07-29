@@ -277,6 +277,24 @@ void main() {
 )glsl";
 }
 
+const char *materialResourceMipComputeShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(
+            coordinate, pelican_size_tint_mip()))) {
+        return;
+    }
+    pelican_store_tint_mip(
+        coordinate, vec4(0.01, 1.0, 0.01, 1.0));
+}
+)glsl";
+}
+
 const char *gpuArenaBufferFragmentShader() {
     return R"glsl(
 #version 450
@@ -808,7 +826,8 @@ nlohmann::json materialResourceRenderingConfig() {
       "extent_scale": 1.0,
       "format": "R8G8B8A8_UNORM",
       "format_class": "data",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"],
+      "mip_levels": 2
     },
     {
       "name": "material_lit",
@@ -865,6 +884,10 @@ nlohmann::json materialResourceRenderingConfig() {
                 "filter": "nearest",
                 "address": "clamp_to_edge"
               },
+              "subresource": {
+                "mip": 0,
+                "mip_count": "remaining"
+              },
               "footprint": "arbitrary"
             }
           },
@@ -897,6 +920,28 @@ nlohmann::json materialResourceRenderingConfig() {
     }
   ],
   "compute_tasks": [
+    {
+      "name": "material_tint_mip",
+      "shader": "shaders/material_resource_mip",
+      "writes": ["material_tint"],
+      "after": ["material_tint_source"],
+      "before": ["material_geometry"],
+      "resource_ports": {
+        "tint_mip": {
+          "resource": "material_tint",
+          "access": "storage",
+          "subresource": {
+            "mip": 1
+          }
+        }
+      },
+      "dispatch": {
+        "groups_from": {
+          "port": "tint_mip"
+        }
+      },
+      "schedule": "per_frame"
+    },
     {
       "name": "material_deform",
       "shader": "shaders/material_resource_deform",
@@ -1785,6 +1830,10 @@ TEST_CASE(
             materialResourceTintFragmentShader());
         writeTextFile(
             temp_dir / "shaders" /
+                "material_resource_mip.comp",
+            materialResourceMipComputeShader());
+        writeTextFile(
+            temp_dir / "shaders" /
                 "material_resource_present.frag",
             gpuArenaCopyFragmentShader());
         writeTextFile(
@@ -1806,7 +1855,9 @@ TEST_CASE(
             "}\n"
             "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
             "inout PelicanSurfaceV1 surface) {\n"
-            "    surface.base_color = pelican_sample_simulation_color(input_data.uv);\n"
+            "    uint last_mip = pelican_mip_count_simulation_color() - 1u;\n"
+            "    surface.base_color = pelican_sample_lod_simulation_color(\n"
+            "        input_data.uv, float(last_mip));\n"
             "    surface.roughness = 1.0;\n"
             "}\n"
             "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
@@ -1990,16 +2041,45 @@ TEST_CASE(
             GET_MODULE(RenderTargetContainer)
                 .getRenderTargetIdByName(
                     "material_tint");
+        const ImageSubresourceRange
+            full_tint_mips{
+                .mip_count_mode =
+                    ImageSubresourceMipCountMode::
+                        remaining,
+            };
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(tint)
+                .mip_levels == 2);
         const auto initial_tint_view =
             GET_MODULE(RenderTargetContainer)
                 .getImageView(tint);
+        const auto initial_tint_mip_view =
+            GET_MODULE(RenderTargetContainer)
+                .getImageSubresourceView(
+                    tint, full_tint_mips,
+                    false);
+        REQUIRE(
+            initial_tint_mip_view !=
+            initial_tint_view);
         REQUIRE(
             materials
                 .boundScreenInputImageViewsForTesting(
                     material_id,
                     geometry_pass->definition) ==
             std::vector<vk::ImageView>{
-                initial_tint_view});
+                initial_tint_mip_view});
+        const auto tint_mip_task =
+            GET_MODULE(ComputeTaskContainer)
+                .getComputeTaskIdByName(
+                    "material_tint_mip");
+        REQUIRE(tint_mip_task.value >= 0);
+        REQUIRE(
+            GET_MODULE(ComputeTaskContainer)
+                .dispatchGroupsForTesting(
+                    tint_mip_task) ==
+            (std::array<std::uint32_t, 3>{
+                2, 2, 1}));
 
         auto mismatched_view_pass =
             geometry_pass->definition;
@@ -2063,8 +2143,10 @@ TEST_CASE(
                     geometry_pass->definition) ==
             std::vector<vk::ImageView>{
                 GET_MODULE(RenderTargetContainer)
-                    .getImageView(
-                        recreated_tint)});
+                    .getImageSubresourceView(
+                        recreated_tint,
+                        full_tint_mips,
+                        false)});
 
         auto &geometry =
             GET_MODULE(VertBufContainer);
@@ -2103,27 +2185,27 @@ TEST_CASE(
         REQUIRE(
             pixels.size() ==
             32u * 32u * 4u);
-        std::size_t red_pixels = 0;
-        std::size_t red_x_sum = 0;
+        std::size_t green_pixels = 0;
+        std::size_t green_x_sum = 0;
         for (std::size_t pixel = 0;
              pixel < 32u * 32u; ++pixel) {
             const auto offset = pixel * 4u;
-            if (pixels[offset] >
-                    pixels[offset + 1] + 40 &&
-                pixels[offset] >
+            if (pixels[offset + 1] >
+                    pixels[offset] + 40 &&
+                pixels[offset + 1] >
                     pixels[offset + 2] + 40) {
-                ++red_pixels;
-                red_x_sum += pixel % 32u;
+                ++green_pixels;
+                green_x_sum += pixel % 32u;
             }
         }
-        REQUIRE(red_pixels > 0);
-        const auto red_centroid_x =
-            static_cast<double>(red_x_sum) /
-            static_cast<double>(red_pixels);
+        REQUIRE(green_pixels > 0);
+        const auto green_centroid_x =
+            static_cast<double>(green_x_sum) /
+            static_cast<double>(green_pixels);
         INFO(
-            "displaced red centroid x = " <<
-            red_centroid_x);
-        REQUIRE(red_centroid_x > 18.0);
+            "displaced green centroid x = " <<
+            green_centroid_x);
+        REQUIRE(green_centroid_x > 18.0);
 
         const auto resized_binding_revision =
             materials
@@ -2215,8 +2297,10 @@ TEST_CASE(
                         ->definition) ==
             std::vector<vk::ImageView>{
                 GET_MODULE(RenderTargetContainer)
-                    .getImageView(
-                        reloaded_tint)});
+                    .getImageSubresourceView(
+                        reloaded_tint,
+                        full_tint_mips,
+                        false)});
 
         engine_time.advance();
         renderer.render();

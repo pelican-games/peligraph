@@ -106,19 +106,21 @@ reflection は port の set、binding、descriptor kind、count、生成変数�
 ### runtime RT subresource port(WP209b)
 
 2D runtime render targetは`mip_levels: <positive integer>|"full"`と
-`layers: <positive integer>`を持てる。fullscreen/computeのimage portはoptional
-`subresource`でexact view rangeを選ぶ。
+`layers: <positive integer>`を持てる。fullscreen/compute/materialのsampled image portは
+optional `subresource`でview rangeを選ぶ。
 
 ```json
 "subresource": {
   "mip": 2,
-  "mip_count": 1,
+  "mip_count": "remaining",
   "layer": 1,
   "layer_count": 1
 }
 ```
 
-省略値は`mip=0`、`mip_count=1`、`layer=0`、`layer_count=1`。明示viewでは
+省略値は`mip=0`、`mip_count=1`、`layer=0`、`layer_count=1`。`mip_count`は正整数または
+選択base mipから現在のtarget最終mipまでを表す`"remaining"`を受理する。後者はtarget
+resize/recreate時に新しいmip数へ再解決される。明示viewでは
 shaderから見たLOD 0が`mip`で選んだbase mipに対応し、`pelican_size_<port>()`も
 そのviewのサイズを返す。`shared_2d`の2D viewはlayer count 1、storage imageは
 mip count 1が必要である。`per_view`がphysical layered viewへloweringされた場合だけ
@@ -129,8 +131,9 @@ logical view数へ展開するか、logical view数と同じ連続rangeを指定
 
 computeは同じlogical imageを複数portへ割り当てられるが、各portに明示range/accessが必要で、
 storageを含むoverlapは拒否する。fullscreenはinput順がdescriptor bindingのauthorityなので、
-1 input resourceにつき1 portである。material/geometry portはまだbase viewだけをbindするため、
-`material_resources`の`subresource`は受理せず名前付きエラーにする。
+1 input resourceにつき1 portである。material/geometryのsampled portも同じrangeをbindし、
+generated `pelican_sample_lod_*` / `pelican_mip_count_*`で参照できる。materialのsubresource
+portはsampler descriptor専用で、`same_pixel` local read/input attachmentへはlowerしない。
 
 layout/hazard trackingは現時点ではresource単位である。互いに素なrangeでもwhole imageを
 保守的に遷移し、subresource並列化は行わない。

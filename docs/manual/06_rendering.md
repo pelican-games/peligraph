@@ -79,7 +79,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `output` | ✔ | — | `color`(null / 名前 / 名前配列)と `depth`(null / 名前)の**両キー必須**。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
 | `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
-| `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、read footprintから依存とbarrierを導出する。image subresourceは現状未対応で明示reject |
+| `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、mip/layer subresource、read footprintから依存とbarrierを導出する |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
 | `clear_color` | 任意 | `[0,0,0,1]` | 4 要素固定 |
@@ -374,9 +374,13 @@ typed buffer未実装時や特殊descriptor用のescape hatchとして維持さ�
 }
 ```
 
-4 fieldの省略値は0/1/0/1です。同じimageを複数portへ割り当てる場合は、各portに
+4 fieldの省略値は0/1/0/1です。sampled viewの`mip_count`は正整数に加えて
+`"remaining"`を指定でき、base mipから現在のtarget最終mipまでを公開します。resizeで
+`mip_levels: "full"`の実段数が変わっても再解決されます。同じimageを複数portへ割り当てる場合は、各portに
 明示rangeとaccessが必要です。storageを含むrange同士のoverlap、範囲外、bufferへの
 subresource、2D viewの複数layer、storage viewの複数mipは起動時エラーです。
+material sampled portでも同じ指定を使えますが、subresource viewは`same_pixel` local readへ
+変換されずsamplerとして実行されます。
 依存とlayout trackerは現在resource単位なので、rangeが離れていても実行順やbarrierを
 勝手に緩和せず、image全体を保守的に遷移します。
 

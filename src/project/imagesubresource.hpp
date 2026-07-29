@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 
@@ -65,13 +66,21 @@ inline std::uint32_t resolveImageMipLevels(
     return authored.count;
 }
 
-// A shader-visible image view. Counts are explicit so validation never needs
-// Vulkan's remaining-mips/remaining-layers sentinels.
+enum class ImageSubresourceMipCountMode : std::uint8_t {
+    fixed,
+    remaining,
+};
+
+// A shader-visible image view. remaining is an authored/runtime-relative
+// count, resolved to an explicit count before a Vulkan image view is cached
+// or created. Array-layer counts remain explicit.
 struct ImageSubresourceRange {
     std::uint32_t base_mip_level = 0;
     std::uint32_t level_count = 1;
     std::uint32_t base_array_layer = 0;
     std::uint32_t layer_count = 1;
+    ImageSubresourceMipCountMode mip_count_mode =
+        ImageSubresourceMipCountMode::fixed;
 
     bool operator==(
         const ImageSubresourceRange &) const = default;
@@ -105,6 +114,11 @@ struct ImageSubresourceViewKey {
             return range.layer_count <
                    other.range.layer_count;
         }
+        if (range.mip_count_mode !=
+            other.range.mip_count_mode) {
+            return range.mip_count_mode <
+                   other.range.mip_count_mode;
+        }
         return array_view < other.array_view;
     }
 };
@@ -113,27 +127,63 @@ inline bool validImageSubresourceRange(
     const ImageSubresourceRange &range,
     std::uint32_t mip_levels,
     std::uint32_t array_layers) {
-    return range.level_count != 0 &&
-           range.layer_count != 0 &&
-           range.base_mip_level < mip_levels &&
-           range.level_count <=
-               mip_levels - range.base_mip_level &&
+    const auto valid_mips =
+        range.base_mip_level < mip_levels &&
+        (range.mip_count_mode ==
+                 ImageSubresourceMipCountMode::
+                     remaining ||
+         (range.level_count != 0 &&
+          range.level_count <=
+              mip_levels -
+                  range.base_mip_level));
+    return range.layer_count != 0 &&
+           valid_mips &&
            range.base_array_layer < array_layers &&
            range.layer_count <=
                array_layers - range.base_array_layer;
+}
+
+inline ImageSubresourceRange
+resolveImageSubresourceRange(
+    ImageSubresourceRange range,
+    std::uint32_t mip_levels,
+    std::uint32_t array_layers) {
+    if (!validImageSubresourceRange(
+            range, mip_levels, array_layers)) {
+        throw std::runtime_error(
+            "image subresource range is outside the image");
+    }
+    if (range.mip_count_mode ==
+        ImageSubresourceMipCountMode::remaining) {
+        range.level_count =
+            mip_levels - range.base_mip_level;
+        range.mip_count_mode =
+            ImageSubresourceMipCountMode::fixed;
+    }
+    return range;
 }
 
 inline bool imageSubresourceRangesOverlap(
     const ImageSubresourceRange &left,
     const ImageSubresourceRange &right) {
     const auto left_mip_end =
-        static_cast<std::uint64_t>(
-            left.base_mip_level) +
-        left.level_count;
+        left.mip_count_mode ==
+                ImageSubresourceMipCountMode::
+                    remaining
+            ? std::numeric_limits<
+                  std::uint64_t>::max()
+            : static_cast<std::uint64_t>(
+                  left.base_mip_level) +
+                  left.level_count;
     const auto right_mip_end =
-        static_cast<std::uint64_t>(
-            right.base_mip_level) +
-        right.level_count;
+        right.mip_count_mode ==
+                ImageSubresourceMipCountMode::
+                    remaining
+            ? std::numeric_limits<
+                  std::uint64_t>::max()
+            : static_cast<std::uint64_t>(
+                  right.base_mip_level) +
+                  right.level_count;
     const auto mip_overlap =
         left.base_mip_level < right_mip_end &&
         right.base_mip_level < left_mip_end;

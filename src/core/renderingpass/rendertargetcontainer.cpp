@@ -73,12 +73,10 @@ static vk::UniqueImageView createImageView(
     vk::Device device, const ImageWrapper &image,
     vk::ImageViewType view_type,
     ImageSubresourceRange subresource) {
-    if (!validImageSubresourceRange(
+    subresource =
+        resolveImageSubresourceRange(
             subresource, image.mip_levels,
-            image.array_layers)) {
-        throw std::runtime_error(
-            "render target image view has an invalid subresource range");
-    }
+            image.array_layers);
     if (view_type == vk::ImageViewType::e2D &&
         subresource.layer_count != 1) {
         throw std::runtime_error(
@@ -990,6 +988,13 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
             ? ((frame_index & 1u) ^
                (history_read ? 1u : 0u))
             : 0u;
+    subresource =
+        resolveImageSubresourceRange(
+            subresource,
+            rt.resources
+                ->images[surface].mip_levels,
+            rt.resources
+                ->images[surface].array_layers);
     const ImageSubresourceViewKey key{
         .range = subresource,
         .array_view = array_view,

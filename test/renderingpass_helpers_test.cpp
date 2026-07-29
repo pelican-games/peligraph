@@ -2307,22 +2307,66 @@ TEST_CASE(
     PassDefinition subresource;
     subresource.name = "subresource";
     subresource.pass_info = MaterialPassInfo{};
+    parseMaterialPassResourcesFromJson(
+        subresource,
+        nlohmann::json{
+            {"material_resources",
+             {{"pyramid",
+               {
+                   {"resource",
+                    "simulation_color"},
+                   {"access", "sampled"},
+                   {"subresource",
+                    {
+                        {"mip", 1},
+                        {"mip_count",
+                         "remaining"},
+                    }},
+               }}}}},
+        names, buffers);
+    REQUIRE(
+        subresource.materialInfo()
+            .material_resources.size() == 1);
+    const auto selected =
+        subresource.materialInfo()
+            .material_resources.front()
+            .port.subresource;
+    REQUIRE(selected.has_value());
+    REQUIRE(selected->base_mip_level == 1);
+    REQUIRE(
+        selected->mip_count_mode ==
+        ImageSubresourceMipCountMode::
+            remaining);
+    const auto resolved_selection =
+        resolveImageSubresourceRange(
+            *selected, 5, 1);
+    REQUIRE(
+        resolved_selection.base_mip_level ==
+        1);
+    REQUIRE(
+        resolved_selection.level_count == 4);
+    REQUIRE(
+        resolved_selection.mip_count_mode ==
+        ImageSubresourceMipCountMode::fixed);
+
+    auto local_subresource =
+        nlohmann::json{
+            {"material_resources",
+             {{"pyramid",
+               {
+                   {"resource",
+                    "simulation_color"},
+                   {"access", "sampled"},
+                   {"subresource",
+                    {{"mip", 1}}},
+                   {"footprint", "same_pixel"},
+               }}}}};
     REQUIRE_THROWS_WITH(
         parseMaterialPassResourcesFromJson(
-            subresource,
-            nlohmann::json{
-                {"material_resources",
-                 {{"pyramid",
-                   {
-                       {"resource",
-                        "simulation_color"},
-                       {"access", "sampled"},
-                       {"subresource",
-                        {{"mip", 1}}},
-                   }}}}},
+            subresource, local_subresource,
             names, buffers),
         Catch::Matchers::ContainsSubstring(
-            "does not yet support image subresource views"));
+            "cannot use same_pixel"));
 
     PassDefinition missing;
     missing.name = "missing";

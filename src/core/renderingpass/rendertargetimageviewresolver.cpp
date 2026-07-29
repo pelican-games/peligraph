@@ -49,4 +49,9 @@ std::uint32_t RenderTargetImageViewResolver::arrayLayers(
     return rt_container.getMetadata(id).array_layers;
 }
 
+std::uint32_t RenderTargetImageViewResolver::mipLevels(
+    GlobalRenderTargetId id) const {
+    return rt_container.getMetadata(id).mip_levels;
+}
+
 } // namespace Pelican

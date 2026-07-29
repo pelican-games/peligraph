@@ -698,8 +698,12 @@ makeComputeResourceInterface(
                         "') has an out-of-range image subresource");
                 }
                 if (!sampled &&
-                    resolved_port.subresource
-                            ->level_count != 1) {
+                    (resolved_port.subresource
+                             ->mip_count_mode !=
+                         ImageSubresourceMipCountMode::
+                             fixed ||
+                     resolved_port.subresource
+                             ->level_count != 1)) {
                     throw std::runtime_error(
                         "Shader resource port '" +
                         port.name + "' (resource '" +

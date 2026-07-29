@@ -28,6 +28,8 @@ class RenderTargetImageViewResolver {
         std::uint32_t frame_index) const;
     std::uint32_t arrayLayers(
         GlobalRenderTargetId id) const;
+    std::uint32_t mipLevels(
+        GlobalRenderTargetId id) const;
 };
 
 } // namespace Pelican
