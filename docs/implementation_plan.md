@@ -878,6 +878,22 @@ light-space transform relationをtyped metadataとして保持し、同梱featur
 feature-off shader byte、flat/preview/XR view contract、resize/hot reload/rollback、
 全894 CTestとvalidation error 0を確認済みである。
 
+WP223でCamera/OpenXRのruntime入力をstable family/view ID付き`RenderViewFamily`へ統一し、
+projection modifierとtemporal matrix履歴をprovider identityへ移した。WP224で
+pass/compute/frame graph/logical IR/FramePlan/Vulkan executionを貫く`view_family`
+relation、family cardinality scheduler、`RenderViewFamilies`、family別FrameUBO slotを
+実行経路へ接続した。標準directional shadowは
+`$shadow/directional/$cascade/0`として`$main`から独立して一回だけ実行し、shadow drawと
+LightUBOが同じfamily-selected行列を使う。callerは同名familyを渡して標準providerを
+置換できる。flat/XR temporal、mixed multiview、shadow画像、全renderer traceを回帰した。
+
+次のViewFamily縦切りはWP225とする。secondary familyを複数viewへ一般化し、CSMを
+最初のdogfoodにする。受け入れ順は、(1) stable `$cascade/N` providerとsplit policy、
+(2) family固有shadow extentとarray-layer target、(3) secondary sequential schedule、
+(4) cascade matrix/splitのlight ABI、(5) family view別culling、(6) flatとXRで同じ
+cascade回数・画像を得る実Vulkan goldenである。point/spot cube shadowとplanar
+reflectionはこの一般化を再利用するが、WP225へ混ぜない。
+
 ## 3. トラック現況(WP 化待ちを含む)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの

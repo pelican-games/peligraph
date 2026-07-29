@@ -325,32 +325,39 @@ Renderer::render()                    … flat 用アダプタ(#L1417)
   -> Cameraから RenderViewFamily($main/$mono) を生成
   -> renderLogicalFrame(target, view_family)
 
-Renderer::renderLogicalFrame(target, view_family)   (#L1238)
+Renderer::renderLogicalFrame(target, view_families)   (#L1238)
   once: DeletionQueue::beginFrame
+  once: compiled nodeが要求するnamed familyを解決
+        (標準 $shadow/directional はLightContainer providerを補完)
   once: family/view identity・実行順変化 / timeSetRevision /
         camera discontinuityRevision の検知で temporal reset
-  once: FrameResources.beginLogicalFrame(view_count)
+  once: FrameResources.beginLogicalFrame(main_view_count, all_family_view_count)
   once: shader reload publication consume → fullscreen input rebind
-  once: updateFrameLights(light_container)         … ライト setter の結果を GPU バッファへ
+  once: updateFrameLights(light_container, resolved families)
+        … shadow drawとLightUBOへ同じfamily-selected行列を渡す
   target.beginLogicalFrame(view_count)
-  once: family-level projection modifierを適用して全viewのsnapshotを構築
-  for each view:
+  once: family-level projection modifierを適用して全familyのsnapshot/UBO slotを構築
+  for each $main view:
     target.beginView(view_index)     … FrameRenderContext(in_flight_frame_index 付き)
     view 0 のみ: resize 処理 + instance_container.triggerUpdate()
                  (object/skin/morph/material override の GPU 状態を凍結)
-    FrameResources.selectView(in_flight, view)   … FrameUBO slot = in_flight*view_count+view
-    executeRenderingPasses(…)                    … frame graph node 実行
+    executeRenderingPasses(…)
+      … invocationの view_family + view_index でFrameUBO/matrixを選択
+      … secondary single-view scopeはmain view 0で一回だけ実行
     XR variant の view 0 では mirror 中間コピーを記録
     target.endView(view_index)
   target.endLogicalFrame()
-  once: RT history flip、instance temporal history advance、snapshot commit
+  once: RT history flip、instance temporal history advance、family別snapshot commit
 ```
 
 providerはtarget acquisitionより前にnon-jitteredな
-[`RenderViewFamily`](../../src/core/renderer/viewfamily.hpp)を完成させます。CameraとOpenXRは
-別providerですが、Rendererへ入った後のcardinality検証、projection modifier、
-temporal snapshot処理は共通です。`view_id`はframe間のidentityで、配列位置は当該frameの
-実行順にすぎません。
+[`RenderViewFamilies`](../../src/core/renderer/viewfamily.hpp)を完成させます。最低限
+`$main`が必要で、従来の単一`RenderViewFamily` overloadはこれを自動で包みます。
+CameraとOpenXRは別providerですが、Rendererへ入った後のcardinality検証、
+projection modifier、temporal snapshot処理は共通です。compiled graphが
+`$shadow/directional`を要求し、callerが同名familyを渡さなかった場合だけ標準
+LightContainer providerを補完します。callerが同名familyを渡せば行列を置換できます。
+`view_id`はframe間のidentityで、配列位置は当該frameの実行順にすぎません。
 
 logical frame には不変条件があり、破ると例外になります([renderer.cpp#L1322-L1337](../../src/core/vkcore/renderer.cpp#L1322))。
 
@@ -359,12 +366,14 @@ logical frame には不変条件があり、破ると例外になります([rend
 | `Renderer logical frame requires at least one view` | `view_count == 0`(#L1241) |
 | `render view family ... contains a view without a stable view_id` | provider がview identityを供給しない |
 | `render view family ... contains duplicate view_id` | 同じfamily内のidentityが重複 |
+| `compiled frame graph node ... requires unavailable view family` | pass/taskの`view_family`に対応するproviderが無い |
+| `secondary view family ... currently requires one single-view scope` | secondary familyに複数viewまたはmultiview/sequential scopeを要求した |
 | `Renderer logical-frame views must share one in-flight frame index` | 全 view で in-flight index が同一(#L1324) |
 | `Renderer logical-frame v1 requires equal per-view extents` | 全 view で extent が同一(#L1329) |
 | `Renderer logical-frame target format does not match the compiled flat graph` | target color format が compile 済み graph と一致(#L1335) |
 
 描画先の抽象は [`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp)(`beginLogicalFrame` / `beginView` / `endView` / `endLogicalFrame`)です。view入力は
-[`RenderViewParameters` / `RenderViewFamily`](../../src/core/renderer/viewfamily.hpp)が運びます。
+[`RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies`](../../src/core/renderer/viewfamily.hpp)が運びます。
 `first_person_view`フラグはXR eyeでVRM firstPersonジオメトリを切り替えるためのものです。
 実装はflatが`FlatLogicalFrameTarget`(renderer.cpp内部、`RenderTarget`を包む)、XRが
 [`OpenXr::XrCompositionTarget`](../../src/core/openxr/openxrcompositiontarget.hpp)です。

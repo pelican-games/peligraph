@@ -20,6 +20,10 @@ WP221ではflat/preview/XRの既存compile入口を一つの内部`RenderCompile
 WP223ではruntime view入力を`RenderViewFamily`へ統一し、Cameraのmono viewとOpenXRの
 stereo viewを同じprovider境界から渡す。projection jitterはfamily modifierとして一度だけ
 sampleし、view snapshot履歴は`(graph variant, family_id, view_id)`相当の安定identityで保持する。
+WP224ではpass/taskの`view_family` relationをlogical IRからVulkan physical scopeまで運び、
+`RenderViewFamilies`からfamily別snapshot・FrameUBO slotを準備するmixed-family runtimeを
+接続した。標準directional shadowは`$shadow/directional/$cascade/0`を使い、`$main`の
+mono/stereo cardinalityと独立して一回だけ実行する。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -552,9 +556,22 @@ Camera / OpenXR / shadow policy / user provider
 - shadow、cube capture、previewの標準providerはjitter/historyを既定で要求しない。
   passがどのfamilyを読むかはlogical relationで表し、CameraやVulkan backendの分岐にしない。
 
-WP223時点のruntime graph入力は一つの`$main` familyである。次の縦切りはdirectional
-shadowをsecondary familyとして生成し、pass-family relationとCSMの安定cascade IDを
-compilerへ追加する。これがG6bの残りであり、単にLightUBOの行列配列へ増設しない。
+WP224でruntime graph入力は`RenderViewFamilies`になった。pass、compute task、
+frame-graph node、logical IR、FramePlan、Vulkan execution nodeが同じ`view_family` IDを
+保持し、異なるfamilyのnodeは同じphysical rendering scopeへfusionしない。schedulerは
+familyごとのcardinalityを受け取り、sequential targetではsecondary familyをmain view 0で
+一回だけ、view-family targetでは同じcommand context内で一回だけ実行する。
+
+標準directional shadow passは`$shadow/directional`を明示し、LightContainerが
+`$cascade/0`の非jitter viewを供給する。project/runtimeが同じIDのfamilyを明示すれば
+builtin providerを置換でき、shadow drawのpush constantとstandard lighting用LightUBOは
+同じfamily-selected view-projectionを使う。familyごとのtemporal matrix履歴と
+in-flight FrameUBO slotは分離する。
+
+現時点のsecondary familyはsingle-view scopeだけをproduction runtimeで受理する。
+CSMの複数cascade、point shadowのcube face、reflection/capture固有extent、
+family別draw culling/sort、secondary multiviewは後続である。したがってG6bは
+directional mono縦切りまで部分解消であり、単にLightUBOの行列配列へ戻して拡張しない。
 
 ## 4. scene、material、light の contract
 
@@ -1217,6 +1234,13 @@ multiviewではplannerまたはruntime compileが名前付きで拒否する。
 
 synthetic Vulkan fixtureではruntime pass compilation、layered descriptor、2-view一回描画を
 通し、sequential referenceと各layerがbyte一致する。
+
+WP224ではこのschedulerへnamed family cardinalityを追加した。`$main`は従来どおり
+target planのview countと一致しなければならず、secondary familyは現在1-view
+`single_view` scopeとしてloweringされる。Rendererはfamilyごとのsnapshot/UBOを先に準備し、
+node invocationの`view_family + view_index`でdescriptor slotとview-projectionを選ぶ。
+execution traceはnon-main nodeだけ`view_family`を明示するため、既存traceのノイズを増やさず
+mixed-family実行を監査できる。
 
 WP203c で physical plan の external depth export を実 resource と OpenXR composition
 target へ接続した。OpenXR は一個の 2-layer color array swapchain を使い、sequential
