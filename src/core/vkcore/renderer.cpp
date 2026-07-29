@@ -702,6 +702,26 @@ void updateFrameLights(
     }
 }
 
+void prepareDirectionalShadowDraws(
+    PolygonInstanceContainer &instances,
+    const RenderViewFamilies &view_families) {
+    std::vector<glm::mat4> view_projections;
+    if (const auto *shadow_family =
+            view_families.find(
+                directionalShadowRenderViewFamilyId);
+        shadow_family != nullptr) {
+        view_projections.reserve(
+            shadow_family->views.size());
+        for (const auto &view :
+             shadow_family->views) {
+            view_projections.push_back(
+                view.projection * view.view);
+        }
+    }
+    instances.prepareDirectionalShadowDraws(
+        view_projections);
+}
+
 void updateFrameDrawCandidates(
     const PolygonInstanceContainer
         &instance_container,
@@ -2398,6 +2418,13 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                                 mainRenderViewFamilyId
                         ? state_view
                         : 0u;
+                material_renderer_dependencies
+                    .directional_shadow_view_index =
+                    invocation.view_family ==
+                            directionalShadowRenderViewFamilyId
+                        ? std::optional{
+                              state_view}
+                        : std::nullopt;
                 pass_dispatch_dependencies
                     .view_projection =
                     snapshot
@@ -4162,6 +4189,9 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+        prepareDirectionalShadowDraws(
+            modules.instance_container,
+            resolved_view_families);
         updateFrameDrawCandidates(
             modules.instance_container,
             modules.frame_graph_resources);
@@ -4298,6 +4328,9 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+            prepareDirectionalShadowDraws(
+                modules.instance_container,
+                resolved_view_families);
             updateFrameDrawCandidates(
                 modules.instance_container,
                 modules.frame_graph_resources);

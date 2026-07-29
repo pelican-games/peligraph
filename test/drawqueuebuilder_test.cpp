@@ -721,6 +721,42 @@ TEST_CASE("RPE5 bounds use indexed vertices and current deformation envelopes",
         depth_provider));
 }
 
+TEST_CASE("zero-to-one clip frustum culling is conservative at AABB boundaries",
+          "[renderer][draw-queue][bounds][frustum]") {
+    const glm::mat4 identity{1.0F};
+    CHECK(intersectsZeroToOneClipFrustum(
+        DrawWorldBounds{{-0.5F, -0.5F, 0.1F}, {0.5F, 0.5F, 0.9F}},
+        identity));
+    CHECK(intersectsZeroToOneClipFrustum(
+        DrawWorldBounds{{0.9F, -0.25F, 0.25F}, {1.1F, 0.25F, 0.75F}},
+        identity));
+
+    CHECK_FALSE(intersectsZeroToOneClipFrustum(
+        DrawWorldBounds{{1.01F, -0.25F, 0.25F}, {2.0F, 0.25F, 0.75F}},
+        identity));
+    CHECK_FALSE(intersectsZeroToOneClipFrustum(
+        DrawWorldBounds{{-0.25F, -0.25F, -2.0F},
+                        {0.25F, 0.25F, -0.01F}},
+        identity));
+    CHECK_FALSE(intersectsZeroToOneClipFrustum(
+        DrawWorldBounds{{-0.25F, -0.25F, 1.01F},
+                        {0.25F, 0.25F, 2.0F}},
+        identity));
+
+    const DrawWorldBounds invalid_bounds{
+        {0.0F, 0.0F, 0.0F}, {-1.0F, 1.0F, 1.0F}};
+    CHECK_THROWS_AS(
+        intersectsZeroToOneClipFrustum(invalid_bounds, identity),
+        std::invalid_argument);
+    auto invalid_matrix = identity;
+    invalid_matrix[2][1] = std::numeric_limits<float>::infinity();
+    CHECK_THROWS_AS(
+        intersectsZeroToOneClipFrustum(
+            DrawWorldBounds{{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}},
+            invalid_matrix),
+        std::invalid_argument);
+}
+
 TEST_CASE("RPE5 phase queues preserve opaque batching and sort transparent back to front",
           "[renderer][draw-queue][transparent][wp184]") {
     const std::vector input{

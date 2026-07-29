@@ -3,6 +3,7 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
+#include "../../project/viewfamilyrelation.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -33,6 +34,17 @@ static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
                                vk::BufferUsageFlagBits::eTransferDst,
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+}
+
+static BufferWrapper createPackedIndirectBuf(
+    VulkanManageCore &vkcore, size_t num) {
+    return vkcore.allocBuf(
+        sizeof(vk::DrawIndexedIndirectCommand) * num,
+        vk::BufferUsageFlagBits::eIndirectBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc |
+            vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferDevice,
+        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
 static BufferWrapper createModelInstanceDataBuf(VulkanManageCore &vkcore, size_t num) {
@@ -170,6 +182,12 @@ PolygonInstanceContainer::PolygonInstanceContainer()
     : indirect_buf{
           createIndirectBuf(GET_MODULE(VulkanManageCore),
                             maxRenderCommands * maxDrawSortViews),
+      },
+      directional_shadow_indirect_buf{
+          createPackedIndirectBuf(
+              GET_MODULE(VulkanManageCore),
+              maxRenderCommands *
+                  maximumDirectionalShadowCascades),
       },
       model_data_buffer{
           createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
@@ -563,6 +581,8 @@ void PolygonInstanceContainer::triggerUpdate(
     const DrawQueueFramePlan &frame_plan) {
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
+    directional_shadow_draw_calls.clear();
+    directional_shadow_visible_draw_counts.clear();
 
     if (frame_plan.opaque_provider.empty() ||
         frame_plan.transparent_provider.empty()) {
@@ -1441,6 +1461,160 @@ glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
+
+void PolygonInstanceContainer::prepareDirectionalShadowDraws(
+    std::span<const glm::mat4> view_projections) {
+    directional_shadow_draw_calls.clear();
+    directional_shadow_visible_draw_counts.clear();
+    if (view_projections.empty()) {
+        return;
+    }
+    if (view_projections.size() >
+        maximumDirectionalShadowCascades) {
+        throw std::invalid_argument(
+            "directional shadow draw preparation exceeds the cascade ABI");
+    }
+
+    const auto candidates =
+        sceneDrawCandidatesForFrameGraph();
+    const auto &base_ranges =
+        getDrawCalls(false, std::nullopt, 0);
+    directional_shadow_draw_calls.resize(
+        view_projections.size());
+    directional_shadow_visible_draw_counts.assign(
+        view_projections.size(), 0);
+
+    for (std::size_t view_index = 0;
+         view_index < view_projections.size();
+         ++view_index) {
+        const auto &view_projection =
+            view_projections[view_index];
+        for (glm::length_t column = 0;
+             column < 4; ++column) {
+            for (glm::length_t row = 0;
+                 row < 4; ++row) {
+                if (!std::isfinite(
+                        view_projection[column][row])) {
+                    throw std::invalid_argument(
+                        "directional shadow view projection must be finite");
+                }
+            }
+        }
+
+        std::vector<vk::DrawIndexedIndirectCommand>
+            packed_commands;
+        packed_commands.reserve(candidates.commands.size());
+        auto &packed_ranges =
+            directional_shadow_draw_calls[view_index];
+        const auto view_command_base =
+            view_index * maxRenderCommands;
+
+        for (const auto &base_range : base_ranges) {
+            if (base_range.stride !=
+                    sizeof(RenderCommand) ||
+                base_range.offset %
+                        sizeof(RenderCommand) !=
+                    0) {
+                throw std::runtime_error(
+                    "directional shadow culling requires canonical draw ranges");
+            }
+            const auto source_begin =
+                static_cast<std::size_t>(
+                    base_range.offset /
+                    sizeof(RenderCommand));
+            if (source_begin >
+                    candidates.commands.size() ||
+                base_range.draw_count >
+                    candidates.commands.size() -
+                        source_begin ||
+                candidates.bounds.size() !=
+                    candidates.commands.size()) {
+                throw std::runtime_error(
+                    "directional shadow culling received misaligned draw candidates");
+            }
+
+            auto packed_range = base_range;
+            packed_range.offset =
+                static_cast<vk::DeviceSize>(
+                    view_command_base +
+                    packed_commands.size()) *
+                sizeof(vk::DrawIndexedIndirectCommand);
+            packed_range.draw_count = 0;
+            packed_range.stride =
+                sizeof(vk::DrawIndexedIndirectCommand);
+            packed_range.scene_segment_index =
+                noSceneDrawSegmentIndex;
+
+            for (std::uint32_t draw = 0;
+                 draw < base_range.draw_count;
+                 ++draw) {
+                const auto source_index =
+                    source_begin + draw;
+                const auto &packed_bounds =
+                    candidates.bounds[source_index];
+                bool visible =
+                    packed_bounds.minimum[3] != 1.0F;
+                if (!visible) {
+                    visible =
+                        intersectsZeroToOneClipFrustum(
+                            DrawWorldBounds{
+                                {packed_bounds.minimum[0],
+                                 packed_bounds.minimum[1],
+                                 packed_bounds.minimum[2]},
+                                {packed_bounds.maximum[0],
+                                 packed_bounds.maximum[1],
+                                 packed_bounds.maximum[2]}},
+                            view_projection);
+                }
+                if (!visible) {
+                    continue;
+                }
+                packed_commands.push_back(
+                    candidates.commands[source_index]);
+                ++packed_range.draw_count;
+            }
+            if (packed_range.draw_count != 0) {
+                packed_ranges.push_back(
+                    packed_range);
+            }
+        }
+
+        if (packed_commands.size() >
+            maxRenderCommands) {
+            throw std::runtime_error(
+                "directional shadow draw compaction exceeds its view region");
+        }
+        directional_shadow_visible_draw_counts[view_index] =
+            packed_commands.size();
+        if (!packed_commands.empty()) {
+            GET_MODULE(VulkanManageCore)
+                .writeBuf(
+                    directional_shadow_indirect_buf,
+                    packed_commands.data(),
+                    static_cast<vk::DeviceSize>(
+                        view_command_base) *
+                        sizeof(
+                            vk::DrawIndexedIndirectCommand),
+                    packed_commands.size() *
+                        sizeof(
+                            vk::DrawIndexedIndirectCommand));
+        }
+    }
+}
+
+const BufferWrapper &
+PolygonInstanceContainer::
+    directionalShadowIndirectBuffer() const {
+    return directional_shadow_indirect_buf;
+}
+
+const std::vector<DrawIndirectInfo> &
+PolygonInstanceContainer::directionalShadowDrawCalls(
+    std::uint32_t view_index) const {
+    return directional_shadow_draw_calls.at(
+        view_index);
+}
+
 SceneDrawCandidatesV1
 PolygonInstanceContainer::
     sceneDrawCandidatesForFrameGraph() const {

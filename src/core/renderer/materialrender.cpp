@@ -326,15 +326,31 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
-    const auto &draw_calls = instance_container.getDrawCalls(
-        dependencies.first_person_view, std::nullopt,
-        dependencies.draw_sort_view_index);
-    if (draw_calls.empty()) {
+    const BufferWrapper *indirect_buf = nullptr;
+    const std::vector<DrawIndirectInfo> *draw_calls = nullptr;
+    if (dependencies.directional_shadow_view_index) {
+        indirect_buf =
+            &instance_container
+                 .directionalShadowIndirectBuffer();
+        draw_calls =
+            &instance_container
+                 .directionalShadowDrawCalls(
+                     *dependencies
+                          .directional_shadow_view_index);
+    } else {
+        indirect_buf =
+            &instance_container.getIndirectBuf();
+        draw_calls =
+            &instance_container.getDrawCalls(
+                dependencies.first_person_view,
+                std::nullopt,
+                dependencies.draw_sort_view_index);
+    }
+    if (draw_calls->empty()) {
         return;
     }
 
-    const auto &indirect_buf = instance_container.getIndirectBuf();
-    for (const auto &draw_call : draw_calls) {
+    for (const auto &draw_call : *draw_calls) {
         const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         shadow_depth_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
@@ -345,7 +361,7 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             dependencies.view_projection;
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
                               sizeof(push_constant), &push_constant);
-        cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
+        cmd_buf.drawIndexedIndirect(indirect_buf->buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
     }
 }

@@ -244,6 +244,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     CompiledDrawQueueSet compiled_draw_queue;
     std::uint64_t next_draw_declaration_ordinal = 0;
     BufferWrapper indirect_buf;
+    BufferWrapper directional_shadow_indirect_buf;
+    std::vector<std::vector<DrawIndirectInfo>>
+        directional_shadow_draw_calls;
+    std::vector<std::size_t>
+        directional_shadow_visible_draw_counts;
 
     std::vector<glm::mat4> model_instances_data;
     std::vector<glm::mat4> previous_model_instances_data;
@@ -353,6 +358,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
+    void prepareDirectionalShadowDraws(
+        std::span<const glm::mat4> view_projections);
+    const BufferWrapper &
+    directionalShadowIndirectBuffer() const;
+    const std::vector<DrawIndirectInfo> &
+    directionalShadowDrawCalls(
+        std::uint32_t view_index) const;
     SceneDrawCandidatesV1
     sceneDrawCandidatesForFrameGraph() const;
     const SceneDrawSegmentV1 &
@@ -387,6 +399,16 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     }
     size_t instanceCountForTesting() const { return instance_slots.liveCount(); }
     size_t slotCountForTesting() const { return model_instances_data.size(); }
+    std::size_t
+    directionalShadowDrawViewCountForTesting() const {
+        return directional_shadow_draw_calls.size();
+    }
+    std::size_t
+    directionalShadowVisibleDrawCountForTesting(
+        std::uint32_t view_index) const {
+        return directional_shadow_visible_draw_counts.at(
+            view_index);
+    }
     ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
     ModelInstanceId forceGenerationForTesting(ModelInstanceId id,
                                                std::uint32_t generation);

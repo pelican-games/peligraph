@@ -155,6 +155,13 @@ DrawWorldBounds resolveDrawWorldBounds(
     std::span<const glm::mat4> skin_palette = {},
     std::span<const float> morph_weights = {});
 
+// Conservative AABB/frustum test for Vulkan's zero-to-one clip volume.
+// Intersecting boxes remain visible; only boxes wholly outside one clip plane
+// are rejected.
+bool intersectsZeroToOneClipFrustum(
+    const DrawWorldBounds &bounds,
+    const glm::mat4 &view_projection);
+
 DrawViewMask drawViewMask(PrimitiveViewVisibility visibility) noexcept;
 PrimitiveViewVisibility primitiveViewVisibility(DrawViewMask mask);
 MaterialPhase drawPhaseForMaterialRoute(MaterialRouteClass route) noexcept;

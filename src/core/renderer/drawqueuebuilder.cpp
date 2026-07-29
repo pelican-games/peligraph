@@ -260,6 +260,49 @@ void validatePrimitiveBounds(const ModelPrimitiveBounds &bounds,
 
 } // namespace
 
+bool intersectsZeroToOneClipFrustum(
+    const DrawWorldBounds &bounds,
+    const glm::mat4 &view_projection) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(bounds.minimum[axis]) ||
+            !std::isfinite(bounds.maximum[axis]) ||
+            bounds.minimum[axis] > bounds.maximum[axis]) {
+            throw std::invalid_argument(
+                "draw frustum bounds must be finite and ordered");
+        }
+    }
+    for (glm::length_t column = 0; column < 4; ++column) {
+        for (glm::length_t row = 0; row < 4; ++row) {
+            if (!std::isfinite(view_projection[column][row])) {
+                throw std::invalid_argument(
+                    "draw frustum matrix must be finite");
+            }
+        }
+    }
+
+    std::array<glm::vec4, 8> clip_corners;
+    for (std::uint32_t corner = 0; corner < clip_corners.size(); ++corner) {
+        const glm::vec3 world{
+            (corner & 1U) != 0 ? bounds.maximum[0] : bounds.minimum[0],
+            (corner & 2U) != 0 ? bounds.maximum[1] : bounds.minimum[1],
+            (corner & 4U) != 0 ? bounds.maximum[2] : bounds.minimum[2],
+        };
+        clip_corners[corner] =
+            view_projection * glm::vec4{world, 1.0F};
+    }
+
+    const auto allOutside = [&](const auto &outside) {
+        return std::all_of(
+            clip_corners.begin(), clip_corners.end(), outside);
+    };
+    return !allOutside([](const glm::vec4 &p) { return p.x < -p.w; }) &&
+           !allOutside([](const glm::vec4 &p) { return p.x > p.w; }) &&
+           !allOutside([](const glm::vec4 &p) { return p.y < -p.w; }) &&
+           !allOutside([](const glm::vec4 &p) { return p.y > p.w; }) &&
+           !allOutside([](const glm::vec4 &p) { return p.z < 0.0F; }) &&
+           !allOutside([](const glm::vec4 &p) { return p.z > p.w; });
+}
+
 DrawWorldBounds resolveDrawWorldBounds(
     const ModelPrimitiveBoundsSource &source, const glm::mat4 &model_matrix,
     std::span<const glm::mat4> skin_palette,

@@ -3373,6 +3373,34 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
             feature_reference);
     if (mode ==
         "shadow_b_layer_cascaded") {
+        auto scene = nlohmann::json::parse(
+            readTextFile(root / "scene.json"));
+        scene["scenes"]["default_scene"]["objects"]
+            .push_back({
+                {"name", "FarCaster"},
+                {"components",
+                 nlohmann::json::array({
+                     {
+                         {"name", "transform"},
+                         {"pos",
+                          nlohmann::json::array(
+                              {1000.0, 0.55, 0.0})},
+                         {"rotation",
+                          nlohmann::json::array(
+                              {0.0, 0.0, 0.0, 1.0})},
+                         {"scale",
+                          nlohmann::json::array(
+                              {0.7, 0.7, 0.7})},
+                     },
+                     {
+                         {"name", "simplemodelview"},
+                         {"model", "ground"},
+                     },
+                 })},
+            });
+        writeTextFile(
+            root / "scene.json",
+            scene.dump(2));
         writeTextFile(
             root / "features" /
                 "shadow_probe.json",
@@ -4262,6 +4290,38 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             invocations ==
             std::array<std::size_t, 3>{
                 1, 1, 1});
+
+        const auto &instances =
+            GET_MODULE(
+                PolygonInstanceContainer);
+        std::size_t unculled_draw_count = 0;
+        for (const auto &draw_range :
+             instances.getDrawCalls(
+                 false, std::nullopt, 0)) {
+            unculled_draw_count +=
+                draw_range.draw_count;
+        }
+        REQUIRE(
+            unculled_draw_count >= 3);
+        REQUIRE(
+            instances
+                .directionalShadowDrawViewCountForTesting() ==
+            3);
+        for (std::uint32_t layer = 0;
+             layer < 3; ++layer) {
+            const auto visible =
+                instances
+                    .directionalShadowVisibleDrawCountForTesting(
+                        layer);
+            INFO("cascade compacted draws "
+                 << layer << ": "
+                 << visible << " / "
+                 << unculled_draw_count);
+            REQUIRE(visible > 0);
+            REQUIRE(
+                visible <
+                unculled_draw_count);
+        }
 
         for (std::uint32_t layer = 0;
              layer < 3;
