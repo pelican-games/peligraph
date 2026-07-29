@@ -220,7 +220,8 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfig() {
 }
 
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
-    std::string_view rendering_config_json) {
+    std::string_view rendering_config_json,
+    RenderGraphVariantLoadHooks hooks) {
     ScopedLogTimer timer{"load default rendering pass from config"};
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
@@ -237,20 +238,26 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     RenderingPassConfigRegistrationDependencies::Options
         flat_options;
     flat_options.validate_prepared_generation =
-        [default_pass_name](
+        [default_pass_name,
+         validate_live_materials =
+             hooks.validate_live_materials](
             const RendererRuntimeGeneration &generation) {
             validateDefaultPass(generation,
                                 default_pass_name);
             validateFrozenRuntimeFeatureModules(
                 generation);
-            if (auto *materials =
+            if (validate_live_materials) {
+                if (auto *materials =
                     FastModuleContainer::tryGet<
                         MaterialContainer>()) {
-                materials
-                    ->validateRuntimeGenerationCompatibility(
-                        generation);
+                    materials
+                        ->validateRuntimeGenerationCompatibility(
+                            generation);
+                }
             }
         };
+    flat_options.before_publish_prepared_generation =
+        std::move(hooks.before_publish);
 #if PELICAN_WITH_OPENXR
     const bool xr_active =
         GET_MODULE(EngineLaunchConfig).xr_active;

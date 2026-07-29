@@ -584,6 +584,7 @@ registerRenderingPassConfigVariantsData(
     const auto owner_scope =
         gpuOwnerScope(dependencies.front().options);
     std::size_t enabled_feature_publishers = 0;
+    std::size_t coordinated_commit_owners = 0;
     for (const auto &variant : dependencies) {
         requireSameRegistrationDomain(
             dependencies.front(), variant);
@@ -595,10 +596,19 @@ registerRenderingPassConfigVariantsData(
         if (variant.options.publish_enabled_features) {
             ++enabled_feature_publishers;
         }
+        if (variant.options
+                .before_publish_prepared_generation) {
+            ++coordinated_commit_owners;
+        }
     }
     if (enabled_feature_publishers > 1) {
         throw std::runtime_error(
             "Render pipeline variant transaction has multiple feature publishers");
+    }
+    if (coordinated_commit_owners > 1) {
+        throw std::runtime_error(
+            "Render pipeline variant transaction has multiple "
+            "coordinated commit owners");
     }
 
     // Acquire provider leases in the same order used by game-DLL owner
@@ -819,6 +829,18 @@ registerRenderingPassConfigVariantsData(
                     prepared_generation.candidate());
         }
     }
+    std::function<void(
+        const RendererRuntimeGeneration &)>
+        coordinated_commit;
+    for (const auto &variant : dependencies) {
+        if (variant.options
+                .before_publish_prepared_generation) {
+            coordinated_commit =
+                variant.options
+                    .before_publish_prepared_generation;
+            break;
+        }
+    }
     const auto &ids =
         prepared_generation.renderingPassIds();
     for (std::size_t index = 0;
@@ -836,7 +858,8 @@ registerRenderingPassConfigVariantsData(
     first.pass_container.bindRuntimePublication(
         first.frame_graph_runtime.publicationState());
     first.frame_graph_runtime.publishPreparedGeneration(
-        std::move(prepared_generation));
+        std::move(prepared_generation),
+        coordinated_commit);
     gpu_arena.commit();
     return {
         .runtime_variants =

@@ -2296,6 +2296,44 @@ void Renderer::installRenderPipelineReloadParticipant() {
                     return reloadRenderPipelineFromDisk(
                         error);
                 },
+            .companion_participants = {
+                std::string{
+                    watch::shaderReloadParticipantName},
+                std::string{
+                    watch::materialReloadParticipantName},
+            },
+            .companion_claims =
+                [](std::string_view participant,
+                   const watch::ReloadRequest &request) {
+                    if (participant ==
+                        watch::
+                            shaderReloadParticipantName) {
+                        return true;
+                    }
+                    if (participant !=
+                        watch::
+                            materialReloadParticipantName) {
+                        return false;
+                    }
+                    const auto *materials =
+                        FastModuleContainer::tryGet<
+                            MaterialContainer>();
+                    return materials != nullptr &&
+                           materials
+                               ->handlesMaterialValuesReload(
+                                   request.key);
+                },
+            .apply_with_companions =
+                [this](
+                    std::span<
+                        const watch::ReloadRequest>,
+                    std::span<
+                        const watch::ReloadRequest>
+                        companion_requests) {
+                    std::string error;
+                    return reloadRenderPipelineFromDisk(
+                        error, companion_requests);
+                },
             .runtime =
                 watch::RuntimeReloadParticipant{
                     .boundary =
@@ -2434,7 +2472,9 @@ void Renderer::relowerRenderPipelineForCurrentOutput() {
 }
 
 bool Renderer::reloadRenderPipelineFromDisk(
-    std::string &error) noexcept {
+    std::string &error,
+    std::span<const watch::ReloadRequest>
+        companion_requests) noexcept {
     if (render_pipeline_reload_state == nullptr) {
         error =
             "render pipeline reload state is unavailable";
@@ -2448,8 +2488,25 @@ bool Renderer::reloadRenderPipelineFromDisk(
         auto json =
             GET_MODULE(PathResolver).loadText(
                 state.source_reference);
+        RenderGraphVariantLoadHooks hooks;
+        if (auto *reload_service =
+                FastModuleContainer::tryGet<
+                    watch::ReloadService>()) {
+            hooks.validate_live_materials = false;
+            hooks.before_publish =
+                [reload_service,
+                 companion_requests](
+                    const RendererRuntimeGeneration
+                        &generation) {
+                    reload_service
+                        ->applyRenderPipelineCompanionReload(
+                            generation,
+                            companion_requests);
+                };
+        }
         auto variants =
-            loadRenderGraphVariantsFromConfigData(json);
+            loadRenderGraphVariantsFromConfigData(
+                json, std::move(hooks));
         const auto generation =
             GET_MODULE(FrameGraphRuntimeContainer)
                 .snapshot();

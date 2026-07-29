@@ -90,6 +90,12 @@ struct RenderingPassConfigRegistrationDependencies {
         // prepared, but before the single publication CAS.
         std::function<void(const RendererRuntimeGeneration &)>
             validate_prepared_generation;
+        // Runs after every validation hook has accepted the private
+        // generation, while GPU registration rollback is still armed, and
+        // immediately before the generation is published. At most one
+        // variant in a family may own this coordinated commit hook.
+        std::function<void(const RendererRuntimeGeneration &)>
+            before_publish_prepared_generation;
         RenderPipelineGpuRegistrationFaultPoint fault_point =
             RenderPipelineGpuRegistrationFaultPoint::none;
     } options;

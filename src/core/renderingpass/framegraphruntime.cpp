@@ -470,7 +470,12 @@ FrameGraphRuntimeContainer::prepareGeneration(
 }
 
 void FrameGraphRuntimeContainer::publishPreparedGeneration(
-    PreparedRendererRuntimeGeneration &&prepared) {
+    PreparedRendererRuntimeGeneration &&prepared,
+    const std::function<void(
+        const RendererRuntimeGeneration &)>
+        &before_publish) {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
     if (!prepared.valid()) {
         throw std::runtime_error(
             "Renderer runtime candidate is empty");
@@ -481,6 +486,9 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
     if (generationOf(expected) != prepared.base_generation_) {
         throw std::runtime_error(
             "Renderer runtime candidate is stale");
+    }
+    if (before_publish) {
+        before_publish(*prepared.candidate_);
     }
     if (!publication->active_generation
              .compare_exchange_strong(

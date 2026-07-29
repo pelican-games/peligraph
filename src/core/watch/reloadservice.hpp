@@ -20,6 +20,7 @@ namespace Pelican {
 class MaterialContainer;
 class ModelAssetContainer;
 class PathResolver;
+struct RendererRuntimeGeneration;
 }
 
 namespace Pelican::watch {
@@ -73,6 +74,18 @@ struct ReloadParticipant {
     // render-pipeline recompilation, where rebuilding once per changed
     // dependency would publish intermediate generations.
     std::function<bool(std::span<const ReloadRequest>)> apply_batch;
+    // A batch owner may absorb selected requests claimed by other named
+    // participants so all affected domains publish one generation. The owner
+    // still needs apply_batch for ordinary standalone batches.
+    std::vector<std::string> companion_participants;
+    std::function<bool(
+        std::string_view,
+        const ReloadRequest &)>
+        companion_claims;
+    std::function<bool(
+        std::span<const ReloadRequest>,
+        std::span<const ReloadRequest>)>
+        apply_with_companions;
     // Retirement callbacks must not throw. ReloadService still guards the
     // boundary so one faulty participant cannot terminate frame teardown.
     std::function<bool(std::shared_ptr<const void>, ReloadCoordinator &)> retire;
@@ -96,6 +109,13 @@ DECLARE_MODULE(ReloadService) {
     void registerParticipant(ReloadParticipant participant);
     bool unregisterParticipant(std::string_view name) noexcept;
     std::vector<std::string> participantNames() const;
+    // Invoked by the render-graph pre-publication hook. Throws on any shader,
+    // material, or graphics-pipeline candidate failure so the graph arena can
+    // roll back without publishing a mixed generation.
+    void applyRenderPipelineCompanionReload(
+        const RendererRuntimeGeneration &generation,
+        std::span<const ReloadRequest>
+            companion_requests);
 
   private:
     struct RuntimeParticipantStatus {
@@ -114,6 +134,11 @@ DECLARE_MODULE(ReloadService) {
     bool applyClaimedBatch(
         ReloadParticipant &claimant,
         std::span<const ReloadRequest> requests);
+    bool applyClaimedCompanionBatch(
+        ReloadParticipant &claimant,
+        std::span<const ReloadRequest> requests,
+        std::span<const ReloadRequest>
+            companion_requests);
     bool applyShaderReloadBatch(std::span<const ReloadRequest> shader_requests,
                                 std::span<const AssetKey> material_documents);
     RuntimeReloadResult forceShaderReload();

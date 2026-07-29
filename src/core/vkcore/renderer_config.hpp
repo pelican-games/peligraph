@@ -3,12 +3,15 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "../renderingpass/previewgraph.hpp"
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace Pelican {
+
+struct RendererRuntimeGeneration;
 
 RenderingPassId loadDefaultRenderingPassFromConfig();
 
@@ -19,8 +22,16 @@ struct RenderGraphVariantConfig {
     PreviewGraphProgram preview;
 };
 
+struct RenderGraphVariantLoadHooks {
+    bool validate_live_materials = true;
+    std::function<void(
+        const RendererRuntimeGeneration &)>
+        before_publish;
+};
+
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfig();
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
-    std::string_view rendering_config_json);
+    std::string_view rendering_config_json,
+    RenderGraphVariantLoadHooks hooks = {});
 
 } // namespace Pelican

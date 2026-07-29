@@ -53,6 +53,35 @@ void ReloadService::registerParticipant(ReloadParticipant participant) {
             "reload participant '" + participant.name +
             "' cannot register both per-request and batch apply callbacks");
     }
+    if (participant.apply_with_companions &&
+        (!participant.apply_batch ||
+         participant.companion_participants.empty())) {
+        throw std::invalid_argument(
+            "reload participant '" + participant.name +
+            "' companion apply requires apply_batch and at "
+            "least one companion participant");
+    }
+    if ((!participant.companion_participants.empty() ||
+         participant.companion_claims) &&
+        !participant.apply_with_companions) {
+        throw std::invalid_argument(
+            "reload participant '" + participant.name +
+            "' declares companions without a companion apply "
+            "callback");
+    }
+    std::unordered_set<std::string>
+        companion_names;
+    for (const auto &companion :
+         participant.companion_participants) {
+        if (companion.empty() ||
+            companion == participant.name ||
+            !companion_names.insert(companion).second) {
+            throw std::invalid_argument(
+                "reload participant '" +
+                participant.name +
+                "' has an invalid companion participant");
+        }
+    }
     if (static_cast<bool>(participant.claims) != has_apply) {
         throw std::invalid_argument("reload participant '" + participant.name +
                                     "' requires claims plus one apply callback");
@@ -218,6 +247,144 @@ bool ReloadService::applyShaderReloadBatch(
     if (!runtime.committed) library->recordReloadFailure(changed_keys, runtime.error);
     mergeShaderRuntimeResult(runtime);
     return runtime.committed;
+}
+
+void ReloadService::applyRenderPipelineCompanionReload(
+    const RendererRuntimeGeneration &generation,
+    std::span<const ReloadRequest>
+        companion_requests) {
+    auto *library =
+        FastModuleContainer::tryGet<ShaderLibrary>();
+    auto *pipelines =
+        FastModuleContainer::tryGet<PipelineFactory>();
+    auto *materials =
+        FastModuleContainer::tryGet<MaterialContainer>();
+    if (library == nullptr || pipelines == nullptr) {
+        throw std::runtime_error(
+            "coordinated render-pipeline reload requires "
+            "ShaderLibrary and PipelineFactory");
+    }
+
+    std::vector<AssetKey> shader_keys;
+    std::vector<AssetKey> material_documents;
+    for (const auto &request :
+         companion_requests) {
+        if (library->handlesReload(request.key)) {
+            shader_keys.push_back(request.key);
+            continue;
+        }
+        if (materials != nullptr &&
+            materials->handlesMaterialValuesReload(
+                request.key)) {
+            material_documents.push_back(
+                request.key);
+            continue;
+        }
+        throw std::runtime_error(
+            "coordinated render-pipeline reload received "
+            "an unsupported companion request: " +
+            assetKeyString(request.key));
+    }
+
+    RuntimeReloadResult runtime;
+    std::vector<AssetKey> recorded_keys =
+        shader_keys;
+    try {
+        MaterialRuntimeGenerationReloadPlan
+            material_plan;
+        if (materials != nullptr) {
+            material_plan =
+                materials
+                    ->prepareRuntimeGenerationReload(
+                        generation);
+        }
+        runtime.attempted =
+            !shader_keys.empty() ||
+            material_plan.changesPipelineAbi();
+
+        auto prepared = library->prepareReload(
+            shader_keys,
+            material_plan.shader_overrides);
+        recorded_keys = prepared.changed_keys;
+        if (!shader_keys.empty() &&
+            prepared.empty()) {
+            throw std::runtime_error(
+                "shader change no longer has a tracked "
+                "dependency");
+        }
+        shader_cache_hits_ +=
+            prepared.cache_hits;
+        shader_cache_misses_ +=
+            prepared.cache_misses;
+
+        std::function<void()> material_commit;
+        if (materials != nullptr) {
+            material_commit =
+                materials
+                    ->prepareSurfaceMaterialReload(
+                        prepared.surface_documents,
+                        material_documents);
+        }
+        std::function<void()> coordinated_commit;
+        if (material_commit ||
+            material_plan.commit) {
+            coordinated_commit =
+                [material_commit =
+                     std::move(material_commit),
+                 generation_commit =
+                     std::move(
+                         material_plan.commit)] {
+                    if (material_commit) {
+                        material_commit();
+                    }
+                    if (generation_commit) {
+                        generation_commit();
+                    }
+                };
+        }
+
+        if (prepared.empty() &&
+            material_plan.pipeline_overrides.empty() &&
+            !coordinated_commit) {
+            return;
+        }
+        const auto rebuilt =
+            pipelines->rebuildPrepared(
+                std::move(prepared),
+                coordinated_commit,
+                material_plan.pipeline_overrides);
+        if (!rebuilt.committed) {
+            throw std::runtime_error(
+                rebuilt.last_error.empty()
+                    ? "coordinated shader/material/pipeline "
+                      "candidate transaction failed"
+                    : rebuilt.last_error);
+        }
+        runtime.committed =
+            runtime.attempted;
+    } catch (const std::exception &error) {
+        runtime.error = error.what();
+        if (!recorded_keys.empty()) {
+            library->recordReloadFailure(
+                recorded_keys, runtime.error);
+        }
+        mergeShaderRuntimeResult(
+            std::move(runtime));
+        throw;
+    } catch (...) {
+        runtime.error =
+            "unknown coordinated render-pipeline reload "
+            "failure";
+        if (!recorded_keys.empty()) {
+            library->recordReloadFailure(
+                recorded_keys, runtime.error);
+        }
+        mergeShaderRuntimeResult(
+            std::move(runtime));
+        throw;
+    }
+    mergeShaderRuntimeResult(
+        std::move(runtime));
 }
 
 RuntimeReloadResult ReloadService::forceShaderReload() {
@@ -524,6 +691,56 @@ bool ReloadService::applyClaimedBatch(
     return applied;
 }
 
+bool ReloadService::applyClaimedCompanionBatch(
+    ReloadParticipant &claimant,
+    std::span<const ReloadRequest> requests,
+    std::span<const ReloadRequest>
+        companion_requests) {
+    bool applied = false;
+    std::string error;
+    try {
+        applied = claimant.apply_with_companions(
+            requests, companion_requests);
+        if (!applied) {
+            error =
+                "file-triggered coordinated batch apply failed";
+        }
+    } catch (const std::exception &caught) {
+        error = caught.what();
+        if (logger) {
+            LOG_ERROR(
+                logger,
+                "reload participant '{}' coordinated batch "
+                "failed: {}",
+                claimant.name, caught.what());
+        }
+    } catch (...) {
+        error =
+            "unknown file-triggered coordinated batch failure";
+        if (logger) {
+            LOG_ERROR(
+                logger,
+                "reload participant '{}' coordinated batch "
+                "failed with an unknown error",
+                claimant.name);
+        }
+    }
+    if (claimant.runtime) {
+        auto &status =
+            runtime_status_[claimant.name];
+        ++status.attempted;
+        if (applied) {
+            ++status.applied;
+            status.last_error.clear();
+        } else {
+            ++status.failed;
+            status.last_error =
+                std::move(error);
+        }
+    }
+    return applied;
+}
+
 std::vector<bool> ReloadService::applyRequests(
     std::span<const ReloadRequest> requests) {
     ensureBuiltInParticipants();
@@ -566,11 +783,71 @@ std::vector<bool> ReloadService::applyRequests(
         }
     }
 
+    std::vector<bool> consumed(requests.size(), false);
+    for (auto &participant : participants_) {
+        if (!participant.apply_with_companions) {
+            continue;
+        }
+        std::vector<std::size_t> owned_indices;
+        std::vector<std::size_t> companion_indices;
+        std::vector<ReloadRequest> owned_batch;
+        std::vector<ReloadRequest> companion_batch;
+        for (std::size_t index = 0;
+             index < requests.size(); ++index) {
+            if (!results[index] || consumed[index] ||
+                claimants[index] == nullptr) {
+                continue;
+            }
+            if (claimants[index] == &participant) {
+                owned_indices.push_back(index);
+                owned_batch.push_back(requests[index]);
+                continue;
+            }
+            const auto named = std::find(
+                participant.companion_participants.begin(),
+                participant.companion_participants.end(),
+                claimants[index]->name);
+            if (named ==
+                participant.companion_participants.end()) {
+                continue;
+            }
+            if (participant.companion_claims &&
+                !participant.companion_claims(
+                    claimants[index]->name,
+                    requests[index])) {
+                continue;
+            }
+            companion_indices.push_back(index);
+            companion_batch.push_back(
+                requests[index]);
+        }
+        if (owned_batch.empty()) {
+            continue;
+        }
+        const bool applied =
+            applyClaimedCompanionBatch(
+                participant, owned_batch,
+                companion_batch);
+        for (const auto index : owned_indices) {
+            results[index] = applied;
+            consumed[index] = true;
+        }
+        for (const auto index :
+             companion_indices) {
+            results[index] = applied;
+            consumed[index] = true;
+        }
+    }
+
     std::vector<std::size_t> shader_indices;
     std::vector<std::size_t> material_value_indices;
-    auto *materials = FastModuleContainer::tryGet<MaterialContainer>();
+    auto *materials =
+        FastModuleContainer::tryGet<MaterialContainer>();
     for (std::size_t index = 0; index < requests.size(); ++index) {
-        if (!results[index] || claimants[index] == nullptr) continue;
+        if (!results[index] || consumed[index] ||
+            claimants[index] == nullptr) {
+            continue;
+        }
         if (claimants[index]->name == shaderReloadParticipantName) {
             shader_indices.push_back(index);
         } else if (materials != nullptr &&
@@ -580,7 +857,6 @@ std::vector<bool> ReloadService::applyRequests(
         }
     }
 
-    std::vector<bool> consumed(requests.size(), false);
     if (!shader_indices.empty()) {
         std::vector<ReloadRequest> shader_requests;
         std::vector<AssetKey> material_documents;

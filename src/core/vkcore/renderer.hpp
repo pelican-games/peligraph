@@ -21,6 +21,9 @@
 namespace Pelican {
 
 struct RenderPipelineReloadState;
+namespace watch {
+struct ReloadRequest;
+}
 
 enum class RenderGraphVariant {
     flat,
@@ -112,7 +115,9 @@ DECLARE_MODULE(Renderer) {
     void installRenderPipelineReloadParticipant();
     void relowerRenderPipelineForCurrentOutput();
     bool reloadRenderPipelineFromDisk(
-        std::string &error) noexcept;
+        std::string &error,
+        std::span<const watch::ReloadRequest>
+            companion_requests = {}) noexcept;
 
   public:
     Renderer();

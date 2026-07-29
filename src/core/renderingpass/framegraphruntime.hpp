@@ -9,7 +9,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -157,6 +159,7 @@ class PreparedRendererRuntimeGeneration {
 DECLARE_MODULE(FrameGraphRuntimeContainer) {
     std::shared_ptr<RendererRuntimePublication>
         publication;
+    mutable std::mutex publication_mutex;
 
   public:
     FrameGraphRuntimeContainer();
@@ -171,7 +174,10 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
         std::optional<OutputCompileFacts>
             window_output_facts = std::nullopt) const;
     void publishPreparedGeneration(
-        PreparedRendererRuntimeGeneration &&prepared);
+        PreparedRendererRuntimeGeneration &&prepared,
+        const std::function<void(
+            const RendererRuntimeGeneration &)>
+            &before_publish = {});
     void rollbackPreparedGeneration(
         PreparedRendererRuntimeGeneration &prepared) const noexcept;
 
