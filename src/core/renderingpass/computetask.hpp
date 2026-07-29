@@ -154,6 +154,12 @@ DECLARE_MODULE(ComputeTaskContainer) {
         vk::DeviceSize offset = 0;
     };
 
+    struct ImageExtentDispatchRecord {
+        GlobalRenderTargetId render_target =
+            noRenderTargetId();
+        std::uint32_t mip_level = 0;
+    };
+
     struct TaskRecord {
         ComputeTaskDefinition definition;
         std::vector<ResolvedComputeResourceBinding> resource_bindings;
@@ -173,6 +179,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
         uint32_t dispatch_z = 1;
         std::optional<IndirectDispatchRecord>
             indirect_dispatch;
+        std::optional<ImageExtentDispatchRecord>
+            image_extent_dispatch;
     };
 
     vk::Device device;
@@ -235,6 +243,9 @@ DECLARE_MODULE(ComputeTaskContainer) {
     std::vector<vk::ImageView> boundImageViewsForTesting(
         ComputeTaskId task_id, std::uint32_t frame_index,
         std::uint32_t view_index = 0) const;
+    std::array<std::uint32_t, 3>
+    dispatchGroupsForTesting(
+        ComputeTaskId task_id) const;
     std::uint64_t bindingRevisionForTesting(ComputeTaskId task_id) const;
 
     RegistrationCheckpoint checkpointRegistrations() const;

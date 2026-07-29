@@ -752,7 +752,9 @@ nlohmann::json depthPyramidRenderingConfig() {
         }
       },
       "dispatch": {
-        "groups": [4, 4, 1]
+        "groups_from": {
+          "port": "seed_depth"
+        }
       },
       "schedule": "per_frame"
     },
@@ -786,7 +788,9 @@ nlohmann::json depthPyramidRenderingConfig() {
         }
       },
       "dispatch": {
-        "groups": [2, 2, 1]
+        "groups_from": {
+          "port": "reduced_depth"
+        }
       },
       "schedule": "per_frame"
     }
@@ -6877,6 +6881,23 @@ TEST_CASE(
                 "depth_reduce");
         REQUIRE(seed_task.value >= 0);
         REQUIRE(reduce_task.value >= 0);
+        REQUIRE(
+            compute_tasks
+                .dispatchGroupsForTesting(
+                    seed_task) ==
+            (std::array<std::uint32_t, 3>{
+                4, 4, 1}));
+        REQUIRE(
+            compute_tasks
+                .dispatchGroupsForTesting(
+                    reduce_task) ==
+            (std::array<std::uint32_t, 3>{
+                2, 2, 1}));
+        REQUIRE_THROWS_WITH(
+            compute_tasks.setDispatchGroups(
+                reduce_task, 1, 1, 1),
+            Catch::Matchers::ContainsSubstring(
+                "extent-derived"));
         const auto initial_seed_views =
             compute_tasks.boundImageViewsForTesting(
                 seed_task, 0);
@@ -6992,10 +7013,18 @@ TEST_CASE(
             render_targets.publishPreparedExtent(
                 std::move(stale_candidate)),
             "render target extent candidate is stale");
-        compute_tasks.setDispatchGroups(
-            seed_task, 8, 4, 1);
-        compute_tasks.setDispatchGroups(
-            reduce_task, 4, 2, 1);
+        REQUIRE(
+            compute_tasks
+                .dispatchGroupsForTesting(
+                    seed_task) ==
+            (std::array<std::uint32_t, 3>{
+                8, 4, 1}));
+        REQUIRE(
+            compute_tasks
+                .dispatchGroupsForTesting(
+                    reduce_task) ==
+            (std::array<std::uint32_t, 3>{
+                4, 2, 1}));
         REQUIRE(
             render_targets.getMetadata(target)
                 .mip_levels == 7);

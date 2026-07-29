@@ -822,6 +822,148 @@ const ResolvedComputeResourceBinding &resourceForInterface(
     return *found;
 }
 
+struct ResolvedImageExtentDispatch {
+    GlobalRenderTargetId render_target =
+        noRenderTargetId();
+    std::uint32_t mip_level = 0;
+};
+
+ResolvedImageExtentDispatch resolveImageExtentDispatch(
+    const ComputeTaskDefinition &definition,
+    std::span<const ResolvedComputeResourceBinding>
+        resources,
+    const RenderTargetContainer
+        &render_target_container) {
+    const auto &authored =
+        *definition.dispatch.groups_from;
+    const auto port = std::find_if(
+        definition.resource_ports.begin(),
+        definition.resource_ports.end(),
+        [&](const ShaderResourcePortDefinition
+                &candidate) {
+            return candidate.name == authored.port;
+        });
+    if (port == definition.resource_ports.end()) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' dispatch.groups_from references unknown resource "
+            "port '" +
+            authored.port + "'");
+    }
+    if (port->kind ==
+        ShaderResourcePortKind::buffer) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' dispatch.groups_from port '" +
+            authored.port +
+            "' must resolve to an image");
+    }
+    const auto resource = std::find_if(
+        resources.begin(), resources.end(),
+        [&](const ResolvedComputeResourceBinding
+                &candidate) {
+            return candidate.authored_name ==
+                   port->resource;
+        });
+    if (resource == resources.end() ||
+        !isConcreteRenderTarget(
+            resource->render_target)) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' dispatch.groups_from port '" +
+            authored.port +
+            "' does not resolve to a render target");
+    }
+    const auto mip_level =
+        port->subresource
+            ? port->subresource
+                  ->base_mip_level
+            : 0u;
+    const auto metadata =
+        render_target_container.getMetadata(
+            resource->render_target);
+    if (mip_level >= metadata.mip_levels) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' dispatch.groups_from port '" +
+            authored.port + "' selects mip " +
+            std::to_string(mip_level) +
+            " outside render target '" +
+            metadata.name + "' (" +
+            std::to_string(metadata.mip_levels) +
+            " mip levels)");
+    }
+    return ResolvedImageExtentDispatch{
+        .render_target =
+            resource->render_target,
+        .mip_level = mip_level,
+    };
+}
+
+std::array<std::uint32_t, 3>
+imageExtentDispatchGroups(
+    const ComputeTaskDefinition &definition,
+    const ResolvedImageExtentDispatch &dispatch,
+    const RenderTargetContainer
+        &render_target_container,
+    const glm::uvec3 &local_size) {
+    if (local_size.x == 0 ||
+        local_size.y == 0 ||
+        local_size.z == 0) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' uses dispatch.groups_from but its shader has no "
+            "reflected workgroup size");
+    }
+    if (local_size.z != 1) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' image extent dispatch requires shader "
+            "local_size_z = 1");
+    }
+    const auto metadata =
+        render_target_container.getMetadata(
+            dispatch.render_target);
+    if (dispatch.mip_level >=
+        metadata.mip_levels) {
+        throw std::runtime_error(
+            "Compute task '" + definition.name +
+            "' image extent dispatch mip is outside render target '" +
+            metadata.name + "'");
+    }
+    const auto mip_dimension =
+        [mip = dispatch.mip_level](
+            std::uint32_t dimension) {
+            if (mip >=
+                std::numeric_limits<
+                    std::uint32_t>::digits) {
+                return 1u;
+            }
+            return std::max(
+                1u, dimension >> mip);
+        };
+    const auto ceil_divide =
+        [](std::uint32_t value,
+           std::uint32_t divisor) {
+            return static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(
+                     value) +
+                 divisor - 1u) /
+                divisor);
+        };
+    return {
+        ceil_divide(
+            mip_dimension(
+                metadata.extent.width),
+            local_size.x),
+        ceil_divide(
+            mip_dimension(
+                metadata.extent.height),
+            local_size.y),
+        1u,
+    };
+}
+
 vk::SamplerAddressMode samplerAddressMode(
     ShaderResourcePortAddressMode mode) {
     switch (mode) {
@@ -976,6 +1118,19 @@ ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const s
         return dispatch;
     }
 
+    if (json.contains("groups") &&
+        json.contains("groups_from")) {
+        throw std::runtime_error(
+            "compute task dispatch.groups cannot be combined with "
+            "groups_from: " +
+            name);
+    }
+    if (json.contains("local_size")) {
+        throw std::runtime_error(
+            "compute task dispatch.local_size is not authored; "
+            "declare the workgroup size in the compute shader: " +
+            name);
+    }
     if (json.contains("groups")) {
         const auto &groups = json.at("groups");
         if (groups.is_array()) {
@@ -999,10 +1154,37 @@ ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const s
         }
     }
     if (json.contains("groups_from")) {
-        dispatch.groups_from = requireString(json, "groups_from", "compute task dispatch: " + name);
-    }
-    if (json.contains("local_size")) {
-        dispatch.local_size = requireUint32(json, "local_size", "compute task dispatch: " + name);
+        const auto &groups_from =
+            json.at("groups_from");
+        if (!groups_from.is_object()) {
+            throw std::runtime_error(
+                "compute task dispatch.groups_from must be an "
+                "object containing an image resource port: " +
+                name);
+        }
+        for (auto field = groups_from.begin();
+             field != groups_from.end(); ++field) {
+            if (field.key() != "port") {
+                throw std::runtime_error(
+                    "compute task dispatch.groups_from has unknown "
+                    "field '" +
+                    field.key() + "': " + name);
+            }
+        }
+        auto port = requireString(
+            groups_from, "port",
+            "compute task dispatch.groups_from: " +
+                name);
+        if (port.empty()) {
+            throw std::runtime_error(
+                "compute task dispatch.groups_from.port must not be "
+                "empty: " +
+                name);
+        }
+        dispatch.groups_from =
+            ComputeImageExtentDispatchDefinition{
+                .port = std::move(port),
+            };
     }
     if (dispatch.groups_x == 0 || dispatch.groups_y == 0 || dispatch.groups_z == 0) {
         throw std::runtime_error("compute task dispatch group counts must be positive: " + name);
@@ -1285,6 +1467,34 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
                 definition.writes,
                 "compute task '" + definition.name + "'");
         definition.dispatch = parseDispatch(task_json, definition.name);
+        if (definition.dispatch.groups_from) {
+            const auto &port_name =
+                definition.dispatch
+                    .groups_from->port;
+            const auto port = std::find_if(
+                definition.resource_ports.begin(),
+                definition.resource_ports.end(),
+                [&](const ShaderResourcePortDefinition
+                        &candidate) {
+                    return candidate.name ==
+                           port_name;
+                });
+            if (port ==
+                definition.resource_ports.end()) {
+                throw std::runtime_error(
+                    "compute task dispatch.groups_from references "
+                    "unknown resource port '" +
+                    port_name + "': " +
+                    definition.name);
+            }
+            if (port->kind ==
+                ShaderResourcePortKind::buffer) {
+                throw std::runtime_error(
+                    "compute task dispatch.groups_from port must be "
+                    "an image: " +
+                    definition.name);
+            }
+        }
         if (task_json.contains("schedule")) {
             const auto schedule =
                 requireString(
@@ -1987,6 +2197,37 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .resource_interface =
                     resource_interface,
             });
+    std::array<std::uint32_t, 3>
+        dispatch_groups{
+            definition.dispatch.groups_x,
+            definition.dispatch.groups_y,
+            definition.dispatch.groups_z,
+        };
+    std::optional<ImageExtentDispatchRecord>
+        image_extent_dispatch;
+    if (definition.dispatch.groups_from) {
+        const auto resolved_dispatch =
+            resolveImageExtentDispatch(
+                definition, resolved_resources,
+                dependencies
+                    .render_target_container);
+        dispatch_groups =
+            imageExtentDispatchGroups(
+                definition, resolved_dispatch,
+                dependencies
+                    .render_target_container,
+                pipeline_factory
+                    .reflection(pipeline)
+                    .local_size);
+        image_extent_dispatch =
+            ImageExtentDispatchRecord{
+                .render_target =
+                    resolved_dispatch
+                        .render_target,
+                .mip_level =
+                    resolved_dispatch.mip_level,
+            };
+    }
     std::uint32_t descriptor_variant_count = 1;
     if (definition.schedule ==
         ComputeTaskSchedule::per_view) {
@@ -2071,13 +2312,15 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             .binding_revision =
                 next_binding_revision++,
             .dispatch_x =
-                definition.dispatch.groups_x,
+                dispatch_groups[0],
             .dispatch_y =
-                definition.dispatch.groups_y,
+                dispatch_groups[1],
             .dispatch_z =
-                definition.dispatch.groups_z,
+                dispatch_groups[2],
             .indirect_dispatch =
                 indirect_dispatch,
+            .image_extent_dispatch =
+                image_extent_dispatch,
         });
     if (!task_inserted) {
         throw std::runtime_error(
@@ -2109,6 +2352,9 @@ void ComputeTaskContainer::rebindRenderTargets(
             std::array<
                 std::vector<vk::ImageView>, 2>>
             bound_image_views;
+        std::optional<
+            std::array<std::uint32_t, 3>>
+            dispatch_groups;
     };
     std::vector<ReboundTask> rebound;
     rebound.reserve(tasks.size());
@@ -2117,6 +2363,24 @@ void ComputeTaskContainer::rebindRenderTargets(
     for (const auto &[id, task] : tasks) {
         ReboundTask next;
         next.id = id;
+        if (task.image_extent_dispatch) {
+            const auto &dispatch =
+                *task.image_extent_dispatch;
+            next.dispatch_groups =
+                imageExtentDispatchGroups(
+                    task.definition,
+                    ResolvedImageExtentDispatch{
+                        .render_target =
+                            dispatch
+                                .render_target,
+                        .mip_level =
+                            dispatch.mip_level,
+                    },
+                    render_target_container,
+                    GET_MODULE(PipelineFactory)
+                        .reflection(task.pipeline)
+                        .local_size);
+        }
         next.descriptor_sets.resize(
             task.descriptor_sets.size());
         next.bound_image_views.resize(
@@ -2166,6 +2430,14 @@ void ComputeTaskContainer::rebindRenderTargets(
         auto &task = tasks.at(next.id);
         task.descriptor_sets = std::move(next.descriptor_sets);
         task.bound_image_views = std::move(next.bound_image_views);
+        if (next.dispatch_groups) {
+            task.dispatch_x =
+                next.dispatch_groups->at(0);
+            task.dispatch_y =
+                next.dispatch_groups->at(1);
+            task.dispatch_z =
+                next.dispatch_groups->at(2);
+        }
         task.binding_revision = next_binding_revision++;
     }
     GET_MODULE(DeletionQueue).defer(std::move(retired));
@@ -2198,6 +2470,11 @@ void ComputeTaskContainer::setDispatchGroups(ComputeTaskId task_id, uint32_t x, 
         throw std::runtime_error(
             "cannot set direct dispatch groups on an indirect "
             "compute task");
+    }
+    if (found->second.image_extent_dispatch) {
+        throw std::runtime_error(
+            "cannot override image extent-derived compute dispatch "
+            "groups");
     }
     found->second.dispatch_x = x;
     found->second.dispatch_y = y;
@@ -2380,6 +2657,20 @@ std::vector<vk::ImageView> ComputeTaskContainer::boundImageViewsForTesting(
     return found->second
         .bound_image_views[view_index]
                           [frame_index];
+}
+
+std::array<std::uint32_t, 3>
+ComputeTaskContainer::dispatchGroupsForTesting(
+    ComputeTaskId task_id) const {
+    const auto found = tasks.find(task_id.value);
+    if (found == tasks.end()) {
+        return {};
+    }
+    return {
+        found->second.dispatch_x,
+        found->second.dispatch_y,
+        found->second.dispatch_z,
+    };
 }
 
 std::uint64_t ComputeTaskContainer::bindingRevisionForTesting(

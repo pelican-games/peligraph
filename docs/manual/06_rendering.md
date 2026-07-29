@@ -384,7 +384,20 @@ subresource、2D viewの複数layer、storage viewの複数mipは起動時エラ
 （logical viewごとに1回）です。`per_view`はXRのdepth pyramid、culling、eye別post-process
 などに使い、他のscopeがmultiviewでも当該compute taskはsequentialに実行されます。
 shaderは`#include "pelican_frame.glsl"`の`pelican_view_index()` /
-`pelican_view_count()`で現在のviewを取得します。`dispatch.groups_from` は予約。
+`pelican_view_count()`で現在のviewを取得します。
+
+画像の現在extentからgroup数を決める場合は、typed image portを指定します。
+
+```json
+"dispatch": {
+  "groups_from": {"port": "reduced_depth"}
+}
+```
+
+portの`subresource.mip`における幅・高さをshader reflectionの
+`layout(local_size_x=..., local_size_y=..., local_size_z=1)`で切り上げ除算します。
+render target resizeとrebind時にも自動再計算されます。`local_size`をJSONへ重複記述は
+できません。
 設定とshaderの最小例は
 [`adding_features.md`のレシピ4](../adding_features.md)と
 `test/run_compute_headless.cmake`です。
@@ -428,7 +441,8 @@ buffer を読まない限り `reads` へ重複記述しません。producer の 
 indirect command read への stage/access barrier もプランから自動発行されます。
 同じtaskが自身のindirect bufferを書く構成はframe間の隠れたfeedbackになるため拒否され、
 例のようにproducerを別taskへ分けます。
-`groups` / `groups_from` / `local_size` との併記は起動時エラーです。
+`groups` / image `groups_from` / `indirect`の併記は起動時エラーです。
+`local_size`は常にshader側の宣言がauthorityです。
 
 ### GPU が indexed draw 数を決める
 

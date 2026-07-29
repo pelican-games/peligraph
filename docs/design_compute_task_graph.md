@@ -67,14 +67,29 @@ fragment / closed forest の規則は
 
 ```json
 {
-  "name": "particle_sim",
-  "shader": "shaders/particle_sim",
-  "reads":  ["particle_state"],
-  "writes": ["particle_state"],
-  "dispatch": {"groups_from": "particle_count", "local_size": 64},
+  "name": "reduce_depth",
+  "shader": "shaders/reduce_depth",
+  "reads":  ["depth_pyramid"],
+  "writes": ["depth_pyramid"],
+  "resource_ports": {
+    "source_depth": {
+      "resource": "depth_pyramid",
+      "access": "sampled",
+      "subresource": {"mip": 0}
+    },
+    "reduced_depth": {
+      "resource": "depth_pyramid",
+      "access": "storage",
+      "subresource": {"mip": 1}
+    }
+  },
+  "dispatch": {"groups_from": {"port": "reduced_depth"}},
   "schedule": "per_frame"
 }
 ```
+
+image `groups_from`はportの選択mip extentとshader reflectionのlocal sizeから
+direct group数を導出する。JSON側にlocal sizeは重複記述しない。
 
 GPU-produced dispatch は次の別形を取る。
 
@@ -279,8 +294,8 @@ CPU implementation はdata / effect依存がなければ既定でparallel / reen
 
 ## 7. 未決事項
 
-1. `dispatch.groups_from` の名前付きパラメータ注入の正確な API
-   (コマンド層 stage 3 / ゲームロジック設計と同時に確定)
+1. image extentではない任意scalar count由来dispatchの正確なAPI
+   (GPU-produced countはtyped indirect dispatchで解決済み。CPU parameter注入は未確定)
 2. compute 結果の CPU readback(rpc `capture` 類似)— 需要が出てから
 3. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— **F0 v1 は解決済み**:
    F0 では `pelican.frame_plan` v1 とし、`schema` / `version` / `graph` /

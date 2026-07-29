@@ -513,12 +513,23 @@ struct ComputeIndirectDispatchDefinition {
         default;
 };
 
+struct ComputeImageExtentDispatchDefinition {
+    // Names a typed image entry in resource_ports. The selected port's
+    // subresource mip and the reflected shader workgroup size determine the
+    // direct dispatch group count.
+    std::string port;
+
+    bool operator==(
+        const ComputeImageExtentDispatchDefinition &) const =
+        default;
+};
+
 struct ComputeDispatchDefinition {
     uint32_t groups_x = 1;
     uint32_t groups_y = 1;
     uint32_t groups_z = 1;
-    std::string groups_from;
-    uint32_t local_size = 1;
+    std::optional<ComputeImageExtentDispatchDefinition>
+        groups_from;
     std::optional<ComputeIndirectDispatchDefinition>
         indirect;
 };

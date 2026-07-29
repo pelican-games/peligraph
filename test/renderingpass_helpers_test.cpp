@@ -673,6 +673,111 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "compute image dispatch derives groups from a typed resource port",
+    "[renderingpass][compute][dispatch][extent][wp231]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "compute_tasks": [{
+            "name": "reduce_reflection",
+            "shader": "shaders/reduce_reflection",
+            "reads": ["reflection"],
+            "writes": ["reflection"],
+            "resource_ports": {
+              "source": {
+                "resource": "reflection",
+                "access": "sampled",
+                "subresource": {"mip": 1}
+              },
+              "reduced": {
+                "resource": "reflection",
+                "access": "storage",
+                "subresource": {"mip": 2}
+              }
+            },
+            "dispatch": {
+              "groups_from": {"port": "reduced"}
+            }
+          }]
+        })json");
+
+    const auto tasks =
+        parseComputeTaskDefinitionsFromConfigJson(
+            config);
+    REQUIRE(tasks.size() == 1);
+    REQUIRE(
+        tasks.front().dispatch.groups_from
+            .has_value());
+    REQUIRE(
+        tasks.front().dispatch.groups_from
+            ->port == "reduced");
+
+    auto mixed = config;
+    mixed["compute_tasks"][0]["dispatch"]
+         ["groups"] =
+        nlohmann::json::array({1, 1, 1});
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            mixed),
+        Catch::Matchers::ContainsSubstring(
+            "cannot be combined"));
+
+    auto legacy_scalar = config;
+    legacy_scalar["compute_tasks"][0]
+                 ["dispatch"]["groups_from"] =
+        "pixel_count";
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            legacy_scalar),
+        Catch::Matchers::ContainsSubstring(
+            "must be an object"));
+
+    auto authored_local_size = config;
+    authored_local_size["compute_tasks"][0]
+                       ["dispatch"]["local_size"] =
+        64;
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            authored_local_size),
+        Catch::Matchers::ContainsSubstring(
+            "declare the workgroup size in the compute shader"));
+
+    auto missing_port = config;
+    missing_port["compute_tasks"][0]
+                ["dispatch"]["groups_from"]
+                ["port"] = "missing";
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            missing_port),
+        Catch::Matchers::ContainsSubstring(
+            "unknown resource port"));
+
+    const auto buffer_port =
+        nlohmann::json::parse(R"json({
+          "compute_tasks": [{
+            "name": "write_buffer",
+            "shader": "shaders/write_buffer",
+            "writes": ["output"],
+            "resource_ports": {
+              "output": {
+                "resource": "output",
+                "kind": "buffer",
+                "element": "uint",
+                "access": "storage"
+              }
+            },
+            "dispatch": {
+              "groups_from": {"port": "output"}
+            }
+          }]
+        })json");
+    REQUIRE_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            buffer_port),
+        Catch::Matchers::ContainsSubstring(
+            "port must be an image"));
+}
+
+TEST_CASE(
     "typed lighting buffers derive size from render extent and parse compute ports",
     "[renderingpass][resource-port][clustered][wp208]") {
     const auto config =
