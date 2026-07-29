@@ -5518,6 +5518,10 @@ void pelican_material_outputs_v1(
 )surface";
         constexpr std::string_view surface_reference =
             "project://shaders/extended_gbuffer.surface";
+        writeTextFile(
+            temp_dir / "shaders" /
+                "extended_gbuffer.surface",
+            std::string{surface_source});
         const auto surface = parseSurfaceFormat(
             surface_source, surface_reference);
         const auto lowered = lowerSurfaceDefaults(
@@ -5664,9 +5668,9 @@ void pelican_material_outputs_v1(
             runtime.snapshot();
         REQUIRE(
             published_generation != nullptr);
-        auto incompatible_state_reload = config;
+        auto state_reload = config;
         auto &state_reload_passes =
-            incompatible_state_reload
+            state_reload
                 ["rendering_passes"][0]
                 ["passes"];
         const auto state_reload_deferred =
@@ -5685,8 +5689,8 @@ void pelican_material_outputs_v1(
             ["write_mask"] = "rg";
         writeTextFile(
             temp_dir / "extended_gbuffer.json",
-            incompatible_state_reload.dump(2));
-        REQUIRE_FALSE(
+            state_reload.dump(2));
+        REQUIRE(
             GET_MODULE(watch::ReloadService)
                 .applyRequestForTesting(
                     watch::ReloadRequest{
@@ -5694,13 +5698,25 @@ void pelican_material_outputs_v1(
                             "extended_gbuffer.json"),
                         watch::ReloadKind::modified,
                         {}, 1}));
+        const auto state_generation =
+            runtime.snapshot();
+        REQUIRE(state_generation != nullptr);
         REQUIRE(
-            runtime.snapshot() ==
+            state_generation !=
             published_generation);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto state_pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(state_pixels != pixels);
+        REQUIRE(
+            state_pixels[center + 1] >
+            pixels[center + 1]);
 
-        auto incompatible_reload = config;
+        auto coordinated_reload = state_reload;
         auto &reload_passes =
-            incompatible_reload
+            coordinated_reload
                 ["rendering_passes"][0]
                 ["passes"];
         const auto reload_deferred =
@@ -5716,21 +5732,164 @@ void pelican_material_outputs_v1(
             reload_passes.end());
         (*reload_deferred)
             ["material_outputs"]["name"] =
-            "headless.incompatible_reload";
+            "headless.coordinated_reload";
+        constexpr std::string_view
+            coordinated_surface_source =
+                R"surface(//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(0.05, 0.2, 0.1, 1.0);
+}
+
+void pelican_material_outputs_v1(
+    in PelicanSurfaceInputV1 input_data,
+    in PelicanSurfaceV1 surface,
+    inout PelicanMaterialOutputsV1 outputs) {
+    outputs.object_id = 73u;
+}
+)surface";
         writeTextFile(
             temp_dir / "extended_gbuffer.json",
-            incompatible_reload.dump(2));
-        REQUIRE_FALSE(
+            coordinated_reload.dump(2));
+        writeTextFile(
+            temp_dir / "shaders" /
+                "extended_gbuffer.surface",
+            std::string{
+                coordinated_surface_source});
+        const auto shader_version_before =
+            GET_MODULE(ShaderLibrary)
+                .get(shaders.fragment)
+                .version;
+        const std::array coordinated_requests{
+            watch::ReloadRequest{
+                watch::makeAssetKey(
+                    "extended_gbuffer.json"),
+                watch::ReloadKind::modified,
+                {}, 2},
+            watch::ReloadRequest{
+                watch::makeAssetKey(
+                    "shaders/extended_gbuffer.surface"),
+                watch::ReloadKind::modified,
+                {}, 2},
+        };
+        REQUIRE(
             GET_MODULE(watch::ReloadService)
-                .applyRequestForTesting(
-                    watch::ReloadRequest{
-                        watch::makeAssetKey(
-                            "extended_gbuffer.json"),
-                        watch::ReloadKind::modified,
-                        {}, 2}));
+                .applyRequestsForTesting(
+                    coordinated_requests) ==
+            std::vector<bool>{true, true});
+        const auto coordinated_generation =
+            runtime.snapshot();
+        REQUIRE(
+            coordinated_generation != nullptr);
+        REQUIRE(
+            coordinated_generation !=
+            state_generation);
+        REQUIRE(
+            GET_MODULE(ShaderLibrary)
+                .get(shaders.fragment)
+                .version ==
+            shader_version_before + 1);
+        const auto coordinated_schema =
+            GET_MODULE(MaterialContainer)
+                .materialOutputSchemaForTesting(
+                    material_id);
+        REQUIRE(coordinated_schema);
+        REQUIRE(
+            coordinated_schema->name ==
+            "headless.coordinated_reload");
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore)
+            .waitIdle();
+        const auto coordinated_pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            coordinated_pixels !=
+            state_pixels);
+        REQUIRE(
+            coordinated_pixels[center] <
+            state_pixels[center]);
+        REQUIRE(
+            coordinated_pixels[center + 1] >
+            state_pixels[center + 1]);
+
+        auto failed_reload =
+            coordinated_reload;
+        auto &failed_passes =
+            failed_reload
+                ["rendering_passes"][0]
+                ["passes"];
+        const auto failed_deferred =
+            std::find_if(
+                failed_passes.begin(),
+                failed_passes.end(),
+                [](const auto &pass) {
+                    return pass.at("name") ==
+                           "deferred_geometry";
+                });
+        REQUIRE(
+            failed_deferred !=
+            failed_passes.end());
+        (*failed_deferred)
+            ["material_outputs"]["name"] =
+            "headless.failed_reload";
+        writeTextFile(
+            temp_dir / "extended_gbuffer.json",
+            failed_reload.dump(2));
+        writeTextFile(
+            temp_dir / "shaders" /
+                "extended_gbuffer.surface",
+            R"surface(//! pelican.surface v1
+//! language: glsl
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    this_is_not_valid_glsl
+}
+)surface");
+        const auto failed_generation_before =
+            runtime.snapshot();
+        const auto failed_shader_version_before =
+            GET_MODULE(ShaderLibrary)
+                .get(shaders.fragment)
+                .version;
+        const std::array failed_requests{
+            watch::ReloadRequest{
+                watch::makeAssetKey(
+                    "extended_gbuffer.json"),
+                watch::ReloadKind::modified,
+                {}, 3},
+            watch::ReloadRequest{
+                watch::makeAssetKey(
+                    "shaders/extended_gbuffer.surface"),
+                watch::ReloadKind::modified,
+                {}, 3},
+        };
+        REQUIRE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestsForTesting(
+                    failed_requests) ==
+            std::vector<bool>{false, false});
         REQUIRE(
             runtime.snapshot() ==
-            published_generation);
+            failed_generation_before);
+        REQUIRE(
+            GET_MODULE(ShaderLibrary)
+                .get(shaders.fragment)
+                .version ==
+            failed_shader_version_before);
+        const auto rollback_schema =
+            GET_MODULE(MaterialContainer)
+                .materialOutputSchemaForTesting(
+                    material_id);
+        REQUIRE(rollback_schema);
+        REQUIRE(
+            rollback_schema->name ==
+            "headless.coordinated_reload");
 
         renderer.render();
         GET_MODULE(VulkanManageCore)
@@ -5739,17 +5898,8 @@ void pelican_material_outputs_v1(
             GET_MODULE(RenderTarget)
                 .readbackLastFrameRGBA8();
         REQUIRE(
-            rollback_pixels[center] > 176);
-        REQUIRE(
-            rollback_pixels[center] < 200);
-        REQUIRE(
-            rollback_pixels[center + 1] > 216);
-        REQUIRE(
-            rollback_pixels[center + 1] < 236);
-        REQUIRE(
-            rollback_pixels[center + 2] > 176);
-        REQUIRE(
-            rollback_pixels[center + 2] < 200);
+            rollback_pixels ==
+            coordinated_pixels);
 
         std::filesystem::remove_all(
             temp_dir);

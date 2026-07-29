@@ -253,10 +253,15 @@ TEST_CASE(
     auto stale = runtime.prepareGeneration({programFor(2)});
 
     runtime.publishPreparedGeneration(std::move(left));
+    bool stale_commit_called = false;
     REQUIRE_THROWS_WITH(
         runtime.publishPreparedGeneration(
-            std::move(stale)),
+            std::move(stale),
+            [&](const RendererRuntimeGeneration &) {
+                stale_commit_called = true;
+            }),
         "Renderer runtime candidate is stale");
+    REQUIRE_FALSE(stale_commit_called);
     REQUIRE(stale.valid());
     REQUIRE(runtime.activeGeneration() == 1);
     REQUIRE(revisionOf(*runtime.snapshot(),

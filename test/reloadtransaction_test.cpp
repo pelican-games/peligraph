@@ -330,6 +330,102 @@ TEST_CASE(
             std::vector<AssetKey>{root, feature});
 }
 
+TEST_CASE(
+    "ReloadService gives one batch owner selected companion requests atomically",
+    "[wp222][reload-participant][batch][companions]") {
+    if (!logger) setupLogger();
+    ReloadService service;
+    const auto graph =
+        makeAssetKey("passes/main.json");
+    const auto shader =
+        makeAssetKey("shaders/main.surface");
+    const auto texture =
+        makeAssetKey("textures/base.png");
+    std::size_t standalone_graph_applies = 0;
+    std::size_t coordinated_applies = 0;
+    std::vector<AssetKey> coordinated_owned;
+    std::vector<AssetKey> coordinated_companions;
+    std::vector<AssetKey> standalone_assets;
+
+    service.registerParticipant(ReloadParticipant{
+        .name = "fake.assets",
+        .claims =
+            [shader, texture](
+                const ReloadRequest &request) {
+                return request.key == shader ||
+                       request.key == texture;
+            },
+        .apply_batch =
+            [&standalone_assets](
+                std::span<const ReloadRequest>
+                    requests) {
+                for (const auto &request : requests) {
+                    standalone_assets.push_back(
+                        request.key);
+                }
+                return true;
+            },
+    });
+    service.registerParticipant(ReloadParticipant{
+        .name = "fake.pipeline",
+        .claims =
+            [graph](const ReloadRequest &request) {
+                return request.key == graph;
+            },
+        .apply_batch =
+            [&standalone_graph_applies](
+                std::span<const ReloadRequest>) {
+                ++standalone_graph_applies;
+                return true;
+            },
+        .companion_participants = {
+            "fake.assets"},
+        .companion_claims =
+            [shader](
+                std::string_view,
+                const ReloadRequest &request) {
+                return request.key == shader;
+            },
+        .apply_with_companions =
+            [&](
+                std::span<const ReloadRequest> owned,
+                std::span<const ReloadRequest>
+                    companions) {
+                ++coordinated_applies;
+                for (const auto &request : owned) {
+                    coordinated_owned.push_back(
+                        request.key);
+                }
+                for (const auto &request :
+                     companions) {
+                    coordinated_companions.push_back(
+                        request.key);
+                }
+                return true;
+            },
+    });
+
+    const std::array requests{
+        ReloadRequest{shader, ReloadKind::modified,
+                      {}, 1},
+        ReloadRequest{graph, ReloadKind::modified,
+                      {}, 1},
+        ReloadRequest{texture,
+                      ReloadKind::modified, {}, 1},
+    };
+    REQUIRE(
+        service.applyRequestsForTesting(requests) ==
+        std::vector<bool>{true, true, true});
+    REQUIRE(standalone_graph_applies == 0);
+    REQUIRE(coordinated_applies == 1);
+    REQUIRE(coordinated_owned ==
+            std::vector<AssetKey>{graph});
+    REQUIRE(coordinated_companions ==
+            std::vector<AssetKey>{shader});
+    REQUIRE(standalone_assets ==
+            std::vector<AssetKey>{texture});
+}
+
 TEST_CASE("ReloadService rejects ambiguous participant claims before enqueue",
           "[r7][reload-participant]") {
     if (!logger) setupLogger();
