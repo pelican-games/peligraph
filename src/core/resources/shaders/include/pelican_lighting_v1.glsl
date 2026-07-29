@@ -10,7 +10,7 @@
 #endif
 layout(set = PELICAN_SET_PASS_INPUT,
        binding = PELICAN_DIRECTIONAL_SHADOW_BINDING)
-    uniform sampler2D pelican_directional_shadow_texture;
+    uniform sampler2DArray pelican_directional_shadow_texture;
 #endif
 
 #if defined(PELICAN_FEATURE_CLUSTERED_LIGHTING)
@@ -95,7 +95,7 @@ float pelican_shadow(uint light_index, vec3 world_position) {
     float stored_depth =
         texture(
             pelican_directional_shadow_texture,
-            shadow_uv)
+            vec3(shadow_uv, 0.0))
             .r;
     const float bias = 0.0015;
     return shadow_ndc.z - bias <= stored_depth

@@ -481,6 +481,29 @@ resolveShaderResourceImageViewDimension(
         }
         return ReflectedImageViewDimension::two_d;
     }
+    if (port.view ==
+        ShaderResourcePortView::family_array) {
+        if (physical_view !=
+            VulkanResourceViewLayout::
+                family_2d_array) {
+            throw std::runtime_error(
+                prefix +
+                " requires family_array, but the physical target plan selected " +
+                std::string{
+                    vulkanResourceViewLayoutName(
+                        physical_view)});
+        }
+        return ReflectedImageViewDimension::
+            two_d_array;
+    }
+    if (physical_view ==
+        VulkanResourceViewLayout::
+            family_2d_array) {
+        throw std::runtime_error(
+            prefix +
+            " must declare family_array to consume a producer-owned "
+            "view-family array");
+    }
 
     if (physical_view ==
         VulkanResourceViewLayout::shared_2d) {

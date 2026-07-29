@@ -421,7 +421,8 @@ TEST_CASE("builtin hybrid screen inputs carry typed footprints and explicit disp
             MaterialPassInputSampling::
                 nearest_clamp_to_edge);
     REQUIRE(shadow.view_policy ==
-            MaterialPassInputViewPolicy::shared_2d);
+            MaterialPassInputViewPolicy::
+                family_array);
     REQUIRE(shadow.fallback ==
             MaterialPassInputFallback::fully_lit);
     REQUIRE(shadow.relation.has_value());

@@ -417,8 +417,12 @@ void FullscreenPassContainer::setInputResourcesById(
             info.input_rt_views.begin(),
             info.input_rt_views.end(),
             [](PassInputViewDimension dimension) {
-                return dimension !=
-                       PassInputViewDimension::shared_2d;
+                return dimension ==
+                           PassInputViewDimension::
+                               sequential_2d ||
+                       dimension ==
+                           PassInputViewDimension::
+                               layered_2d_array;
             });
     if (logical_view_count == 0) {
         logical_view_count =
@@ -432,7 +436,10 @@ void FullscreenPassContainer::setInputResourcesById(
             for (std::size_t input = 0;
                  input < input_rts.size(); ++input) {
                 if (info.input_rt_views[input] ==
-                    PassInputViewDimension::shared_2d) {
+                        PassInputViewDimension::shared_2d ||
+                    info.input_rt_views[input] ==
+                        PassInputViewDimension::
+                            family_2d_array) {
                     continue;
                 }
                 logical_view_count = std::max(
@@ -530,6 +537,15 @@ void FullscreenPassContainer::setInputResourcesById(
         } else if (
             info.input_rt_views[input] ==
                 PassInputViewDimension::
+                    family_2d_array) {
+            if (selected_layers == 0) {
+                throw std::runtime_error(
+                    "Fullscreen family_array input must select at least "
+                    "one producer-family layer");
+            }
+        } else if (
+            info.input_rt_views[input] ==
+                PassInputViewDimension::
                     sequential_2d) {
             if (selected_layers != 1 &&
                 selected_layers <
@@ -592,6 +608,9 @@ void FullscreenPassContainer::setInputResourcesById(
                     auto subresource =
                         *info.input_rt_subresources[i];
                     const auto sequential =
+                        dimension !=
+                                PassInputViewDimension::
+                                    family_2d_array &&
                         view.execution ==
                                 GraphicsPipelineViewExecution::
                                     single_view &&
@@ -607,9 +626,22 @@ void FullscreenPassContainer::setInputResourcesById(
                                 input_rts[i],
                                 subresource,
                                 !sequential &&
-                                    dimension ==
-                                        PassInputViewDimension::
-                                            layered_2d_array,
+                                    (dimension ==
+                                         PassInputViewDimension::
+                                             layered_2d_array ||
+                                     dimension ==
+                                         PassInputViewDimension::
+                                             family_2d_array),
+                                input_rt_history[i],
+                                parity);
+                } else if (
+                    dimension ==
+                    PassInputViewDimension::
+                        family_2d_array) {
+                    image_view =
+                        rt_views
+                            .getLayeredImageViewForFrame(
+                                input_rts[i],
                                 input_rt_history[i],
                                 parity);
                 } else if (view.execution ==

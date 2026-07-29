@@ -197,6 +197,8 @@ PassInputViewDimension inputViewDimension(
         return PassInputViewDimension::sequential_2d;
     case VulkanResourceViewLayout::layered_2d_array:
         return PassInputViewDimension::layered_2d_array;
+    case VulkanResourceViewLayout::family_2d_array:
+        return PassInputViewDimension::family_2d_array;
     }
     throw std::runtime_error(
         "unknown physical input view layout");
@@ -1008,23 +1010,28 @@ compilePassRenderingContract(
     return result;
 }
 
-void appendMultiviewShaderDefines(
+void appendViewShaderDefines(
     std::vector<std::string> &defines,
     const PassDefinition &pass,
     const GraphicsPipelineViewContract &view) {
-    if (view.execution !=
+    if (view.execution ==
         GraphicsPipelineViewExecution::multiview) {
-        return;
+        defines.push_back("PELICAN_MULTIVIEW=1");
+        defines.push_back(
+            "PELICAN_VIEW_COUNT=" +
+            std::to_string(view.view_count));
     }
-    defines.push_back("PELICAN_MULTIVIEW=1");
-    defines.push_back(
-        "PELICAN_VIEW_COUNT=" +
-        std::to_string(view.view_count));
     for (std::size_t binding = 0;
          binding < pass.input_target_views.size();
          ++binding) {
-        if (pass.input_target_views[binding] ==
-            PassInputViewDimension::layered_2d_array) {
+        const auto dimension =
+            pass.input_target_views[binding];
+        if ((view.execution ==
+                 GraphicsPipelineViewExecution::multiview &&
+             dimension ==
+                 PassInputViewDimension::layered_2d_array) ||
+            dimension ==
+                PassInputViewDimension::family_2d_array) {
             defines.push_back(
                 "PELICAN_INPUT_" +
                 std::to_string(binding) +
@@ -1346,6 +1353,8 @@ VulkanResourceViewLayout physicalViewLayout(
         return VulkanResourceViewLayout::sequential_2d;
     case PassInputViewDimension::layered_2d_array:
         return VulkanResourceViewLayout::layered_2d_array;
+    case PassInputViewDimension::family_2d_array:
+        return VulkanResourceViewLayout::family_2d_array;
     }
     throw std::runtime_error(
         "unknown fullscreen input view dimension");
@@ -1515,6 +1524,9 @@ compileFullscreenResourceInterface(
         if (dimension ==
                 ReflectedImageViewDimension::
                     two_d_array &&
+            physical !=
+                VulkanResourceViewLayout::
+                    family_2d_array &&
             metadata.array_layers <
                 logical_view_count) {
             throw std::runtime_error(
@@ -1731,7 +1743,7 @@ PassId registerFullscreenPipeline(
         (color_format == vk::Format::eR8G8B8A8Unorm || color_format == vk::Format::eB8G8R8A8Unorm)) {
         dependencies.shader_defines.push_back("PELICAN_OUTPUT_UNORM_FALLBACK");
     }
-    appendMultiviewShaderDefines(
+    appendViewShaderDefines(
         dependencies.shader_defines, pass_def, view);
     appendLocalReadShaderDefines(
         dependencies.shader_defines, pass_def,

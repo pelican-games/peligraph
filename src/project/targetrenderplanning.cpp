@@ -1465,6 +1465,8 @@ std::string_view vulkanResourceViewLayoutName(
         return "sequential_2d";
     case VulkanResourceViewLayout::layered_2d_array:
         return "layered_2d_array";
+    case VulkanResourceViewLayout::family_2d_array:
+        return "family_2d_array";
     }
     throw std::runtime_error(
         "unknown Vulkan resource view layout");
@@ -1914,6 +1916,10 @@ void applyResourceViewLayouts(
         bool multiview_touch = false;
         bool multiview_write = false;
         bool sequential_write = false;
+        std::set<std::string, std::less<>>
+            writer_families;
+        std::set<std::string, std::less<>>
+            reader_families;
         for (const auto &node : workspace.nodes) {
             const auto execution =
                 view_plan.requireNode(
@@ -1928,6 +1934,14 @@ void applyResourceViewLayouts(
                     use.output_value->resource ==
                         resource.logical_resource;
                 if (!reads && !writes) continue;
+                if (reads) {
+                    reader_families.insert(
+                        node.logical.view_family);
+                }
+                if (writes) {
+                    writer_families.insert(
+                        node.logical.view_family);
+                }
                 if (execution ==
                     VulkanScopeViewExecution::multiview) {
                     multiview_touch = true;
@@ -1942,7 +1956,27 @@ void applyResourceViewLayouts(
             }
         }
 
-        if (multiview_write ||
+        const bool crosses_view_families =
+            std::any_of(
+                writer_families.begin(),
+                writer_families.end(),
+                [&](const std::string &writer) {
+                    return std::any_of(
+                        reader_families.begin(),
+                        reader_families.end(),
+                        [&](const std::string &reader) {
+                            return writer != reader;
+                        });
+                });
+        if (crosses_view_families) {
+            // The producer family's runtime cardinality is independent of
+            // the consumer (for example four shadow cascades feeding one or
+            // two camera views). Preserve the whole producer-owned array
+            // instead of indexing it with the consumer view.
+            resource.view_layout =
+                VulkanResourceViewLayout::
+                    family_2d_array;
+        } else if (multiview_write ||
             (multiview_touch && sequential_write)) {
             resource.view_layout =
                 VulkanResourceViewLayout::layered_2d_array;
@@ -1971,6 +2005,10 @@ void applyResourceViewLayouts(
                     VulkanResourceViewLayout::layered_2d_array
                 ? "multiview output or a sequential-to-multiview "
                   "boundary requires all view layers to coexist"
+            : resource.view_layout ==
+                      VulkanResourceViewLayout::family_2d_array
+                ? "a resource crossing view-family ownership preserves "
+                  "the producer family's complete array"
             : resource.view_layout ==
                       VulkanResourceViewLayout::sequential_2d
                 ? "view-dependent writes execute once per view"

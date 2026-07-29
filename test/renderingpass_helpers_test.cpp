@@ -2007,7 +2007,8 @@ TEST_CASE("material pass surface resources resolve the feature-owned directional
     REQUIRE(binding.contract.sampling ==
             MaterialPassInputSampling::nearest_clamp_to_edge);
     REQUIRE(binding.contract.view_policy ==
-            MaterialPassInputViewPolicy::shared_2d);
+            MaterialPassInputViewPolicy::
+                family_array);
     REQUIRE(binding.contract.fallback ==
             MaterialPassInputFallback::fully_lit);
     REQUIRE(binding.contract.relation);

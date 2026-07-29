@@ -75,6 +75,9 @@ ShaderResourcePortView parseView(
     if (value == "per_view") {
         return ShaderResourcePortView::per_view;
     }
+    if (value == "family_array") {
+        return ShaderResourcePortView::family_array;
+    }
     throw std::runtime_error(
         std::string{context} +
         ".view has unknown value '" + value + "'");
@@ -362,6 +365,8 @@ std::string_view shaderResourcePortViewName(
         return "shared_2d";
     case ShaderResourcePortView::per_view:
         return "per_view";
+    case ShaderResourcePortView::family_array:
+        return "family_array";
     }
     throw std::runtime_error(
         "unknown shader resource port view");

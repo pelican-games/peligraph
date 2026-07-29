@@ -3671,6 +3671,9 @@ MaterialContainer::buildScreenInputDescriptor(
         if (resource.isImage() &&
             resource.view_dimension !=
                 PassInputViewDimension::shared_2d &&
+            resource.view_dimension !=
+                PassInputViewDimension::
+                    family_2d_array &&
             !(resource.isInputAttachment() &&
               resource.view_dimension ==
                   PassInputViewDimension::
@@ -3684,6 +3687,9 @@ MaterialContainer::buildScreenInputDescriptor(
         if (resource.isImage() &&
             resource.view_dimension !=
                 PassInputViewDimension::shared_2d &&
+            resource.view_dimension !=
+                PassInputViewDimension::
+                    family_2d_array &&
             !(resource.isInputAttachment() &&
               resource.view_dimension ==
                   PassInputViewDimension::
@@ -3755,10 +3761,13 @@ MaterialContainer::buildScreenInputDescriptor(
                     continue;
                 }
                 const auto image_view =
-                    resource.isInputAttachment() &&
-                            resource.view_dimension ==
-                                PassInputViewDimension::
-                                    layered_2d_array
+                    resource.view_dimension ==
+                            PassInputViewDimension::
+                                family_2d_array ||
+                        (resource.isInputAttachment() &&
+                         resource.view_dimension ==
+                             PassInputViewDimension::
+                                 layered_2d_array)
                         ? rt_views
                               .getLayeredImageViewForFrame(
                                   resource.target,
@@ -3931,6 +3940,18 @@ MaterialContainer::ensureScreenInputDescriptor(
                 "' requires shared_2d view policy in pass '" +
                 pass.name + "'");
         }
+        if (required.contract.view_policy ==
+                MaterialPassInputViewPolicy::
+                    family_array &&
+            view_dimension !=
+                PassInputViewDimension::
+                    family_2d_array) {
+            throw std::runtime_error(
+                "material pass input '" +
+                required.contract.name +
+                "' requires family_array view policy in pass '" +
+                pass.name + "'");
+        }
         resources.push_back(
             InternalMaterialInfo::ScreenInputResource{
                 .name = required.contract.name,
@@ -4090,6 +4111,30 @@ MaterialContainer::ensureScreenInputDescriptor(
                 "material resource port '" +
                 required.port.name +
                 "' requires per_view in pass '" +
+                pass.name + "'");
+        }
+        if (binding->port.view ==
+                ShaderResourcePortView::
+                    family_array &&
+            view_dimension !=
+                PassInputViewDimension::
+                    family_2d_array) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' requires family_array in pass '" +
+                pass.name + "'");
+        }
+        if (binding->port.view !=
+                ShaderResourcePortView::
+                    family_array &&
+            view_dimension ==
+                PassInputViewDimension::
+                    family_2d_array) {
+            throw std::runtime_error(
+                "material resource port '" +
+                required.port.name +
+                "' must declare family_array in pass '" +
                 pass.name + "'");
         }
         if (view_dimension ==

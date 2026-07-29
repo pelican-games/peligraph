@@ -23,6 +23,7 @@ std::string_view materialPassInputSamplingName(
 enum class MaterialPassInputViewPolicy : std::uint8_t {
     consumer_view,
     shared_2d,
+    family_array,
 };
 
 std::string_view materialPassInputViewPolicyName(

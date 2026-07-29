@@ -25,6 +25,8 @@ std::string_view materialPassInputViewPolicyName(
         return "consumer_view";
     case MaterialPassInputViewPolicy::shared_2d:
         return "shared_2d";
+    case MaterialPassInputViewPolicy::family_array:
+        return "family_array";
     }
     throw std::runtime_error("unknown material pass input view policy");
 }
@@ -96,7 +98,7 @@ MaterialPassInputContract makeBuiltinMaterialPassInputContract(
             .sampling =
                 MaterialPassInputSampling::nearest_clamp_to_edge,
             .view_policy =
-                MaterialPassInputViewPolicy::shared_2d,
+                MaterialPassInputViewPolicy::family_array,
             .fallback =
                 MaterialPassInputFallback::fully_lit,
             .relation =

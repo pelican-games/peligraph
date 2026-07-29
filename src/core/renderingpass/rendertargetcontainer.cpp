@@ -134,7 +134,6 @@ createSequentialImageViews(
 
 static vk::UniqueImageView createLayeredImageView(
     vk::Device device, const ImageWrapper &image) {
-    if (image.array_layers == 1) return {};
     return createImageView(
         device, image, vk::ImageViewType::e2DArray,
         ImageSubresourceRange{

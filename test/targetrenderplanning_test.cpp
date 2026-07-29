@@ -312,6 +312,9 @@ CompiledLogicalRenderGraph hybridGraphWithSharedShadow(
     shadow.name = "ShadowDepth";
     shadow.kind = LogicalGraphNodeKind::render;
     shadow.region_tags = {"region.shadow"};
+    shadow.view_family =
+        std::string{
+            directionalShadowRenderViewFamilyId};
     addWrite(
         types, shadow,
         resource(graph, "directional_shadow"), 1,
@@ -2253,7 +2256,7 @@ TEST_CASE("view execution planning keeps mono and sequential stereo as explicit 
                 sequential.required_physical_features.end());
 }
 
-TEST_CASE("directional shadow remains one shared image for flat preview sequential XR and multiview",
+TEST_CASE("directional shadow remains one producer-family array for flat preview sequential XR and multiview",
           "[target-render-planning][view-execution][shadow][wp205]") {
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto graph =
@@ -2291,7 +2294,8 @@ TEST_CASE("directional shadow remains one shared image for flat preview sequenti
         REQUIRE(physicalResource(
                     *plan, "directional_shadow")
                     .view_layout ==
-                VulkanResourceViewLayout::shared_2d);
+                VulkanResourceViewLayout::
+                    family_2d_array);
         REQUIRE(physicalResource(
                     *plan, "directional_shadow")
                     .array_layers == 1);
@@ -2321,7 +2325,8 @@ TEST_CASE("directional shadow remains one shared image for flat preview sequenti
     REQUIRE(physicalResource(
                 sequential, "directional_shadow")
                 .view_layout ==
-            VulkanResourceViewLayout::shared_2d);
+            VulkanResourceViewLayout::
+                family_2d_array);
     REQUIRE(physicalResource(
                 sequential, "directional_shadow")
                 .array_layers == 1);
@@ -2349,7 +2354,8 @@ TEST_CASE("directional shadow remains one shared image for flat preview sequenti
     REQUIRE(physicalResource(
                 multiview, "directional_shadow")
                 .view_layout ==
-            VulkanResourceViewLayout::shared_2d);
+            VulkanResourceViewLayout::
+                family_2d_array);
     REQUIRE(physicalResource(
                 multiview, "directional_shadow")
                 .array_layers == 1);

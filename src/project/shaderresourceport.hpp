@@ -24,6 +24,7 @@ std::string_view shaderResourcePortAccessName(
 enum class ShaderResourcePortView : std::uint8_t {
     shared_2d,
     per_view,
+    family_array,
 };
 
 std::string_view shaderResourcePortViewName(

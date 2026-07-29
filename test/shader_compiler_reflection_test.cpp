@@ -334,7 +334,7 @@ void main() {
 }
 
 TEST_CASE(
-    "resource port view resolver separates shared sequential and multiview "
+    "resource port view resolver separates shared consumer and producer-family "
     "contracts",
     "[shader][resource-port][multiview][wp207a]") {
     ShaderResourcePortDefinition shared{
@@ -345,6 +345,12 @@ TEST_CASE(
         .name = "eyes",
         .resource = "eye_color",
         .view = ShaderResourcePortView::per_view,
+    };
+    ShaderResourcePortDefinition family_array{
+        .name = "cascades",
+        .resource = "shadow",
+        .view =
+            ShaderResourcePortView::family_array,
     };
     REQUIRE(
         resolveShaderResourceImageViewDimension(
@@ -413,6 +419,33 @@ TEST_CASE(
                 graphics_multiview),
         Catch::Matchers::ContainsSubstring(
             "resource 'shadow'"));
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            family_array,
+            VulkanResourceViewLayout::
+                family_2d_array,
+            ShaderResourceConsumerView::
+                graphics_multiview) ==
+        ReflectedImageViewDimension::
+            two_d_array);
+    REQUIRE_THROWS_WITH(
+        resolveShaderResourceImageViewDimension(
+            per_view,
+            VulkanResourceViewLayout::
+                family_2d_array,
+            ShaderResourceConsumerView::
+                graphics_sequential),
+        Catch::Matchers::ContainsSubstring(
+            "must declare family_array"));
+    REQUIRE_THROWS_WITH(
+        resolveShaderResourceImageViewDimension(
+            family_array,
+            VulkanResourceViewLayout::
+                layered_2d_array,
+            ShaderResourceConsumerView::
+                graphics_multiview),
+        Catch::Matchers::ContainsSubstring(
+            "requires family_array"));
 }
 
 TEST_CASE("UI shader reflection and QuadVertex pipeline layout preserve the 20-byte ABI", "[shader][ui][u1]") {

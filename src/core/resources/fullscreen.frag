@@ -102,7 +102,8 @@ float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
         return 1.0;
     }
 
-    float storedDepth = PELICAN_TEXTURE_2D_6(shadowMapSampler, shadowUv).r;
+    float storedDepth =
+        texture(shadowMapSampler, vec3(shadowUv, 0.0)).r;
     float bias = max(0.0025 * (1.0 - dot(normal, lightDir)), 0.0008);
     return shadowNdc.z - bias <= storedDepth ? 1.0 : 0.35;
 }

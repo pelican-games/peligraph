@@ -175,6 +175,7 @@ enum class VulkanResourceViewLayout : std::uint8_t {
     shared_2d,
     sequential_2d,
     layered_2d_array,
+    family_2d_array,
 };
 
 std::string_view vulkanResourceViewLayoutName(

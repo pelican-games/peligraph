@@ -94,12 +94,15 @@ void validateViewExecution(
          input_index <
          pass.definition.input_targets.size();
          ++input_index) {
-        const auto shared =
+        const auto consumer_independent =
             pass.definition.input_target_views.size() ==
                     pass.definition.input_targets.size() &&
-                pass.definition.input_target_views[input_index] ==
-                    PassInputViewDimension::shared_2d;
-        if (!shared) {
+                (pass.definition.input_target_views[input_index] ==
+                     PassInputViewDimension::shared_2d ||
+                 pass.definition.input_target_views[input_index] ==
+                     PassInputViewDimension::
+                         family_2d_array);
+        if (!consumer_independent) {
             require_layers(
                 pass.definition
                     .input_targets[input_index]);
