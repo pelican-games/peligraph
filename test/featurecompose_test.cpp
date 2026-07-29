@@ -776,6 +776,7 @@ TEST_CASE(
                  {"plane_z", 0.0},
                  {"plane_offset", -2.0},
                  {"preserve_raster_winding", true},
+                 {"oblique_near_plane", true},
              }},
         };
     const auto result =
@@ -941,6 +942,20 @@ TEST_CASE(
         std::get<double>(
             plane_y->value) ==
         Catch::Approx(2.0));
+    const auto oblique_near_plane =
+        std::find_if(
+            feature->parameters.begin(),
+            feature->parameters.end(),
+            [](const auto &parameter) {
+                return parameter.name ==
+                       "oblique_near_plane";
+            });
+    REQUIRE(
+        oblique_near_plane !=
+        feature->parameters.end());
+    REQUIRE(
+        std::get<bool>(
+            oblique_near_plane->value));
 
     for (const auto shadow_first :
          {false, true}) {

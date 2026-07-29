@@ -1,5 +1,6 @@
 #include "planarreflectionview.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -60,7 +61,120 @@ bool finiteMatrix(const glm::mat4 &matrix) {
     return true;
 }
 
+bool finiteVector(const glm::vec4 &value) {
+    return std::isfinite(value.x) &&
+           std::isfinite(value.y) &&
+           std::isfinite(value.z) &&
+           std::isfinite(value.w);
+}
+
 } // namespace
+
+std::optional<glm::mat4>
+tryBuildObliqueNearPlaneProjectionZO(
+    const glm::mat4 &projection,
+    const glm::mat4 &view,
+    const RenderViewClipPlane &clip_plane) {
+    if (!finiteMatrix(projection) ||
+        !finiteMatrix(view)) {
+        throw std::invalid_argument(
+            "oblique near-plane projection requires finite matrices");
+    }
+    const auto plane =
+        normalizedPlane(clip_plane);
+    const auto inverse_view =
+        glm::inverse(view);
+    const auto inverse_projection =
+        glm::inverse(projection);
+    if (!finiteMatrix(inverse_view) ||
+        !finiteMatrix(inverse_projection)) {
+        throw std::invalid_argument(
+            "oblique near-plane projection requires invertible matrices");
+    }
+
+    const auto view_plane =
+        glm::transpose(inverse_view) *
+        glm::vec4{
+            plane.normal,
+            plane.offset};
+    if (!finiteVector(view_plane)) {
+        throw std::invalid_argument(
+            "oblique near-plane projection produced an invalid view plane");
+    }
+
+    // The retained half-space must begin in front of the camera. When the
+    // camera is on/inside it, the semantic clip plane is behind the near
+    // boundary and fragment/CPU clipping remains the correct fallback.
+    constexpr float applicability_epsilon =
+        1.0e-5f;
+    if (view_plane.w >=
+        -applicability_epsilon) {
+        return std::nullopt;
+    }
+
+    // Vulkan's forward-Z clip volume uses 0 <= z <= w. The new near row is
+    // k * plane, and k is chosen so the far-face corner deepest inside the
+    // retained half-space still maps to z == w. Enumerating the near face too
+    // rejects orientations whose retained distance decreases along the view;
+    // those planes cannot safely replace a forward-Z near boundary.
+    float near_plane_dot =
+        -std::numeric_limits<float>::infinity();
+    float far_plane_dot =
+        -std::numeric_limits<float>::infinity();
+    for (const auto z : {0.0f, 1.0f}) {
+        for (const auto x : {-1.0f, 1.0f}) {
+            for (const auto y : {-1.0f, 1.0f}) {
+                const auto view_corner =
+                    inverse_projection *
+                    glm::vec4{
+                        x, y, z, 1.0f};
+                if (!finiteVector(view_corner)) {
+                    throw std::invalid_argument(
+                        "oblique near-plane projection produced an invalid "
+                        "clip-volume corner");
+                }
+                const auto plane_dot =
+                    glm::dot(
+                        view_plane,
+                        view_corner);
+                if (!std::isfinite(plane_dot)) {
+                    throw std::invalid_argument(
+                        "oblique near-plane projection produced an invalid "
+                        "clip-volume distance");
+                }
+                auto &face_max =
+                    z == 0.0f
+                        ? near_plane_dot
+                        : far_plane_dot;
+                face_max =
+                    std::max(
+                        face_max,
+                        plane_dot);
+            }
+        }
+    }
+    if (far_plane_dot <=
+            applicability_epsilon ||
+        far_plane_dot <=
+            near_plane_dot +
+                applicability_epsilon) {
+        return std::nullopt;
+    }
+
+    auto result = projection;
+    const auto near_row =
+        view_plane / far_plane_dot;
+    for (glm::length_t column = 0;
+         column < 4; ++column) {
+        result[column][2] =
+            near_row[column];
+    }
+    if (!finiteMatrix(result)) {
+        throw std::invalid_argument(
+            "oblique near-plane projection produced an invalid matrix");
+    }
+    return result;
+}
 
 RenderViewFamily buildPlanarReflectionViewFamily(
     const RenderViewFamily &main_family,
@@ -106,17 +220,31 @@ RenderViewFamily buildPlanarReflectionViewFamily(
             glm::vec4{
                 source.camera_position,
                 1.0f};
+        const auto reflected_view =
+            source.view *
+            reflection;
+        auto reflected_projection =
+            settings
+                    .preserve_raster_winding
+                ? clip_x_flip *
+                      source.projection
+                : source.projection;
+        if (settings.oblique_near_plane) {
+            if (const auto oblique =
+                    tryBuildObliqueNearPlaneProjectionZO(
+                        reflected_projection,
+                        reflected_view,
+                        plane)) {
+                reflected_projection =
+                    *oblique;
+            }
+        }
         result.views.push_back(
             RenderViewParameters{
                 .view =
-                    source.view *
-                    reflection,
+                    reflected_view,
                 .projection =
-                    settings
-                            .preserve_raster_winding
-                        ? clip_x_flip *
-                              source.projection
-                        : source.projection,
+                    reflected_projection,
                 .camera_position =
                     glm::vec3{
                         reflected_position},

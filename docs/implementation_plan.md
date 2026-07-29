@@ -117,6 +117,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP227 | planar reflection Forward opaque capture / pass binding inheritance | ✅ 完了（2026-07-29）。Forward再描画、late binding継承、clustered compiler ABI、実GPU |
 | WP228 | secondary ViewFamily transparent capture / family-local sort | ✅ 完了（2026-07-29）。同一sort providerのview別再評価、reflection-local snapshot、Forward transparent再描画、実GPU |
 | WP229 | ViewFamily-local clustered light selection | ✅ 完了（2026-07-29）。selection ABI v2、family token、XR左右眼領域、cross-feature integration、reflection多灯実GPU |
+| WP230 | planar reflection oblique near-plane projection | ✅ 完了（2026-07-29）。Vulkan ZO一般式、透視/非対称/正射影/X反転、fallback、実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -974,6 +975,18 @@ reflectionにも存在するpassだけを統合できる。41灯のreflection Vu
 XR左右眼GPU readbackで、LightUBO上限を超えたinventory、family token、overflowを検証した。
 詳細は
 [`2026-07-29_wp229_view_family_clustered_selection_report.md`](design_reviews/2026-07-29_wp229_view_family_clustered_selection_report.md)
+を参照する。
+
+WP230で標準planar reflection providerへoblique near-plane projectionを追加した。
+world clip planeを反射view spaceへinverse-transposeし、Vulkan forward-Zのnear/far面8隅を
+逆投影して向きを検証し、far面でretained half-space内最大のcornerを選ぶ。projectionの
+near rowだけを`plane / dot(plane, far_corner)`へ置換するため、`0 <= z <= w`のnear境界が
+鏡面と一致する。
+固定のperspective要素を仮定せず、非対称XR、正射影、raster winding用X反転も同じ関数で扱う。
+planeがcamera前方に無い場合やfar面と交差しない場合はprojectionを変更せず、従来の
+clip-plane culling/fragment discardへfallbackする。標準featureは既定ONだがparameterで
+無効化でき、caller-authored familyの置換境界も維持した。詳細は
+[`2026-07-29_wp230_planar_oblique_projection_report.md`](design_reviews/2026-07-29_wp230_planar_oblique_projection_report.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

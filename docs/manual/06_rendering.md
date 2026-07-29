@@ -260,7 +260,8 @@ planar reflectionも同じparameter/provider境界で有効化できます。
       "plane_y": 1.0,
       "plane_z": 0.0,
       "plane_offset": 0.0,
-      "preserve_raster_winding": true
+      "preserve_raster_winding": true,
+      "oblique_near_plane": true
     }
   }
 ]
@@ -272,6 +273,14 @@ clip planeで反対側のgeometryを捨て、既知world boundsは同じplaneと
 submission cullingされます。targetは`resolution × resolution`、2 layers固定で、flatでは
 layer 0、XR sequentialでは対応eye layerを使います。同名`$reflection/planar` familyを
 runtime callerが渡すとbuiltin camera providerを置換できます。
+
+`oblique_near_plane`は既定で有効です。builtin providerは反射後の非jitter投影を
+Vulkan forward-Zの`0 <= z <= w`規約で補正し、retained half-spaceのplaneをrasterizerの
+near境界へ移します。透視、非対称XR、正射影、`preserve_raster_winding`のX反転を同じ
+一般式で扱います。planeが反射cameraの前に無い、view方向へ後退する、またはfar面と
+交差しない場合は元の投影を維持し、既存のCPU cullingとfragment clip planeだけを使います。
+独自projection conventionを使うprojectはこのparameterを`false`にするか、
+`$reflection/planar` family自体を提供できます。
 
 標準featureは`deferred_geometry_v1`、`forward_opaque_v1`、`forward_transparent_v1`を
 captureします。Deferred geometryはreflection用G-bufferとlightingを通り、Forward opaqueは
@@ -298,8 +307,8 @@ clustered light selection v2はViewFamily/viewごとに独立します。標準b
 flatは先頭領域、XR sequentialは左右眼の各領域を使います。planar reflection併用時は
 `$reflection/planar`専用buffer/taskがintegrationから追加され、scalable inventoryだけを
 main viewと共有します。headerが現在のFrameUBOと一致しない場合はLightUBOへ安全側fallback
-するため、別familyのselectionや未生成領域を誤用しません。secondary multiview、oblique
-near-plane projection、標準roughness prefilterは後続です。
+するため、別familyのselectionや未生成領域を誤用しません。secondary multiviewと
+標準roughness prefilterは後続です。
 
 ### canonical anchor(✅WP73)
 
@@ -1339,7 +1348,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
-- **論理フレーム / ViewFamily(WP128/WP223〜229)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
+- **論理フレーム / ViewFamily(WP128/WP223〜230)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。planar reflectionのbuiltin providerはclip planeをVulkan ZOのoblique near planeへ変換します。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
 - **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
 - **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。

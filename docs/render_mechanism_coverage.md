@@ -123,7 +123,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | D3 | parallax-corrected reflection probe | **△** | baked texture + hook。probe selection/data は material単位または G5 |
 | D4 | post SSR | **△** | scene color + depth fullscreen で構成可能。実 feature 未作成 |
 | D5 | material SSR/refraction integration | **○** | typed screen input と実 Vulkan refraction test 済み |
-| D6 | planar reflection | **△** | WP226〜229でreflection provider、per-view clip plane、独立解像度Deferred + Forward opaque/transparent capture、汎用family culling、view-local transparent sort、ViewFamily-local clustered selectionを実Vulkan実装。標準sampling/prefilter、oblique projection、secondary multiviewは未完(G6b) |
+| D6 | planar reflection | **△** | WP226〜230でreflection provider、per-view clip plane、Vulkan ZO oblique projection、独立解像度Deferred + Forward opaque/transparent capture、汎用family culling、view-local transparent sort、ViewFamily-local clustered selectionを実Vulkan実装。標準sampling/prefilterとsecondary multiviewは未完(G6b) |
 | D7 | hybrid RT reflection | **✕** | acceleration structure/RT pipeline と descriptor path が無い(G7/G9) |
 
 ### E. volumetric / atmosphere
@@ -221,7 +221,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a（解消済み、WP205）** | public directional shadow resource/light relation、generated `pelican_shadow()`、project-copy同値とpurgeを実装 | filtered PCF/PCSSは品質algorithm側の残件 |
-| **G6b（部分解消: WP223〜229）** | stable runtime ViewFamily、pass/task relation、secondary sequential scheduling、family固有extent、directional CSM、planar reflection、汎用secondary culling、family別transparent sort、family-local clustered selectionを実装。secondary multiviewとcube provider/attachmentが未完 | point/spot shadow、reflection probe、advanced planar capture |
+| **G6b（部分解消: WP223〜230）** | stable runtime ViewFamily、pass/task relation、secondary sequential scheduling、family固有extent、directional CSM、planar reflection、oblique near-plane、汎用secondary culling、family別transparent sort、family-local clustered selectionを実装。secondary multiviewとcube provider/attachmentが未完 | point/spot shadow、reflection probe、advanced planar capture |
 | **G7** | acceleration structure / RT shader/pipeline contractが無い | K1/K2 |
 | **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
@@ -269,7 +269,7 @@ upscale resolution contract、public directional shadow receptionである。
 推奨順は次である。
 
 1. WP204 runtime sliceは完了
-2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227、transparent capture/sortはWP228、family-local clustered selectionはWP229で完了。G6bの次はsecondary multiviewまたはpoint/spot cube provider
+2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227、transparent capture/sortはWP228、family-local clustered selectionはWP229、oblique near-planeはWP230で完了。G6bの次はsecondary multiviewまたはpoint/spot cube provider
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了

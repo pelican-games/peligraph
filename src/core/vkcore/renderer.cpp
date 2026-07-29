@@ -366,6 +366,11 @@ planarReflectionRuntimeSettings(
                 *feature,
                 "preserve_raster_winding",
                 true),
+        .oblique_near_plane =
+            featureBool(
+                *feature,
+                "oblique_near_plane",
+                true),
     };
 }
 

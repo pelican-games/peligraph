@@ -3721,6 +3721,7 @@ void writePlanarReflectionProject(
                      {"plane_z", 0.0},
                      {"plane_offset", 0.0},
                      {"preserve_raster_winding", true},
+                     {"oblique_near_plane", true},
                  }},
             },
             "engine://features/clustered_lighting.json",

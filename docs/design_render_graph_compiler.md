@@ -606,6 +606,14 @@ deferred G-buffer、SSAO、lightingに続いてForward opaqueをreflection famil
 結果をnamed material resource portとして公開する。同名familyをcallerが与えた場合は
 builtin providerを使わない。
 
+標準providerは反射viewとraster winding補正後の非jitter projectionに対して、world planeを
+Vulkan forward-Zのoblique near planeへ変換する。near row以外を維持し、near/far面8隅の
+逆投影で向きを検証してfar面からscaleを求めるため、透視/正射影、非対称projection、X反転を
+特別分岐なしで扱う。retained
+half-spaceがcamera前方に無い、またはfar面と交差しないときはprojectionを変更せず、
+同じsemantic planeによるsubmission cullingとfragment discardへfallbackする。
+`oblique_near_plane=false`またはcaller-authored familyで全面置換できる。
+
 再描画passは`inherit_bindings_from`でcanonical passを参照できる。このfieldはruntime
 IRではなくfeature composerのlate helperである。全featureのmerge、override、surface
 resource consumer解決後に展開し、material passでは同じ`material_contract`の
@@ -650,8 +658,8 @@ attachmentをsampleする再帰feedbackを防ぐ。透明surfaceのdepth write�
 
 残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiviewである。
 CSMやreflectionを単なる特殊passへ戻さず、これらも
-stable family relationを通して拡張する。planar reflection側にはさらにoblique near-plane
-projection、roughness prefilter/sampling policyが残る。
+stable family relationを通して拡張する。planar reflection側はoblique near-planeを実装済みで、
+roughness prefilter/sampling policyが残る。
 
 ## 4. scene、material、light の contract
 

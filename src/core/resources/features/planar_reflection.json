@@ -46,6 +46,12 @@
         "type": "bool",
         "default": true,
         "shader_define": false
+      },
+      {
+        "name": "oblique_near_plane",
+        "type": "bool",
+        "default": true,
+        "shader_define": false
       }
     ]
   },

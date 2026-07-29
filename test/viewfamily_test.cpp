@@ -416,6 +416,81 @@ TEST_CASE(
         Catch::Approx(
             -main.views[0]
                  .projection[0][0]));
+    glm::mat4 clip_x_flip{1.0f};
+    clip_x_flip[0][0] = -1.0f;
+    const auto unmodified_reflection_projection =
+        clip_x_flip *
+        main.views[0].projection;
+    bool near_row_changed = false;
+    for (glm::length_t column = 0;
+         column < 4; ++column) {
+        REQUIRE(
+            reflection.views[0]
+                .projection[column][0] ==
+            Catch::Approx(
+                unmodified_reflection_projection
+                    [column][0]));
+        REQUIRE(
+            reflection.views[0]
+                .projection[column][1] ==
+            Catch::Approx(
+                unmodified_reflection_projection
+                    [column][1]));
+        REQUIRE(
+            reflection.views[0]
+                .projection[column][3] ==
+            Catch::Approx(
+                unmodified_reflection_projection
+                    [column][3]));
+        near_row_changed =
+            near_row_changed ||
+            reflection.views[0]
+                    .projection[column][2] !=
+                Catch::Approx(
+                    unmodified_reflection_projection
+                        [column][2]);
+    }
+    REQUIRE(near_row_changed);
+    const auto reflected_clip =
+        [&](glm::vec3 world_position,
+            const glm::mat4 &projection) {
+            return projection *
+                   reflection.views[0].view *
+                   glm::vec4{
+                       world_position, 1.0f};
+        };
+    const auto on_plane =
+        reflected_clip(
+            {0.0f, 1.0f, 0.0f},
+            reflection.views[0].projection);
+    const auto retained =
+        reflected_clip(
+            {0.0f, 1.5f, 0.0f},
+            reflection.views[0].projection);
+    const auto rejected =
+        reflected_clip(
+            {0.0f, 0.5f, 0.0f},
+            reflection.views[0].projection);
+    REQUIRE(
+        on_plane.z ==
+        Catch::Approx(0.0f)
+            .margin(1.0e-5f));
+    REQUIRE(on_plane.w > 0.0f);
+    REQUIRE(retained.z > 0.0f);
+    REQUIRE(retained.z < retained.w);
+    REQUIRE(rejected.z < 0.0f);
+
+    const auto jittered_projection =
+        applyProjectionJitter(
+            reflection.views[0].projection,
+            {0.01f, -0.02f});
+    REQUIRE(
+        reflected_clip(
+            {0.0f, 1.0f, 0.0f},
+            jittered_projection)
+            .z ==
+        Catch::Approx(0.0f)
+            .margin(1.0e-5f));
     REQUIRE(
         reflection.views[0].clip_plane);
     REQUIRE(
@@ -452,6 +527,101 @@ TEST_CASE(
                             {0.0f, 0.0f, 0.0f},
                     },
             }),
+        std::invalid_argument);
+
+    const auto without_oblique =
+        buildPlanarReflectionViewFamily(
+            main,
+            PlanarReflectionViewSettings{
+                .clip_plane =
+                    RenderViewClipPlane{
+                        .normal =
+                            {0.0f, 1.0f, 0.0f},
+                        .offset = -1.0f,
+                    },
+                .oblique_near_plane =
+                    false,
+            });
+    for (glm::length_t column = 0;
+         column < 4; ++column) {
+        REQUIRE(
+            without_oblique.views[0]
+                .projection[column][2] ==
+            Catch::Approx(
+                unmodified_reflection_projection
+                    [column][2]));
+    }
+}
+
+TEST_CASE(
+    "zero-to-one oblique projection supports orthographic cameras and safe fallback",
+    "[view-family][reflection][oblique]") {
+    const auto view_matrix =
+        glm::lookAt(
+            glm::vec3{0.0f, -2.0f, 0.0f},
+            glm::vec3{0.0f, 1.0f, 0.0f},
+            glm::vec3{0.0f, 0.0f, 1.0f});
+    const auto projection =
+        glm::orthoRH_ZO(
+            -3.0f, 2.0f,
+            -2.0f, 4.0f,
+            0.1f, 20.0f);
+    const RenderViewClipPlane plane{
+        .normal =
+            {0.0f, 1.0f, 0.0f},
+        .offset = 0.0f,
+    };
+    const auto oblique =
+        tryBuildObliqueNearPlaneProjectionZO(
+            projection,
+            view_matrix,
+            plane);
+    REQUIRE(oblique);
+    const auto clip =
+        [&](glm::vec3 world_position) {
+            return *oblique *
+                   view_matrix *
+                   glm::vec4{
+                       world_position, 1.0f};
+        };
+    REQUIRE(
+        clip({0.0f, 0.0f, 0.0f}).z ==
+        Catch::Approx(0.0f)
+            .margin(1.0e-5f));
+    REQUIRE(
+        clip({0.0f, 1.0f, 0.0f}).z >
+        0.0f);
+    REQUIRE(
+        clip({0.0f, -1.0f, 0.0f}).z <
+        0.0f);
+
+    const auto camera_in_retained_half_space =
+        glm::lookAt(
+            glm::vec3{0.0f, 2.0f, 0.0f},
+            glm::vec3{0.0f, -1.0f, 0.0f},
+            glm::vec3{0.0f, 0.0f, 1.0f});
+    REQUIRE_FALSE(
+        tryBuildObliqueNearPlaneProjectionZO(
+            projection,
+            camera_in_retained_half_space,
+            plane));
+
+    const RenderViewClipPlane receding_plane{
+        .normal =
+            {10.0f, -0.1f, 0.0f},
+        .offset = -1.0f,
+    };
+    REQUIRE_FALSE(
+        tryBuildObliqueNearPlaneProjectionZO(
+            projection,
+            view_matrix,
+            receding_plane));
+
+    REQUIRE_THROWS_AS(
+        tryBuildObliqueNearPlaneProjectionZO(
+            glm::mat4{0.0f},
+            view_matrix,
+            plane),
         std::invalid_argument);
 }
 
