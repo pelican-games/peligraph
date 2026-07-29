@@ -7,7 +7,7 @@ WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster se
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
 mip/layer/subresource view、WP218の任意長・型付きmaterial output ABI、
 WP219のoutput別blend/write-mask、WP220のmaterial same-pixel local-read、
-WP226のplanar reflection provider/clip plane/汎用secondary cullingまで反映した。
+WP227のplanar reflection Forward opaque capture/late pass binding継承まで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
 3D/cube targetとraster attachment subresource、typed integer material image inputは
 後続である。監査記録は
@@ -120,7 +120,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | D3 | parallax-corrected reflection probe | **△** | baked texture + hook。probe selection/data は material単位または G5 |
 | D4 | post SSR | **△** | scene color + depth fullscreen で構成可能。実 feature 未作成 |
 | D5 | material SSR/refraction integration | **○** | typed screen input と実 Vulkan refraction test 済み |
-| D6 | planar reflection | **△** | WP226でreflection provider、per-view clip plane、独立解像度deferred capture、汎用family culling、標準feature、実Vulkan goldenまで実装。forward-route opaque capture、surface側の標準sampling policy、secondary multiviewは未完(G6b) |
+| D6 | planar reflection | **△** | WP226〜227でreflection provider、per-view clip plane、独立解像度Deferred + Forward opaque capture、汎用family culling、順序非依存binding継承、clustered併用の実Vulkan goldenまで実装。transparent capture/sort、標準sampling/prefilter、secondary multiviewは未完(G6b) |
 | D7 | hybrid RT reflection | **✕** | acceleration structure/RT pipeline と descriptor path が無い(G7/G9) |
 
 ### E. volumetric / atmosphere
@@ -183,7 +183,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | I1 | Gerstner wave | **○** | `displace` hook |
 | I2 | FFT ocean | **○** | compute buffer→material vertex displacementとfragment sampled imageを実GPU dogfood済み。FFT実装自体はproject shader |
 | I3 | water refraction | **○** | material screen input |
-| I4 | water reflection | **△** | SSRに加え、WP226の標準planar reflection target/resource portを利用可能。水面のFresnel・歪み・sampling policyとforward-route captureはproject/material側の後続 |
+| I4 | water reflection | **△** | SSRに加え、WP226〜227の標準planar reflection target/resource portとDeferred + Forward opaque captureを利用可能。水面のFresnel・歪み・roughness prefilter/sampling policyはproject/material側の後続 |
 | I5 | foam / shoreline | **○** | depth差分 + material/fullscreen |
 | I6 | caustics | **○** | projected texture + lighting hook |
 | I7 | underwater fog/distortion | **○** | fullscreen |
@@ -218,7 +218,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a（解消済み、WP205）** | public directional shadow resource/light relation、generated `pelican_shadow()`、project-copy同値とpurgeを実装 | filtered PCF/PCSSは品質algorithm側の残件 |
-| **G6b（部分解消: WP223〜226）** | stable runtime ViewFamily、pass/task relation、secondary sequential scheduling、family固有extent、directional CSMに加え、planar reflection provider、per-view clip plane、独立解像度標準feature、frustum/clip-plane対応の汎用secondary cullingを実装。secondary multiview、cube provider/attachment、family別transparent sort、forward-route reflection captureが未完 | point/spot shadow、reflection probe、advanced planar capture |
+| **G6b（部分解消: WP223〜227）** | stable runtime ViewFamily、pass/task relation、secondary sequential scheduling、family固有extent、directional CSMに加え、planar reflection provider、per-view clip plane、独立解像度Deferred + Forward opaque capture、frustum/clip-plane対応の汎用secondary cullingを実装。secondary multiview、cube provider/attachment、family別transparent sort/capture、family-local clustered selectionが未完 | point/spot shadow、reflection probe、advanced planar capture |
 | **G7** | acceleration structure / RT shader/pipeline contractが無い | K1/K2 |
 | **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
@@ -266,7 +266,7 @@ upscale resolution contract、public directional shadow receptionである。
 推奨順は次である。
 
 1. WP204 runtime sliceは完了
-2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226で完了。G6bの次はforward-route reflection capture、またはpoint/spot cube provider
+2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227で完了。G6bの次はfamily-local clustered selection、transparent capture/sort、またはpoint/spot cube provider
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了

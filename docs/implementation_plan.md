@@ -114,6 +114,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP224 | secondary ViewFamily relation/runtime | ✅ 完了（2026-07-29）。logical〜Vulkan relation、family別FrameUBO、directional shadow provider、mixed-family実行 |
 | WP225 | cascaded secondary ViewFamily | ✅ 完了（2026-07-29）。CSM provider、array target、sequential schedule、LightUBO、cascade別culling、実GPU |
 | WP226 | planar reflection ViewFamily / generic secondary culling | ✅ 完了（2026-07-29）。reflection provider、clip plane ABI、独立解像度feature、汎用secondary culling、実GPU |
+| WP227 | planar reflection Forward opaque capture / pass binding inheritance | ✅ 完了（2026-07-29）。Forward再描画、late binding継承、clustered compiler ABI、実GPU |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -914,10 +915,28 @@ FrameUBOのper-view clip planeは標準surfaceから反射面の反対側を除�
 frustum/clip-plane外の既知AABBだけを`instanceCount=0`にするため、material/skinned phaseを
 壊さず未知boundsも保守的に残す。実Vulkan goldenで64×64のG-buffer/depth/color、
 reflection invocation、draw preparationを検証した。
-現時点の標準captureはdeferred-route opaqueを対象とする。forward opaqueのcapture、
-secondary multiview、point/spot cube family、family別transparent sortは後続とする。
+WP226時点の標準captureはdeferred-route opaqueを対象とする。forward opaqueのcapture、
+secondary multiview、point/spot cube family、family別transparent sortは後続とした。
 実装境界と検証結果は
 [`2026-07-29_wp226_planar_reflection_report.md`](design_reviews/2026-07-29_wp226_planar_reflection_report.md)
+を参照する。
+
+WP227で標準planar reflectionへ`forward_opaque_v1`の再描画passを追加した。
+canonical `forward_opaque`と同じmaterial/surface resource bindingをcomposerの最終段で継承し、
+reflection固有のtarget、view family、load/storeだけを局所上書きする。この
+`inherit_bindings_from`はfeature合成とsurface resource consumer解決後に展開されるため、
+shadowやclustered lighting featureをplanar reflectionの前後どちらに書いても、canonical
+passへ最終的に集約されたbindingがreflection passへ一致して伝播する。helper fieldは
+展開後のpass definitionから除去し、material contract不一致、未知source、cycleはcompile
+errorにする。
+
+clustered lightingを同時に有効化した実Vulkan fixtureではDeferredとForwardを左右に分け、
+Forward objectがG-bufferへ入らずreflection color/depthだけを変えることを検証した。
+このdogfoodで、非Forward surfaceへclustered defineが漏れる問題と、surface compilerが
+合成したimplicit resource portがmaterial runtimeへ失われる問題も修正した。現行のcluster
+selectionはmain-view空間なのでclip planeを持つsecondary viewではLightUBO selectionへ
+fallbackする。family-local cluster生成は品質・性能の後続である。詳細は
+[`2026-07-29_wp227_planar_forward_capture_report.md`](design_reviews/2026-07-29_wp227_planar_forward_capture_report.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

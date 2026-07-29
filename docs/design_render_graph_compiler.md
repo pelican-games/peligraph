@@ -32,6 +32,10 @@ WP226ではplanar reflectionを二つ目のconsumerとして追加した。stabl
 `$mirror/<source-view>`、反射view、per-view world clip plane、独立解像度target、
 standard deferred captureを同じrelationへ接続し、secondary draw preparationを
 shadow専用実装からfrustum/clip-plane対応の汎用family経路へ一般化した。
+WP227ではcanonical passの最終bindingを別view familyの再描画passへ継承する
+`inherit_bindings_from`を追加し、standard planar reflectionがDeferredだけでなく
+Forward opaqueもcaptureするようにした。shadow/clustered featureの記述順に依存せず、
+同じmaterial contractのresource ABIを再利用する。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -591,12 +595,30 @@ CSMとplanar reflectionは同じprepared indirect bufferを使い、family/view�
 
 planar reflectionのbuiltin providerはmain familyの各viewを指定planeで反転し、stable
 `$mirror/<source-view>` identityと同じplaneのclip情報を付ける。標準featureは独立解像度の
-deferred G-buffer、SSAO、lightingをreflection familyで実行し、結果をnamed material resource
-portとして公開する。同名familyをcallerが与えた場合はbuiltin providerを使わない。
+deferred G-buffer、SSAO、lightingに続いてForward opaqueをreflection familyで再描画し、
+結果をnamed material resource portとして公開する。同名familyをcallerが与えた場合は
+builtin providerを使わない。
+
+再描画passは`inherit_bindings_from`でcanonical passを参照できる。このfieldはruntime
+IRではなくfeature composerのlate helperである。全featureのmerge、override、surface
+resource consumer解決後に展開し、material passでは同じ`material_contract`の
+`surface_resources`、`material_resources`、`screen_inputs`、fullscreen passでは
+`resource_ports`と対応する`input`を継承する。destinationが明示したfieldは上書きせず、
+未知source、cycle、pass kindまたはmaterial contract不一致を拒否する。展開後はhelperを
+消すため、scheduler/backendへ特殊な継承状態を持ち込まない。
+
+clustered light inventory/selectionはForward surface compilerが生成するimplicit resource
+interfaceとしてShaderBundleに保持し、materialが宣言したportとruntime登録時に合成する。
+これにより標準passから継承したclustered bindingをSPIR-V reflectionまで一貫して検証できる。
+ただし現行selection bufferはmain-view cluster空間であり、clip planeを持つsecondary viewでは
+使用せずLightUBOの固定selectionへfallbackする。family-local cluster生成を実装した時点で
+この判定をprovider capabilityへ置換する。
 
 残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiview、
-family別transparent sort、forward-route geometryのreflection captureである。CSMやreflectionを
-単なる特殊passへ戻さず、これらもstable family relationを通して拡張する。
+family別transparent sort、transparent geometryのreflection captureである。CSMやreflectionを
+単なる特殊passへ戻さず、これらもstable family relationを通して拡張する。planar reflection
+側にはさらにoblique near-plane projection、family-local clustered selection、roughness
+prefilter/sampling policyが残る。
 
 ## 4. scene、material、light の contract
 

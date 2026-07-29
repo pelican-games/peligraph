@@ -1011,6 +1011,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE13b / WP224（済 2026-07-29） | pass/taskの`view_family` relationをlogical IRからVulkan scopeまで運搬、family別FrameUBO | mixed-family scheduling、caller provider置換、directional shadow実GPU |
 | RPE13c / WP225（済 2026-07-29） | secondary multi-view sequential lowering、directional CSM provider/array target/LightUBO/cascade draw compaction | XR frustum union、3-layer depth、全cascade invocation、遠方caster除外の実GPU |
 | RPE13d / WP226（済 2026-07-29） | planar reflection provider、per-view clip plane、独立解像度standard feature、generic secondary culling | reflection G-buffer/depth/color、family invocation、shadow/reflection共通submissionの実GPU |
+| RPE13e / WP227（済 2026-07-29） | canonical passのlate binding継承、planar reflection Forward opaque再描画、compiler-owned resource ABI | feature順序独立shadow/clustered binding、Deferred/Forward分離、reflection color/depth差分の実GPU |
 
 ### 12.1 いま着手する範囲
 

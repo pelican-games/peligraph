@@ -251,11 +251,25 @@ submission cullingされます。targetは`resolution × resolution`、2 layers�
 layer 0、XR sequentialでは対応eye layerを使います。同名`$reflection/planar` familyを
 runtime callerが渡すとbuiltin camera providerを置換できます。
 
-標準featureがcaptureするのは現時点では`deferred_geometry_v1` routeのopaque geometryです。
-結果targetは`planar_reflection_color`、forward transparent passでは同名の
+標準featureは`deferred_geometry_v1`と`forward_opaque_v1`のopaque geometryをcaptureします。
+Deferred geometryはreflection用G-bufferとlightingを通り、Forward opaqueはそのcolor/depthへ
+loadして同じreflection familyから再描画されます。結果targetは
+`planar_reflection_color`で、canonical `forward_transparent` passでは同名の
 `planar_reflection` material resource portへ自動bindingされます。Fresnel、歪み、roughness
-filterなどのsampling policyはmaterial側に書きます。forward opaque geometry自身をreflectionへ
-captureする経路、secondary multiview、oblique near-plane projectionは後続です。
+filterなどのsampling policyはmaterial側に書きます。
+
+project featureでcanonical passと同じmaterial bindingを別target/viewへ再利用するときは、
+composer helperの`"inherit_bindings_from": "<pass-name>"`を指定できます。全featureの
+surface/material bindingが解決された後に継承されるため、shadowやclustered lighting featureの
+記述順には依存しません。再描画pass側で明示したtarget、view family、load/storeは維持されます。
+material passは参照元と同じ`material_contract`である必要があり、未知pass、cycle、種類不一致は
+compile errorです。helperはcompose後に消えるのでruntime/backendのpass schemaには残りません。
+
+現行clustered light selectionはmain view用です。planar reflectionのようにclip planeを持つ
+secondary viewは、自動的にLightUBOの固定light selectionへfallbackします。描画の正しさは
+維持されますが、family-local cluster生成より多灯時の効率と選択精度は低くなります。
+transparent geometryのreflection内描画とfamily別sort、secondary multiview、oblique
+near-plane projection、標準roughness prefilterは後続です。
 
 ### canonical anchor(✅WP73)
 
@@ -1295,7 +1309,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
-- **論理フレーム / ViewFamily(WP128/WP223〜226)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロット制で相互汚染を防ぎます。secondary familyの複数viewはsequential実行に対応し、secondary multiviewとcube-face providerは未対応です。
+- **論理フレーム / ViewFamily(WP128/WP223〜227)**: `renderLogicalFrame(target, view_family)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskは`view_family`で別providerを選べ、標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、planar reflectionは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロット制で相互汚染を防ぎます。secondary familyの複数viewはsequential実行に対応し、secondary multiviewとcube-face providerは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
 - **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
 - **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。
