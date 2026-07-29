@@ -2172,6 +2172,15 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     auto buffer_names = collectBufferNames(composed);
     auto task_names = collectComputeTaskNames(composed);
     nlohmann::json resolved_instances = nlohmann::json::array();
+    struct PendingSurfaceResourceFeature {
+        nlohmann::json feature;
+        std::string name;
+        std::string reference;
+    };
+    std::vector<PendingSurfaceResourceFeature>
+        pending_surface_resources;
+    pending_surface_resources.reserve(
+        loaded_features.size());
     for (const auto &loaded : loaded_features) {
         nlohmann::json resolved_parameters;
         std::vector<std::string> scalar_defines;
@@ -2182,10 +2191,6 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(composed, feature, pass_names);
-        applySurfaceResourceContracts(
-            composed, feature, loaded.name,
-            loaded.instance.ref,
-            surface_resource_contracts);
         applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
         applyLightingDataPlan(
@@ -2198,6 +2203,23 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             {"parameters", std::move(resolved_parameters)},
             {"ref", loaded.instance.ref},
         });
+        pending_surface_resources.push_back({
+            feature,
+            loaded.name,
+            loaded.instance.ref,
+        });
+    }
+    // A feature-owned surface resource selects consumers semantically. Run
+    // that selection only after every feature has inserted its passes so the
+    // result does not depend on whether a producer such as directional
+    // shadows was listed before or after a secondary-view consumer.
+    for (const auto &pending :
+         pending_surface_resources) {
+        applySurfaceResourceContracts(
+            composed, pending.feature,
+            pending.name,
+            pending.reference,
+            surface_resource_contracts);
     }
 
     if (!shader_defines.empty()) {

@@ -20,6 +20,7 @@ struct PelicanFrameData {
     uint previous_temporal_reset_epoch;
     uint view_index;
     uint view_count;
+    vec4 clip_plane;
 };
 
 layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uniform PelicanFrameUBO {
@@ -43,6 +44,7 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uni
     uint previous_temporal_reset_epoch;
     uint view_index;
     uint view_count;
+    vec4 clip_plane;
 } pelicanFrame;
 #endif
 
@@ -56,6 +58,14 @@ uint pelican_view_index() {
 
 uint pelican_view_count() {
     return pelicanFrame.view_count;
+}
+
+bool pelican_view_clip_rejects(vec3 world_position) {
+    vec3 normal = pelicanFrame.clip_plane.xyz;
+    return dot(normal, normal) > 0.0 &&
+           dot(normal, world_position) +
+                   pelicanFrame.clip_plane.w <
+               0.0;
 }
 
 struct PelicanResolutionData {

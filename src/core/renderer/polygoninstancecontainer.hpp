@@ -8,13 +8,16 @@
 #include "modelinstance.hpp"
 #include "modelinstanceslots.hpp"
 #include "drawqueuebuilder.hpp"
+#include "viewfamily.hpp"
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <array>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vulkan/vulkan.hpp>
@@ -240,15 +243,21 @@ class StagedModelInstance {
 };
 
 DECLARE_MODULE(PolygonInstanceContainer) {
+    struct PreparedViewFamilyDraws {
+        std::size_t slot_base = 0;
+        std::vector<std::size_t>
+            visible_draw_counts;
+    };
+
     std::vector<DrawItemSnapshot> draw_inventory;
     CompiledDrawQueueSet compiled_draw_queue;
     std::uint64_t next_draw_declaration_ordinal = 0;
     BufferWrapper indirect_buf;
-    BufferWrapper directional_shadow_indirect_buf;
-    std::vector<std::vector<DrawIndirectInfo>>
-        directional_shadow_draw_calls;
-    std::vector<std::size_t>
-        directional_shadow_visible_draw_counts;
+    BufferWrapper view_family_indirect_buf;
+    std::map<std::string,
+             PreparedViewFamilyDraws,
+             std::less<>>
+        prepared_view_family_draws;
 
     std::vector<glm::mat4> model_instances_data;
     std::vector<glm::mat4> previous_model_instances_data;
@@ -358,12 +367,17 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
-    void prepareDirectionalShadowDraws(
-        std::span<const glm::mat4> view_projections);
+    // Builds conservative per-view indirect command regions for every
+    // secondary family that fits the bounded cache. Commands retain canonical
+    // offsets/state ranges; rejected draws become Vulkan zero-instance draws.
+    // A family that exceeds the cache simply uses the canonical CPU queue.
+    void prepareViewFamilyDraws(
+        const RenderViewFamilies &view_families);
     const BufferWrapper &
-    directionalShadowIndirectBuffer() const;
-    const std::vector<DrawIndirectInfo> &
-    directionalShadowDrawCalls(
+    viewFamilyIndirectBuffer() const;
+    std::optional<vk::DeviceSize>
+    viewFamilyDrawOffset(
+        std::string_view family_id,
         std::uint32_t view_index) const;
     SceneDrawCandidatesV1
     sceneDrawCandidatesForFrameGraph() const;
@@ -401,14 +415,29 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     size_t slotCountForTesting() const { return model_instances_data.size(); }
     std::size_t
     directionalShadowDrawViewCountForTesting() const {
-        return directional_shadow_draw_calls.size();
+        const auto found =
+            prepared_view_family_draws.find(
+                directionalShadowRenderViewFamilyId);
+        return found ==
+                       prepared_view_family_draws.end()
+                   ? 0
+                   : found->second
+                         .visible_draw_counts.size();
     }
     std::size_t
     directionalShadowVisibleDrawCountForTesting(
         std::uint32_t view_index) const {
-        return directional_shadow_visible_draw_counts.at(
+        return viewFamilyVisibleDrawCountForTesting(
+            directionalShadowRenderViewFamilyId,
             view_index);
     }
+    std::size_t
+    viewFamilyDrawViewCountForTesting(
+        std::string_view family_id) const;
+    std::size_t
+    viewFamilyVisibleDrawCountForTesting(
+        std::string_view family_id,
+        std::uint32_t view_index) const;
     ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
     ModelInstanceId forceGenerationForTesting(ModelInstanceId id,
                                                std::uint32_t generation);

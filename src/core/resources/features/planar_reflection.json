@@ -1,0 +1,243 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "planar_reflection",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "scalars": [
+      {
+        "name": "resolution",
+        "type": "int",
+        "range": [64, 8192],
+        "default": 1024,
+        "shader_define": false
+      },
+      {
+        "name": "plane_x",
+        "type": "float",
+        "range": [-10000.0, 10000.0],
+        "default": 0.0,
+        "shader_define": false
+      },
+      {
+        "name": "plane_y",
+        "type": "float",
+        "range": [-10000.0, 10000.0],
+        "default": 1.0,
+        "shader_define": false
+      },
+      {
+        "name": "plane_z",
+        "type": "float",
+        "range": [-10000.0, 10000.0],
+        "default": 0.0,
+        "shader_define": false
+      },
+      {
+        "name": "plane_offset",
+        "type": "float",
+        "range": [-10000.0, 10000.0],
+        "default": 0.0,
+        "shader_define": false
+      },
+      {
+        "name": "preserve_raster_winding",
+        "type": "bool",
+        "default": true,
+        "shader_define": false
+      }
+    ]
+  },
+  "render_targets": [
+    {
+      "name": "planar_reflection_albedo",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_normal",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_material",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_worldpos",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_emissive",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_depth",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    },
+    {
+      "name": "planar_reflection_ao",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_ao_blur",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "planar_reflection_color",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 2,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "begin",
+      "pass": {
+        "name": "planar_reflection_geometry",
+        "type": "material",
+        "material_contract": "deferred_geometry_v1",
+        "resolution_domain": "independent",
+        "view_family": "$reflection/planar",
+        "output": {
+          "color": [
+            "planar_reflection_albedo",
+            "planar_reflection_normal",
+            "planar_reflection_material",
+            "planar_reflection_worldpos",
+            "planar_reflection_emissive"
+          ],
+          "depth": "planar_reflection_depth"
+        },
+        "depth_store_op": "store"
+      }
+    },
+    {
+      "insert": "after:planar_reflection_geometry",
+      "pass": {
+        "name": "planar_reflection_ssao",
+        "type": "fullscreen",
+        "resolution_domain": "independent",
+        "view_family": "$reflection/planar",
+        "output": {
+          "color": ["planar_reflection_ao"],
+          "depth": null
+        },
+        "input": [
+          "planar_reflection_worldpos",
+          "planar_reflection_normal"
+        ],
+        "push_constants": "projection_view",
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://ssao"
+        },
+        "clear_color": [1.0, 1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "insert": "after:planar_reflection_ssao",
+      "pass": {
+        "name": "planar_reflection_ssao_blur",
+        "type": "fullscreen",
+        "resolution_domain": "independent",
+        "view_family": "$reflection/planar",
+        "output": {
+          "color": ["planar_reflection_ao_blur"],
+          "depth": null
+        },
+        "input": ["planar_reflection_ao"],
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://ssao_blur"
+        },
+        "clear_color": [1.0, 1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "insert": "after:planar_reflection_ssao_blur",
+      "pass": {
+        "name": "planar_reflection_lighting",
+        "type": "fullscreen",
+        "resolution_domain": "independent",
+        "view_family": "$reflection/planar",
+        "output": {
+          "color": ["planar_reflection_color"],
+          "depth": null
+        },
+        "input": [
+          "planar_reflection_albedo",
+          "planar_reflection_normal",
+          "planar_reflection_material",
+          "planar_reflection_worldpos",
+          "planar_reflection_emissive",
+          "planar_reflection_ao_blur"
+        ],
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://fullscreen"
+        },
+        "push_constants": "camera_position",
+        "uses_light_data": true
+      }
+    }
+  ],
+  "pass_overrides": {
+    "forward_transparent": {
+      "material_resources": {
+        "planar_reflection": "planar_reflection_color"
+      }
+    }
+  }
+}

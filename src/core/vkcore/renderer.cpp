@@ -25,6 +25,7 @@
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
 #include "../renderer/directionalshadowcascade.hpp"
+#include "../renderer/planarreflectionview.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -318,6 +319,56 @@ struct DirectionalShadowRuntimeContract {
         target;
 };
 
+std::optional<PlanarReflectionViewSettings>
+planarReflectionRuntimeSettings(
+    const CompiledFrameGraphExecution
+        &frame_graph) {
+    if (!frame_graph.render_pipeline) {
+        return std::nullopt;
+    }
+    const auto feature = std::find_if(
+        frame_graph.render_pipeline
+            ->feature_instances.begin(),
+        frame_graph.render_pipeline
+            ->feature_instances.end(),
+        [](const CompiledRenderFeatureInstance
+               &candidate) {
+            return candidate.feature ==
+                   planarReflectionRenderFeatureName;
+        });
+    if (feature ==
+        frame_graph.render_pipeline
+            ->feature_instances.end()) {
+        return std::nullopt;
+    }
+    return PlanarReflectionViewSettings{
+        .clip_plane =
+            RenderViewClipPlane{
+                .normal =
+                    {
+                        featureFloat(
+                            *feature,
+                            "plane_x", 0.0f),
+                        featureFloat(
+                            *feature,
+                            "plane_y", 1.0f),
+                        featureFloat(
+                            *feature,
+                            "plane_z", 0.0f),
+                    },
+                .offset =
+                    featureFloat(
+                        *feature,
+                        "plane_offset", 0.0f),
+            },
+        .preserve_raster_winding =
+            featureBool(
+                *feature,
+                "preserve_raster_winding",
+                true),
+    };
+}
+
 DirectionalShadowRuntimeContract
 directionalShadowRuntimeContract(
     const CompiledFrameGraphExecution
@@ -454,6 +505,36 @@ void validateDirectionalShadowRuntimeFamily(
     }
 }
 
+void validatePlanarReflectionRuntimeFamily(
+    const RenderViewFamilies &families,
+    const std::optional<
+        PlanarReflectionViewSettings>
+        &settings) {
+    if (!settings) {
+        return;
+    }
+    const auto &main =
+        families.require(
+            mainRenderViewFamilyId);
+    const auto *reflection =
+        families.find(
+            planarReflectionRenderViewFamilyId);
+    if (reflection == nullptr ||
+        reflection->views.size() !=
+            main.views.size()) {
+        throw std::runtime_error(
+            "standard planar reflection requires one reflected view "
+            "for every main-family view");
+    }
+    for (const auto &view :
+         reflection->views) {
+        if (!view.clip_plane) {
+            throw std::runtime_error(
+                "standard planar reflection views require a clip plane");
+        }
+    }
+}
+
 RenderViewFamily directionalShadowViewFamily(
     const LightContainer &lights,
     const RenderViewFamily &main_family,
@@ -543,6 +624,24 @@ RenderViewFamilies resolveFrameViewFamilies(
                     result.require(
                         mainRenderViewFamilyId),
                     contract));
+            continue;
+        }
+        if (node.view_family ==
+            planarReflectionRenderViewFamilyId) {
+            const auto settings =
+                planarReflectionRuntimeSettings(
+                    frame_graph);
+            if (!settings) {
+                throw std::runtime_error(
+                    "compiled frame graph requires '$reflection/planar' "
+                    "but no authored family or standard planar_reflection "
+                    "feature is available");
+            }
+            result.families.push_back(
+                buildPlanarReflectionViewFamily(
+                    result.require(
+                        mainRenderViewFamilyId),
+                    *settings));
             continue;
         }
         throw std::runtime_error(
@@ -702,24 +801,11 @@ void updateFrameLights(
     }
 }
 
-void prepareDirectionalShadowDraws(
+void prepareSecondaryViewFamilyDraws(
     PolygonInstanceContainer &instances,
     const RenderViewFamilies &view_families) {
-    std::vector<glm::mat4> view_projections;
-    if (const auto *shadow_family =
-            view_families.find(
-                directionalShadowRenderViewFamilyId);
-        shadow_family != nullptr) {
-        view_projections.reserve(
-            shadow_family->views.size());
-        for (const auto &view :
-             shadow_family->views) {
-            view_projections.push_back(
-                view.projection * view.view);
-        }
-    }
-    instances.prepareDirectionalShadowDraws(
-        view_projections);
+    instances.prepareViewFamilyDraws(
+        view_families);
 }
 
 void updateFrameDrawCandidates(
@@ -958,6 +1044,8 @@ FrameUniformData updateFrameResources(
     RenderFrameModules &modules, EngineTime &engine_time,
     vk::Extent2D render_extent, vk::Extent2D output_extent,
     const RenderFrameSnapshot &snapshot,
+    const std::optional<RenderViewClipPlane>
+        &clip_plane,
     std::uint32_t view_index,
     std::uint32_t view_count) {
     const auto frame_index = engine_time.frameIndex();
@@ -981,6 +1069,12 @@ FrameUniformData updateFrameResources(
     data.previous_temporal_reset_epoch = snapshot.previous_temporal_reset_epoch;
     data.view_index = view_index;
     data.view_count = view_count;
+    if (clip_plane) {
+        data.clip_plane =
+            glm::vec4{
+                clip_plane->normal,
+                clip_plane->offset};
+    }
 
     modules.frame_resources.setSceneBuffers(modules.instance_container.getObjectBuf(),
                                             modules.instance_container.getPreviousObjectBuf(),
@@ -2419,9 +2513,12 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                         ? state_view
                         : 0u;
                 material_renderer_dependencies
-                    .directional_shadow_view_index =
-                    invocation.view_family ==
-                            directionalShadowRenderViewFamilyId
+                    .view_family =
+                    invocation.view_family;
+                material_renderer_dependencies
+                    .secondary_view_index =
+                    invocation.view_family !=
+                            mainRenderViewFamilyId
                         ? std::optional{
                               state_view}
                         : std::nullopt;
@@ -3779,6 +3876,10 @@ void Renderer::renderLogicalFrame(
         directionalShadowRuntimeContract(
             frame_graph,
             modules.render_target_container));
+    validatePlanarReflectionRuntimeFamily(
+        resolved_view_families,
+        planarReflectionRuntimeSettings(
+            frame_graph));
     const auto &view_family =
         resolved_view_families.require(
             mainRenderViewFamilyId);
@@ -4063,6 +4164,10 @@ void Renderer::renderLogicalFrame(
                                 state.snapshots
                                     .at(
                                         family_view_index),
+                                family.views
+                                    .at(
+                                        family_view_index)
+                                    .clip_plane,
                                 family_view_index,
                                 family_view_count));
                     state.frame_resolutions
@@ -4189,7 +4294,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
-        prepareDirectionalShadowDraws(
+        prepareSecondaryViewFamilyDraws(
             modules.instance_container,
             resolved_view_families);
         updateFrameDrawCandidates(
@@ -4328,7 +4433,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
-            prepareDirectionalShadowDraws(
+            prepareSecondaryViewFamilyDraws(
                 modules.instance_container,
                 resolved_view_families);
             updateFrameDrawCandidates(

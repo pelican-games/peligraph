@@ -14,6 +14,9 @@ inline constexpr std::string_view
     directionalShadowRenderViewFamilyId =
         "$shadow/directional";
 inline constexpr std::string_view
+    planarReflectionRenderViewFamilyId =
+        "$reflection/planar";
+inline constexpr std::string_view
     directionalShadowRenderViewId =
         "$cascade/0";
 inline constexpr std::uint32_t

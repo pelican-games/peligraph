@@ -608,9 +608,13 @@ TEST_CASE(
     frames[0].camera_position =
         {0.2f, 0.0f, 0.0f, 0.1f};
     frames[0].projection[0][0] = 0.3f;
+    frames[0].clip_plane =
+        {0.0f, 1.0f, 0.0f, -1.5f};
     frames[1].camera_position =
         {0.8f, 0.0f, 0.0f, 0.9f};
     frames[1].projection[0][0] = 0.7f;
+    frames[1].clip_plane =
+        {0.0f, 1.0f, 0.0f, -1.75f};
     const auto multiview_bytes =
         packFrameUniformViews(frames);
     const std::array flat_frame{frames[0]};
@@ -742,6 +746,12 @@ TEST_CASE(
     REQUIRE(
         managed_frame_data.size() ==
         stereo_view_count);
+    REQUIRE(
+        managed_frame_data[0].clip_plane ==
+        frames[0].clip_plane);
+    REQUIRE(
+        managed_frame_data[1].clip_plane ==
+        frames[1].clip_plane);
     REQUIRE(
         std::memcmp(
             managed_frame_data.data(),

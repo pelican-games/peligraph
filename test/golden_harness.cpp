@@ -108,6 +108,17 @@ struct GoldenCase {
     std::uint32_t height = goldenHeight;
 };
 
+struct PlanarReflectionProbe {
+    RenderTargetMetadata albedo;
+    RenderTargetMetadata depth;
+    RenderTargetMetadata color;
+    std::vector<std::uint8_t> albedo_bytes;
+    std::vector<std::uint8_t> depth_bytes;
+    std::vector<std::uint8_t> color_bytes;
+    std::size_t prepared_view_count = 0;
+    std::size_t visible_draw_count = 0;
+};
+
 struct RenderedCase {
     RgbaImage image;
     std::string device_name;
@@ -144,10 +155,19 @@ struct RenderedCase {
         gpu_selected_segment_counts;
     std::vector<int>
         gpu_selected_segment_materials;
+    std::optional<PlanarReflectionProbe>
+        planar_reflection;
 };
 
 std::vector<std::uint8_t>
 readDepthTargetBytes(
+    GlobalRenderTargetId target_id,
+    std::uint32_t array_layer = 0,
+    vk::ImageLayout source_layout =
+        vk::ImageLayout::eShaderReadOnlyOptimal);
+
+std::vector<std::uint8_t>
+readColorTargetBytes(
     GlobalRenderTargetId target_id,
     std::uint32_t array_layer = 0);
 
@@ -3435,6 +3455,53 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
         config.dump(2));
 }
 
+void writePlanarReflectionProject(
+    const std::filesystem::path &root) {
+    writeShadowProject(root, false);
+    writeTextFile(
+        root / "features" /
+            "planar_reflection_probe.json",
+        R"json({
+          "schema":"pelican.render_feature",
+          "version":1,
+          "name":"planar_reflection_probe",
+          "render_target_overrides":{
+            "planar_reflection_albedo":{
+              "usage":["TRANSFER_SRC"]
+            },
+            "planar_reflection_depth":{
+              "usage":["TRANSFER_SRC"]
+            },
+            "planar_reflection_color":{
+              "usage":["TRANSFER_SRC"]
+            }
+          }
+        })json");
+
+    auto config =
+        makeBLayerShadowRenderingConfig({});
+    config["features"] =
+        nlohmann::json::array({
+            {
+                {"ref",
+                 "engine://features/planar_reflection.json"},
+                {"parameters",
+                 {
+                     {"resolution", 64},
+                     {"plane_x", 0.0},
+                     {"plane_y", 1.0},
+                     {"plane_z", 0.0},
+                     {"plane_offset", 0.0},
+                     {"preserve_raster_winding", true},
+                 }},
+            },
+            "project://features/planar_reflection_probe.json",
+        });
+    writeTextFile(
+        root / "passes" / "main.json",
+        config.dump(2));
+}
+
 void writeMorphSkinnedShadowProject(const std::filesystem::path &root) {
     writeShadowProject(root, true);
     TestMorphFixture::writeGlb(root / "assets" / "morph.glb",
@@ -4080,7 +4147,8 @@ void renderShadowFrame(RenderTarget &render_target) {
 }
 
 void renderBLayerShadowFrame(RenderTarget &render_target,
-                             std::string_view mode) {
+                             std::string_view mode,
+                             bool deferred_material = false) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     const bool shadow_enabled =
         mode != "shadow_b_layer_off";
@@ -4145,9 +4213,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         surface_reference);
     MaterialSurfaceCatalog surfaces{
         {surface_reference, surface}};
-    const auto material_document =
-        parseMaterialFormatJson(
-            nlohmann::json::parse(R"json({
+    auto material_json =
+        nlohmann::json::parse(R"json({
               "schema":"pelican.material",
               "version":1,
               "materials":[{
@@ -4163,15 +4230,32 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                   "double_sided":false
                 }
               }]
-            })json"),
+            })json");
+    if (deferred_material) {
+        auto &values =
+            material_json["materials"][0]
+                         ["values"];
+        values.erase("coat_weight");
+        values.erase(
+            "base_diffuse_roughness");
+        values["specular_roughness"] =
+            0.72;
+    }
+    const auto material_document =
+        parseMaterialFormatJson(
+            material_json,
             surfaces);
     const auto lowered = lowerMaterial(
         material_document.materials.front(), surface);
-    if (lowered.route !=
-        MaterialRouteClass::forward_opaque) {
+    const auto expected_route =
+        deferred_material
+            ? MaterialRouteClass::
+                  deferred_geometry
+            : MaterialRouteClass::
+                  forward_opaque;
+    if (lowered.route != expected_route) {
         throw std::runtime_error(
-            "B-layer shadow golden material did not route to "
-            "forward_opaque");
+            "hybrid golden material did not route to the requested pass");
     }
 
     const auto shaders =
@@ -5029,6 +5113,22 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             "main_render";
         GET_MODULE(ProjectSource).setProjectData(
             project.dump());
+    } else if (
+        golden_case.mode ==
+        "planar_reflection") {
+        writePlanarReflectionProject(
+            temp_dir);
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false);
+        auto project =
+            makeShadowProjectJson();
+        project["name"] =
+            "planar reflection golden";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource).setProjectData(
+            project.dump());
     } else if (isShadowGoldenMode(golden_case.mode)) {
         writeShadowProject(temp_dir, golden_case.mode == "shadow_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -5158,6 +5258,13 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                    golden_case.mode)) {
         renderBLayerShadowFrame(render_target,
                                 golden_case.mode);
+    } else if (
+        golden_case.mode ==
+        "planar_reflection") {
+        renderBLayerShadowFrame(
+            render_target,
+            "shadow_b_layer_off",
+            true);
     } else if (isShadowGoldenMode(golden_case.mode)) {
         renderShadowFrame(render_target);
     } else if (isGpuDrawGoldenMode(
@@ -5199,6 +5306,8 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         gpu_selected_segment_counts;
     std::vector<int>
         gpu_selected_segment_materials;
+    std::optional<PlanarReflectionProbe>
+        planar_reflection;
     if (isGpuOcclusionGoldenMode(
             golden_case.mode)) {
         auto &resources =
@@ -5259,6 +5368,56 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             }
         }
     }
+    if (golden_case.mode ==
+        "planar_reflection") {
+        auto &targets =
+            GET_MODULE(
+                RenderTargetContainer);
+        const auto albedo =
+            targets.getRenderTargetIdByName(
+                "planar_reflection_albedo");
+        const auto depth =
+            targets.getRenderTargetIdByName(
+                "planar_reflection_depth");
+        const auto color =
+            targets.getRenderTargetIdByName(
+                "planar_reflection_color");
+        auto &instances =
+            GET_MODULE(
+                PolygonInstanceContainer);
+        planar_reflection =
+            PlanarReflectionProbe{
+                .albedo =
+                    targets.getMetadata(
+                        albedo),
+                .depth =
+                    targets.getMetadata(
+                        depth),
+                .color =
+                    targets.getMetadata(
+                        color),
+                .albedo_bytes =
+                    readColorTargetBytes(
+                        albedo),
+                .depth_bytes =
+                    readDepthTargetBytes(
+                        depth, 0,
+                        vk::ImageLayout::
+                            eDepthAttachmentOptimal),
+                .color_bytes =
+                    readColorTargetBytes(
+                        color),
+                .prepared_view_count =
+                    instances
+                        .viewFamilyDrawViewCountForTesting(
+                            planarReflectionRenderViewFamilyId),
+                .visible_draw_count =
+                    instances
+                        .viewFamilyVisibleDrawCountForTesting(
+                            planarReflectionRenderViewFamilyId,
+                            0),
+            };
+    }
     const auto pixels = render_target.readbackLastFrameRGBA8();
     const auto device_properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
     const auto sprite_status = FastModuleContainer::isInitialized<SpriteScene>()
@@ -5297,6 +5456,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             gpu_selected_segment_counts),
         std::move(
             gpu_selected_segment_materials),
+        std::move(planar_reflection),
     };
 }
 
@@ -5442,7 +5602,8 @@ JitterCapture captureJitterFrames(std::string_view run_name,
 std::vector<std::uint8_t>
 readDepthTargetBytes(
     GlobalRenderTargetId target_id,
-    std::uint32_t array_layer) {
+    std::uint32_t array_layer,
+    vk::ImageLayout source_layout) {
     auto &targets = GET_MODULE(RenderTargetContainer);
     const auto metadata = targets.getMetadata(target_id);
     if (metadata.format != vk::Format::eD32Sfloat ||
@@ -5461,12 +5622,38 @@ readDepthTargetBytes(
     auto &utils = GET_MODULE(VulkanUtils);
     utils.executeOneTimeCmd(
         [&](vk::CommandBuffer command) {
+            auto source_stage =
+                vk::PipelineStageFlags{
+                    vk::PipelineStageFlagBits::
+                        eFragmentShader};
+            auto source_access =
+                vk::AccessFlags{
+                    vk::AccessFlagBits::
+                        eShaderRead};
+            if (source_layout ==
+                vk::ImageLayout::
+                    eDepthAttachmentOptimal) {
+                source_stage =
+                    vk::PipelineStageFlagBits::
+                        eEarlyFragmentTests |
+                    vk::PipelineStageFlagBits::
+                        eLateFragmentTests |
+                    vk::PipelineStageFlagBits::
+                        eColorAttachmentOutput;
+                source_access =
+                    vk::AccessFlagBits::
+                        eDepthStencilAttachmentRead |
+                    vk::AccessFlagBits::
+                        eDepthStencilAttachmentWrite |
+                    vk::AccessFlagBits::
+                        eColorAttachmentWrite;
+            }
             utils.changeImageLayoutCmd(
-                command, image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                command, image, source_layout,
                 vk::ImageLayout::eTransferSrcOptimal,
-                {.src_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                {.src_stage = source_stage,
                  .dst_stage = vk::PipelineStageFlagBits::eTransfer,
-                 .src_access = vk::AccessFlagBits::eShaderRead,
+                 .src_access = source_access,
                  .dst_access = vk::AccessFlagBits::eTransferRead});
             vk::BufferImageCopy copy;
             copy.imageSubresource = {
@@ -5479,14 +5666,131 @@ readDepthTargetBytes(
                                       staging.buffer.get(), copy);
             utils.changeImageLayoutCmd(
                 command, image, vk::ImageLayout::eTransferSrcOptimal,
-                vk::ImageLayout::eShaderReadOnlyOptimal,
+                source_layout,
                 {.src_stage = vk::PipelineStageFlagBits::eTransfer,
-                 .dst_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                 .dst_stage = source_stage,
                  .src_access = vk::AccessFlagBits::eTransferRead,
-                 .dst_access = vk::AccessFlagBits::eShaderRead});
+                 .dst_access = source_access});
         },
         true);
     return vkcore.readBuf(staging, byte_count);
+}
+
+std::vector<std::uint8_t>
+readColorTargetBytes(
+    GlobalRenderTargetId target_id,
+    std::uint32_t array_layer) {
+    auto &targets =
+        GET_MODULE(RenderTargetContainer);
+    const auto metadata =
+        targets.getMetadata(target_id);
+    std::uint32_t bytes_per_texel = 0;
+    switch (metadata.format) {
+    case vk::Format::eB8G8R8A8Unorm:
+    case vk::Format::eB8G8R8A8Srgb:
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+        bytes_per_texel = 4;
+        break;
+    case vk::Format::eR16G16B16A16Sfloat:
+        bytes_per_texel = 8;
+        break;
+    default:
+        break;
+    }
+    if (bytes_per_texel == 0 ||
+        !(metadata.usage &
+          vk::ImageUsageFlagBits::
+              eTransferSrc) ||
+        array_layer >=
+            metadata.array_layers) {
+        throw std::runtime_error(
+            "color probe requires a transfer-src "
+            "RGBA8 or RGBA16F target");
+    }
+
+    const auto &image =
+        targets.getImage(target_id);
+    const auto byte_count =
+        static_cast<vk::DeviceSize>(
+            metadata.extent.width) *
+        metadata.extent.height *
+        bytes_per_texel;
+    auto &vkcore =
+        GET_MODULE(VulkanManageCore);
+    auto staging =
+        vkcore.allocBuf(
+            byte_count,
+            vk::BufferUsageFlagBits::
+                eTransferDst,
+            vma::MemoryUsage::
+                eAutoPreferHost,
+            vma::AllocationCreateFlagBits::
+                eHostAccessRandom);
+    auto &utils =
+        GET_MODULE(VulkanUtils);
+    utils.executeOneTimeCmd(
+        [&](vk::CommandBuffer command) {
+            utils.changeImageLayoutCmd(
+                command, image,
+                vk::ImageLayout::
+                    eShaderReadOnlyOptimal,
+                vk::ImageLayout::
+                    eTransferSrcOptimal,
+                {
+                    .src_stage =
+                        vk::PipelineStageFlagBits::
+                            eFragmentShader,
+                    .dst_stage =
+                        vk::PipelineStageFlagBits::
+                            eTransfer,
+                    .src_access =
+                        vk::AccessFlagBits::
+                            eShaderRead,
+                    .dst_access =
+                        vk::AccessFlagBits::
+                            eTransferRead,
+                });
+            vk::BufferImageCopy copy;
+            copy.imageSubresource = {
+                vk::ImageAspectFlagBits::
+                    eColor,
+                0,
+                array_layer,
+                1,
+            };
+            copy.imageExtent =
+                image.extent;
+            command.copyImageToBuffer(
+                image.image.get(),
+                vk::ImageLayout::
+                    eTransferSrcOptimal,
+                staging.buffer.get(),
+                copy);
+            utils.changeImageLayoutCmd(
+                command, image,
+                vk::ImageLayout::
+                    eTransferSrcOptimal,
+                vk::ImageLayout::
+                    eShaderReadOnlyOptimal,
+                {
+                    .src_stage =
+                        vk::PipelineStageFlagBits::
+                            eTransfer,
+                    .dst_stage =
+                        vk::PipelineStageFlagBits::
+                            eFragmentShader,
+                    .src_access =
+                        vk::AccessFlagBits::
+                            eTransferRead,
+                    .dst_access =
+                        vk::AccessFlagBits::
+                            eShaderRead,
+                });
+        },
+        true);
+    return vkcore.readBuf(
+        staging, byte_count);
 }
 
 struct ShadowProbeCapture {
@@ -6720,6 +7024,135 @@ void GoldenHarness::runBLayerShadowEquivalence() {
 #else
     SKIP("B-layer directional-shadow golden requires "
          "the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runPlanarReflection() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto root =
+        sourceRoot() /
+        "test/golden/shadow_off";
+    const auto rendered =
+        renderCase(
+            GoldenCase{
+                "planar_reflection_runtime",
+                "planar_reflection",
+                root,
+                goldenWidth,
+                goldenHeight});
+    REQUIRE(
+        rendered.planar_reflection);
+    const auto &probe =
+        *rendered.planar_reflection;
+    for (const auto *metadata : {
+             &probe.albedo,
+             &probe.depth,
+             &probe.color,
+         }) {
+        REQUIRE(
+            metadata->extent ==
+            vk::Extent2D{64, 64});
+        REQUIRE(
+            metadata->array_layers ==
+            2);
+    }
+    REQUIRE(
+        (probe.albedo.format ==
+             vk::Format::
+                 eB8G8R8A8Unorm ||
+         probe.albedo.format ==
+             vk::Format::
+                 eB8G8R8A8Srgb));
+    REQUIRE(
+        probe.depth.format ==
+        vk::Format::eD32Sfloat);
+    REQUIRE(
+        probe.color.format ==
+        vk::Format::
+            eR16G16B16A16Sfloat);
+    REQUIRE(
+        probe.prepared_view_count ==
+        1);
+    REQUIRE(
+        probe.visible_draw_count > 0);
+
+    REQUIRE(
+        probe.albedo_bytes.size() ==
+        64u * 64u * 4u);
+    REQUIRE(
+        probe.depth_bytes.size() ==
+        64u * 64u *
+            sizeof(float));
+    REQUIRE(
+        probe.color_bytes.size() ==
+        64u * 64u * 8u);
+    REQUIRE(
+        std::any_of(
+            probe.albedo_bytes.begin(),
+            probe.albedo_bytes.end(),
+            [](std::uint8_t value) {
+                return value != 0;
+            }));
+    bool has_written_depth = false;
+    for (std::size_t offset = 0;
+         offset <
+         probe.depth_bytes.size();
+         offset += sizeof(float)) {
+        float depth = 1.0f;
+        std::memcpy(
+            &depth,
+            probe.depth_bytes.data() +
+                offset,
+            sizeof(depth));
+        has_written_depth =
+            has_written_depth ||
+            depth < 0.9999f;
+    }
+    REQUIRE(has_written_depth);
+    REQUIRE(
+        std::any_of(
+            probe.color_bytes.begin(),
+            probe.color_bytes.end(),
+            [](std::uint8_t value) {
+                return value != 0;
+            }));
+
+    std::set<std::string>
+        reflection_nodes;
+    for (const auto &node :
+         rendered.execution_trace
+             .at("nodes")) {
+        if (node.value(
+                "view_family",
+                std::string{}) !=
+            planarReflectionRenderViewFamilyId) {
+            continue;
+        }
+        REQUIRE(
+            node.at(
+                "view_execution") ==
+            "single_view");
+        REQUIRE(
+            node.at("view_index") ==
+            0);
+        reflection_nodes.insert(
+            node.at("name")
+                .get<std::string>());
+    }
+    REQUIRE(
+        reflection_nodes ==
+        std::set<std::string>{
+            "planar_reflection_geometry",
+            "planar_reflection_ssao",
+            "planar_reflection_ssao_blur",
+            "planar_reflection_lighting",
+        });
+#else
+    SKIP(
+        "planar reflection golden requires "
+        "the runtime shader compiler");
 #endif
 }
 

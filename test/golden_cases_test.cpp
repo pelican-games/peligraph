@@ -14,6 +14,12 @@ TEST_CASE("B-layer directional shadow is visible and copied features are equival
 }
 
 TEST_CASE(
+    "planar reflection executes a clipped secondary view family on the GPU",
+    "[golden][headless][reflection][view-family]") {
+    GoldenHarness::runPlanarReflection();
+}
+
+TEST_CASE(
     "GPU-written indexed draw count handles zero max overflow and CPU fallback",
     "[golden][headless][wp210]") {
     GoldenHarness::runGpuDrawIndirect();

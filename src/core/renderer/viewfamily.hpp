@@ -26,6 +26,18 @@ struct RenderViewDepthRange {
         default;
 };
 
+// Optional world-space clipping half-space. Geometry with
+// dot(normal, world_position) + offset < 0 is outside the view.
+// A non-unit normal is valid as long as the full equation is scaled together.
+struct RenderViewClipPlane {
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    float offset = 0.0f;
+
+    bool operator==(
+        const RenderViewClipPlane &) const =
+        default;
+};
+
 // A provider-owned, non-jittered view. view_id is stable across frames and is
 // the identity used to select temporal state; vector position is only the
 // execution order for the current frame.
@@ -42,6 +54,10 @@ struct RenderViewParameters {
     // unrelated view families leave it empty.
     std::optional<RenderViewDepthRange>
         depth_range;
+    // View-local raster clipping expressed in world space. Projection
+    // modifiers such as jitter do not alter this semantic plane.
+    std::optional<RenderViewClipPlane>
+        clip_plane;
 };
 
 // One provider-owned family. RenderViewFamilies supplies the set consumed by

@@ -4,6 +4,7 @@
 #include "../renderingpass/renderingpass.hpp"
 #include <glm/glm.hpp>
 #include <optional>
+#include <string_view>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -30,8 +31,9 @@ struct MaterialRendererDependencies {
     glm::mat4 view_projection{1.0f};
     bool first_person_view = false;
     std::uint32_t draw_sort_view_index = 0;
+    std::string_view view_family;
     std::optional<std::uint32_t>
-        directional_shadow_view_index;
+        secondary_view_index;
 };
 
 DECLARE_MODULE(MaterialRenderer) {

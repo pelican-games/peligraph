@@ -51,6 +51,9 @@ layout(location = 4) out vec4 outEmissive;
 #endif
 
 void main() {
+    if (pelican_view_clip_rejects(inWorldPos)) {
+        discard;
+    }
 #ifdef PELICAN_PASS_DEPTH
     return;
 #else

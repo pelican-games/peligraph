@@ -25,6 +25,7 @@ namespace {
 constexpr size_t maxModelInstances = 1024;
 constexpr size_t maxRenderCommands = 1024;
 constexpr size_t maxDrawSortViews = 2;
+constexpr size_t maxPreparedSecondaryViewFamilyViews = 32;
 
 } // namespace
 
@@ -34,17 +35,6 @@ static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
                                vk::BufferUsageFlagBits::eTransferDst,
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-}
-
-static BufferWrapper createPackedIndirectBuf(
-    VulkanManageCore &vkcore, size_t num) {
-    return vkcore.allocBuf(
-        sizeof(vk::DrawIndexedIndirectCommand) * num,
-        vk::BufferUsageFlagBits::eIndirectBuffer |
-            vk::BufferUsageFlagBits::eTransferSrc |
-            vk::BufferUsageFlagBits::eTransferDst,
-        vma::MemoryUsage::eAutoPreferDevice,
-        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
 static BufferWrapper createModelInstanceDataBuf(VulkanManageCore &vkcore, size_t num) {
@@ -183,11 +173,11 @@ PolygonInstanceContainer::PolygonInstanceContainer()
           createIndirectBuf(GET_MODULE(VulkanManageCore),
                             maxRenderCommands * maxDrawSortViews),
       },
-      directional_shadow_indirect_buf{
-          createPackedIndirectBuf(
+      view_family_indirect_buf{
+          createIndirectBuf(
               GET_MODULE(VulkanManageCore),
               maxRenderCommands *
-                  maximumDirectionalShadowCascades),
+                  maxPreparedSecondaryViewFamilyViews),
       },
       model_data_buffer{
           createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
@@ -581,8 +571,7 @@ void PolygonInstanceContainer::triggerUpdate(
     const DrawQueueFramePlan &frame_plan) {
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
-    directional_shadow_draw_calls.clear();
-    directional_shadow_visible_draw_counts.clear();
+    prepared_view_family_draws.clear();
 
     if (frame_plan.opaque_provider.empty() ||
         frame_plan.transparent_provider.empty()) {
@@ -1462,157 +1451,223 @@ glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
 
-void PolygonInstanceContainer::prepareDirectionalShadowDraws(
-    std::span<const glm::mat4> view_projections) {
-    directional_shadow_draw_calls.clear();
-    directional_shadow_visible_draw_counts.clear();
-    if (view_projections.empty()) {
-        return;
-    }
-    if (view_projections.size() >
-        maximumDirectionalShadowCascades) {
-        throw std::invalid_argument(
-            "directional shadow draw preparation exceeds the cascade ABI");
-    }
-
+void PolygonInstanceContainer::prepareViewFamilyDraws(
+    const RenderViewFamilies &view_families) {
+    prepared_view_family_draws.clear();
     const auto candidates =
         sceneDrawCandidatesForFrameGraph();
-    const auto &base_ranges =
-        getDrawCalls(false, std::nullopt, 0);
-    directional_shadow_draw_calls.resize(
-        view_projections.size());
-    directional_shadow_visible_draw_counts.assign(
-        view_projections.size(), 0);
+    const auto &canonical =
+        compiled_draw_queue.indirectRecords();
+    if (canonical.empty()) {
+        return;
+    }
+    if (candidates.bounds.size() !=
+            canonical.size() ||
+        compiled_draw_queue.sortViewCount() == 0) {
+        throw std::runtime_error(
+            "view-family culling received misaligned canonical draws");
+    }
+    const auto command_count =
+        compiled_draw_queue
+            .queue(
+                DrawQueuePhase::opaque, 0)
+            .indirectRecords().size() +
+        compiled_draw_queue
+            .queue(
+                DrawQueuePhase::transparent, 0)
+            .indirectRecords().size();
+    if (command_count >
+            maxRenderCommands ||
+        command_count >
+            canonical.size()) {
+        throw std::runtime_error(
+            "view-family culling exceeds its canonical view region");
+    }
 
-    for (std::size_t view_index = 0;
-         view_index < view_projections.size();
-         ++view_index) {
-        const auto &view_projection =
-            view_projections[view_index];
-        for (glm::length_t column = 0;
-             column < 4; ++column) {
-            for (glm::length_t row = 0;
-                 row < 4; ++row) {
-                if (!std::isfinite(
-                        view_projection[column][row])) {
-                    throw std::invalid_argument(
-                        "directional shadow view projection must be finite");
+    const auto intersects_clip_plane =
+        [](const DrawWorldBounds &bounds,
+           const RenderViewClipPlane &plane) {
+            float maximum_distance =
+                plane.offset;
+            for (std::size_t axis = 0;
+                 axis < 3; ++axis) {
+                maximum_distance +=
+                    plane.normal[
+                        static_cast<
+                            glm::length_t>(axis)] >=
+                            0.0f
+                        ? plane.normal[
+                              static_cast<
+                                  glm::length_t>(axis)] *
+                              bounds.maximum[axis]
+                        : plane.normal[
+                              static_cast<
+                                  glm::length_t>(axis)] *
+                              bounds.minimum[axis];
+            }
+            return maximum_distance >= 0.0f;
+        };
+
+    std::size_t next_slot = 0;
+    for (const auto &family :
+         view_families.families) {
+        if (family.family_id ==
+            mainRenderViewFamilyId) {
+            continue;
+        }
+        if (family.views.size() >
+            maxPreparedSecondaryViewFamilyViews -
+                next_slot) {
+            // Culling is an optimization. An unusually large user family
+            // remains correct through the canonical indirect queue.
+            continue;
+        }
+        PreparedViewFamilyDraws prepared{
+            .slot_base = next_slot,
+            .visible_draw_counts =
+                std::vector<std::size_t>(
+                    family.views.size(), 0),
+        };
+        for (std::size_t view_index = 0;
+             view_index < family.views.size();
+             ++view_index) {
+            const auto &view =
+                family.views[view_index];
+            const auto view_projection =
+                view.projection * view.view;
+            for (glm::length_t column = 0;
+                 column < 4; ++column) {
+                for (glm::length_t row = 0;
+                     row < 4; ++row) {
+                    if (!std::isfinite(
+                            view_projection[column]
+                                           [row])) {
+                        throw std::invalid_argument(
+                            "view-family culling requires finite view "
+                            "projection matrices");
+                    }
                 }
             }
-        }
 
-        std::vector<vk::DrawIndexedIndirectCommand>
-            packed_commands;
-        packed_commands.reserve(candidates.commands.size());
-        auto &packed_ranges =
-            directional_shadow_draw_calls[view_index];
-        const auto view_command_base =
-            view_index * maxRenderCommands;
-
-        for (const auto &base_range : base_ranges) {
-            if (base_range.stride !=
-                    sizeof(RenderCommand) ||
-                base_range.offset %
-                        sizeof(RenderCommand) !=
-                    0) {
-                throw std::runtime_error(
-                    "directional shadow culling requires canonical draw ranges");
-            }
-            const auto source_begin =
-                static_cast<std::size_t>(
-                    base_range.offset /
-                    sizeof(RenderCommand));
-            if (source_begin >
-                    candidates.commands.size() ||
-                base_range.draw_count >
-                    candidates.commands.size() -
-                        source_begin ||
-                candidates.bounds.size() !=
-                    candidates.commands.size()) {
-                throw std::runtime_error(
-                    "directional shadow culling received misaligned draw candidates");
-            }
-
-            auto packed_range = base_range;
-            packed_range.offset =
-                static_cast<vk::DeviceSize>(
-                    view_command_base +
-                    packed_commands.size()) *
-                sizeof(vk::DrawIndexedIndirectCommand);
-            packed_range.draw_count = 0;
-            packed_range.stride =
-                sizeof(vk::DrawIndexedIndirectCommand);
-            packed_range.scene_segment_index =
-                noSceneDrawSegmentIndex;
-
-            for (std::uint32_t draw = 0;
-                 draw < base_range.draw_count;
-                 ++draw) {
-                const auto source_index =
-                    source_begin + draw;
+            std::vector<RenderCommand> commands{
+                canonical.begin(),
+                canonical.begin() +
+                    static_cast<
+                        std::ptrdiff_t>(
+                        command_count)};
+            for (std::size_t command = 0;
+                 command < command_count;
+                 ++command) {
                 const auto &packed_bounds =
-                    candidates.bounds[source_index];
+                    candidates.bounds[command];
                 bool visible =
-                    packed_bounds.minimum[3] != 1.0F;
+                    packed_bounds.minimum[3] !=
+                    1.0F;
+                DrawWorldBounds bounds;
                 if (!visible) {
+                    bounds = {
+                        {packed_bounds.minimum[0],
+                         packed_bounds.minimum[1],
+                         packed_bounds.minimum[2]},
+                        {packed_bounds.maximum[0],
+                         packed_bounds.maximum[1],
+                         packed_bounds.maximum[2]},
+                    };
                     visible =
                         intersectsZeroToOneClipFrustum(
-                            DrawWorldBounds{
-                                {packed_bounds.minimum[0],
-                                 packed_bounds.minimum[1],
-                                 packed_bounds.minimum[2]},
-                                {packed_bounds.maximum[0],
-                                 packed_bounds.maximum[1],
-                                 packed_bounds.maximum[2]}},
+                            bounds,
                             view_projection);
+                    if (visible &&
+                        view.clip_plane) {
+                        visible =
+                            intersects_clip_plane(
+                                bounds,
+                                *view.clip_plane);
+                    }
                 }
-                if (!visible) {
-                    continue;
+                if (visible) {
+                    ++prepared
+                          .visible_draw_counts
+                              [view_index];
+                } else {
+                    commands[command]
+                        .command.instanceCount =
+                        0;
                 }
-                packed_commands.push_back(
-                    candidates.commands[source_index]);
-                ++packed_range.draw_count;
             }
-            if (packed_range.draw_count != 0) {
-                packed_ranges.push_back(
-                    packed_range);
+            if (!commands.empty()) {
+                const auto slot =
+                    next_slot + view_index;
+                GET_MODULE(VulkanManageCore)
+                    .writeBuf(
+                        view_family_indirect_buf,
+                        commands.data(),
+                        static_cast<vk::DeviceSize>(
+                            slot *
+                            maxRenderCommands *
+                            sizeof(RenderCommand)),
+                        commands.size() *
+                            sizeof(RenderCommand));
             }
         }
-
-        if (packed_commands.size() >
-            maxRenderCommands) {
-            throw std::runtime_error(
-                "directional shadow draw compaction exceeds its view region");
-        }
-        directional_shadow_visible_draw_counts[view_index] =
-            packed_commands.size();
-        if (!packed_commands.empty()) {
-            GET_MODULE(VulkanManageCore)
-                .writeBuf(
-                    directional_shadow_indirect_buf,
-                    packed_commands.data(),
-                    static_cast<vk::DeviceSize>(
-                        view_command_base) *
-                        sizeof(
-                            vk::DrawIndexedIndirectCommand),
-                    packed_commands.size() *
-                        sizeof(
-                            vk::DrawIndexedIndirectCommand));
-        }
+        next_slot += family.views.size();
+        prepared_view_family_draws.emplace(
+            family.family_id,
+            std::move(prepared));
     }
 }
 
 const BufferWrapper &
 PolygonInstanceContainer::
-    directionalShadowIndirectBuffer() const {
-    return directional_shadow_indirect_buf;
+    viewFamilyIndirectBuffer() const {
+    return view_family_indirect_buf;
 }
 
-const std::vector<DrawIndirectInfo> &
-PolygonInstanceContainer::directionalShadowDrawCalls(
+std::optional<vk::DeviceSize>
+PolygonInstanceContainer::viewFamilyDrawOffset(
+    std::string_view family_id,
     std::uint32_t view_index) const {
-    return directional_shadow_draw_calls.at(
-        view_index);
+    const auto found =
+        prepared_view_family_draws.find(
+            family_id);
+    if (found ==
+        prepared_view_family_draws.end()) {
+        return std::nullopt;
+    }
+    if (view_index >=
+        found->second
+            .visible_draw_counts.size()) {
+        throw std::out_of_range(
+            "prepared view-family draw index is out of range");
+    }
+    return static_cast<vk::DeviceSize>(
+               found->second.slot_base +
+               view_index) *
+           maxRenderCommands *
+           sizeof(RenderCommand);
+}
+
+std::size_t PolygonInstanceContainer::
+    viewFamilyDrawViewCountForTesting(
+        std::string_view family_id) const {
+    const auto found =
+        prepared_view_family_draws.find(
+            family_id);
+    return found ==
+                   prepared_view_family_draws.end()
+               ? 0
+               : found->second
+                     .visible_draw_counts.size();
+}
+
+std::size_t PolygonInstanceContainer::
+    viewFamilyVisibleDrawCountForTesting(
+        std::string_view family_id,
+        std::uint32_t view_index) const {
+    return prepared_view_family_draws
+        .at(std::string{family_id})
+        .visible_draw_counts.at(
+            view_index);
 }
 
 SceneDrawCandidatesV1

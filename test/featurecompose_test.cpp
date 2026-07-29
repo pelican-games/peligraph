@@ -3,6 +3,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
@@ -731,6 +732,159 @@ TEST_CASE(
     const auto compiled =
         compileComposition(result);
     REQUIRE_FALSE(compiled.lighting_data);
+}
+
+TEST_CASE(
+    "planar reflection feature builds a clipped secondary-family render slice",
+    "[render-feature][reflection][view-family]") {
+    const auto compose =
+        [](nlohmann::json features) {
+            return composeRenderFeatureConfig(
+                nlohmann::json{
+                    {"pipeline",
+                     {{"preset",
+                       "engine://render_pipelines/hybrid_v1.json"}}},
+                    {"features",
+                     std::move(features)},
+                },
+                RenderFeatureComposeDependencies{
+                    loadEngineFeature,
+                    true,
+                });
+        };
+    const auto reflection_instance =
+        nlohmann::json{
+            {"ref",
+             "engine://features/planar_reflection.json"},
+            {"parameters",
+             {
+                 {"resolution", 64},
+                 {"plane_x", 0.0},
+                 {"plane_y", 2.0},
+                 {"plane_z", 0.0},
+                 {"plane_offset", -2.0},
+                 {"preserve_raster_winding", true},
+             }},
+        };
+    const auto result =
+        compose(nlohmann::json::array(
+            {reflection_instance}));
+
+    REQUIRE(
+        result.feature_names ==
+        std::vector<std::string>{
+            "planar_reflection"});
+    for (const auto target_name : {
+             "planar_reflection_albedo",
+             "planar_reflection_normal",
+             "planar_reflection_material",
+             "planar_reflection_worldpos",
+             "planar_reflection_emissive",
+             "planar_reflection_depth",
+             "planar_reflection_ao",
+             "planar_reflection_ao_blur",
+             "planar_reflection_color",
+         }) {
+        const auto target =
+            std::find_if(
+                result.config.at("render_targets")
+                    .begin(),
+                result.config.at("render_targets")
+                    .end(),
+                [&](const auto &candidate) {
+                    return candidate.at("name") ==
+                           target_name;
+                });
+        REQUIRE(
+            target !=
+            result.config.at("render_targets")
+                .end());
+        REQUIRE(target->at("width") == 64);
+        REQUIRE(target->at("height") == 64);
+        REQUIRE(target->at("layers") == 2);
+        REQUIRE(target->at("extent_scale") == 1.0);
+    }
+    for (const auto pass_name : {
+             "planar_reflection_geometry",
+             "planar_reflection_ssao",
+             "planar_reflection_ssao_blur",
+             "planar_reflection_lighting",
+         }) {
+        REQUIRE(
+            passByName(
+                result.config, pass_name)
+                .at("view_family") ==
+            "$reflection/planar");
+        REQUIRE(
+            passByName(
+                result.config, pass_name)
+                .at("resolution_domain") ==
+            "independent");
+    }
+    REQUIRE(
+        passByName(
+            result.config,
+            "forward_transparent")
+            .at("material_resources")
+            .at("planar_reflection") ==
+        "planar_reflection_color");
+
+    const auto compiled =
+        compileComposition(result);
+    const auto feature =
+        std::find_if(
+            compiled.feature_instances.begin(),
+            compiled.feature_instances.end(),
+            [](const auto &candidate) {
+                return candidate.feature ==
+                       "planar_reflection";
+            });
+    REQUIRE(
+        feature !=
+        compiled.feature_instances.end());
+    const auto plane_y =
+        std::find_if(
+            feature->parameters.begin(),
+            feature->parameters.end(),
+            [](const auto &parameter) {
+                return parameter.name ==
+                       "plane_y";
+            });
+    REQUIRE(
+        plane_y !=
+        feature->parameters.end());
+    REQUIRE(
+        std::get<double>(
+            plane_y->value) ==
+        Catch::Approx(2.0));
+
+    for (const auto shadow_first :
+         {false, true}) {
+        auto features =
+            nlohmann::json::array();
+        if (shadow_first) {
+            features.push_back(
+                "engine://features/shadow_directional.json");
+        }
+        features.push_back(
+            reflection_instance);
+        if (!shadow_first) {
+            features.push_back(
+                "engine://features/shadow_directional.json");
+        }
+        const auto combined =
+            compose(std::move(features));
+        const auto &lighting =
+            passByName(
+                combined.config,
+                "planar_reflection_lighting");
+        REQUIRE(
+            std::find(
+                lighting.at("input").begin(),
+                lighting.at("input").end(),
+                "shadow_map") !=
+            lighting.at("input").end());
+    }
 }
 
 TEST_CASE("HDR render feature marks scene targets and uses the canonical tonemap anchor", "[render-feature]") {

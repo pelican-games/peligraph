@@ -58,6 +58,27 @@ std::set<std::string, std::less<>> validatedViewIds(
                 "' view '" + view.view_id +
                 "' has an invalid depth_range");
         }
+        if (view.clip_plane) {
+            const auto &plane =
+                *view.clip_plane;
+            const auto length_squared =
+                glm::dot(
+                    plane.normal,
+                    plane.normal);
+            if (!std::isfinite(plane.normal.x) ||
+                !std::isfinite(plane.normal.y) ||
+                !std::isfinite(plane.normal.z) ||
+                !std::isfinite(plane.offset) ||
+                !std::isfinite(length_squared) ||
+                length_squared <=
+                    std::numeric_limits<float>::epsilon()) {
+                throw std::runtime_error(
+                    "render view family '" +
+                    family.family_id +
+                    "' view '" + view.view_id +
+                    "' has an invalid clip_plane");
+            }
+        }
     }
     return ids;
 }

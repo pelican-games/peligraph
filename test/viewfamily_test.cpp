@@ -1,5 +1,6 @@
 #include "../src/core/renderer/viewfamily.hpp"
 #include "../src/core/renderer/directionalshadowcascade.hpp"
+#include "../src/core/renderer/planarreflectionview.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -312,6 +313,128 @@ TEST_CASE(
         reordered_snapshots[1]
             .previous_camera_position.x ==
         -1.0f);
+}
+
+TEST_CASE(
+    "planar reflection views preserve identity, clipping, and raster winding",
+    "[view-family][reflection][clip-plane]") {
+    RenderViewFamily main{
+        .family_id =
+            std::string{
+                mainRenderViewFamilyId},
+        .views = {
+            RenderViewParameters{
+                .view =
+                    glm::lookAt(
+                        glm::vec3{1.0f, 2.0f, 3.0f},
+                        glm::vec3{0.0f, 0.0f, 0.0f},
+                        glm::vec3{0.0f, 1.0f, 0.0f}),
+                .projection =
+                    glm::perspectiveRH_ZO(
+                        glm::radians(60.0f),
+                        1.5f, 0.1f, 100.0f),
+                .camera_position =
+                    {1.0f, 2.0f, 3.0f},
+                .view_id = "left",
+            },
+            RenderViewParameters{
+                .view =
+                    glm::lookAt(
+                        glm::vec3{-1.0f, 4.0f, 5.0f},
+                        glm::vec3{0.0f, 1.0f, 0.0f},
+                        glm::vec3{0.0f, 1.0f, 0.0f}),
+                .projection =
+                    glm::perspectiveRH_ZO(
+                        glm::radians(55.0f),
+                        1.5f, 0.1f, 100.0f),
+                .camera_position =
+                    {-1.0f, 4.0f, 5.0f},
+                .view_id = "right",
+            },
+        },
+    };
+    const auto reflection =
+        buildPlanarReflectionViewFamily(
+            main,
+            PlanarReflectionViewSettings{
+                .clip_plane =
+                    RenderViewClipPlane{
+                        .normal =
+                            {0.0f, 2.0f, 0.0f},
+                        .offset = -2.0f,
+                    },
+            });
+
+    REQUIRE(
+        reflection.family_id ==
+        std::string{
+            planarReflectionRenderViewFamilyId});
+    REQUIRE(reflection.views.size() == 2);
+    REQUIRE(
+        reflection.views[0].view_id ==
+        "$mirror/left");
+    REQUIRE(
+        reflection.views[1].view_id ==
+        "$mirror/right");
+    REQUIRE(
+        reflection.views[0]
+            .camera_position.x ==
+        Catch::Approx(1.0f));
+    REQUIRE(
+        reflection.views[0]
+            .camera_position.y ==
+        Catch::Approx(0.0f));
+    REQUIRE(
+        reflection.views[0]
+            .camera_position.z ==
+        Catch::Approx(3.0f));
+    REQUIRE(
+        reflection.views[1]
+            .camera_position.y ==
+        Catch::Approx(-2.0f));
+    REQUIRE(
+        reflection.views[0]
+            .projection[0][0] ==
+        Catch::Approx(
+            -main.views[0]
+                 .projection[0][0]));
+    REQUIRE(
+        reflection.views[0].clip_plane);
+    REQUIRE(
+        reflection.views[0]
+            .clip_plane->normal ==
+        glm::vec3{0.0f, 1.0f, 0.0f});
+    REQUIRE(
+        reflection.views[0]
+            .clip_plane->offset ==
+        Catch::Approx(-1.0f));
+
+    const auto policy =
+        compileGraphVariantPolicy({
+            .variant =
+                RenderPipelineGraphVariant::xr,
+        });
+    RenderViewFamilies families{
+        .families = {
+            main,
+            reflection,
+        },
+    };
+    REQUIRE_NOTHROW(
+        validateRenderViewFamilies(
+            families, policy));
+
+    REQUIRE_THROWS_AS(
+        buildPlanarReflectionViewFamily(
+            main,
+            PlanarReflectionViewSettings{
+                .clip_plane =
+                    RenderViewClipPlane{
+                        .normal =
+                            {0.0f, 0.0f, 0.0f},
+                    },
+            }),
+        std::invalid_argument);
 }
 
 TEST_CASE(

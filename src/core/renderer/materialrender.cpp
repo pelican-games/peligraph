@@ -53,7 +53,26 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         return;
     }
 
-    const auto &indirect_buf = instance_container.getIndirectBuf();
+    const BufferWrapper *indirect_buf =
+        &instance_container.getIndirectBuf();
+    vk::DeviceSize indirect_offset_bias = 0;
+    bool use_prepared_view_family_draws =
+        false;
+    if (dependencies.secondary_view_index) {
+        if (const auto offset =
+                instance_container
+                    .viewFamilyDrawOffset(
+                        dependencies.view_family,
+                        *dependencies
+                             .secondary_view_index)) {
+            indirect_buf =
+                &instance_container
+                     .viewFamilyIndirectBuffer();
+            indirect_offset_bias = *offset;
+            use_prepared_view_family_draws =
+                true;
+        }
+    }
     const auto &gpu_draw_source =
         pass.materialInfo().gpu_draw_source;
     if (gpu_draw_source &&
@@ -102,7 +121,8 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         };
     auto use_gpu_draws =
         gpu_draw_source.has_value() &&
-        gpu_device_draw_limit.has_value();
+        gpu_device_draw_limit.has_value() &&
+        !use_prepared_view_family_draws;
     if (use_gpu_draws) {
         if (!isValidFrameGraphBufferId(
                 gpu_draw_source->commands_id) ||
@@ -312,8 +332,9 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             // fallback when the device cannot consume a GPU-written count or
             // the current segmented publication exceeds authored capacity.
             cmd_buf.drawIndexedIndirect(
-                indirect_buf.buffer.get(),
-                draw_call.offset,
+                indirect_buf->buffer.get(),
+                indirect_offset_bias +
+                    draw_call.offset,
                 draw_call.draw_count,
                 draw_call.stride);
         }
@@ -326,31 +347,32 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
-    const BufferWrapper *indirect_buf = nullptr;
-    const std::vector<DrawIndirectInfo> *draw_calls = nullptr;
-    if (dependencies.directional_shadow_view_index) {
-        indirect_buf =
-            &instance_container
-                 .directionalShadowIndirectBuffer();
-        draw_calls =
-            &instance_container
-                 .directionalShadowDrawCalls(
-                     *dependencies
-                          .directional_shadow_view_index);
-    } else {
-        indirect_buf =
-            &instance_container.getIndirectBuf();
-        draw_calls =
-            &instance_container.getDrawCalls(
-                dependencies.first_person_view,
-                std::nullopt,
-                dependencies.draw_sort_view_index);
-    }
-    if (draw_calls->empty()) {
+    const auto &draw_calls =
+        instance_container.getDrawCalls(
+            dependencies.first_person_view,
+            std::nullopt,
+            dependencies.draw_sort_view_index);
+    if (draw_calls.empty()) {
         return;
     }
+    const BufferWrapper *indirect_buf =
+        &instance_container.getIndirectBuf();
+    vk::DeviceSize indirect_offset_bias = 0;
+    if (dependencies.secondary_view_index) {
+        if (const auto offset =
+                instance_container
+                    .viewFamilyDrawOffset(
+                        dependencies.view_family,
+                        *dependencies
+                             .secondary_view_index)) {
+            indirect_buf =
+                &instance_container
+                     .viewFamilyIndirectBuffer();
+            indirect_offset_bias = *offset;
+        }
+    }
 
-    for (const auto &draw_call : *draw_calls) {
+    for (const auto &draw_call : draw_calls) {
         const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         shadow_depth_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
@@ -361,7 +383,9 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             dependencies.view_projection;
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
                               sizeof(push_constant), &push_constant);
-        cmd_buf.drawIndexedIndirect(indirect_buf->buffer.get(), draw_call.offset, draw_call.draw_count,
+        cmd_buf.drawIndexedIndirect(indirect_buf->buffer.get(),
+                                    indirect_offset_bias + draw_call.offset,
+                                    draw_call.draw_count,
                                     draw_call.stride);
     }
 }
@@ -374,14 +398,29 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         dependencies.first_person_view, std::nullopt,
         dependencies.draw_sort_view_index);
     if (draw_calls.empty()) return;
-    const auto &indirect = instances.getIndirectBuf();
+    const BufferWrapper *indirect =
+        &instances.getIndirectBuf();
+    vk::DeviceSize indirect_offset_bias = 0;
+    if (dependencies.secondary_view_index) {
+        if (const auto offset =
+                instances.viewFamilyDrawOffset(
+                    dependencies.view_family,
+                    *dependencies
+                         .secondary_view_index)) {
+            indirect =
+                &instances
+                     .viewFamilyIndirectBuffer();
+            indirect_offset_bias = *offset;
+        }
+    }
     for (const auto &draw_call : draw_calls) {
         const auto layout = velocity_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         velocity_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         dependencies.vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, layout);
         instances.bindDeformation(cmd_buf, layout, draw_call.skinned);
-        cmd_buf.drawIndexedIndirect(indirect.buffer.get(), draw_call.offset,
+        cmd_buf.drawIndexedIndirect(indirect->buffer.get(),
+                                    indirect_offset_bias + draw_call.offset,
                                     draw_call.draw_count, draw_call.stride);
     }
 }

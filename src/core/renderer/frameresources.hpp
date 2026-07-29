@@ -27,6 +27,7 @@ struct alignas(16) FrameUniformData {
     std::uint32_t previous_temporal_reset_epoch = 0;
     std::uint32_t view_index = 0;
     std::uint32_t view_count = 1;
+    alignas(16) glm::vec4 clip_plane{0.0f};
 };
 
 static_assert(offsetof(FrameUniformData, time_delta) == 0);
@@ -43,7 +44,8 @@ static_assert(offsetof(FrameUniformData, temporal_reset_epoch) == 336);
 static_assert(offsetof(FrameUniformData, previous_temporal_reset_epoch) == 340);
 static_assert(offsetof(FrameUniformData, view_index) == 344);
 static_assert(offsetof(FrameUniformData, view_count) == 348);
-static_assert(sizeof(FrameUniformData) == 352);
+static_assert(offsetof(FrameUniformData, clip_plane) == 352);
+static_assert(sizeof(FrameUniformData) == 368);
 static_assert(std::is_trivially_copyable_v<FrameUniformData>);
 
 struct alignas(16) FrameResolutionUniformData {
