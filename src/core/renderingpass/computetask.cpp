@@ -1,4 +1,5 @@
 #include "computetask.hpp"
+#include "renderingpassjsonhelpers.hpp"
 #include "rendertargetcontainer.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
@@ -1259,6 +1260,11 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
         definition.writes = parseOptionalStringList(task_json, "writes", "compute task: " + definition.name);
         definition.after = parseOptionalStringList(task_json, "after", "compute task: " + definition.name);
         definition.before = parseOptionalStringList(task_json, "before", "compute task: " + definition.name);
+        definition.view_family =
+            parseRenderViewFamilyId(
+                task_json,
+                "Compute task '" +
+                    definition.name + "'");
         definition.resource_ports =
             parseShaderResourcePortDefinitions(
                 task_json, definition.reads,

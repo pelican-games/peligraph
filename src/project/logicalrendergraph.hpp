@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logicalrendertype.hpp"
+#include "viewfamilyrelation.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -168,6 +169,10 @@ struct LogicalGraphNode {
     std::vector<std::string> after;
     std::vector<std::string> before;
     std::vector<std::string> region_tags;
+    // A logical relation, not a Vulkan execution mode. Physical lowering
+    // decides whether this family is sequential, multiview, or shared.
+    std::string view_family{
+        mainRenderViewFamilyId};
 };
 
 struct LogicalCompileDecision {

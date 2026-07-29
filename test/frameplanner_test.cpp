@@ -1076,6 +1076,17 @@ TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]")
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
+    REQUIRE(
+        graphs.front().nodes.front()
+            .view_family ==
+        "$shadow/directional");
+    const auto logical =
+        compileLogicalFrameGraphShadow(
+            graphs.front(),
+            makeBuiltinLogicalTypeRegistry());
+    REQUIRE(
+        logical.nodes.front().view_family ==
+        "$shadow/directional");
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "shadow_directional_feature_main.json");
 }
 

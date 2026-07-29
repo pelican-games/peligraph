@@ -85,6 +85,7 @@
       "order": 0,
       "reads": [],
       "reads_history": [],
+      "view_family": "$shadow/directional",
       "writes": [
         "shadow_map"
       ]

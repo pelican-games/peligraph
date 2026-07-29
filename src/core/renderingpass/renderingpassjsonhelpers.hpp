@@ -32,6 +32,9 @@ std::vector<std::string> parseStringArrayField(const nlohmann::json &json, const
                                                const std::string &context);
 std::vector<std::string> parseOptionalRegionTags(
     const nlohmann::json &json, const std::string &context);
+std::string parseRenderViewFamilyId(
+    const nlohmann::json &json,
+    const std::string &context);
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context);
 std::array<double, 4>

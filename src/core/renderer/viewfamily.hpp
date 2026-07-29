@@ -2,6 +2,7 @@
 
 #include "projectionjitter.hpp"
 #include "../../project/graphvariantpolicy.hpp"
+#include "../../project/viewfamilyrelation.hpp"
 
 #include <cstdint>
 #include <map>
@@ -14,7 +15,6 @@
 
 namespace Pelican {
 
-inline constexpr std::string_view mainRenderViewFamilyId = "$main";
 inline constexpr std::string_view monoRenderViewId = "$mono";
 
 // A provider-owned, non-jittered view. view_id is stable across frames and is

@@ -8,6 +8,7 @@
 #include "../../project/materialoutput.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
+#include "../../project/viewfamilyrelation.hpp"
 #include "../../project/shaderresourceport.hpp"
 #include <array>
 #include <cmath>
@@ -330,6 +331,8 @@ struct PassDefinition {
     std::vector<PassInputViewDimension> input_target_views;
     std::vector<std::string> input_buffers;
     std::vector<std::string> region_tags;
+    std::string view_family{
+        mainRenderViewFamilyId};
 
     PassInfo pass_info = MaterialPassInfo{};
     std::optional<std::string> requested_implementation_provider;
@@ -543,6 +546,8 @@ struct ComputeTaskDefinition {
     ComputeDispatchDefinition dispatch;
     ComputeTaskSchedule schedule =
         ComputeTaskSchedule::per_frame;
+    std::string view_family{
+        mainRenderViewFamilyId};
 };
 
 struct CompiledComputeTask {

@@ -32,6 +32,8 @@ struct FrameGraphExecutionNode {
     std::string name;
     size_t index = 0;
     std::vector<CompiledFrameGraphBarrier> incoming_barriers;
+    std::string view_family{
+        mainRenderViewFamilyId};
 };
 
 struct CompiledMaterialRouteBinding {

@@ -123,8 +123,17 @@ CompiledFrameGraphExecution compileExecution(
                     "Frame plan render node is not compiled: " +
                     node.name);
             }
+            if (compiled_pass.passes[found->second]
+                    .definition.view_family !=
+                node.view_family) {
+                throw std::runtime_error(
+                    "Frame plan render node view_family does not match "
+                    "the compiled pass: " +
+                    node.name);
+            }
             execution.nodes.push_back(FrameGraphExecutionNode{
-                node.kind, node.name, found->second, {}});
+                node.kind, node.name, found->second, {},
+                node.view_family});
         } else if (node.kind == FramePlanNodeKind::compute) {
             auto found = task_indices.find(node.name);
             if (found == task_indices.end()) {
@@ -132,13 +141,23 @@ CompiledFrameGraphExecution compileExecution(
                     "Frame plan compute node is not compiled: " +
                     node.name);
             }
+            if (compiled_pass.compute_tasks[found->second]
+                    .definition.view_family !=
+                node.view_family) {
+                throw std::runtime_error(
+                    "Frame plan compute node view_family does not match "
+                    "the compiled task: " +
+                    node.name);
+            }
             execution.nodes.push_back(FrameGraphExecutionNode{
-                node.kind, node.name, found->second, {}});
+                node.kind, node.name, found->second, {},
+                node.view_family});
         } else if (node.kind == FramePlanNodeKind::anchor ||
                    node.kind == FramePlanNodeKind::snapshot_copy ||
                    node.kind == FramePlanNodeKind::output_transform) {
             execution.nodes.push_back(FrameGraphExecutionNode{
-                node.kind, node.name, 0, {}});
+                node.kind, node.name, 0, {},
+                node.view_family});
         } else {
             throw std::runtime_error(
                 "Unsupported frame plan node kind: " + node.name);

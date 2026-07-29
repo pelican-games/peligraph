@@ -292,6 +292,9 @@ void validateCompiledLogicalRenderGraph(
     std::map<std::string, const LogicalGraphNode *, std::less<>> nodes;
     for (const auto &node : graph.nodes) {
         requireName(node.name, "logical graph node name");
+        validateRenderViewFamilyId(
+            node.view_family,
+            "logical graph node '" + node.name + "'");
         if (!nodes.emplace(node.name, &node).second) {
             throw std::runtime_error("duplicate logical graph node: " + node.name);
         }
@@ -725,6 +728,11 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             {"before", node.before},
             {"regions", node.region_tags},
         };
+        if (node.view_family !=
+            mainRenderViewFamilyId) {
+            encoded["view_family"] =
+                node.view_family;
+        }
         for (const auto &port : node.ports) {
             nlohmann::ordered_json encoded_port{
                 {"name", port.name},

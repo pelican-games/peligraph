@@ -202,6 +202,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
         node.after = source.after;
         node.before = source.before;
         node.region_tags = source.region_tags;
+        node.view_family =
+            source.view_family;
         const auto legacy_region =
             "legacy." +
             std::string{logicalGraphNodeKindName(node.kind)};

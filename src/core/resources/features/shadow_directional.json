@@ -19,6 +19,7 @@
       "pass": {
         "name": "shadow_depth",
         "type": "shadow_depth",
+        "view_family": "$shadow/directional",
         "output": {
           "color": null,
           "depth": "shadow_map"

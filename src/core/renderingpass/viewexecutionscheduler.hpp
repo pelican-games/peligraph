@@ -2,9 +2,11 @@
 
 #include "framegraphruntime.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -28,6 +30,8 @@ struct LogicalFrameNodeInvocation {
     std::uint32_t view_index = 0;
     std::uint32_t execution_index = 0;
     std::uint32_t execution_count = 1;
+    std::string view_family{
+        mainRenderViewFamilyId};
 
     bool firstExecution() const noexcept {
         return execution_index == 0;
@@ -42,6 +46,11 @@ struct LogicalFrameNodeInvocation {
         return scope_node_index + 1 ==
                scope_node_count;
     }
+};
+
+struct LogicalFrameViewFamilyCardinality {
+    std::string_view family_id;
+    std::uint32_t view_count = 1;
 };
 
 // Maps one logical view execution onto source and destination image-array
@@ -102,11 +111,41 @@ inline std::vector<LogicalFrameNodeInvocation>
 buildLogicalFrameViewFamilySchedule(
     std::span<const FrameGraphExecutionNode> nodes,
     const VulkanTargetPlan &target_plan,
-    std::uint32_t logical_view_count) {
-    if (logical_view_count == 0) {
-        throw std::runtime_error(
-            "logical-frame view-family schedule requires at least one view");
+    std::span<const LogicalFrameViewFamilyCardinality>
+        view_families) {
+    std::map<std::string_view, std::uint32_t,
+             std::less<>>
+        view_count_by_family;
+    for (const auto &family : view_families) {
+        validateRenderViewFamilyId(
+            family.family_id,
+            "logical-frame schedule family");
+        if (family.view_count == 0) {
+            throw std::runtime_error(
+                "logical-frame view-family schedule requires at least "
+                "one view in family '" +
+                std::string{family.family_id} + "'");
+        }
+        if (!view_count_by_family
+                 .emplace(family.family_id,
+                          family.view_count)
+                 .second) {
+            throw std::runtime_error(
+                "logical-frame view-family schedule contains duplicate "
+                "family '" +
+                std::string{family.family_id} + "'");
+        }
     }
+    const auto main_family =
+        view_count_by_family.find(
+            mainRenderViewFamilyId);
+    if (main_family ==
+        view_count_by_family.end()) {
+        throw std::runtime_error(
+            "logical-frame view-family schedule requires '$main'");
+    }
+    const auto logical_view_count =
+        main_family->second;
     if (target_plan.view_execution_plan.view_count !=
         logical_view_count) {
         throw std::runtime_error(
@@ -130,20 +169,79 @@ buildLogicalFrameViewFamilySchedule(
 
     std::map<std::string_view, std::size_t, std::less<>>
         scope_by_node;
+    struct ScopeFamily {
+        std::string_view family_id;
+        std::uint32_t view_count = 1;
+    };
+    std::vector<ScopeFamily> scope_families;
+    scope_families.reserve(
+        target_plan.scopes.size());
     for (std::size_t scope_index = 0;
          scope_index < target_plan.scopes.size();
          ++scope_index) {
         const auto &scope = target_plan.scopes[scope_index];
+        if (scope.nodes.empty()) {
+            throw std::runtime_error(
+                "physical target plan contains an empty scope: " +
+                scope.id);
+        }
+        std::optional<std::string_view>
+            scope_family_id;
+        for (const auto &name : scope.nodes) {
+            const auto found =
+                node_by_name.find(name);
+            if (found == node_by_name.end()) {
+                throw std::runtime_error(
+                    "physical target plan contains a scope node that "
+                    "is absent from the compiled frame graph: " +
+                    name);
+            }
+            const auto &family =
+                nodes[found->second].view_family;
+            if (scope_family_id &&
+                *scope_family_id != family) {
+                throw std::runtime_error(
+                    "physical target-plan scope mixes view families: " +
+                    scope.id);
+            }
+            scope_family_id = family;
+        }
+        const auto family =
+            view_count_by_family.find(
+                *scope_family_id);
+        if (family ==
+            view_count_by_family.end()) {
+            throw std::runtime_error(
+                "logical frame does not provide view family '" +
+                std::string{*scope_family_id} +
+                "' required by scope '" + scope.id + "'");
+        }
+        const bool main_scope =
+            *scope_family_id ==
+            mainRenderViewFamilyId;
+        if (!main_scope &&
+            (family->second != 1 ||
+             scope.view_execution !=
+                 VulkanScopeViewExecution::single_view)) {
+            throw std::runtime_error(
+                "secondary view family '" +
+                std::string{*scope_family_id} +
+                "' currently requires one single-view scope");
+        }
+        const auto scope_logical_view_count =
+            main_scope
+                ? logical_view_count
+                : family->second;
         const auto expected_execution_count =
             scope.view_execution ==
                     VulkanScopeViewExecution::sequential
-                ? logical_view_count
+                ? scope_logical_view_count
                 : 1u;
         const auto expected_view_count =
             scope.view_execution ==
                     VulkanScopeViewExecution::single_view
                 ? 1u
-                : logical_view_count;
+                : scope_logical_view_count;
         if (scope.execution_count !=
                 expected_execution_count ||
             scope.view_count != expected_view_count ||
@@ -156,6 +254,10 @@ buildLogicalFrameViewFamilySchedule(
                 "contract: " +
                 scope.id);
         }
+        scope_families.push_back(
+            ScopeFamily{
+                *scope_family_id,
+                scope_logical_view_count});
         for (const auto &node : scope.nodes) {
             if (!scope_by_node.emplace(node, scope_index).second) {
                 throw std::runtime_error(
@@ -174,6 +276,8 @@ buildLogicalFrameViewFamilySchedule(
          ++scope_index) {
         const auto &scope =
             target_plan.scopes[scope_index];
+        const auto &scope_family =
+            scope_families[scope_index];
         std::vector<std::size_t> scope_nodes;
         scope_nodes.reserve(scope.nodes.size());
         for (const auto &name : scope.nodes) {
@@ -196,7 +300,7 @@ buildLogicalFrameViewFamilySchedule(
         const auto execution_count =
             scope.view_execution ==
                     VulkanScopeViewExecution::sequential
-                ? logical_view_count
+                ? scope_family.view_count
                 : 1u;
         for (std::uint32_t execution_index = 0;
              execution_index < execution_count;
@@ -217,7 +321,8 @@ buildLogicalFrameViewFamilySchedule(
                         .execution =
                             scope.view_execution,
                         .logical_view_count =
-                            logical_view_count,
+                            scope_family
+                                .view_count,
                         .view_index =
                             scope.view_execution ==
                                     VulkanScopeViewExecution::
@@ -228,6 +333,10 @@ buildLogicalFrameViewFamilySchedule(
                             execution_index,
                         .execution_count =
                             execution_count,
+                        .view_family =
+                            std::string{
+                                scope_family
+                                    .family_id},
                     });
             }
         }
@@ -242,6 +351,19 @@ buildLogicalFrameViewFamilySchedule(
         }
     }
     return result;
+}
+
+inline std::vector<LogicalFrameNodeInvocation>
+buildLogicalFrameViewFamilySchedule(
+    std::span<const FrameGraphExecutionNode> nodes,
+    const VulkanTargetPlan &target_plan,
+    std::uint32_t logical_view_count) {
+    const std::array families{
+        LogicalFrameViewFamilyCardinality{
+            mainRenderViewFamilyId,
+            logical_view_count}};
+    return buildLogicalFrameViewFamilySchedule(
+        nodes, target_plan, families);
 }
 
 // Selects the scope-complete command-recording work for one view when the
@@ -261,10 +383,21 @@ selectLogicalFrameSequentialViewSchedule(
 
     std::vector<LogicalFrameNodeInvocation> result;
     for (const auto &invocation : schedule) {
-        if (invocation.logical_view_count !=
-            logical_view_count) {
+        const bool main_family =
+            invocation.view_family ==
+            mainRenderViewFamilyId;
+        if (main_family &&
+            invocation.logical_view_count !=
+                logical_view_count) {
             throw std::runtime_error(
                 "per-view schedule mixes logical-view cardinalities");
+        }
+        if (!main_family) {
+            if (view_index == 0) {
+                result.push_back(
+                    invocation);
+            }
+            continue;
         }
         switch (invocation.execution) {
         case VulkanScopeViewExecution::single_view:

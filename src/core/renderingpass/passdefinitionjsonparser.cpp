@@ -66,6 +66,10 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     pass_def.region_tags =
         parseOptionalRegionTags(
             pass_json, "Pass '" + pass_def.name + "'");
+    pass_def.view_family =
+        parseRenderViewFamilyId(
+            pass_json,
+            "Pass '" + pass_def.name + "'");
     parsePassImplementationProvider(pass_def, pass_json);
 
     parsePassOutputTargetsFromJson(pass_def, rt_resolver, pass_json);

@@ -322,6 +322,26 @@ std::vector<std::string> parseOptionalRegionTags(
     return result;
 }
 
+std::string parseRenderViewFamilyId(
+    const nlohmann::json &json,
+    const std::string &context) {
+    auto family_id =
+        std::string{mainRenderViewFamilyId};
+    if (json.contains("view_family")) {
+        if (!json.at("view_family").is_string()) {
+            throw std::runtime_error(
+                context +
+                " view_family must be a string");
+        }
+        family_id =
+            json.at("view_family")
+                .get<std::string>();
+    }
+    validateRenderViewFamilyId(
+        family_id, context);
+    return family_id;
+}
+
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context) {
     if (!json.contains(field_name) || !json.at(field_name).is_number_integer()) {

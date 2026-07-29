@@ -586,6 +586,11 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     FrameGraphNodeDefinition node;
     node.name = requireString(pass_json, "name", "pass");
     node.declaration_index = declaration_index;
+    node.view_family =
+        parseRenderViewFamilyId(
+            pass_json,
+            "Frame graph pass '" +
+                node.name + "'");
     node.after = parseOptionalStringList(pass_json, "after", "pass");
     node.before = parseOptionalStringList(pass_json, "before", "pass");
     node.region_tags =
@@ -777,6 +782,11 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     node.name = requireString(task_json, "name", "compute task");
     node.kind = FramePlanNodeKind::compute;
     node.declaration_index = declaration_index;
+    node.view_family =
+        parseRenderViewFamilyId(
+            task_json,
+            "Frame graph compute task '" +
+                node.name + "'");
     const auto authored_reads =
         parseOptionalStringList(
             task_json, "reads", "compute task");
@@ -995,6 +1005,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.name = pass.name;
     node.kind = passKind(pass);
     node.declaration_index = declaration_index;
+    node.view_family =
+        pass.view_family;
     node.region_tags = pass.region_tags;
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
@@ -1546,6 +1558,7 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             node_def.byte_size,
             node_def.material_filter,
             node_def.material_variant,
+            node_def.view_family,
         });
     }
 
@@ -1606,6 +1619,11 @@ nlohmann::json framePlanToJson(
         if (node.material_variant) {
             node_json["material_variant"] =
                 *node.material_variant;
+        }
+        if (node.view_family !=
+            mainRenderViewFamilyId) {
+            node_json["view_family"] =
+                node.view_family;
         }
         nodes_json.push_back(std::move(node_json));
     }

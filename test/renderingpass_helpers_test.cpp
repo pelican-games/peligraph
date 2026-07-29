@@ -79,6 +79,25 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(parseStringArrayField(object, "usage", "test").size() == 2);
     REQUIRE(parseUint32Field(object, "count", "test") == 42);
     REQUIRE(
+        parseRenderViewFamilyId(
+            nlohmann::json::object(),
+            "test") ==
+        "$main");
+    REQUIRE(
+        parseRenderViewFamilyId(
+            nlohmann::json{
+                {"view_family",
+                 "$reflection/probe/0"}},
+            "test") ==
+        "$reflection/probe/0");
+    REQUIRE_THROWS_WITH(
+        parseRenderViewFamilyId(
+            nlohmann::json{
+                {"view_family", ""}},
+            "test"),
+        Catch::Matchers::ContainsSubstring(
+            "non-empty view_family"));
+    REQUIRE(
         parseOptionalRegionTags(
             nlohmann::json{
                 {"regions",
@@ -610,7 +629,8 @@ TEST_CASE(
             {
               "name": "per_eye",
               "shader": "shaders/per_eye",
-              "schedule": "per_view"
+              "schedule": "per_view",
+              "view_family": "$reflection/probe/0"
             }
           ]
         })json");
@@ -625,6 +645,12 @@ TEST_CASE(
     REQUIRE(
         tasks[1].schedule ==
         ComputeTaskSchedule::per_view);
+    REQUIRE(
+        tasks[0].view_family ==
+        "$main");
+    REQUIRE(
+        tasks[1].view_family ==
+        "$reflection/probe/0");
     REQUIRE(
         std::string{
             computeTaskScheduleName(
@@ -1427,6 +1453,7 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         {"output", {{"color", "half_color"}, {"depth", nullptr}}},
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "debug_texture"}}},
         {"implementation", {{"provider", "fixture.fullscreen"}}},
+        {"view_family", "$reflection/probe/0"},
         {"regions",
          nlohmann::json::array(
              {"region.post.fixture", "region.post"})},
@@ -1451,6 +1478,9 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         pass_def.region_tags ==
         std::vector<std::string>{
             "region.post.fixture", "region.post"});
+    REQUIRE(
+        pass_def.view_family ==
+        "$reflection/probe/0");
 }
 
 TEST_CASE(
@@ -3578,6 +3608,102 @@ TEST_CASE(
     REQUIRE(second_view[0].beginsScopeExecution());
     REQUIRE(second_view[1].node_index == 2);
     REQUIRE(second_view[1].endsScopeExecution());
+}
+
+TEST_CASE(
+    "view-family scheduler binds secondary families without repeating them per main view",
+    "[renderingpass][view-execution][schedule][secondary-family]") {
+    const std::vector<FrameGraphExecutionNode> nodes{
+        {
+            .name = "DirectionalShadow",
+            .view_family =
+                std::string{
+                    directionalShadowRenderViewFamilyId},
+        },
+        {.name = "Geometry"},
+    };
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 2;
+    plan.scopes = {
+        {
+            .id = "shadow",
+            .nodes = {"DirectionalShadow"},
+            .view_execution =
+                VulkanScopeViewExecution::single_view,
+            .view_count = 1,
+            .execution_count = 1,
+        },
+        {
+            .id = "geometry",
+            .nodes = {"Geometry"},
+            .view_execution =
+                VulkanScopeViewExecution::sequential,
+            .view_count = 2,
+            .execution_count = 2,
+        },
+    };
+    const std::array families{
+        LogicalFrameViewFamilyCardinality{
+            mainRenderViewFamilyId, 2},
+        LogicalFrameViewFamilyCardinality{
+            directionalShadowRenderViewFamilyId,
+            1},
+    };
+
+    const auto schedule =
+        buildLogicalFrameViewFamilySchedule(
+            nodes, plan, families);
+    REQUIRE(schedule.size() == 3);
+    REQUIRE(
+        schedule[0].view_family ==
+        "$shadow/directional");
+    REQUIRE(
+        schedule[0].logical_view_count ==
+        1);
+    REQUIRE(
+        schedule[1].view_family ==
+        "$main");
+    REQUIRE(
+        schedule[2].view_index == 1);
+
+    const auto first_view =
+        selectLogicalFrameSequentialViewSchedule(
+            schedule, 0, 2);
+    const auto second_view =
+        selectLogicalFrameSequentialViewSchedule(
+            schedule, 1, 2);
+    REQUIRE(first_view.size() == 2);
+    REQUIRE(
+        first_view.front().view_family ==
+        "$shadow/directional");
+    REQUIRE(second_view.size() == 1);
+    REQUIRE(
+        second_view.front().view_family ==
+        "$main");
+
+    REQUIRE_THROWS_WITH(
+        buildLogicalFrameViewFamilySchedule(
+            nodes, plan,
+            std::span{
+                families.data(), 1}),
+        Catch::Matchers::ContainsSubstring(
+            "does not provide view family"));
+
+    auto mixed = plan;
+    mixed.scopes = {{
+        .id = "mixed",
+        .nodes =
+            {"DirectionalShadow", "Geometry"},
+        .view_execution =
+            VulkanScopeViewExecution::single_view,
+        .view_count = 1,
+        .execution_count = 1,
+    }};
+    REQUIRE_THROWS_WITH(
+        buildLogicalFrameViewFamilySchedule(
+            nodes, mixed, families),
+        Catch::Matchers::ContainsSubstring(
+            "mixes view families"));
 }
 
 TEST_CASE(

@@ -1619,6 +1619,9 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
             result.back().kind ==
                 VulkanPhysicalScopeKind::rendering &&
             result.back().view_execution == execution &&
+            nodes.at(result.back().nodes.front())
+                    ->view_family ==
+                node.view_family &&
             result.back().rasterization_samples ==
                 rasterization_samples &&
             !constraintBlocksFusion(constraints, node.name)) {

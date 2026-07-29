@@ -82,10 +82,6 @@ targetViewExecutionRequest(
                     pass.at("name").get<std::string>();
                 const auto type =
                     pass.at("type").get<std::string>();
-                if (type == "shadow_depth") {
-                    independent_candidates.insert(name);
-                    continue;
-                }
                 if (type != "fullscreen" ||
                     pass.contains("implementation") ||
                     !pass.contains("shader") ||
@@ -124,6 +120,11 @@ targetViewExecutionRequest(
             "sprite") != pipeline.feature_names.end();
     for (const auto &graph : graphs) {
         for (const auto &node : graph.nodes) {
+            if (node.view_family !=
+                mainRenderViewFamilyId) {
+                independent_candidates.insert(
+                    node.name);
+            }
             if (node.kind == FramePlanNodeKind::anchor &&
                 (!sprite_enabled ||
                  node.name != "__anchor_sprite")) {
