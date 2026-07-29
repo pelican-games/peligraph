@@ -1,7 +1,5 @@
 #include "openxrviewspace.hpp"
 
-#include "../vkcore/renderer.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -132,11 +130,25 @@ std::vector<RenderViewParameters> buildRenderViewParameters(
     std::span<const XrView> views, float z_near, float z_far) {
     std::vector<RenderViewParameters> result;
     result.reserve(views.size());
-    for (const auto &view : views) {
+    for (std::size_t index = 0; index < views.size(); ++index) {
         result.push_back(buildRenderViewParameters(
-            active_camera_view_at_frame_start, view, z_near, z_far));
+            active_camera_view_at_frame_start, views[index],
+            z_near, z_far));
+        result.back().view_id =
+            "$xr/" + std::to_string(index);
     }
     return result;
+}
+
+RenderViewFamily buildMainRenderViewFamily(
+    const glm::mat4 &active_camera_view_at_frame_start,
+    std::span<const XrView> views, float z_near, float z_far) {
+    return RenderViewFamily{
+        .family_id = std::string{mainRenderViewFamilyId},
+        .views = buildRenderViewParameters(
+            active_camera_view_at_frame_start, views,
+            z_near, z_far),
+    };
 }
 
 } // namespace Pelican::OpenXr

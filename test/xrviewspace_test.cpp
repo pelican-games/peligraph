@@ -65,8 +65,19 @@ TEST_CASE("OpenXR 64mm IPD keeps eye positions and inverse view translations dis
     CHECK(result[1].camera_position.x == Approx(0.032F));
     CHECK(result[0].view[3][0] == Approx(0.032F));
     CHECK(result[1].view[3][0] == Approx(-0.032F));
+    CHECK(result[0].view_id == "$xr/0");
+    CHECK(result[1].view_id == "$xr/1");
     CHECK(result[1].camera_position.x - result[0].camera_position.x ==
           Approx(0.064F));
+
+    const auto family = Pelican::OpenXr::buildMainRenderViewFamily(
+        glm::mat4{1.0F}, views, 0.1F, 100.0F);
+    CHECK(
+        family.family_id ==
+        std::string{Pelican::mainRenderViewFamilyId});
+    REQUIRE(family.views.size() == 2);
+    CHECK(family.views[0].view_id == "$xr/0");
+    CHECK(family.views[1].view_id == "$xr/1");
 }
 
 TEST_CASE("flat render view defaults to third-person visibility",

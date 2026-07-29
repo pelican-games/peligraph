@@ -528,10 +528,10 @@ void Loop::run() {
                         display_timing, located_views,
                         camera_projection.znear,
                         camera_projection.zfar);
-                    const auto view_parameters = OpenXr::buildRenderViewParameters(
+                    const auto view_family = OpenXr::buildMainRenderViewFamily(
                         active_camera_view, located_views.views,
                         camera_projection.znear, camera_projection.zfar);
-                    renderer.renderLogicalFrame(*xr_target, view_parameters);
+                    renderer.renderLogicalFrame(*xr_target, view_family);
                     if (xr_mirror != nullptr) {
                         xr_mirror->tryPresent();
                         const auto &mirror = xr_mirror->statistics();

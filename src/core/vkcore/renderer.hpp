@@ -3,7 +3,7 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../renderingpass/previewgraph.hpp"
-#include "../renderer/projectionjitter.hpp"
+#include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
 #include <nlohmann/json.hpp>
@@ -28,15 +28,6 @@ struct ReloadRequest;
 enum class RenderGraphVariant {
     flat,
     xr,
-};
-
-struct RenderViewParameters {
-    glm::mat4 view{1.0f};
-    glm::mat4 projection{1.0f};
-    glm::vec3 camera_position{0.0f};
-    // XR eye views set this true. Flat and mirror/observer views retain the
-    // default so VRM head geometry remains visible.
-    bool first_person_view = false;
 };
 
 struct LogicalFrameRuntime {
@@ -96,8 +87,8 @@ DECLARE_MODULE(Renderer) {
     RenderingPassId flat_rendering_pass_id = invalidRenderingPassId();
     std::optional<RenderingPassId> xr_rendering_pass_id;
     RenderGraphVariant active_graph_variant = RenderGraphVariant::flat;
-    std::vector<TemporalFrameHistory> flat_temporal_histories;
-    std::vector<TemporalFrameHistory> xr_temporal_histories;
+    TemporalViewFamilyHistory flat_temporal_history;
+    TemporalViewFamilyHistory xr_temporal_history;
     std::vector<RenderFrameSnapshot> last_view_snapshots;
     bool temporal_reset_requested = true;
     std::uint64_t observed_time_set_revision = 0;
@@ -110,8 +101,8 @@ DECLARE_MODULE(Renderer) {
     std::unique_ptr<RenderPipelineReloadState>
         render_pipeline_reload_state;
 
-    std::vector<TemporalFrameHistory> &activeTemporalHistories();
-    const std::vector<TemporalFrameHistory> &activeTemporalHistories() const;
+    TemporalViewFamilyHistory &activeTemporalHistory();
+    const TemporalViewFamilyHistory &activeTemporalHistory() const;
     void installRenderPipelineReloadParticipant();
     void relowerRenderPipelineForCurrentOutput();
     bool reloadRenderPipelineFromDisk(
@@ -157,7 +148,7 @@ DECLARE_MODULE(Renderer) {
     void prepareRuntimeModules();
     void renderLogicalFrame(
         ILogicalFrameTarget &target,
-        std::span<const RenderViewParameters> views);
+        const RenderViewFamily &view_family);
     void render();
 };
 

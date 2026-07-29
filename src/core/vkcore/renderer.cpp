@@ -2238,8 +2238,6 @@ Renderer::Renderer() {
     xr_excluded_features = variants.xr_excluded_features;
     preview_graph_program = variants.preview;
     current_rendering_pass_id = flat_rendering_pass_id;
-    flat_temporal_histories.resize(1);
-    if (xr_rendering_pass_id) xr_temporal_histories.resize(2);
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
     installRenderPipelineReloadParticipant();
 }
@@ -2602,9 +2600,13 @@ nlohmann::ordered_json Renderer::previewIsolationStateJson() const {
                     {"jitter_ndc", vec2(value.jitter_ndc)},
                     {"temporal_reset_epoch", value.temporal_reset_epoch}};
     };
-    const auto histories = [&](const std::vector<TemporalFrameHistory> &values) {
+    const auto histories = [&](const TemporalViewFamilyHistory &family) {
         auto result = Json::array();
-        for (const auto &value : values) result.push_back(history(value));
+        for (const auto &[view_id, value] : family.views) {
+            auto entry = history(value);
+            entry["view_id"] = view_id;
+            result.push_back(std::move(entry));
+        }
         return result;
     };
     auto snapshots = Json::array();
@@ -2633,8 +2635,10 @@ nlohmann::ordered_json Renderer::previewIsolationStateJson() const {
                                        ? Json(xr_rendering_pass_id->value) : Json(nullptr)},
             {"active_graph_variant", active_graph_variant == RenderGraphVariant::flat
                                          ? "flat" : "xr"},
-            {"flat_histories", histories(flat_temporal_histories)},
-            {"xr_histories", histories(xr_temporal_histories)},
+            {"flat_history_family_id", flat_temporal_history.family_id},
+            {"flat_histories", histories(flat_temporal_history)},
+            {"xr_history_family_id", xr_temporal_history.family_id},
+            {"xr_histories", histories(xr_temporal_history)},
             {"last_view_snapshots", std::move(snapshots)},
             {"temporal_reset_requested", temporal_reset_requested},
             {"observed_time_set_revision", observed_time_set_revision},
@@ -2648,16 +2652,16 @@ nlohmann::ordered_json Renderer::previewIsolationStateJson() const {
             {"preview_graph_generation", preview_graph_program.generation}};
 }
 
-std::vector<TemporalFrameHistory> &Renderer::activeTemporalHistories() {
+TemporalViewFamilyHistory &Renderer::activeTemporalHistory() {
     return active_graph_variant == RenderGraphVariant::flat
-               ? flat_temporal_histories
-               : xr_temporal_histories;
+               ? flat_temporal_history
+               : xr_temporal_history;
 }
 
-const std::vector<TemporalFrameHistory> &Renderer::activeTemporalHistories() const {
+const TemporalViewFamilyHistory &Renderer::activeTemporalHistory() const {
     return active_graph_variant == RenderGraphVariant::flat
-               ? flat_temporal_histories
-               : xr_temporal_histories;
+               ? flat_temporal_history
+               : xr_temporal_history;
 }
 
 nlohmann::json Renderer::currentFramePlanJson() const {
@@ -3116,7 +3120,8 @@ void Renderer::prepareRuntimeModules() {
 
 void Renderer::renderLogicalFrame(
     ILogicalFrameTarget &target,
-    std::span<const RenderViewParameters> views) {
+    const RenderViewFamily &view_family) {
+    const auto &views = view_family.views;
     if (views.size() > std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error(
             "Renderer logical frame view count exceeds the public index range");
@@ -3187,6 +3192,19 @@ void Renderer::renderLogicalFrame(
     }
     const auto frame_projection_jitter =
         projectionJitterSettingsFor(frame_graph);
+    const auto &graph_variant_policy =
+        frame_graph.render_pipeline->graph_variant_policy;
+    const auto expected_graph_variant =
+        active_graph_variant == RenderGraphVariant::flat
+            ? RenderPipelineGraphVariant::flat
+            : RenderPipelineGraphVariant::xr;
+    if (graph_variant_policy.variant !=
+        expected_graph_variant) {
+        throw std::runtime_error(
+            "Renderer selected graph does not match its compiled graph variant policy");
+    }
+    validateRenderViewFamily(
+        view_family, graph_variant_policy);
 
     if (modules.render_timing != nullptr) {
         std::size_t max_nodes = 0;
@@ -3207,12 +3225,17 @@ void Renderer::renderLogicalFrame(
             static_cast<std::uint32_t>(in_flight_frames_num), range_slots,
             static_cast<std::uint32_t>(max_nodes));
     }
-    auto &temporal_histories = activeTemporalHistories();
-    if (temporal_histories.size() != view_count) {
-        modules.render_target_container.resetHistory();
-        modules.instance_container.resetTemporalHistory();
-        render_target_layout_tracker.reset();
-        temporal_histories.assign(view_count, TemporalFrameHistory{});
+    auto &temporal_history = activeTemporalHistory();
+    const auto view_family_change =
+        synchronizeTemporalViewFamilyHistory(
+            temporal_history, view_family);
+    if (view_family_change !=
+        TemporalViewFamilyChange::none) {
+        if (!temporal_reset_requested) {
+            modules.render_target_container.resetHistory();
+            modules.instance_container.resetTemporalHistory();
+            render_target_layout_tracker.reset();
+        }
         temporal_reset_requested = true;
     }
     modules.frame_resources.beginLogicalFrame(view_count);
@@ -3225,8 +3248,7 @@ void Renderer::renderLogicalFrame(
     const auto time_set_revision = engine_time.timeSetRevision();
     const auto camera_discontinuity_revision = modules.camera.discontinuityRevision();
     const bool has_temporal_history =
-        std::any_of(temporal_histories.begin(), temporal_histories.end(),
-                    [](const TemporalFrameHistory &history) { return history.valid; });
+        temporal_history.hasValidView();
     if (has_temporal_history &&
         (time_set_revision != observed_time_set_revision ||
          camera_discontinuity_revision != observed_camera_discontinuity_revision)) {
@@ -3241,27 +3263,6 @@ void Renderer::renderLogicalFrame(
         modules.light_container,
         modules.frame_graph_resources);
 
-    const auto &graph_variant_policy =
-        frame_graph.render_pipeline->graph_variant_policy;
-    const auto expected_graph_variant =
-        active_graph_variant == RenderGraphVariant::flat
-            ? RenderPipelineGraphVariant::flat
-            : RenderPipelineGraphVariant::xr;
-    if (graph_variant_policy.variant !=
-        expected_graph_variant) {
-        throw std::runtime_error(
-            "Renderer selected graph does not match its compiled graph variant policy");
-    }
-    if (graph_variant_policy.view_count != 0 &&
-        view_count != graph_variant_policy.view_count) {
-        throw std::runtime_error(
-            "Renderer graph variant '" +
-            std::string{renderPipelineGraphVariantName(
-                graph_variant_policy.variant)} +
-            "' requires " +
-            std::to_string(graph_variant_policy.view_count) +
-            " views");
-    }
     const auto &draw_sorting =
         frame_graph.render_pipeline->draw_sorting;
     const bool per_view_sort =
@@ -3347,6 +3348,11 @@ void Renderer::renderLogicalFrame(
     }
     std::vector<RenderFrameSnapshot> snapshots;
     snapshots.reserve(view_count);
+    const RenderViewFamilyProjectionModifiers
+        view_family_modifiers{
+            .projection_jitter =
+                frame_projection_jitter,
+        };
     nlohmann::json view_traces = nlohmann::json::array();
     std::optional<std::uint32_t> logical_in_flight_frame;
     std::optional<vk::Extent2D> logical_extent;
@@ -3476,42 +3482,29 @@ void Renderer::renderLogicalFrame(
             frame_resolutions;
         frame_uniforms.reserve(view_count);
         frame_resolutions.reserve(view_count);
+        snapshots =
+            buildRenderViewFamilySnapshots(
+                temporal_history, view_family,
+                view_family_modifiers,
+                graph_variant_policy,
+                engine_time.frameIndex(),
+                resolution_extents.render.width,
+                resolution_extents.render.height,
+                temporal_reset_requested);
         for (std::uint32_t view_index = 0;
              view_index < view_count;
              ++view_index) {
-            const auto &view =
-                views[view_index];
-            glm::vec2 jitter_ndc{0.0f};
-            if (frame_projection_jitter) {
-                jitter_ndc =
-                    projectionJitterSample(
-                        *frame_projection_jitter,
-                        engine_time.frameIndex(),
-                        resolution_extents
-                            .render.width,
-                        resolution_extents
-                            .render.height)
-                        .jitter_ndc;
-            }
-            snapshots.push_back(
-                buildRenderFrameSnapshot(
-                    temporal_histories.at(
-                        view_index),
-                    view.projection, view.view,
-                    view.camera_position,
-                    jitter_ndc,
-                    temporal_reset_requested));
             modules.frame_resources.selectView(
                 render_ctx
                     .in_flight_frame_index,
                 view_index);
             frame_uniforms.push_back(
                 updateFrameResources(
-                    modules, engine_time,
-                    resolution_extents.render,
-                    resolution_extents.output,
-                    snapshots.back(),
-                    view_index, view_count));
+                     modules, engine_time,
+                     resolution_extents.render,
+                     resolution_extents.output,
+                     snapshots.at(view_index),
+                     view_index, view_count));
             frame_resolutions.push_back(
                 frameResolutionData(
                     resolution_extents.render,
@@ -3634,23 +3627,25 @@ void Renderer::renderLogicalFrame(
                 "Renderer logical-frame target format does not match the compiled flat graph");
         }
 
-        const auto &view = views[view_index];
         const auto resolution_extents =
             resolveFrameResolutionExtents(
                 frame_graph,
                 modules.render_target_container,
                 render_ctx.extent);
-        glm::vec2 jitter_ndc{0.0f};
-        if (frame_projection_jitter) {
-            jitter_ndc = projectionJitterSample(*frame_projection_jitter, engine_time.frameIndex(),
-                                                resolution_extents.render.width,
-                                                resolution_extents.render.height)
-                             .jitter_ndc;
+        if (view_index == 0) {
+            snapshots =
+                buildRenderViewFamilySnapshots(
+                    temporal_history,
+                    view_family,
+                    view_family_modifiers,
+                    graph_variant_policy,
+                    engine_time.frameIndex(),
+                    resolution_extents.render.width,
+                    resolution_extents.render.height,
+                    temporal_reset_requested);
         }
-        snapshots.push_back(buildRenderFrameSnapshot(
-            temporal_histories.at(view_index), view.projection, view.view,
-            view.camera_position, jitter_ndc, temporal_reset_requested));
-        const auto &snapshot = snapshots.back();
+        const auto &snapshot =
+            snapshots.at(view_index);
 
         modules.frame_resources.selectView(render_ctx.in_flight_frame_index, view_index);
         updateFrameResources(
@@ -3735,9 +3730,8 @@ void Renderer::renderLogicalFrame(
 
     modules.render_target_container.advanceHistoryFrame();
     modules.instance_container.advanceTemporalHistoryAfterRender();
-    for (std::uint32_t view_index = 0; view_index < view_count; ++view_index) {
-        commitRenderFrameSnapshot(temporal_histories.at(view_index), snapshots.at(view_index));
-    }
+    commitRenderViewFamilySnapshots(
+        temporal_history, view_family, snapshots);
     last_view_snapshots = std::move(snapshots);
     temporal_reset_requested = false;
     if (pending_graph_transition) {
@@ -3757,17 +3751,17 @@ void Renderer::render() {
     selectGraphVariant(RenderGraphVariant::flat);
     FlatLogicalFrameTarget target{GET_MODULE(RenderTarget)};
     const auto &camera = GET_MODULE(Camera);
-    const std::array views{
+    auto view_family =
+        makeMainRenderViewFamily(
         RenderViewParameters{
             .view = camera.getViewMatrix(),
             .projection = camera.getProjectionMatrix(),
             .camera_position = camera.getPos(),
-        },
-    };
+        });
     for (std::uint32_t attempt = 0; attempt < 2;
          ++attempt) {
         try {
-            renderLogicalFrame(target, views);
+            renderLogicalFrame(target, view_family);
             return;
         } catch (
             const OutputTemporarilyUnavailable &) {

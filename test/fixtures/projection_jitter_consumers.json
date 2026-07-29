@@ -22,6 +22,7 @@
       "\\bglm::mat4 projection\\b",
       "\\basymmetricProjectionRhZo\\b",
       "\\bbuildRenderViewParameters\\b",
+      "\\bbuildRenderViewFamilySnapshots\\b",
       "\\bRenderViewParameters\\b"
     ]
   },
@@ -122,7 +123,7 @@
       "source": "src/core/appflow/loop.cpp",
       "consumer": "view_provider",
       "role": "OpenXR per-eye view provider delivery",
-      "needles": ["OpenXr::buildRenderViewParameters(", "renderer.renderLogicalFrame("]
+      "needles": ["OpenXr::buildMainRenderViewFamily(", "renderer.renderLogicalFrame("]
     },
     {
       "source": "src/core/communication/editorpreviewservice.cpp",
@@ -225,6 +226,12 @@
       "consumer": "snapshot_and_frame_transport",
       "role": "snapshot semantic types",
       "needles": ["glm::mat4 view_projection_jittered{1.0f};", "glm::vec2 jitter_ndc{0.0f};"]
+    },
+    {
+      "source": "src/core/renderer/viewfamily.cpp",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "view-family projection modifier and stable history resolver",
+      "needles": ["projectionJitterSample(", "history.views.find(view.view_id)", "buildRenderFrameSnapshot("]
     },
     {
       "source": "src/core/renderer/temporal.cpp",
@@ -385,10 +392,10 @@
       "needles": ["data.projection = snapshot.projection_jittered;", "data.jitter_ndc = snapshot.jitter_ndc;", "snapshot.view_projection_jittered"]
     },
     {
-      "source": "src/core/vkcore/renderer.hpp",
+      "source": "src/core/renderer/viewfamily.hpp",
       "consumer": "view_provider",
       "role": "flat/XR projection input boundary",
-      "needles": ["struct RenderViewParameters", "glm::mat4 projection{1.0f};"]
+      "needles": ["struct RenderViewParameters", "struct RenderViewFamily", "glm::mat4 projection{1.0f};"]
     }
   ]
 }

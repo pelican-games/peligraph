@@ -1,6 +1,7 @@
 #pragma once
 
 #include "openxrdiscovery.hpp"
+#include "../renderer/viewfamily.hpp"
 
 #include <glm/glm.hpp>
 #include <span>
@@ -8,8 +9,6 @@
 #include <vector>
 
 namespace Pelican {
-
-struct RenderViewParameters;
 
 namespace OpenXr {
 
@@ -38,6 +37,9 @@ RenderViewParameters buildRenderViewParameters(
     const glm::mat4 &active_camera_view_at_frame_start, const XrView &view,
     float z_near, float z_far);
 std::vector<RenderViewParameters> buildRenderViewParameters(
+    const glm::mat4 &active_camera_view_at_frame_start,
+    std::span<const XrView> views, float z_near, float z_far);
+RenderViewFamily buildMainRenderViewFamily(
     const glm::mat4 &active_camera_view_at_frame_start,
     std::span<const XrView> views, float z_near, float z_far);
 

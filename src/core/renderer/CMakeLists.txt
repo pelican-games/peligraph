@@ -10,6 +10,7 @@ target_sources(pelican_core PRIVATE
     indirectdrawlimits.cpp
     polygoninstancecontainer.cpp
     projectionjitter.cpp
+    viewfamily.cpp
     materialrender.cpp
     uicontainer.cpp
     uirenderer.cpp

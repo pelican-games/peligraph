@@ -5453,7 +5453,15 @@ captureGpuSegmentedOcclusionXr(
         views[view_index]
             .first_person_view =
             false;
+        views[view_index].view_id =
+            "$xr/" +
+            std::to_string(view_index);
     }
+    const RenderViewFamily view_family{
+        .family_id =
+            std::string{mainRenderViewFamilyId},
+        .views = {views.begin(), views.end()},
+    };
 
     auto &renderer = GET_MODULE(Renderer);
     renderer.selectGraphVariant(
@@ -5473,7 +5481,7 @@ captureGpuSegmentedOcclusionXr(
                     launch.headless_extent,
                     format};
         renderer.renderLogicalFrame(
-            target_output, views);
+            target_output, view_family);
         result.images[0] =
             target_output.readback(0);
         result.images[1] =
@@ -5499,7 +5507,7 @@ captureGpuSegmentedOcclusionXr(
                 launch.headless_extent,
                 format};
         renderer.renderLogicalFrame(
-            target_output, views);
+            target_output, view_family);
         result.images[0] =
             target_output.readback(0);
         result.images[1] =
@@ -7057,21 +7065,35 @@ void GoldenHarness::runLogicalFrameStereo() {
     GET_MODULE(SceneLoader).load("default_scene");
     GET_MODULE(ECSCore).update();
 
-    auto make_view = [](float view_x, float projection_x, float camera_x) {
+    auto make_view = [](float view_x, float projection_x,
+                        float camera_x, std::string view_id) {
         RenderViewParameters result;
         result.view[3][0] = view_x;
         result.projection[0][0] = projection_x;
         result.camera_position = {camera_x, 0.0f, 0.0f};
+        result.view_id = std::move(view_id);
         return result;
     };
-    const std::array first_views{
-        make_view(-0.75f, 0.75f, -1.0f),
-        make_view(0.75f, 1.25f, 1.0f),
+    const RenderViewFamily first_view_family{
+        .family_id =
+            std::string{mainRenderViewFamilyId},
+        .views = {
+            make_view(-0.75f, 0.75f, -1.0f, "$xr/0"),
+            make_view(0.75f, 1.25f, 1.0f, "$xr/1"),
+        },
     };
-    const std::array second_views{
-        make_view(-0.5f, 0.9f, -1.5f),
-        make_view(0.5f, 1.4f, 1.5f),
+    const RenderViewFamily second_view_family{
+        .family_id =
+            std::string{mainRenderViewFamilyId},
+        .views = {
+            make_view(-0.5f, 0.9f, -1.5f, "$xr/0"),
+            make_view(0.5f, 1.4f, 1.5f, "$xr/1"),
+        },
     };
+    const auto &first_views =
+        first_view_family.views;
+    const auto &second_views =
+        second_view_family.views;
     auto &renderer = GET_MODULE(Renderer);
     renderer.selectGraphVariant(RenderGraphVariant::xr);
     auto &flat_target = GET_MODULE(RenderTarget);
@@ -7079,7 +7101,7 @@ void GoldenHarness::runLogicalFrameStereo() {
         launch.headless_extent, flat_target.getSwapchainFormat()};
 
     time.advance();
-    renderer.renderLogicalFrame(stereo_target, first_views);
+    renderer.renderLogicalFrame(stereo_target, first_view_family);
     const auto first_snapshots = renderer.lastViewSnapshotsForTesting();
     const auto first_left = stereo_target.readback(0);
     const auto first_right = stereo_target.readback(1);
@@ -7098,7 +7120,8 @@ void GoldenHarness::runLogicalFrameStereo() {
                 .sortViewCount() == 1);
 
     REQUIRE(first_snapshots.size() == 2);
-    for (std::size_t view = 0; view < first_views.size(); ++view) {
+    for (std::size_t view = 0;
+         view < first_view_family.views.size(); ++view) {
         REQUIRE(first_snapshots[view].view == first_views[view].view);
         REQUIRE(first_snapshots[view].projection_non_jittered ==
                 first_views[view].projection);
@@ -7119,7 +7142,7 @@ void GoldenHarness::runLogicalFrameStereo() {
                      glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
 
     time.advance();
-    renderer.renderLogicalFrame(stereo_target, second_views);
+    renderer.renderLogicalFrame(stereo_target, second_view_family);
     const auto second_snapshots = renderer.lastViewSnapshotsForTesting();
     const auto second_left = stereo_target.readback(0);
     const auto second_right = stereo_target.readback(1);
@@ -7276,10 +7299,19 @@ void GoldenHarness::runOpenXrTaaTransition() {
     xr_views[0].view[3][0] = -0.03f;
     xr_views[0].camera_position.x = -0.03f;
     xr_views[0].first_person_view = true;
+    xr_views[0].view_id = "$xr/0";
     xr_views[1].view[3][0] = 0.03f;
     xr_views[1].camera_position.x = 0.03f;
     xr_views[1].first_person_view = true;
-    renderer.renderLogicalFrame(stereo_target, xr_views);
+    xr_views[1].view_id = "$xr/1";
+    const RenderViewFamily xr_view_family{
+        .family_id =
+            std::string{mainRenderViewFamilyId},
+        .views = {xr_views.begin(),
+                  xr_views.end()},
+    };
+    renderer.renderLogicalFrame(
+        stereo_target, xr_view_family);
     const auto xr_snapshots = renderer.lastViewSnapshotsForTesting();
     REQUIRE(xr_snapshots.size() == 2);
     REQUIRE(xr_snapshots[0].jitter_ndc == glm::vec2{0.0f});
