@@ -82,6 +82,16 @@ static vk::UniqueImageView createImageView(
         throw std::runtime_error(
             "2D render target image view requires one array layer");
     }
+    if (view_type == vk::ImageViewType::eCube &&
+        (!(image.create_flags &
+           vk::ImageCreateFlagBits::eCubeCompatible) ||
+         subresource.layer_count != 6 ||
+         subresource.base_array_layer % 6 != 0)) {
+        throw std::runtime_error(
+            "Cube render target image view requires a "
+            "cube-compatible image and one aligned six-layer "
+            "range");
+    }
     vk::ImageViewCreateInfo ci;
     ci.image = image.image.get();
     ci.viewType = view_type;
@@ -206,7 +216,9 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      std::uint32_t array_layers = 1,
                                      RenderTargetStorageMode storage_mode =
                                          RenderTargetStorageMode::materialized,
-                                     bool aliasable = false) {
+                                     bool aliasable = false,
+                                     ImageResourceDimension dimension =
+                                         ImageResourceDimension::two_d) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
     vk::FormatFeatureFlags required;
@@ -231,6 +243,15 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
         throw std::runtime_error("Render target format lacks required color capability: " + name);
     }
     const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
+    if (dimension ==
+            ImageResourceDimension::cube &&
+        (array_layers != 6 ||
+         extent.width != extent.height)) {
+        throw std::runtime_error(
+            "Cube render target image creation requires a square "
+            "extent and exactly six array layers: " +
+            name);
+    }
     const auto resolved_mip_levels =
         resolveImageMipLevels(
             mip_levels, extent.width,
@@ -251,11 +272,17 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
             ? vma::AllocationCreateFlags{
                   vma::AllocationCreateFlagBits::eCanAlias}
             : vma::AllocationCreateFlags{};
-    const auto image_flags =
+    auto image_flags =
         aliasable
             ? vk::ImageCreateFlags{
                   vk::ImageCreateFlagBits::eAlias}
             : vk::ImageCreateFlags{};
+    if (dimension ==
+        ImageResourceDimension::cube) {
+        image_flags |=
+            vk::ImageCreateFlagBits::
+                eCubeCompatible;
+    }
     return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
                              memory_usage, allocation_flags,
                              VulkanProcessType::graphics,
@@ -382,7 +409,9 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                                                  RenderTargetStorageMode storage_mode,
                                                                  std::optional<std::string> alias_group,
                                                                  std::optional<std::uint64_t>
-                                                                     alias_group_token) {
+                                                                     alias_group_token,
+                                                                 ImageResourceDimension
+                                                                     dimension) {
     if (mip_levels.mode ==
         ImageMipLevelMode::full_chain) {
         mip_levels.count = 1;
@@ -406,6 +435,24 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         throw std::runtime_error(
             "Render target array_layers must be greater than zero: " +
             name);
+    }
+    if (dimension ==
+        ImageResourceDimension::cube) {
+        if (array_layers != 6) {
+            throw std::runtime_error(
+                "Cube render target requires exactly six array "
+                "layers: " +
+                name);
+        }
+        const auto extent =
+            resolveRenderTargetExtent(
+                name, base_extent, extent_scale,
+                fixed_extent);
+        if (extent.width != extent.height) {
+            throw std::runtime_error(
+                "Cube render target requires a square extent: " +
+                name);
+        }
     }
     const auto attachment_usage =
         vk::ImageUsageFlagBits::eColorAttachment |
@@ -511,6 +558,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         if (existing.samples != samples) note("samples");
         if (existing.mip_levels != mip_levels)
             note("mip_levels");
+        if (existing.dimension != dimension)
+            note("dimension");
         if (existing.storage_mode != storage_mode)
             note("storage_mode");
         if (existing.alias_group != alias_group)
@@ -559,6 +608,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                 alias_owner->mip_levels !=
                     mip_levels ||
                 alias_owner->array_layers != array_layers ||
+                alias_owner->dimension != dimension ||
                 alias_owner->storage_mode != storage_mode ||
                 owner_extent != requested_extent) {
                 throw std::runtime_error(
@@ -593,7 +643,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                       mip_levels,
                       vk::SampleCountFlagBits::e1,
                       array_layers, storage_mode,
-                      alias_group_token.has_value());
+                      alias_group_token.has_value(),
+                      dimension);
         image_layer_views[i] =
             createSequentialImageViews(device, images[i]);
         layered_image_views[i] =
@@ -606,7 +657,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                 name, base_extent, extent_scale, fixed_extent, format,
                 attachment_usage, memUsage,
                 ImageMipLevelCount{}, sample_count,
-                array_layers, storage_mode);
+                array_layers, storage_mode,
+                false, dimension);
             attachment_image_layer_views[i] =
                 createSequentialImageViews(
                     device, attachment_images[i]);
@@ -641,6 +693,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .samples = samples,
         .mip_levels = mip_levels,
         .array_layers = array_layers,
+        .dimension = dimension,
         .storage_mode = storage_mode,
         .alias_group = alias_group,
         .alias_group_token = alias_group_token,
@@ -759,7 +812,8 @@ RenderTargetContainer::prepareForExtent(
                           rt.array_layers,
                           rt.storage_mode,
                           rt.alias_group_token
-                              .has_value());
+                              .has_value(),
+                          rt.dimension);
             next->image_layer_views[i] =
                 createSequentialImageViews(
                     device, next->images[i]);
@@ -776,7 +830,8 @@ RenderTargetContainer::prepareForExtent(
                     rt.format, attachment_usage, rt.memory_usage,
                     ImageMipLevelCount{},
                     toSampleCount(rt.samples), rt.array_layers,
-                    rt.storage_mode);
+                    rt.storage_mode, false,
+                    rt.dimension);
                 next->attachment_image_layer_views[i] =
                     createSequentialImageViews(
                         device, next->attachment_images[i]);
@@ -929,6 +984,7 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
         .mip_levels =
             rt.resources->images[0].mip_levels,
         .array_layers = rt.array_layers,
+        .dimension = rt.dimension,
         .storage_mode = rt.storage_mode,
         .alias_group = rt.alias_group,
     };
@@ -972,7 +1028,12 @@ RenderTargetContainer::getImageSubresourceView(
     ImageSubresourceRange subresource,
     bool array_view, bool history_read) const {
     return getImageSubresourceViewForFrame(
-        id, subresource, array_view,
+        id, subresource,
+        array_view
+            ? ImageSubresourceViewDimension::
+                  two_d_array
+            : ImageSubresourceViewDimension::
+                  two_d,
         history_read, history_frame_index);
 }
 
@@ -981,6 +1042,34 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
     GlobalRenderTargetId id,
     ImageSubresourceRange subresource,
     bool array_view, bool history_read,
+    std::uint32_t frame_index) const {
+    return getImageSubresourceViewForFrame(
+        id, subresource,
+        array_view
+            ? ImageSubresourceViewDimension::
+                  two_d_array
+            : ImageSubresourceViewDimension::
+                  two_d,
+        history_read, frame_index);
+}
+
+vk::ImageView
+RenderTargetContainer::getImageSubresourceView(
+    GlobalRenderTargetId id,
+    ImageSubresourceRange subresource,
+    ImageSubresourceViewDimension dimension,
+    bool history_read) const {
+    return getImageSubresourceViewForFrame(
+        id, subresource, dimension,
+        history_read, history_frame_index);
+}
+
+vk::ImageView
+RenderTargetContainer::getImageSubresourceViewForFrame(
+    GlobalRenderTargetId id,
+    ImageSubresourceRange subresource,
+    ImageSubresourceViewDimension dimension,
+    bool history_read,
     std::uint32_t frame_index) const {
     const auto &rt = render_targets.get(id);
     const auto surface =
@@ -997,7 +1086,7 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
                 ->images[surface].array_layers);
     const ImageSubresourceViewKey key{
         .range = subresource,
-        .array_view = array_view,
+        .dimension = dimension,
     };
     auto &views =
         rt.resources
@@ -1008,8 +1097,13 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
     }
     auto view = createImageView(
         device, rt.resources->images[surface],
-        array_view
+        dimension ==
+                ImageSubresourceViewDimension::
+                    two_d_array
             ? vk::ImageViewType::e2DArray
+        : dimension ==
+                ImageSubresourceViewDimension::cube
+            ? vk::ImageViewType::eCube
             : vk::ImageViewType::e2D,
         subresource);
     GET_MODULE(VulkanManageCore)
@@ -1030,8 +1124,11 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
              "-" +
              std::to_string(
                  subresource.layer_count) +
-             (array_view ? "/array_view"
-                         : "/view"))
+             "/" +
+             std::string{
+                 imageSubresourceViewDimensionName(
+                     dimension)} +
+             "_view")
                 .c_str());
     const auto [inserted, success] =
         views.emplace(key, std::move(view));
@@ -1127,7 +1224,12 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
                 .array_layers);
     const ImageSubresourceViewKey key{
         .range = subresource,
-        .array_view = array_view,
+        .dimension =
+            array_view
+                ? ImageSubresourceViewDimension::
+                      two_d_array
+                : ImageSubresourceViewDimension::
+                      two_d,
     };
     auto &views =
         rt.resources

@@ -171,6 +171,16 @@ vk::ImageUsageFlags requiredImageUsage(
     return usage;
 }
 
+vk::ImageCreateFlags requiredImageCreateFlags(
+    const RenderTargetDefinition &definition) {
+    return definition.dimension ==
+                   ImageResourceDimension::cube
+               ? vk::ImageCreateFlags{
+                     vk::ImageCreateFlagBits::
+                         eCubeCompatible}
+               : vk::ImageCreateFlags{};
+}
+
 RenderingImageFormatCapability
 queryImageFormatCapability(
     vk::PhysicalDevice physical_device,
@@ -182,7 +192,9 @@ queryImageFormatCapability(
                 definition.format,
                 vk::ImageType::e2D,
                 vk::ImageTiling::eOptimal,
-                requiredImageUsage(definition));
+                requiredImageUsage(definition),
+                requiredImageCreateFlags(
+                    definition));
         result.image_usage_supported = true;
         result.supported_samples =
             sampleCounts(properties.sampleCounts);
@@ -214,7 +226,9 @@ queryImageFormatCapability(
                 vk::ImageTiling::eOptimal,
                 requiredImageUsage(definition) |
                     vk::ImageUsageFlagBits::
-                        eTransferSrc);
+                        eTransferSrc,
+                requiredImageCreateFlags(
+                    definition));
         result.external_depth_export_supported =
             true;
     } catch (const vk::SystemError &) {
@@ -231,7 +245,9 @@ queryImageFormatCapability(
                     vk::ImageTiling::eOptimal,
                     requiredImageUsage(definition) |
                         vk::ImageUsageFlagBits::
-                            eTransientAttachment);
+                            eTransientAttachment,
+                    requiredImageCreateFlags(
+                        definition));
             result.transient_attachment_supported =
                 true;
         } catch (const vk::SystemError &) {
@@ -248,6 +264,8 @@ queryImageFormatCapability(
                     vk::ImageType::e2D,
                     vk::ImageTiling::eOptimal,
                     tileLocalImageUsage(
+                        definition),
+                    requiredImageCreateFlags(
                         definition));
             (void)physical_device
                 .getImageFormatProperties(
@@ -257,7 +275,9 @@ queryImageFormatCapability(
                     requiredImageUsage(
                         definition) |
                         vk::ImageUsageFlagBits::
-                            eInputAttachment);
+                            eInputAttachment,
+                    requiredImageCreateFlags(
+                        definition));
             result.local_read_attachment_supported =
                 true;
         } catch (const vk::SystemError &) {
@@ -545,6 +565,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 ResourceExtentPlan{},
                 ImageMipLevelCount{},
                 1,
+                ImageResourceDimension::two_d,
             });
             continue;
         }
@@ -583,6 +604,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
             runtimeExtentPlan(*target->second),
             target->second->mip_levels,
             target->second->array_layers,
+            target->second->dimension,
         });
     }
     return result;
@@ -1237,6 +1259,8 @@ void validateRuntimePhysicalPlan(
                     contract->mip_levels ||
                 resource.array_layers !=
                     contract->array_layers ||
+                resource.dimension !=
+                    contract->dimension ||
                 resource.extent != contract->extent) {
                 throw std::runtime_error(
                     "runtime physical alias group members have incompatible image contracts: " +
@@ -1249,7 +1273,9 @@ void validateRuntimePhysicalPlan(
             if (resource.representation !=
                     VulkanResourceRepresentation::external ||
                 resource.format != vk::to_string(swapchain_format) ||
-                resource.rasterization_samples != 1) {
+                resource.rasterization_samples != 1 ||
+                resource.dimension !=
+                    ImageResourceDimension::two_d) {
                 throw std::runtime_error(
                     "runtime swapchain physical plan is incompatible "
                     "with the current external single-sample target");
@@ -1428,6 +1454,16 @@ void validateRuntimePhysicalPlan(
             throw std::runtime_error(
                 "runtime physical array-layer contract is smaller than "
                 "the authored contract for '" +
+                resource.logical_resource + "'");
+        }
+        if (resource.dimension !=
+                target->second->dimension ||
+            (resource.dimension ==
+                 ImageResourceDimension::cube &&
+             resource.array_layers != 6)) {
+            throw std::runtime_error(
+                "runtime physical image dimension contract "
+                "mismatch for '" +
                 resource.logical_resource + "'");
         }
         if (plan.external_depth_export &&
@@ -2415,6 +2451,8 @@ void applyRenderingTargetPlan(
                     contract.mip_levels ||
                 target->array_layers !=
                     contract.array_layers ||
+                target->dimension !=
+                    contract.dimension ||
                 target->storage_mode !=
                     contract.storage_mode) {
                 throw std::runtime_error(

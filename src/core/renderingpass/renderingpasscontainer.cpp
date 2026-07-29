@@ -303,6 +303,30 @@ RenderingPassContainer::materialPassRenderingBindings(
                                             PassInputViewDimension::
                                                 shared_2d;
                                     }
+                                    const auto attachment =
+                                        input_attachment_index(
+                                            target, history,
+                                            footprint);
+                                    const auto
+                                        descriptor_dimension =
+                                            attachment
+                                                ? ImageSubresourceViewDimension::
+                                                      two_d
+                                            : resource_view ==
+                                                      ShaderResourcePortView::
+                                                          cube
+                                                ? ImageSubresourceViewDimension::
+                                                      cube
+                                            : view_dimension ==
+                                                          PassInputViewDimension::
+                                                              layered_2d_array ||
+                                                      view_dimension ==
+                                                          PassInputViewDimension::
+                                                              family_2d_array
+                                                ? ImageSubresourceViewDimension::
+                                                      two_d_array
+                                                : ImageSubresourceViewDimension::
+                                                      two_d;
                                     inputs.push_back(
                                         MaterialPassShaderInputBinding{
                                             .input = {
@@ -311,11 +335,11 @@ RenderingPassContainer::materialPassRenderingBindings(
                                                     std::move(name),
                                             },
                                             .input_attachment_index =
-                                                input_attachment_index(
-                                                    target, history,
-                                                    footprint),
+                                                attachment,
                                             .view_dimension =
                                                 view_dimension,
+                                            .descriptor_dimension =
+                                                descriptor_dimension,
                                         });
                                 };
                             for (const auto &input :
@@ -388,6 +412,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
         std::optional<std::uint32_t> expected;
         auto expected_view =
             PassInputViewDimension::shared_2d;
+        auto expected_descriptor_dimension =
+            ImageSubresourceViewDimension::two_d;
         std::string expected_pass;
         bool initialized = false;
         for (const auto &pass : passes) {
@@ -409,6 +435,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
                     found->input_attachment_index;
                 expected_view =
                     found->view_dimension;
+                expected_descriptor_dimension =
+                    found->descriptor_dimension;
                 expected_pass =
                     pass.pass_name;
                 initialized = true;
@@ -417,7 +445,9 @@ RenderingPassContainer::materialPassShaderInputBindings(
             if (expected !=
                     found->input_attachment_index ||
                 expected_view !=
-                    found->view_dimension) {
+                    found->view_dimension ||
+                expected_descriptor_dimension !=
+                    found->descriptor_dimension) {
                 throw std::runtime_error(
                     "material shader input '" +
                     inputs[input_index].name +
@@ -427,11 +457,19 @@ RenderingPassContainer::materialPassShaderInputBindings(
                     std::to_string(
                         static_cast<int>(
                             expected_view)) +
+                    ", descriptor " +
+                    std::string{
+                        imageSubresourceViewDimensionName(
+                            expected_descriptor_dimension)} +
                     ") and '" + pass.pass_name +
                     "' (view " +
                     std::to_string(
                         static_cast<int>(
                             found->view_dimension)) +
+                    ", descriptor " +
+                    std::string{
+                        imageSubresourceViewDimensionName(
+                            found->descriptor_dimension)} +
                     ")");
             }
         }
@@ -439,6 +477,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
             expected;
         result[input_index].view_dimension =
             expected_view;
+        result[input_index].descriptor_dimension =
+            expected_descriptor_dimension;
     }
     return result;
 }

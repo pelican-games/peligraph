@@ -76,6 +76,8 @@ struct ResourcePatternBinding {
     std::optional<ResourceExtentPlan> extent;
     ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
+    ImageResourceDimension dimension =
+        ImageResourceDimension::two_d;
 };
 
 enum class TargetIrDialect : std::uint8_t {
@@ -131,6 +133,8 @@ struct TargetLoweringResource {
     std::optional<ResourceExtentPlan> extent;
     ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
+    ImageResourceDimension dimension =
+        ImageResourceDimension::two_d;
     TargetIrDialect dialect = TargetIrDialect::logical;
     TargetResourceUseSummary uses;
     TargetResourceLifetime lifetime;
@@ -200,6 +204,8 @@ struct VulkanPhysicalResourcePlan {
         VulkanResourceViewLayout::shared_2d;
     ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
+    ImageResourceDimension dimension =
+        ImageResourceDimension::two_d;
     std::optional<ResourceExtentPlan> extent;
 
     bool operator==(

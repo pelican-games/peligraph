@@ -43,6 +43,7 @@ namespace Pelican {
 namespace {
 
 constexpr vk::Extent2D test_extent{8, 4};
+constexpr vk::Extent2D cube_extent{8, 8};
 constexpr vk::Format test_format =
     vk::Format::eR8G8B8A8Unorm;
 constexpr std::uint32_t stereo_view_count = 2;
@@ -214,6 +215,21 @@ void main() {
     vec4 value = pelican_sample_eye_input(
         vec2(0.5), 0u);
     pelican_store_probe_result(
+        0u, uvec4(value * 255.0));
+}
+)glsl";
+}
+
+const char *cubeComputeShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x = 1, local_size_y = 1) in;
+void main() {
+    vec4 value = pelican_sample_environment(
+        normalize(vec3(1.0, 0.5, 0.25)));
+    pelican_store_cube_probe_result(
         0u, uvec4(value * 255.0));
 }
 )glsl";
@@ -841,6 +857,37 @@ TEST_CASE(
             vma::MemoryUsage::eAutoPreferDevice,
             false, {}, 1, {},
             authored_layer_capacity);
+    const auto cube_target =
+        render_targets.registerRenderTarget(
+            "wp236_cube_target",
+            cube_extent, "data", "data", 1.0f,
+            std::optional<vk::Extent2D>{
+                cube_extent},
+            test_format, usage,
+            vma::MemoryUsage::eAutoPreferDevice,
+            false, {}, 1,
+            ImageMipLevelCount{
+                .mode =
+                    ImageMipLevelMode::fixed,
+                .count = 3,
+            },
+            6,
+            RenderTargetStorageMode::
+                materialized,
+            std::nullopt, std::nullopt,
+            ImageResourceDimension::cube);
+    REQUIRE(
+        render_targets.getMetadata(cube_target)
+            .dimension ==
+        ImageResourceDimension::cube);
+    REQUIRE(
+        render_targets.getMetadata(cube_target)
+            .array_layers == 6);
+    REQUIRE(
+        render_targets.getImage(cube_target)
+            .create_flags &
+        vk::ImageCreateFlagBits::
+            eCubeCompatible);
     std::filesystem::create_directories(
         project.path() / "shaders");
     std::ofstream{
@@ -848,13 +895,24 @@ TEST_CASE(
             "per_view_probe.comp",
         std::ios::binary}
         << perViewComputeShader();
+    std::ofstream{
+        project.path() / "shaders" /
+            "cube_probe.comp",
+        std::ios::binary}
+        << cubeComputeShader();
     auto &frame_graph_resources =
         GET_MODULE(FrameGraphResourceContainer);
     frame_graph_resources.registerBuffers(
-        {FrameGraphBufferDefinition{
-            .name = "per_view_probe_result",
-            .size = 16,
-        }});
+        {
+            FrameGraphBufferDefinition{
+                .name = "per_view_probe_result",
+                .size = 16,
+            },
+            FrameGraphBufferDefinition{
+                .name = "cube_probe_result",
+                .size = 16,
+            },
+        });
     ComputeTaskDefinition per_view_task{
         .name = "per_view_descriptor_probe",
         .shader =
@@ -993,6 +1051,92 @@ TEST_CASE(
                             stereo_view_count,
                     },
                     true)});
+    ComputeTaskDefinition cube_task{
+        .name = "cube_descriptor_probe",
+        .shader =
+            makeShaderReference(
+                "shaders/cube_probe",
+                ShaderStage::compute),
+        .reads = {"wp236_cube_target"},
+        .writes = {"cube_probe_result"},
+        .resource_ports = {
+            ShaderResourcePortDefinition{
+                .name = "environment",
+                .resource =
+                    "wp236_cube_target",
+                .access =
+                    ShaderResourcePortAccess::
+                        sampled,
+                .view =
+                    ShaderResourcePortView::cube,
+            },
+            ShaderResourcePortDefinition{
+                .name =
+                    "cube_probe_result",
+                .resource =
+                    "cube_probe_result",
+                .kind =
+                    ShaderResourcePortKind::
+                        buffer,
+                .buffer_element =
+                    ShaderResourceBufferElement::
+                        uvec4,
+                .access =
+                    ShaderResourcePortAccess::
+                        storage,
+            },
+        },
+    };
+    const std::unordered_map<
+        std::string,
+        VulkanResourceViewLayout>
+        cube_resource_views{
+            {"wp236_cube_target",
+             VulkanResourceViewLayout::
+                 shared_2d},
+        };
+    const auto cube_task_id =
+        GET_MODULE(ComputeTaskContainer)
+            .registerComputeTask(
+                cube_task,
+                ComputeTaskRuntimeDependencies{
+                    library,
+                    GET_MODULE(PathResolver),
+                    render_targets,
+                    frame_graph_resources,
+                    &cube_resource_views,
+                });
+    const auto cube_view =
+        render_targets
+            .getImageSubresourceView(
+                cube_target,
+                ImageSubresourceRange{
+                    .base_mip_level = 0,
+                    .level_count = 3,
+                    .base_array_layer = 0,
+                    .layer_count = 6,
+                },
+                ImageSubresourceViewDimension::
+                    cube);
+    REQUIRE(
+        GET_MODULE(ComputeTaskContainer)
+            .boundImageViewsForTesting(
+                cube_task_id, 0, 0) ==
+        std::vector<vk::ImageView>{
+            cube_view});
+    REQUIRE(
+        cube_view ==
+        render_targets
+            .getImageSubresourceView(
+                cube_target,
+                ImageSubresourceRange{
+                    .base_mip_level = 0,
+                    .level_count = 3,
+                    .base_array_layer = 0,
+                    .layer_count = 6,
+                },
+                ImageSubresourceViewDimension::
+                    cube));
     const auto local_source =
         render_targets.registerRenderTarget(
             "wp203b_tile_local_source",
@@ -1562,6 +1706,45 @@ TEST_CASE(
         vk::Extent2D{
             test_extent.width / 2,
             test_extent.height / 2}));
+
+    PassDefinition cube_face_pass;
+    cube_face_pass.name =
+        "wp236_cube_face_attachment_probe";
+    cube_face_pass.output_color = {
+        RasterAttachmentView{
+            cube_target,
+            ImageSubresourceRange{
+                .base_mip_level = 1,
+                .base_array_layer = 4,
+                .layer_count = 1,
+            }},
+    };
+    const auto cube_face_attachment =
+        createColorAttachments(
+            managed_frame, cube_face_pass,
+            render_targets,
+            GraphicsPipelineViewContract{},
+            RenderPassViewInvocation{1, 0});
+    REQUIRE(
+        cube_face_attachment.front()
+            .imageView ==
+        render_targets
+            .getImageSubresourceView(
+                cube_target,
+                ImageSubresourceRange{
+                    .base_mip_level = 1,
+                    .base_array_layer = 4,
+                    .layer_count = 1,
+                },
+                ImageSubresourceViewDimension::
+                    two_d));
+    REQUIRE((
+        getRenderPassTargetExtent(
+            managed_frame, cube_face_pass,
+            render_targets) ==
+        vk::Extent2D{
+            cube_extent.width / 2,
+            cube_extent.height / 2}));
 
     auto multiview_image = vkcore.allocImage(
         {test_extent.width, test_extent.height, 1},

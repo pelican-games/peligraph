@@ -177,7 +177,8 @@ void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &
                                               ? std::optional<std::uint64_t>{
                                                     alias_group_tokens.at(
                                                         *definition.alias_group)}
-                                              : std::nullopt);
+                                              : std::nullopt,
+                                          definition.dimension);
     }
 }
 

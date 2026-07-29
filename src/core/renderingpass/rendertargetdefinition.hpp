@@ -32,6 +32,8 @@ struct RenderTargetDefinition {
     std::uint32_t samples = 1;
     ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
+    ImageResourceDimension dimension =
+        ImageResourceDimension::two_d;
     RenderTargetStorageMode storage_mode =
         RenderTargetStorageMode::materialized;
     // Filled by physical-plan compilation. Targets with the same value may

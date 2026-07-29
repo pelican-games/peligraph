@@ -155,9 +155,18 @@ std::string imageType(
         return sampled ? "sampler2DArray"
                        : "image2DArray";
     }
+    if (dimension ==
+        ReflectedImageViewDimension::cube) {
+        if (!sampled) {
+            throw std::runtime_error(
+                "generated cube resource ports currently support "
+                "sampled access only");
+        }
+        return "samplerCube";
+    }
     throw std::runtime_error(
-        "generated shader resource ports support only 2D and "
-        "2D-array image views");
+        "generated shader resource ports support 2D, 2D-array, "
+        "and sampled cube image views");
 }
 
 void writeImageSubresourceAccessors(
@@ -216,6 +225,28 @@ void writeSampledAccessors(
     const ShaderResourceInterfaceBinding &binding,
     std::string_view variable) {
     const auto &name = binding.port.name;
+    if (binding.image_view_dimension ==
+        ReflectedImageViewDimension::cube) {
+        stream
+            << "vec4 pelican_sample_" << name
+            << "(vec3 direction) { return texture(" << variable
+            << ", direction); }\n"
+            << "vec4 pelican_sample_lod_" << name
+            << "(vec3 direction, float lod) { return textureLod("
+            << variable << ", direction, lod); }\n"
+            << "ivec2 pelican_size_" << name
+            << "() { return textureSize(" << variable
+            << ", 0); }\n"
+            << "ivec2 pelican_size_lod_" << name
+            << "(int lod) { return textureSize(" << variable
+            << ", lod); }\n"
+            << "uint pelican_mip_count_" << name
+            << "() { return uint(textureQueryLevels(" << variable
+            << ")); }\n"
+            << "uint pelican_view_count_" << name
+            << "() { return 6u; }\n";
+        return;
+    }
     if (binding.image_view_dimension ==
         ReflectedImageViewDimension::two_d) {
         stream
@@ -401,6 +432,14 @@ void writeInactiveStageAccessors(
         ShaderResourceDescriptorKind::
             combined_image_sampler) {
         if (binding.image_view_dimension ==
+            ReflectedImageViewDimension::cube) {
+            stream << "vec4 pelican_sample_" << name
+                   << "(vec3 direction) { return vec4(0.0); }\n"
+                   << "vec4 pelican_sample_lod_" << name
+                   << "(vec3 direction, float lod) { return vec4(0.0); }\n"
+                   << "uint pelican_view_count_" << name
+                   << "() { return 6u; }\n";
+        } else if (binding.image_view_dimension ==
             ReflectedImageViewDimension::two_d) {
             stream << "vec4 pelican_sample_" << name
                    << "(vec2 uv) { return vec4(0.0); }\n"
@@ -493,10 +532,21 @@ ReflectedImageViewDimension
 resolveShaderResourceImageViewDimension(
     const ShaderResourcePortDefinition &port,
     VulkanResourceViewLayout physical_view,
-    ShaderResourceConsumerView consumer) {
+    ShaderResourceConsumerView consumer,
+    ImageResourceDimension resource_dimension) {
     const auto prefix =
         "Shader resource port '" + port.name +
         "' (resource '" + port.resource + "')";
+    if (port.view ==
+        ShaderResourcePortView::cube) {
+        if (resource_dimension !=
+            ImageResourceDimension::cube) {
+            throw std::runtime_error(
+                prefix +
+                " requires a cube image resource");
+        }
+        return ReflectedImageViewDimension::cube;
+    }
     if (port.view ==
         ShaderResourcePortView::shared_2d) {
         if (physical_view !=

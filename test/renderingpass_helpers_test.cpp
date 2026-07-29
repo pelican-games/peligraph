@@ -379,6 +379,69 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "render target JSON parser keeps cube resource shape separate from "
+    "array layers",
+    "[renderingpass][cube][wp236]") {
+    auto document = nlohmann::json::parse(R"json({
+      "render_targets": [{
+        "name": "environment_probe",
+        "extent_scale": 1.0,
+        "width": 256,
+        "height": 256,
+        "dimension": "cube",
+        "format": "R16G16B16A16_SFLOAT",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+        "mip_levels": "full"
+      }]
+    })json");
+    const auto definitions =
+        parseRenderTargetDefinitionsFromJson(
+            document);
+    REQUIRE(definitions.size() == 1);
+    REQUIRE(
+        definitions.front().dimension ==
+        ImageResourceDimension::cube);
+    REQUIRE(definitions.front().array_layers == 6);
+    REQUIRE(
+        definitions.front().fixed_extent ==
+        vk::Extent2D{256, 256});
+
+    auto invalid = document;
+    invalid["render_targets"][0].erase("width");
+    invalid["render_targets"][0].erase("height");
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "fixed square"));
+
+    invalid = document;
+    invalid["render_targets"][0]["height"] = 128;
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "width and height must match"));
+
+    invalid = document;
+    invalid["render_targets"][0]["layers"] = 5;
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "exactly six layers"));
+
+    invalid = document;
+    invalid["render_targets"][0]["dimension"] =
+        "3d";
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "'2d' or 'cube'"));
+}
+
+TEST_CASE(
     "fullscreen pass JSON parser keeps per-input sampling typed",
     "[renderingpass][upscale][sampling]") {
     const nlohmann::json pass_json{
@@ -539,6 +602,41 @@ TEST_CASE(
             invalid, "lighting"),
         Catch::Matchers::ContainsSubstring(
             "buffer ports require storage access"));
+}
+
+TEST_CASE(
+    "shader resource port JSON accepts sampled cube views",
+    "[renderingpass][resource-port][cube][wp236]") {
+    auto pass_json = nlohmann::json::parse(R"json({
+      "input": ["environment_probe"],
+      "resource_ports": {
+        "environment": {
+          "resource": "environment_probe",
+          "kind": "image",
+          "access": "sampled",
+          "view": "cube"
+        }
+      },
+      "shader": {
+        "vertex": "fullscreen",
+        "fragment": "environment"
+      }
+    })json");
+    const auto info =
+        parseFullscreenPassInfoFromJson(
+            pass_json, "environment");
+    REQUIRE(info.resource_ports.size() == 1);
+    REQUIRE(
+        info.resource_ports.front().view ==
+        ShaderResourcePortView::cube);
+
+    pass_json["resource_ports"]["environment"]
+             ["access"] = "storage";
+    REQUIRE_THROWS_WITH(
+        parseFullscreenPassInfoFromJson(
+            pass_json, "environment"),
+        Catch::Matchers::ContainsSubstring(
+            "cube views currently require sampled access"));
 }
 
 TEST_CASE(

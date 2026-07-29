@@ -1,5 +1,7 @@
 #pragma once
 
+#include "imageresourcedimension.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cstdint>
@@ -108,7 +110,8 @@ struct ImageSubresourceRange {
 
 struct ImageSubresourceViewKey {
     ImageSubresourceRange range;
-    bool array_view = false;
+    ImageSubresourceViewDimension dimension =
+        ImageSubresourceViewDimension::two_d;
 
     bool operator==(
         const ImageSubresourceViewKey &) const = default;
@@ -139,7 +142,7 @@ struct ImageSubresourceViewKey {
             return range.mip_count_mode <
                    other.range.mip_count_mode;
         }
-        return array_view < other.array_view;
+        return dimension < other.dimension;
     }
 };
 

@@ -480,6 +480,14 @@ resolveMaterialResourceInterface(
                                     found
                                             ->image_view_dimension ==
                                         ReflectedImageViewDimension::
+                                            cube
+                                ? ShaderResourcePortView::
+                                      cube
+                            : image &&
+                                    !input_attachment &&
+                                    found
+                                            ->image_view_dimension ==
+                                        ReflectedImageViewDimension::
                                             two_d_array
                                 ? ShaderResourcePortView::
                                       family_array
@@ -2870,17 +2878,40 @@ materialBindingsForGeneration(
                             PassInputViewDimension::
                                 shared_2d;
                     }
+                    const auto attachment =
+                        input_attachment_index(
+                            target, history,
+                            footprint);
+                    const auto descriptor_dimension =
+                        attachment
+                            ? ImageSubresourceViewDimension::
+                                  two_d
+                        : resource_view ==
+                                  ShaderResourcePortView::
+                                      cube
+                            ? ImageSubresourceViewDimension::
+                                  cube
+                        : view_dimension ==
+                                  PassInputViewDimension::
+                                      layered_2d_array ||
+                              view_dimension ==
+                                  PassInputViewDimension::
+                                      family_2d_array
+                            ? ImageSubresourceViewDimension::
+                                  two_d_array
+                            : ImageSubresourceViewDimension::
+                                  two_d;
                     shader_inputs.push_back({
                         .input = {
                             .kind = kind,
                             .name = std::move(name),
                         },
                         .input_attachment_index =
-                            input_attachment_index(
-                                target, history,
-                                footprint),
+                            attachment,
                         .view_dimension =
                             view_dimension,
+                        .descriptor_dimension =
+                            descriptor_dimension,
                     });
                 };
             for (const auto &input :
@@ -2951,6 +2982,8 @@ resolveGenerationShaderInputs(
         std::optional<std::uint32_t> expected;
         auto expected_view =
             PassInputViewDimension::shared_2d;
+        auto expected_descriptor_dimension =
+            ImageSubresourceViewDimension::two_d;
         std::string expected_pass;
         bool initialized = false;
         for (const auto &pass : passes) {
@@ -2972,6 +3005,8 @@ resolveGenerationShaderInputs(
                     found->input_attachment_index;
                 expected_view =
                     found->view_dimension;
+                expected_descriptor_dimension =
+                    found->descriptor_dimension;
                 expected_pass =
                     pass.pass_name;
                 initialized = true;
@@ -2980,7 +3015,9 @@ resolveGenerationShaderInputs(
             if (expected !=
                     found->input_attachment_index ||
                 expected_view !=
-                    found->view_dimension) {
+                    found->view_dimension ||
+                expected_descriptor_dimension !=
+                    found->descriptor_dimension) {
                 throw std::runtime_error(
                     "material shader input '" +
                     inputs[input_index].name +
@@ -2990,11 +3027,19 @@ resolveGenerationShaderInputs(
                     std::to_string(
                         static_cast<int>(
                             expected_view)) +
+                    ", descriptor " +
+                    std::string{
+                        imageSubresourceViewDimensionName(
+                            expected_descriptor_dimension)} +
                     ") and '" + pass.pass_name +
                     "' (view " +
                     std::to_string(
                         static_cast<int>(
                             found->view_dimension)) +
+                    ", descriptor " +
+                    std::string{
+                        imageSubresourceViewDimensionName(
+                            found->descriptor_dimension)} +
                     ")");
             }
         }
@@ -3002,6 +3047,8 @@ resolveGenerationShaderInputs(
             expected;
         result[input_index].view_dimension =
             expected_view;
+        result[input_index].descriptor_dimension =
+            expected_descriptor_dimension;
     }
     return result;
 }
@@ -3360,6 +3407,13 @@ MaterialContainer::prepareRuntimeGenerationReload(
                 } else if (
                     current->image_view_dimension ==
                     ReflectedImageViewDimension::
+                        cube) {
+                    current_physical_defines.push_back(
+                        makeSurfaceResourceCubeDefine(
+                            resource_index));
+                } else if (
+                    current->image_view_dimension ==
+                    ReflectedImageViewDimension::
                         two_d_array) {
                     current_physical_defines.push_back(
                         makeSurfaceResourceLayeredDefine(
@@ -3373,14 +3427,16 @@ MaterialContainer::prepareRuntimeGenerationReload(
                         position);
                 const auto attachment =
                     physical.input_attachment_index;
-                const auto layered =
+                const auto cube =
                     !attachment &&
-                    (physical.view_dimension ==
-                         PassInputViewDimension::
-                             layered_2d_array ||
-                     physical.view_dimension ==
-                         PassInputViewDimension::
-                             family_2d_array);
+                    physical.descriptor_dimension ==
+                        ImageSubresourceViewDimension::
+                            cube;
+                const auto layered =
+                    !attachment && !cube &&
+                    physical.descriptor_dimension ==
+                        ImageSubresourceViewDimension::
+                            two_d_array;
                 candidate->descriptor =
                     attachment
                         ? ShaderResourceDescriptorKind::
@@ -3390,13 +3446,19 @@ MaterialContainer::prepareRuntimeGenerationReload(
                 candidate->input_attachment_index =
                     attachment;
                 candidate->image_view_dimension =
-                    layered
+                    cube
+                        ? ReflectedImageViewDimension::
+                              cube
+                    : layered
                         ? ReflectedImageViewDimension::
                               two_d_array
                         : ReflectedImageViewDimension::
                               two_d;
                 candidate->port.view =
-                    layered
+                    cube
+                        ? ShaderResourcePortView::
+                              cube
+                    : layered
                         ? ShaderResourcePortView::
                               family_array
                         : ShaderResourcePortView::
@@ -3406,6 +3468,10 @@ MaterialContainer::prepareRuntimeGenerationReload(
                         makeSurfaceResourceLocalReadDefine(
                             resource_index,
                             *attachment));
+                } else if (cube) {
+                    candidate_physical_defines.push_back(
+                        makeSurfaceResourceCubeDefine(
+                            resource_index));
                 } else if (layered) {
                     candidate_physical_defines.push_back(
                         makeSurfaceResourceLayeredDefine(
@@ -3821,6 +3887,34 @@ MaterialContainer::buildScreenInputDescriptor(
                 "subresource: " +
                 resource.name);
         }
+        if (resource.isInputAttachment() &&
+            resource.descriptor_dimension ==
+                ImageSubresourceViewDimension::cube) {
+            throw std::runtime_error(
+                "material input attachment cannot use a cube image "
+                "view: " +
+                resource.name);
+        }
+        if (resource.isImage() &&
+            resource.descriptor_dimension ==
+                ImageSubresourceViewDimension::cube &&
+            rt_views.dimension(resource.target) !=
+                ImageResourceDimension::cube) {
+            throw std::runtime_error(
+                "material cube input requires a cube render target: " +
+                resource.name);
+        }
+        if (resource.isImage() &&
+            resource.descriptor_dimension ==
+                ImageSubresourceViewDimension::cube &&
+            resource.subresource &&
+            (resource.subresource->base_array_layer != 0 ||
+             resource.subresource->layer_count != 6)) {
+            throw std::runtime_error(
+                "material cube input subresource must select all six "
+                "faces: " +
+                resource.name);
+        }
         if (resource.isImage() &&
             resource.subresource &&
             !validImageSubresourceRange(
@@ -3934,13 +4028,12 @@ MaterialContainer::buildScreenInputDescriptor(
                     continue;
                 }
                 const auto array_view =
-                    resource.view_dimension ==
-                            PassInputViewDimension::
-                                family_2d_array ||
-                    (resource.isInputAttachment() &&
-                     resource.view_dimension ==
-                         PassInputViewDimension::
-                             layered_2d_array);
+                    resource.descriptor_dimension ==
+                    ImageSubresourceViewDimension::
+                        two_d_array;
+                const auto cube_view =
+                    resource.descriptor_dimension ==
+                    ImageSubresourceViewDimension::cube;
                 vk::ImageView image_view;
                 if (resource.subresource) {
                     auto subresource =
@@ -3956,6 +4049,7 @@ MaterialContainer::buildScreenInputDescriptor(
                             rt_views.arrayLayers(
                                 resource.target);
                     } else if (!array_view &&
+                        !cube_view &&
                         resource.view_dimension !=
                             PassInputViewDimension::
                                 shared_2d) {
@@ -3968,7 +4062,25 @@ MaterialContainer::buildScreenInputDescriptor(
                             .getImageSubresourceViewForFrame(
                                 resource.target,
                                 subresource,
-                                array_view,
+                                resource
+                                    .descriptor_dimension,
+                                resource.history,
+                                parity);
+                } else if (cube_view) {
+                    image_view =
+                        rt_views
+                            .getImageSubresourceViewForFrame(
+                                resource.target,
+                                ImageSubresourceRange{
+                                    .base_mip_level = 0,
+                                    .level_count =
+                                        rt_views.mipLevels(
+                                            resource.target),
+                                    .base_array_layer = 0,
+                                    .layer_count = 6,
+                                },
+                                ImageSubresourceViewDimension::
+                                    cube,
                                 resource.history,
                                 parity);
                 } else if (
@@ -3987,7 +4099,8 @@ MaterialContainer::buildScreenInputDescriptor(
                                     .base_array_layer = 0,
                                     .layer_count = 1,
                                 },
-                                true,
+                                ImageSubresourceViewDimension::
+                                    two_d_array,
                                 resource.history,
                                 parity);
                 } else if (array_view) {
@@ -4084,6 +4197,8 @@ MaterialContainer::ensureScreenInputDescriptor(
     resources.reserve(
         material.pass_inputs.size() +
         material.resource_interface.size());
+    const RenderTargetImageViewResolver rt_views{
+        GET_MODULE(RenderTargetContainer)};
     std::uint32_t screen_binding = 0;
     for (const auto &required : material.pass_inputs) {
         const auto find_binding =
@@ -4199,6 +4314,20 @@ MaterialContainer::ensureScreenInputDescriptor(
                 .history = binding->history,
                 .view_dimension =
                     view_dimension,
+                .descriptor_dimension =
+                    view_dimension ==
+                                PassInputViewDimension::
+                                    family_2d_array ||
+                            (required.descriptor_type ==
+                                 vk::DescriptorType::
+                                     eInputAttachment &&
+                             view_dimension ==
+                                 PassInputViewDimension::
+                                     layered_2d_array)
+                        ? ImageSubresourceViewDimension::
+                              two_d_array
+                        : ImageSubresourceViewDimension::
+                              two_d,
                 // Preserve the established screen-input sampler
                 // behavior. The historical linear_repeat label used
                 // the clamp sampler at runtime.
@@ -4330,8 +4459,17 @@ MaterialContainer::ensureScreenInputDescriptor(
                         target_position -
                         pass.input_targets.begin()));
         }
-        auto descriptor_view_dimension =
-            view_dimension;
+        auto descriptor_dimension =
+            !input_attachment &&
+                    (view_dimension ==
+                         PassInputViewDimension::
+                             layered_2d_array ||
+                     view_dimension ==
+                         PassInputViewDimension::
+                             family_2d_array)
+                ? ImageSubresourceViewDimension::
+                      two_d_array
+                : ImageSubresourceViewDimension::two_d;
         if (binding->port.view ==
                 ShaderResourcePortView::
                     family_array &&
@@ -4342,18 +4480,50 @@ MaterialContainer::ensureScreenInputDescriptor(
             // representation. Adapt that image to a one-layer array view so
             // one material shader ABI remains valid in both the secondary
             // family and a layered main family.
-            descriptor_view_dimension =
-                PassInputViewDimension::
-                    family_2d_array;
+            descriptor_dimension =
+                ImageSubresourceViewDimension::
+                    two_d_array;
+        }
+        if (binding->port.view ==
+            ShaderResourcePortView::cube) {
+            if (input_attachment) {
+                throw std::runtime_error(
+                    "material resource port '" +
+                    required.port.name +
+                    "' cube views cannot use input attachments in pass '" +
+                    pass.name + "'");
+            }
+            if (rt_views.dimension(
+                    binding->target) !=
+                ImageResourceDimension::cube) {
+                throw std::runtime_error(
+                    "material resource port '" +
+                    required.port.name +
+                    "' requires a cube render target in pass '" +
+                    pass.name + "'");
+            }
+            if (binding->port.subresource &&
+                (binding->port.subresource
+                         ->base_array_layer != 0 ||
+                 binding->port.subresource
+                         ->layer_count != 6)) {
+                throw std::runtime_error(
+                    "material resource port '" +
+                    required.port.name +
+                    "' cube subresource must select all six faces in pass '" +
+                    pass.name + "'");
+            }
+            descriptor_dimension =
+                ImageSubresourceViewDimension::cube;
         }
         const auto expected_shader_view =
-            !input_attachment &&
-                    (descriptor_view_dimension ==
-                         PassInputViewDimension::
-                             layered_2d_array ||
-                     descriptor_view_dimension ==
-                         PassInputViewDimension::
-                             family_2d_array)
+            descriptor_dimension ==
+                    ImageSubresourceViewDimension::cube
+                ? ReflectedImageViewDimension::cube
+            : !input_attachment &&
+                    descriptor_dimension ==
+                        ImageSubresourceViewDimension::
+                            two_d_array
                 ? ReflectedImageViewDimension::
                       two_d_array
                 : ReflectedImageViewDimension::two_d;
@@ -4403,6 +4573,8 @@ MaterialContainer::ensureScreenInputDescriptor(
         if (binding->port.view !=
                 ShaderResourcePortView::
                     family_array &&
+            binding->port.view !=
+                ShaderResourcePortView::cube &&
             view_dimension ==
                 PassInputViewDimension::
                     family_2d_array) {
@@ -4440,7 +4612,9 @@ MaterialContainer::ensureScreenInputDescriptor(
                     .history =
                         binding->history,
                     .view_dimension =
-                        descriptor_view_dimension,
+                        view_dimension,
+                    .descriptor_dimension =
+                        descriptor_dimension,
                     .sampling =
                         binding->port.sampling,
                     .subresource =
@@ -4451,8 +4625,6 @@ MaterialContainer::ensureScreenInputDescriptor(
                 });
     }
 
-    const RenderTargetImageViewResolver rt_views{
-        GET_MODULE(RenderTargetContainer)};
     auto [inserted, unused] = material.screen_input_descriptors.emplace(
         key, buildScreenInputDescriptor(material.pipeline, std::move(resources),
                                         rt_views));

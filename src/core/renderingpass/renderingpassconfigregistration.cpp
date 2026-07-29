@@ -256,6 +256,8 @@ void mergeVariantRenderTargetPhysicalRequirements(
         std::optional<vk::Format> format;
         std::optional<ImageMipLevelCount>
             mip_levels;
+        std::optional<ImageResourceDimension>
+            dimension;
         std::optional<RenderTargetStorageMode>
             storage_mode;
         std::optional<std::string> alias_group;
@@ -284,6 +286,16 @@ void mergeVariantRenderTargetPhysicalRequirements(
                 throw std::runtime_error(
                     "render graph variants require conflicting "
                     "mip-level contracts for target '" +
+                    target.name + "'");
+            }
+            if (!merged.dimension) {
+                merged.dimension =
+                    target.dimension;
+            } else if (*merged.dimension !=
+                       target.dimension) {
+                throw std::runtime_error(
+                    "render graph variants require conflicting "
+                    "image dimensions for target '" +
                     target.name + "'");
             }
             if (!merged.format) {
@@ -342,6 +354,8 @@ void mergeVariantRenderTargetPhysicalRequirements(
             target.usage = merged.usage;
             target.mip_levels =
                 *merged.mip_levels;
+            target.dimension =
+                *merged.dimension;
             target.format = *merged.format;
             target.storage_mode =
                 *merged.storage_mode;

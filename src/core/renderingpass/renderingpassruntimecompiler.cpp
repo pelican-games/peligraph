@@ -1473,6 +1473,8 @@ struct CompiledFullscreenResourceInterface {
     std::vector<FullscreenInputSampling> sampling;
     std::vector<std::optional<ImageSubresourceRange>>
         subresources;
+    std::vector<ImageSubresourceViewDimension>
+        view_dimensions;
 };
 
 VulkanResourceViewLayout physicalViewLayout(
@@ -1595,6 +1597,24 @@ compileFullscreenResourceInterface(
         pass.input_targets.size());
     result.subresources.resize(
         pass.input_targets.size());
+    result.view_dimensions.resize(
+        pass.input_targets.size(),
+        ImageSubresourceViewDimension::two_d);
+    for (std::size_t input = 0;
+         input < pass.input_target_views.size() &&
+         input < result.view_dimensions.size();
+         ++input) {
+        if (pass.input_target_views[input] ==
+                PassInputViewDimension::
+                    layered_2d_array ||
+            pass.input_target_views[input] ==
+                PassInputViewDimension::
+                    family_2d_array) {
+            result.view_dimensions[input] =
+                ImageSubresourceViewDimension::
+                    two_d_array;
+        }
+    }
     std::size_t matched_ports = 0;
     for (std::size_t input = 0;
          input < pass.input_targets.size(); ++input) {
@@ -1651,7 +1671,8 @@ compileFullscreenResourceInterface(
                       graphics_sequential;
         const auto dimension =
             resolveShaderResourceImageViewDimension(
-                *port, physical, consumer);
+                *port, physical, consumer,
+                metadata.dimension);
         if (dimension ==
                 ReflectedImageViewDimension::
                     two_d_array &&
@@ -1664,6 +1685,15 @@ compileFullscreenResourceInterface(
                 "Shader resource port '" + port->name +
                 "' (resource '" + port->resource +
                 "') has too few physical array layers");
+        }
+        if (dimension ==
+                ReflectedImageViewDimension::cube &&
+            metadata.dimension !=
+                ImageResourceDimension::cube) {
+            throw std::runtime_error(
+                "Shader resource port '" + port->name +
+                "' (resource '" + port->resource +
+                "') requires a cube render target");
         }
         if (port->subresource) {
             if (!validImageSubresourceRange(
@@ -1711,6 +1741,18 @@ compileFullscreenResourceInterface(
                         "physical view layout");
                 }
             }
+            if (dimension ==
+                    ReflectedImageViewDimension::cube &&
+                (port->subresource
+                         ->base_array_layer != 0 ||
+                 port->subresource
+                         ->layer_count != 6)) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port->name + "' (resource '" +
+                    port->resource +
+                    "') cube view must select all six faces");
+            }
         }
         result.bindings.push_back(
             ShaderResourceInterfaceBinding{
@@ -1729,6 +1771,16 @@ compileFullscreenResourceInterface(
             fullscreenSampling(port->sampling);
         result.subresources[input] =
             port->subresource;
+        result.view_dimensions[input] =
+            dimension ==
+                    ReflectedImageViewDimension::cube
+                ? ImageSubresourceViewDimension::cube
+            : dimension ==
+                    ReflectedImageViewDimension::
+                        two_d_array
+                ? ImageSubresourceViewDimension::
+                      two_d_array
+                : ImageSubresourceViewDimension::two_d;
     }
     for (std::size_t input = 0;
          input < pass.input_buffers.size(); ++input) {
@@ -1924,7 +1976,8 @@ PassId compileFullscreenPass(
             localReadInputMask(
                 pass_def, rendering),
             resource_interface.subresources,
-            logical_view_count);
+            logical_view_count,
+            resource_interface.view_dimensions);
     }
 
     return pass_id;

@@ -76,7 +76,7 @@ fullscreen/compute imageも、`resource_ports`のlogical名から
 - generated interface: [shaderresourceinterface.cpp](../src/core/shader/shaderresourceinterface.cpp)
 - runtime lowering: [renderingpassruntimecompiler.cpp](../src/core/renderingpass/renderingpassruntimecompiler.cpp)
 
-reflectionはlogical resource名とdescriptor kind、2D/2D-array view dimension、
+reflectionはlogical resource名とdescriptor kind、2D/2D-array/cube view dimension、
 生成変数名までpipeline作成前に照合する。reorderで意味が黙って入れ替わらない。
 raw `layout(set=1,binding=N)`はbuffer、特殊descriptor、低レベル実験用の
 C-layer escape hatchとして意図的に維持する。typed bufferとmaterial consumerはU5/WP207bで扱う。

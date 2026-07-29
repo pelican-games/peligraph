@@ -904,6 +904,16 @@ void parseMaterialPassResourcesFromJson(
                 " image subresource views cannot use same_pixel "
                 "local-read footprint");
         }
+        if (port.view ==
+                ShaderResourcePortView::cube &&
+            footprint.kind ==
+                LogicalReadFootprintKind::
+                    same_pixel) {
+            throw std::runtime_error(
+                context +
+                " cube views cannot use same_pixel local-read "
+                "footprint");
+        }
 
         if (reference.history &&
             buffer_names.contains(reference.name)) {
@@ -925,7 +935,7 @@ void parseMaterialPassResourcesFromJson(
                 ShaderResourcePortView::shared_2d) {
                 throw std::runtime_error(
                     context +
-                    " buffer does not support per_view");
+                    " buffer does not support image view selection");
             }
             if (source.is_object() &&
                 source.contains("sampling")) {

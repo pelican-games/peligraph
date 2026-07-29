@@ -123,14 +123,16 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP233 | replaceable render algorithm asset/package | ✅ 完了（2026-07-29）。typed shader asset parameter、compute define/subresource ABI、標準packageのproject差替え・build purge、ON/OFF実GPU |
 | WP234 | runtime ViewFamily provider package | ✅ 完了（2026-07-29）。汎用family registry、caller優先解決、planar C++ policyのbuild purge、shadow/reflection ON/OFF実GPU |
 | WP235 | raster attachment mip/layer view | ✅ 完了（2026-07-29）。typed attachment view、論理〜Vulkan物理計画、sequential/multiview image view、mip extent、実GPU |
+| WP236 | runtime cube render target | ✅ 完了（2026-07-30）。resource/view形状分離、cube-compatible allocation、face attachment、fullscreen/compute/material samplerCube、実GPU |
 
-WP231〜235の受け入れ詳細:
+WP231〜236の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
 [`WP231b`](design_reviews/2026-07-29_wp231b_remaining_mip_material_ports.md)、
 [`WP232`](design_reviews/2026-07-29_wp232_planar_reflection_mip_filter_report.md)、
 [`WP233`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)、
 [`WP234`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)、
-[`WP235`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)。
+[`WP235`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)、
+[`WP236`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -493,8 +495,8 @@ WP208/WP209a/WP209b は2026-07-26に完了した。実装内容と受け入れ�
 fullscreen/compute の sampled/storage subresource viewをtyped化し、physical plan、
 Vulkan image/view、resize/hot reloadまで接続した。depth pyramidを第2 array layer上で
 実GPU dogfood済み。material portのsubresourceはWP231b、raster attachmentの
-任意mip/layer出力はWP235で解消した。runtime 3D/cube targetは後続の明示拡張であり、
-未対応設定は黙って無視せず拒否する。
+任意mip/layer出力はWP235、runtime cube targetはWP236で解消した。runtime 3D targetは
+後続の明示拡張であり、未対応設定は黙って無視せず拒否する。
 
 完了内容・検証・意図的制限は
 [`implementation_archive.md`](implementation_archive.md)と
@@ -1030,6 +1032,20 @@ raster rangeをまだ指名できないため、明示subresource attachmentはt
 materialized imageとして実行する。MSAA attachment imageはmip 0だけなので
 non-zero mipとの組合せをhard errorにした。詳細は
 [`2026-07-29_wp235_raster_attachment_subresource.md`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)
+を参照する。
+
+WP236でruntime imageの**資源形状**をschedulerの**view-family layout**から分離した。
+`dimension: "cube"`はsquareな2D image、6 layers、`eCubeCompatible`としてallocationされる。
+raster出力はWP235のtyped subresourceで各faceを2D attachmentとして選び、
+fullscreen/compute/materialの`view: "cube"`は同じimageの6 faceを1つのcube viewとして
+`samplerCube`へbindする。logical target plan、Vulkan physical plan、alias/fingerprint、
+runtime registration、resize/hot reloadまでdimensionを保持し、2Dとcubeをalias互換と
+みなさない。
+
+cubeはsampled portだけを公開し、storage cube、cube array、runtime 3Dは未対応として
+明示rejectする。point/spot shadowやdynamic environmentのcapture family/providerは
+機構の利用者でありWP236には含めない。詳細は
+[`2026-07-30_wp236_runtime_cube_render_target.md`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

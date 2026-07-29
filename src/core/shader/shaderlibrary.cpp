@@ -868,13 +868,17 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
                              .input_attachment_index));
             } else if (
                 physical_inputs[physical_index]
-                        .view_dimension ==
-                    PassInputViewDimension::
-                        layered_2d_array ||
+                        .descriptor_dimension ==
+                    ImageSubresourceViewDimension::
+                        cube) {
+                defines.push_back(
+                    makeSurfaceResourceCubeDefine(
+                        image_resource_indices[index]));
+            } else if (
                 physical_inputs[physical_index]
-                        .view_dimension ==
-                    PassInputViewDimension::
-                        family_2d_array) {
+                        .descriptor_dimension ==
+                    ImageSubresourceViewDimension::
+                        two_d_array) {
                 defines.push_back(
                     makeSurfaceResourceLayeredDefine(
                         image_resource_indices[index]));

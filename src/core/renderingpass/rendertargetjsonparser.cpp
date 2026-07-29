@@ -132,11 +132,39 @@ ImageMipLevelCount parseMipLevels(
     };
 }
 
-std::uint32_t parseArrayLayers(
+ImageResourceDimension parseDimension(
     const nlohmann::json &rt_json,
     const std::string &name) {
+    if (!rt_json.contains("dimension")) {
+        return ImageResourceDimension::two_d;
+    }
+    if (!rt_json.at("dimension").is_string()) {
+        throw std::runtime_error(
+            "Render target dimension must be '2d' or 'cube': " +
+            name);
+    }
+    const auto value =
+        rt_json.at("dimension").get<std::string>();
+    if (value == "2d") {
+        return ImageResourceDimension::two_d;
+    }
+    if (value == "cube") {
+        return ImageResourceDimension::cube;
+    }
+    throw std::runtime_error(
+        "Render target dimension must be '2d' or 'cube': " +
+        name);
+}
+
+std::uint32_t parseArrayLayers(
+    const nlohmann::json &rt_json,
+    const std::string &name,
+    ImageResourceDimension dimension) {
     if (!rt_json.contains("layers")) {
-        return 1;
+        return dimension ==
+                       ImageResourceDimension::cube
+                   ? 6u
+                   : 1u;
     }
     const auto count =
         parseUint32Field(
@@ -145,6 +173,13 @@ std::uint32_t parseArrayLayers(
     if (count == 0) {
         throw std::runtime_error(
             "Render target layers must be positive: " +
+            name);
+    }
+    if (dimension ==
+            ImageResourceDimension::cube &&
+        count != 6) {
+        throw std::runtime_error(
+            "Cube render target requires exactly six layers: " +
             name);
     }
     return count;
@@ -240,11 +275,30 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
                 rt_json, name, format);
         const auto mip_levels =
             parseMipLevels(rt_json, name);
+        const auto dimension =
+            parseDimension(rt_json, name);
         const auto array_layers =
-            parseArrayLayers(rt_json, name);
+            parseArrayLayers(
+                rt_json, name, dimension);
 
         if (extent_scale <= 0.0f) {
             throw std::runtime_error("Render target extent_scale must be positive: " + name);
+        }
+        if (dimension ==
+            ImageResourceDimension::cube) {
+            if (!fixed_extent) {
+                throw std::runtime_error(
+                    "Cube render target requires a fixed square "
+                    "width and height: " +
+                    name);
+            }
+            if (fixed_extent->width !=
+                fixed_extent->height) {
+                throw std::runtime_error(
+                    "Cube render target width and height must "
+                    "match: " +
+                    name);
+            }
         }
 
         definitions.push_back(RenderTargetDefinition{
@@ -263,6 +317,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             .samples = 1,
             .mip_levels = mip_levels,
             .array_layers = array_layers,
+            .dimension = dimension,
         });
     }
 

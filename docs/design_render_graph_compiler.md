@@ -1,8 +1,8 @@
-# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1.2)
+# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1.3)
 
 対象読者: レンダラ実装者、独自描画方式・最適化・Vulkan backend を実装する人。
 
-ステータス: v1.2 設計方針(2026-07-29)。公開 ABI は未凍結。RPE1〜RPE9と
+ステータス: v1.3 設計方針(2026-07-30)。公開 ABI は未凍結。RPE1〜RPE9と
 RPE10a runtime publication rootまで実装済み。
 RPE6b0の純CPU logical graph、RPE6b1のcolor/depth screen-input contractに加え、
 RPE6c0/1でdata-only topology/probe、`ResourcePattern`、desktop/tile physical plan fixture、
@@ -56,6 +56,11 @@ WP235ではraster attachmentを`(target, optional image subresource)`のtyped va
 logical frame graph、Vulkan physical attachment plan、fingerprint、runtime image viewまで
 同じrangeを保持する。1 mipとlogical view数ぶんの連続layerを選択でき、選択mipのextentを
 render areaへ伝播する。
+WP236ではphysical imageの資源形状(`2d` / `cube`)と、descriptor/attachmentのview形状
+(`2d` / `2d_array` / `cube`)を、schedulerのViewFamily layoutから分離した。cubeは
+6-layerのcube-compatible 2D imageとして計画・allocationし、face raster出力では2D view、
+方向samplingではcube viewを選ぶ。六面を偽の6-view familyとして扱わないため、capture camera
+生成とface scheduleは交換可能なfamily/provider algorithm側に残る。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -705,7 +710,8 @@ scalarなsecondary family passとarrayなmain-family passへ割り当てられ�
 array viewを作って`sampler2DArray` ABIを統一する。これはfeature固有のVulkan分岐ではなく、
 material resource port全般のview-shape adapterである。
 
-残るG6bはpoint/spot shadowのcube faceとruntime cube attachment、secondary multiviewである。
+残るG6bはpoint/spot shadowとreflection probeのcube-family provider、secondary multiviewである。
+runtime cube resource、face attachment、sampled cube descriptorはWP236で解消した。
 CSMやreflectionを単なる特殊passへ戻さず、これらも
 stable family relationを通して拡張する。planar reflection側はoblique near-planeを実装済みで、
 標準7-level roughness-aware tent mip chainを交換可能packageとして実装済みである。残るreflection quality項目はGGX等の

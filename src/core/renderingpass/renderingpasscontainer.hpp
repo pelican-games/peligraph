@@ -44,6 +44,11 @@ struct MaterialPassShaderInputBinding {
     // image or a view-family array.
     PassInputViewDimension view_dimension =
         PassInputViewDimension::shared_2d;
+    // Descriptor/image-view shape is independent from the scheduler's view
+    // family layout. In particular a cube remains one shared logical
+    // resource while exposing a samplerCube descriptor.
+    ImageSubresourceViewDimension descriptor_dimension =
+        ImageSubresourceViewDimension::two_d;
 
     bool operator==(
         const MaterialPassShaderInputBinding &) const = default;

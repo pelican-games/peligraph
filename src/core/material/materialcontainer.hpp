@@ -128,6 +128,9 @@ DECLARE_MODULE(MaterialContainer) {
             bool history = false;
             PassInputViewDimension view_dimension =
                 PassInputViewDimension::shared_2d;
+            ImageSubresourceViewDimension
+                descriptor_dimension =
+                    ImageSubresourceViewDimension::two_d;
             ShaderResourcePortSampling sampling;
             std::optional<ImageSubresourceRange>
                 subresource;

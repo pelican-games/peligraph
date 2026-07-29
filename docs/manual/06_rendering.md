@@ -66,9 +66,28 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
 | `history` | 任意 bool | `true` で 2 面持ち。前フレーム面は `<名前>@history` で読める(§6.8)✅WP88 |
 | `clear_color` | 任意 | history RT の初期化色 |
+| `dimension` | 任意 | `2d`(既定) / `cube`。cubeは固定かつ正方形の`width`/`height`と6 layersが必要 |
 | `mip_levels` | 任意 | 正整数または `"full"`。省略時1。`"full"`は実extentから最大mip chainを作り、resize時に再計算する |
-| `layers` | 任意 | 正整数。省略時1。2D array resourceの容量であり、XRの内部view数とはphysical loweringで最大値を取る |
+| `layers` | 任意 | 正整数。2Dは省略時1でarray容量を表し、XRの内部view数とはphysical loweringで最大値を取る。cubeは省略時6、明示時も6固定 |
 | `usage` | ✔ | `COLOR_ATTACHMENT` / `DEPTH_STENCIL_ATTACHMENT` / `SAMPLED` / `STORAGE` / `TRANSFER_DST` / `TRANSFER_SRC` |
+
+runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 viewとはみなしません。
+
+```json
+{
+  "name": "environment_capture",
+  "dimension": "cube",
+  "width": 256,
+  "height": 256,
+  "extent_scale": 1.0,
+  "format": "R16G16B16A16_SFLOAT",
+  "mip_levels": "full",
+  "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+}
+```
+
+このimageはraster時に各faceの2D attachment view、sampling時に6 faceのcube viewを公開します。
+cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2Dへ落とさず起動時に拒否します。
 
 ### pass 共通フィールド
 
@@ -78,7 +97,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `type` | ✔ | — | `material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / attachment / attachment配列)と `depth`(null / attachment)の**両キー必須**。attachmentは従来の名前または`{target, subresource}`。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
-| `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
+| `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
 | `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、mip/layer subresource、read footprintから依存とbarrierを導出する |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
@@ -120,6 +139,10 @@ swapchainのsubresource、同一targetの複数attachment slot、範囲外、non
 依存、barrier、layout trackingは現時点ではimage全体を保守的に扱います。明示subresourceの
 raster attachmentは、同じrangeを指名するsame-pixel input contractがまだ無いため
 tile-local化せずmaterialized imageとして実行されます。
+
+cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで、単一view passでは
+`layer_count`を省略できます。cube全体をraster attachmentとして一度にbindするのではなく、
+各faceを2D viewとして明示的に描画します。
 
 主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 attachment は同一実サイズ / 同一 RT の入出力同時使用は不可 / input に書いた RT は先行パスが出力していること。
 
@@ -463,6 +486,33 @@ shaderがtask名やVulkan image viewを推測せず、mipごとのkernel paramet
 現在実行中のlogical viewは引き続き`pelican_view_index()`で取得します。
 依存とlayout trackerは現在resource単位なので、rangeが離れていても実行順やbarrierを
 勝手に緩和せず、image全体を保守的に遷移します。
+
+runtime cubeを読むportは`view: "cube"`、`access: "sampled"`を指定します。省略した
+subresourceはmip 0と全6 faceへ正規化され、明示時も`layer: 0, layer_count: 6`が必要です。
+full mip chainを読む場合は`mip_count: "remaining"`を指定します。
+
+```json
+"resource_ports": {
+  "environment": {
+    "resource": "environment_capture",
+    "access": "sampled",
+    "view": "cube",
+    "subresource": {
+      "mip": 0,
+      "mip_count": "remaining",
+      "layer": 0,
+      "layer_count": 6
+    }
+  }
+}
+```
+
+generated interfaceは`samplerCube`と
+`pelican_sample_environment(vec3 direction)` /
+`pelican_sample_lod_environment(vec3 direction, float lod)`を作ります。同じ契約をfullscreenと
+material sampled resource portでも使えます。cubeをstorageまたはsame-pixel local readとして
+使う設定は現在hard errorです。`pelican_view_count_environment()`の6はdescriptorのface数で、
+実行中ViewFamilyのcardinalityは引き続き引数なしの`pelican_view_count()`で取得します。
 
 `schedule` は既定`per_frame`（logical frameで1回）または`per_view`
 （logical viewごとに1回）です。`per_view`はXRのdepth pyramid、culling、eye別post-process

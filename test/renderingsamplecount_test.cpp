@@ -461,6 +461,94 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
 }
 
 TEST_CASE(
+    "runtime target bridge preserves cube shape through device capability "
+    "planning",
+    "[target-planning][rendering][cube][wp236]") {
+    const auto config =
+        nlohmann::json::parse(R"json({
+          "render_targets": [{
+            "name": "environment_probe",
+            "extent_scale": 1.0,
+            "width": 128,
+            "height": 128,
+            "dimension": "cube",
+            "format": "R8G8B8A8_UNORM",
+            "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+            "mip_levels": "full"
+          }],
+          "rendering_passes": [{
+            "name": "cube_capture",
+            "passes": [{
+              "name": "capture_face",
+              "type": "fullscreen",
+              "output": {
+                "color": [{
+                  "target": "environment_probe",
+                  "subresource": {
+                    "mip": 0,
+                    "layer": 2
+                  }
+                }],
+                "depth": null
+              }
+            }]
+          }]
+        })json");
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    const auto targets =
+        parseRenderTargetDefinitionsFromJson(
+            config);
+    bool queried_cube = false;
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_image_format_capability =
+                    [&](const RenderTargetDefinition
+                            &definition) {
+                        queried_cube =
+                            definition.dimension ==
+                                ImageResourceDimension::
+                                    cube &&
+                            definition.array_layers == 6;
+                        return RenderingImageFormatCapability{
+                            .image_usage_supported =
+                                true,
+                            .supported_samples = {1},
+                            .max_mip_levels = 8,
+                            .max_array_layers = 6,
+                        };
+                    },
+            });
+    REQUIRE(queried_cube);
+    REQUIRE(compilation.plans.size() == 1);
+    const auto &physical =
+        physicalResource(
+            *compilation.plans.front(),
+            "environment_probe");
+    REQUIRE(
+        physical.dimension ==
+        ImageResourceDimension::cube);
+    REQUIRE(physical.array_layers == 6);
+    REQUIRE(
+        physical.mip_levels.mode ==
+        ImageMipLevelMode::full_chain);
+
+    auto applied = targets;
+    applyRenderingTargetPlan(
+        applied, compilation);
+    REQUIRE(applied.size() == 1);
+    REQUIRE(
+        applied.front().dimension ==
+        ImageResourceDimension::cube);
+    REQUIRE(applied.front().array_layers == 6);
+}
+
+TEST_CASE(
     "runtime target adapter executes supported write-only attachments as transient",
     "[target-planning][rendering][transient-attachment][runtime-adapter]") {
     const auto config =

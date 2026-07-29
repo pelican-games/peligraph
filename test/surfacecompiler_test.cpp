@@ -1237,6 +1237,29 @@ void pelican_surface_v1(
             "pelican_sample_gbuffer_normal"
             "(uv, pelican_view_index())") !=
         std::string::npos);
+    const auto cube = composeSurfaceShaders(
+        surface, source_name,
+        SurfacePass::forward,
+        {makeSurfaceResourceCubeDefine(0)});
+    REQUIRE(
+        cube.resource_interface.front()
+            .image_view_dimension ==
+        ReflectedImageViewDimension::cube);
+    const auto cube_params = std::find_if(
+        cube.virtual_includes.begin(),
+        cube.virtual_includes.end(),
+        [](const auto &include) {
+            return include.first ==
+                   "__pelican_surface_params.glsl";
+        });
+    REQUIRE(
+        cube_params !=
+        cube.virtual_includes.end());
+    REQUIRE(
+        cube_params->second.find(
+            "uniform samplerCube "
+            "pelican_resource_gbuffer_normal") !=
+        std::string::npos);
     REQUIRE_THROWS_WITH(
         composeSurfaceShaders(
             surface, source_name,
@@ -1248,6 +1271,29 @@ void pelican_surface_v1(
             }),
         Catch::Matchers::ContainsSubstring(
             "cannot select input-attachment and layered sampled "
+            "ABIs simultaneously"));
+    REQUIRE_THROWS_WITH(
+        composeSurfaceShaders(
+            surface, source_name,
+            SurfacePass::forward,
+            {
+                makeSurfaceResourceLocalReadDefine(
+                    0, 5),
+                makeSurfaceResourceCubeDefine(0),
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "cannot select input-attachment and cube sampled "
+            "ABIs simultaneously"));
+    REQUIRE_THROWS_WITH(
+        composeSurfaceShaders(
+            surface, source_name,
+            SurfacePass::forward,
+            {
+                makeSurfaceResourceLayeredDefine(0),
+                makeSurfaceResourceCubeDefine(0),
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "cannot select layered-array and cube sampled "
             "ABIs simultaneously"));
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -1315,6 +1361,63 @@ void pelican_surface_v1(
         validateShaderResourceInterfaceReflection(
             layered.resource_interface,
             layered_fragment));
+#endif
+}
+
+TEST_CASE(
+    "surface physical variant compiles a cube material resource accessor",
+    "[surface-compiler][material-resource][cube][wp236]") {
+    constexpr std::string_view source_name =
+        "project://shaders/environment.surface";
+    const auto surface = parseSurfaceFormat(
+        R"surface(//! pelican.surface v1
+//! language: glsl
+//! resource_ports:
+//!   - { name: environment, kind: image, stage: fragment }
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    surface.emissive =
+        pelican_sample_environment(
+            normalize(input_data.normal)).rgb;
+}
+)surface",
+        source_name);
+    const auto composition =
+        composeSurfaceShaders(
+            surface, source_name,
+            SurfacePass::forward,
+            {makeSurfaceResourceCubeDefine(0)});
+    REQUIRE(
+        composition.resource_interface.front()
+            .port.view ==
+        ShaderResourcePortView::cube);
+    REQUIRE(
+        composition.resource_interface.front()
+            .image_view_dimension ==
+        ReflectedImageViewDimension::cube);
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto compiled =
+        compileSurfaceShaders(
+            compiler, surface, source_name,
+            SurfacePass::forward,
+            {makeSurfaceResourceCubeDefine(0)});
+    requireCompiled(compiled);
+    const auto reflection =
+        reflect(compiled.fragment.spirv);
+    const auto binding = std::find_if(
+        reflection.bindings.begin(),
+        reflection.bindings.end(),
+        [](const auto &candidate) {
+            return candidate.set == 1 &&
+                   candidate.binding == 0;
+        });
+    REQUIRE(binding != reflection.bindings.end());
+    REQUIRE(
+        binding->image_view_dimension ==
+        ReflectedImageViewDimension::cube);
 #endif
 }
 

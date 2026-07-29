@@ -435,6 +435,9 @@ nlohmann::ordered_json physicalResourceToJson(
               resource.mip_levels.count},
          }},
         {"array_layers", resource.array_layers},
+        {"dimension",
+         imageResourceDimensionName(
+             resource.dimension)},
         {"extent", extentToJson(resource.extent)},
     };
 }
@@ -955,6 +958,7 @@ void validateAliasGroups(
                     a.view_layout != b.view_layout ||
                     a.mip_levels != b.mip_levels ||
                     a.array_layers != b.array_layers ||
+                    a.dimension != b.dimension ||
                     a.extent != b.extent) {
                     throw std::runtime_error(
                         "Vulkan physical alias group has "

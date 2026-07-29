@@ -298,7 +298,10 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
                                                 const std::vector<bool> &input_local_reads,
                                                 const std::vector<std::optional<ImageSubresourceRange>>
                                                     &input_subresources,
-                                                std::uint32_t logical_view_count) {
+                                                std::uint32_t logical_view_count,
+                                                const std::vector<
+                                                    ImageSubresourceViewDimension>
+                                                    &input_view_dimensions) {
     std::vector<FrameGraphBufferId> buffer_ids;
     buffer_ids.reserve(input_buffers.size());
     for (const auto &name : input_buffers) {
@@ -315,7 +318,8 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
         pass_id, input_rts, input_rt_history, buffer_ids,
         rt_views, frame_graph_resources, input_sampling,
         input_views, view, input_local_reads,
-        input_subresources, logical_view_count);
+        input_subresources, logical_view_count,
+        input_view_dimensions);
 }
 
 void FullscreenPassContainer::setInputResourcesById(
@@ -331,7 +335,10 @@ void FullscreenPassContainer::setInputResourcesById(
     const std::vector<bool> &input_local_reads,
     const std::vector<std::optional<ImageSubresourceRange>>
         &input_subresources,
-    std::uint32_t logical_view_count) {
+    std::uint32_t logical_view_count,
+    const std::vector<
+        ImageSubresourceViewDimension>
+        &input_view_dimensions) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto local_reads =
@@ -368,6 +375,13 @@ void FullscreenPassContainer::setInputResourcesById(
         throw std::runtime_error(
             "Fullscreen pass input subresource metadata is inconsistent");
     }
+    if (!input_view_dimensions.empty() &&
+        input_view_dimensions.size() !=
+            input_rts.size()) {
+        throw std::runtime_error(
+            "Fullscreen pass input descriptor-view metadata is "
+            "inconsistent");
+    }
     if (view.execution ==
             GraphicsPipelineViewExecution::multiview &&
         std::find(input_views.begin(), input_views.end(),
@@ -397,6 +411,30 @@ void FullscreenPassContainer::setInputResourcesById(
                   input_rts.size(),
                   PassInputViewDimension::shared_2d)
             : input_views;
+    info.input_view_dimensions =
+        input_view_dimensions.empty()
+            ? std::vector<
+                  ImageSubresourceViewDimension>(
+                  input_rts.size(),
+                  ImageSubresourceViewDimension::
+                      two_d)
+            : input_view_dimensions;
+    if (input_view_dimensions.empty()) {
+        for (std::size_t input = 0;
+             input < info.input_rt_views.size();
+             ++input) {
+            if (info.input_rt_views[input] ==
+                    PassInputViewDimension::
+                        layered_2d_array ||
+                info.input_rt_views[input] ==
+                    PassInputViewDimension::
+                        family_2d_array) {
+                info.input_view_dimensions[input] =
+                    ImageSubresourceViewDimension::
+                        two_d_array;
+            }
+        }
+    }
     info.input_rt_subresources =
         input_subresources.empty()
             ? std::vector<
@@ -512,6 +550,13 @@ void FullscreenPassContainer::setInputResourcesById(
             throw std::runtime_error(
                 "Fullscreen local-read input cannot reference history");
         }
+        if (info.input_local_reads[input] &&
+            info.input_view_dimensions[input] ==
+                ImageSubresourceViewDimension::cube) {
+            throw std::runtime_error(
+                "Fullscreen local-read input cannot use a cube "
+                "descriptor view");
+        }
         const auto layers =
             rt_views.arrayLayers(input_rts[input]);
         const auto selected_layers =
@@ -561,6 +606,19 @@ void FullscreenPassContainer::setInputResourcesById(
                     "Fullscreen sequential_2d subresource must select one reusable layer or exactly the logical view count");
             }
         }
+        if (info.input_view_dimensions[input] ==
+                ImageSubresourceViewDimension::cube &&
+            (rt_views.dimension(input_rts[input]) !=
+                 ImageResourceDimension::cube ||
+             (info.input_rt_subresources[input] &&
+              (info.input_rt_subresources[input]
+                       ->base_array_layer != 0 ||
+               info.input_rt_subresources[input]
+                       ->layer_count != 6)))) {
+            throw std::runtime_error(
+                "Fullscreen cube input requires a cube target and "
+                "all six faces");
+        }
     }
     info.variants.resize(variant_count);
     for (std::uint32_t variant = 0;
@@ -588,6 +646,8 @@ void FullscreenPassContainer::setInputResourcesById(
                 }
                 const auto dimension =
                     info.input_rt_views[i];
+                const auto descriptor_dimension =
+                    info.input_view_dimensions[i];
                 vk::ImageView image_view;
                 const auto selected_layers =
                     info.input_rt_subresources[i]
@@ -608,6 +668,9 @@ void FullscreenPassContainer::setInputResourcesById(
                     auto subresource =
                         *info.input_rt_subresources[i];
                     const auto sequential =
+                        descriptor_dimension !=
+                                ImageSubresourceViewDimension::
+                                    cube &&
                         dimension !=
                                 PassInputViewDimension::
                                     family_2d_array &&
@@ -625,13 +688,26 @@ void FullscreenPassContainer::setInputResourcesById(
                             .getImageSubresourceViewForFrame(
                                 input_rts[i],
                                 subresource,
-                                !sequential &&
-                                    (dimension ==
-                                         PassInputViewDimension::
-                                             layered_2d_array ||
-                                     dimension ==
-                                         PassInputViewDimension::
-                                             family_2d_array),
+                                descriptor_dimension,
+                                input_rt_history[i],
+                                parity);
+                } else if (
+                    descriptor_dimension ==
+                    ImageSubresourceViewDimension::
+                        cube) {
+                    image_view =
+                        rt_views
+                            .getImageSubresourceViewForFrame(
+                                input_rts[i],
+                                ImageSubresourceRange{
+                                    .base_mip_level = 0,
+                                    .level_count =
+                                        rt_views.mipLevels(
+                                            input_rts[i]),
+                                    .base_array_layer = 0,
+                                    .layer_count = 6,
+                                },
+                                descriptor_dimension,
                                 input_rt_history[i],
                                 parity);
                 } else if (
@@ -738,6 +814,8 @@ void FullscreenPassContainer::rebindInputResources(
         found->second.input_rt_views;
     const auto input_subresources =
         found->second.input_rt_subresources;
+    const auto input_view_dimensions =
+        found->second.input_view_dimensions;
     const auto logical_view_count =
         found->second.logical_view_count;
     const auto input_local_reads =
@@ -747,7 +825,8 @@ void FullscreenPassContainer::rebindInputResources(
         pass_id, input_rts, input_history, input_buffers,
         rt_views, frame_graph_resources, input_sampling,
         input_views, view, input_local_reads,
-        input_subresources, logical_view_count);
+        input_subresources, logical_view_count,
+        input_view_dimensions);
 }
 
 std::vector<vk::ImageView>

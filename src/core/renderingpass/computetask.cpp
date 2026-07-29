@@ -640,7 +640,8 @@ makeComputeResourceInterface(
                         ? ShaderResourceConsumerView::
                               compute_per_view
                         : ShaderResourceConsumerView::
-                              compute_once);
+                              compute_once,
+                    metadata.dimension);
             if (dimension ==
                     ReflectedImageViewDimension::
                         two_d_array &&
@@ -659,6 +660,16 @@ makeComputeResourceInterface(
                         resource
                             .physical_view_count) +
                     ")");
+            }
+            if (dimension ==
+                    ReflectedImageViewDimension::cube &&
+                !sampled) {
+                throw std::runtime_error(
+                    "Shader resource port '" +
+                    port.name + "' (resource '" +
+                    port.resource +
+                    "') cube view currently requires sampled "
+                    "access");
             }
             auto resolved_port = port;
             if (resolved_port.subresource &&
@@ -745,6 +756,18 @@ makeComputeResourceInterface(
                         port.resource +
                         "') family image subresource must select exactly "
                         "the logical view count");
+                }
+                if (dimension ==
+                        ReflectedImageViewDimension::cube &&
+                    (resolved_port.subresource
+                             ->base_array_layer != 0 ||
+                     resolved_port.subresource
+                             ->layer_count != 6)) {
+                    throw std::runtime_error(
+                        "Shader resource port '" +
+                        port.name + "' (resource '" +
+                        port.resource +
+                        "') cube view must select all six faces");
                 }
             }
             result.push_back(
@@ -1932,11 +1955,15 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                 typed->image_view_dimension ==
                     ReflectedImageViewDimension::
                         two_d_array;
+            const auto cube =
+                typed != nullptr &&
+                typed->image_view_dimension ==
+                    ReflectedImageViewDimension::cube;
             const auto metadata =
                 render_target_container
                     .getMetadata(rt_id);
             const auto sequential_layer =
-                !layered &&
+                !cube && !layered &&
                 resource.physical_view ==
                     VulkanResourceViewLayout::
                         sequential_2d &&
@@ -1980,11 +2007,36 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                         view_index;
                 }
                 image_view =
+                    cube
+                        ? render_target_container
+                              .getImageSubresourceViewForFrame(
+                                  rt_id,
+                                  subresource,
+                                  ImageSubresourceViewDimension::
+                                      cube,
+                                  resource.history_read,
+                                  frame_index)
+                        : render_target_container
+                              .getImageSubresourceViewForFrame(
+                                  rt_id,
+                                  subresource,
+                                  layered,
+                                  resource.history_read,
+                                  frame_index);
+            } else if (cube) {
+                image_view =
                     render_target_container
                         .getImageSubresourceViewForFrame(
                             rt_id,
-                            subresource,
-                            layered,
+                            ImageSubresourceRange{
+                                .base_mip_level = 0,
+                                .level_count =
+                                    metadata.mip_levels,
+                                .base_array_layer = 0,
+                                .layer_count = 6,
+                            },
+                            ImageSubresourceViewDimension::
+                                cube,
                             resource.history_read,
                             frame_index);
             } else if (layered) {

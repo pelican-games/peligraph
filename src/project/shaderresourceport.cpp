@@ -78,6 +78,9 @@ ShaderResourcePortView parseView(
     if (value == "family_array") {
         return ShaderResourcePortView::family_array;
     }
+    if (value == "cube") {
+        return ShaderResourcePortView::cube;
+    }
     throw std::runtime_error(
         std::string{context} +
         ".view has unknown value '" + value + "'");
@@ -258,6 +261,8 @@ std::string_view shaderResourcePortViewName(
         return "per_view";
     case ShaderResourcePortView::family_array:
         return "family_array";
+    case ShaderResourcePortView::cube:
+        return "cube";
     }
     throw std::runtime_error(
         "unknown shader resource port view");
@@ -431,6 +436,8 @@ parseShaderResourcePortDefinitions(
                 object, kind, port_context);
         const auto access =
             parseAccess(object, port_context);
+        const auto view =
+            parseView(object, port_context);
         const auto written = contains(writes, resource);
         const auto sampled =
             access == ShaderResourcePortAccess::sampled ||
@@ -467,6 +474,12 @@ parseShaderResourcePortDefinitions(
                 port_context +
                 ".view is valid only for image resources");
         }
+        if (view == ShaderResourcePortView::cube &&
+            !sampled) {
+            throw std::runtime_error(
+                port_context +
+                " cube views currently require sampled access");
+        }
         if (kind == ShaderResourcePortKind::buffer &&
             subresource) {
             throw std::runtime_error(
@@ -480,7 +493,7 @@ parseShaderResourcePortDefinitions(
                 .kind = kind,
                 .buffer_element = element,
                 .access = access,
-                .view = parseView(object, port_context),
+                .view = view,
                 .sampling =
                     parseSampling(object, port_context),
                 .subresource = subresource,

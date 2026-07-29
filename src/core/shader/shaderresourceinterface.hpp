@@ -35,7 +35,9 @@ enum class ShaderResourceConsumerView : std::uint8_t {
 ReflectedImageViewDimension resolveShaderResourceImageViewDimension(
     const ShaderResourcePortDefinition &port,
     VulkanResourceViewLayout physical_view,
-    ShaderResourceConsumerView consumer);
+    ShaderResourceConsumerView consumer,
+    ImageResourceDimension resource_dimension =
+        ImageResourceDimension::two_d);
 
 struct ShaderResourceInterfaceBinding {
     ShaderResourcePortDefinition port;

@@ -36,6 +36,13 @@ std::string makeSurfaceResourceLayeredDefine(
            std::to_string(resource) + "_LAYERED=1";
 }
 
+std::string makeSurfaceResourceCubeDefine(
+    std::size_t resource) {
+    return std::string{
+               surfaceResourceLocalReadDefinePrefix} +
+           std::to_string(resource) + "_CUBE=1";
+}
+
 namespace {
 
 constexpr std::string_view userIncludeName = "__pelican_user_surface.glsl";
@@ -104,6 +111,38 @@ bool physicalLayeredResource(
         } else {
             throw std::runtime_error(
                 "surface physical layered-view define must be 0 or 1: " +
+                define);
+        }
+    }
+    return result.value_or(false);
+}
+
+bool physicalCubeResource(
+    std::span<const std::string> defines,
+    std::size_t index) {
+    const auto key =
+        std::string{
+            surfaceResourceLocalReadDefinePrefix} +
+        std::to_string(index) + "_CUBE=";
+    std::optional<bool> result;
+    for (const auto &define : defines) {
+        if (!define.starts_with(key)) {
+            continue;
+        }
+        if (result) {
+            throw std::runtime_error(
+                "surface physical cube-view define is duplicated: " +
+                key);
+        }
+        const auto encoded =
+            std::string_view{define}.substr(key.size());
+        if (encoded == "0") {
+            result = false;
+        } else if (encoded == "1") {
+            result = true;
+        } else {
+            throw std::runtime_error(
+                "surface physical cube-view define must be 0 or 1: " +
                 define);
         }
     }
@@ -285,10 +324,26 @@ makeSurfaceResourceInterface(
             image &&
             physicalLayeredResource(
                 defines, index);
+        const auto cube =
+            image &&
+            physicalCubeResource(
+                defines, index);
         if (local_read && layered) {
             throw std::runtime_error(
                 "surface resource port '" + port.name +
                 "' cannot select input-attachment and layered sampled "
+                "ABIs simultaneously");
+        }
+        if (local_read && cube) {
+            throw std::runtime_error(
+                "surface resource port '" + port.name +
+                "' cannot select input-attachment and cube sampled "
+                "ABIs simultaneously");
+        }
+        if (layered && cube) {
+            throw std::runtime_error(
+                "surface resource port '" + port.name +
+                "' cannot select layered-array and cube sampled "
                 "ABIs simultaneously");
         }
         if (local_read &&
@@ -319,7 +374,10 @@ makeSurfaceResourceInterface(
                                 ? ShaderResourcePortAccess::sampled
                                 : ShaderResourcePortAccess::storage,
                         .view =
-                            layered
+                            cube
+                                ? ShaderResourcePortView::
+                                      cube
+                            : layered
                                 ? ShaderResourcePortView::
                                       family_array
                                 : ShaderResourcePortView::
@@ -339,7 +397,10 @@ makeSurfaceResourceInterface(
                               storage_buffer,
                 .image_view_dimension =
                     image
-                                ? layered
+                                ? cube
+                                      ? ReflectedImageViewDimension::
+                                            cube
+                                  : layered
                                       ? ReflectedImageViewDimension::
                                             two_d_array
                                       : ReflectedImageViewDimension::

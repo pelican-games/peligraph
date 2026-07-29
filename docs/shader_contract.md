@@ -100,7 +100,7 @@ bindする。2Dにもindexed accessor overloadと`pelican_view_count_<port>() ==
 `pelican_frame.glsl`は`pelican_view_index()`と`pelican_view_count()`も公開する。
 sequential / computeではFrameUBOの値、multiview graphicsでは`gl_ViewIndex`を返す。
 
-reflection は port の set、binding、descriptor kind、count、生成変数名、2D/2D-array 次元を
+reflection は port の set、binding、descriptor kind、count、生成変数名、2D/2D-array/cube次元を
 照合する。hot reload も同じ interface を保存して再検証する。`resource_ports` を持たない
 既存 shader の raw set 1 ABI は不変であり、buffer や特殊 descriptor の escape hatch として
 利用できる。
@@ -142,6 +142,50 @@ portはsampler descriptor専用で、`same_pixel` local read/input attachmentへ
 
 layout/hazard trackingは現時点ではresource単位である。互いに素なrangeでもwhole imageを
 保守的に遷移し、subresource並列化は行わない。
+
+### runtime cube render target port(WP236)
+
+runtime render targetは資源形状を`dimension: "2d"|"cube"`で宣言する。cubeは固定の
+正方形extentと6 layersを必要とし、`layers`省略時は6になる。これはViewFamilyの実行形状とは
+別の型であり、六面を自動的に6-view scheduleへ変換しない。
+
+```json
+{
+  "name": "environment_capture",
+  "dimension": "cube",
+  "width": 256,
+  "height": 256,
+  "extent_scale": 1.0,
+  "format": "R16G16B16A16_SFLOAT",
+  "mip_levels": "full",
+  "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+}
+```
+
+raster出力は既存の`subresource.layer`でface 0〜5を2D attachmentとして選ぶ。
+fullscreen/compute/materialのsampled portは`view: "cube"`で同じimageの全6 faceを選ぶ。
+
+```json
+"resource_ports": {
+  "environment": {
+    "resource": "environment_capture",
+    "access": "sampled",
+    "view": "cube",
+    "subresource": {
+      "mip": 0,
+      "mip_count": "remaining",
+      "layer": 0,
+      "layer_count": 6
+    }
+  }
+}
+```
+
+generated objectは`samplerCube`で、
+`pelican_sample_<port>(vec3 direction)` /
+`pelican_sample_lod_<port>(vec3 direction, float lod)`を公開する。resource shape、
+descriptor reflection、runtime image viewを同じcube dimensionで照合する。cube storage、
+same-pixel/input attachment、cube array、runtime 3Dは現契約外で、明示設定をrejectする。
 
 feature compositionが生成する値付きdefineはgraphicsだけでなくcompute shaderの
 compile/cache recipeにも同じ順序で入る。project-owned compute algorithmも

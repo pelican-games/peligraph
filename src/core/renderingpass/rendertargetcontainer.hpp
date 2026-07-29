@@ -89,6 +89,8 @@ DECLARE_MODULE(RenderTargetContainer) {
         std::uint32_t samples;
         ImageMipLevelCount mip_levels;
         std::uint32_t array_layers;
+        ImageResourceDimension dimension =
+            ImageResourceDimension::two_d;
         RenderTargetStorageMode storage_mode;
         std::optional<std::string> alias_group;
         std::optional<std::uint64_t> alias_group_token;
@@ -129,7 +131,11 @@ DECLARE_MODULE(RenderTargetContainer) {
                                                   std::nullopt,
                                               std::optional<std::uint64_t>
                                                   alias_group_token =
-                                                      std::nullopt);
+                                                      std::nullopt,
+                                              ImageResourceDimension
+                                                  dimension =
+                                                      ImageResourceDimension::
+                                                          two_d);
     std::uint64_t createAliasGroupToken();
     PreparedRenderTargetExtent prepareForExtent(
         vk::Extent2D base_extent) const;
@@ -154,10 +160,21 @@ DECLARE_MODULE(RenderTargetContainer) {
         ImageSubresourceRange subresource,
         bool array_view,
         bool history_read = false) const;
+    vk::ImageView getImageSubresourceView(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        ImageSubresourceViewDimension dimension,
+        bool history_read = false) const;
     vk::ImageView getImageSubresourceViewForFrame(
         GlobalRenderTargetId id,
         ImageSubresourceRange subresource,
         bool array_view, bool history_read,
+        std::uint32_t frame_index) const;
+    vk::ImageView getImageSubresourceViewForFrame(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        ImageSubresourceViewDimension dimension,
+        bool history_read,
         std::uint32_t frame_index) const;
     vk::ImageView getImageLayerView(
         GlobalRenderTargetId id, std::uint32_t array_layer,

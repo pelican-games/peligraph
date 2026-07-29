@@ -29,6 +29,20 @@ RenderTargetImageViewResolver::
 }
 
 vk::ImageView
+RenderTargetImageViewResolver::
+    getImageSubresourceViewForFrame(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        ImageSubresourceViewDimension dimension,
+        bool history_read,
+        std::uint32_t frame_index) const {
+    return rt_container
+        .getImageSubresourceViewForFrame(
+            id, subresource, dimension,
+            history_read, frame_index);
+}
+
+vk::ImageView
 RenderTargetImageViewResolver::getImageLayerViewForFrame(
     GlobalRenderTargetId id, std::uint32_t array_layer,
     bool history_read, std::uint32_t frame_index) const {
@@ -52,6 +66,12 @@ std::uint32_t RenderTargetImageViewResolver::arrayLayers(
 std::uint32_t RenderTargetImageViewResolver::mipLevels(
     GlobalRenderTargetId id) const {
     return rt_container.getMetadata(id).mip_levels;
+}
+
+ImageResourceDimension
+RenderTargetImageViewResolver::dimension(
+    GlobalRenderTargetId id) const {
+    return rt_container.getMetadata(id).dimension;
 }
 
 } // namespace Pelican

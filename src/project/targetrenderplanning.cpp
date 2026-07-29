@@ -198,6 +198,8 @@ struct CanonicalResourcePatternBinding {
     std::optional<ResourceExtentPlan> extent;
     ImageMipLevelCount mip_levels;
     std::uint32_t array_layers = 1;
+    ImageResourceDimension dimension =
+        ImageResourceDimension::two_d;
 };
 
 ImageMipLevelCount canonicalizeMipLevels(
@@ -243,6 +245,43 @@ std::uint32_t canonicalizeArrayLayers(
             resource.name);
     }
     return array_layers;
+}
+
+ImageResourceDimension canonicalizeDimension(
+    const LogicalResourceDesc &resource,
+    ImageResourceDimension dimension,
+    std::uint32_t array_layers,
+    const std::optional<ResourceExtentPlan> &extent) {
+    if (resource.type.constructor !=
+        LogicalTypeConstructor::image) {
+        if (dimension !=
+            ImageResourceDimension::two_d) {
+            throw std::runtime_error(
+                "resource image dimension applies to a non-image "
+                "resource: " +
+                resource.name);
+        }
+        return ImageResourceDimension::two_d;
+    }
+    if (dimension ==
+        ImageResourceDimension::cube) {
+        if (array_layers != 6) {
+            throw std::runtime_error(
+                "cube image resource requires exactly six array "
+                "layers: " +
+                resource.name);
+        }
+        if (extent &&
+            extent->kind ==
+                ResourceExtentKind::fixed &&
+            extent->width != extent->height) {
+            throw std::runtime_error(
+                "cube image resource requires a square fixed "
+                "extent: " +
+                resource.name);
+        }
+    }
+    return dimension;
 }
 
 ResourceExtentPlan canonicalizeExtent(
@@ -325,6 +364,11 @@ canonicalPatternBindings(
             canonicalizeArrayLayers(
                 *resource->second,
                 binding.array_layers);
+        const auto dimension =
+            canonicalizeDimension(
+                *resource->second,
+                binding.dimension,
+                array_layers, extent);
         if (!result
                  .emplace(
                      binding.resource,
@@ -333,6 +377,7 @@ canonicalPatternBindings(
                          .extent = std::move(extent),
                          .mip_levels = mip_levels,
                          .array_layers = array_layers,
+                         .dimension = dimension,
                      })
                  .second) {
             throw std::runtime_error(
@@ -1125,6 +1170,8 @@ TargetLoweringGraph makeTargetLoweringGraph(
                 pattern->second.mip_levels,
             .array_layers =
                 pattern->second.array_layers,
+            .dimension =
+                pattern->second.dimension,
         });
     }
 
@@ -1401,6 +1448,9 @@ nlohmann::ordered_json targetLoweringGraphToJson(
              }},
             {"array_layers",
              resource.array_layers},
+            {"dimension",
+             imageResourceDimensionName(
+                 resource.dimension)},
             {"uses",
              nlohmann::ordered_json{
                  {"read", resource.uses.read},
@@ -2297,6 +2347,8 @@ CandidateDraft buildCandidateDraft(
                     resource.mip_levels,
                 .array_layers =
                     resource.array_layers,
+                .dimension =
+                    resource.dimension,
                 .extent = resource.extent,
             });
         result.decisions.push_back(PlanningDecision{
@@ -2609,6 +2661,8 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     resources[right].mip_levels ||
                 resources[left].array_layers !=
                     resources[right].array_layers ||
+                resources[left].dimension !=
+                    resources[right].dimension ||
                 resources[left].extent !=
                     resources[right].extent ||
                 !lifetimesDoNotOverlap(
@@ -3514,6 +3568,9 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                      resource.view_layout)},
                 {"array_layers",
                  resource.array_layers},
+                {"dimension",
+                 imageResourceDimensionName(
+                     resource.dimension)},
                 {"mip_levels",
                  nlohmann::ordered_json{
                      {"mode",

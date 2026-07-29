@@ -247,6 +247,24 @@ TEST_CASE(
                 ReflectedImageViewDimension::
                     two_d_array,
         },
+        ShaderResourceInterfaceBinding{
+            .port =
+                ShaderResourcePortDefinition{
+                    .name = "environment",
+                    .resource = "environment_probe",
+                    .access =
+                        ShaderResourcePortAccess::
+                            sampled,
+                    .view =
+                        ShaderResourcePortView::cube,
+                },
+            .binding = 3,
+            .descriptor =
+                ShaderResourceDescriptorKind::
+                    combined_image_sampler,
+            .image_view_dimension =
+                ReflectedImageViewDimension::cube,
+        },
     };
     ShaderCompiler compiler;
     compiler.addIncludeDir(
@@ -263,6 +281,11 @@ TEST_CASE(
     REQUIRE(
         generated_ports.second.find(
             "pelican_base_layer_result() { return 1u; }") !=
+        std::string::npos);
+    REQUIRE(
+        generated_ports.second.find(
+            "uniform samplerCube "
+            "pelican_resource_environment") !=
         std::string::npos);
     options.virtual_includes.push_back(
         generated_ports);
@@ -283,6 +306,9 @@ void main() {
     value += vec4(pelican_size_lod_scene_color(0), 0, 0) * 0.0;
     value += pelican_sample_lod_scene_layers(
         vec2(0.5), 0u, 0.0) * 0.001;
+    value += pelican_sample_lod_environment(
+        normalize(vec3(1.0, 0.5, 0.25)), 0.0) *
+        float(pelican_view_count_environment()) * 0.001;
     if (pelican_base_mip_result() != 3u ||
         pelican_base_layer_result() != 1u) {
         return;
@@ -309,6 +335,9 @@ void main() {
     const auto *sampled_array =
         findBinding(
             reflection, PELICAN_SET_PASS_INPUT, 2);
+    const auto *sampled_cube =
+        findBinding(
+            reflection, PELICAN_SET_PASS_INPUT, 3);
     REQUIRE(sampled != nullptr);
     REQUIRE(
         sampled->image_view_dimension ==
@@ -323,6 +352,10 @@ void main() {
         sampled_array->image_view_dimension ==
         ReflectedImageViewDimension::
             two_d_array);
+    REQUIRE(sampled_cube != nullptr);
+    REQUIRE(
+        sampled_cube->image_view_dimension ==
+        ReflectedImageViewDimension::cube);
 
     auto wrong_dimension = reflection;
     wrong_dimension.bindings.at(1)
@@ -372,6 +405,11 @@ TEST_CASE(
         .resource = "shadow",
         .view =
             ShaderResourcePortView::family_array,
+    };
+    ShaderResourcePortDefinition cube{
+        .name = "environment",
+        .resource = "environment_probe",
+        .view = ShaderResourcePortView::cube,
     };
     REQUIRE(
         resolveShaderResourceImageViewDimension(
@@ -467,6 +505,22 @@ TEST_CASE(
                 graphics_multiview),
         Catch::Matchers::ContainsSubstring(
             "requires family_array"));
+    REQUIRE(
+        resolveShaderResourceImageViewDimension(
+            cube,
+            VulkanResourceViewLayout::shared_2d,
+            ShaderResourceConsumerView::
+                compute_once,
+            ImageResourceDimension::cube) ==
+        ReflectedImageViewDimension::cube);
+    REQUIRE_THROWS_WITH(
+        resolveShaderResourceImageViewDimension(
+            cube,
+            VulkanResourceViewLayout::shared_2d,
+            ShaderResourceConsumerView::
+                compute_once),
+        Catch::Matchers::ContainsSubstring(
+            "requires a cube image resource"));
 }
 
 TEST_CASE("UI shader reflection and QuadVertex pipeline layout preserve the 20-byte ABI", "[shader][ui][u1]") {

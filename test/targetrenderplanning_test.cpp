@@ -1143,6 +1143,103 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
             document);
 }
 
+TEST_CASE(
+    "Vulkan target planning preserves cube resource shape independently "
+    "from view-family layout",
+    "[target-render-planning][cube][wp236]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 4, false, true);
+    auto bindings =
+        bindingsFor(types, graph);
+    const auto scene_color =
+        std::find_if(
+            bindings.begin(), bindings.end(),
+            [](const auto &binding) {
+                return binding.resource ==
+                       "scene_color";
+            });
+    REQUIRE(scene_color != bindings.end());
+    scene_color->dimension =
+        ImageResourceDimension::cube;
+    scene_color->array_layers = 6;
+    scene_color->extent =
+        ResourceExtentPlan{
+            .kind = ResourceExtentKind::fixed,
+            .width = 256,
+            .height = 256,
+        };
+
+    const auto plan =
+        compile(
+            types, graph, topology(false),
+            bindings);
+    const auto &physical =
+        physicalResource(plan, "scene_color");
+    REQUIRE(
+        physical.dimension ==
+        ImageResourceDimension::cube);
+    REQUIRE(physical.array_layers == 6);
+    REQUIRE(
+        physical.view_layout ==
+        VulkanResourceViewLayout::shared_2d);
+    const auto encoded =
+        vulkanTargetPlanToJson(plan);
+    const auto encoded_resource =
+        std::find_if(
+            encoded.at("resources").begin(),
+            encoded.at("resources").end(),
+            [](const auto &resource) {
+                return resource.at(
+                           "logical_resource") ==
+                       "scene_color";
+            });
+    REQUIRE(
+        encoded_resource !=
+        encoded.at("resources").end());
+    REQUIRE(
+        encoded_resource->at("dimension") ==
+        "cube");
+
+    auto invalid_layers = bindings;
+    std::find_if(
+        invalid_layers.begin(),
+        invalid_layers.end(),
+        [](const auto &binding) {
+            return binding.resource ==
+                   "scene_color";
+        })->array_layers = 5;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                invalid_layers);
+        },
+        "exactly six array layers");
+
+    auto invalid_extent = bindings;
+    std::find_if(
+        invalid_extent.begin(),
+        invalid_extent.end(),
+        [](const auto &binding) {
+            return binding.resource ==
+                   "scene_color";
+        })->extent =
+        ResourceExtentPlan{
+            .kind = ResourceExtentKind::fixed,
+            .width = 256,
+            .height = 128,
+        };
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                invalid_extent);
+        },
+        "square fixed extent");
+}
+
 TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies and resolve semantics",
           "[target-render-planning][physical-fragment][attachment]") {
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -2874,6 +2971,37 @@ TEST_CASE("non-overlapping materialized resource lifetimes become legal alias gr
     REQUIRE(plan.alias_groups.size() == 1);
     REQUIRE(plan.alias_groups.front().resources ==
             std::vector<std::string>{"temporary_a", "temporary_b"});
+
+    auto mixed_dimensions =
+        bindingsFor(types, graph);
+    for (auto &binding : mixed_dimensions) {
+        binding.array_layers = 6;
+        binding.extent =
+            ResourceExtentPlan{
+                .kind =
+                    ResourceExtentKind::fixed,
+                .width = 128,
+                .height = 128,
+            };
+        if (binding.resource == "temporary_a") {
+            binding.dimension =
+                ImageResourceDimension::cube;
+        }
+    }
+    const auto mixed_plan =
+        compile(types, graph, topology(false),
+                std::move(mixed_dimensions));
+    REQUIRE(std::find(
+                mixed_plan.opportunities
+                    .alias_candidates.begin(),
+                mixed_plan.opportunities
+                    .alias_candidates.end(),
+                PlanningNamePair{
+                    "temporary_a",
+                    "temporary_b"}) ==
+            mixed_plan.opportunities
+                .alias_candidates.end());
+    REQUIRE(mixed_plan.alias_groups.empty());
 }
 
 TEST_CASE("target lowering resolves sample counts on physical resources and scopes",

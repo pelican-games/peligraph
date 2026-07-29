@@ -20,6 +20,12 @@ class RenderTargetImageViewResolver {
         ImageSubresourceRange subresource,
         bool array_view, bool history_read,
         std::uint32_t frame_index) const;
+    vk::ImageView getImageSubresourceViewForFrame(
+        GlobalRenderTargetId id,
+        ImageSubresourceRange subresource,
+        ImageSubresourceViewDimension dimension,
+        bool history_read,
+        std::uint32_t frame_index) const;
     vk::ImageView getImageLayerViewForFrame(
         GlobalRenderTargetId id, std::uint32_t array_layer,
         bool history_read, std::uint32_t frame_index) const;
@@ -29,6 +35,8 @@ class RenderTargetImageViewResolver {
     std::uint32_t arrayLayers(
         GlobalRenderTargetId id) const;
     std::uint32_t mipLevels(
+        GlobalRenderTargetId id) const;
+    ImageResourceDimension dimension(
         GlobalRenderTargetId id) const;
 };
 
