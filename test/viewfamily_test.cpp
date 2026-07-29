@@ -1,12 +1,17 @@
 #include "../src/core/renderer/viewfamily.hpp"
+#include "../src/core/renderer/directionalshadowcascade.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
+
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace Pelican {
 namespace {
@@ -140,6 +145,116 @@ TEST_CASE(
             missing_main, xr_policy),
         Catch::Matchers::ContainsSubstring(
             "do not provide family '$main'"));
+}
+
+TEST_CASE(
+    "directional cascade provider creates stable camera-relative family views",
+    "[view-family][shadow][cascade]") {
+    RenderViewFamily main{
+        .family_id =
+            std::string{
+                mainRenderViewFamilyId},
+        .views = {
+            RenderViewParameters{
+                .view =
+                    glm::lookAt(
+                        glm::vec3{0.0f, 1.0f, 5.0f},
+                        glm::vec3{0.0f, 1.0f, 0.0f},
+                        glm::vec3{0.0f, 1.0f, 0.0f}),
+                .projection =
+                    glm::perspectiveRH_ZO(
+                        glm::radians(70.0f),
+                        16.0f / 9.0f,
+                        0.1f, 200.0f),
+                .camera_position =
+                    {0.0f, 1.0f, 5.0f},
+                .view_id = "camera",
+            },
+        },
+    };
+    const auto cascades =
+        buildDirectionalShadowCascadeFamily(
+            main,
+            {-0.5f, -1.0f, -0.25f},
+            {2048u, 2048u},
+            DirectionalShadowCascadeSettings{
+                .cascade_count = 3,
+                .max_distance = 40.0f,
+                .split_lambda = 0.7f,
+                .stabilize = true,
+            });
+
+    REQUIRE(
+        cascades.family_id ==
+        "$shadow/directional");
+    REQUIRE(cascades.views.size() == 3);
+    float prior_far = 0.0f;
+    for (std::uint32_t index = 0;
+         index < cascades.views.size();
+         ++index) {
+        const auto &cascade =
+            cascades.views[index];
+        INFO("cascade " << index);
+        REQUIRE(
+            cascade.view_id ==
+            "$cascade/" +
+                std::to_string(index));
+        REQUIRE(cascade.depth_range);
+        REQUIRE(
+            cascade.depth_range
+                    ->near_distance <
+            cascade.depth_range
+                    ->far_distance);
+        if (index != 0) {
+            REQUIRE(
+                cascade.depth_range
+                    ->near_distance ==
+                Catch::Approx(prior_far));
+        }
+        prior_far =
+            cascade.depth_range
+                ->far_distance;
+        for (glm::length_t column = 0;
+             column < 4; ++column) {
+            for (glm::length_t row = 0;
+                 row < 4; ++row) {
+                REQUIRE(std::isfinite(
+                    cascade
+                        .view[column][row]));
+                REQUIRE(std::isfinite(
+                    cascade
+                        .projection[column][row]));
+            }
+        }
+    }
+    REQUIRE(
+        prior_far ==
+        Catch::Approx(40.0f)
+            .margin(0.01f));
+
+    auto stereo = main;
+    stereo.views.push_back(
+        stereo.views.front());
+    stereo.views[0].view_id = "left";
+    stereo.views[1].view_id = "right";
+    stereo.views[0].view =
+        glm::translate(
+            stereo.views[0].view,
+            glm::vec3{0.03f, 0.0f, 0.0f});
+    stereo.views[1].view =
+        glm::translate(
+            stereo.views[1].view,
+            glm::vec3{-0.03f, 0.0f, 0.0f});
+    REQUIRE(
+        buildDirectionalShadowCascadeFamily(
+            stereo,
+            {-0.5f, -1.0f, -0.25f},
+            {1024u, 1024u},
+            DirectionalShadowCascadeSettings{
+                .cascade_count = 3,
+                .max_distance = 40.0f,
+            })
+            .views.size() == 3);
 }
 
 TEST_CASE(

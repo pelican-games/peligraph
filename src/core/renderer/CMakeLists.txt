@@ -11,6 +11,7 @@ target_sources(pelican_core PRIVATE
     polygoninstancecontainer.cpp
     projectionjitter.cpp
     viewfamily.cpp
+    directionalshadowcascade.cpp
     materialrender.cpp
     uicontainer.cpp
     uirenderer.cpp

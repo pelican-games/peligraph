@@ -24,6 +24,7 @@
 #include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/directionalshadowcascade.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -62,6 +63,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <variant>
 
 namespace Pelican {
 
@@ -199,8 +201,233 @@ requireRenderViewFamilyExecutionState(
     return *found;
 }
 
+const CompiledRenderFeatureParameter *
+findFeatureParameter(
+    const CompiledRenderFeatureInstance &feature,
+    std::string_view name) {
+    const auto found = std::find_if(
+        feature.parameters.begin(),
+        feature.parameters.end(),
+        [name](
+            const CompiledRenderFeatureParameter
+                &parameter) {
+            return parameter.name == name;
+        });
+    return found != feature.parameters.end()
+               ? &*found
+               : nullptr;
+}
+
+std::uint32_t featureUnsigned(
+    const CompiledRenderFeatureInstance &feature,
+    std::string_view name,
+    std::uint32_t fallback) {
+    const auto *parameter =
+        findFeatureParameter(feature, name);
+    if (parameter == nullptr) return fallback;
+    if (const auto *value =
+            std::get_if<std::uint64_t>(
+                &parameter->value)) {
+        if (*value <=
+            std::numeric_limits<
+                std::uint32_t>::max()) {
+            return static_cast<
+                std::uint32_t>(*value);
+        }
+    }
+    if (const auto *value =
+            std::get_if<std::int64_t>(
+                &parameter->value)) {
+        if (*value >= 0 &&
+            static_cast<std::uint64_t>(
+                *value) <=
+                std::numeric_limits<
+                    std::uint32_t>::max()) {
+            return static_cast<
+                std::uint32_t>(*value);
+        }
+    }
+    throw std::runtime_error(
+        "render feature '" + feature.feature +
+        "' parameter '" + std::string{name} +
+        "' is not an unsigned 32-bit integer");
+}
+
+float featureFloat(
+    const CompiledRenderFeatureInstance &feature,
+    std::string_view name,
+    float fallback) {
+    const auto *parameter =
+        findFeatureParameter(feature, name);
+    if (parameter == nullptr) return fallback;
+    double value = 0.0;
+    if (const auto *floating =
+            std::get_if<double>(
+                &parameter->value)) {
+        value = *floating;
+    } else if (const auto *integer =
+                   std::get_if<std::int64_t>(
+                       &parameter->value)) {
+        value = static_cast<double>(*integer);
+    } else if (const auto *integer =
+                   std::get_if<std::uint64_t>(
+                       &parameter->value)) {
+        value = static_cast<double>(*integer);
+    } else {
+        throw std::runtime_error(
+            "render feature '" + feature.feature +
+            "' parameter '" + std::string{name} +
+            "' is not numeric");
+    }
+    if (!std::isfinite(value) ||
+        value <
+            -static_cast<double>(
+                std::numeric_limits<float>::max()) ||
+        value >
+            static_cast<double>(
+                std::numeric_limits<float>::max())) {
+        throw std::runtime_error(
+            "render feature '" + feature.feature +
+            "' parameter '" + std::string{name} +
+            "' is outside the finite float range");
+    }
+    return static_cast<float>(value);
+}
+
+bool featureBool(
+    const CompiledRenderFeatureInstance &feature,
+    std::string_view name,
+    bool fallback) {
+    const auto *parameter =
+        findFeatureParameter(feature, name);
+    if (parameter == nullptr) return fallback;
+    if (const auto *value =
+            std::get_if<bool>(
+                &parameter->value)) {
+        return *value;
+    }
+    throw std::runtime_error(
+        "render feature '" + feature.feature +
+        "' parameter '" + std::string{name} +
+        "' is not boolean");
+}
+
+struct DirectionalShadowRuntimeContract {
+    DirectionalShadowCascadeSettings settings;
+    std::optional<RenderTargetMetadata>
+        target;
+};
+
+DirectionalShadowRuntimeContract
+directionalShadowRuntimeContract(
+    const CompiledFrameGraphExecution
+        &frame_graph,
+    const RenderTargetContainer &targets) {
+    DirectionalShadowRuntimeContract result;
+    if (!frame_graph.render_pipeline) {
+        return result;
+    }
+    const auto contract = std::find_if(
+        frame_graph.render_pipeline
+            ->surface_resource_contracts
+            .begin(),
+        frame_graph.render_pipeline
+            ->surface_resource_contracts
+            .end(),
+        [](const CompiledSurfaceResourceContract
+               &candidate) {
+            return candidate.contract.name ==
+                   directionalShadowInputContractName;
+        });
+    if (contract ==
+        frame_graph.render_pipeline
+            ->surface_resource_contracts
+            .end()) {
+        return result;
+    }
+    const auto binding =
+        frame_graph.render_target_bindings.find(
+            contract->resource);
+    if (binding ==
+            frame_graph.render_target_bindings
+                .end() ||
+        !isConcreteRenderTarget(
+            binding->second)) {
+        throw std::runtime_error(
+            "directional shadow contract is not bound to a concrete "
+            "render target");
+    }
+    result.target =
+        targets.getMetadata(
+            binding->second);
+
+    const auto feature = std::find_if(
+        frame_graph.render_pipeline
+            ->feature_instances.begin(),
+        frame_graph.render_pipeline
+            ->feature_instances.end(),
+        [&](const CompiledRenderFeatureInstance
+                &candidate) {
+            return candidate.feature ==
+                   contract->provider_feature;
+        });
+    if (feature ==
+        frame_graph.render_pipeline
+            ->feature_instances.end()) {
+        return result;
+    }
+    result.settings.cascade_count =
+        featureUnsigned(
+            *feature, "cascade_count", 1);
+    result.settings.max_distance =
+        featureFloat(
+            *feature, "max_distance",
+            result.settings.max_distance);
+    result.settings.split_lambda =
+        featureFloat(
+            *feature, "split_lambda",
+            result.settings.split_lambda);
+    result.settings.stabilize =
+        featureBool(
+            *feature, "stabilize",
+            result.settings.stabilize);
+    return result;
+}
+
 RenderViewFamily directionalShadowViewFamily(
-    const LightContainer &lights) {
+    const LightContainer &lights,
+    const RenderViewFamily &main_family,
+    const DirectionalShadowRuntimeContract
+        &contract) {
+    if (contract.settings.cascade_count >
+        maximumDirectionalShadowCascades) {
+        throw std::runtime_error(
+            "directional shadow cascade_count exceeds the runtime ABI");
+    }
+    if (contract.target &&
+        contract.target->array_layers <
+            contract.settings
+                .cascade_count) {
+        throw std::runtime_error(
+            "directional shadow target has fewer array layers than the "
+            "configured cascade_count");
+    }
+    if (contract.settings.cascade_count >
+        1) {
+        if (!contract.target) {
+            throw std::runtime_error(
+                "cascaded directional shadows require a typed shadow "
+                "target contract");
+        }
+        return buildDirectionalShadowCascadeFamily(
+            main_family,
+            lights.directionalShadowDirection(),
+            {
+                contract.target->extent.width,
+                contract.target->extent.height,
+            },
+            contract.settings);
+    }
     const auto source =
         lights.directionalShadowView();
     return RenderViewFamily{
@@ -224,7 +451,8 @@ RenderViewFamily directionalShadowViewFamily(
 RenderViewFamilies resolveFrameViewFamilies(
     const RenderViewFamilies &authored,
     const CompiledFrameGraphExecution &frame_graph,
-    const LightContainer &lights) {
+    const LightContainer &lights,
+    const RenderTargetContainer &targets) {
     RenderViewFamilies result;
     result.families.push_back(
         authored.require(
@@ -246,9 +474,15 @@ RenderViewFamilies resolveFrameViewFamilies(
         }
         if (node.view_family ==
             directionalShadowRenderViewFamilyId) {
+            const auto contract =
+                directionalShadowRuntimeContract(
+                    frame_graph, targets);
             result.families.push_back(
                 directionalShadowViewFamily(
-                    lights));
+                    lights,
+                    result.require(
+                        mainRenderViewFamilyId),
+                    contract));
             continue;
         }
         throw std::runtime_error(
@@ -529,6 +763,56 @@ struct FrameResolutionExtents {
     vk::Extent2D render;
     vk::Extent2D output;
 };
+
+std::optional<vk::Extent2D>
+resolveViewFamilyRasterExtent(
+    std::string_view family_id,
+    const CompiledRenderingPass
+        &rendering_pass,
+    const CompiledFrameGraphExecution
+        &frame_graph,
+    const RenderTargetContainer
+        &render_targets) {
+    std::optional<vk::Extent2D> result;
+    const auto observe =
+        [&](GlobalRenderTargetId target) {
+            if (!isConcreteRenderTarget(
+                    target)) {
+                return;
+            }
+            const auto extent =
+                render_targets
+                    .getMetadata(target)
+                    .extent;
+            if (!result) {
+                result = extent;
+            } else if (*result != extent) {
+                throw std::runtime_error(
+                    "render view family '" +
+                    std::string{family_id} +
+                    "' spans multiple raster extents; pass-specific "
+                    "family resolution is required");
+            }
+        };
+    for (const auto &node :
+         frame_graph.nodes) {
+        if (node.view_family != family_id ||
+            node.kind !=
+                FramePlanNodeKind::render) {
+            continue;
+        }
+        const auto &pass =
+            rendering_pass.passes.at(
+                node.index);
+        for (const auto target :
+             pass.definition.output_color) {
+            observe(target);
+        }
+        observe(
+            pass.definition.output_depth);
+    }
+    return result;
+}
 
 FrameResolutionUniformData frameResolutionData(
     vk::Extent2D render_extent,
@@ -3380,7 +3664,8 @@ void Renderer::renderLogicalFrame(
     const auto resolved_view_families =
         resolveFrameViewFamilies(
             view_families, frame_graph,
-            modules.light_container);
+            modules.light_container,
+            modules.render_target_container);
     validateRenderViewFamilies(
         resolved_view_families,
         graph_variant_policy);
@@ -3588,6 +3873,26 @@ void Renderer::renderLogicalFrame(
             for (const auto &family :
                  resolved_view_families
                      .families) {
+                auto family_resolution_extents =
+                    resolution_extents;
+                if (family.family_id !=
+                    mainRenderViewFamilyId) {
+                    if (const auto raster_extent =
+                            resolveViewFamilyRasterExtent(
+                                family.family_id,
+                                rendering_pass,
+                                frame_graph,
+                                modules
+                                    .render_target_container)) {
+                        family_resolution_extents =
+                            FrameResolutionExtents{
+                                .render =
+                                    *raster_extent,
+                                .output =
+                                    *raster_extent,
+                            };
+                    }
+                }
                 auto &history =
                     family.family_id ==
                             mainRenderViewFamilyId
@@ -3611,9 +3916,9 @@ void Renderer::renderLogicalFrame(
                                 graph_variant_policy,
                                 engine_time
                                     .frameIndex(),
-                                resolution_extents
+                                family_resolution_extents
                                     .render.width,
-                                resolution_extents
+                                family_resolution_extents
                                     .render.height,
                                 temporal_reset_requested),
                         .sequential_slot_base =
@@ -3641,9 +3946,9 @@ void Renderer::renderLogicalFrame(
                             updateFrameResources(
                                 modules,
                                 engine_time,
-                                resolution_extents
+                                family_resolution_extents
                                     .render,
-                                resolution_extents
+                                family_resolution_extents
                                     .output,
                                 state.snapshots
                                     .at(
@@ -3653,9 +3958,9 @@ void Renderer::renderLogicalFrame(
                     state.frame_resolutions
                         .push_back(
                             frameResolutionData(
-                                resolution_extents
+                                family_resolution_extents
                                     .render,
-                                resolution_extents
+                                family_resolution_extents
                                     .output));
                 }
                 slot_base +=

@@ -17,6 +17,15 @@ namespace Pelican {
 
 inline constexpr std::string_view monoRenderViewId = "$mono";
 
+struct RenderViewDepthRange {
+    float near_distance = 0.0f;
+    float far_distance = 0.0f;
+
+    bool operator==(
+        const RenderViewDepthRange &) const =
+        default;
+};
+
 // A provider-owned, non-jittered view. view_id is stable across frames and is
 // the identity used to select temporal state; vector position is only the
 // execution order for the current frame.
@@ -28,6 +37,11 @@ struct RenderViewParameters {
     // default so VRM head geometry remains visible.
     bool first_person_view = false;
     std::string view_id;
+    // Optional main-camera view-space selection range. Directional shadow
+    // cascades use it to connect provider matrices to lighting selection;
+    // unrelated view families leave it empty.
+    std::optional<RenderViewDepthRange>
+        depth_range;
 };
 
 // One provider-owned family. RenderViewFamilies supplies the set consumed by

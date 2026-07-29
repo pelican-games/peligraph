@@ -2,15 +2,55 @@
   "schema": "pelican.render_feature",
   "version": 1,
   "name": "shadow_directional",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "scalars": [
+      {
+        "name": "cascade_count",
+        "type": "int",
+        "range": [1, 8],
+        "default": 1
+      },
+      {
+        "name": "resolution",
+        "type": "int",
+        "range": [64, 8192],
+        "default": 2048,
+        "shader_define": false
+      },
+      {
+        "name": "max_distance",
+        "type": "float",
+        "range": [1.0, 10000.0],
+        "default": 100.0,
+        "shader_define": false
+      },
+      {
+        "name": "split_lambda",
+        "type": "float",
+        "range": [0.0, 1.0],
+        "default": 0.65,
+        "shader_define": false
+      },
+      {
+        "name": "stabilize",
+        "type": "bool",
+        "default": true,
+        "shader_define": false
+      }
+    ]
+  },
   "render_targets": [
     {
       "name": "shadow_map",
       "extent_scale": 1.0,
-      "width": 2048,
-      "height": 2048,
+      "width": "$resolution",
+      "height": "$resolution",
       "format": "D32_SFLOAT",
       "format_class": "data",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
+      "array_layers": "$cascade_count"
     }
   ],
   "passes": [

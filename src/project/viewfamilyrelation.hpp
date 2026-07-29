@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -17,6 +18,13 @@ inline constexpr std::string_view
         "$cascade/0";
 inline constexpr std::size_t
     maximumRenderViewFamilyIdBytes = 255;
+
+inline std::string
+directionalShadowCascadeRenderViewId(
+    std::uint32_t cascade_index) {
+    return "$cascade/" +
+           std::to_string(cascade_index);
+}
 
 inline void validateRenderViewFamilyId(
     std::string_view family_id,

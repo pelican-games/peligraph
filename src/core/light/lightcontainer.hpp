@@ -51,6 +51,7 @@ namespace Pelican
 		bool setSpotLightDirection(const std::string& name, glm::vec3 direction);
 
 		DirectionalShadowView directionalShadowView() const;
+		glm::vec3 directionalShadowDirection() const;
 		glm::mat4 shadowViewProjection() const;
 		const BufferWrapper& lightBuffer() const { return m_LightUBO; }
 		PackedLightInventoryV2 lightInventoryV2(

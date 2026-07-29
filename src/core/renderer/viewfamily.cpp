@@ -1,6 +1,7 @@
 #include "viewfamily.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -37,6 +38,25 @@ std::set<std::string, std::less<>> validatedViewIds(
             throw std::runtime_error(
                 "render view family '" + family.family_id +
                 "' contains duplicate view_id '" + view.view_id + "'");
+        }
+        if (view.depth_range &&
+            (!std::isfinite(
+                 view.depth_range
+                     ->near_distance) ||
+             !std::isfinite(
+                 view.depth_range
+                     ->far_distance) ||
+             view.depth_range
+                     ->near_distance < 0.0f ||
+             view.depth_range
+                     ->far_distance <=
+                 view.depth_range
+                     ->near_distance)) {
+            throw std::runtime_error(
+                "render view family '" +
+                family.family_id +
+                "' view '" + view.view_id +
+                "' has an invalid depth_range");
         }
     }
     return ids;

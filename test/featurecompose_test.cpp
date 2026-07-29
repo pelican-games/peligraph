@@ -258,7 +258,7 @@ TEST_CASE(
             .at("surface_resource_contracts")
             .front();
     REQUIRE(metadata.at("producer") == "shadow_depth");
-    REQUIRE(metadata.at("view_policy") == "shared_2d");
+    REQUIRE(metadata.at("view_policy") == "family_array");
     REQUIRE(metadata.at("fallback") == "fully_lit");
     REQUIRE(metadata.at("fallback_reason") ==
             "provider_feature_absent");
@@ -919,7 +919,10 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
         });
 
     REQUIRE(result.feature_names == std::vector<std::string>{"shadow_directional"});
-    REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_FEATURE_SHADOW"});
+    REQUIRE(result.shader_defines ==
+            std::vector<std::string>{
+                "PELICAN_FEATURE_SHADOW",
+                "PELICAN_FEATURE_SHADOW_DIRECTIONAL_CASCADE_COUNT=1"});
     REQUIRE(passNames(result.config) ==
             std::vector<std::string>{
                 "shadow_depth", "gbuffer_pass",
@@ -929,6 +932,11 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
     REQUIRE(shadow_map.at("name").get<std::string>() == "shadow_map");
     REQUIRE(shadow_map.at("width").get<int>() == 2048);
     REQUIRE(shadow_map.at("height").get<int>() == 2048);
+    REQUIRE(shadow_map.at("array_layers").get<int>() == 1);
+    REQUIRE(
+        result.feature_instances.at(0)
+            .at("parameters")
+            .at("cascade_count") == 1);
 
     const auto &shadow_pass = passByName(result.config, "shadow_depth");
     REQUIRE(shadow_pass.at("output").at("depth").get<std::string>() == "shadow_map");
@@ -950,6 +958,47 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
     REQUIRE(contract.at("material_consumers").empty());
     REQUIRE(contract.at("fullscreen_consumers") ==
             nlohmann::json::array({"lighting_pass"}));
+
+    auto cascaded_config = config;
+    cascaded_config["features"] =
+        nlohmann::json::array({
+            {
+                {"ref",
+                 "engine://features/shadow_directional.json"},
+                {"parameters",
+                 {
+                     {"cascade_count", 3},
+                     {"resolution", 1024},
+                     {"max_distance", 60.0},
+                     {"split_lambda", 0.75},
+                     {"stabilize", false},
+                 }},
+            },
+        });
+    const auto cascaded =
+        composeRenderFeatureConfig(
+            cascaded_config,
+            RenderFeatureComposeDependencies{
+                loadEngineFeature,
+                true,
+            });
+    const auto &cascaded_target =
+        cascaded.config.at(
+            "render_targets").back();
+    REQUIRE(
+        cascaded_target.at("width") ==
+        1024);
+    REQUIRE(
+        cascaded_target.at("height") ==
+        1024);
+    REQUIRE(
+        cascaded_target.at("array_layers") ==
+        3);
+    REQUIRE(
+        cascaded.shader_defines ==
+        std::vector<std::string>{
+            "PELICAN_FEATURE_SHADOW",
+            "PELICAN_FEATURE_SHADOW_DIRECTIONAL_CASCADE_COUNT=3"});
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {
@@ -1325,14 +1374,16 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
         "scalars":[
           {"name":"alpha","type":"float","range":[0.0,1.0],"default":0.1},
           {"name":"iterations","type":"int","range":[1,16],"default":4},
-          {"name":"enabled","type":"bool","default":true}
+          {"name":"enabled","type":"bool","default":true},
+          {"name":"physical_only","type":"int","range":[1,32],"default":9,
+           "shader_define":false}
         ]
       },
       "shader_defines":["PELICAN_FEATURE_TAA"],
       "render_targets":[{
         "name":"scalar_target",
         "extent_scale":"$alpha",
-        "width":"$iterations",
+        "width":"$physical_only",
         "height":"$iterations",
         "format":"R8_UNORM",
         "format_class":"data",
@@ -1359,11 +1410,12 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
     });
     REQUIRE(first.config.at("shader_defines") == first.shader_defines);
     REQUIRE(first.feature_instances.at(0).at("parameters") == nlohmann::json{
-        {"alpha", 0.1}, {"enabled", false}, {"iterations", 7}, {"source", "lit_color"}});
+        {"alpha", 0.1}, {"enabled", false}, {"iterations", 7},
+        {"physical_only", 9}, {"source", "lit_color"}});
     const auto &first_target =
         first.config.at("render_targets").back();
     REQUIRE(first_target.at("extent_scale") == 0.1);
-    REQUIRE(first_target.at("width") == 7);
+    REQUIRE(first_target.at("width") == 9);
     REQUIRE(first_target.at("height") == 7);
     REQUIRE(first_target.at("array_layers") == 7);
     REQUIRE(first_target.at("history") == false);

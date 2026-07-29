@@ -118,7 +118,7 @@ namespace Pelican
 
 	DirectionalShadowView LightContainer::directionalShadowView() const
 	{
-		const auto direction = safeLightDirection(m_DirectionalLights);
+		const auto direction = directionalShadowDirection();
 		const glm::vec3 center{0.0f, 0.0f, 0.0f};
 		const glm::vec3 eye = center - direction * 10.0f;
 		const glm::vec3 world_up =
@@ -132,6 +132,11 @@ namespace Pelican
 			.projection = projection,
 			.camera_position = eye,
 		};
+	}
+
+	glm::vec3 LightContainer::directionalShadowDirection() const
+	{
+		return safeLightDirection(m_DirectionalLights);
 	}
 
 	glm::mat4 LightContainer::shadowViewProjection() const

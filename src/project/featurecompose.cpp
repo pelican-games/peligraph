@@ -687,6 +687,7 @@ struct ScalarParameterDeclaration {
     ScalarParameterType type = ScalarParameterType::floating;
     nlohmann::json default_value;
     std::optional<std::pair<nlohmann::json, nlohmann::json>> range;
+    bool shader_define = true;
 };
 
 struct FeatureParameterDeclarations {
@@ -896,7 +897,8 @@ FeatureParameterDeclarations parseFeatureParameters(
         }
         for (auto field = scalar.begin(); field != scalar.end(); ++field) {
             if (field.key() != "name" && field.key() != "type" &&
-                field.key() != "range" && field.key() != "default") {
+                field.key() != "range" && field.key() != "default" &&
+                field.key() != "shader_define") {
                 throw std::runtime_error("render feature '" + feature_name +
                                          "' scalar parameter has unknown field: " + field.key());
             }
@@ -923,6 +925,12 @@ FeatureParameterDeclarations parseFeatureParameters(
         }
         if (!scalar.contains("default")) {
             throwParameterError(feature_name, name, "declaration requires default");
+        }
+        if (scalar.contains("shader_define") &&
+            !scalar.at("shader_define").is_boolean()) {
+            throwParameterError(
+                feature_name, name,
+                "shader_define must have type bool");
         }
 
         std::optional<std::pair<nlohmann::json, nlohmann::json>> range;
@@ -959,7 +967,11 @@ FeatureParameterDeclarations parseFeatureParameters(
             }
         }
 
-        ScalarParameterDeclaration declaration{name, type, scalar.at("default"), std::move(range)};
+        ScalarParameterDeclaration declaration{
+            name, type, scalar.at("default"),
+            std::move(range),
+            scalar.value(
+                "shader_define", true)};
         validateScalarValue(declaration.default_value, declaration, feature_name, "default");
         declarations.scalars.push_back(std::move(declaration));
     }
@@ -1166,9 +1178,11 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         resolved_parameters[declaration.name] = value;
         scalar_bindings.emplace(
             declaration.name, value);
-        scalar_defines.push_back(feature_define_prefix +
-                                 upperIdentifier(declaration.name, feature_name) + "=" +
-                                 scalarDefineValue(value, declaration, feature_name));
+        if (declaration.shader_define) {
+            scalar_defines.push_back(feature_define_prefix +
+                                     upperIdentifier(declaration.name, feature_name) + "=" +
+                                     scalarDefineValue(value, declaration, feature_name));
+        }
     }
 
     auto feature = authored_feature;
