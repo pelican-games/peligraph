@@ -17,6 +17,9 @@ execution 全体の正は
 WP221ではflat/preview/XRの既存compile入口を一つの内部`RenderCompilerProgram`へ抽出し、
 共通plannerを使う標準経路とVulkan-only経路が、同じ検証済みbackend physical packageへ
 合流できるruntime sliceを追加した。previewは同じinvocation内のdata-only artifactである。
+WP223ではruntime view入力を`RenderViewFamily`へ統一し、Cameraのmono viewとOpenXRの
+stereo viewを同じprovider境界から渡す。projection jitterはfamily modifierとして一度だけ
+sampleし、view snapshot履歴は`(graph variant, family_id, view_id)`相当の安定identityで保持する。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -515,6 +518,43 @@ pattern が過剰な usage bit を常時要求しない。通常 project は pat
 標準 pattern をコピーするか、型付き field pin で一部だけ固定する。曖昧な recursive deep
 merge は導入しない。最終的に `vk::Format` や usage を完全固定したい場合は physical plan
 override へ降りる。
+
+### 3.6 ViewFamily provider と projection modifier
+
+viewはCamera、OpenXR、shadow、reflectionを個別にRendererへ直結せず、非jitterの
+`RenderViewFamily`として供給する。
+
+```text
+Camera / OpenXR / shadow policy / user provider
+                         │
+                         ▼
+ RenderViewFamily(family_id, [RenderView(view_id, V, P, position)])
+                         │
+                         ├── ProjectionModifier[] (TAA jitter等)
+                         ▼
+             RenderFrameSnapshot[view_id]
+                         │
+                         ▼
+       sequential / multiview physical execution
+```
+
+契約は次のとおり。
+
+- 通常のscene graphが参照する既定family IDは`$main`。
+- `view_id`はframe間で安定し、vector添字はそのframeの実行順にすぎない。
+- `GraphVariantViewFamily`と`view_count`はmono/stereo/cardinalityを検証するが、
+  provider identityやVulkanの実行方式を表さない。
+- projection jitterはview providerの行列を書き換えず、family projection modifierとして
+  render extentに対して一度sampleし、同じfamilyのviewへ適用する。
+- temporal matrix履歴は`family_id + view_id`で引く。membership変更はfamily topology reset。
+- 現行history imageは実行添字所有なので、viewの並び替えだけでもresource historyをresetする。
+  将来physical planがview identityからlayerを割り当てるまでは、この安全側制約を維持する。
+- shadow、cube capture、previewの標準providerはjitter/historyを既定で要求しない。
+  passがどのfamilyを読むかはlogical relationで表し、CameraやVulkan backendの分岐にしない。
+
+WP223時点のruntime graph入力は一つの`$main` familyである。次の縦切りはdirectional
+shadowをsecondary familyとして生成し、pass-family relationとCSMの安定cascade IDを
+compilerへ追加する。これがG6bの残りであり、単にLightUBOの行列配列へ増設しない。
 
 ## 4. scene、material、light の contract
 

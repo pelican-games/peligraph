@@ -200,7 +200,8 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L47) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L1238) / [`render()`](../../src/core/vkcore/renderer.cpp#L1417) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
-| `ILogicalFrameTarget` / `RenderViewParameters` / `RenderGraphVariant` | abstract interface / values | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L19) | flat=`FlatLogicalFrameTarget`(renderer.cpp 内部)、XR=`XrCompositionTarget` | logical frame の描画先と view パラメータ、flat/`#xr` の graph 切替 |
+| `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替 |
+| `RenderViewParameters` / `RenderViewFamily` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`previewgraph.hpp#L15`](../../src/core/renderingpass/previewgraph.hpp#L15) / [`#L27`](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |
 | `PreviewExecutor` / `PreviewCaptureRequest` / `PreviewCaptureResult` | 隔離実行 | [`previewexecutor.hpp#L61`](../../src/core/vkcore/previewexecutor.hpp#L61) / [`#L25`](../../src/core/vkcore/previewexecutor.hpp#L25) / [`#L36`](../../src/core/vkcore/previewexecutor.hpp#L36) | [`previewexecutor.cpp`](../../src/core/vkcore/previewexecutor.cpp) | request-local な資源で preview を描いて返す(現状は CPU 模式ラスタ) |
 | `previewStateInventory()` | 診断 | [同 #L59](../../src/core/vkcore/previewexecutor.hpp#L59) | 同左 | WP172 の所有権インベントリ。**並び順も診断契約の一部** |
@@ -276,7 +277,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `XrActionRuntime` | runtime | [`openxraction.hpp`](../../src/core/openxr/openxraction.hpp#L40) | XR action/pose の sync と input backend への注入 |
 | `IXrCompositionTarget` / `XrCompositionTarget` | interface/impl | [`openxrcompositiontarget.hpp`](../../src/core/openxr/openxrcompositiontarget.hpp#L59) | XR swapchain を `ILogicalFrameTarget` として公開(impl は同 #L69) |
 | `XrMirrorSink` | optional sink | [`openxrmirrorsink.hpp`](../../src/core/openxr/openxrmirrorsink.hpp#L24) | window への zero-wait mirror(drop 可) |
-| `buildRenderViewParameters()` | free function | [`openxrviewspace.hpp`](../../src/core/openxr/openxrviewspace.hpp#L37) | 両 eye pose を active camera に anchor(WP131) |
+| `buildMainRenderViewFamily()` | free function | [`openxrviewspace.hpp`](../../src/core/openxr/openxrviewspace.hpp) | 両eye poseをactive cameraへanchorしstable ID付き`$main` familyを生成(WP131/WP223) |
 | `CompiledGraphVariantPolicy` | pure compiled value | [`graphvariantpolicy.hpp`](../../src/project/graphvariantpolicy.hpp) | flat / preview / `#xr` の feature decision、view execution、resource layout、terminal、mirror、suffix |
 
 ## 8.10 RPC、CLI、Studio

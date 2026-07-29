@@ -75,9 +75,10 @@ v1 の「2 回実行」を撤回。**`Renderer::render()` を logical frame と
 per-view execution に分離**する:
 
 ```
-renderLogicalFrame(frame_input, views[N]):
+renderLogicalFrame(frame_target, RenderViewFamily[N]):
   論理フレーム開始を一回(reload/deletion/animation/reset/target acquire)
   共有シーン状態を一回 freeze
+  family projection modifierを一回解決(jitterはXR policyで禁止)
   for each view:
     in-flight × view の上書き不能 FrameUBO slot を選択
     view 別 current/previous snapshot(view/proj/**camera_position** —
@@ -89,6 +90,8 @@ renderLogicalFrame(frame_input, views[N]):
 
 - **FrameUBO は `in_flight × view_count` slot**(dynamic offset か
   set 複数)— 単一 buffer 上書きの眼間汚染(レビュー §2)を封じる
+- family IDは`$main`、eye IDは`$xr/0` / `$xr/1`としてframe間で安定させる。
+  temporal matrixは添字でなくIDから引き、実行順変更時はhistory imageも安全にresetする
 - グラフの node 定義は無改造(view-aware 化は XR2b)。
   **view_count=1 の既存経路は golden byte 一致**が gate
 - この WP は OpenXR 非依存 — **実 Vulkan の synthetic stereo target**

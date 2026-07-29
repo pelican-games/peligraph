@@ -102,8 +102,8 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | C1 | B-layer material shadow reception | **✕** | `pelican_shadow()` が 1.0(G6a) |
-| C2 | cascaded shadow map | **✕** | public shadow contract と任意 view family が無い(G6a/G6b) |
-| C3 | point/spot shadow | **✕** | static cube/arrayは公開済み。shadow relation、任意view、light schemaが不足(G5/G6a/G6b) |
+| C2 | cascaded shadow map | **△** | stable ID付きruntime ViewFamily基盤はWP223で追加。public shadow relation、secondary family schedulingが不足(G6a/G6b) |
+| C3 | point/spot shadow | **✕** | static cube/arrayとruntime ViewFamily値は公開済み。shadow relation、secondary family scheduling、light schemaが不足(G5/G6a/G6b) |
 | C4 | PCSS / PCF | **✕** | shadow resource が未公開(G6a)。manual compare は可能なので comparison sampler 自体は必須条件ではない |
 | C5 | screen-space contact shadow | **△** | fullscreen depth ray march で構成可能。実 feature/golden 未作成 |
 | C6 | shadow cache / virtual shadow map | **✕** | mip/layer viewは解消。任意camera/view、GPU-driven execution、residencyが不足(G6b/G8/G9) |
@@ -216,7 +216,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a** | public shadow resource/light relationが無く`pelican_shadow()`がstub | material shadow、PCF/PCSS |
-| **G6b** | passへ任意のcamera/view familyを供給できない | CSM、point shadow、planar reflection |
+| **G6b（部分解消: WP223）** | flat/OpenXRをstable ID付きruntime ViewFamilyへ統合。pass-family relationとsecondary family schedulingは未実装 | CSM、point shadow、planar reflection |
 | **G7** | acceleration structure / RT shader/pipeline contractが無い | K1/K2 |
 | **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |

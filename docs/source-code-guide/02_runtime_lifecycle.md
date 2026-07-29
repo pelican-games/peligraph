@@ -283,7 +283,10 @@ const bool xr_frame_renderable =
 
 mirror表示の結果はsessionへ戻され、`xr_session->recordMirrorStatistics(presented, dropped, failures)`（[loop.cpp](../../src/core/appflow/loop.cpp#L522)）で presented / dropped / failures が記録されます。
 
-両eyeのposeはこのフレーム境界で取得したactive cameraへanchorされます（WP131、[`buildRenderViewParameters`](../../src/core/openxr/openxrviewspace.hpp)）。使う投影パラメータは [`Camera::getProjectionSpec()`](../../src/core/appflow/loop.cpp#L499) のznear/zfarです。
+両eyeのposeはこのフレーム境界で取得したactive cameraへanchorされ、stable eye ID付き
+`$main` familyになります（WP131/WP223、
+[`buildMainRenderViewFamily`](../../src/core/openxr/openxrviewspace.hpp)）。使う投影パラメータは
+[`Camera::getProjectionSpec()`](../../src/core/appflow/loop.cpp)のznear/zfarです。
 
 ### headless固定フレーム
 

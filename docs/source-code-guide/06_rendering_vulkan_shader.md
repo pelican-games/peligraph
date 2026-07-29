@@ -322,21 +322,22 @@ WP128 で描画の中心は **logical frame** になりました。フレーム�
 Renderer::render()                    … flat 用アダプタ(#L1417)
   -> selectGraphVariant(flat)
   -> FlatLogicalFrameTarget(RenderTarget を包む)
-  -> renderLogicalFrame(target, view_count=1, view_provider=active Camera)
+  -> Cameraから RenderViewFamily($main/$mono) を生成
+  -> renderLogicalFrame(target, view_family)
 
-Renderer::renderLogicalFrame(target, view_count, view_provider)   (#L1238)
+Renderer::renderLogicalFrame(target, view_family)   (#L1238)
   once: DeletionQueue::beginFrame
-  once: view 数変化 / timeSetRevision / camera discontinuityRevision の検知で temporal reset
+  once: family/view identity・実行順変化 / timeSetRevision /
+        camera discontinuityRevision の検知で temporal reset
   once: FrameResources.beginLogicalFrame(view_count)
   once: shader reload publication consume → fullscreen input rebind
   once: updateFrameLights(light_container)         … ライト setter の結果を GPU バッファへ
   target.beginLogicalFrame(view_count)
+  once: family-level projection modifierを適用して全viewのsnapshotを構築
   for each view:
     target.beginView(view_index)     … FrameRenderContext(in_flight_frame_index 付き)
     view 0 のみ: resize 処理 + instance_container.triggerUpdate()
                  (object/skin/morph/material override の GPU 状態を凍結)
-    view_provider(view_index, render_ctx) から view/projection/camera_position を取得
-    projection jitter をサンプルし RenderFrameSnapshot を構築
     FrameResources.selectView(in_flight, view)   … FrameUBO slot = in_flight*view_count+view
     executeRenderingPasses(…)                    … frame graph node 実行
     XR variant の view 0 では mirror 中間コピーを記録
@@ -345,19 +346,28 @@ Renderer::renderLogicalFrame(target, view_count, view_provider)   (#L1238)
   once: RT history flip、instance temporal history advance、snapshot commit
 ```
 
-view provider は **2 引数** です。実際の呼び出しは [renderer.cpp#L1339](../../src/core/vkcore/renderer.cpp#L1339) の `view_provider(view_index, render_ctx)` で、呼び出し側は [loop.cpp#L514-L517](../../src/core/appflow/loop.cpp#L514) のように第2引数の `const FrameRenderContext &` を無視することもできます。
+providerはtarget acquisitionより前にnon-jitteredな
+[`RenderViewFamily`](../../src/core/renderer/viewfamily.hpp)を完成させます。CameraとOpenXRは
+別providerですが、Rendererへ入った後のcardinality検証、projection modifier、
+temporal snapshot処理は共通です。`view_id`はframe間のidentityで、配列位置は当該frameの
+実行順にすぎません。
 
 logical frame には不変条件があり、破ると例外になります([renderer.cpp#L1322-L1337](../../src/core/vkcore/renderer.cpp#L1322))。
 
 | 文言 | 条件 |
 |---|---|
 | `Renderer logical frame requires at least one view` | `view_count == 0`(#L1241) |
-| `Renderer logical frame requires a view provider` | provider が空(#L1244) |
+| `render view family ... contains a view without a stable view_id` | provider がview identityを供給しない |
+| `render view family ... contains duplicate view_id` | 同じfamily内のidentityが重複 |
 | `Renderer logical-frame views must share one in-flight frame index` | 全 view で in-flight index が同一(#L1324) |
 | `Renderer logical-frame v1 requires equal per-view extents` | 全 view で extent が同一(#L1329) |
 | `Renderer logical-frame target format does not match the compiled flat graph` | target color format が compile 済み graph と一致(#L1335) |
 
-描画先の抽象は [`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L33)(`beginLogicalFrame` / `beginView` / `endView` / `endLogicalFrame`)で、view ごとのパラメータは [`RenderViewParameters`](../../src/core/vkcore/renderer.hpp#L24) が運びます。`first_person_view` フラグは XR eye で VRM firstPerson ジオメトリを切り替えるためのものです。実装は flat が `FlatLogicalFrameTarget`(renderer.cpp 内部、`RenderTarget` を包む)、XR が [`OpenXr::XrCompositionTarget`](../../src/core/openxr/openxrcompositiontarget.hpp#L69)(`IXrCompositionTarget`(同 #L59)が `ILogicalFrameTarget` を継承)です。
+描画先の抽象は [`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp)(`beginLogicalFrame` / `beginView` / `endView` / `endLogicalFrame`)です。view入力は
+[`RenderViewParameters` / `RenderViewFamily`](../../src/core/renderer/viewfamily.hpp)が運びます。
+`first_person_view`フラグはXR eyeでVRM firstPersonジオメトリを切り替えるためのものです。
+実装はflatが`FlatLogicalFrameTarget`(renderer.cpp内部、`RenderTarget`を包む)、XRが
+[`OpenXr::XrCompositionTarget`](../../src/core/openxr/openxrcompositiontarget.hpp)です。
 
 各 node の実行は [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L574) です。node ごとに以下をします。
 
@@ -878,7 +888,12 @@ temporal 系の中心型は [`projectionjitter.hpp`](../../src/core/renderer/pro
 >
 > **不変条件**: ジッタは projection にのみ入れ、view / world には入れないこと。CPU の `offset_px`・`jitter_ndc`・shader サンプリングの y 符号は同一。系列は `frame_index` の純関数(状態を持たない)で、ここを崩すと replay 不能になります。
 
-temporal history のリセットは `renderLogicalFrame()` 内で次のトリガから起きます: view 数変化([renderer.cpp#L1268](../../src/core/vkcore/renderer.cpp#L1268))、`set_time` 等による `timeSetRevision` の不連続と camera の `discontinuityRevision`([#L1285-L1292](../../src/core/vkcore/renderer.cpp#L1285))、extent 変化(resize、[#L1313-L1316](../../src/core/vkcore/renderer.cpp#L1313))、graph variant 切替([`selectGraphVariant()`](../../src/core/vkcore/renderer.cpp#L1192))。明示リセット用の公開 API は [`Renderer::resetTemporalHistory()`](../../src/core/vkcore/renderer.cpp#L1184) です。
+temporal history のリセットは `renderLogicalFrame()` 内で次のトリガから起きます:
+family/view membershipまたは実行順の変化、`set_time`等による`timeSetRevision`の不連続と
+cameraの`discontinuityRevision`、extent変化、graph variant切替。matrix履歴自体は
+`family_id + view_id`で引きますが、history imageは現状実行添字所有なので順序変更でも
+resource historyをresetします。明示リセット用の公開APIは
+[`Renderer::resetTemporalHistory()`](../../src/core/vkcore/renderer.cpp)です。
 
 > 🧩 **難所 — epoch ペアが reset 信号**([`buildRenderFrameSnapshot()`](../../src/core/renderer/projectionjitter.cpp#L84) / [`RenderFrameSnapshot::historyValid()`](../../src/core/renderer/projectionjitter.hpp#L47))
 >
@@ -911,10 +926,12 @@ OpenXR 統合(`src/core/openxr/`、独立 static lib `pelican_openxr`)は描画�
 | [`OpenXr::SessionRuntime`](../../src/core/openxr/openxrsession.hpp#L88) | session 状態機械。`waitFrame`/`beginFrame` と [`XrDisplayTiming`](../../src/core/openxr/openxrsession.hpp#L21)、[`XrLocatedViews`](../../src/core/openxr/openxrsession.hpp#L36) |
 | [`OpenXr::XrCompositionTarget`](../../src/core/openxr/openxrcompositiontarget.hpp#L69) | XR swapchain を `ILogicalFrameTarget` として公開(`IXrCompositionTarget` 同 #L59) |
 | [`OpenXr::XrMirrorSink`](../../src/core/openxr/openxrmirrorsink.hpp#L24) | window への mirror 表示。`try_render_begin()` による zero-wait で、間に合わなければ drop 可 |
-| [`buildRenderViewParameters()`](../../src/core/openxr/openxrviewspace.hpp#L37) | 両 eye の pose/fov を active camera に anchor した `RenderViewParameters` へ変換(WP131) |
+| [`buildMainRenderViewFamily()`](../../src/core/openxr/openxrviewspace.hpp) | 両eyeのpose/fovをactive cameraへanchorし、stable eye ID付き`$main` familyへ変換(WP131/WP223) |
 | [`CompiledGraphVariantPolicy`](../../src/project/graphvariantpolicy.hpp) | `#xr` graph variant の typed feature decision、exact 2-view sequential、history/jitter、mirror、suffix 契約。OpenXR session lifecycle は所有しない |
 
-フレームの流れは第 2 章の「windowed + XR session running」経路のとおりで、`renderLogicalFrame(target, 2 views)` に `XrCompositionTarget` を渡し、view 0 の描画後に mirror 用の中間コピーを記録して、logical frame の外で mirror sink が `tryPresent` します。
+フレームの流れは第2章の「windowed + XR session running」経路のとおりで、
+`renderLogicalFrame(target, $main stereo family)`に`XrCompositionTarget`を渡し、view 0の
+描画後にmirror用の中間コピーを記録して、logical frameの外でmirror sinkが`tryPresent`します。
 
 テスト: `xractivation_test` / `xrdiscovery_test` / `xrsession_test` / `xraction_test` / `xrviewspace_test` / `xrcompositiontarget_test` / `xrfeaturepolicy_test`(GPU なしで検証するための [`synthetic_stereo_target.hpp`](../../test/synthetic_stereo_target.hpp))、process integration は [`run_vrm_xr_demo_rpc.cmake`](../../test/run_vrm_xr_demo_rpc.cmake)。
 
