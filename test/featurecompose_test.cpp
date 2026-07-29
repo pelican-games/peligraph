@@ -809,6 +809,7 @@ TEST_CASE(
              "planar_reflection_ssao",
              "planar_reflection_ssao_blur",
              "planar_reflection_lighting",
+             "planar_reflection_forward_opaque",
          }) {
         REQUIRE(
             passByName(
@@ -821,6 +822,34 @@ TEST_CASE(
                 .at("resolution_domain") ==
             "independent");
     }
+    const auto &forward_capture =
+        passByName(
+            result.config,
+            "planar_reflection_forward_opaque");
+    REQUIRE(
+        forward_capture.at(
+            "material_contract") ==
+        "forward_opaque_v1");
+    REQUIRE(
+        forward_capture.at("output")
+            .at("color") ==
+        nlohmann::json::array(
+            {"planar_reflection_color"}));
+    REQUIRE(
+        forward_capture.at("output")
+            .at("depth") ==
+        "planar_reflection_depth");
+    REQUIRE(
+        forward_capture.at(
+            "color_load_op") ==
+        "load");
+    REQUIRE(
+        forward_capture.at(
+            "depth_load_op") ==
+        "load");
+    REQUIRE_FALSE(
+        forward_capture.contains(
+            "inherit_bindings_from"));
     REQUIRE(
         passByName(
             result.config,
@@ -884,6 +913,130 @@ TEST_CASE(
                 lighting.at("input").end(),
                 "shadow_map") !=
             lighting.at("input").end());
+        REQUIRE(
+            passByName(
+                combined.config,
+                "planar_reflection_forward_opaque")
+                .at("surface_resources")
+                .at("directional_shadow") ==
+            "shadow_map");
+    }
+
+    for (const auto clustered_first :
+         {false, true}) {
+        auto features =
+            nlohmann::json::array();
+        if (clustered_first) {
+            features.push_back(
+                "engine://features/clustered_lighting.json");
+        }
+        features.push_back(
+            reflection_instance);
+        if (!clustered_first) {
+            features.push_back(
+                "engine://features/clustered_lighting.json");
+        }
+        const auto combined =
+            compose(std::move(features));
+        const auto &lighting =
+            passByName(
+                combined.config,
+                "planar_reflection_lighting");
+        REQUIRE(
+            lighting.at("resource_ports")
+                .at("light_inventory")
+                .at("resource") ==
+            "clustered_light_inventory");
+        REQUIRE(
+            std::find(
+                lighting.at("input").begin(),
+                lighting.at("input").end(),
+                "clustered_light_inventory") !=
+            lighting.at("input").end());
+        const auto &resources =
+            passByName(
+                combined.config,
+                "planar_reflection_forward_opaque")
+                .at("material_resources");
+        REQUIRE(
+            resources.at(
+                "light_inventory") ==
+            "clustered_light_inventory");
+        REQUIRE(
+            resources.at(
+                "light_selection") ==
+            "clustered_light_selection");
+    }
+}
+
+TEST_CASE(
+    "render feature pass binding inheritance rejects invalid dependency graphs",
+    "[render-feature][binding-inheritance]") {
+    const auto compose =
+        [](nlohmann::json feature) {
+            return composeRenderFeatureConfig(
+                nlohmann::json{
+                    {"pipeline",
+                     {{"preset",
+                       "engine://render_pipelines/hybrid_v1.json"}}},
+                    {"features",
+                     nlohmann::json::array(
+                         {"fixture://binding_inheritance"})},
+                },
+                RenderFeatureComposeDependencies{
+                    [text = feature.dump()](
+                        std::string_view) {
+                        return text;
+                    },
+                    true,
+                    {},
+                    loadEngineFeature,
+                });
+        };
+
+    SECTION("unknown source") {
+        auto feature =
+            nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "features/planar_reflection.json"));
+        feature["passes"][4]["pass"]
+               ["inherit_bindings_from"] =
+            "missing_pass";
+        REQUIRE_THROWS_WITH(
+            compose(std::move(feature)),
+            Catch::Matchers::ContainsSubstring(
+                "references unknown pass 'missing_pass'"));
+    }
+
+    SECTION("cycle") {
+        auto feature =
+            nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "features/planar_reflection.json"));
+        feature["passes"][3]["pass"]
+               ["inherit_bindings_from"] =
+            "planar_reflection_forward_opaque";
+        feature["passes"][4]["pass"]
+               ["inherit_bindings_from"] =
+            "planar_reflection_lighting";
+        REQUIRE_THROWS_WITH(
+            compose(std::move(feature)),
+            Catch::Matchers::ContainsSubstring(
+                "contains a cycle"));
+    }
+
+    SECTION("material contract mismatch") {
+        auto feature =
+            nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "features/planar_reflection.json"));
+        feature["passes"][4]["pass"]
+               ["material_contract"] =
+            "deferred_geometry_v1";
+        REQUIRE_THROWS_WITH(
+            compose(std::move(feature)),
+            Catch::Matchers::ContainsSubstring(
+                "requires the same material_contract"));
     }
 }
 

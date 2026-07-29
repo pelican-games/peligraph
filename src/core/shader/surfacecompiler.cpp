@@ -622,6 +622,26 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
                                  "' uses a non-GLSL language; the M3a source backend accepts GLSL only");
     }
 
+    if (pass != SurfacePass::forward) {
+        constexpr std::string_view
+            clustered_define =
+                "PELICAN_FEATURE_CLUSTERED_LIGHTING";
+        std::erase_if(
+            defines,
+            [clustered_define](
+                const std::string &define) {
+                return define ==
+                           clustered_define ||
+                       (define.size() >
+                            clustered_define.size() &&
+                        define.starts_with(
+                            clustered_define) &&
+                        define[
+                            clustered_define.size()] ==
+                            '=');
+            });
+    }
+
     if (surface.hooks.vertex_displace_v1) appendUnique(defines, "PELICAN_HAS_VERTEX_DISPLACE_V1");
     if (surface.hooks.surface_v1) appendUnique(defines, "PELICAN_HAS_SURFACE_V1");
     if (surface.hooks.material_outputs_v1) {

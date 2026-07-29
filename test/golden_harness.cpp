@@ -69,9 +69,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <numeric>
 #include <optional>
 #include <picosha2.h>
 #include <set>
@@ -3456,8 +3458,118 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
 }
 
 void writePlanarReflectionProject(
-    const std::filesystem::path &root) {
+    const std::filesystem::path &root,
+    bool forward_capture) {
     writeShadowProject(root, false);
+    auto scene = nlohmann::json::parse(
+        readTextFile(root / "scene.json"));
+    auto &objects =
+        scene["scenes"]["default_scene"]
+             ["objects"];
+    const auto caster =
+        std::find_if(
+            objects.begin(), objects.end(),
+            [](const auto &object) {
+                return object.value(
+                           "name",
+                           std::string{}) ==
+                       "Caster";
+            });
+    if (caster == objects.end()) {
+        throw std::runtime_error(
+            "planar reflection fixture requires Caster");
+    }
+    auto &caster_components =
+        (*caster)["components"];
+    const auto caster_transform =
+        std::find_if(
+            caster_components.begin(),
+            caster_components.end(),
+            [](const auto &component) {
+                return component.value(
+                           "name",
+                           std::string{}) ==
+                       "transform";
+            });
+    if (caster_transform ==
+        caster_components.end()) {
+        throw std::runtime_error(
+            "planar reflection Caster requires transform");
+    }
+    (*caster_transform)["pos"] =
+        nlohmann::json::array(
+            {1.0, 0.55, 0.0});
+    (*caster_transform)["scale"] =
+        nlohmann::json::array(
+            {0.65, 0.65, 0.65});
+    const auto caster_model =
+        std::find_if(
+            caster_components.begin(),
+            caster_components.end(),
+            [](const auto &component) {
+                return component.value(
+                           "name",
+                           std::string{}) ==
+                       "simplemodelview";
+            });
+    if (caster_model ==
+        caster_components.end()) {
+        throw std::runtime_error(
+            "planar reflection Caster requires simplemodelview");
+    }
+    (*caster_model)["model"] =
+        "forward_ground";
+
+    const auto ground =
+        std::find_if(
+            objects.begin(), objects.end(),
+            [](const auto &object) {
+                return object.value(
+                           "name",
+                           std::string{}) ==
+                       "Ground";
+            });
+    if (ground == objects.end()) {
+        throw std::runtime_error(
+            "planar reflection fixture requires Ground");
+    }
+    auto &ground_components =
+        (*ground)["components"];
+    const auto ground_transform =
+        std::find_if(
+            ground_components.begin(),
+            ground_components.end(),
+            [](const auto &component) {
+                return component.value(
+                           "name",
+                           std::string{}) ==
+                       "transform";
+            });
+    if (ground_transform ==
+        ground_components.end()) {
+        throw std::runtime_error(
+            "planar reflection Ground requires transform");
+    }
+    (*ground_transform)["pos"] =
+        nlohmann::json::array(
+            {-1.0, 0.55, 0.0});
+    (*ground_transform)["scale"] =
+        nlohmann::json::array(
+            {0.65, 0.65, 0.65});
+    writeTextFile(
+        root / "scene.json",
+        scene.dump(2));
+
+    auto assets = nlohmann::json::parse(
+        readTextFile(root / "assets.json"));
+    assets["models"].push_back({
+        {"name", "forward_ground"},
+        {"path", "assets/ground.glb"},
+    });
+    writeTextFile(
+        root / "assets.json",
+        assets.dump(2));
+
     writeTextFile(
         root / "features" /
             "planar_reflection_probe.json",
@@ -3480,11 +3592,38 @@ void writePlanarReflectionProject(
 
     auto config =
         makeBLayerShadowRenderingConfig({});
+    std::string reflection_feature =
+        "engine://features/planar_reflection.json";
+    if (!forward_capture) {
+        auto feature =
+            nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "features/planar_reflection.json"));
+        auto &passes =
+            feature["passes"];
+        passes.erase(
+            std::remove_if(
+                passes.begin(), passes.end(),
+                [](const auto &entry) {
+                    return entry.at("pass")
+                               .value(
+                                   "name",
+                                   std::string{}) ==
+                           "planar_reflection_forward_opaque";
+                }),
+            passes.end());
+        writeTextFile(
+            root / "features" /
+                "planar_reflection_deferred_only.json",
+            feature.dump(2));
+        reflection_feature =
+            "project://features/planar_reflection_deferred_only.json";
+    }
     config["features"] =
         nlohmann::json::array({
             {
                 {"ref",
-                 "engine://features/planar_reflection.json"},
+                 reflection_feature},
                 {"parameters",
                  {
                      {"resolution", 64},
@@ -3495,6 +3634,7 @@ void writePlanarReflectionProject(
                      {"preserve_raster_winding", true},
                  }},
             },
+            "engine://features/clustered_lighting.json",
             "project://features/planar_reflection_probe.json",
         });
     writeTextFile(
@@ -4148,7 +4288,8 @@ void renderShadowFrame(RenderTarget &render_target) {
 
 void renderBLayerShadowFrame(RenderTarget &render_target,
                              std::string_view mode,
-                             bool deferred_material = false) {
+                             bool deferred_material = false,
+                             bool mixed_forward_material = false) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     const bool shadow_enabled =
         mode != "shadow_b_layer_off";
@@ -4231,6 +4372,24 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                 }
               }]
             })json");
+    auto forward_material_json =
+        material_json;
+    forward_material_json["materials"][0]
+                         ["name"] =
+        "reflection_forward_caster";
+    auto &forward_values =
+        forward_material_json["materials"][0]
+                             ["values"];
+    forward_values["base_color"] =
+        nlohmann::json::array(
+            {0.9, 0.12, 0.06, 1.0});
+    forward_values["coat_weight"] =
+        0.85;
+    forward_values["emission_luminance"] =
+        3.0;
+    forward_values["emission_color"] =
+        nlohmann::json::array(
+            {1.0, 0.04, 0.01, 1.0});
     if (deferred_material) {
         auto &values =
             material_json["materials"][0]
@@ -4294,8 +4453,122 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
     for (auto &group : model.material_primitives) {
         group.material = material_id;
     }
+    if (mixed_forward_material) {
+        const auto forward_document =
+            parseMaterialFormatJson(
+                forward_material_json,
+                surfaces);
+        const auto forward_lowered =
+            lowerMaterial(
+                forward_document.materials.front(),
+                surface);
+        if (forward_lowered.route !=
+            MaterialRouteClass::
+                forward_opaque) {
+            throw std::runtime_error(
+                "planar reflection forward fixture did not route "
+                "to forward_opaque");
+        }
+        const auto forward_shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    surface,
+                    surface_reference,
+                    forward_lowered,
+                    pipeline.shader_defines);
+        MaterialInfo forward_material{
+            .vert_shader =
+                forward_shaders.vertex,
+            .frag_shader =
+                forward_shaders.fragment,
+            .base_color_texture =
+                standard.whiteTexture(),
+            .metallic_roughness_texture =
+                standard
+                    .metallicRoughnessDefaultTexture(),
+            .normal_texture =
+                standard.normalDefaultTexture(),
+            .emissive_texture =
+                standard.emissiveDefaultTexture(),
+        };
+        applyLoweredMaterialForRoute(
+            forward_material,
+            forward_lowered);
+        const auto forward_material_id =
+            GET_MODULE(MaterialContainer)
+                .registerMaterial(
+                    std::move(
+                        forward_material));
+        if (!isValidMaterialId(
+                forward_material_id)) {
+            throw std::runtime_error(
+                "failed to register planar reflection forward material");
+        }
+        auto &forward_model =
+            GET_MODULE(ModelAssetContainer)
+                .getModelTemplateByName(
+                    "forward_ground");
+        if (forward_model
+                .material_primitives.empty()) {
+            throw std::runtime_error(
+                "planar reflection forward model has no material primitives");
+        }
+        for (auto &group :
+             forward_model
+                 .material_primitives) {
+            group.material =
+                forward_material_id;
+        }
+    }
 
     renderShadowFrame(render_target);
+    if (mixed_forward_material) {
+        const auto program =
+            GET_MODULE(
+                FrameGraphRuntimeContainer)
+                .findProgram(
+                    rendering_pass_id);
+        if (program == nullptr) {
+            throw std::runtime_error(
+                "planar reflection forward fixture has no runtime program");
+        }
+        const auto &compiled =
+            program->rendering_pass;
+        const auto reflection_pass =
+            std::find_if(
+                compiled.passes.begin(),
+                compiled.passes.end(),
+                [](const auto &entry) {
+                    return entry.definition.name ==
+                           "planar_reflection_forward_opaque";
+                });
+        if (reflection_pass !=
+            compiled.passes.end()) {
+            const auto &draws =
+                GET_MODULE(
+                    PolygonInstanceContainer)
+                    .getDrawCalls(
+                        false,
+                        MaterialPhase::opaque,
+                        0);
+            const auto eligible =
+                std::count_if(
+                    draws.begin(), draws.end(),
+                    [&](const auto &draw) {
+                        return GET_MODULE(
+                                   MaterialContainer)
+                            .isRenderRequired(
+                                reflection_pass
+                                    ->definition,
+                                draw.material);
+                    });
+            if (eligible == 0) {
+                throw std::runtime_error(
+                    "planar reflection forward fixture produced no eligible "
+                    "forward draw range");
+            }
+        }
+    }
     if (mode ==
         "shadow_b_layer_cascaded") {
         const auto shadow =
@@ -5115,9 +5388,13 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             project.dump());
     } else if (
         golden_case.mode ==
-        "planar_reflection") {
+            "planar_reflection" ||
+        golden_case.mode ==
+            "planar_reflection_deferred_only") {
         writePlanarReflectionProject(
-            temp_dir);
+            temp_dir,
+            golden_case.mode ==
+                "planar_reflection");
         GET_MODULE(PathResolver).setup(
             temp_dir, false);
         auto project =
@@ -5260,10 +5537,13 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                                 golden_case.mode);
     } else if (
         golden_case.mode ==
-        "planar_reflection") {
+            "planar_reflection" ||
+        golden_case.mode ==
+            "planar_reflection_deferred_only") {
         renderBLayerShadowFrame(
             render_target,
             "shadow_b_layer_off",
+            true,
             true);
     } else if (isShadowGoldenMode(golden_case.mode)) {
         renderShadowFrame(render_target);
@@ -5369,7 +5649,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         }
     }
     if (golden_case.mode ==
-        "planar_reflection") {
+            "planar_reflection" ||
+        golden_case.mode ==
+            "planar_reflection_deferred_only") {
         auto &targets =
             GET_MODULE(
                 RenderTargetContainer);
@@ -7034,6 +7316,14 @@ void GoldenHarness::runPlanarReflection() {
     const auto root =
         sourceRoot() /
         "test/golden/shadow_off";
+    const auto deferred_only =
+        renderCase(
+            GoldenCase{
+                "planar_reflection_deferred_only",
+                "planar_reflection_deferred_only",
+                root,
+                goldenWidth,
+                goldenHeight});
     const auto rendered =
         renderCase(
             GoldenCase{
@@ -7044,8 +7334,12 @@ void GoldenHarness::runPlanarReflection() {
                 goldenHeight});
     REQUIRE(
         rendered.planar_reflection);
+    REQUIRE(
+        deferred_only.planar_reflection);
     const auto &probe =
         *rendered.planar_reflection;
+    const auto &deferred_probe =
+        *deferred_only.planar_reflection;
     for (const auto *metadata : {
              &probe.albedo,
              &probe.depth,
@@ -7118,6 +7412,43 @@ void GoldenHarness::runPlanarReflection() {
             [](std::uint8_t value) {
                 return value != 0;
             }));
+    REQUIRE(
+        probe.albedo_bytes ==
+        deferred_probe.albedo_bytes);
+    REQUIRE(
+        probe.depth_bytes.size() ==
+        deferred_probe.depth_bytes.size());
+    REQUIRE(
+        probe.color_bytes.size() ==
+        deferred_probe.color_bytes.size());
+    const auto changed_depth_bytes =
+        std::inner_product(
+            probe.depth_bytes.begin(),
+            probe.depth_bytes.end(),
+            deferred_probe.depth_bytes.begin(),
+            std::size_t{0},
+            std::plus<>{},
+            std::not_equal_to<>{});
+    const auto changed_color_bytes =
+        std::inner_product(
+            probe.color_bytes.begin(),
+            probe.color_bytes.end(),
+            deferred_probe.color_bytes.begin(),
+            std::size_t{0},
+            std::plus<>{},
+            std::not_equal_to<>{});
+    INFO(
+        "planar forward capture changed "
+        << changed_color_bytes
+        << " color bytes and "
+        << changed_depth_bytes
+        << " depth bytes; secondary culling kept "
+        << probe.visible_draw_count
+        << " draw commands");
+    REQUIRE(
+        changed_color_bytes > 0);
+    REQUIRE(
+        changed_depth_bytes > 0);
 
     std::set<std::string>
         reflection_nodes;
@@ -7148,6 +7479,7 @@ void GoldenHarness::runPlanarReflection() {
             "planar_reflection_ssao",
             "planar_reflection_ssao_blur",
             "planar_reflection_lighting",
+            "planar_reflection_forward_opaque",
         });
 #else
     SKIP(

@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -2032,6 +2033,210 @@ void applyPassOverrides(nlohmann::json &config, const nlohmann::json &feature) {
     }
 }
 
+void resolveInheritedPassBindings(
+    nlohmann::json &config) {
+    const std::string field_name =
+        "inherit_bindings_from";
+    std::vector<std::string> pass_names;
+    for (auto &pass_set :
+         ensureArray(config, "rendering_passes")) {
+        for (auto &pass :
+             pass_set.at("passes")) {
+            if (pass.is_object() &&
+                pass.contains(field_name)) {
+                (void)requireStringField(
+                    pass, field_name,
+                    "render feature pass binding inheritance");
+                pass_names.push_back(
+                    requireStringField(
+                        pass, "name",
+                        "render feature pass binding inheritance"));
+            }
+        }
+    }
+
+    enum class VisitState {
+        visiting,
+        resolved,
+    };
+    std::unordered_map<std::string, VisitState>
+        states;
+    std::function<void(const std::string &)>
+        resolve =
+            [&](const std::string &pass_name) {
+                const auto state =
+                    states.find(pass_name);
+                if (state != states.end()) {
+                    if (state->second ==
+                        VisitState::visiting) {
+                        throw std::runtime_error(
+                            "render feature pass binding inheritance "
+                            "contains a cycle at: " +
+                            pass_name);
+                    }
+                    return;
+                }
+                auto *pass =
+                    findPass(config, pass_name);
+                if (pass == nullptr ||
+                    !pass->contains(field_name)) {
+                    states[pass_name] =
+                        VisitState::resolved;
+                    return;
+                }
+                states[pass_name] =
+                    VisitState::visiting;
+                const auto source_name =
+                    requireStringField(
+                        *pass, field_name,
+                        "render feature pass binding inheritance");
+                if (source_name == pass_name) {
+                    throw std::runtime_error(
+                        "render feature pass cannot inherit bindings "
+                        "from itself: " +
+                        pass_name);
+                }
+                auto *source =
+                    findPass(config, source_name);
+                if (source == nullptr) {
+                    throw std::runtime_error(
+                        "render feature pass binding inheritance "
+                        "references unknown pass '" +
+                        source_name + "': " +
+                        pass_name);
+                }
+                if (source->contains(field_name)) {
+                    resolve(source_name);
+                    pass = findPass(
+                        config, pass_name);
+                    source = findPass(
+                        config, source_name);
+                }
+
+                const auto pass_type =
+                    pass->value(
+                        "type", std::string{});
+                const auto source_type =
+                    source->value(
+                        "type", std::string{});
+                if (pass_type != source_type ||
+                    (pass_type != "material" &&
+                     pass_type != "fullscreen")) {
+                    throw std::runtime_error(
+                        "render feature pass binding inheritance "
+                        "requires matching material or fullscreen "
+                        "pass types: " +
+                        pass_name + " <- " +
+                        source_name);
+                }
+
+                const auto merge_missing_object =
+                    [&](std::string_view object_name) {
+                        const auto object =
+                            std::string{object_name};
+                        if (!source->contains(object)) {
+                            return;
+                        }
+                        if (!source->at(object)
+                                 .is_object()) {
+                            throw std::runtime_error(
+                                "render feature pass binding source has "
+                                "non-object " +
+                                object + ": " +
+                                source_name);
+                        }
+                        if (!pass->contains(object)) {
+                            (*pass)[object] =
+                                nlohmann::json::object();
+                        }
+                        if (!pass->at(object)
+                                 .is_object()) {
+                            throw std::runtime_error(
+                                "render feature pass binding destination "
+                                "has non-object " +
+                                object + ": " +
+                                pass_name);
+                        }
+                        for (const auto &entry :
+                             source->at(object).items()) {
+                            if (!pass->at(object)
+                                     .contains(entry.key())) {
+                                (*pass)[object]
+                                       [entry.key()] =
+                                    entry.value();
+                            }
+                        }
+                    };
+
+                if (pass_type == "material") {
+                    if (pass->value(
+                            "material_contract",
+                            std::string{}) !=
+                        source->value(
+                            "material_contract",
+                            std::string{})) {
+                        throw std::runtime_error(
+                            "render feature material pass binding "
+                            "inheritance requires the same "
+                            "material_contract: " +
+                            pass_name + " <- " +
+                            source_name);
+                    }
+                    merge_missing_object(
+                        "surface_resources");
+                    merge_missing_object(
+                        "material_resources");
+                    merge_missing_object(
+                        "screen_inputs");
+                } else {
+                    if (source->contains(
+                            "resource_ports")) {
+                        merge_missing_object(
+                            "resource_ports");
+                        for (const auto &entry :
+                             source->at(
+                                 "resource_ports")
+                                 .items()) {
+                            const auto &effective =
+                                pass->at(
+                                    "resource_ports")
+                                    .at(entry.key());
+                            if (!effective.is_object() ||
+                                !effective.contains(
+                                    "resource") ||
+                                !effective.at(
+                                    "resource")
+                                     .is_string()) {
+                                throw std::runtime_error(
+                                    "fullscreen inherited resource port "
+                                    "requires a string resource: " +
+                                    pass_name + "." +
+                                    entry.key());
+                            }
+                            appendStringListValue(
+                                *pass, "input",
+                                effective.at(
+                                    "resource")
+                                    .get<std::string>());
+                        }
+                    }
+                }
+                pass->erase(field_name);
+                states[pass_name] =
+                    VisitState::resolved;
+            };
+
+    for (const auto &pass_name :
+         pass_names) {
+        if (pass_name.empty()) {
+            throw std::runtime_error(
+                "render feature pass binding inheritance "
+                "requires a named pass");
+        }
+        resolve(pass_name);
+    }
+}
+
 void addFeatureComputeTasks(nlohmann::json &config, const nlohmann::json &feature,
                             std::unordered_set<std::string> &task_names) {
     if (!feature.contains("compute_tasks")) {
@@ -2221,6 +2426,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             pending.reference,
             surface_resource_contracts);
     }
+    resolveInheritedPassBindings(
+        composed);
 
     if (!shader_defines.empty()) {
         composed["shader_defines"] = shader_defines;

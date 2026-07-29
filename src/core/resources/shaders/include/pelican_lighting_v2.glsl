@@ -40,7 +40,12 @@ uvec4 pelican_light_selection_header_b() {
 }
 
 bool pelican_light_selection_v1_valid() {
-    if (!pelican_light_inventory_v2_valid() ||
+    // The standard clustered selector is authored for the main view. A
+    // clipped secondary family (for example planar reflection) keeps the
+    // scalable inventory binding but deliberately falls back to LightUBO
+    // until it owns a family-local selector task and buffer.
+    if (pelican_view_has_clip_plane() ||
+        !pelican_light_inventory_v2_valid() ||
         pelican_count_light_selection() < 8u) {
         return false;
     }

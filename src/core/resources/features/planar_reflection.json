@@ -210,6 +210,7 @@
       "pass": {
         "name": "planar_reflection_lighting",
         "type": "fullscreen",
+        "inherit_bindings_from": "deferred_lighting",
         "resolution_domain": "independent",
         "view_family": "$reflection/planar",
         "output": {
@@ -230,6 +231,24 @@
         },
         "push_constants": "camera_position",
         "uses_light_data": true
+      }
+    },
+    {
+      "insert": "after:planar_reflection_lighting",
+      "pass": {
+        "name": "planar_reflection_forward_opaque",
+        "type": "material",
+        "material_contract": "forward_opaque_v1",
+        "inherit_bindings_from": "forward_opaque",
+        "resolution_domain": "independent",
+        "view_family": "$reflection/planar",
+        "output": {
+          "color": ["planar_reflection_color"],
+          "depth": "planar_reflection_depth"
+        },
+        "color_load_op": "load",
+        "depth_load_op": "load",
+        "depth_store_op": "store"
       }
     }
   ],

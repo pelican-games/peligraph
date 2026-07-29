@@ -40,6 +40,12 @@ struct ShaderBundle {
     std::string cache_key;
     bool cache_hit = false;
     std::vector<std::filesystem::path> dependency_paths;
+    // Resource ports synthesized by the surface compiler rather than
+    // declared in the authored .surface (for example clustered-light
+    // buffers). Material registration merges this authoritative ABI with the
+    // lowered authored ports.
+    std::vector<ShaderResourceInterfaceBinding>
+        compiler_resource_interface;
     // Present only for generated material fragment shaders. This identity is
     // carried into material registration instead of being reconstructed from
     // attachment formats.

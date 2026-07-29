@@ -391,10 +391,16 @@ resolveMaterialResourceInterface(
         shader_library.get(info.frag_shader).reflection,
     };
     const auto reflection = merge(reflections);
+    const auto &compiler_resources =
+        shader_library.get(
+            info.frag_shader)
+            .compiler_resource_interface;
 
     std::vector<ShaderResourceInterfaceBinding>
         result;
-    result.reserve(info.resource_ports.size());
+    result.reserve(
+        info.resource_ports.size() +
+        compiler_resources.size());
     std::unordered_set<std::string> declared_names;
     for (const auto &port : info.resource_ports) {
         if (!declared_names.insert(port.name).second) {
@@ -482,6 +488,19 @@ resolveMaterialResourceInterface(
                 .readable = true,
                 .writable = false,
             });
+    }
+
+    for (const auto &binding :
+         compiler_resources) {
+        if (!declared_names.insert(
+                binding.port.name)
+                 .second) {
+            throw std::runtime_error(
+                "compiler-owned material resource port collides with "
+                "an authored port: " +
+                binding.port.name);
+        }
+        result.push_back(binding);
     }
 
     for (const auto &binding : reflection.bindings) {

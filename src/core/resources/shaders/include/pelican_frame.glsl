@@ -60,9 +60,16 @@ uint pelican_view_count() {
     return pelicanFrame.view_count;
 }
 
+bool pelican_view_has_clip_plane() {
+    return dot(
+               pelicanFrame.clip_plane.xyz,
+               pelicanFrame.clip_plane.xyz) >
+           0.0;
+}
+
 bool pelican_view_clip_rejects(vec3 world_position) {
     vec3 normal = pelicanFrame.clip_plane.xyz;
-    return dot(normal, normal) > 0.0 &&
+    return pelican_view_has_clip_plane() &&
            dot(normal, world_position) +
                    pelicanFrame.clip_plane.w <
                0.0;

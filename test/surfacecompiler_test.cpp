@@ -532,6 +532,13 @@ TEST_CASE(
     REQUIRE(
         deferred.resource_interface.size() ==
         plain.resource_interface.size());
+    REQUIRE(std::none_of(
+        deferred.defines.begin(),
+        deferred.defines.end(),
+        [](const auto &define) {
+            return define ==
+                   "PELICAN_FEATURE_CLUSTERED_LIGHTING";
+        }));
     const auto inventory =
         std::find_if(
             clustered.resource_interface.begin(),
@@ -581,6 +588,12 @@ TEST_CASE(
             .binding == 2);
 
     ShaderCompiler compiler;
+    requireCompiled(
+        compileSurfaceShaders(
+            compiler, surface,
+            "wp78.surface",
+            SurfacePass::deferred_geometry,
+            defines));
     const auto compiled =
         compileSurfaceShaders(
             compiler, surface,
@@ -596,6 +609,26 @@ TEST_CASE(
         validateShaderResourceInterfaceReflection(
             clustered.resource_interface,
             reflection));
+    ShaderLibrary library{
+        ShaderLibraryModuleMode::
+            reflection_only};
+    const auto bundles =
+        library.loadFromSurface(
+            surface, "wp78.surface",
+            SurfacePass::forward, defines);
+    const auto &compiler_ports =
+        library.get(bundles.fragment)
+            .compiler_resource_interface;
+    REQUIRE(
+        compiler_ports.size() == 2);
+    REQUIRE(
+        std::any_of(
+            compiler_ports.begin(),
+            compiler_ports.end(),
+            [](const auto &binding) {
+                return binding.port.name ==
+                       "light_selection";
+            }));
     const auto combined_compiled =
         compileSurfaceShaders(
             compiler, surface,

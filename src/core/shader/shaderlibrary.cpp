@@ -119,6 +119,29 @@ bool isCompilerOwnedSurfaceDefine(
                surfaceResourceLocalReadDefinePrefix);
 }
 
+std::vector<ShaderResourceInterfaceBinding>
+compilerOwnedSurfaceResourceInterface(
+    const SurfaceShaderComposition &composition,
+    const SurfaceFormatDocument &surface) {
+    std::vector<ShaderResourceInterfaceBinding>
+        result;
+    for (const auto &binding :
+         composition.resource_interface) {
+        const auto authored =
+            std::any_of(
+                surface.resource_ports.begin(),
+                surface.resource_ports.end(),
+                [&](const auto &port) {
+                    return port.name ==
+                           binding.port.name;
+                });
+        if (!authored) {
+            result.push_back(binding);
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 std::vector<ShaderBundleId> PreparedShaderReload::affectedBundleIds() const {
@@ -536,6 +559,9 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
     appendPathUnique(vertex_bundle.dependency_paths, source_path);
     auto fragment_bundle = buildFromSpirv(result.fragment.spirv, source_path, 1, fragment_name,
                                           composition.defines);
+    fragment_bundle.compiler_resource_interface =
+        compilerOwnedSurfaceResourceInterface(
+            composition, surface);
     if (composition.material_output_schema) {
         validateFragmentOutputSchema(
             fragment_bundle.reflection,
@@ -729,6 +755,9 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
             surface_recipe.source_name + "#" +
                 std::string{surfacePassName(surface_recipe.pass)} + ".frag",
             composition.defines);
+        fragment.compiler_resource_interface =
+            compilerOwnedSurfaceResourceInterface(
+                composition, surface->second);
         if (effective_output_schema) {
             validateFragmentOutputSchema(
                 fragment.reflection,
