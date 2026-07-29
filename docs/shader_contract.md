@@ -197,8 +197,10 @@ input attachmentはtyped image portを追加するまで拒否する。
 
 一つのmaterial shader/pipelineを共有するactive graph variantは、各portの
 sampler/input-attachment種別とinput attachment indexが一致する必要がある。
-graph-only hot reloadでこの物理契約が変わるcandidateは、coordinated material rebuildが
-未実装のためrollbackする。
+graph-only hot reloadでこの物理契約が変わる場合も、WP222のcoordinated transactionが
+保持済みsurface compiler recipeからshaderを再生成し、依存pipelineとmaterial metadataを
+候補generationへ合わせる。全candidateの構築完了後だけgraphと同時公開し、
+compile failureまたはstale publicationでは全て旧世代を維持する。
 
 runtime compile は buffer を active generation の `FrameGraphBufferId` へ固定し、
 target recreate/pipeline reloadではdescriptorを新しいimage view/IDへ再生成する。

@@ -468,9 +468,9 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   clearとhistory初期化は最終physical formatのnumeric classへ変換し、integer attachmentを
   float unionとして解釈しない
 - flat/XR route間のschema差はcompile時に拒否する。hot reload時はlive material pipelineの
-  schema・format・MSAA・local-read contractを候補generationと照合し、不一致なら
-  candidateをpublishせず旧generationを保つ。graphとsurfaceを同時に再構築するtransactionは
-  後続境界として残す
+  schema・format・MSAA・local-read contractを候補generationに対して再解決し、必要な
+  surface shader / pipeline / metadataを同じtransactionで再構築する。どこか一つでも
+  失敗した場合はgraphをpublishせず旧generationを保つ
 
 **attachment state追補（WP219、2026-07-28）**:
 
@@ -499,6 +499,25 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   history、material subresourceは後続境界とする
 - 詳細は
   [`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
+  を正とする
+
+**coordinated material pipeline reload追補（WP222、2026-07-29）**:
+
+- render graph、`.surface`、material valuesが同じwatcher batchにある場合、
+  render-pipeline participantが一つのcandidateとして所有する。texture requestは
+  physical graph ABIに関係しないため通常のmaterial asset transactionへ残す
+- 全live materialをprivate runtime generationへ再bindし、output schema/format/sample、
+  local-read mapping、attachment state、descriptor ABIの変化からshader/pipeline overrideを作る
+- file-backed surfaceだけでなく、standard material等のgenerated surfaceも起動時の
+  compiler recipeを保持し、graph schema変更時に同じ生成経路で再compileする
+- metadata/value commitはshader/pipeline候補が全て成功した後だけ行い、
+  publication lock内のstale検査とgraph CASの間に置く。compile failureとstale candidateは
+  graph、shader、pipeline、material schema/valueのどれも部分公開しない
+- route、render state、screen/resource declaration、custom value layoutそのものの編集は
+  structural material reloadとして別途validateする。WP222は物理graph ABI追従を
+  暗黙のmaterial authoring migrationとして扱わない
+- 詳細は
+  [`design_reviews/2026-07-29_wp222_coordinated_render_reload_report.md`](design_reviews/2026-07-29_wp222_coordinated_render_reload_report.md)
   を正とする
 
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)

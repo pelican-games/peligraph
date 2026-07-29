@@ -1,8 +1,8 @@
-# アセットホットリロード(v2.2)
+# アセットホットリロード(v2.3)
 
 対象読者: エンジン担当・開発体験を気にする人。
-ステータス: **v2.2 — 条件付き受理 + pipeline runtime 接続済み
-(2026-07-24)**。v1 は敵対レビュー
+ステータス: **v2.3 — 条件付き受理 + coordinated render pipeline 接続済み
+(2026-07-29)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md`(以下
 「レビュー」)§6-9 で **Reject** — Watcher の overflow/復帰プロトコル欠落、
 WP82 hash「流用」の不成立、WP62 EntityId の取り違え、GPU resource
@@ -15,7 +15,9 @@ dependency transaction group / platform fixture / HR0-HR2 再分割)を反映し
 受入条件に添付することが条件**。v2.1 = その 4 条件の正本反映(§2-1a・
 §3-1a・§2-4・§7 の gate 追記)。v2.2 は WP196 で rendering config /
 render feature / pipeline preset の transaction と submission-fence lifetime を
-同じ runtime publication 経路へ接続した。
+同じ runtime publication 経路へ接続した。v2.3はWP222で、同じwatcher batchの
+render graph、surface shader、graphics pipeline、material metadata/valueを
+選択的なcompanion requestとして同じpublicationへ接続した。
 実装状況: **HR2-S は WP108(2026-07-15)で完了**。以下の規範どおり、
 shader の独自 mtime poll は撤去され、FileWatcher/ContentDigest の単一路、
 source/include/.surface reverse dependency、全 variant/pipeline/material layout の
@@ -225,7 +227,7 @@ append — リロード反復で 1024 上限に到達)。よって種別ハン�
 | input_actions / プロファイル | 再パース candidate → フレーム境界 swap。held input / consume の扱いを fixture 化 | HR0 | HR2-I |
 | pelican.ui | U3 の hot reload トランザクションに委譲 — ただし **HR0 の AssetKey/epoch/reconcile 契約は共有**(UI 独自 watcher を作らない) | HR0 | U3 合流 |
 | scene JSON | 自動リロード対象外(ゲーム状態の全消し)。rpc `load_scene` / ImGui ボタンの明示操作のみ | — | 対象外 |
-| rendering config / feature JSON / pipeline preset | project-backed root とその feature / preset 依存を一つの watcher batch にまとめ、preview + flat (+ 起動中なら XR)を全 prepare 後に一回の runtime generation CAS で公開する。失敗時は旧 root / registry / watch dependency を維持する | RPE10b2 | RPE10b3(WP196 済) |
+| rendering config / feature JSON / pipeline preset | project-backed root とその feature / preset 依存を一つの watcher batch にまとめ、preview + flat (+ 起動中なら XR)を全 prepareする。同じbatchのshaderとmaterial valuesを選択的に候補へ加え、graph / shader / pipeline / materialを一回のruntime generation publicationで公開する。失敗時は旧root / registry / shader / material / watch dependencyを維持する | RPE10b2 | RPE10b3(WP196) + RPE8f(WP222 済) |
 | project.json / manifest | 対象外(再起動事項) | — | 対象外 |
 
 ### 3-2a. rendering pipeline reload の境界(WP196)
@@ -251,6 +253,17 @@ participantは一度だけ次を行う。
 4. 一回のgeneration CAS後だけGPU arenaをcommitし、config cacheとwatch source集合を更新する
 5. parse / shader compile / target planning / GPU registration / validationのどこで
    失敗してもcandidateだけをrollbackし、active generationと旧watch sourceを維持する
+
+WP222ではparticipantの通常claim所有権を変えず、batch ownerが明示した
+`companion_participants`からrequest単位で必要なものだけを選べる。render-pipeline ownerは
+shader requestとmaterial-values requestを同じcandidateへ取り込み、texture requestは
+取り込まない。選ばれたrequestはowner成功後にだけまとめて成功となり、失敗時は
+companion participantを別経路で再実行しない。
+
+ownerはprivate runtime generationに対してlive material ABIを再解決し、必要な
+surface shader / graphics pipelineを候補化する。全検証後のmaterial commitは
+publication mutex内でbase-generation stale検査の後、root CASの直前に一度だけ実行する。
+したがってstale candidateやshader compile failureでgraphとmaterialの世代が分離しない。
 
 起動後に初めて`ui` / `sprite` / `gpu_timing`等を有効化し、必要moduleが
 startup profileで初期化されていない場合は、module graph凍結後の遅延生成をせず
@@ -295,6 +308,12 @@ FileWatcher(検知)
        回復)。旧リソース継続 + WARN + status
   → 1 行 INFO `reload: <group> <パス...> ok|failed (<時間>ms)`
 ```
+
+一つのrequestを複数participantが通常claimしてはならない。複数asset種別を同じ
+publicationへ合流させる場合は、ownerとcompanionの組を登録時に固定し、ownerの
+`companion_claims`がrequest単位で選択する。選択されなかったrequestは元participantの
+通常transactionへ残す。この境界により「material participantだからtextureまで
+render graph reloadへ巻き込む」といった過剰な直列化を避ける。
 
 - 現行 `GltfLoader::commit` は即座に global Material/VertBuf container へ
   登録し、途中失敗の rollback がない — HR1 で candidate/staged commit に

@@ -110,8 +110,8 @@ material `sampler2DArray` accessorは別拡張である。
   UINT/SINT color targetのlocal-readは型付き
   `usubpassInput` / `isubpassInput`が必要なため、名前付きエラーで拒否する。
 - graph変更でlive materialのsampled/local種別、input attachment index、
-  format、MSAA等が変わる場合、coordinated material rebuildがまだ無いため
-  candidate generationを公開せず旧generationを維持する。
+  format、MSAA等が変わる場合、WP222のcoordinated material rebuildがshader、
+  pipeline、metadataをcandidate generationへ追従させる。失敗時は旧generationを維持する。
 - custom schemaと同様、shaderc OFF配布物はWP211 `dist-bake`の対象である。
 
 ## 検証
@@ -137,7 +137,7 @@ forward material passが同じ画素をgenerated
 
 ## 次の境界
 
-1. graph + surface + material pipelineのcoordinated hot reload
+1. graph + surface + material pipelineのcoordinated hot reload（WP222で解消）
 2. image portのfloating / SINT / UINT typed accessor
 3. shaderc OFF / dist-bake artifact
 4. Quest/Meta XR Simulator・物理HMDでの帯域、multiview、表示gate

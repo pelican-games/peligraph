@@ -1,8 +1,8 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2.6)
+# レンダーパイプライン拡張境界とポリシー統合(v2.7)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2.6 実装方針(2026-07-29。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.7 実装方針(2026-07-29。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
@@ -68,6 +68,9 @@ v2.6 / WP221は、標準二段階facadeを必須言語にせず、一つの内�
 `RenderCompilerProgram`からportable / mixed / backend-nativeの各実装を選べる境界を追加した。
 全modeはopenなbackend physical package、既存GPU arena、単一publicationへ収束する。
 flat/preview/XRは同じinvocationへ入り、previewは共有GPU登録を持たないdata-only artifactとする。
+v2.7 / WP222は、render graph、surface shader、graphics pipeline、material metadata/valueを
+同じwatcher batchから一つのcandidateへprepareし、stale検査とruntime publicationの間に
+pre-publication commitを置く。graphだけ新しくmaterialだけ古い中間世代を公開しない。
 
 関連文書:
 
@@ -909,6 +912,14 @@ generation CASで公開する。flat / XRは一つのowner scopeを共有する�
 中間世代は存在しない。失敗時はactive root、registry membership、config cache、watch
 dependency集合を更新しない。
 
+RPE8f / WP222では、このtransactionへshader/material companion requestを選択的に併合する
+batch-owner境界を追加した。render-pipeline ownerはprivate graph/GPU generationに対して
+全live material ABIを解決し、必要なsurface shaderと既存graphics pipeline handleを
+候補descriptorで再構築する。material metadata/valueは全candidateの検証後だけcommitする。
+publication mutex内でstale検査、commit、root CASを連続させるため、stale candidateは
+material/shader stateへ触れない。texture reload等、graph physical ABIと無関係なrequestは
+companionにせず通常のasset transactionへ残す。
+
 rendererはlogical frame開始時のgeneration snapshotを、実際にsubmitするframe targetへ
 渡す。window swapchainはin-flight slotごとのfence、offscreenは同期fence、OpenXRは各eye
 submit、desktop mirrorは独立swapchain submitにleaseを保持し、それぞれの完了後だけ解放する。
@@ -977,6 +988,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE8c / WP218（済 2026-07-28） | strategy-private `pelican.material_outputs` schema、任意長・typed material MRT、generated shader ABI | 6枚目UINT G-buffer実GPU、MSAA resolve、target別typed clear、reflection、device上限、XR同一性、hot reload rollback |
 | RPE8d / WP219（済 2026-07-28） | schema field名別のblend equation / write mask、surface state継承、typed lowering | additive + R-only write実GPU、integer blend拒否、`independentBlend`/format capability、XR同一性、hot reload rollback |
 | RPE8e / WP220（済 2026-07-29） | material screen/resource same-pixel inputをsamplerまたはinput attachmentへ物理解決 | accessor不変、variant ABI整合、reflection/index検証、descriptor/runtime、materialized fallback、実GPU |
+| RPE8f / WP222（済 2026-07-29） | graph/surface/pipeline/material metadata/valueのcoordinated candidateと単一publication | graph-only ABI変更、同時schema+shader変更、generated surface、stale callback抑止、compile失敗完全rollback、実GPU |
 | RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
 | RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |

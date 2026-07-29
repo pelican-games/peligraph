@@ -109,6 +109,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP219 | material output attachment state | ✅ 完了（2026-07-28）。output別blend/write-mask、device capability、実GPU、reload rollback |
 | WP220 | material same-pixel local-read ABI | ✅ 完了（2026-07-29）。screen/resource input、sampler/input-attachment自動lowering、実GPU |
 | WP221 | top-level render compiler program / open backend package | ✅ 内部slice完了（2026-07-29）。flat/preview/XR一括compile、runtime/data-only artifact、mixed/native Vulkan package、provenance、実GPU |
+| WP222 | coordinated render graph / surface / material pipeline reload | ✅ 完了（2026-07-29）。候補ABI再解決、surface/pipeline再構築、material values併合、単一publication、実GPU rollback |
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -126,7 +127,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の内部slice受け入れ完了: WP221、2026-07-29。WP203c はローカル実装・自動テスト済みだが、
+(最新の内部slice受け入れ完了: WP222、2026-07-29。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -150,7 +151,8 @@ SINT/UINT clear/history、flat/XR整合性、hot reload rollbackを同じcontrac
 受け入れ結果と意図的に残した境界は
 [`design_reviews/2026-07-28_wp218_material_outputs_report.md`](design_reviews/2026-07-28_wp218_material_outputs_report.md)
 を正とする。attachment別blend/write-maskはWP219、material local-read inputは
-WP220で解消した。残る候補はgraph+surface coordinated reloadとWP211 dist-bakeである。
+WP220、graph+surface coordinated reloadはWP222で解消した。残る候補は
+typed integer image accessorとWP211 dist-bakeである。
 
 ### WP219: material output attachment state
 
@@ -187,8 +189,8 @@ accessorと型が合わないため明示的に拒否する。
 
 受け入れ結果と公開境界は
 [`design_reviews/2026-07-29_wp220_material_local_read_report.md`](design_reviews/2026-07-29_wp220_material_local_read_report.md)
-を正とする。次の描画基盤候補はgraph+surface+material pipelineのcoordinated reload、
-typed integer image accessor、WP211 dist-bake、Quest/物理HMD gateである。
+を正とする。graph+surface+material pipelineのcoordinated reloadはWP222で解消した。
+次の描画基盤候補はtyped integer image accessor、WP211 dist-bake、Quest/物理HMD gateである。
 
 ### WP221: top-level render compiler program / open backend package
 
@@ -210,6 +212,25 @@ program selectionはengineが`CompiledRenderPipeline`へstampし、dump metadata
 を正とする。previewへのruntime transform / tagged subgraph / physical-plan表示、
 complete raw Vulkan plan / `NativeScope`、Metal package、CPU/external linker、
 公開game-DLL ABIは後続である。
+
+### WP222: coordinated render graph / surface / material pipeline reload
+
+同じwatcher batchに含まれるrender config、`.surface`、material valuesを一つの
+render-pipeline transactionへ昇格する。private GPU generationに対して全live materialの
+output schema、format、sample count、local-read mapping、attachment stateを再解決し、
+file-backedだけでなくengine-generated surfaceも保持したcompiler recipeから再生成する。
+影響するshader bundleとgraphics pipelineを全て候補化し、material metadata/value commitを
+検証後のpre-publication callbackへまとめる。
+
+公開はpublication mutex内でbase generationのstale検査、pre-publication commit、
+runtime rootのCASを連続して行う。どこか一つでも失敗した場合はgraph、shader、
+pipeline、material schema/valueの全てを旧世代に保ち、candidate GPU arenaだけを破棄する。
+graph-onlyのwrite mask変更、graph+surfaceのoutput schema変更を実GPUで受理し、
+同時shader compile失敗時の完全rollbackを検証した。
+
+受け入れ結果、対応範囲、意図的に残した構造変更境界は
+[`design_reviews/2026-07-29_wp222_coordinated_render_reload_report.md`](design_reviews/2026-07-29_wp222_coordinated_render_reload_report.md)
+を正とする。
 
 ### XR2b 分割 WP の逐語条件と所有権
 

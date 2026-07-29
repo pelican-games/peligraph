@@ -98,8 +98,9 @@ snapshotする。render graphだけを変更してこのcontractを変えたcand
 次frameの描画結果も変わらないことを確認した。
 
 graphと`.surface`を同時に変更して全live material pipelineをcandidate generationへ
-再構築するcoordinated transactionは未実装である。現状の拒否は互換維持ではなく、
-古いshaderと新しいattachment列を混ぜないためのfailure-atomic境界である。
+再構築するcoordinated transactionはWP218時点では未実装だった。WP222でこの境界を
+解消し、古いshaderと新しいattachment列を混ぜないfailure-atomic性を保ったまま
+同時再構築できる。
 
 ## 検証
 
@@ -135,9 +136,11 @@ deviceが6 color attachmentsまたは対象format/sampleを持たない場合は
    同じsurface accessorをsampler/input attachmentへlowerする公開契約を追加した。
    詳細は
    [`2026-07-29_wp220_material_local_read_report.md`](2026-07-29_wp220_material_local_read_report.md)。
-3. **coordinated graph + surface hot reload**
+3. **coordinated graph + surface hot reload（WP222で解消）**
 
    schema変更時にlive material pipelineもcandidate世代へ再prepareするtransaction。
+   詳細は
+   [`2026-07-29_wp222_coordinated_render_reload_report.md`](2026-07-29_wp222_coordinated_render_reload_report.md)。
 4. **shaderc OFF / dist-bake**
 
    独自schemaはfragment source生成を必要とする。配布・Quest向けにはWP211が生成物を

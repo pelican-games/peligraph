@@ -1086,9 +1086,9 @@ gate:
 
 WP219では同じseamへfield名別のblend equation/write-maskを追加し、
 route variant整合性、pipeline key、device capability、hot reload rollbackまで接続した。
-material local-read input ABIはWP220で解消した。残る境界はcoordinated
-graph+surface hot reloadとshaderc OFF向けdist-bakeである。これらはoutput枚数を
-再固定せず、同じschema/physical-contract seamへ追加する。
+material local-read input ABIはWP220、coordinated graph+surface hot reloadはWP222で
+解消した。いずれもoutput枚数を再固定せず、同じschema/physical-contract seamへ
+接続する。残る配布境界はshaderc OFF向けdist-bakeである。
 
 ### RPE8e / WP220 — material same-pixel local-read input ABI
 
@@ -1110,8 +1110,43 @@ gate:
 - screen inputとcustom image resourceの両経路で同じABI選択を使う
 - sequential viewとlayered multiview local viewを検証する
 - floating-point `vec4` accessorへUINT/SINT input attachmentを黙ってbindしない
-- graph-only reloadでlive pipelineの物理ABIが変わるcandidateはrollbackする
+- graph-only reloadでもlive pipelineの物理ABIを候補generationに合わせて再構築する
 - 実Vulkanでscope fusion、reflection、descriptor image view、最終pixelを検証する
+
+### RPE8f / WP222 — coordinated material pipeline reload
+
+状態: **実装済み（2026-07-29）**。render graph generationだけを先に公開して
+live material pipelineを後から追従させる中間状態を廃止した。同じwatcher batchの
+render config / feature / preset、`.surface`、material valuesはrender-pipeline
+participantがownerとなる一つのtransactionへまとめる。texture等、同じmaterial
+participantが扱ってもこのABI transactionへ属さないrequestは通常のasset batchに残す。
+
+候補作成と公開順序は次で固定する。
+
+1. flat/preview/XRをprivate `RendererRuntimeGeneration`とGPU registration arenaへcompileする
+2. 全live materialのroute、output schema/format/sample、local-read、attachment state、
+   descriptor ABIをcandidate generationに対して解決する
+3. 変化したphysical ABIをfile-backedまたは保持済みgenerated-surface recipeへ反映し、
+   shader bundleと依存graphics pipelineを候補として全て構築する
+4. material valuesを候補layoutへvalidate/lowerし、metadata commitとともに
+   pre-publication callbackへ束ねる
+5. publication mutex内でbase generationのstale検査、pre-publication commit、
+   runtime rootのCASを連続して行う。成功後だけGPU arenaを確定する
+
+generated standard materialも起動時のsurface documentをreload recipeとして保持するため、
+project fileを持たなくてもgraph schema変更へ追従する。共有shader/pipeline handleへ
+異なるcandidate ABIが要求された場合は曖昧な一方を選ばずpublish前に拒否する。
+
+gate:
+
+- graph-onlyのoutput state変更でshader/pipelineを再構築し、新しいpixelを描画する
+- graph output schema名と`.surface` bodyを同時変更し、graph/shader/material metadataを
+  同じ世代へ進める
+- shader compile失敗時にgraph pointer/version、shader version、material schema、
+  描画結果をすべて旧世代へ戻す
+- stale candidateはpre-publication callbackを実行せず、active generationを変更しない
+- structural material editは既存material-values transactionの境界に従い、route、
+  render state、screen/resource declaration、custom value layoutを暗黙移行しない
 
 ### それ以後
 

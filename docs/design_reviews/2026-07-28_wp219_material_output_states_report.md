@@ -97,7 +97,7 @@ factor名だけを先に公開すると動かない設定を作るためであ�
 4. material pipeline compilerがsurface render stateを既定値として全attachmentへ展開し、
    疎なoverrideだけを適用してVulkan stateへlowerする。
 5. pipeline keyとlive material snapshotがstateを含む。graph reloadでstateが変わる場合は
-   material pipelineとのcoordinated rebuildがまだ無いためcandidateをrollbackする。
+   WP222のcoordinated rebuildでmaterial pipelineも同じcandidateへ再prepareする。
 
 固定機能の意味はpass/renderer strategyが所有する。`.surface`は透明/不透明など
 material自身の既定stateを引き続き所有し、個別G-buffer field名やOIT技法を知らない。
@@ -131,7 +131,7 @@ headless gateは`B8G8R8A8_UNORM` albedoを0.25でclearし、shaderの0.25を
 
 1. material/custom raster shaderからのsame-pixel local-read input ABI
    （WP220で解消）
-2. graph + surface + material pipelineのcoordinated hot reload
+2. graph + surface + material pipelineのcoordinated hot reload（WP222で解消）
 3. shaderc OFF / dist-bakeでのcustom schema artifact
 4. weighted OIT accumulation + compositeをproject-owned featureとしてdogfood
 5. blend constants、dual-source blend、logic op、advanced blend extension

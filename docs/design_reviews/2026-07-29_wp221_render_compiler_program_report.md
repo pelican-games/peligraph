@@ -147,13 +147,13 @@ Debug / OpenXR ON buildで次を確認した。
 4. `NativeScope`とraw Vulkan command/resource ownership contractは未実装
 5. Metal context/packageと共有planner fixtureは未実装
 6. CPU / external physical packageとheterogeneous execution linkerは未実装
-7. coordinated graph + surface + material pipeline hot reloadは別候補
+7. coordinated graph + surface + material pipeline hot reloadはWP222で解消
 8. stable game-DLL compiler-program ABIは未設計
 
 ## 次の順序
 
-1. graph + surface + material pipelineのcoordinated candidateをprogram output transactionへ
-   統合する
+1. graph + surface + material pipelineのcoordinated candidateはWP222でprogram output
+   transactionへ統合済み
 2. previewでtransform / subgraph / physical-plan表示が必要になった時点で、data-only
    adapterの入力契約をtarget storage非依存に分離する
 3. 具体的なVulkan-only使用例からcomplete raw package verifierまたは`NativeScope`を設計する
