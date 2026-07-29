@@ -6,10 +6,11 @@
 // pelican_resource_ports.glsl; this library owns only the packed data ABI.
 const uint PELICAN_LIGHT_INVENTORY_V2_MAGIC = 0x504C4932u;
 const uint PELICAN_LIGHT_INVENTORY_V2_VERSION = 2u;
-const uint PELICAN_LIGHT_SELECTION_V1_MAGIC = 0x504C5331u;
-const uint PELICAN_LIGHT_SELECTION_V1_VERSION = 1u;
+const uint PELICAN_LIGHT_SELECTION_V2_MAGIC = 0x504C5332u;
+const uint PELICAN_LIGHT_SELECTION_V2_VERSION = 2u;
 const uint PELICAN_LIGHT_SELECTION_OVERFLOW_BIT = 0x80000000u;
 const uint PELICAN_LIGHT_SELECTION_COUNT_MASK = 0x7fffffffu;
+const uint PELICAN_LIGHT_SELECTION_V2_HEADER_WORDS = 12u;
 
 bool pelican_light_inventory_v2_valid() {
     if (pelican_count_light_inventory() < 2u) {
@@ -23,58 +24,107 @@ bool pelican_light_inventory_v2_valid() {
            required <= pelican_count_light_inventory();
 }
 
-uvec4 pelican_light_selection_header_a() {
-    return uvec4(
-        pelican_load_light_selection(0u),
-        pelican_load_light_selection(1u),
-        pelican_load_light_selection(2u),
-        pelican_load_light_selection(3u));
-}
-
-uvec4 pelican_light_selection_header_b() {
-    return uvec4(
-        pelican_load_light_selection(4u),
-        pelican_load_light_selection(5u),
-        pelican_load_light_selection(6u),
-        pelican_load_light_selection(7u));
-}
-
-bool pelican_light_selection_v1_valid() {
-    // The standard clustered selector is authored for the main view. A
-    // clipped secondary family (for example planar reflection) keeps the
-    // scalable inventory binding but deliberately falls back to LightUBO
-    // until it owns a family-local selector task and buffer.
-    if (pelican_view_has_clip_plane() ||
-        !pelican_light_inventory_v2_valid() ||
-        pelican_count_light_selection() < 8u) {
+bool pelican_light_selection_region(
+    out uint region_base,
+    out uint region_words) {
+    uint view_index = pelican_view_index();
+    uint view_count = pelican_view_count();
+    uint total_words =
+        pelican_count_light_selection();
+    if (view_count == 0u ||
+        view_index >= view_count ||
+        total_words % view_count != 0u) {
+        region_base = 0u;
+        region_words = 0u;
         return false;
     }
-    uvec4 a = pelican_light_selection_header_a();
-    uvec4 b = pelican_light_selection_header_b();
-    if (a.x != PELICAN_LIGHT_SELECTION_V1_MAGIC ||
-        a.y != PELICAN_LIGHT_SELECTION_V1_VERSION ||
+    region_words = total_words / view_count;
+    region_base = view_index * region_words;
+    return region_words >=
+           PELICAN_LIGHT_SELECTION_V2_HEADER_WORDS;
+}
+
+uvec4 pelican_light_selection_header_a(
+    uint region_base) {
+    return uvec4(
+        pelican_load_light_selection(region_base + 0u),
+        pelican_load_light_selection(region_base + 1u),
+        pelican_load_light_selection(region_base + 2u),
+        pelican_load_light_selection(region_base + 3u));
+}
+
+uvec4 pelican_light_selection_header_b(
+    uint region_base) {
+    return uvec4(
+        pelican_load_light_selection(region_base + 4u),
+        pelican_load_light_selection(region_base + 5u),
+        pelican_load_light_selection(region_base + 6u),
+        pelican_load_light_selection(region_base + 7u));
+}
+
+uvec4 pelican_light_selection_header_c(
+    uint region_base) {
+    return uvec4(
+        pelican_load_light_selection(region_base + 8u),
+        pelican_load_light_selection(region_base + 9u),
+        pelican_load_light_selection(region_base + 10u),
+        pelican_load_light_selection(region_base + 11u));
+}
+
+bool pelican_light_selection_v2_valid() {
+    uint region_base = 0u;
+    uint region_words = 0u;
+    if (!pelican_light_inventory_v2_valid() ||
+        !pelican_light_selection_region(
+            region_base, region_words)) {
+        return false;
+    }
+    uvec4 a =
+        pelican_light_selection_header_a(region_base);
+    uvec4 b =
+        pelican_light_selection_header_b(region_base);
+    uvec4 c =
+        pelican_light_selection_header_c(region_base);
+    uvec2 family_token =
+        pelican_view_family_token();
+    if (a.x != PELICAN_LIGHT_SELECTION_V2_MAGIC ||
+        a.y != PELICAN_LIGHT_SELECTION_V2_VERSION ||
         a.z == 0u || a.w == 0u ||
-        b.x == 0u || b.y == 0u || b.z == 0u) {
+        b.x == 0u || b.y == 0u || b.z == 0u ||
+        c.x != pelican_view_index() ||
+        c.y != pelican_view_count() ||
+        c.z != family_token.x ||
+        c.w != family_token.y) {
         return false;
     }
     uint tile_count = a.z * a.w;
     uint stride = 1u + b.z;
-    uint required = 8u + tile_count * stride;
+    uint required =
+        PELICAN_LIGHT_SELECTION_V2_HEADER_WORDS +
+        tile_count * stride;
     return tile_count != 0u && stride > b.z &&
-           required >= 8u &&
-           required <= pelican_count_light_selection();
+           required >=
+               PELICAN_LIGHT_SELECTION_V2_HEADER_WORDS &&
+           required <= region_words;
 }
 
 uint pelican_light_selection_tile_base() {
-    uvec4 a = pelican_light_selection_header_a();
-    uvec4 b = pelican_light_selection_header_b();
+    uint region_base = 0u;
+    uint region_words = 0u;
+    pelican_light_selection_region(
+        region_base, region_words);
+    uvec4 a =
+        pelican_light_selection_header_a(region_base);
+    uvec4 b =
+        pelican_light_selection_header_b(region_base);
     uint tile_x = min(
         uint(max(gl_FragCoord.x, 0.0)) / b.x,
         a.z - 1u);
     uint tile_y = min(
         uint(max(gl_FragCoord.y, 0.0)) / b.y,
         a.w - 1u);
-    return 8u +
+    return region_base +
+           PELICAN_LIGHT_SELECTION_V2_HEADER_WORDS +
            (tile_y * a.z + tile_x) *
                (1u + b.z);
 }
@@ -86,14 +136,14 @@ uint pelican_legacy_light_count_v2() {
 }
 
 uint pelican_directional_light_count() {
-    if (!pelican_light_selection_v1_valid()) {
+    if (!pelican_light_selection_v2_valid()) {
         return pelicanLights.directionalLightCount;
     }
     return pelican_load_light_inventory(1u).x;
 }
 
 uint pelican_light_count() {
-    if (!pelican_light_selection_v1_valid()) {
+    if (!pelican_light_selection_v2_valid()) {
         return pelican_legacy_light_count_v2();
     }
     uint encoded = pelican_load_light_selection(
@@ -103,7 +153,7 @@ uint pelican_light_count() {
 }
 
 bool pelican_light_selection_overflowed() {
-    if (!pelican_light_selection_v1_valid()) {
+    if (!pelican_light_selection_v2_valid()) {
         return false;
     }
     uint encoded = pelican_load_light_selection(
@@ -113,7 +163,7 @@ bool pelican_light_selection_overflowed() {
 }
 
 uint pelican_light_inventory_index(uint local_index) {
-    if (!pelican_light_selection_v1_valid()) {
+    if (!pelican_light_selection_v2_valid()) {
         return local_index;
     }
     uint base = pelican_light_selection_tile_base();
@@ -172,7 +222,7 @@ PelicanLightV1 pelican_legacy_light_v2(
 
 PelicanLightV1 pelican_light(
     uint local_index, vec3 world_position) {
-    if (!pelican_light_selection_v1_valid()) {
+    if (!pelican_light_selection_v2_valid()) {
         return pelican_legacy_light_v2(
             local_index, world_position);
     }

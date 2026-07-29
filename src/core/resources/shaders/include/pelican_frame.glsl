@@ -60,6 +60,13 @@ uint pelican_view_count() {
     return pelicanFrame.view_count;
 }
 
+uvec2 pelican_view_family_token() {
+    // frame_index.xy is the 64-bit logical frame number. zw is reserved for
+    // the deterministic ViewFamily token so view-affine buffers can reject a
+    // stale or incorrectly rebound producer.
+    return pelicanFrame.frame_index.zw;
+}
+
 bool pelican_view_has_clip_plane() {
     return dot(
                pelicanFrame.clip_plane.xyz,

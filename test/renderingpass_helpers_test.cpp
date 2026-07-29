@@ -701,7 +701,8 @@ TEST_CASE(
                 "tile_width": 32,
                 "tile_height": 32,
                 "header_bytes": 32,
-                "bytes_per_tile": 260
+                "bytes_per_tile": 260,
+                "copies": 2
               }
             }
           ],
@@ -744,7 +745,10 @@ TEST_CASE(
         "lit_color");
     REQUIRE(
         buffers[1].size ==
-        32u + 20u * 12u * 260u);
+        2u * (32u + 20u * 12u * 260u));
+    REQUIRE(
+        buffers[1].extent_size->copies ==
+        2);
 
     const auto tasks =
         parseComputeTaskDefinitionsFromConfigJson(
@@ -771,6 +775,16 @@ TEST_CASE(
             invalid),
         Catch::Matchers::ContainsSubstring(
             "cannot declare both size and size_from_extent"));
+
+    invalid = config;
+    invalid["buffers"][1]
+           ["size_from_extent"]["copies"] =
+        0;
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphBufferDefinitionsFromJson(
+            invalid),
+        Catch::Matchers::ContainsSubstring(
+            "positive tile dimensions bytes_per_tile, and copies"));
 }
 
 TEST_CASE(

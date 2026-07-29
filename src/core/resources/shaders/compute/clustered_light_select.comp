@@ -8,12 +8,12 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 const uint PELICAN_LIGHT_INVENTORY_V2_MAGIC = 0x504C4932u;
 const uint PELICAN_LIGHT_INVENTORY_V2_VERSION = 2u;
-const uint PELICAN_LIGHT_SELECTION_V1_MAGIC = 0x504C5331u;
-const uint PELICAN_LIGHT_SELECTION_V1_VERSION = 1u;
+const uint PELICAN_LIGHT_SELECTION_V2_MAGIC = 0x504C5332u;
+const uint PELICAN_LIGHT_SELECTION_V2_VERSION = 2u;
 const uint PELICAN_TILE_WIDTH = 32u;
 const uint PELICAN_TILE_HEIGHT = 32u;
 const uint PELICAN_MAX_LIGHTS_PER_TILE = 64u;
-const uint PELICAN_SELECTION_HEADER_WORDS = 8u;
+const uint PELICAN_SELECTION_HEADER_WORDS = 12u;
 const uint PELICAN_SELECTION_OVERFLOW_BIT = 0x80000000u;
 
 bool inventoryValid(out uint light_count) {
@@ -113,36 +113,77 @@ void main() {
     uint required_words =
         PELICAN_SELECTION_HEADER_WORDS +
         tile_count * stride;
+    uint view_index = pelican_view_index();
+    uint view_count = pelican_view_count();
+    uint total_selection_words =
+        pelican_count_light_selection();
+    bool region_layout_valid =
+        view_count != 0u &&
+        view_index < view_count &&
+        total_selection_words % view_count == 0u;
+    uint region_words =
+        region_layout_valid
+            ? total_selection_words / view_count
+            : 0u;
+    uint region_base =
+        region_layout_valid
+            ? view_index * region_words
+            : 0u;
 
     uint light_count = 0u;
-    bool valid = inventoryValid(light_count) &&
+    bool valid = region_layout_valid &&
+                 inventoryValid(light_count) &&
                  tile_count != 0u &&
                  required_words >=
                      PELICAN_SELECTION_HEADER_WORDS &&
                  required_words <=
-                     pelican_count_light_selection();
+                     region_words;
 
     uint worker = gl_GlobalInvocationID.x;
     uint worker_count =
         gl_NumWorkGroups.x *
         gl_WorkGroupSize.x;
-    if (worker == 0u) {
+    if (worker == 0u &&
+        region_words >=
+            PELICAN_SELECTION_HEADER_WORDS) {
+        uvec2 family_token =
+            pelican_view_family_token();
         pelican_store_light_selection(
-            0u, PELICAN_LIGHT_SELECTION_V1_MAGIC);
+            region_base + 0u,
+            PELICAN_LIGHT_SELECTION_V2_MAGIC);
         pelican_store_light_selection(
-            1u, PELICAN_LIGHT_SELECTION_V1_VERSION);
+            region_base + 1u,
+            PELICAN_LIGHT_SELECTION_V2_VERSION);
         pelican_store_light_selection(
-            2u, valid ? tiles.x : 0u);
+            region_base + 2u,
+            valid ? tiles.x : 0u);
         pelican_store_light_selection(
-            3u, valid ? tiles.y : 0u);
+            region_base + 3u,
+            valid ? tiles.y : 0u);
         pelican_store_light_selection(
-            4u, PELICAN_TILE_WIDTH);
+            region_base + 4u,
+            PELICAN_TILE_WIDTH);
         pelican_store_light_selection(
-            5u, PELICAN_TILE_HEIGHT);
+            region_base + 5u,
+            PELICAN_TILE_HEIGHT);
         pelican_store_light_selection(
-            6u, PELICAN_MAX_LIGHTS_PER_TILE);
+            region_base + 6u,
+            PELICAN_MAX_LIGHTS_PER_TILE);
         pelican_store_light_selection(
-            7u, light_count);
+            region_base + 7u,
+            light_count);
+        pelican_store_light_selection(
+            region_base + 8u,
+            view_index);
+        pelican_store_light_selection(
+            region_base + 9u,
+            view_count);
+        pelican_store_light_selection(
+            region_base + 10u,
+            family_token.x);
+        pelican_store_light_selection(
+            region_base + 11u,
+            family_token.y);
     }
     if (!valid) {
         return;
@@ -155,6 +196,7 @@ void main() {
             tile_index % tiles.x,
             tile_index / tiles.x);
         uint output_base =
+            region_base +
             PELICAN_SELECTION_HEADER_WORDS +
             tile_index * stride;
         uint selected_count = 0u;

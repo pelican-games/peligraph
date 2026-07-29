@@ -2414,12 +2414,226 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             loaded.instance.ref,
         });
     }
+    // Cross-feature additions are evaluated only after every base fragment
+    // has been composed.  This keeps an integration independent of feature
+    // declaration order while retaining the same collision and validation
+    // rules as ordinary feature content.
+    std::unordered_set<std::string>
+        enabled_feature_names{
+            feature_names.begin(),
+            feature_names.end()};
+    const auto base_pass_names =
+        pass_names;
+    std::vector<PendingSurfaceResourceFeature>
+        pending_integration_surface_resources;
+    for (const auto &provider :
+         pending_surface_resources) {
+        if (!provider.feature.contains(
+                "integrations")) {
+            continue;
+        }
+        const auto &integrations =
+            requireArrayField(
+                provider.feature,
+                "integrations",
+                "render feature '" +
+                    provider.name + "'");
+        for (const auto &integration :
+             integrations) {
+            if (!integration.is_object()) {
+                throw std::runtime_error(
+                    "render feature integration must be an object: " +
+                    provider.name);
+            }
+            for (auto field =
+                     integration.begin();
+                 field != integration.end();
+                 ++field) {
+                if (field.key() != "name" &&
+                    field.key() != "requires" &&
+                    field.key() !=
+                        "requires_passes" &&
+                    field.key() != "fragment") {
+                    throw std::runtime_error(
+                        "render feature integration has unknown field '" +
+                        field.key() + "': " +
+                        provider.name);
+                }
+            }
+            const auto integration_name =
+                requireStringField(
+                    integration, "name",
+                    "render feature integration in '" +
+                        provider.name + "'");
+            const auto required_features =
+                parseStringArray(
+                    integration, "requires",
+                    "render feature integration '" +
+                        integration_name + "'");
+            if (required_features.empty()) {
+                throw std::runtime_error(
+                    "render feature integration requires at least one "
+                    "feature: " +
+                    integration_name);
+            }
+            std::unordered_set<std::string>
+                unique_requirements;
+            for (const auto &required :
+                 required_features) {
+                if (required.empty() ||
+                    !unique_requirements
+                         .insert(required)
+                         .second) {
+                    throw std::runtime_error(
+                        "render feature integration has an empty or "
+                        "duplicate requirement: " +
+                        integration_name);
+                }
+            }
+            if (!std::all_of(
+                    required_features.begin(),
+                    required_features.end(),
+                    [&](const auto &required) {
+                        return enabled_feature_names
+                            .contains(required);
+                    })) {
+                continue;
+            }
+            std::vector<std::string>
+                required_passes;
+            if (integration.contains(
+                    "requires_passes")) {
+                required_passes =
+                    parseStringArray(
+                        integration,
+                        "requires_passes",
+                        "render feature integration '" +
+                            integration_name + "'");
+            }
+            if (integration.contains(
+                    "requires_passes") &&
+                required_passes.empty()) {
+                throw std::runtime_error(
+                    "render feature integration requires_passes must not "
+                    "be empty: " +
+                    integration_name);
+            }
+            std::unordered_set<std::string>
+                unique_pass_requirements;
+            for (const auto &required :
+                 required_passes) {
+                if (required.empty() ||
+                    !unique_pass_requirements
+                         .insert(required)
+                         .second) {
+                    throw std::runtime_error(
+                        "render feature integration has an empty or "
+                        "duplicate pass requirement: " +
+                        integration_name);
+                }
+            }
+            if (!std::all_of(
+                    required_passes.begin(),
+                    required_passes.end(),
+                    [&](const auto &required) {
+                        return base_pass_names
+                            .contains(required);
+                    })) {
+                continue;
+            }
+            if (!integration.contains(
+                    "fragment") ||
+                !integration.at("fragment")
+                     .is_object()) {
+                throw std::runtime_error(
+                    "render feature integration fragment must be an "
+                    "object: " +
+                    integration_name);
+            }
+            const auto &fragment =
+                integration.at("fragment");
+            constexpr std::array
+                supported_fragment_fields{
+                    std::string_view{
+                        "render_targets"},
+                    std::string_view{"buffers"},
+                    std::string_view{
+                        "render_target_overrides"},
+                    std::string_view{"passes"},
+                    std::string_view{
+                        "pass_overrides"},
+                    std::string_view{
+                        "compute_tasks"},
+                    std::string_view{
+                        "surface_resources"},
+                    std::string_view{
+                        "shader_defines"},
+                };
+            for (auto field =
+                     fragment.begin();
+                 field != fragment.end();
+                 ++field) {
+                if (std::find(
+                        supported_fragment_fields
+                            .begin(),
+                        supported_fragment_fields
+                            .end(),
+                        field.key()) ==
+                    supported_fragment_fields
+                        .end()) {
+                    throw std::runtime_error(
+                        "render feature integration fragment has "
+                        "unsupported field '" +
+                        field.key() + "': " +
+                        integration_name);
+                }
+            }
+            addRenderTargets(
+                composed, fragment,
+                target_names);
+            addBuffers(
+                composed, fragment,
+                buffer_names);
+            applyRenderTargetOverrides(
+                composed, fragment);
+            addFeaturePasses(
+                composed, fragment,
+                pass_names);
+            applyPassOverrides(
+                composed, fragment);
+            addFeatureComputeTasks(
+                composed, fragment,
+                task_names);
+            appendShaderDefines(
+                shader_defines, fragment,
+                "render feature integration '" +
+                    integration_name + "'");
+            if (fragment.contains(
+                    "surface_resources")) {
+                pending_integration_surface_resources
+                    .push_back({
+                        fragment,
+                        provider.name + "/" +
+                            integration_name,
+                        provider.reference,
+                    });
+            }
+        }
+    }
     // A feature-owned surface resource selects consumers semantically. Run
     // that selection only after every feature has inserted its passes so the
     // result does not depend on whether a producer such as directional
     // shadows was listed before or after a secondary-view consumer.
     for (const auto &pending :
          pending_surface_resources) {
+        applySurfaceResourceContracts(
+            composed, pending.feature,
+            pending.name,
+            pending.reference,
+            surface_resource_contracts);
+    }
+    for (const auto &pending :
+         pending_integration_surface_resources) {
         applySurfaceResourceContracts(
             composed, pending.feature,
             pending.name,

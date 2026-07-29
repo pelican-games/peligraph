@@ -1050,14 +1050,19 @@ FrameUniformData updateFrameResources(
     const std::optional<RenderViewClipPlane>
         &clip_plane,
     std::uint32_t view_index,
-    std::uint32_t view_count) {
+    std::uint32_t view_count,
+    std::string_view view_family) {
     const auto frame_index = engine_time.frameIndex();
+    const auto family_token =
+        renderViewFamilyToken(
+            view_family);
 
     FrameUniformData data;
     data.time_delta = glm::vec4{static_cast<float>(engine_time.now()),
                                 static_cast<float>(engine_time.dt()), 0.0f, 0.0f};
     data.frame_index = glm::uvec4{static_cast<uint32_t>(frame_index),
-                                  static_cast<uint32_t>(frame_index >> 32), 0u, 0u};
+                                  static_cast<uint32_t>(frame_index >> 32),
+                                  family_token[0], family_token[1]};
     // Legacy consumers remain output-relative. New render-resolution-aware
     // shaders use the dedicated PelicanResolutionUBO below.
     data.resolution = resolutionVector(output_extent);
@@ -4163,7 +4168,8 @@ void Renderer::renderLogicalFrame(
                                         family_view_index)
                                     .clip_plane,
                                 family_view_index,
-                                family_view_count));
+                                family_view_count,
+                                family.family_id));
                     state.frame_resolutions
                         .push_back(
                             frameResolutionData(

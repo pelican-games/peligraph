@@ -16,8 +16,9 @@
         "resource": "lit_color",
         "tile_width": 32,
         "tile_height": 32,
-        "header_bytes": 32,
-        "bytes_per_tile": 260
+        "header_bytes": 48,
+        "bytes_per_tile": 260,
+        "copies": 2
       }
     }
   ],
@@ -27,6 +28,7 @@
       "shader": "engine://shaders/compute/clustered_light_select",
       "reads": ["clustered_light_inventory"],
       "writes": ["clustered_light_selection"],
+      "schedule": "per_view",
       "before": [
         "deferred_lighting",
         "forward_opaque",
@@ -85,22 +87,118 @@
       }
     }
   },
+  "integrations": [
+    {
+      "name": "planar_reflection_view_local_selection_v2",
+      "requires": ["planar_reflection"],
+      "fragment": {
+        "buffers": [
+          {
+            "name": "planar_reflection_light_selection",
+            "lifetime": "persistent",
+            "size_from_extent": {
+              "resource": "planar_reflection_color",
+              "tile_width": 32,
+              "tile_height": 32,
+              "header_bytes": 48,
+              "bytes_per_tile": 260,
+              "copies": 2
+            }
+          }
+        ],
+        "compute_tasks": [
+          {
+            "name": "planar_reflection_light_select",
+            "shader": "engine://shaders/compute/clustered_light_select",
+            "reads": ["clustered_light_inventory"],
+            "writes": ["planar_reflection_light_selection"],
+            "schedule": "per_view",
+            "view_family": "$reflection/planar",
+            "before": [
+              "planar_reflection_lighting"
+            ],
+            "resource_ports": {
+              "light_inventory": {
+                "resource": "clustered_light_inventory",
+                "kind": "buffer",
+                "element": "uvec4",
+                "access": "storage"
+              },
+              "light_selection": {
+                "resource": "planar_reflection_light_selection",
+                "kind": "buffer",
+                "element": "uint",
+                "access": "storage"
+              }
+            },
+            "dispatch": {
+              "groups": [64, 1, 1]
+            }
+          }
+        ],
+        "pass_overrides": {
+          "planar_reflection_lighting": {
+            "resource_ports": {
+              "light_selection": {
+                "resource": "planar_reflection_light_selection",
+                "kind": "buffer",
+                "element": "uint",
+                "access": "storage"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_forward_opaque_selection_v2",
+      "requires": ["planar_reflection"],
+      "requires_passes": [
+        "planar_reflection_forward_opaque"
+      ],
+      "fragment": {
+        "pass_overrides": {
+          "planar_reflection_forward_opaque": {
+            "material_resources": {
+              "light_selection": "planar_reflection_light_selection"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "planar_reflection_forward_transparent_selection_v2",
+      "requires": ["planar_reflection"],
+      "requires_passes": [
+        "planar_reflection_forward_transparent"
+      ],
+      "fragment": {
+        "pass_overrides": {
+          "planar_reflection_forward_transparent": {
+            "material_resources": {
+              "light_selection": "planar_reflection_light_selection"
+            }
+          }
+        }
+      }
+    }
+  ],
   "lighting_data": {
     "inventory_contract": "pelican.light_inventory_v2",
-    "selection_contract": "project.clustered_selection_v1",
+    "selection_contract": "project.clustered_selection_v2",
     "inventory_resource": "clustered_light_inventory",
     "selection_resource": "clustered_light_selection",
     "selector_task": "clustered_light_select",
-    "algorithm": "project.fixed_tile_sphere_v1",
+    "algorithm": "project.fixed_tile_sphere_v2",
     "tile_width": 32,
     "tile_height": 32,
     "max_lights_per_tile": 64,
     "overflow": "deterministic_truncate",
     "desktop_path": "compute_clustered",
     "tile_gpu_path": "small_light_v1",
-    "xr_path": "small_light_v1",
+    "xr_path": "compute_clustered",
     "tile_gpu_fallback_reason": "tile_device_profile_requires_explicit_cluster_opt_in",
-    "xr_fallback_reason": "selection_v1_is_single_view"
+    "xr_fallback_reason": "selection_v2_is_view_family_affine"
   },
   "shader_defines": [
     "PELICAN_FEATURE_CLUSTERED_LIGHTING"

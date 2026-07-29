@@ -85,6 +85,31 @@ std::set<std::string, std::less<>> validatedViewIds(
 
 } // namespace
 
+std::array<std::uint32_t, 2>
+renderViewFamilyToken(
+    std::string_view family_id) {
+    validateRenderViewFamilyId(
+        family_id,
+        "render view family token");
+    std::uint64_t hash =
+        14695981039346656037ULL;
+    constexpr std::uint64_t prime =
+        1099511628211ULL;
+    for (const auto character :
+         family_id) {
+        hash ^=
+            static_cast<std::uint8_t>(
+                character);
+        hash *= prime;
+    }
+    return {
+        static_cast<std::uint32_t>(
+            hash),
+        static_cast<std::uint32_t>(
+            hash >> 32),
+    };
+}
+
 RenderViewFamily makeMainRenderViewFamily(RenderViewParameters view) {
     if (view.view_id.empty()) {
         view.view_id = monoRenderViewId;

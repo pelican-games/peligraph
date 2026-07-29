@@ -43,6 +43,24 @@ RenderViewFamily stereoFamily(
 } // namespace
 
 TEST_CASE(
+    "render view family tokens are stable and domain-specific",
+    "[view-family][token][gpu-abi]") {
+    const auto main =
+        renderViewFamilyToken(
+            mainRenderViewFamilyId);
+    REQUIRE(
+        main ==
+        renderViewFamilyToken(
+            mainRenderViewFamilyId));
+    REQUIRE(
+        main !=
+        renderViewFamilyToken(
+            planarReflectionRenderViewFamilyId));
+    REQUIRE_THROWS(
+        renderViewFamilyToken(""));
+}
+
+TEST_CASE(
     "render view family validates stable identities and graph cardinality",
     "[view-family][contract]") {
     const auto xr_policy =

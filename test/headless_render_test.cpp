@@ -51,6 +51,7 @@
 #include <span>
 #include <stdexcept>
 #include "ktx2_test_writer.hpp"
+#include "synthetic_stereo_target.hpp"
 
 namespace Pelican {
 
@@ -4351,6 +4352,8 @@ TEST_CASE(
                 {"features",
                  nlohmann::json::array(
                      {"engine://features/clustered_lighting.json"})},
+                {"xr",
+                 {{"view_execution", "sequential"}}},
             }
                 .dump(2));
 
@@ -4375,6 +4378,11 @@ TEST_CASE(
         launch.headless_extent =
             vk::Extent2D{32, 32};
         launch.headless_frames = 1;
+        // This fixture exercises the precompiled XR graph without starting
+        // an OpenXR runtime. Initialize ordinary Vulkan first, then request
+        // both graph variants before Renderer construction.
+        (void)GET_MODULE(VulkanManageCore);
+        launch.xr_active = true;
         GET_MODULE(EngineTime).setup(
             EngineTime::Mode::fixed_step,
             1.0 / 60.0);
@@ -4469,7 +4477,7 @@ TEST_CASE(
         REQUIRE(
             resources.bufferSize(
                 "clustered_light_selection") ==
-            32u + 260u);
+            2u * (48u + 260u));
 
         renderer.render();
         GET_MODULE(VulkanManageCore).waitIdle();
@@ -4503,16 +4511,27 @@ TEST_CASE(
                 "clustered_light_selection");
         REQUIRE(
             wordAt(selection, 0) ==
-            0x504C5331u);
-        REQUIRE(wordAt(selection, 1) == 1);
+            0x504C5332u);
+        REQUIRE(wordAt(selection, 1) == 2);
         REQUIRE(wordAt(selection, 2) == 1);
         REQUIRE(wordAt(selection, 3) == 1);
         REQUIRE(wordAt(selection, 4) == 32);
         REQUIRE(wordAt(selection, 5) == 32);
         REQUIRE(wordAt(selection, 6) == 64);
         REQUIRE(wordAt(selection, 7) == 70);
+        REQUIRE(wordAt(selection, 8) == 0);
+        REQUIRE(wordAt(selection, 9) == 1);
+        const auto main_family_token =
+            renderViewFamilyToken(
+                mainRenderViewFamilyId);
+        REQUIRE(
+            wordAt(selection, 10) ==
+            main_family_token[0]);
+        REQUIRE(
+            wordAt(selection, 11) ==
+            main_family_token[1]);
         const auto encoded_count =
-            wordAt(selection, 8);
+            wordAt(selection, 12);
         REQUIRE(
             (encoded_count & 0x7fffffffu) ==
             64);
@@ -4522,7 +4541,7 @@ TEST_CASE(
         for (std::uint32_t index = 0;
              index < 64; ++index) {
             REQUIRE(
-                wordAt(selection, 9 + index) ==
+                wordAt(selection, 13 + index) ==
                 index);
         }
 
@@ -4550,7 +4569,7 @@ TEST_CASE(
         REQUIRE(
             plan.at("lighting_data")
                 .at("selection_contract") ==
-            "project.clustered_selection_v1");
+            "project.clustered_selection_v2");
         REQUIRE(
             plan.at("lighting_data_runtime")
                 .at("selected_path") ==
@@ -4558,7 +4577,7 @@ TEST_CASE(
         REQUIRE(
             plan.at("lighting_data_runtime")
                 .at("declared_vram_bytes") ==
-            65568u + 292u);
+            65568u + 616u);
         REQUIRE(
             plan.at("lighting_data_runtime")
                 .at("inventory")
@@ -4605,6 +4624,143 @@ TEST_CASE(
                                "clustered_light_selection";
                 }));
         }
+
+        std::array<RenderViewParameters, 2>
+            stereo_views;
+        for (std::uint32_t view_index = 0;
+             view_index < stereo_views.size();
+             ++view_index) {
+            const auto eye_x =
+                view_index == 0 ? -0.04f : 0.04f;
+            stereo_views[view_index].view =
+                glm::lookAt(
+                    glm::vec3{eye_x, 0.0f, 2.0f},
+                    glm::vec3{eye_x, 0.0f, 0.0f},
+                    glm::vec3{0.0f, 1.0f, 0.0f});
+            stereo_views[view_index].projection =
+                glm::perspective(
+                    glm::radians(70.0f),
+                    1.0f, 0.1f, 100.0f);
+            stereo_views[view_index]
+                .projection[1][1] *= -1.0f;
+            stereo_views[view_index]
+                .camera_position =
+                {eye_x, 0.0f, 2.0f};
+            stereo_views[view_index].view_id =
+                "$xr/" +
+                std::to_string(view_index);
+        }
+        const RenderViewFamily stereo_family{
+            .family_id =
+                std::string{
+                    mainRenderViewFamilyId},
+            .views = {
+                stereo_views.begin(),
+                stereo_views.end()},
+        };
+        renderer.selectGraphVariant(
+            RenderGraphVariant::xr);
+        REQUIRE(
+            std::find(
+                renderer.xrExcludedFeatures()
+                    .begin(),
+                renderer.xrExcludedFeatures()
+                    .end(),
+                "clustered_lighting") ==
+            renderer.xrExcludedFeatures().end());
+        renderer.setExecutionTracingForTesting(
+            true);
+        GET_MODULE(EngineTime).advance();
+        Test::VulkanSyntheticStereoTarget
+            stereo_target{
+                launch.headless_extent,
+                GET_MODULE(RenderTarget)
+                    .getSwapchainFormat()};
+        renderer.renderLogicalFrame(
+            stereo_target, stereo_family);
+        REQUIRE(
+            stereo_target.logicalBeginCount() ==
+            1);
+        REQUIRE(
+            stereo_target.viewBeginCount() ==
+            2);
+        REQUIRE(
+            stereo_target.viewEndCount() ==
+            2);
+        REQUIRE(
+            stereo_target.submissionCount() == 1);
+
+        const auto stereo_selection =
+            readFrameGraphBuffer(
+                "clustered_light_selection");
+        constexpr std::size_t
+            stereo_region_words =
+                (2u * (48u + 260u)) /
+                sizeof(std::uint32_t) / 2u;
+        REQUIRE(stereo_region_words == 77);
+        for (std::uint32_t view_index = 0;
+             view_index < stereo_views.size();
+             ++view_index) {
+            const auto base =
+                static_cast<std::size_t>(
+                    view_index) *
+                stereo_region_words;
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 0) ==
+                0x504C5332u);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 1) == 2);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 2) == 1);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 3) == 1);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 7) == 70);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 8) ==
+                view_index);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 9) == 2);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 10) ==
+                main_family_token[0]);
+            REQUIRE(
+                wordAt(
+                    stereo_selection,
+                    base + 11) ==
+                main_family_token[1]);
+            const auto encoded =
+                wordAt(
+                    stereo_selection,
+                    base + 12);
+            REQUIRE(
+                (encoded & 0x7fffffffu) ==
+                64);
+            REQUIRE(
+                (encoded & 0x80000000u) !=
+                0);
+        }
+        REQUIRE(
+            renderer.currentFramePlanJson()
+                .at("lighting_data_runtime")
+                .at("selected_path") ==
+            "compute_clustered");
 
         GET_MODULE(VulkanManageCore).waitIdle();
         std::filesystem::remove_all(temp_dir);

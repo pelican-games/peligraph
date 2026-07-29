@@ -117,6 +117,8 @@ struct PlanarReflectionProbe {
     std::vector<std::uint8_t> albedo_bytes;
     std::vector<std::uint8_t> depth_bytes;
     std::vector<std::uint8_t> color_bytes;
+    std::vector<std::uint32_t>
+        light_selection_words;
     std::size_t prepared_view_count = 0;
     std::size_t visible_draw_count = 0;
 };
@@ -3592,6 +3594,31 @@ void writePlanarReflectionProject(
         transparent_object(
             "TransparentHigh",
             "transparent_high", 1.1));
+    // Exceed the fixed LightUBO directional capacity so the reflected result
+    // can only consume the complete inventory through its family-local
+    // clustered selection.
+    for (std::uint32_t index = 0;
+         index < 40; ++index) {
+        objects.push_back({
+            {"name",
+             "ReflectionClusterLight" +
+                 std::to_string(index)},
+            {"components",
+             nlohmann::json::array({
+                 {
+                     {"name", "light"},
+                     {"type", "directional"},
+                     {"direction",
+                      nlohmann::json::array({
+                          0.0, -1.0, -0.1})},
+                     {"intensity", 0.001},
+                     {"color",
+                      nlohmann::json::array({
+                          0.8, 0.9, 1.0})},
+                 },
+             })},
+        });
+    }
     writeTextFile(
         root / "scene.json",
         scene.dump(2));
@@ -5971,6 +5998,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                 .color_bytes =
                     readColorTargetBytes(
                         color),
+                .light_selection_words =
+                    readFrameGraphUint32Buffer(
+                        "planar_reflection_light_selection"),
                 .prepared_view_count =
                     instances
                         .viewFamilyDrawViewCountForTesting(
@@ -7665,6 +7695,51 @@ void GoldenHarness::runPlanarReflection() {
         1);
     REQUIRE(
         probe.visible_draw_count > 0);
+    REQUIRE(
+        probe.light_selection_words.size() ==
+        2u * (12u + 4u * 65u));
+    REQUIRE(
+        probe.light_selection_words[0] ==
+        0x504C5332u);
+    REQUIRE(
+        probe.light_selection_words[1] ==
+        2u);
+    REQUIRE(
+        probe.light_selection_words[2] ==
+        2u);
+    REQUIRE(
+        probe.light_selection_words[3] ==
+        2u);
+    REQUIRE(
+        probe.light_selection_words[4] ==
+        32u);
+    REQUIRE(
+        probe.light_selection_words[5] ==
+        32u);
+    REQUIRE(
+        probe.light_selection_words[6] ==
+        64u);
+    REQUIRE(
+        probe.light_selection_words[7] ==
+        41u);
+    REQUIRE(
+        probe.light_selection_words[8] ==
+        0u);
+    REQUIRE(
+        probe.light_selection_words[9] ==
+        1u);
+    const auto reflection_family_token =
+        renderViewFamilyToken(
+            planarReflectionRenderViewFamilyId);
+    REQUIRE(
+        probe.light_selection_words[10] ==
+        reflection_family_token[0]);
+    REQUIRE(
+        probe.light_selection_words[11] ==
+        reflection_family_token[1]);
+    REQUIRE(
+        (probe.light_selection_words[12] &
+         0x7fffffffu) == 41u);
 
     REQUIRE(
         probe.albedo_bytes.size() ==
@@ -7788,6 +7863,7 @@ void GoldenHarness::runPlanarReflection() {
     REQUIRE(
         reflection_nodes ==
         std::set<std::string>{
+            "planar_reflection_light_select",
             "planar_reflection_geometry",
             "planar_reflection_ssao",
             "planar_reflection_ssao_blur",

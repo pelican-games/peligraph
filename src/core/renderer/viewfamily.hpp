@@ -4,6 +4,7 @@
 #include "../../project/graphvariantpolicy.hpp"
 #include "../../project/viewfamilyrelation.hpp"
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -16,6 +17,12 @@
 namespace Pelican {
 
 inline constexpr std::string_view monoRenderViewId = "$mono";
+
+// Stable shader-visible identity for validating view-affine GPU data. The
+// token is deterministic across processes and is not a security boundary.
+std::array<std::uint32_t, 2>
+renderViewFamilyToken(
+    std::string_view family_id);
 
 struct RenderViewDepthRange {
     float near_distance = 0.0f;

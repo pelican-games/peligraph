@@ -244,7 +244,8 @@ parseExtentDerivedBufferSize(
             field.key() != "tile_width" &&
             field.key() != "tile_height" &&
             field.key() != "header_bytes" &&
-            field.key() != "bytes_per_tile") {
+            field.key() != "bytes_per_tile" &&
+            field.key() != "copies") {
             throw std::runtime_error(
                 std::string{context} +
                 ".size_from_extent has unknown field '" +
@@ -272,14 +273,22 @@ parseExtentDerivedBufferSize(
             encoded, "bytes_per_tile",
             std::string{context} +
                 ".size_from_extent"),
+        .copies =
+            encoded.contains("copies")
+                ? requireUint32(
+                      encoded, "copies",
+                      std::string{context} +
+                          ".size_from_extent")
+                : 1u,
     };
     if (definition.tile_width == 0 ||
         definition.tile_height == 0 ||
-        definition.bytes_per_tile == 0) {
+        definition.bytes_per_tile == 0 ||
+        definition.copies == 0) {
         throw std::runtime_error(
             std::string{context} +
             ".size_from_extent requires positive tile dimensions "
-            "and bytes_per_tile");
+            "bytes_per_tile, and copies");
     }
     const auto [width, height] =
         renderTargetExtent(
@@ -300,10 +309,15 @@ parseExtentDerivedBufferSize(
             tile_count,
             definition.bytes_per_tile,
             context);
-    const auto byte_size =
+    const auto region_byte_size =
         checkedAdd(
             definition.header_bytes,
             payload, context);
+    const auto byte_size =
+        checkedMultiply(
+            region_byte_size,
+            definition.copies,
+            context);
     return {std::move(definition), byte_size};
 }
 

@@ -639,6 +639,14 @@ TEST_CASE(
     REQUIRE(selector.at("writes") ==
             nlohmann::json::array(
                 {"clustered_light_selection"}));
+    REQUIRE(
+        selector.at("schedule") ==
+        "per_view");
+    REQUIRE(
+        result.config.at("buffers")
+            .at(1)
+            .at("size_from_extent")
+            .at("copies") == 2);
 
     const auto &deferred =
         passByName(
@@ -686,8 +694,12 @@ TEST_CASE(
         "pelican.light_inventory_v2");
     REQUIRE(
         metadata.at("lighting_data")
+            .at("selection_contract") ==
+        "project.clustered_selection_v2");
+    REQUIRE(
+        metadata.at("lighting_data")
             .at("xr_path") ==
-        "small_light_v1");
+        "compute_clustered");
 
 }
 
@@ -998,10 +1010,21 @@ TEST_CASE(
                 .at("resource") ==
             "clustered_light_inventory");
         REQUIRE(
+            lighting.at("resource_ports")
+                .at("light_selection")
+                .at("resource") ==
+            "planar_reflection_light_selection");
+        REQUIRE(
             std::find(
                 lighting.at("input").begin(),
                 lighting.at("input").end(),
                 "clustered_light_inventory") !=
+            lighting.at("input").end());
+        REQUIRE(
+            std::find(
+                lighting.at("input").begin(),
+                lighting.at("input").end(),
+                "planar_reflection_light_selection") !=
             lighting.at("input").end());
         const auto &resources =
             passByName(
@@ -1015,7 +1038,7 @@ TEST_CASE(
         REQUIRE(
             resources.at(
                 "light_selection") ==
-            "clustered_light_selection");
+            "planar_reflection_light_selection");
         const auto &transparent_resources =
             passByName(
                 combined.config,
@@ -1028,12 +1051,133 @@ TEST_CASE(
         REQUIRE(
             transparent_resources.at(
                 "light_selection") ==
-            "clustered_light_selection");
+            "planar_reflection_light_selection");
         REQUIRE(
             transparent_resources.at(
                 "planar_reflection") ==
             "planar_reflection_opaque_color");
+        const auto &buffers =
+            combined.config.at("buffers");
+        REQUIRE(
+            std::count_if(
+                buffers.begin(),
+                buffers.end(),
+                [](const auto &buffer) {
+                    return buffer.at("name") ==
+                           "planar_reflection_light_selection";
+                }) == 1);
+        const auto &tasks =
+            combined.config.at(
+                "compute_tasks");
+        const auto reflection_selector =
+            std::find_if(
+                tasks.begin(), tasks.end(),
+                [](const auto &task) {
+                    return task.at("name") ==
+                           "planar_reflection_light_select";
+                });
+        REQUIRE(
+            reflection_selector !=
+            tasks.end());
+        REQUIRE(
+            reflection_selector->at(
+                "view_family") ==
+            "$reflection/planar");
+        REQUIRE(
+            reflection_selector->at(
+                "schedule") ==
+            "per_view");
+        REQUIRE(
+            reflection_selector
+                ->at("writes") ==
+            nlohmann::json::array({
+                "planar_reflection_light_selection"}));
     }
+
+    auto deferred_only_feature =
+        nlohmann::json::parse(
+            loadEngineFeature(
+                "engine://features/planar_reflection.json"));
+    auto &deferred_only_passes =
+        deferred_only_feature.at("passes");
+    deferred_only_passes.erase(
+        std::remove_if(
+            deferred_only_passes.begin(),
+            deferred_only_passes.end(),
+            [](const auto &entry) {
+                const auto name =
+                    entry.at("pass")
+                        .value(
+                            "name",
+                            std::string{});
+                return name ==
+                           "planar_reflection_forward_opaque" ||
+                       name.starts_with(
+                           "planar_reflection_snapshot_opaque_") ||
+                       name ==
+                           "planar_reflection_forward_transparent";
+            }),
+        deferred_only_passes.end());
+    const auto deferred_only =
+        composeRenderFeatureConfig(
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features",
+                 nlohmann::json::array({
+                     {
+                         {"ref",
+                          "fixture://planar_reflection_deferred_only"},
+                         {"parameters",
+                          {
+                              {"resolution", 64},
+                              {"plane_x", 0.0},
+                              {"plane_y", 1.0},
+                              {"plane_z", 0.0},
+                              {"plane_offset", 0.0},
+                              {"preserve_raster_winding", true},
+                          }},
+                     },
+                     "engine://features/clustered_lighting.json",
+                 })},
+            },
+            RenderFeatureComposeDependencies{
+                [&](std::string_view ref) {
+                    if (ref ==
+                        "fixture://planar_reflection_deferred_only") {
+                        return deferred_only_feature.dump();
+                    }
+                    return loadEngineFeature(ref);
+                },
+                true,
+            });
+    const auto deferred_only_names =
+        passNames(deferred_only.config);
+    REQUIRE(
+        std::find(
+            deferred_only_names.begin(),
+            deferred_only_names.end(),
+            "planar_reflection_forward_opaque") ==
+        deferred_only_names.end());
+    REQUIRE(
+        passByName(
+            deferred_only.config,
+            "planar_reflection_lighting")
+            .at("resource_ports")
+            .at("light_selection")
+            .at("resource") ==
+        "planar_reflection_light_selection");
+    REQUIRE(
+        std::count_if(
+            deferred_only.config.at("compute_tasks")
+                .begin(),
+            deferred_only.config.at("compute_tasks")
+                .end(),
+            [](const auto &task) {
+                return task.at("name") ==
+                       "planar_reflection_light_select";
+            }) == 1);
 }
 
 TEST_CASE(

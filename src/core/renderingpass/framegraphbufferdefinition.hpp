@@ -51,6 +51,10 @@ struct FrameGraphBufferExtentSizeDefinition {
     std::uint32_t tile_height = 1;
     vk::DeviceSize header_bytes = 0;
     vk::DeviceSize bytes_per_tile = 0;
+    // Repeats the complete header + tiled payload region. View-affine
+    // algorithms use one region per bounded logical view and select the
+    // region in shader-visible ABI data.
+    std::uint32_t copies = 1;
 
     bool operator==(
         const FrameGraphBufferExtentSizeDefinition &) const =
