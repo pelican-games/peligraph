@@ -504,6 +504,12 @@ compileDefaultVulkanVariant(
             compiled_pipeline->vulkan_plan_pins,
             compiled_pipeline
                 ->vulkan_physical_fragments);
+    for (auto &verification :
+         physical->target_plan_compilation
+             .verification_contexts) {
+        verification.enabled_device_extensions =
+            backend.enabled_device_extensions;
+    }
     applyRenderingTargetPlan(
         render_target_definitions,
         physical->target_plan_compilation);
@@ -626,6 +632,42 @@ void validateVulkanPhysicalPackage(
                 "invalid target-plan index entry");
         }
     }
+    std::unordered_set<std::string>
+        verification_graphs;
+    for (const auto &context :
+         physical.target_plan_compilation
+             .verification_contexts) {
+        if (context.logical_graph == nullptr ||
+            context.automatic_plan == nullptr ||
+            context.logical_graph->name.empty() ||
+            context.automatic_plan->graph !=
+                context.logical_graph->name ||
+            !compiled_by_name.contains(
+                context.logical_graph->name) ||
+            !verification_graphs
+                 .insert(context.logical_graph->name)
+                 .second ||
+            (compiled_by_name.at(
+                 context.logical_graph->name) !=
+                 context.automatic_plan &&
+             !physical
+                  .verified_complete_physical_plans
+                  .contains(
+                      context.logical_graph->name)) ||
+            context.automatic_plan
+                    ->logical_graph_fingerprint !=
+                vulkanTargetPlanLogicalGraphFingerprint(
+                    *context.logical_graph) ||
+            context.automatic_plan
+                    ->automatic_plan_fingerprint !=
+                vulkanAutomaticTargetPlanFingerprint(
+                    context.topology,
+                    *context.automatic_plan)) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package has an invalid "
+                "complete-plan verification context");
+        }
+    }
     for (const auto &[name, verified] :
          physical.verified_complete_physical_plans) {
         const auto target =
@@ -729,6 +771,105 @@ requireVulkanRenderCompilerPhysicalPackage(
             "physical package");
     }
     return *vulkan;
+}
+
+const RenderingTargetPlanVerificationContext &
+requireVulkanTargetPlanVerificationContext(
+    const VulkanRenderCompilerPhysicalPackage &physical,
+    std::string_view graph) {
+    const auto &contexts =
+        physical.target_plan_compilation
+            .verification_contexts;
+    const auto found = std::find_if(
+        contexts.begin(), contexts.end(),
+        [graph](const auto &context) {
+            return context.logical_graph != nullptr &&
+                   context.logical_graph->name == graph;
+        });
+    if (found == contexts.end() ||
+        found->automatic_plan == nullptr) {
+        throw std::runtime_error(
+            "Vulkan compiler package has no verification context for "
+            "graph '" +
+            std::string{graph} + "'");
+    }
+    return *found;
+}
+
+void installVerifiedVulkanCompletePhysicalPlanPackage(
+    VulkanRenderCompilerPhysicalPackage &physical,
+    std::string_view graph,
+    VulkanCompletePhysicalPlanPackage package) {
+    if (graph.empty() ||
+        physical.verified_complete_physical_plans
+            .contains(std::string{graph})) {
+        throw std::runtime_error(
+            "Vulkan compiler package complete plan is unnamed or "
+            "already installed");
+    }
+    const auto indexed =
+        physical.target_plans.find(
+            std::string{graph});
+    if (indexed == physical.target_plans.end() ||
+        indexed->second == nullptr) {
+        throw std::runtime_error(
+            "Vulkan compiler package has no target plan for graph '" +
+            std::string{graph} + "'");
+    }
+    const auto &context =
+        requireVulkanTargetPlanVerificationContext(
+            physical, graph);
+    if (indexed->second !=
+        context.automatic_plan) {
+        throw std::runtime_error(
+            "Vulkan compiler target plan was modified before complete "
+            "plan verification");
+    }
+    const auto plan = std::find_if(
+        physical.target_plan_compilation.plans.begin(),
+        physical.target_plan_compilation.plans.end(),
+        [&](const auto &candidate) {
+            return candidate ==
+                   context.automatic_plan;
+        });
+    if (plan ==
+        physical.target_plan_compilation.plans.end()) {
+        throw std::runtime_error(
+            "Vulkan compiler automatic target plan is absent from its "
+            "compilation");
+    }
+
+    auto verified =
+        verifyVulkanCompletePhysicalPlanPackage(
+            *context.logical_graph,
+            context.topology,
+            *context.automatic_plan,
+            std::move(package),
+            context.format_capabilities,
+            context.enabled_device_extensions);
+    auto applied =
+        std::make_shared<const VulkanTargetPlan>(
+            applyVerifiedVulkanCompletePhysicalPlanPackage(
+                *context.automatic_plan,
+                verified));
+    auto retained_verified =
+        std::make_shared<
+            const VerifiedVulkanCompletePhysicalPlanPackage>(
+            std::move(verified));
+
+    const auto [verification, inserted] =
+        physical.verified_complete_physical_plans
+            .emplace(
+                std::string{graph},
+                std::move(retained_verified));
+    (void)verification;
+    if (!inserted) {
+        throw std::logic_error(
+            "Vulkan compiler complete plan insertion raced with "
+            "validation");
+    }
+    *plan = applied;
+    indexed->second = std::move(applied);
 }
 
 const RenderCompilerProgram &

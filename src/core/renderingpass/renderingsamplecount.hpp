@@ -100,8 +100,27 @@ struct RenderingTargetPlanDeviceFacts {
     bool dynamic_rendering_local_read = false;
 };
 
+// Exact source inputs retained beside an automatic target plan so a
+// delegating backend compiler can verify and install a complete physical
+// replacement without reconstructing private runtime-device facts.
+struct RenderingTargetPlanVerificationContext {
+    std::shared_ptr<const CompiledLogicalRenderGraph>
+        logical_graph;
+    TargetTopologySnapshot topology;
+    std::shared_ptr<const VulkanTargetPlan>
+        automatic_plan;
+    std::vector<VulkanPhysicalResourceFormatCapability>
+        format_capabilities;
+    // Filled by the Vulkan compiler layer, which owns the actual logical
+    // device contract rather than the target planner.
+    std::vector<std::string>
+        enabled_device_extensions;
+};
+
 struct RenderingTargetPlanCompilation {
     std::vector<std::shared_ptr<const VulkanTargetPlan>> plans;
+    std::vector<RenderingTargetPlanVerificationContext>
+        verification_contexts;
     std::vector<RenderingSampleCountAssignment> assignments;
     std::vector<RenderingTargetArrayLayerAssignment>
         array_layer_assignments;

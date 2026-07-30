@@ -128,7 +128,8 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP238a | common FrameExecutionPlan vertical slice | ✅ 完了（2026-07-30）。open endpoint/capability IR、render/compute/copy収束、closure/fingerprint、compiler/runtime/dump、atomic reload |
 | WP238b | Generic Raster Pass ABI vertical slice | ✅ 完了（2026-07-30）。backend非依存draw/state contract、open実装ID、任意MRT/resource port、Vulkan adapter、execution-plan dialect、sprite dogfood |
 | WP238c | complete physical plan / NativeScope data boundary | ✅ CPU slice完了（2026-07-30）。完全physical package、canonical round-trip/fingerprint、strict verifier、typed NativeScope effect/ownership/sync。runtime executorは後続 |
-| WP238d | NativeScope executor provider / runtime publication | ✅ source-level runtime slice完了（2026-07-31）。owner/generation lease、prepare/rollback、typed resource view、automatic outer sync、scope単位dispatch、generation retirement。公開game-DLL ABIと実GPU command fixtureは後続 |
+| WP238d | NativeScope executor provider / runtime publication | ✅ source-level runtime slice完了（2026-07-31）。owner/generation lease、prepare/rollback、typed resource view、automatic outer sync、scope単位dispatch、generation retirement |
+| WP238e | NativeScope command-producing Vulkan fixture | ✅ 完了（2026-07-31）。exact logical/device verification context、実command記録、validation error 0、readback capture、generation rebuild/retirement。公開game-DLL ABIとdevice-loss注入は後続 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -142,7 +143,8 @@ WP231〜237の受け入れ詳細:
 [`WP238a`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)、
 [`WP238b`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)、
 [`WP238c`](design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md)、
-[`WP238d`](design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md)。
+[`WP238d`](design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md)、
+[`WP238e`](design_reviews/2026-07-31_wp238e_native_scope_vulkan_fixture.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -351,8 +353,22 @@ attachment aspectから外側image layoutを導出し、`manual`/`unchecked`は�
 attachment、layer/mip viewとFrameResourcesだけを渡す。runtime dumpにはprovider世代とresource
 loweringを出す。詳細は
 [`design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md`](design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md)
-を正とする。公開game-DLL raw command ABI、command-producing実GPU fixture、capture/device-loss実測は
-このsource runtime seamを使った具体例の後まで凍結しない。
+を正とする。公開game-DLL raw command ABIは、このsource runtime seamを使う実GPU具体例と
+device-loss境界を確認するまで凍結しない。
+
+### WP238e: NativeScope command-producing Vulkan fixture
+
+delegating compilerがdefault Vulkan packageに保持されたcanonical logical graph、target topology、
+automatic plan、format capability、実際に`vkCreateDevice`へ渡したextension closureをそのまま使い、
+complete packageを再検証して一括installするhelperを追加した。callerがprivate device factsを
+再構成したり、未有効extensionを検証入力として申告する必要はない。
+
+test providerは隔離したphysical scopeでdynamic renderingを開始し、宣言済みcolor attachmentを
+clearして終了する。後続の通常fullscreen passとheadless readbackでmagenta/greenの実画素を確認し、
+debug-utils validation error 0、二世代のhot replacement、in-flight GPU lease完了後の旧executor
+retirementを同時にgateした。詳細は
+[`design_reviews/2026-07-31_wp238e_native_scope_vulkan_fixture.md`](design_reviews/2026-07-31_wp238e_native_scope_vulkan_fixture.md)
+を正とする。公開game-DLL ABIと意図的な`VK_ERROR_DEVICE_LOST`注入は未実装である。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
@@ -554,8 +570,8 @@ XR2b最終gateを満たす。
 3. MSAA/history/depth/storage/transfer/bufferまで含むalias範囲の拡張と、対象tile GPU /
    XR実機での性能・validation gate
 4. complete physical/data-only `NativeScope` boundaryはWP238c、source-level executorの
-   ownership/publicationはWP238dで実装済み。open external runtime、公開game-DLL ABI、
-   command-producing実GPU fixtureは未実装
+   ownership/publicationはWP238d、command-producing実GPU/validation/readback/reload fixtureは
+   WP238eで実装済み。open external runtime、公開game-DLL ABI、device-loss注入は未実装
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 
@@ -992,8 +1008,9 @@ same-pixel fullscreen/material readのtile-local scope fusion、
 lifetime非重複imageのallocation共有まで
 実行できる。次はscope fusion/reorder、一般のmaterialized store elision、queue/barrier等の
 aggressive controlと、現runtime subsetの範囲拡張を具体的なGPU gate付きで進める。
-`NativeScope`は具体的な
-Vulkan-only利用例を得てから進める。
+`NativeScope`はWP238eでVulkan-only command fixture、validation、readback capture、
+generation replacementまで実証済みである。次に進める場合も、直ちに公開ABIを固定せず、
+device-loss注入または実用的な二つ目のnative workloadが示す不足だけを追加する。
 
 WP205でfeature-owned `directional_shadow` contractをstandard surfaceのpass-input ABIへ
 接続した。shadow image、shared 2D view policy、manual depth compare、light indexと

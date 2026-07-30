@@ -1023,6 +1023,14 @@ providerがbarrierを発行し、engine-owned imageを宣言outer layoutへ戻�
 実行せず、callbackをscope/viewごとに一度だけrecordする。公開game-DLL向けversioned/noexcept ABIは、
 command-producing実GPU fixtureとcapture/device-loss gateを得るまで追加しない。
 
+WP238eではcommand-producing実GPU fixtureまで接続した。default compilerはcanonical logical graph、
+target topology、automatic plan、format capabilityと、`vkCreateDevice`へ実際に渡したextension closureを
+complete-plan verification contextへ保持する。delegating compilerはこのcontextだけを使うinstall helperで
+同層packageを再検証し、検証済みmarkerと二つのtarget-plan indexを一括更新する。test providerは
+dynamic renderingのclear commandを記録し、通常passによるsampleとheadless readback、validation error 0、
+二世代replacementとin-flight完了後retirementを実GPUで確認した。意図的なdevice-loss注入と公開game-DLL
+ABIはまだ追加しない。
+
 ## 8. 拡張の段階
 
 利用者が必要な深さだけ降りられるよう、次を別々の入口として提供する。
@@ -1842,8 +1850,8 @@ gate:
 
 - previewへのruntime transform / tagged subgraph / physical-plan表示
 - verified complete physical packageはWP238c、source-level `NativeScope` executor provider、
-  device-object ownership、runtime publicationはWP238dで追加済み。公開game-DLL ABIと
-  command-producing実GPU fixtureは未完了
+  device-object ownership、runtime publicationはWP238d、command-producing実GPU/validation/
+  readback/reload fixtureはWP238eで追加済み。公開game-DLL ABIとdevice-loss注入は未完了
 - Metal backend context/packageと共通planner再利用fixture
 - CPU/external physical packageとexecution linker
 - game-DLL向けversioned/noexcept ABI、owner lease、hot reload
@@ -1854,9 +1862,8 @@ gate:
 2. WP204 後続 — MSAA/external/異種attachmentを含む広いscope fusion、一般のload-store /
    queue / barrierのaggressive physical verifier、MSAA/history/depth/storage/transfer/bufferを
    含むalias範囲拡張、対象GPU実測gate
-3. WP238d後続 — source-level executor seamへcommand-producing Vulkan-only使用例を載せ、
-   validation/capture/device-loss/reloadを実GPUで確認する。raw game-DLL callback ABIは
-   このfixtureを得てから必要なら設計
+3. WP238e後続 — source-level command fixtureは完了。必要ならcontrolled device-loss注入か
+   実用的な二つ目のnative workloadで不足contractを確認してから、raw game-DLL callback ABIを設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 

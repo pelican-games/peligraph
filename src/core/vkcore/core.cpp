@@ -393,6 +393,7 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
                                             bool headless, bool &memory_budget_enabled,
                                             VulkanRuntimeCapabilities &runtime_capabilities,
+                                            std::vector<std::string> &enabled_device_extensions,
                                             bool use_openxr = false) {
     LOG_INFO(logger, "initializing vulkan device...");
 
@@ -435,6 +436,7 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         enabled_extensions.emplace_back(
             VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
     }
+    enabled_device_extensions = enabled_extensions;
     const auto exts = vulkanExtensionNamePointers(enabled_extensions);
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
@@ -572,6 +574,8 @@ struct VulkanBootstrapState {
     vk::UniqueDevice device;
     bool memory_budget_enabled = false;
     VulkanRuntimeCapabilities runtime_capabilities;
+    std::vector<std::string>
+        enabled_device_extensions;
 };
 
 static VulkanBootstrapState bootstrapFlatVulkan(
@@ -597,7 +601,8 @@ static VulkanBootstrapState bootstrapFlatVulkan(
     result.queues = *queues;
     result.device = createLogicalDevice(result.physical_device, result.queues, headless,
                                         result.memory_budget_enabled,
-                                        result.runtime_capabilities);
+                                        result.runtime_capabilities,
+                                        result.enabled_device_extensions);
     return result;
 }
 
@@ -635,7 +640,9 @@ static VulkanBootstrapState bootstrapXrVulkan(
              properties.deviceName.data(), properties.vendorID, properties.deviceID);
     result.device = createLogicalDevice(result.physical_device, result.queues, headless,
                                         result.memory_budget_enabled,
-                                        result.runtime_capabilities, true);
+                                        result.runtime_capabilities,
+                                        result.enabled_device_extensions,
+                                        true);
     return result;
 }
 #endif
@@ -671,6 +678,9 @@ VulkanManageCore::VulkanManageCore() {
     device = std::move(bootstrap.device);
     memory_budget_enabled = bootstrap.memory_budget_enabled;
     runtime_capabilities = bootstrap.runtime_capabilities;
+    enabled_device_extensions =
+        std::move(
+            bootstrap.enabled_device_extensions);
     if (runtime_capabilities
             .dynamic_rendering_local_read) {
         const auto raw_device =

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -56,6 +57,8 @@ DECLARE_MODULE(VulkanManageCore) {
     DebugUtilsDispatch debug_utils;
     bool memory_budget_enabled = false;
     VulkanRuntimeCapabilities runtime_capabilities;
+    std::vector<std::string>
+        enabled_device_extensions;
     PFN_vkCmdSetRenderingAttachmentLocationsKHR
         set_rendering_attachment_locations = nullptr;
     PFN_vkCmdSetRenderingInputAttachmentIndicesKHR
@@ -88,6 +91,10 @@ DECLARE_MODULE(VulkanManageCore) {
     const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
     const VulkanRuntimeCapabilities &getRuntimeCapabilities() const noexcept {
         return runtime_capabilities;
+    }
+    std::span<const std::string>
+    getEnabledDeviceExtensions() const noexcept {
+        return enabled_device_extensions;
     }
     void setRenderingAttachmentLocations(
         vk::CommandBuffer command_buffer,

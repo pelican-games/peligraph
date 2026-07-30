@@ -1072,6 +1072,12 @@ render-target/MSAA attachment/resolve、frame target、frame-graph buffer、prov
 loweringする。in-flight frameが旧renderer generationを保持する限り旧executor/code/device objectも
 retireされない。
 
+2026-07-31のWP238eでは、default compilerが保持するcanonical logical/device verification contextから
+complete packageを安全にinstallするsource APIと、実commandを記録するVulkan test providerを追加した。
+providerは隔離scopeでdynamic rendering clearを行い、後続通常passとheadless readbackで結果をcaptureする。
+debug-utils validation error 0、extension closure、二世代replacement、GPU完了後retirementを実測した。
+これはsource-level Vulkan escape hatchの実証であり、公開game-DLL ABIや実際のdevice-loss注入ではない。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -1146,7 +1152,10 @@ retireされない。
   data-only `NativeScope` boundaryとcanonical fingerprint/ejectを追加
 - WP238dでsource-level executor provider、owner/generation code lease、prepare/rollback、
   typed runtime resource facade、automatic outer sync、scope単位command ownershipと
-  renderer-generation retirementを接続。公開game-DLL ABIと実GPU command fixtureは未接続
+  renderer-generation retirementを接続
+- WP238eでexact logical/device verification context、command-producing Vulkan fixture、
+  validation/readback capture、generation replacementとGPU完了後retirementを接続。
+  公開game-DLL ABIとcontrolled device-loss注入は未接続
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
   physical control、MSAA/external scope fusion、NativeScope runtime、CPU・external・video runtime
   workはまだ追加しない

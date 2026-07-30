@@ -82,6 +82,9 @@ render-pipeline transaction, compiler-program, target-planning,
 frame-execution-plan, and reload-transaction suites pass 7,508 assertions in
 62 cases.
 
-The current built-in provider is intentionally an empty marker fixture. A
-command-producing Vulkan example and real-device validation/capture gate remain
-the next step before considering a public, versioned, `noexcept` game-DLL ABI.
+The current built-in provider is intentionally an empty marker fixture.
+Follow-up WP238e now supplies the command-producing Vulkan example, real-device
+validation/readback capture, and renderer-generation retirement gate without
+turning the fixture into a built-in feature. A controlled device-loss injection
+and a public, versioned, `noexcept` game-DLL ABI remain separate work. See
+[`2026-07-31_wp238e_native_scope_vulkan_fixture.md`](2026-07-31_wp238e_native_scope_vulkan_fixture.md).

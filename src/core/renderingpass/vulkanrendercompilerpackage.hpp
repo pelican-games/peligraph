@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -24,15 +25,21 @@ class VulkanRenderCompilerBackendContext final
         vk::Format output_format =
             vk::Format::eUndefined,
         vk::Extent2D output_extent = {},
-        vk::PhysicalDevice physical_device = {})
+        vk::PhysicalDevice physical_device = {},
+        std::vector<std::string>
+            enabled_device_extensions = {})
         : output_format{output_format},
           output_extent{output_extent},
-          physical_device{physical_device} {}
+          physical_device{physical_device},
+          enabled_device_extensions{
+              std::move(enabled_device_extensions)} {}
 
     vk::Format output_format =
         vk::Format::eUndefined;
     vk::Extent2D output_extent{};
     vk::PhysicalDevice physical_device{};
+    std::vector<std::string>
+        enabled_device_extensions;
 
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;
@@ -78,6 +85,19 @@ requireVulkanRenderCompilerPhysicalPackage(
 const VulkanRenderCompilerPhysicalPackage &
 requireVulkanRenderCompilerPhysicalPackage(
     const RenderCompilerBackendPhysicalPackage &package);
+
+const RenderingTargetPlanVerificationContext &
+requireVulkanTargetPlanVerificationContext(
+    const VulkanRenderCompilerPhysicalPackage &physical,
+    std::string_view graph);
+
+// Verifies a complete same-layer replacement against the exact logical graph
+// and device topology used by the delegated automatic compiler, then updates
+// every target-plan index as one package mutation.
+void installVerifiedVulkanCompletePhysicalPlanPackage(
+    VulkanRenderCompilerPhysicalPackage &physical,
+    std::string_view graph,
+    VulkanCompletePhysicalPlanPackage package);
 
 const RenderCompilerProgram &
 defaultVulkanRenderCompilerProgram();

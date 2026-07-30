@@ -633,6 +633,9 @@ target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
+target_sources(pelican_test_headless_render_test PRIVATE
+    headless_native_scope_test.cpp
+)
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_headless_render_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)

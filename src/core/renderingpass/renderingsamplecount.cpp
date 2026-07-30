@@ -1767,6 +1767,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
 
     RenderingTargetPlanCompilation result;
     result.plans.reserve(frame_graphs.size());
+    result.verification_contexts.reserve(
+        frame_graphs.size());
     std::map<std::string, std::uint32_t, std::less<>>
         merged_samples;
     std::map<std::string, std::uint32_t, std::less<>>
@@ -1797,7 +1799,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         // has no resource that the current runtime can actually execute as a
         // local attachment. Otherwise an equivalent tile draft can win a
         // deterministic tie without providing any tile-local work.
-        const auto topology =
+        auto topology =
             runtimeTopology(
                 device_facts,
                 !tile_local_formats.empty());
@@ -1806,7 +1808,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
             shadowOptions(
                 definition, types, target_by_name,
                 tile_local_formats));
-        const auto format_capabilities =
+        auto format_capabilities =
             physicalFormatCapabilities(
                 logical_graph, target_by_name,
                 device_facts);
@@ -2019,6 +2021,17 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 }
             }
         }
+        result.verification_contexts.push_back(
+            RenderingTargetPlanVerificationContext{
+                .logical_graph =
+                    std::make_shared<
+                        const CompiledLogicalRenderGraph>(
+                        std::move(logical_graph)),
+                .topology = std::move(topology),
+                .automatic_plan = plan,
+                .format_capabilities =
+                    std::move(format_capabilities),
+            });
         result.plans.push_back(std::move(plan));
     }
 
