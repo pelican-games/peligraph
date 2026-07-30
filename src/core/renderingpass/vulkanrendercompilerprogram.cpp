@@ -1,6 +1,7 @@
 #include "vulkanrendercompilerpackage.hpp"
 
 #include "computetask.hpp"
+#include "frameexecutionadapter.hpp"
 #include "graphtransformregistry.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "renderstrategyregistry.hpp"
@@ -198,6 +199,48 @@ targetPlansByName(
             !by_name.emplace(plan->graph, plan).second) {
             throw std::runtime_error(
                 "Duplicate or null physical target plan");
+        }
+    }
+    return by_name;
+}
+
+std::unordered_map<std::string, FrameExecutionPlan>
+frameExecutionPlansByName(
+    const std::vector<FrameGraphDefinition>
+        &definitions,
+    const std::unordered_map<std::string, FramePlan>
+        &frame_plans,
+    const std::unordered_map<
+        std::string,
+        std::shared_ptr<const VulkanTargetPlan>>
+        &target_plans) {
+    std::unordered_map<std::string, FrameExecutionPlan>
+        by_name;
+    for (const auto &definition : definitions) {
+        const auto frame =
+            frame_plans.find(definition.name);
+        const auto target =
+            target_plans.find(definition.name);
+        if (frame == frame_plans.end() ||
+            target == target_plans.end() ||
+            target->second == nullptr) {
+            throw std::runtime_error(
+                "Execution planning lacks a frame or physical "
+                "plan for graph: " +
+                definition.name);
+        }
+        auto execution =
+            compileFrameExecutionPlan(
+                definition, frame->second,
+                selectedVulkanExecutionEndpoint(
+                    *target->second));
+        if (!by_name.emplace(
+                 definition.name,
+                 std::move(execution))
+                 .second) {
+            throw std::runtime_error(
+                "Duplicate frame execution graph definition: " +
+                definition.name);
         }
     }
     return by_name;
@@ -469,6 +512,13 @@ compileDefaultVulkanVariant(
             physical->target_plan_compilation);
     physical->render_target_definitions =
         std::move(render_target_definitions);
+    auto frame_plans =
+        framePlansByName(graph_definitions);
+    auto execution_plans =
+        frameExecutionPlansByName(
+            graph_definitions,
+            frame_plans,
+            physical->target_plans);
 
     return RenderCompilerProgramVariantOutput{
         .graph_variant = request.graph_variant,
@@ -483,7 +533,9 @@ compileDefaultVulkanVariant(
         .compute_task_definitions =
             std::move(compute_task_definitions),
         .frame_plans =
-            framePlansByName(graph_definitions),
+            std::move(frame_plans),
+        .execution_plans =
+            std::move(execution_plans),
         .physical_package = std::move(physical),
     };
 }

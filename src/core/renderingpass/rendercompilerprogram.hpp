@@ -2,6 +2,7 @@
 
 #include "framegraphbufferdefinition.hpp"
 #include "frameplanner.hpp"
+#include "../../project/executionplan.hpp"
 #include "../../project/renderpipeline.hpp"
 
 #include <cstdint>
@@ -99,6 +100,8 @@ struct RenderCompilerProgramVariantOutput {
         compute_task_definitions;
     std::unordered_map<std::string, FramePlan>
         frame_plans;
+    std::unordered_map<std::string, FrameExecutionPlan>
+        execution_plans;
     std::unique_ptr<
         RenderCompilerBackendPhysicalPackage>
         physical_package;

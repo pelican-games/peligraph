@@ -2899,6 +2899,9 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     }
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
+    result["execution_plan"] =
+        frameExecutionPlanToJson(
+            frame_graph->execution_plan);
     result["runtime_generation"] = generation->generation;
     result["gpu_owner_scope"] = program->owner_scope;
     result["retained_resource_lease_count"] =

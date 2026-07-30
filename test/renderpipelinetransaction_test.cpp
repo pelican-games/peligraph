@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/project/graphvariantpolicy.hpp"
 
@@ -46,6 +47,9 @@ RenderPipelineProgramPreparation programFor(
         .declaration_index =
             static_cast<std::size_t>(revision),
     });
+    auto execution_plan =
+        makeCompatibilityFrameExecutionPlan(
+            frame_plan);
 
     auto pipeline = std::make_shared<CompiledRenderPipeline>();
     pipeline->feature_names = {
@@ -72,6 +76,8 @@ RenderPipelineProgramPreparation programFor(
     return RenderPipelineProgramPreparation{
         .rendering_pass = std::move(rendering_pass),
         .frame_plan = std::move(frame_plan),
+        .execution_plan =
+            std::move(execution_plan),
         .render_pipeline = std::move(pipeline),
         .target_plan = std::move(target_plan),
     };
@@ -86,11 +92,22 @@ int revisionOf(const RendererRuntimeGeneration &generation,
     const auto plan_revision = static_cast<int>(
         program->frame_graph.plan.nodes.front()
             .declaration_index);
+    const auto execution_revision =
+        static_cast<int>(
+            program->frame_graph.execution_plan
+                .nodes.front()
+                .declaration_index);
     const auto sample_revision = static_cast<int>(
         program->frame_graph.sample_count_plan->request.samples);
     const auto expected_provider =
         "provider_" + std::to_string(pass_revision);
     if (plan_revision != pass_revision ||
+        execution_revision != pass_revision ||
+        program->frame_graph.execution_plan
+                .fingerprint !=
+            frameExecutionPlanFingerprint(
+                program->frame_graph
+                    .execution_plan) ||
         sample_revision != pass_revision ||
         program->frame_graph.render_pipeline
                 ->draw_sorting.opaque.provider !=
@@ -239,7 +256,7 @@ TEST_CASE(
     REQUIRE_THROWS_WITH(
         runtime.prepareGeneration(
             {std::move(invalid)}),
-        "Frame plan render node is not compiled: missing_runtime_pass");
+        "Frame execution node does not match FramePlan node at order 0: missing_runtime_pass");
     REQUIRE(runtime.snapshot() == before);
     REQUIRE(revisionOf(*runtime.snapshot(),
                        RenderingPassId{0}) == 1);

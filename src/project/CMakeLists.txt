@@ -1,5 +1,6 @@
 add_library(pelican_project
     assetsmanifest.cpp
+    executionplan.cpp
     featurecompose.cpp
     featurejitter.cpp
     graphvariantpolicy.cpp

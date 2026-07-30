@@ -3,6 +3,7 @@
 #include "frameplanner.hpp"
 #include "renderpipelinegpuarena.hpp"
 #include "renderingpass.hpp"
+#include "../../project/executionplan.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../container.hpp"
 #include "../vkcore/outputcompilefacts.hpp"
@@ -47,6 +48,7 @@ struct CompiledMaterialRouteBinding {
 
 struct CompiledFrameGraphExecution {
     FramePlan plan;
+    FrameExecutionPlan execution_plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
     std::shared_ptr<const VulkanTargetPlan> target_plan;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
@@ -105,6 +107,7 @@ struct RenderPipelineProgramPreparation {
     std::string owner_scope;
     CompiledRenderingPass rendering_pass;
     FramePlan frame_plan;
+    FrameExecutionPlan execution_plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
     std::shared_ptr<const VulkanTargetPlan> target_plan;
     std::unordered_map<std::string, GlobalRenderTargetId>

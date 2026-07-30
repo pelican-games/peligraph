@@ -1,4 +1,5 @@
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
@@ -15,6 +16,7 @@ enum class NativeProgramFault {
     none,
     wrong_backend,
     missing_target_index,
+    missing_execution_plan,
     data_only_physical_package,
 };
 
@@ -100,10 +102,19 @@ class NativeVulkanProgram final
                     target_plan);
             }
 
+            auto frame_plan = FramePlan{
+                .name = "native_graph"};
+            if (fault_ !=
+                NativeProgramFault::
+                    missing_execution_plan) {
+                variant.execution_plans.emplace(
+                    "native_graph",
+                    makeCompatibilityFrameExecutionPlan(
+                        frame_plan));
+            }
             variant.frame_plans.emplace(
                 "native_graph",
-                FramePlan{
-                    .name = "native_graph"});
+                std::move(frame_plan));
             variant.physical_package =
                 std::move(physical);
             output.variants.push_back(
@@ -256,6 +267,17 @@ TEST_CASE(
                 program, fixture.input()),
             Catch::Matchers::ContainsSubstring(
                 "target-plan index is incomplete"));
+    }
+
+    SECTION("execution graph index") {
+        NativeVulkanProgram program{
+            NativeProgramFault::
+                missing_execution_plan};
+        CHECK_THROWS_WITH(
+            runRenderCompilerProgram(
+                program, fixture.input()),
+            Catch::Matchers::ContainsSubstring(
+                "execution-plan coverage does not match"));
     }
 
     SECTION("duplicate graph variant") {

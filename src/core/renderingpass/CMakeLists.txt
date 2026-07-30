@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     computetask.cpp
     debugdrawpassinfojsonparser.cpp
     debugtextpassinfojsonparser.cpp
+    frameexecutionadapter.cpp
     frameplanner.cpp
     framegraphruntime.cpp
     graphtransformregistry.cpp

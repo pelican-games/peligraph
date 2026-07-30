@@ -125,6 +125,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP235 | raster attachment mip/layer view | ✅ 完了（2026-07-29）。typed attachment view、論理〜Vulkan物理計画、sequential/multiview image view、mip extent、実GPU |
 | WP236 | runtime cube render target | ✅ 完了（2026-07-30）。resource/view形状分離、cube-compatible allocation、face attachment、fullscreen/compute/material samplerCube、実GPU |
 | WP237 | replaceable cube capture algorithm | ✅ 完了（2026-07-30）。stable 6-face provider、Deferred + Forward capture、family-local clustered selection、secondary runtime layer/descriptor一般化、package purge、実GPU |
+| WP238a | common FrameExecutionPlan vertical slice | ✅ 完了（2026-07-30）。open endpoint/capability IR、render/compute/copy収束、closure/fingerprint、compiler/runtime/dump、atomic reload |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -134,7 +135,8 @@ WP231〜237の受け入れ詳細:
 [`WP234`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)、
 [`WP235`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)、
 [`WP236`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)、
-[`WP237`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)。
+[`WP237`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)、
+[`WP238a`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -255,6 +257,31 @@ graph-onlyのwrite mask変更、graph+surfaceのoutput schema変更を実GPUで�
 
 受け入れ結果、対応範囲、意図的に残した構造変更境界は
 [`design_reviews/2026-07-29_wp222_coordinated_render_reload_report.md`](design_reviews/2026-07-29_wp222_coordinated_render_reload_report.md)
+を正とする。
+
+### WP238a: common FrameExecutionPlan vertical slice
+
+現行`FramePlan`の`render` / `compute` / `snapshot_copy`等をexecution domainと誤認せず、
+authoring互換・診断表現として残したまま、backend非依存の`FrameExecutionPlan`へ写す。
+共通IRはcoarseなhost/device/external endpoint classとopenなbackend identity、
+versioned capability / implementation / dependency / effect ID、resource epoch/access/intent/
+footprintだけを持つ。Vulkan handle、queue family enum、native command payloadは持たない。
+
+標準compilerはVulkan physical target planが実際に選択したendpointへ各nodeを割り当て、
+render/anchor/output、compute、copyをそれぞれgraphics、compute、transfer capabilityで
+表す。endpoint capability不足、未知参照、逆向きdependency、cross-endpoint bridge欠落を
+final planのhard errorとする一方、非連結componentは許可する。
+
+runtime packageはlegacy frame planとexecution planのgraph/node/resource/barrier対応を検証し、
+同じimmutable renderer generationで一括publishする。compatibility facadeはlegacy
+`FramePlan`から保守的なplanを生成できるが、production compilerは
+`FrameGraphDefinition`由来のintent/footprintとphysical endpointを必ず運ぶ。
+`currentFramePlanJson()`はstable fingerprint付きexecution planを併記する。
+
+本sliceは既存Vulkan executorの分岐や描画結果を変更しない。CPU scheduler、queue-family選択、
+Generic Raster Pass ABI、complete raw physical plan、`NativeScope`はこの共通語彙を消費する
+後続sliceで扱う。詳細と受け入れ結果は
+[`design_reviews/2026-07-30_wp238a_frame_execution_plan.md`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)
 を正とする。
 
 ### XR2b 分割 WP の逐語条件と所有権

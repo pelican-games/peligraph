@@ -992,6 +992,26 @@ headless fixtureは独立compute scopeを先頭へ移動し、その後の融合
 実行する。これはHEG3のCPU/GPU domain partitionを先取りせず、GPU physical schedulerが
 異なるVulkan node kindを正しい順序で扱えることだけを証明する。
 
+2026-07-30のWP238aでは、上記のlogical/target/Vulkan各artifactをruntime publicationへ
+収束させる最初の共通`FrameExecutionPlan`を追加した。現行`FramePlanNodeKind`は
+authoring互換・診断用のままで、execution domainには使わない。各nodeはversionedな
+`semantic_dialect`、`selected_implementation`、`required_capabilities`とopenな
+`selected_endpoint`を持つ。endpoint側はhost/device/externalという粗いclass、
+open backend identity、versioned capability集合だけを持ち、Vulkan handleやqueue enumを
+共通IRへ入れない。
+
+標準compilerはphysical target planで選ばれたVulkan endpointへrender/compute/copyを写し、
+resourceのcurrent/previous epoch、read/write、intent、footprint、明示順序とbarrierを
+data-only planへ保持する。final planではendpoint/capability/dependency/bridge closureを
+検証するが、sinkとlifetimeが閉じた非連結componentは許可する。planはcanonical orderingと
+stable fingerprintを持ち、legacy FramePlan、physical package、runtime executableを同じ
+renderer generationで一括publishする。これによりhot reloadで新旧のlogical planと
+execution selectionが混ざらない。
+
+このsliceでは既存Vulkan executorを置き換えず、CPU schedulerやqueue-family plannerも
+発明しない。次のGeneric Raster Pass ABIとcomplete physical/NativeScope境界は、この
+共通execution語彙へlinkする兄弟dialectとして追加する。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -1056,6 +1076,9 @@ headless fixtureは独立compute scopeを先頭へ移動し、その後の融合
 - WP204 dependency-safe-scope sliceでversion 3 fragment、data/after/beforeを保つreorder、
   lifetime再計算、既存compute/render nodeのphysical-order execution、限定materialized
   dynamic-rendering fusionを接続
+- WP238aでbackend非依存`FrameExecutionPlan`、open endpoint/capability選択、
+  resource/effect/dependency closure、stable fingerprint、compiler/runtime generation/dumpを接続。
+  現Vulkan executorは意味論保存のため既存FramePlan駆動を維持
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
   physical control、MSAA/external scope fusion、NativeScope、CPU・external・video runtime
   workはまだ追加しない

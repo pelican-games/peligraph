@@ -501,6 +501,15 @@ registerPreparedRenderingPassConfigVariant(
                 "Frame graph definition not found for rendering pass: " +
                 pass_name);
         }
+        auto found_execution_plan =
+            prepared.execution_plans.find(
+                pass_name);
+        if (found_execution_plan ==
+            prepared.execution_plans.end()) {
+            throw std::runtime_error(
+                "Frame execution plan not found for rendering pass: " +
+                pass_name);
+        }
         const auto found_target_plan =
             physical.target_plans.find(pass_name);
         if (found_target_plan ==
@@ -516,6 +525,10 @@ registerPreparedRenderingPassConfigVariant(
                     std::move(compiled_pass),
                 .frame_plan =
                     std::move(found_plan->second),
+                .execution_plan =
+                    std::move(
+                        found_execution_plan
+                            ->second),
                 .render_pipeline =
                     prepared.compiled_pipeline,
                 .target_plan =
