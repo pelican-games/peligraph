@@ -10,9 +10,11 @@ namespace Pelican {
 
 void validatePassInputs(const PassDefinition &pass_def) {
     if ((!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) &&
-        !pass_def.isFullscreen() && !pass_def.isMaterial()) {
+        !pass_def.isFullscreen() &&
+        !pass_def.isGenericRaster() &&
+        !pass_def.isMaterial()) {
         throw std::runtime_error(
-            "Only fullscreen and material passes support input targets: " +
+            "Only fullscreen, raster, and material passes support input targets: " +
             pass_def.name);
     }
     if (pass_def.isMaterial()) {
@@ -508,9 +510,22 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             pass_def.name);
     }
     if (!pass_def.isFullscreen() &&
+        !pass_def.isGenericRaster() &&
         pass_json.contains("resource_ports")) {
         throw std::runtime_error(
-            "Only fullscreen passes support resource_ports: " +
+            "Only fullscreen and raster passes support resource_ports: " +
+            pass_def.name);
+    }
+    if (!pass_def.isGenericRaster() &&
+        pass_json.contains("draw")) {
+        throw std::runtime_error(
+            "Only raster passes support draw: " +
+            pass_def.name);
+    }
+    if (!pass_def.isGenericRaster() &&
+        pass_json.contains("raster_state")) {
+        throw std::runtime_error(
+            "Only raster passes support raster_state: " +
             pass_def.name);
     }
 
@@ -520,10 +535,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             pass_def.name);
     }
 
-    if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && !pass_def.isDebugText() &&
+    if (!pass_def.isFullscreen() &&
+        !pass_def.isGenericRaster() &&
+        !pass_def.isDebugDraw() && !pass_def.isDebugText() &&
         !pass_def.isShadowDepth() && !pass_def.isVelocity() &&
         pass_json.contains("shader")) {
-        throw std::runtime_error("Only fullscreen, debug_draw, debug_text, and shadow_depth passes support shader: " +
+        throw std::runtime_error("Only fullscreen, raster, debug_draw, debug_text, shadow_depth, and velocity passes support shader: " +
                                  pass_def.name);
     }
 

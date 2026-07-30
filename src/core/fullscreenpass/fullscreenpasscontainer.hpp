@@ -80,6 +80,12 @@ DECLARE_MODULE(FullscreenPassContainer) {
             local_read,
         std::vector<ShaderResourceInterfaceBinding>
             resource_interface = {});
+    // Generic procedural raster passes share descriptor ownership and
+    // registration lifetime with the legacy fullscreen path. The complete
+    // pipeline description is produced by a backend adapter before entering
+    // this storage/execution container.
+    PipelineId registerRasterPass(
+        GraphicsPipelineDesc desc);
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                       RenderPassViewInvocation invocation = {});
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,

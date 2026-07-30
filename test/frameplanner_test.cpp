@@ -745,6 +745,68 @@ TEST_CASE(
         LogicalAccessIntent::storage);
 }
 
+TEST_CASE(
+    "generic raster nodes participate in one logical planner with typed inputs",
+    "[frameplanner][raster][resource-port][wp238b]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+              "name": "custom_raster",
+              "render_targets": [
+                {"name": "source"},
+                {"name": "gbuffer_a"},
+                {"name": "gbuffer_b"}
+              ],
+              "passes": [{
+                "name": "custom_geometry",
+                "type": "raster",
+                "resolution_domain": "scene",
+                "input": ["source"],
+                "resource_ports": {
+                  "source_image": {
+                    "resource": "source",
+                    "access": "sampled"
+                  }
+                },
+                "output": {
+                  "color": ["gbuffer_a", "gbuffer_b"],
+                  "depth": null
+                }
+              }]
+            })json"));
+
+    REQUIRE(graph.nodes.size() == 1);
+    const auto &node = graph.nodes.front();
+    CHECK(
+        node.kind ==
+        FramePlanNodeKind::render);
+    CHECK(node.raster_geometry);
+    CHECK(
+        node.resolution_domain ==
+        RenderResolutionDomain::scene);
+    CHECK(
+        node.reads ==
+        std::vector<std::string>{"source"});
+    CHECK(
+        node.writes ==
+        std::vector<std::string>{
+            "gbuffer_a", "gbuffer_b"});
+    CHECK(
+        node.local_read_shader_inputs ==
+        std::vector<std::string>{"source"});
+    REQUIRE(
+        node.resource_accesses.size() == 1);
+    CHECK(
+        node.resource_accesses.front().intent ==
+        LogicalAccessIntent::sampled);
+
+    const auto plan = planFrameGraph(graph);
+    REQUIRE(plan.nodes.size() == 1);
+    CHECK(
+        plan.nodes.front().name ==
+        "custom_geometry");
+}
+
 TEST_CASE("frame planner reports invalid graph fixtures", "[frameplanner]") {
     const auto expectations = readJson(fixtureRoot() / "errors" / "expectations.json");
     for (const auto &entry : expectations) {

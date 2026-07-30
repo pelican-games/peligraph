@@ -1134,6 +1134,7 @@ target_compile_definitions(pelican_test_materialformat_test PRIVATE
 )
 
 pelican_define_test(materiallowering_test pelican_project)
+pelican_define_test(rasterpass_test pelican_project)
 target_compile_definitions(pelican_test_materiallowering_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

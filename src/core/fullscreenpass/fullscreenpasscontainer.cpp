@@ -17,7 +17,9 @@ namespace Pelican {
 
 namespace {
 
-constexpr uint32_t fullscreenInputBindingCount = 8;
+// Descriptor-pool sizing estimate, not a per-pass ABI limit. A pass may use
+// more bindings; the selected device/pipeline layout owns the real limit.
+constexpr uint32_t estimatedInputBindingsPerPass = 8;
 
 FullscreenPassContainer::PipelineId requireFullscreenPipelineId(PassId pass_id) {
     if (pass_id.value < 0) {
@@ -89,12 +91,12 @@ vk::UniqueDescriptorPool createDescPool(vk::Device device,
                                         uint32_t maxSets = 1024) {
     std::array<vk::DescriptorPoolSize, 3> pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               maxSets * fullscreenInputBindingCount},
+                               maxSets * estimatedInputBindingsPerPass},
         vk::DescriptorPoolSize{
             vk::DescriptorType::eInputAttachment,
-            maxSets * fullscreenInputBindingCount},
+            maxSets * estimatedInputBindingsPerPass},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer,
-                               maxSets * fullscreenInputBindingCount},
+                               maxSets * estimatedInputBindingsPerPass},
     };
 
     vk::DescriptorPoolCreateInfo ci{};
@@ -204,16 +206,6 @@ FullscreenPassContainer::registerFullscreenPass(
         local_read,
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface) {
-    registration_order.reserve(registration_order.size() + 1);
-    if (next_pipeline_id >
-        static_cast<uint32_t>(
-            std::numeric_limits<int>::max())) {
-        throw std::runtime_error(
-            "Fullscreen pipeline handle table is exhausted");
-    }
-    PipelineId pipeline_id = {next_pipeline_id++};
-
-    auto &pipeline_factory = GET_MODULE(PipelineFactory);
     GraphicsPipelineDesc desc;
     desc.vert = vert_shader;
     desc.frag = frag_shader;
@@ -228,10 +220,27 @@ FullscreenPassContainer::registerFullscreenPass(
         std::move(local_read);
     desc.resource_interface =
         std::move(resource_interface);
+    return registerRasterPass(std::move(desc));
+}
+
+FullscreenPassContainer::PipelineId
+FullscreenPassContainer::registerRasterPass(
+    GraphicsPipelineDesc desc) {
+    registration_order.reserve(
+        registration_order.size() + 1);
+    if (next_pipeline_id >
+        static_cast<uint32_t>(
+            std::numeric_limits<int>::max())) {
+        throw std::runtime_error(
+            "Raster pipeline handle table is exhausted");
+    }
+    PipelineId pipeline_id = {next_pipeline_id++};
+
+    auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline_handle = pipeline_factory.create(desc);
     if (!pipelines.insert({pipeline_id, pipeline_handle}).second) {
         throw std::runtime_error(
-            "Fullscreen pipeline handle table changed during registration");
+            "Raster pipeline handle table changed during registration");
     }
     registration_order.push_back(pipeline_id);
 
@@ -392,9 +401,6 @@ void FullscreenPassContainer::setInputResourcesById(
     }
 
     const auto input_count = input_rts.size() + input_buffers.size();
-    if (input_count > fullscreenInputBindingCount) {
-        throw std::runtime_error("Fullscreen pass has too many inputs");
-    }
     if (input_count == 0) {
         input_textures.erase(pass_id.value);
         return;

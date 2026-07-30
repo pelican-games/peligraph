@@ -160,7 +160,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
     if (pass_def.isMaterial()) {
         renderMaterialPass(cmd_buf, pass_id, pass_def, dependencies,
                            invocation);
-    } else if (pass_def.isFullscreen()) {
+    } else if (pass_def.isFullscreen() ||
+               pass_def.isGenericRaster()) {
         renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies,
                              invocation);
     } else if (pass_def.isShadowDepth()) {

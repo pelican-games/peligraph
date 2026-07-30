@@ -8,6 +8,7 @@
 #include "../../project/materialoutput.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
+#include "../../project/rasterpass.hpp"
 #include "../../project/viewfamilyrelation.hpp"
 #include "../../project/shaderresourceport.hpp"
 #include "../../project/imagesubresource.hpp"
@@ -244,6 +245,23 @@ struct FullscreenPassInfo {
     std::vector<ShaderResourcePortDefinition> resource_ports;
 };
 
+// One extensible raster entry replaces the need for a new engine-owned pass
+// kind for every custom raster technique. The portable contract describes
+// draw/fixed state; ShaderReference is resolved only by the selected backend
+// adapter.
+struct GenericRasterPassInfo {
+    RasterPassContract contract;
+    std::string shader_implementation{
+        "pelican.raster.authored_shader@1"};
+    ShaderReference vert_shader =
+        ShaderReference{"", ShaderStage::vertex,
+                        ShaderReferenceKind::explicit_file,
+                        false};
+    std::optional<ShaderReference> frag_shader;
+    std::vector<ShaderResourcePortDefinition>
+        resource_ports;
+};
+
 struct DebugDrawPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
@@ -270,7 +288,8 @@ struct UiPassInfo {};
 struct ImGuiPassInfo {};
 #endif
 
-using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, DebugTextPassInfo,
+using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, GenericRasterPassInfo,
+                              DebugDrawPassInfo, DebugTextPassInfo,
                               ShadowDepthPassInfo, VelocityPassInfo, UiPassInfo
 #if PELICAN_WITH_IMGUI
                               , ImGuiPassInfo
@@ -406,6 +425,10 @@ struct PassDefinition {
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
+    bool isGenericRaster() const {
+        return std::holds_alternative<
+            GenericRasterPassInfo>(pass_info);
+    }
     bool isDebugDraw() const { return std::holds_alternative<DebugDrawPassInfo>(pass_info); }
     bool isDebugText() const { return std::holds_alternative<DebugTextPassInfo>(pass_info); }
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
@@ -528,6 +551,14 @@ struct PassDefinition {
     const MaterialPassInfo &materialInfo() const { return std::get<MaterialPassInfo>(pass_info); }
     FullscreenPassInfo &fullscreenInfo() { return std::get<FullscreenPassInfo>(pass_info); }
     const FullscreenPassInfo &fullscreenInfo() const { return std::get<FullscreenPassInfo>(pass_info); }
+    GenericRasterPassInfo &genericRasterInfo() {
+        return std::get<GenericRasterPassInfo>(
+            pass_info);
+    }
+    const GenericRasterPassInfo &genericRasterInfo() const {
+        return std::get<GenericRasterPassInfo>(
+            pass_info);
+    }
     DebugDrawPassInfo &debugDrawInfo() { return std::get<DebugDrawPassInfo>(pass_info); }
     const DebugDrawPassInfo &debugDrawInfo() const { return std::get<DebugDrawPassInfo>(pass_info); }
     DebugTextPassInfo &debugTextInfo() { return std::get<DebugTextPassInfo>(pass_info); }

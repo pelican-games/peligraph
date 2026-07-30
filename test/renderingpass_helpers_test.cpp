@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
+#include "../src/core/renderingpass/genericrasterpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/materialpassattachments.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
@@ -11,6 +12,7 @@
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassvalidation.hpp"
+#include "../src/core/renderingpass/rasterpassvulkanadapter.hpp"
 #include "../src/core/renderingpass/rendertargetconfigregistration.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
@@ -21,6 +23,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -61,6 +64,10 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
 
     REQUIRE(std::holds_alternative<MaterialPassInfo>(makePassInfo("material")));
     REQUIRE(std::holds_alternative<FullscreenPassInfo>(makePassInfo("fullscreen")));
+    REQUIRE(
+        std::holds_alternative<
+            GenericRasterPassInfo>(
+            makePassInfo("raster")));
     REQUIRE(std::holds_alternative<ShadowDepthPassInfo>(makePassInfo("shadow_depth")));
     REQUIRE(std::holds_alternative<UiPassInfo>(makePassInfo("ui")));
 
@@ -602,6 +609,181 @@ TEST_CASE(
             invalid, "lighting"),
         Catch::Matchers::ContainsSubstring(
             "buffer ports require storage access"));
+}
+
+TEST_CASE(
+    "generic raster pass parser retains open implementation ids and typed resources",
+    "[renderingpass][raster][wp238b]") {
+    const auto pass_json =
+        nlohmann::json::parse(R"json({
+          "input": ["scene_color", "draw_metadata"],
+          "resource_ports": {
+            "scene": {
+              "resource": "scene_color",
+              "access": "sampled",
+              "sampling": {
+                "filter": "nearest",
+                "address": "clamp_to_edge"
+              }
+            },
+            "metadata": {
+              "resource": "draw_metadata",
+              "kind": "buffer",
+              "element": "uvec4",
+              "access": "storage"
+            }
+          },
+          "draw": {
+            "implementation": "project.procedural_sky@2",
+            "operation": "direct",
+            "vertex_count": 18,
+            "instance_count": 4
+          },
+          "raster_state": {
+            "topology": "triangle_strip",
+            "cull": "front",
+            "depth_test": true,
+            "color_attachments": [
+              {"blend": "opaque", "write_mask": "rgba"},
+              {"blend": "additive", "write_mask": "rg"}
+            ]
+          },
+          "shader": {
+            "implementation": "project.sky_shader@4",
+            "vertex": "shaders/sky_vertex",
+            "fragment": "shaders/sky_fragment"
+          }
+        })json");
+
+    const auto info =
+        parseGenericRasterPassInfoFromJson(
+            pass_json, "sky", 2, true);
+    CHECK(
+        info.contract.geometry.implementation ==
+        "project.procedural_sky@2");
+    CHECK(
+        info.shader_implementation ==
+        "project.sky_shader@4");
+    CHECK(
+        info.vert_shader.ref ==
+        "shaders/sky_vertex");
+    REQUIRE(info.frag_shader);
+    CHECK(
+        info.frag_shader->ref ==
+        "shaders/sky_fragment");
+    REQUIRE(info.resource_ports.size() == 2);
+    const auto metadata_port =
+        std::find_if(
+            info.resource_ports.begin(),
+            info.resource_ports.end(),
+            [](const auto &port) {
+                return port.name == "metadata";
+            });
+    REQUIRE(
+        metadata_port !=
+        info.resource_ports.end());
+    CHECK(
+        metadata_port->kind ==
+        ShaderResourcePortKind::buffer);
+    CHECK(
+        std::get<RasterDirectDrawOperation>(
+            info.contract.geometry.operation)
+            .instance_count == 4);
+
+    auto missing_fragment = pass_json;
+    missing_fragment["shader"].erase("fragment");
+    CHECK_THROWS_WITH(
+        parseGenericRasterPassInfoFromJson(
+            missing_fragment, "sky", 2, true),
+        Catch::Matchers::ContainsSubstring(
+            "color outputs requires a fragment"));
+
+    auto unversioned = pass_json;
+    unversioned["shader"]["implementation"] =
+        "project.sky_shader";
+    CHECK_THROWS_WITH(
+        parseGenericRasterPassInfoFromJson(
+            unversioned, "sky", 2, true),
+        Catch::Matchers::ContainsSubstring(
+            "namespace.name@major"));
+}
+
+TEST_CASE(
+    "generic raster Vulkan adapter maps logical MRT state into physical scope slots",
+    "[renderingpass][raster][vulkan][wp238b]") {
+    auto contract = parseRasterPassContract(
+        nlohmann::json::parse(R"json({
+          "draw": {"vertex_count": 3},
+          "raster_state": {
+            "topology": "line_strip",
+            "cull": "back",
+            "front_face": "clockwise",
+            "depth_test": true,
+            "depth_write": true,
+            "depth_compare": "greater",
+            "color_attachments": [
+              {"blend": "opaque", "write_mask": "r"},
+              {"blend": "additive", "write_mask": "ga"}
+            ]
+          }
+        })json"),
+        2, true);
+    GraphicsPipelineDesc desc;
+    desc.color_formats = {
+        vk::Format::eR16G16B16A16Sfloat,
+        vk::Format::eR8G8B8A8Unorm,
+        vk::Format::eR16G16Sfloat};
+    desc.depth_format =
+        vk::Format::eD32Sfloat;
+    const std::array locations{
+        1u,
+        unusedGraphicsAttachmentMapping,
+        0u};
+    applyVulkanRasterPassContract(
+        contract, desc, locations);
+
+    CHECK(
+        desc.topology ==
+        vk::PrimitiveTopology::eLineStrip);
+    CHECK(
+        desc.cull_mode ==
+        vk::CullModeFlagBits::eBack);
+    CHECK(
+        desc.front_face ==
+        vk::FrontFace::eClockwise);
+    CHECK(desc.depth_test);
+    CHECK(desc.depth_write);
+    CHECK(
+        desc.depth_compare ==
+        vk::CompareOp::eGreater);
+    REQUIRE(
+        desc.color_attachment_states.size() == 3);
+    CHECK(
+        desc.color_attachment_states[0]
+            .blend_enabled);
+    CHECK(
+        desc.color_attachment_states[0]
+            .write_mask ==
+        (vk::ColorComponentFlagBits::eG |
+         vk::ColorComponentFlagBits::eA));
+    CHECK(
+        desc.color_attachment_states[1]
+            .write_mask ==
+        vk::ColorComponentFlags{});
+    CHECK_FALSE(
+        desc.color_attachment_states[2]
+            .blend_enabled);
+    CHECK(
+        desc.color_attachment_states[2]
+            .write_mask ==
+        vk::ColorComponentFlagBits::eR);
+
+    const std::array duplicate{0u, 0u, 1u};
+    CHECK_THROWS_WITH(
+        applyVulkanRasterPassContract(
+            contract, desc, duplicate),
+        Catch::Matchers::ContainsSubstring(
+            "duplicates a logical color output"));
 }
 
 TEST_CASE(
@@ -1792,6 +1974,100 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     REQUIRE(
         pass_def.view_family ==
         "$reflection/probe/0");
+}
+
+TEST_CASE(
+    "pass definition JSON parser builds an arbitrary-MRT generic raster pass",
+    "[renderingpass][raster][wp238b]") {
+    const auto name_resolver =
+        RenderTargetNameResolver{
+            [](const std::string &name) {
+                if (name == "gbuffer_a")
+                    return GlobalRenderTargetId{10};
+                if (name == "gbuffer_b")
+                    return GlobalRenderTargetId{11};
+                if (name == "scene_depth")
+                    return GlobalRenderTargetId{12};
+                return noRenderTargetId();
+            }};
+    const auto metadata_resolver =
+        RenderTargetMetadataResolver{
+            [](GlobalRenderTargetId id) {
+                if (id == GlobalRenderTargetId{10}) {
+                    return RenderTargetMetadata{
+                        "gbuffer_a",
+                        vk::ImageUsageFlagBits::
+                            eColorAttachment,
+                        vk::Format::eR16G16B16A16Sfloat,
+                        vk::Extent2D{960, 540}};
+                }
+                if (id == GlobalRenderTargetId{11}) {
+                    return RenderTargetMetadata{
+                        "gbuffer_b",
+                        vk::ImageUsageFlagBits::
+                            eColorAttachment,
+                        vk::Format::eR8G8B8A8Unorm,
+                        vk::Extent2D{960, 540}};
+                }
+                if (id == GlobalRenderTargetId{12}) {
+                    return RenderTargetMetadata{
+                        "scene_depth",
+                        vk::ImageUsageFlagBits::
+                            eDepthStencilAttachment,
+                        vk::Format::eD32Sfloat,
+                        vk::Extent2D{960, 540}};
+                }
+                throw std::runtime_error(
+                    "unexpected render target metadata lookup");
+            }};
+    const auto encoded =
+        nlohmann::json::parse(R"json({
+          "name": "custom_gbuffer",
+          "type": "raster",
+          "resolution_domain": "scene",
+          "output": {
+            "color": ["gbuffer_a", "gbuffer_b"],
+            "depth": "scene_depth"
+          },
+          "draw": {
+            "implementation": "project.gbuffer_draw@1",
+            "vertex_count": 3
+          },
+          "raster_state": {
+            "depth_test": true,
+            "depth_write": true,
+            "color_attachments": [
+              {"blend": "opaque", "write_mask": "rgba"},
+              {"blend": "opaque", "write_mask": "rg"}
+            ]
+          },
+          "shader": {
+            "vertex": "shaders/custom_gbuffer_vertex",
+            "fragment": "shaders/custom_gbuffer_fragment"
+          }
+        })json");
+
+    const auto pass =
+        parsePassDefinitionFromJson(
+            encoded, name_resolver,
+            metadata_resolver);
+    CHECK(pass.isGenericRaster());
+    CHECK(
+        pass.resolution_domain ==
+        RenderResolutionDomain::scene);
+    REQUIRE(pass.output_color.size() == 2);
+    CHECK(
+        pass.output_depth ==
+        GlobalRenderTargetId{12});
+    CHECK(
+        pass.genericRasterInfo()
+            .contract.state.depth.write);
+    CHECK(
+        pass.genericRasterInfo()
+            .contract.state.color_attachments[1]
+            .write_mask ==
+        (materialOutputWriteRed |
+         materialOutputWriteGreen));
 }
 
 TEST_CASE(

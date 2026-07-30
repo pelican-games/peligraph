@@ -2,6 +2,7 @@
 #include "debugdrawpassinfojsonparser.hpp"
 #include "debugtextpassinfojsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
+#include "genericrasterpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <stdexcept>
 
@@ -30,6 +31,20 @@ void parseFullscreenPassInfoIntoDefinition(PassDefinition &pass_def, const nlohm
     }
 
     pass_def.fullscreenInfo() = parseFullscreenPassInfoFromJson(pass_json, pass_def.name);
+}
+
+void parseGenericRasterPassInfoIntoDefinition(
+    PassDefinition &pass_def,
+    const nlohmann::json &pass_json) {
+    if (!pass_def.isGenericRaster()) {
+        return;
+    }
+    pass_def.genericRasterInfo() =
+        parseGenericRasterPassInfoFromJson(
+            pass_json, pass_def.name,
+            pass_def.output_color.size(),
+            isConcreteRenderTarget(
+                pass_def.output_depth));
 }
 
 void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {

@@ -11,7 +11,7 @@
   ],
   "rendering_passes": [{"name":"main","passes":[
     {"name":"gbuffer_pass","type":"material","output":{"color":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive"],"depth":"offscreen_depth"}},
-    {"name":"ssao_clear","type":"fullscreen","output":{"color":"ssao_blur","depth":null},"shader":{"vertex":"shaders/fullscreen","fragment":"shaders/white"},"clear_color":[1,1,1,1]},
+    {"name":"ssao_clear","type":"raster","output":{"color":"ssao_blur","depth":null},"draw":{"implementation":"sprite_demo.clear_triangle@1","operation":"direct","vertex_count":3},"shader":{"implementation":"sprite_demo.clear_shader@1","vertex":"shaders/fullscreen","fragment":"shaders/white"},"clear_color":[1,1,1,1]},
     {"name":"lighting_pass","type":"fullscreen","output":{"color":"swapchain","depth":null},"input":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive","ssao_blur"],"shader":{"vertex":"engine://fullscreen","fragment":"engine://fullscreen"},"push_constants":"camera_position","uses_light_data":true}
   ]}]
 }

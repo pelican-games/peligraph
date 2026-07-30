@@ -13,6 +13,7 @@ target_sources(pelican_core PRIVATE
     renderfeatureparameteraccess.cpp
     logicalframegraphadapter.cpp
     fullscreenpassinfojsonparser.cpp
+    genericrasterpassinfojsonparser.cpp
     materialpassinfojsonparser.cpp
     passattachmentoptionsjsonparser.cpp
     passdefinitionjsonparser.cpp
@@ -27,6 +28,7 @@ target_sources(pelican_core PRIVATE
     renderingpassjsonhelpers.cpp
     renderingpassconfigregistration.cpp
     renderingpassruntimecompiler.cpp
+    rasterpassvulkanadapter.cpp
     renderingsamplecount.cpp
     renderingpasstargetjsonparser.cpp
     renderingpassvalidation.cpp

@@ -2,6 +2,7 @@
 #include "computetask.hpp"
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetmetadataresolver.hpp"
+#include "rasterpassvulkanadapter.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/pathresolver.hpp"
@@ -80,6 +81,11 @@ struct FullscreenShaderModules {
     ShaderBundleId frag_shader;
 };
 
+struct GenericRasterShaderModules {
+    ShaderBundleId vert_shader;
+    std::optional<ShaderBundleId> frag_shader;
+};
+
 const VulkanPhysicalScopePlan &requirePassScope(
     const VulkanTargetPlan &plan,
     std::string_view pass_name) {
@@ -142,7 +148,8 @@ GraphicsPipelineViewContract passViewContract(
         VulkanScopeViewExecution::multiview) {
         return {};
     }
-    if (!pass.isFullscreen()) {
+    if (!pass.isFullscreen() &&
+        !pass.isGenericRaster()) {
         throw std::runtime_error(
             "physical multiview scope selected an unsupported production "
             "pass implementation: " +
@@ -1281,6 +1288,9 @@ resolvePhysicalColorFormats(
     const RenderTargetMetadataResolver
         &metadata) {
     if (rendering.color_attachments.empty()) {
+        if (pass.output_color.empty()) {
+            return {};
+        }
         return {resolveFirstColorFormat(
             pass, render_target, metadata)};
     }
@@ -1557,11 +1567,18 @@ void validateFullscreenSamplingCapabilities(
               vk::FormatFeatureFlagBits::
                   eSampledImageFilterLinear)) {
             throw std::runtime_error(
-                "Fullscreen pass input '" +
+                std::string{
+                    pass.isGenericRaster()
+                        ? "Raster"
+                        : "Fullscreen"} +
+                " pass input '" +
                 metadata.name + "' format " +
                 vk::to_string(metadata.format) +
-                " does not support linear filtering; author "
-                "input_sampling filter 'nearest': " +
+                " does not support linear filtering; author " +
+                std::string{
+                    pass.isGenericRaster()
+                        ? "resource_ports sampling.filter 'nearest': "
+                        : "input_sampling filter 'nearest': "} +
                 pass.name);
         }
     }
@@ -1576,16 +1593,26 @@ compileFullscreenResourceInterface(
     const CompiledPassRenderingContract &rendering) {
     CompiledFullscreenResourceInterface result;
     const auto &ports =
-        pass.fullscreenInfo().resource_ports;
+        pass.isGenericRaster()
+            ? pass.genericRasterInfo()
+                  .resource_ports
+            : pass.fullscreenInfo()
+                  .resource_ports;
     const auto local_reads =
         localReadInputMask(pass, rendering);
     if (ports.empty()) {
-        result.sampling =
-            pass.fullscreenInfo().input_sampling.empty()
-                ? std::vector<FullscreenInputSampling>(
-                      pass.input_targets.size())
-                : pass.fullscreenInfo()
-                      .input_sampling;
+        if (pass.isFullscreen() &&
+            !pass.fullscreenInfo()
+                 .input_sampling.empty()) {
+            result.sampling =
+                pass.fullscreenInfo()
+                    .input_sampling;
+        } else {
+            result.sampling =
+                std::vector<
+                    FullscreenInputSampling>(
+                    pass.input_targets.size());
+        }
         validateFullscreenSamplingCapabilities(
             pass, dependencies,
             result.sampling, local_reads);
@@ -1641,19 +1668,42 @@ compileFullscreenResourceInterface(
                 "' (resource '" + port->resource +
                 "') declares a buffer but resolves to an image");
         }
-        if (local_reads[input]) {
-            throw std::runtime_error(
-                "Shader resource port '" + port->name +
-                "' (resource '" + port->resource +
-                "') cannot bind a tile-local input attachment as a "
-                "sampled image");
-        }
-        if (!(metadata.usage &
+        if (!local_reads[input] &&
+            !(metadata.usage &
               vk::ImageUsageFlagBits::eSampled)) {
             throw std::runtime_error(
                 "Shader resource port '" + port->name +
                 "' (resource '" + port->resource +
                 "') requires sampled render-target usage");
+        }
+        if (local_reads[input]) {
+            result.bindings.push_back(
+                ShaderResourceInterfaceBinding{
+                    .port = *port,
+                    .binding =
+                        static_cast<std::uint32_t>(
+                            input),
+                    .descriptor =
+                        ShaderResourceDescriptorKind::
+                            input_attachment,
+                    .image_view_dimension =
+                        ReflectedImageViewDimension::
+                            two_d,
+                    .input_attachment_index =
+                        static_cast<std::uint32_t>(
+                            input),
+                    .expected_stages =
+                        vk::ShaderStageFlagBits::
+                            eFragment,
+                    .readable = true,
+                    .writable = false,
+                });
+            result.sampling[input] =
+                fullscreenSampling(
+                    port->sampling);
+            result.subresources[input] =
+                port->subresource;
+            continue;
         }
         const auto physical =
             input < pass.input_target_views.size()
@@ -1876,18 +1926,36 @@ compileFullscreenResourceInterface(
     return result;
 }
 
+std::vector<std::pair<std::string, std::string>>
+makeRasterResourceVirtualIncludes(
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface,
+    ShaderStage stage) {
+    if (resource_interface.empty()) return {};
+    auto result =
+        makeShaderResourcePortVirtualIncludes(
+            resource_interface);
+    const auto stage_define =
+        stage == ShaderStage::vertex
+            ? "#define PELICAN_SURFACE_STAGE_VERTEX 1\n"
+            : "#define PELICAN_SURFACE_STAGE_FRAGMENT 1\n";
+    for (auto &[name, source] : result) {
+        if (name == shaderResourcePortIncludeName) {
+            source.insert(0, stage_define);
+        }
+    }
+    return result;
+}
+
 FullscreenShaderModules registerFullscreenShaders(
     const FullscreenPassInfo &fullscreen_info,
     FullscreenRuntimeDependencies dependencies,
     std::span<const ShaderResourceInterfaceBinding>
         resource_interface) {
-    std::vector<std::pair<std::string, std::string>>
-        virtual_includes;
-    if (!resource_interface.empty()) {
-        virtual_includes =
-            makeShaderResourcePortVirtualIncludes(
-                resource_interface);
-    }
+    auto virtual_includes =
+        makeRasterResourceVirtualIncludes(
+            resource_interface,
+            ShaderStage::fragment);
     return FullscreenShaderModules{
         registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
                                 fullscreen_info.vert_shader,
@@ -1899,6 +1967,44 @@ FullscreenShaderModules registerFullscreenShaders(
                                 dependencies.shader_defines,
                                 std::move(virtual_includes)),
     };
+}
+
+GenericRasterShaderModules registerGenericRasterShaders(
+    const GenericRasterPassInfo &raster_info,
+    FullscreenRuntimeDependencies dependencies,
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface) {
+    auto vertex_includes =
+        makeRasterResourceVirtualIncludes(
+            resource_interface,
+            ShaderStage::vertex);
+    auto fragment_includes =
+        makeRasterResourceVirtualIncludes(
+            resource_interface,
+            ShaderStage::fragment);
+    GenericRasterShaderModules result{
+        .vert_shader =
+            registerShaderReference(
+                dependencies.shader_library,
+                dependencies.path_resolver,
+                raster_info.vert_shader,
+                dependencies
+                    .warn_backend_specific_shader_refs,
+                dependencies.shader_defines,
+                std::move(vertex_includes)),
+    };
+    if (raster_info.frag_shader) {
+        result.frag_shader =
+            registerShaderReference(
+                dependencies.shader_library,
+                dependencies.path_resolver,
+                *raster_info.frag_shader,
+                dependencies
+                    .warn_backend_specific_shader_refs,
+                dependencies.shader_defines,
+                std::move(fragment_includes));
+    }
+    return result;
 }
 
 PassId registerFullscreenPipeline(
@@ -1947,6 +2053,113 @@ PassId registerFullscreenPipeline(
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
+void validateGenericRasterColorState(
+    const PassDefinition &pass) {
+    const auto &states =
+        pass.genericRasterInfo()
+            .contract.state.color_attachments;
+    if (!pass.physical_color_numeric_classes.empty() &&
+        pass.physical_color_numeric_classes.size() !=
+            states.size()) {
+        throw std::runtime_error(
+            "Raster pass physical color numeric-class count "
+            "does not match logical outputs: " +
+            pass.name);
+    }
+    for (std::size_t index = 0;
+         index < states.size(); ++index) {
+        if (!states[index].blend.enabled ||
+            pass.physical_color_numeric_classes.empty()) {
+            continue;
+        }
+        if (pass.physical_color_numeric_classes[index] !=
+            MaterialOutputNumericClass::floating) {
+            throw std::runtime_error(
+                "Raster pass cannot enable blending for integer "
+                "color output " +
+                std::to_string(index) + ": " +
+                pass.name);
+        }
+    }
+}
+
+PassId registerGenericRasterPipeline(
+    const PassDefinition &pass_def,
+    FullscreenRuntimeDependencies dependencies,
+    GraphicsPipelineViewContract view,
+    const CompiledPassRenderingContract &rendering,
+    std::span<const ShaderResourceInterfaceBinding>
+        resource_interface) {
+    validateGenericRasterColorState(pass_def);
+    auto color_formats =
+        resolvePhysicalColorFormats(
+            pass_def, rendering,
+            dependencies.render_target,
+            dependencies.render_target_metadata);
+    const auto depth_format =
+        resolvePhysicalDepthFormat(
+            rendering,
+            dependencies.render_target_metadata);
+    appendViewShaderDefines(
+        dependencies.shader_defines,
+        pass_def, view);
+    appendLocalReadShaderDefines(
+        dependencies.shader_defines,
+        pass_def, rendering);
+    const auto shaders =
+        registerGenericRasterShaders(
+            pass_def.genericRasterInfo(),
+            dependencies, resource_interface);
+
+    GraphicsPipelineDesc desc;
+    desc.vert = shaders.vert_shader;
+    desc.frag = shaders.frag_shader;
+    desc.color_formats =
+        std::move(color_formats);
+    desc.depth_format = depth_format;
+    desc.shader_defines =
+        std::move(dependencies.shader_defines);
+    desc.rasterization_samples =
+        pass_def.rasterization_samples;
+    desc.view = view;
+    desc.local_read =
+        graphicsLocalReadContract(rendering);
+    desc.resource_interface.assign(
+        resource_interface.begin(),
+        resource_interface.end());
+    if (!rendering.local_read_scope) {
+        for (std::size_t physical = 0;
+             physical <
+             rendering.color_attachment_locations
+                 .size();
+             ++physical) {
+            const auto logical =
+                rendering
+                    .color_attachment_locations[
+                        physical];
+            if (logical !=
+                    unusedPhysicalAttachmentMapping &&
+                logical !=
+                    static_cast<std::uint32_t>(
+                        physical)) {
+                throw std::runtime_error(
+                    "Raster pass requires non-identity attachment "
+                    "location remapping outside a local-read scope: " +
+                    pass_def.name);
+            }
+        }
+    }
+    applyVulkanRasterPassContract(
+        pass_def.genericRasterInfo().contract,
+        desc,
+        rendering.color_attachment_locations);
+    const auto pipeline_id =
+        dependencies.fullscreen_pass_container
+            .registerRasterPass(std::move(desc));
+    return fullscreenPipelineValueToPassId(
+        pipeline_id.value);
+}
+
 PassId compileFullscreenPass(
     const PassDefinition &pass_def,
     FullscreenRuntimeDependencies dependencies,
@@ -1980,6 +2193,43 @@ PassId compileFullscreenPass(
             resource_interface.view_dimensions);
     }
 
+    return pass_id;
+}
+
+PassId compileGenericRasterPass(
+    const PassDefinition &pass_def,
+    FullscreenRuntimeDependencies dependencies,
+    GraphicsPipelineViewContract view,
+    std::uint32_t logical_view_count,
+    const CompiledPassRenderingContract &rendering) {
+    const auto resource_interface =
+        compileFullscreenResourceInterface(
+            pass_def, dependencies, view,
+            logical_view_count, rendering);
+    const auto pass_id =
+        registerGenericRasterPipeline(
+            pass_def, dependencies, view,
+            rendering,
+            resource_interface.bindings);
+    if (!pass_def.input_targets.empty() ||
+        !pass_def.input_buffers.empty()) {
+        dependencies.fullscreen_pass_container
+            .setInputResources(
+                pass_id,
+                pass_def.input_targets,
+                pass_def.input_target_history,
+                pass_def.input_buffers,
+                dependencies.render_target_views,
+                dependencies.frame_graph_resources,
+                resource_interface.sampling,
+                pass_def.input_target_views,
+                view,
+                localReadInputMask(
+                    pass_def, rendering),
+                resource_interface.subresources,
+                logical_view_count,
+                resource_interface.view_dimensions);
+    }
     return pass_id;
 }
 
@@ -2098,6 +2348,21 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
                     compileFullscreenPass(
                         pass_def, fullscreen_dependencies,
                         view, logical_view_count,
+                        rendering),
+                    view,
+                    rendering});
+        } else if (pass_def.isGenericRaster()) {
+            const auto raster_dependencies =
+                requireFullscreenDependencies(
+                    pass_def, dependencies);
+            compiled_pass.passes.push_back(
+                CompiledPass{
+                    pass_def,
+                    compileGenericRasterPass(
+                        pass_def,
+                        raster_dependencies,
+                        view,
+                        logical_view_count,
                         rendering),
                     view,
                     rendering});

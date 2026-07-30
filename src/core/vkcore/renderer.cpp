@@ -2139,7 +2139,8 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
         const auto &compiled_pass =
             program->rendering_pass;
         for (const auto &pass : compiled_pass.passes) {
-            if (pass.definition.isFullscreen() &&
+            if ((pass.definition.isFullscreen() ||
+                 pass.definition.isGenericRaster()) &&
                 (!pass.definition.input_targets.empty() || !pass.definition.input_buffers.empty())) {
                 modules.fullscreen_pass_container
                     .rebindInputResources(

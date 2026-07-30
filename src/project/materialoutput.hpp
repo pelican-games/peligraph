@@ -163,6 +163,20 @@ std::string_view materialOutputBlendOperationName(
 std::optional<MaterialOutputBlendOperation>
 materialOutputBlendOperationFromName(std::string_view name);
 
+// Shared raster fixed-function helpers. Material output declarations use
+// these through their named attachment-state syntax, while generic raster
+// passes use the same portable values through an ordered attachment array.
+MaterialOutputBlendState parseMaterialOutputBlendState(
+    const nlohmann::json &declaration,
+    std::string_view context = "blend");
+nlohmann::json materialOutputBlendStateToJson(
+    const MaterialOutputBlendState &state);
+std::uint8_t parseMaterialOutputWriteMask(
+    const nlohmann::json &declaration,
+    std::string_view context = "write_mask");
+std::string materialOutputWriteMaskName(
+    std::uint8_t write_mask);
+
 // Parses a material_output_states object. Keys are output field names from the
 // supplied schema. Blend accepts the convenience presets opaque/blend/
 // additive or an explicit {color, alpha} equation. write_mask is any

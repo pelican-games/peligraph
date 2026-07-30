@@ -244,6 +244,32 @@ nlohmann::json blendStateToJson(
 
 } // namespace
 
+MaterialOutputBlendState parseMaterialOutputBlendState(
+    const nlohmann::json &declaration,
+    std::string_view context) {
+    return parseBlendState(declaration, context);
+}
+
+nlohmann::json materialOutputBlendStateToJson(
+    const MaterialOutputBlendState &state) {
+    return blendStateToJson(state);
+}
+
+std::uint8_t parseMaterialOutputWriteMask(
+    const nlohmann::json &declaration,
+    std::string_view context) {
+    return parseWriteMask(declaration, context);
+}
+
+std::string materialOutputWriteMaskName(
+    std::uint8_t write_mask) {
+    if ((write_mask & ~materialOutputWriteRgba) != 0) {
+        throw std::runtime_error(
+            "material output write mask has invalid bits");
+    }
+    return writeMaskName(write_mask);
+}
+
 std::string_view materialOutputTypeName(
     MaterialOutputType type) {
     switch (type) {

@@ -16,6 +16,7 @@ add_library(pelican_project
     materiallowering.cpp
     materialformat.cpp
     openpbrmapping.cpp
+    rasterpass.cpp
     renderpipeline.cpp
     samplecountplanning.cpp
     sceneformat.cpp

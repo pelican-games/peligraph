@@ -782,10 +782,16 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
+    if (type == "raster") {
+        node.semantic_dialect =
+            "pelican.logical.raster@1";
+        node.execution_implementation =
+            "pelican.execution.generic_raster_direct@1";
+    }
     node.raster_geometry =
         type == "material" || type == "shadow_depth" ||
-        type == "velocity";
-    if (type == "fullscreen") {
+        type == "velocity" || type == "raster";
+    if (type == "fullscreen" || type == "raster") {
         for (const auto &resource : node.reads) {
             appendUnique(
                 node.local_read_shader_inputs,
@@ -1114,11 +1120,19 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.declaration_index = declaration_index;
     node.view_family =
         pass.view_family;
+    if (pass.isGenericRaster()) {
+        node.semantic_dialect =
+            "pelican.logical.raster@1";
+        node.execution_implementation =
+            "pelican.execution.generic_raster_direct@1";
+    }
     node.region_tags = pass.region_tags;
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
-        pass.isVelocity();
-    if (pass.isFullscreen()) {
+        pass.isVelocity() ||
+        pass.isGenericRaster();
+    if (pass.isFullscreen() ||
+        pass.isGenericRaster()) {
         for (std::size_t index = 0;
              index < pass.input_targets.size();
              ++index) {

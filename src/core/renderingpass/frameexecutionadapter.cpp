@@ -302,12 +302,21 @@ FrameExecutionNode executionNode(
         .order = node.order,
         .level = node.level,
         .semantic_dialect =
-            std::string{
-                semanticDialect(node.kind)},
+            source != nullptr &&
+                    !source->semantic_dialect.empty()
+                ? source->semantic_dialect
+                : std::string{
+                      semanticDialect(node.kind)},
         .selected_implementation =
-            std::string{
-                selectedImplementation(
-                    node.kind)},
+            source != nullptr &&
+                    !source
+                         ->execution_implementation
+                         .empty()
+                ? source
+                      ->execution_implementation
+                : std::string{
+                      selectedImplementation(
+                          node.kind)},
         .selected_endpoint =
             std::string{endpoint},
         .required_capabilities =

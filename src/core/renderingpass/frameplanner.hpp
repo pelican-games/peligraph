@@ -107,6 +107,10 @@ struct FrameGraphNodeDefinition {
     std::optional<std::string> material_variant;
     std::string view_family{
         mainRenderViewFamilyId};
+    // Optional dialect selection carried into FrameExecutionPlan. Empty
+    // preserves the legacy kind-based compatibility mapping.
+    std::string semantic_dialect;
+    std::string execution_implementation;
 };
 
 struct FrameGraphDefinition {

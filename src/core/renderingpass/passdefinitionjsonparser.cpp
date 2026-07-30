@@ -105,6 +105,8 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
             "Fullscreen pass input_sampling count must match image input count: " +
             pass_def.name);
     }
+    parseGenericRasterPassInfoIntoDefinition(
+        pass_def, pass_json);
     parseDebugDrawPassInfoIntoDefinition(pass_def, pass_json);
     parseDebugTextPassInfoIntoDefinition(pass_def, pass_json);
     parseShadowDepthPassInfoIntoDefinition(pass_def, pass_json);

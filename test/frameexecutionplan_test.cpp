@@ -221,6 +221,52 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "generic raster dialect remains visible in the common execution plan",
+    "[wp238][execution-plan][raster]") {
+    FrameGraphDefinition graph;
+    graph.name = "generic_raster";
+    graph.declared_resources = {"color"};
+    graph.nodes = {
+        FrameGraphNodeDefinition{
+            .name = "custom_draw",
+            .kind = FramePlanNodeKind::render,
+            .declaration_index = 0,
+            .writes = {"color"},
+            .attachments =
+                {FrameGraphAttachmentDefinition{
+                    .resource = "color",
+                }},
+            .raster_geometry = true,
+            .semantic_dialect =
+                "pelican.logical.raster@1",
+            .execution_implementation =
+                "pelican.execution.generic_raster_direct@1",
+        },
+    };
+    const auto frame = planFrameGraph(graph);
+    const auto execution =
+        compileFrameExecutionPlan(
+            graph, frame,
+            testEndpoint());
+
+    REQUIRE(execution.nodes.size() == 1);
+    CHECK(
+        execution.nodes.front().semantic_dialect ==
+        "pelican.logical.raster@1");
+    CHECK(
+        execution.nodes.front()
+            .selected_implementation ==
+        "pelican.execution.generic_raster_direct@1");
+    CHECK(
+        execution.nodes.front()
+            .required_capabilities ==
+        std::vector<std::string>{
+            "pelican.execution.graphics@1"});
+    REQUIRE_NOTHROW(
+        validateFrameExecutionPlan(execution));
+}
+
+TEST_CASE(
     "frame execution validation rejects unclosed endpoint "
     "and dependency state",
     "[wp238][execution-plan]") {

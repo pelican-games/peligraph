@@ -1012,6 +1012,28 @@ execution selectionが混ざらない。
 発明しない。次のGeneric Raster Pass ABIとcomplete physical/NativeScope境界は、この
 共通execution語彙へlinkする兄弟dialectとして追加する。
 
+2026-07-30のWP238bでは最初の兄弟dialectとしてGeneric Raster Pass ABIを追加した。
+`RasterPassContract`はbackend非依存なtyped direct draw、portable fixed-function state、
+attachment別blend/write-maskと、operation生成algorithmのopen/versioned implementation IDを
+持つ。shader referenceとtyped resource portはcore adapter境界で結合し、Vulkan型は
+`rasterpassvulkanadapter`より上へ漏らさない。これは「custom technique名を中央enumへ
+追加する」設計ではなく、交換可能algorithmが有限で検証可能なoperationを生成し、各backendが
+operationだけをloweringする設計である。
+
+論理color attachment数とresource port数にengine固定上限はない。physical scopeが複数passの
+attachment unionを持つ場合も、logical fragment locationからphysical slotへの写像を使って
+per-attachment stateを展開し、未使用slotのwriteを止める。deviceの
+`maxColorAttachments`、format、sample、descriptor上限はdevice compilerのhard gateとして
+残る。typed same-pixel resource portはsampled imageと同じlogical ABIからVulkan input
+attachmentへloweringできる。
+
+Frame graph shadowには`pelican.logical.raster@1`と
+`pelican.execution.generic_raster_direct@1`を保持し、`FrameExecutionPlan`で既存render nodeと
+同じgraphics capabilityへ合流させる。runtime storageは移行コストを抑えるため既存fullscreen
+containerを内部利用するが、公開contractとdraw countはfullscreenから独立した。direct以外の
+indexed/indirect/mesh operationは、具体workloadとbackend verifierを伴う後続variantとして
+追加する。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -1079,6 +1101,9 @@ execution selectionが混ざらない。
 - WP238aでbackend非依存`FrameExecutionPlan`、open endpoint/capability選択、
   resource/effect/dependency closure、stable fingerprint、compiler/runtime generation/dumpを接続。
   現Vulkan executorは意味論保存のため既存FramePlan駆動を維持
+- WP238bでbackend非依存`RasterPassContract`、open algorithm provenance、typed direct draw、
+  任意MRT/resource port、Vulkan state/attachment adapter、generic raster execution dialectを接続。
+  既存fullscreen containerの利用はruntime内部のcompatibility detailに限定
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
   physical control、MSAA/external scope fusion、NativeScope、CPU・external・video runtime
   workはまだ追加しない

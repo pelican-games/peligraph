@@ -126,6 +126,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP236 | runtime cube render target | ✅ 完了（2026-07-30）。resource/view形状分離、cube-compatible allocation、face attachment、fullscreen/compute/material samplerCube、実GPU |
 | WP237 | replaceable cube capture algorithm | ✅ 完了（2026-07-30）。stable 6-face provider、Deferred + Forward capture、family-local clustered selection、secondary runtime layer/descriptor一般化、package purge、実GPU |
 | WP238a | common FrameExecutionPlan vertical slice | ✅ 完了（2026-07-30）。open endpoint/capability IR、render/compute/copy収束、closure/fingerprint、compiler/runtime/dump、atomic reload |
+| WP238b | Generic Raster Pass ABI vertical slice | ✅ 完了（2026-07-30）。backend非依存draw/state contract、open実装ID、任意MRT/resource port、Vulkan adapter、execution-plan dialect、sprite dogfood |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -136,7 +137,8 @@ WP231〜237の受け入れ詳細:
 [`WP235`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)、
 [`WP236`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)、
 [`WP237`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)、
-[`WP238a`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)。
+[`WP238a`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)、
+[`WP238b`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -282,6 +284,35 @@ runtime packageはlegacy frame planとexecution planのgraph/node/resource/barri
 Generic Raster Pass ABI、complete raw physical plan、`NativeScope`はこの共通語彙を消費する
 後続sliceで扱う。詳細と受け入れ結果は
 [`design_reviews/2026-07-30_wp238a_frame_execution_plan.md`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)
+を正とする。
+
+### WP238b: Generic Raster Pass ABI vertical slice
+
+Techniqueごとに`PassInfo` variantとVulkan dispatch分岐を増やす代わりに、一つの
+`type: "raster"`を追加する。project層の`RasterPassContract`はversionedなopen
+implementation IDとtyped draw operation、topology/cull/front-face/depth、
+attachmentごとのblend/write-maskだけを持ち、Vulkan型、shader module、descriptor
+binding番号を持たない。標準authoringは`direct` operationを使うが、implementation IDは
+backendが解釈するenumではなく、そのtyped operationを生成した交換可能algorithmのprovenanceである。
+
+shader assetと`resource_ports`は`GenericRasterPassInfo`で契約へ結び、既存graph edge、
+history/view/subresource、multiview、local-read loweringを再利用する。color attachment数と
+resource port数にengine固定上限を置かず、実device compilerがformat/sample/descriptor/
+`maxColorAttachments`を判定する。Vulkan側は独立したadapterでportable stateを
+`GraphicsPipelineDesc`へ変換し、融合scopeではlogical fragment locationからphysical
+attachment slotへの写像を使う。未使用slotはwrite mask 0にする。
+
+runtime storage/descriptor lifetimeは当面既存`FullscreenPassContainer`を内部実装として再利用するが、
+公開ABIとdraw callはfullscreen固定ではない。legacy fullscreenは6-vertex互換を維持し、
+generic rasterはcontractのvertex/instance/first値を実行する。typed tile-local portは同じ
+resource ABIからinput attachmentへloweringされる。`FrameExecutionPlan`では
+`pelican.logical.raster@1` / `pelican.execution.generic_raster_direct@1`として通常renderと
+同じgraphics endpointへ合流する。
+
+本sliceはprocedural direct drawを成立させる最小operationであり、vertex/indexed/indirect/
+mesh draw、custom vertex layout、material/debug passのgeneric contract移行は後続で
+operation variantとadapterを追加して行う。詳細と受け入れ結果は
+[`design_reviews/2026-07-30_wp238b_generic_raster_pass.md`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)
 を正とする。
 
 ### XR2b 分割 WP の逐語条件と所有権
