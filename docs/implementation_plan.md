@@ -127,6 +127,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP237 | replaceable cube capture algorithm | ✅ 完了（2026-07-30）。stable 6-face provider、Deferred + Forward capture、family-local clustered selection、secondary runtime layer/descriptor一般化、package purge、実GPU |
 | WP238a | common FrameExecutionPlan vertical slice | ✅ 完了（2026-07-30）。open endpoint/capability IR、render/compute/copy収束、closure/fingerprint、compiler/runtime/dump、atomic reload |
 | WP238b | Generic Raster Pass ABI vertical slice | ✅ 完了（2026-07-30）。backend非依存draw/state contract、open実装ID、任意MRT/resource port、Vulkan adapter、execution-plan dialect、sprite dogfood |
+| WP238c | complete physical plan / NativeScope data boundary | ✅ CPU slice完了（2026-07-30）。完全physical package、canonical round-trip/fingerprint、strict verifier、typed NativeScope effect/ownership/sync。runtime executorは後続 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -138,7 +139,8 @@ WP231〜237の受け入れ詳細:
 [`WP236`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)、
 [`WP237`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)、
 [`WP238a`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)、
-[`WP238b`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)。
+[`WP238b`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)、
+[`WP238c`](design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -239,7 +241,7 @@ program selectionはengineが`CompiledRenderPipeline`へstampし、dump metadata
 受け入れ結果と残した境界は
 [`design_reviews/2026-07-29_wp221_render_compiler_program_report.md`](design_reviews/2026-07-29_wp221_render_compiler_program_report.md)
 を正とする。previewへのruntime transform / tagged subgraph / physical-plan表示、
-complete raw Vulkan plan / `NativeScope`、Metal package、CPU/external linker、
+`NativeScope` runtime executor、Metal package、CPU/external linker、
 公開game-DLL ABIは後続である。
 
 ### WP222: coordinated render graph / surface / material pipeline reload
@@ -313,6 +315,24 @@ resource ABIからinput attachmentへloweringされる。`FrameExecutionPlan`で
 mesh draw、custom vertex layout、material/debug passのgeneric contract移行は後続で
 operation variantとadapterを追加して行う。詳細と受け入れ結果は
 [`design_reviews/2026-07-30_wp238b_generic_raster_pass.md`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)
+を正とする。
+
+### WP238c: complete physical plan / NativeScope data boundary
+
+`VulkanCompletePhysicalPlanPackage`はgraph、logical/automatic fingerprint、backend candidateと
+全engine-visible resource/scope/attachment/alias/feature closureをcanonical JSONで
+eject/parseできる。strict verifierはnode coverage、data/after/before順序、lifetime/read
+footprint、attachment subresource、alias互換性、alternate format evidence、endpoint capability
+を再検証し、verified markerとstable package fingerprintを返す。sparse physical fragmentとは
+同じschemaへ統合せず、差分指定と完全同層指定の意図を観測可能に保つ。
+
+`VulkanNativeScopeDeclaration`は既存physical scopeに対するdata-only implementation boundaryで、
+typed resource effect、ownership、queue、feature/extension、sync mode、tooling/device-loss/
+hot-reload能力、opaque implementation configを保持する。現段階ではruntime callbackやVulkan
+handleを受け取らず、通常rendererへpublishされない。次の実装はowner/generation lease付き
+executor provider、prepare側でのdevice-object生成、automatic sync lowering、transaction
+rollbackを一つのruntime sliceとして接続する。詳細は
+[`design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md`](design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md)
 を正とする。
 
 ### XR2b 分割 WP の逐語条件と所有権
@@ -514,7 +534,8 @@ XR2b最終gateを満たす。
 2. queue family/queue assignment、手動barrier/event/semaphoreを扱うaggressive fragment
 3. MSAA/history/depth/storage/transfer/bufferまで含むalias範囲の拡張と、対象tile GPU /
    XR実機での性能・validation gate
-4. open external boundary、complete raw physical plan、`NativeScope`
+4. complete physical/data-only `NativeScope` boundaryはWP238cで実装済み。
+   open external runtimeとNativeScope executor/ownership/publicationは未実装
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 

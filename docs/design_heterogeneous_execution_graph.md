@@ -1034,6 +1034,29 @@ containerを内部利用するが、公開contractとdraw countはfullscreenか�
 indexed/indirect/mesh operationは、具体workloadとbackend verifierを伴う後続variantとして
 追加する。
 
+2026-07-30のWP238cでは`pelican.vulkan_complete_physical_plan` v1と、data-only
+`NativeScope`境界を追加した。sparseな`VulkanPhysicalFragmentPackage`がautomatic planへの
+保守的差分であるのに対し、complete packageは現在のgraph/device fingerprintに束縛された
+全engine-visible resource、実行順付きscope、attachment、alias group、physical feature
+closureを必須で持つ。同層のeject -> parse -> verifyが可能で、logical data/after/before順序、
+再計算したlifetime/read footprint、attachment subresource、alias shape/lifetime、alternate
+formatのdevice evidence、endpoint capabilityを閉じる。追加G-buffer数を含むresource数に
+engine固定上限は置かない。
+
+`NativeScope`はphysical scope一つの実装だけをversioned implementation IDへ差し替える宣言で
+あり、callback、Vulkan handle、game-DLL ABIを持たない。scope内が触るlogical resourceを
+semantic type、read/write effect、engine/native ownershipとともに全列挙し、queue capability、
+required feature/extension、alias group、capture/device-loss/hot-reload能力を宣言する。
+`automatic` syncはtyped effectから外側のminimal transitionを導出する契約、`manual`は全resource
+のstage/access宣言を必須とし、`unchecked`はwarning付きで作者へcorrectnessを委譲する。
+schema v1でnative ownershipを選べるのはlogical external resourceだけである。
+
+WP238cは意図的にverified data packageで止め、通常rendererへraw command callbackを接続しない。
+backend-private command/resourceはopaqueな`implementation_config`内に置けるが、実行には今後の
+owner/generation lease付きNativeScope executor providerと、prepare transactionでの
+device-object生成が必要である。したがって「packageを検証できること」と「production runtimeで
+実行できること」は別のgateとして観測できる。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -1104,8 +1127,11 @@ indexed/indirect/mesh operationは、具体workloadとbackend verifierを伴う�
 - WP238bでbackend非依存`RasterPassContract`、open algorithm provenance、typed direct draw、
   任意MRT/resource port、Vulkan state/attachment adapter、generic raster execution dialectを接続。
   既存fullscreen containerの利用はruntime内部のcompatibility detailに限定
+- WP238cでenvironment-bound complete Vulkan physical package、strict same-layer verifier、
+  data-only `NativeScope` boundaryとcanonical fingerprint/ejectを追加。NativeScope executor
+  providerとruntime command ownershipは未接続
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
-  physical control、MSAA/external scope fusion、NativeScope、CPU・external・video runtime
+  physical control、MSAA/external scope fusion、NativeScope runtime、CPU・external・video runtime
   workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain

@@ -24,6 +24,7 @@ add_library(pelican_project
     surfaceformat.cpp
     targetplanning.cpp
     targetrenderplanning.cpp
+    vulkancompletephysicalplan.cpp
     vulkanphysicalfragment.cpp
     vulkanviewplanning.cpp
     xrmultiviewprofile.cpp

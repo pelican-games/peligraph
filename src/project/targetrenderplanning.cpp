@@ -1,6 +1,7 @@
 #include "targetrenderplanning.hpp"
 #include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
+#include "vulkancompletephysicalplan.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -3361,6 +3362,10 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"ejectable_physical_fragment",
          vulkanPhysicalFragmentPackageToJson(
              ejectVulkanPhysicalFragmentPackage(
+                 plan))},
+        {"ejectable_complete_physical_plan",
+         vulkanCompletePhysicalPlanPackageToJson(
+             ejectVulkanCompletePhysicalPlanPackage(
                  plan))},
         {"graph_transforms",
          nlohmann::ordered_json::array()},

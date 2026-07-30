@@ -992,6 +992,22 @@ boundary contractを完全なものとしてautomatic minimal syncを作る。�
 同期はadvisoryであり、作者がcorrectnessを所有する。保守的な全scope barrierはdebug診断profile
 でだけ任意に選ぶ。安全性fixtureが揃う前に game-DLL ABI を凍結しない。
 
+WP238cの初期実装はこの最後の制約を守り、`VulkanNativeScopeDeclaration`をdata-only contract
+として追加した。既存physical scope IDを実行順・node coverageの単位にし、そのscopeが触る
+logical resourceをsemantic type、access effect、ownership付きで完全列挙する。
+`implementation`と`implementation_config`はbackend provider向けのopen dataであり、関数pointer
+やVulkan handleではない。`automatic`ではstage/accessの手書きを禁止し、`manual`では全boundary
+resourceへの明示を要求し、`unchecked`ではstable warningを出す。capture、device-loss、
+hot-reload非対応も個別diagnosticとして残る。
+
+同時に`VulkanCompletePhysicalPlanPackage`を追加した。これはautomatic planへ重ねるsparse
+fragmentではなく、現在のlogical graphとtarget environment fingerprintへ束縛された完全な
+engine-visible physical replacementである。v1 verifierは全resource/scope/node coverage、
+dependency順、lifetime/read-footprint再導出、attachment、alias、format evidence、
+feature/extension closureを検証する。backend-private resourceはNativeScope内部へ閉じられるが、
+engine-visible resource集合の追加・削除はv1では許可しない。これにより既存runtime object生成を
+暗黙に迂回せず、物理IR自体の変更とraw command実行ABIの導入を別々に進められる。
+
 ## 8. 拡張の段階
 
 利用者が必要な深さだけ降りられるよう、次を別々の入口として提供する。
@@ -1810,7 +1826,8 @@ gate:
 未完了:
 
 - previewへのruntime transform / tagged subgraph / physical-plan表示
-- complete raw Vulkan plan builderと`NativeScope`
+- verified complete physical packageはWP238cで追加済み。`NativeScope` executor provider、
+  device-object ownership、runtime publicationは未完了
 - Metal backend context/packageと共通planner再利用fixture
 - CPU/external physical packageとexecution linker
 - game-DLL向けversioned/noexcept ABI、owner lease、hot reload
@@ -1821,8 +1838,9 @@ gate:
 2. WP204 後続 — MSAA/external/異種attachmentを含む広いscope fusion、一般のload-store /
    queue / barrierのaggressive physical verifier、MSAA/history/depth/storage/transfer/bufferを
    含むalias範囲拡張、対象GPU実測gate
-3. WP221後続 — complete raw Vulkan plan / `NativeScope`は具体的なVulkan-only使用例と
-   verifier fixtureを得てから公開形式・ABIを設計
+3. WP238c後続 — data-only complete package / `NativeScope` verifierを、具体的な
+   Vulkan-only使用例、owner lease、prepare/rollback付きexecutor providerへ接続する。
+   raw callback ABIはこのruntime fixtureを得てから必要なら設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 

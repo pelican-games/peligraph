@@ -1,9 +1,11 @@
 #include "../src/project/targetrenderplanning.hpp"
+#include "../src/project/vulkancompletephysicalplan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1216,6 +1218,416 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
     REQUIRE(encoded.at(
                 "applied_physical_fragment") ==
             document);
+}
+
+TEST_CASE(
+    "complete Vulkan physical plans round-trip and verify as an "
+    "environment-bound data package",
+    "[target-render-planning][complete-physical-plan][eject]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 4, false, true);
+    const auto target = topology(false);
+    const auto automatic =
+        compile(
+            types, graph, target,
+            bindingsFor(types, graph));
+
+    const auto ejected =
+        ejectVulkanCompletePhysicalPlanPackage(
+            automatic);
+    const auto document =
+        vulkanCompletePhysicalPlanPackageToJson(
+            ejected);
+    REQUIRE(
+        document.at("schema") ==
+        "pelican.vulkan_complete_physical_plan");
+    REQUIRE(document.at("version") == 1);
+    REQUIRE(
+        document.at("resources").size() ==
+        automatic.resources.size());
+    REQUIRE(
+        document.at("scopes").size() ==
+        automatic.scopes.size());
+
+    const auto parsed =
+        vulkanCompletePhysicalPlanPackageFromJson(
+            document);
+    REQUIRE(parsed == ejected);
+    const auto verified =
+        verifyVulkanCompletePhysicalPlanPackage(
+            graph, target, automatic, parsed);
+    REQUIRE(verified.package == ejected);
+    REQUIRE(
+        verified.package_fingerprint ==
+        vulkanCompletePhysicalPlanPackageFingerprint(
+            ejected));
+    REQUIRE(verified.diagnostics.empty());
+
+    const auto dump =
+        vulkanTargetPlanToJson(automatic);
+    REQUIRE(
+        dump.at(
+            "ejectable_complete_physical_plan") ==
+        document);
+
+    auto malformed = document;
+    malformed["raw_commands"] =
+        nlohmann::json::array();
+    requireThrowsContaining(
+        [&] {
+            (void)vulkanCompletePhysicalPlanPackageFromJson(
+                malformed);
+        },
+        "unknown key 'raw_commands'");
+}
+
+TEST_CASE(
+    "complete Vulkan physical verifier rejects stale order, "
+    "lifetime, and alias metadata",
+    "[target-render-planning][complete-physical-plan][reject]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 4, false, true);
+    const auto target = topology(false);
+    const auto automatic =
+        compile(
+            types, graph, target,
+            bindingsFor(types, graph));
+    const auto ejected =
+        ejectVulkanCompletePhysicalPlanPackage(
+            automatic);
+
+    auto stale = ejected;
+    ++stale.logical_graph_fingerprint;
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                stale);
+        },
+        "stale for the logical graph");
+
+    auto wrong_lifetime = ejected;
+    const auto used =
+        std::find_if(
+            wrong_lifetime.resources.begin(),
+            wrong_lifetime.resources.end(),
+            [](const auto &resource) {
+                return resource.lifetime.used;
+            });
+    REQUIRE(
+        used != wrong_lifetime.resources.end());
+    ++used->lifetime.last_use;
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                wrong_lifetime);
+        },
+        "stale lifetime");
+
+    auto wrong_order = ejected;
+    REQUIRE(wrong_order.scopes.size() >= 2);
+    std::reverse(
+        wrong_order.scopes.begin(),
+        wrong_order.scopes.end());
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                wrong_order);
+        },
+        "reverses logical data dependency");
+
+    auto missing_feature = ejected;
+    std::erase(
+        missing_feature.required_physical_features,
+        "pelican.vulkan.graphics@1");
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                missing_feature);
+        },
+        "omits required feature");
+
+    auto missing_resource_feature = ejected;
+    const auto materialized =
+        std::find_if(
+            missing_resource_feature.resources.begin(),
+            missing_resource_feature.resources.end(),
+            [](const auto &resource) {
+                return resource.representation ==
+                       VulkanResourceRepresentation::
+                           materialized_image;
+            });
+    REQUIRE(
+        materialized !=
+        missing_resource_feature.resources.end());
+    std::erase(
+        materialized->required_physical_features,
+        "pelican.vulkan.sampled_image@1");
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                missing_resource_feature);
+        },
+        "physical resource omits required feature");
+
+    auto wrong_scope_kind = ejected;
+    REQUIRE_FALSE(wrong_scope_kind.scopes.empty());
+    wrong_scope_kind.scopes.front().kind =
+        VulkanPhysicalScopeKind::compute;
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                wrong_scope_kind);
+        },
+        "scope kind does not match logical node");
+
+    auto overlapping_alias = ejected;
+    const auto first =
+        std::find_if(
+            overlapping_alias.resources.begin(),
+            overlapping_alias.resources.end(),
+            [](const auto &resource) {
+                return resource.aliasable;
+            });
+    REQUIRE(
+        first != overlapping_alias.resources.end());
+    const auto second =
+        std::find_if(
+            std::next(first),
+            overlapping_alias.resources.end(),
+            [&](const auto &resource) {
+                return resource.aliasable &&
+                       resource.representation ==
+                           first->representation &&
+                       resource.format ==
+                           first->format &&
+                       resource.rasterization_samples ==
+                           first->rasterization_samples &&
+                       resource.view_layout ==
+                           first->view_layout &&
+                       resource.mip_levels ==
+                           first->mip_levels &&
+                       resource.array_layers ==
+                           first->array_layers &&
+                       resource.dimension ==
+                           first->dimension &&
+                       resource.extent ==
+                           first->extent &&
+                       resource.lifetime.used &&
+                       first->lifetime.used &&
+                       !(resource.lifetime.last_use <
+                             first->lifetime.first_use ||
+                         first->lifetime.last_use <
+                             resource.lifetime.first_use);
+            });
+    REQUIRE(
+        second != overlapping_alias.resources.end());
+    overlapping_alias.alias_groups = {
+        VulkanAliasGroupPlan{
+            .id = "overlap",
+            .resources = {
+                first->logical_resource,
+                second->logical_resource,
+            },
+        },
+    };
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                overlapping_alias);
+        },
+        "overlapping lifetimes");
+}
+
+TEST_CASE(
+    "NativeScope closes typed effects and keeps unsafe "
+    "synchronization explicit",
+    "[target-render-planning][complete-physical-plan][native-scope]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 3, false, false);
+    const auto target = topology(false);
+    const auto automatic =
+        compile(
+            types, graph, target,
+            bindingsFor(types, graph));
+    auto package =
+        ejectVulkanCompletePhysicalPlanPackage(
+            automatic);
+    const auto &physical_scope =
+        scopeForNode(automatic, "ToneMap");
+
+    std::map<std::string, LogicalAccessMode, std::less<>>
+        accesses;
+    const auto merge =
+        [&](std::string_view resource,
+            LogicalAccessMode access) {
+            const auto [found, inserted] =
+                accesses.emplace(
+                    std::string{resource}, access);
+            if (!inserted &&
+                found->second != access) {
+                found->second =
+                    LogicalAccessMode::read_write;
+            }
+        };
+    for (const auto &node_name :
+         physical_scope.nodes) {
+        const auto node =
+            std::find_if(
+                graph.nodes.begin(),
+                graph.nodes.end(),
+                [&](const auto &candidate) {
+                    return candidate.name ==
+                           node_name;
+                });
+        REQUIRE(node != graph.nodes.end());
+        for (const auto &use : node->uses) {
+            if (use.input_value) {
+                merge(
+                    use.input_value->resource,
+                    use.access);
+            }
+            if (use.output_value &&
+                (!use.input_value ||
+                 use.input_value->resource !=
+                     use.output_value->resource)) {
+                merge(
+                    use.output_value->resource,
+                    use.access);
+            }
+        }
+    }
+
+    VulkanNativeScopeDeclaration native{
+        .scope = physical_scope.id,
+        .implementation =
+            "pelican.test.native_tonemap@1",
+        .queue_capability =
+            "pelican.vulkan.graphics@1",
+        .synchronization =
+            VulkanNativeScopeSynchronizationMode::
+                automatic,
+        .capture_compatible = true,
+        .device_loss_recoverable = true,
+        .hot_reloadable = true,
+        .implementation_config =
+            nlohmann::ordered_json{
+                {"shader", "tonemap_native.spv"},
+            },
+    };
+    for (const auto &[name, access] : accesses) {
+        const auto logical =
+            std::find_if(
+                graph.resources.begin(),
+                graph.resources.end(),
+                [&](const auto &resource) {
+                    return resource.name == name;
+                });
+        REQUIRE(logical != graph.resources.end());
+        native.resources.push_back(
+            VulkanNativeScopeResourceBoundary{
+                .logical_resource = name,
+                .semantic_type =
+                    semanticTypeIdName(
+                        logical->type.semantic),
+                .access = access,
+            });
+    }
+    package.native_scopes = {native};
+
+    const auto verified =
+        verifyVulkanCompletePhysicalPlanPackage(
+            graph, target, automatic, package);
+    REQUIRE(verified.diagnostics.empty());
+
+    auto extension_bound = package;
+    extension_bound.native_scopes.front()
+        .required_extensions = {"VK_EXT_test_scope"};
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                extension_bound);
+        },
+        "not enabled");
+    const std::vector<std::string>
+        enabled_extensions{"VK_EXT_test_scope"};
+    REQUIRE_NOTHROW(
+        verifyVulkanCompletePhysicalPlanPackage(
+            graph, target, automatic,
+            extension_bound, {},
+            enabled_extensions));
+
+    const auto document =
+        vulkanCompletePhysicalPlanPackageToJson(
+            package);
+    REQUIRE(
+        vulkanCompletePhysicalPlanPackageFromJson(
+            document) ==
+        verified.package);
+
+    auto incomplete = package;
+    incomplete.native_scopes.front()
+        .resources.pop_back();
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                incomplete);
+        },
+        "declare every accessed logical resource");
+
+    auto manual = package;
+    manual.native_scopes.front()
+        .synchronization =
+        VulkanNativeScopeSynchronizationMode::manual;
+    requireThrowsContaining(
+        [&] {
+            (void)verifyVulkanCompletePhysicalPlanPackage(
+                graph, target, automatic,
+                manual);
+        },
+        "manual NativeScope synchronization requires");
+    for (auto &resource :
+         manual.native_scopes.front().resources) {
+        resource.stages = {
+            "VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT"};
+        resource.accesses = {
+            "VK_ACCESS_2_MEMORY_READ_BIT",
+            "VK_ACCESS_2_MEMORY_WRITE_BIT"};
+    }
+    REQUIRE_NOTHROW(
+        verifyVulkanCompletePhysicalPlanPackage(
+            graph, target, automatic, manual));
+
+    auto unchecked = package;
+    unchecked.native_scopes.front()
+        .synchronization =
+        VulkanNativeScopeSynchronizationMode::
+            unchecked;
+    const auto unchecked_verified =
+        verifyVulkanCompletePhysicalPlanPackage(
+            graph, target, automatic, unchecked);
+    REQUIRE(
+        std::any_of(
+            unchecked_verified.diagnostics.begin(),
+            unchecked_verified.diagnostics.end(),
+            [](const auto &diagnostic) {
+                return diagnostic.id ==
+                       "pelican.plan.native_scope_unchecked_sync@1";
+            }));
 }
 
 TEST_CASE(
@@ -2913,6 +3325,23 @@ TEST_CASE("external depth export infers camera depth and keeps it materialized a
                 .at("source_resource") == "scene_depth");
     REQUIRE(encoded.at("external_depth_export")
                 .at("array_layers") == 2);
+    const auto complete =
+        ejectVulkanCompletePhysicalPlanPackage(plan);
+    REQUIRE(
+        complete.external_depth_export ==
+        plan.external_depth_export);
+    const auto complete_document =
+        vulkanCompletePhysicalPlanPackageToJson(
+            complete);
+    REQUIRE(
+        complete_document.at("external_depth_export")
+            .at("source_resource") ==
+        "scene_depth");
+    REQUIRE_NOTHROW(
+        verifyVulkanCompletePhysicalPlanPackage(
+            graph, topology(true, 8, 2), plan,
+            vulkanCompletePhysicalPlanPackageFromJson(
+                complete_document)));
 
     const auto mixed = compile(
         types, graph, topology(false, 8, 2),
