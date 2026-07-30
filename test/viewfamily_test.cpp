@@ -2,6 +2,7 @@
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderer/directionalshadowcascade.hpp"
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+#include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
 #include "../src/core/render_algorithms/planar_reflection/planarreflectionview.hpp"
 #endif
 
@@ -10,7 +11,9 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -41,8 +44,19 @@ TEST_CASE(
     REQUIRE(
         planar->name ==
         "standard.planar_reflection_v1");
+    const auto *cube =
+        providers.find(
+            cubeCaptureRenderViewFamilyId);
+    REQUIRE(cube != nullptr);
+    REQUIRE(
+        cube->name ==
+        "standard.cube_capture_v1");
 #else
     REQUIRE(planar == nullptr);
+    REQUIRE(
+        providers.find(
+            "$capture/cube") ==
+        nullptr);
 #endif
 
     RenderViewFamilyProviderRegistry
@@ -693,6 +707,104 @@ TEST_CASE(
             glm::mat4{0.0f},
             view_matrix,
             plane),
+        std::invalid_argument);
+}
+
+TEST_CASE(
+    "standard cube capture publishes six stable Vulkan face views",
+    "[view-family][cube-capture][render-algorithm]") {
+    const CubeCaptureViewSettings settings{
+        .position =
+            {2.0f, -3.0f, 5.0f},
+        .near_distance = 0.25f,
+        .far_distance = 250.0f,
+    };
+    const auto family =
+        buildCubeCaptureViewFamily(
+            settings);
+    REQUIRE(
+        family.family_id ==
+        std::string{
+            cubeCaptureRenderViewFamilyId});
+    REQUIRE(family.views.size() == 6);
+
+    constexpr std::array<std::string_view, 6>
+        ids{
+            cubeCapturePositiveXViewId,
+            cubeCaptureNegativeXViewId,
+            cubeCapturePositiveYViewId,
+            cubeCaptureNegativeYViewId,
+            cubeCapturePositiveZViewId,
+            cubeCaptureNegativeZViewId,
+        };
+    const std::array<glm::vec3, 6>
+        directions{
+            glm::vec3{1.0f, 0.0f, 0.0f},
+            glm::vec3{-1.0f, 0.0f, 0.0f},
+            glm::vec3{0.0f, 1.0f, 0.0f},
+            glm::vec3{0.0f, -1.0f, 0.0f},
+            glm::vec3{0.0f, 0.0f, 1.0f},
+            glm::vec3{0.0f, 0.0f, -1.0f},
+        };
+    for (std::size_t index = 0;
+         index < family.views.size();
+         ++index) {
+        const auto &face =
+            family.views[index];
+        REQUIRE(
+            face.view_id ==
+            std::string{ids[index]});
+        REQUIRE(
+            face.camera_position ==
+            settings.position);
+        REQUIRE_FALSE(
+            face.first_person_view);
+        REQUIRE_FALSE(face.clip_plane);
+        const auto world_forward =
+            glm::normalize(
+                glm::vec3{
+                    glm::inverse(face.view) *
+                    glm::vec4{
+                        0.0f, 0.0f,
+                        -1.0f, 0.0f}});
+        REQUIRE(
+            world_forward.x ==
+            Catch::Approx(
+                directions[index].x)
+                .margin(1.0e-5f));
+        REQUIRE(
+            world_forward.y ==
+            Catch::Approx(
+                directions[index].y)
+                .margin(1.0e-5f));
+        REQUIRE(
+            world_forward.z ==
+            Catch::Approx(
+                directions[index].z)
+                .margin(1.0e-5f));
+        REQUIRE(
+            face.projection[0][0] ==
+            Catch::Approx(
+                face.projection[1][1]));
+    }
+
+    REQUIRE_THROWS_AS(
+        buildCubeCaptureViewFamily(
+            CubeCaptureViewSettings{
+                .near_distance = 1.0f,
+                .far_distance = 1.0f,
+            }),
+        std::invalid_argument);
+    REQUIRE_THROWS_AS(
+        buildCubeCaptureViewFamily(
+            CubeCaptureViewSettings{
+                .position =
+                    {
+                        std::numeric_limits<
+                            float>::quiet_NaN(),
+                        0.0f, 0.0f,
+                    },
+            }),
         std::invalid_argument);
 }
 #endif

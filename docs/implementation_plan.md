@@ -124,15 +124,17 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP234 | runtime ViewFamily provider package | ✅ 完了（2026-07-29）。汎用family registry、caller優先解決、planar C++ policyのbuild purge、shadow/reflection ON/OFF実GPU |
 | WP235 | raster attachment mip/layer view | ✅ 完了（2026-07-29）。typed attachment view、論理〜Vulkan物理計画、sequential/multiview image view、mip extent、実GPU |
 | WP236 | runtime cube render target | ✅ 完了（2026-07-30）。resource/view形状分離、cube-compatible allocation、face attachment、fullscreen/compute/material samplerCube、実GPU |
+| WP237 | replaceable cube capture algorithm | ✅ 完了（2026-07-30）。stable 6-face provider、Deferred + Forward capture、family-local clustered selection、secondary runtime layer/descriptor一般化、package purge、実GPU |
 
-WP231〜236の受け入れ詳細:
+WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
 [`WP231b`](design_reviews/2026-07-29_wp231b_remaining_mip_material_ports.md)、
 [`WP232`](design_reviews/2026-07-29_wp232_planar_reflection_mip_filter_report.md)、
 [`WP233`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)、
 [`WP234`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)、
 [`WP235`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)、
-[`WP236`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)。
+[`WP236`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)、
+[`WP237`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -1046,6 +1048,26 @@ cubeはsampled portだけを公開し、storage cube、cube array、runtime 3D�
 明示rejectする。point/spot shadowやdynamic environmentのcapture family/providerは
 機構の利用者でありWP236には含めない。詳細は
 [`2026-07-30_wp236_runtime_cube_render_target.md`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)
+を参照する。
+
+WP237で最初のruntime cube consumerを、交換可能な標準`cube_capture` featureとして縦切りした。
+同featureは`$capture/cube`上にVulkan cube layer順のstable view
+`$face/+x`、`$face/-x`、`$face/+y`、`$face/-y`、`$face/+z`、`$face/-z`を供給し、
+通常のDeferred geometry/SSAO/lightingとForward opaque/transparent passで
+`cube_capture_color`の6 faceへsequential描画する。六方向cameraは
+`render_algorithms/cube_capture`だけが知り、graph compiler、scheduler、Vulkan backendへ
+cube固有passや分岐を追加しない。callerが同名familyを渡せば標準providerより優先され、
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`ではproviderのsource/objectをbuildから
+除外できる。
+
+同時に、compile時1-view templateとなるsecondary familyについて、family内部targetを
+runtime cardinalityまで選択可能なsequential array layoutへ一般化した。fullscreen descriptorも
+compile時view数ではなく選択targetのlayer容量からvariantを確保するため、cubeだけでなく
+cascade、複数mirror、将来のsecondary providerも同じ経路を使える。clustered lighting併用時は
+6-view専用selection task/bufferを順序非依存integrationで追加する。公開cubeは意図的に
+1 mipで、BRDF-aware prefilter、複数probeの更新/選択、main materialへの自動bindingは
+別の交換可能algorithmとして残した。詳細は
+[`2026-07-30_wp237_replaceable_cube_capture.md`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)
 を参照する。
 
 ## 3. トラック現況(WP 化待ちを含む)

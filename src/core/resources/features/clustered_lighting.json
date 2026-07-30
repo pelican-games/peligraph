@@ -181,6 +181,100 @@
           }
         }
       }
+    },
+    {
+      "name": "cube_capture_view_local_selection_v2",
+      "requires": ["cube_capture"],
+      "fragment": {
+        "buffers": [
+          {
+            "name": "cube_capture_light_selection",
+            "lifetime": "persistent",
+            "size_from_extent": {
+              "resource": "cube_capture_color",
+              "tile_width": 32,
+              "tile_height": 32,
+              "header_bytes": 48,
+              "bytes_per_tile": 260,
+              "copies": 6
+            }
+          }
+        ],
+        "compute_tasks": [
+          {
+            "name": "cube_capture_light_select",
+            "shader": "engine://shaders/compute/clustered_light_select",
+            "reads": ["clustered_light_inventory"],
+            "writes": ["cube_capture_light_selection"],
+            "schedule": "per_view",
+            "view_family": "$capture/cube",
+            "before": [
+              "cube_capture_lighting"
+            ],
+            "resource_ports": {
+              "light_inventory": {
+                "resource": "clustered_light_inventory",
+                "kind": "buffer",
+                "element": "uvec4",
+                "access": "storage"
+              },
+              "light_selection": {
+                "resource": "cube_capture_light_selection",
+                "kind": "buffer",
+                "element": "uint",
+                "access": "storage"
+              }
+            },
+            "dispatch": {
+              "groups": [64, 1, 1]
+            }
+          }
+        ],
+        "pass_overrides": {
+          "cube_capture_lighting": {
+            "resource_ports": {
+              "light_selection": {
+                "resource": "cube_capture_light_selection",
+                "kind": "buffer",
+                "element": "uint",
+                "access": "storage"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "cube_capture_forward_opaque_selection_v2",
+      "requires": ["cube_capture"],
+      "requires_passes": [
+        "cube_capture_forward_opaque"
+      ],
+      "fragment": {
+        "pass_overrides": {
+          "cube_capture_forward_opaque": {
+            "material_resources": {
+              "light_selection": "cube_capture_light_selection"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "cube_capture_forward_transparent_selection_v2",
+      "requires": ["cube_capture"],
+      "requires_passes": [
+        "cube_capture_forward_transparent"
+      ],
+      "fragment": {
+        "pass_overrides": {
+          "cube_capture_forward_transparent": {
+            "material_resources": {
+              "light_selection": "cube_capture_light_selection"
+            }
+          }
+        }
+      }
     }
   ],
   "lighting_data": {

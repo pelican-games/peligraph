@@ -39,6 +39,7 @@ constexpr auto registered_ids =
     "features/sprite.json",
     "features/gpu_timing.json",
     "features/clustered_lighting.json",
+    "features/cube_capture.json",
     "features/hdr.json",
     "features/planar_reflection.json",
     "features/shadow_directional.json",
@@ -170,6 +171,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         return std::string_view{feature};
     }
     PELICAN_ENGINE_RESOURCE("features/clustered_lighting.json")
+    PELICAN_ENGINE_RESOURCE("features/cube_capture.json")
     PELICAN_ENGINE_RESOURCE("features/hdr.json")
     PELICAN_ENGINE_RESOURCE("features/planar_reflection.json")
     PELICAN_ENGINE_RESOURCE("features/shadow_directional.json")

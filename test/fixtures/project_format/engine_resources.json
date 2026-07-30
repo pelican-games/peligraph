@@ -29,6 +29,7 @@
   "features/sprite.json",
     "features/gpu_timing.json",
     "features/clustered_lighting.json",
+    "features/cube_capture.json",
     "features/hdr.json",
     "features/planar_reflection.json",
     "features/shadow_directional.json",

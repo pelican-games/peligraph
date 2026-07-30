@@ -133,6 +133,21 @@ const nlohmann::json &computeTaskByName(
         std::string{name});
 }
 
+const nlohmann::json &renderTargetByName(
+    const nlohmann::json &config,
+    std::string_view name) {
+    for (const auto &target :
+         config.at("render_targets")) {
+        if (target.value("name", std::string{}) ==
+            name) {
+            return target;
+        }
+    }
+    throw std::runtime_error(
+        "render target not found: " +
+        std::string{name});
+}
+
 void requireErrorKind(std::string_view message, std::string_view error_kind) {
     if (error_kind == "render_target_collision") {
         REQUIRE(contains(message, "render target name collides"));
@@ -1340,6 +1355,243 @@ TEST_CASE(
                 return task.at("name") ==
                        "planar_reflection_light_select";
             }) == 1);
+}
+
+TEST_CASE(
+    "cube capture feature composes one replaceable six-face hybrid slice",
+    "[render-feature][cube-capture][view-family]") {
+    const auto capture =
+        nlohmann::json{
+            {"ref",
+             "engine://features/cube_capture.json"},
+            {"parameters",
+             {
+                 {"resolution", 64},
+                 {"position_x", 2.0},
+                 {"position_y", 3.0},
+                 {"position_z", -4.0},
+                 {"near_distance", 0.25},
+                 {"far_distance", 250.0},
+             }},
+        };
+    const auto compose =
+        [&](nlohmann::json features) {
+            return composeRenderFeatureConfig(
+                nlohmann::json{
+                    {"pipeline",
+                     {{"preset",
+                       "engine://render_pipelines/hybrid_v1.json"}}},
+                    {"features",
+                     std::move(features)},
+                },
+                RenderFeatureComposeDependencies{
+                    loadEngineFeature,
+                    true,
+                });
+        };
+    const auto result =
+        compose(
+            nlohmann::json::array({
+                capture,
+            }));
+
+    REQUIRE(
+        result.feature_names ==
+        std::vector<std::string>{
+            "cube_capture"});
+    for (const auto target_name : {
+             "cube_capture_albedo",
+             "cube_capture_normal",
+             "cube_capture_material",
+             "cube_capture_worldpos",
+             "cube_capture_emissive",
+             "cube_capture_depth",
+             "cube_capture_ao",
+             "cube_capture_ao_blur",
+             "cube_capture_color",
+             "cube_capture_opaque_color",
+             "cube_capture_opaque_depth",
+         }) {
+        const auto &target =
+            renderTargetByName(
+                result.config,
+                target_name);
+        REQUIRE(target.at("width") == 64);
+        REQUIRE(target.at("height") == 64);
+        REQUIRE(target.at("layers") == 6);
+        REQUIRE(
+            target.at("extent_scale") ==
+            1.0);
+    }
+    const auto &cube =
+        renderTargetByName(
+            result.config,
+            "cube_capture_color");
+    REQUIRE(
+        cube.at("dimension") == "cube");
+    REQUIRE(cube.at("mip_levels") == 1);
+
+    for (const auto pass_name : {
+             "cube_capture_geometry",
+             "cube_capture_ssao",
+             "cube_capture_ssao_blur",
+             "cube_capture_lighting",
+             "cube_capture_forward_opaque",
+             "cube_capture_forward_transparent",
+         }) {
+        const auto &pass =
+            passByName(
+                result.config,
+                pass_name);
+        REQUIRE(
+            pass.at("view_family") ==
+            "$capture/cube");
+        REQUIRE(
+            pass.at("resolution_domain") ==
+            "independent");
+        REQUIRE_FALSE(
+            pass.contains(
+                "inherit_bindings_from"));
+    }
+    for (const auto pass_name : {
+             "cube_capture_snapshot_opaque_color",
+             "cube_capture_snapshot_opaque_depth",
+         }) {
+        const auto &pass =
+            passByName(
+                result.config,
+                pass_name);
+        REQUIRE(
+            pass.at("type") ==
+            "snapshot_copy");
+        REQUIRE(
+            pass.at("view_family") ==
+            "$capture/cube");
+    }
+    REQUIRE(
+        passByName(
+            result.config,
+            "cube_capture_lighting")
+            .at("output")
+            .at("color") ==
+        nlohmann::json::array({
+            "cube_capture_color"}));
+    REQUIRE(
+        passByName(
+            result.config,
+            "cube_capture_forward_transparent")
+            .at("screen_inputs")
+            .at("opaque_color") ==
+        "cube_capture_opaque_color");
+    REQUIRE(
+        std::find(
+            result.shader_defines.begin(),
+            result.shader_defines.end(),
+            "PELICAN_FEATURE_CUBE_CAPTURE") !=
+        result.shader_defines.end());
+
+    const auto compiled =
+        compileComposition(result);
+    const auto feature =
+        std::find_if(
+            compiled.feature_instances.begin(),
+            compiled.feature_instances.end(),
+            [](const auto &candidate) {
+                return candidate.feature ==
+                       "cube_capture";
+            });
+    REQUIRE(
+        feature !=
+        compiled.feature_instances.end());
+    const auto position_x =
+        std::find_if(
+            feature->parameters.begin(),
+            feature->parameters.end(),
+            [](const auto &parameter) {
+                return parameter.name ==
+                       "position_x";
+            });
+    REQUIRE(
+        position_x !=
+        feature->parameters.end());
+    REQUIRE(
+        std::get<double>(
+            position_x->value) ==
+        Catch::Approx(2.0));
+
+    for (const auto clustered_first :
+         {false, true}) {
+        auto features =
+            nlohmann::json::array();
+        if (clustered_first) {
+            features.push_back(
+                "engine://features/clustered_lighting.json");
+        }
+        features.push_back(capture);
+        if (!clustered_first) {
+            features.push_back(
+                "engine://features/clustered_lighting.json");
+        }
+        const auto combined =
+            compose(std::move(features));
+        const auto &lighting =
+            passByName(
+                combined.config,
+                "cube_capture_lighting");
+        REQUIRE(
+            lighting.at("resource_ports")
+                .at("light_selection")
+                .at("resource") ==
+            "cube_capture_light_selection");
+        REQUIRE(
+            passByName(
+                combined.config,
+                "cube_capture_forward_opaque")
+                .at("material_resources")
+                .at("light_selection") ==
+            "cube_capture_light_selection");
+        REQUIRE(
+            passByName(
+                combined.config,
+                "cube_capture_forward_transparent")
+                .at("material_resources")
+                .at("light_selection") ==
+            "cube_capture_light_selection");
+        const auto selection =
+            std::find_if(
+                combined.config.at("buffers")
+                    .begin(),
+                combined.config.at("buffers")
+                    .end(),
+                [](const auto &buffer) {
+                    return buffer.at("name") ==
+                           "cube_capture_light_selection";
+                });
+        REQUIRE(
+            selection !=
+            combined.config.at("buffers")
+                .end());
+        REQUIRE(
+            selection->at("size_from_extent")
+                .at("copies") == 6);
+        const auto &selector =
+            computeTaskByName(
+                combined.config,
+                "cube_capture_light_select");
+        REQUIRE(
+            selector.at("view_family") ==
+            "$capture/cube");
+        REQUIRE(
+            selector.at("schedule") ==
+            "per_view");
+        REQUIRE(
+            selector.at("before") ==
+            nlohmann::json::array({
+                "cube_capture_lighting"}));
+        REQUIRE_NOTHROW(
+            compileComposition(
+                combined));
+    }
 }
 
 TEST_CASE(

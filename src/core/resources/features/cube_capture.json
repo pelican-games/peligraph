@@ -1,0 +1,329 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "cube_capture",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "scalars": [
+      {
+        "name": "resolution",
+        "type": "int",
+        "range": [64, 8192],
+        "default": 256,
+        "shader_define": false
+      },
+      {
+        "name": "position_x",
+        "type": "float",
+        "range": [-100000.0, 100000.0],
+        "default": 0.0,
+        "shader_define": false
+      },
+      {
+        "name": "position_y",
+        "type": "float",
+        "range": [-100000.0, 100000.0],
+        "default": 0.0,
+        "shader_define": false
+      },
+      {
+        "name": "position_z",
+        "type": "float",
+        "range": [-100000.0, 100000.0],
+        "default": 0.0,
+        "shader_define": false
+      },
+      {
+        "name": "near_distance",
+        "type": "float",
+        "range": [0.001, 1000.0],
+        "default": 0.1,
+        "shader_define": false
+      },
+      {
+        "name": "far_distance",
+        "type": "float",
+        "range": [0.01, 1000000.0],
+        "default": 1000.0,
+        "shader_define": false
+      }
+    ]
+  },
+  "render_targets": [
+    {
+      "name": "cube_capture_albedo",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_normal",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_material",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_worldpos",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_emissive",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_depth",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"]
+    },
+    {
+      "name": "cube_capture_ao",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_ao_blur",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_color",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "dimension": "cube",
+      "layers": 6,
+      "mip_levels": 1,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+    },
+    {
+      "name": "cube_capture_opaque_color",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": ["TRANSFER_DST", "SAMPLED"]
+    },
+    {
+      "name": "cube_capture_opaque_depth",
+      "extent_scale": 1.0,
+      "width": "$resolution",
+      "height": "$resolution",
+      "layers": 6,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["TRANSFER_DST", "SAMPLED"]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "begin",
+      "pass": {
+        "name": "cube_capture_geometry",
+        "type": "material",
+        "material_contract": "deferred_geometry_v1",
+        "resolution_domain": "independent",
+        "view_family": "$capture/cube",
+        "output": {
+          "color": [
+            "cube_capture_albedo",
+            "cube_capture_normal",
+            "cube_capture_material",
+            "cube_capture_worldpos",
+            "cube_capture_emissive"
+          ],
+          "depth": "cube_capture_depth"
+        },
+        "depth_store_op": "store"
+      }
+    },
+    {
+      "insert": "after:cube_capture_geometry",
+      "pass": {
+        "name": "cube_capture_ssao",
+        "type": "fullscreen",
+        "resolution_domain": "independent",
+        "view_family": "$capture/cube",
+        "output": {
+          "color": ["cube_capture_ao"],
+          "depth": null
+        },
+        "input": [
+          "cube_capture_worldpos",
+          "cube_capture_normal"
+        ],
+        "push_constants": "projection_view",
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://ssao"
+        },
+        "clear_color": [1.0, 1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "insert": "after:cube_capture_ssao",
+      "pass": {
+        "name": "cube_capture_ssao_blur",
+        "type": "fullscreen",
+        "resolution_domain": "independent",
+        "view_family": "$capture/cube",
+        "output": {
+          "color": ["cube_capture_ao_blur"],
+          "depth": null
+        },
+        "input": ["cube_capture_ao"],
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://ssao_blur"
+        },
+        "clear_color": [1.0, 1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "insert": "after:cube_capture_ssao_blur",
+      "pass": {
+        "name": "cube_capture_lighting",
+        "type": "fullscreen",
+        "inherit_bindings_from": "deferred_lighting",
+        "resolution_domain": "independent",
+        "view_family": "$capture/cube",
+        "output": {
+          "color": ["cube_capture_color"],
+          "depth": null
+        },
+        "input": [
+          "cube_capture_albedo",
+          "cube_capture_normal",
+          "cube_capture_material",
+          "cube_capture_worldpos",
+          "cube_capture_emissive",
+          "cube_capture_ao_blur"
+        ],
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://fullscreen"
+        },
+        "push_constants": "camera_position",
+        "uses_light_data": true
+      }
+    },
+    {
+      "insert": "after:cube_capture_lighting",
+      "pass": {
+        "name": "cube_capture_forward_opaque",
+        "type": "material",
+        "material_contract": "forward_opaque_v1",
+        "inherit_bindings_from": "forward_opaque",
+        "resolution_domain": "independent",
+        "view_family": "$capture/cube",
+        "output": {
+          "color": ["cube_capture_color"],
+          "depth": "cube_capture_depth"
+        },
+        "color_load_op": "load",
+        "depth_load_op": "load",
+        "depth_store_op": "store"
+      }
+    },
+    {
+      "insert": "after:cube_capture_forward_opaque",
+      "pass": {
+        "name": "cube_capture_snapshot_opaque_color",
+        "type": "snapshot_copy",
+        "view_family": "$capture/cube",
+        "source": "cube_capture_color",
+        "destination": "cube_capture_opaque_color",
+        "snapshot": "cube_capture_opaque_color",
+        "snapshot_after": "cube_capture_forward_opaque"
+      }
+    },
+    {
+      "insert": "after:cube_capture_snapshot_opaque_color",
+      "pass": {
+        "name": "cube_capture_snapshot_opaque_depth",
+        "type": "snapshot_copy",
+        "view_family": "$capture/cube",
+        "source": "cube_capture_depth",
+        "destination": "cube_capture_opaque_depth",
+        "snapshot": "cube_capture_opaque_depth",
+        "snapshot_after": "cube_capture_forward_opaque"
+      }
+    },
+    {
+      "insert": "after:cube_capture_snapshot_opaque_depth",
+      "pass": {
+        "name": "cube_capture_forward_transparent",
+        "type": "material",
+        "material_contract": "forward_transparent_v1",
+        "inherit_bindings_from": "forward_transparent",
+        "resolution_domain": "independent",
+        "view_family": "$capture/cube",
+        "screen_inputs": {
+          "opaque_color": "cube_capture_opaque_color",
+          "opaque_depth": "cube_capture_opaque_depth",
+          "scene_depth": "cube_capture_opaque_depth",
+          "linear_view_depth": "cube_capture_opaque_depth"
+        },
+        "output": {
+          "color": ["cube_capture_color"],
+          "depth": "cube_capture_depth"
+        },
+        "color_load_op": "load",
+        "depth_load_op": "load",
+        "depth_store_op": "store"
+      }
+    }
+  ],
+  "shader_defines": [
+    "PELICAN_FEATURE_CUBE_CAPTURE"
+  ]
+}

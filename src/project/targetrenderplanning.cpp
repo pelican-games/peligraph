@@ -2039,6 +2039,14 @@ void applyResourceViewLayouts(
                             return writer != reader;
                         });
                 });
+        const bool secondary_family_write =
+            std::any_of(
+                writer_families.begin(),
+                writer_families.end(),
+                [](const std::string &family) {
+                    return family !=
+                           mainRenderViewFamilyId;
+                });
         if (crosses_view_families) {
             // The producer family's runtime cardinality is independent of
             // the consumer (for example four shadow cascades feeding one or
@@ -2062,6 +2070,14 @@ void applyResourceViewLayouts(
                 "lowered resource physical feature");
             candidate.required_features.push_back(
                 std::string{vulkanMultiviewCapability});
+        } else if (secondary_family_write) {
+            // Secondary-family scopes are one-view physical templates.
+            // Their actual provider cardinality is known only at runtime,
+            // so resources kept inside that family still need one selectable
+            // 2D layer per invocation.
+            resource.view_layout =
+                VulkanResourceViewLayout::
+                    sequential_2d;
         } else if (sequential_write) {
             resource.view_layout =
                 VulkanResourceViewLayout::sequential_2d;
@@ -2080,6 +2096,9 @@ void applyResourceViewLayouts(
                       VulkanResourceViewLayout::family_2d_array
                 ? "a resource crossing view-family ownership preserves "
                   "the producer family's complete array"
+            : secondary_family_write
+                ? "a secondary-family resource preserves runtime "
+                  "provider views as selectable 2D layers"
             : resource.view_layout ==
                       VulkanResourceViewLayout::sequential_2d
                 ? "view-dependent writes execute once per view"

@@ -336,6 +336,81 @@ CompiledLogicalRenderGraph hybridGraphWithSharedShadow(
     return graph;
 }
 
+CompiledLogicalRenderGraph
+hybridGraphWithSecondaryInternalResource(
+    const LogicalTypeRegistry &types) {
+    auto graph = hybridGraph(types, 3, false);
+    graph.name =
+        "hybrid_secondary_internal";
+    const auto scene =
+        sceneLinearHdrV1(types);
+    graph.resources.push_back(
+        LogicalResourceDesc{
+            .name =
+                "capture_intermediate",
+            .type = scene,
+        });
+    graph.resources.push_back(
+        LogicalResourceDesc{
+            .name = "capture_output",
+            .type = scene,
+        });
+
+    LogicalGraphNode prepare;
+    prepare.name = "CapturePrepare";
+    prepare.kind =
+        LogicalGraphNodeKind::render;
+    prepare.view_family =
+        "$capture/test";
+    addWrite(
+        types, prepare,
+        resource(
+            graph,
+            "capture_intermediate"),
+        1, "intermediate");
+
+    LogicalGraphNode resolve;
+    resolve.name = "CaptureResolve";
+    resolve.kind =
+        LogicalGraphNodeKind::render;
+    resolve.view_family =
+        "$capture/test";
+    addRead(
+        types, resolve,
+        resource(
+            graph,
+            "capture_intermediate"),
+        1, "intermediate",
+        LogicalReadFootprintKind::
+            same_pixel);
+    addWrite(
+        types, resolve,
+        resource(
+            graph, "capture_output"),
+        1, "capture");
+
+    for (auto &node : graph.nodes) {
+        if (node.name != "Lighting") {
+            continue;
+        }
+        addRead(
+            types, node,
+            resource(
+                graph,
+                "capture_output"),
+            1, "capture",
+            LogicalReadFootprintKind::
+                arbitrary);
+    }
+    graph.nodes.push_back(
+        std::move(resolve));
+    graph.nodes.push_back(
+        std::move(prepare));
+    validateCompiledLogicalRenderGraph(
+        types, graph);
+    return graph;
+}
+
 ResourcePattern patternFor(const LogicalTypeRegistry &types,
                            const LogicalResourceDesc &resource) {
     const auto display =
@@ -2534,6 +2609,54 @@ TEST_CASE("directional shadow remains one producer-family array for flat preview
     REQUIRE(physicalResource(
                 multiview, "directional_shadow")
                 .array_layers == 1);
+}
+
+TEST_CASE(
+    "secondary-family internal images retain runtime per-view layers",
+    "[target-render-planning][view-execution][secondary]") {
+    const auto types =
+        makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraphWithSecondaryInternalResource(
+            types);
+    const auto plan =
+        compile(
+            types, graph, topology(false),
+            bindingsFor(types, graph),
+            std::nullopt,
+            VulkanViewExecutionPlanRequest{
+                .view_count = 1,
+                .view_independent_nodes = {
+                    "CapturePrepare",
+                    "CaptureResolve",
+                },
+            });
+
+    REQUIRE(
+        scopeForNode(
+            plan, "CapturePrepare")
+            .view_execution ==
+        VulkanScopeViewExecution::
+            single_view);
+    REQUIRE(
+        scopeForNode(
+            plan, "CaptureResolve")
+            .view_execution ==
+        VulkanScopeViewExecution::
+            single_view);
+    REQUIRE(
+        physicalResource(
+            plan,
+            "capture_intermediate")
+            .view_layout ==
+        VulkanResourceViewLayout::
+            sequential_2d);
+    REQUIRE(
+        physicalResource(
+            plan, "capture_output")
+            .view_layout ==
+        VulkanResourceViewLayout::
+            family_2d_array);
 }
 
 TEST_CASE("view execution planning selects layered multiview and exposes its Vulkan scope contract",

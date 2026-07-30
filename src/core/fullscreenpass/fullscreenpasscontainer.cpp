@@ -261,13 +261,13 @@ void FullscreenPassContainer::bindResource(
                     "match its pipeline");
             }
         } else if (info.variants.size() > 1) {
-            if (invocation.logical_view_count !=
+            if (invocation.logical_view_count >
                     info.variants.size() ||
                 invocation.view_index >=
-                info.variants.size()) {
+                    invocation.logical_view_count) {
                 throw std::runtime_error(
                     "fullscreen sequential descriptor invocation does not "
-                    "match its layered inputs");
+                    "fit its layered-input capacity");
             }
             variant_index = invocation.view_index;
         }
@@ -507,41 +507,42 @@ void FullscreenPassContainer::setInputResourcesById(
         throw std::runtime_error(
             "Fullscreen pass input texture must be a render target");
     }
-    const auto has_separate_view_layers =
-        [&]() {
-            for (std::size_t input = 0;
-                 input < input_rts.size();
-                 ++input) {
-                const auto dimension =
-                    info.input_rt_views[input];
-                if (dimension ==
-                    PassInputViewDimension::
-                        layered_2d_array) {
-                    return true;
-                }
-                if (dimension !=
-                    PassInputViewDimension::
-                        sequential_2d) {
-                    continue;
-                }
-                const auto selected_layers =
-                    info.input_rt_subresources[input]
-                        ? info.input_rt_subresources[input]
-                              ->layer_count
-                        : rt_views.arrayLayers(
-                              input_rts[input]);
-                if (selected_layers >=
-                    logical_view_count) {
-                    return true;
-                }
-            }
-            return false;
-        }();
     std::uint32_t variant_count = 1;
     if (view.execution ==
-            GraphicsPipelineViewExecution::single_view &&
-        has_separate_view_layers) {
-        variant_count = logical_view_count;
+        GraphicsPipelineViewExecution::single_view) {
+        for (std::size_t input = 0;
+             input < input_rts.size(); ++input) {
+            const auto dimension =
+                info.input_rt_views[input];
+            if (dimension ==
+                PassInputViewDimension::
+                    layered_2d_array) {
+                variant_count = std::max(
+                    variant_count,
+                    logical_view_count);
+                continue;
+            }
+            if (dimension !=
+                PassInputViewDimension::
+                    sequential_2d) {
+                continue;
+            }
+            const auto selected_layers =
+                info.input_rt_subresources[input]
+                    ? info.input_rt_subresources[input]
+                          ->layer_count
+                    : rt_views.arrayLayers(
+                          input_rts[input]);
+            // Secondary view-family scopes are compiled as one-view
+            // templates and expanded only after providers publish their
+            // runtime cardinality. Preserve the authored array capacity so
+            // those later invocations can still bind their own 2D layer.
+            if (selected_layers > 1) {
+                variant_count = std::max(
+                    variant_count,
+                    selected_layers);
+            }
+        }
     }
     for (std::size_t input = 0;
          input < input_rts.size(); ++input) {
@@ -594,16 +595,18 @@ void FullscreenPassContainer::setInputResourcesById(
                     sequential_2d) {
             if (selected_layers != 1 &&
                 selected_layers <
-                    logical_view_count) {
+                    variant_count) {
                 throw std::runtime_error(
-                    "Fullscreen sequential_2d input must provide one reusable layer or every logical view");
+                    "Fullscreen sequential_2d input must provide one "
+                    "reusable layer or the descriptor view capacity");
             }
             if (info.input_rt_subresources[input] &&
                 selected_layers != 1 &&
                 selected_layers !=
-                    logical_view_count) {
+                    variant_count) {
                 throw std::runtime_error(
-                    "Fullscreen sequential_2d subresource must select one reusable layer or exactly the logical view count");
+                    "Fullscreen sequential_2d subresource must select one "
+                    "reusable layer or exactly the descriptor view capacity");
             }
         }
         if (info.input_view_dimensions[input] ==
@@ -663,7 +666,8 @@ void FullscreenPassContainer::setInputResourcesById(
                          PassInputViewDimension::
                              sequential_2d &&
                      selected_layers >=
-                         logical_view_count);
+                         variant_count &&
+                     variant_count > 1);
                 if (info.input_rt_subresources[i]) {
                     auto subresource =
                         *info.input_rt_subresources[i];

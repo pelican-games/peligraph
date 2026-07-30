@@ -59,8 +59,11 @@ render areaへ伝播する。
 WP236ではphysical imageの資源形状(`2d` / `cube`)と、descriptor/attachmentのview形状
 (`2d` / `2d_array` / `cube`)を、schedulerのViewFamily layoutから分離した。cubeは
 6-layerのcube-compatible 2D imageとして計画・allocationし、face raster出力では2D view、
-方向samplingではcube viewを選ぶ。六面を偽の6-view familyとして扱わないため、capture camera
-生成とface scheduleは交換可能なfamily/provider algorithm側に残る。
+方向samplingではcube viewを選ぶ。cube imageであること自体からViewFamilyを暗黙生成せず、
+capture camera生成とface scheduleは交換可能なfamily/provider algorithm側に残る。
+WP237の標準`cube_capture`はその最初のconsumerであり、captureという論理処理が明示的に
+6-view familyを供給して各viewを対応faceへsequential実行する。これはcube資源を偽の
+ViewFamilyとみなすこととは異なり、caller-authored familyで全面置換できる。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
@@ -710,8 +713,11 @@ scalarなsecondary family passとarrayなmain-family passへ割り当てられ�
 array viewを作って`sampler2DArray` ABIを統一する。これはfeature固有のVulkan分岐ではなく、
 material resource port全般のview-shape adapterである。
 
-残るG6bはpoint/spot shadowとreflection probeのcube-family provider、secondary multiviewである。
-runtime cube resource、face attachment、sampled cube descriptorはWP236で解消した。
+runtime cube resource、face attachment、sampled cube descriptorはWP236、標準reflection
+captureのstable six-face providerとDeferred + Forward実行はWP237で解消した。
+secondary family内部のtarget/view descriptorはruntime cardinalityまでsequential展開され、
+clustered selectionも同じfamilyの6 viewへ接続される。残るG6bはpoint/spot shadow provider、
+複数probeの更新/選択policy、secondary multiviewである。
 CSMやreflectionを単なる特殊passへ戻さず、これらも
 stable family relationを通して拡張する。planar reflection側はoblique near-planeを実装済みで、
 標準7-level roughness-aware tent mip chainを交換可能packageとして実装済みである。残るreflection quality項目はGGX等の

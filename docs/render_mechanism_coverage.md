@@ -1,8 +1,8 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v19)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v20)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v19(2026-07-30)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v20(2026-07-30)**。84 行の技法候補を現行コードとテストへ再照合し、
 WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
 mip/layer/subresource view、WP218の任意長・型付きmaterial output ABI、
@@ -10,7 +10,8 @@ WP219のoutput別blend/write-mask、WP220のmaterial same-pixel local-read、
 WP228のplanar reflection Forward transparent capture/family-local sort、
 WP229のViewFamily-local clustered selection、WP233のtyped shader asset差替え、
 WP234のruntime ViewFamily provider registryと標準C++ algorithm package purge、
-WP235のraster attachment mip/layer view、WP236のruntime cube target/viewまで反映した。
+WP235のraster attachment mip/layer view、WP236のruntime cube target/view、
+WP237の交換可能なsix-face capture/providerまで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
 3D target、typed integer material image inputは
 後続である。監査記録は
@@ -24,7 +25,8 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 [`design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md`](design_reviews/2026-07-29_wp233_replaceable_render_algorithm_package.md)、
 [`design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md`](design_reviews/2026-07-29_wp234_runtime_view_family_provider_package.md)、
 [`design_reviews/2026-07-29_wp235_raster_attachment_subresource.md`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)、
-[`design_reviews/2026-07-30_wp236_runtime_cube_render_target.md`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)。
+[`design_reviews/2026-07-30_wp236_runtime_cube_render_target.md`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)、
+[`design_reviews/2026-07-30_wp237_replaceable_cube_capture.md`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)。
 
 ## 0. 判定規則
 
@@ -125,7 +127,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
 | D1 | prebaked IBL | **○** | 2D octahedral/stripに加えてnative cubemapをmaterialから利用可能(WP209a) |
-| D2 | runtime prefilter / dynamic environment | **△** | runtime cube target、face raster出力、full-mip sampled cubeは利用可能。標準capture family/provider、六面実行package、BRDF-aware prefilterのdogfoodが未完(G6b) |
+| D2 | runtime prefilter / dynamic environment | **△** | WP237でstable six-face provider、Deferred + Forward capture、family-local clustered selectionを交換可能packageとして実装し、6 face実GPU描画まで検証。公開結果は現在1 mipで、BRDF-aware prefilter、複数probeの更新/選択、main materialへのbinding policyが未完(G6b) |
 | D3 | parallax-corrected reflection probe | **△** | baked texture + hook。probe selection/data は material単位または G5 |
 | D4 | post SSR | **△** | scene color + depth fullscreen で構成可能。実 feature 未作成 |
 | D5 | material SSR/refraction integration | **○** | typed screen input と実 Vulkan refraction test 済み |
@@ -227,7 +229,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a（解消済み、WP205）** | public directional shadow resource/light relation、generated `pelican_shadow()`、project-copy同値とpurgeを実装 | filtered PCF/PCSSは品質algorithm側の残件 |
-| **G6b（部分解消: WP223〜236）** | stable runtime ViewFamily、pass/task relation、secondary sequential scheduling、family固有extent、directional CSM、planar reflection、oblique near-plane、汎用secondary culling、family別transparent sort、family-local clustered selection、planar mip filter/family-array sampling、stable-ID provider registry、標準shader/C++ package差替え・purge、cube-compatible target/face attachment/sampled cube viewを実装。secondary multiviewとpoint/probe cube-family providerが未完 | point/spot shadow、reflection probe、advanced planar capture |
+| **G6b（部分解消: WP223〜237）** | stable runtime ViewFamily、pass/task relation、secondary sequential scheduling、family固有extent、directional CSM、planar reflection、oblique near-plane、汎用secondary culling、family別transparent sort、family-local clustered selection、planar mip filter/family-array sampling、stable-ID provider registry、標準shader/C++ package差替え・purge、cube-compatible target/face attachment/sampled cube view、交換可能なsix-face reflection captureを実装。secondary multiview、point/spot shadow provider、複数probe policyが未完 | point/spot shadow、reflection probe、advanced planar/cube capture |
 | **G7** | acceleration structure / RT shader/pipeline contractが無い | K1/K2 |
 | **G8（部分解消、WP210b）** | 固定状態1 material rangeのGPU-written indexed draw/countは実装済み。複数material/pipeline segment、GPU-visible state key、実culling dogfoodが未完 | culling、particles、virtual geometry |
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
@@ -275,7 +277,7 @@ upscale resolution contract、public directional shadow receptionである。
 推奨順は次である。
 
 1. WP204 runtime sliceは完了
-2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227、transparent capture/sortはWP228、family-local clustered selectionはWP229、oblique near-planeはWP230、extent-derived dispatch/material remaining-mip/family-array planar filterはWP231〜232、filter asset差替えはWP233、runtime family provider registryと標準C++ package purgeはWP234、raster attachment mip/layer viewはWP235、runtime cube target/viewはWP236で完了。G6bの次はpoint/probe cube-family providerまたはsecondary multiview
+2. G6a public shadow contractはWP205、directional CSMはWP225、planar reflectionと汎用secondary cullingはWP226、Forward opaque captureはWP227、transparent capture/sortはWP228、family-local clustered selectionはWP229、oblique near-planeはWP230、extent-derived dispatch/material remaining-mip/family-array planar filterはWP231〜232、filter asset差替えはWP233、runtime family provider registryと標準C++ package purgeはWP234、raster attachment mip/layer viewはWP235、runtime cube target/viewはWP236、交換可能なsix-face captureはWP237で完了。G6bの次はcube prefilter/probe policy、point/spot shadow provider、またはsecondary multiview
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1はWP207a、G2はWP207bで完了
 5. G5 lighting data v2 + clustered dogfoodはWP208で完了

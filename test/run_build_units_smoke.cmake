@@ -531,7 +531,7 @@ function(verify_standard_render_algorithms_absent build_dir)
     foreach(metadata IN LISTS build_metadata)
         file(READ "${metadata}" contents)
         if(contents MATCHES
-            "render_algorithms[/\\\\](standardrenderalgorithms[.]cpp|planar_reflection[/\\\\](standard_prefilter[.]comp|planarreflectionview[.]cpp|planarreflectionviewprovider[.]cpp))")
+            "render_algorithms[/\\\\](standardrenderalgorithms[.]cpp|cube_capture[/\\\\](cubecaptureview[.]cpp|cubecaptureviewprovider[.]cpp)|planar_reflection[/\\\\](standard_prefilter[.]comp|planarreflectionview[.]cpp|planarreflectionviewprovider[.]cpp))")
             message(FATAL_ERROR
                 "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF retained a standard algorithm source: ${metadata}")
         endif()
@@ -542,7 +542,7 @@ function(verify_standard_render_algorithms_absent build_dir)
         get_filename_component(name "${artifact}" NAME)
         string(TOLOWER "${name}" lower_name)
         if(lower_name MATCHES
-            "(standard_prefilter|standardrenderalgorithms|planarreflectionview|planarreflectionviewprovider).*[.](obj|o|lib|a)$")
+            "(standard_prefilter|standardrenderalgorithms|cubecaptureview|cubecaptureviewprovider|planarreflectionview|planarreflectionviewprovider).*[.](obj|o|lib|a)$")
             message(FATAL_ERROR
                 "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF emitted a standard algorithm artifact: ${artifact}")
         endif()

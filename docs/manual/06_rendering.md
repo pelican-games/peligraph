@@ -394,6 +394,41 @@ Fresnel、法線由来の歪み、GGX importance-sampled convolutionはmaterial/
 置換可能なalgorithmです。標準filterはmipに応じて半径を広げるboundedな7-level tent
 low-passであり、方向空間の物理BRDF積分そのものではありません。
 
+dynamic cubemap captureは標準`cube_capture` featureで有効化できます。
+
+```json
+"features": [
+  {
+    "ref": "engine://features/cube_capture.json",
+    "parameters": {
+      "resolution": 256,
+      "position_x": 0.0,
+      "position_y": 1.5,
+      "position_z": 0.0,
+      "near_distance": 0.1,
+      "far_distance": 1000.0
+    }
+  }
+]
+```
+
+標準providerはstable `$capture/cube` familyを作り、Vulkan cube layer順の
+`$face/+x`、`$face/-x`、`$face/+y`、`$face/-y`、`$face/+z`、`$face/-z`を
+`cube_capture_color`の6 faceへsequential描画します。captureは通常のDeferred geometry、
+SSAO、lighting、Forward opaque/transparent passだけで構成され、cube専用pass typeは
+ありません。clustered lighting featureと併用すると、6 view専用のlight selectionも
+feature integrationから自動追加されます。
+
+`cube_capture_color`は現在1 mipです。main materialへ暗黙bindingせず、利用するsurface/passが
+typed image portを`resource: "cube_capture_color"`、`view: "cube"`として明示します。
+BRDF-aware mip prefilter、複数probeの更新頻度/選択、capture結果の自動割当は技法ごとに
+異なるため、後続の交換可能algorithmです。
+
+callerが同じ`$capture/cube` familyを渡すと、標準の位置/六方向camera policyを全面置換できます。
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF`では標準providerのsource/objectが除外されますが、
+feature schemaと汎用compiler/scheduler/backendは残ります。その構成でfeatureを使う場合は
+caller-authored family、またはhostが登録する同じstable family IDのproviderを用意してください。
+
 project featureでcanonical passと同じmaterial bindingを別target/viewへ再利用するときは、
 composer helperの`"inherit_bindings_from": "<pass-name>"`を指定できます。全featureの
 surface/material bindingが解決された後に継承されるため、shadowやclustered lighting featureの
@@ -406,8 +441,9 @@ clustered light selection v2はViewFamily/viewごとに独立します。標準b
 flatは先頭領域、XR sequentialは左右眼の各領域を使います。planar reflection併用時は
 `$reflection/planar`専用buffer/taskがintegrationから追加され、scalable inventoryだけを
 main viewと共有します。headerが現在のFrameUBOと一致しない場合はLightUBOへ安全側fallback
-するため、別familyのselectionや未生成領域を誤用しません。secondary multiviewと
-標準roughness prefilterは後続です。
+するため、別familyのselectionや未生成領域を誤用しません。cube capture併用時も同じ契約で
+6-view専用selectionを作ります。secondary multiviewとcube capture用BRDF-aware prefilterは
+後続です。
 
 ### canonical anchor(✅WP73)
 
@@ -1502,7 +1538,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
-- **論理フレーム / ViewFamily(WP128/WP223〜234)**: `renderLogicalFrame(target, view_families)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskの`view_family`は汎用runtime registryで解決され、caller-authored familyが常に優先されます。標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、標準planar reflection packageは`$reflection/planar`のstable `$mirror/<source-view>`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。標準planar providerはclip planeをVulkan ZOのoblique near planeへ変換し、package OFF時はcaller/project providerで全面置換できます。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewとcube-face providerは未対応です。
+- **論理フレーム / ViewFamily(WP128/WP223〜237)**: `renderLogicalFrame(target, view_families)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskの`view_family`は汎用runtime registryで解決され、caller-authored familyが常に優先されます。標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、標準planar reflection packageは`$reflection/planar`のstable `$mirror/<source-view>`群、標準cube captureは`$capture/cube`のstable `$face/{+x,-x,+y,-y,+z,-z}`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。標準planar providerはclip planeをVulkan ZOのoblique near planeへ変換し、cube providerはsquare 90度投影の六方向cameraを作ります。どちらもpackage OFF時はcaller/project providerで全面置換できます。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
 - **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
 - **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。

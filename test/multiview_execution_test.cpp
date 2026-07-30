@@ -48,6 +48,7 @@ constexpr vk::Format test_format =
     vk::Format::eR8G8B8A8Unorm;
 constexpr std::uint32_t stereo_view_count = 2;
 constexpr std::uint32_t stereo_view_mask = 0b11;
+constexpr std::uint32_t cube_face_count = 6;
 
 class TempProject {
     std::filesystem::path root_;
@@ -288,8 +289,8 @@ vk::UniqueDescriptorSet allocateFrameSet(
 }
 
 struct LayeredReadback {
-    std::array<std::vector<std::uint8_t>,
-               stereo_view_count>
+    std::vector<
+        std::vector<std::uint8_t>>
         layers;
     std::uint32_t rendering_count = 0;
 };
@@ -300,12 +301,17 @@ LayeredReadback renderLayered(
     PipelineFactory &factory, PipelineHandle pipeline,
     std::span<const vk::DescriptorSet> frame_sets,
     bool multiview) {
+    const auto layer_count =
+        image.array_layers;
     const auto expected_attachment_count =
         multiview ? std::size_t{1}
-                  : std::size_t{stereo_view_count};
+                  : std::size_t{layer_count};
     if (attachment_views.size() !=
             expected_attachment_count ||
-        frame_sets.size() != expected_attachment_count) {
+        frame_sets.size() !=
+            expected_attachment_count ||
+        (multiview &&
+         layer_count != stereo_view_count)) {
         throw std::runtime_error(
             "layered render fixture contract is inconsistent");
     }
@@ -314,11 +320,16 @@ LayeredReadback renderLayered(
     auto &utils = GET_MODULE(VulkanUtils);
     auto commands = vkcore.allocCmdBufs(1);
     auto &command = commands.front();
+    const vk::Extent2D render_extent{
+        image.extent.width,
+        image.extent.height,
+    };
     const auto layer_bytes =
-        static_cast<vk::DeviceSize>(test_extent.width) *
-        test_extent.height * 4;
+        static_cast<vk::DeviceSize>(
+            render_extent.width) *
+        render_extent.height * 4;
     const auto total_bytes =
-        layer_bytes * stereo_view_count;
+        layer_bytes * layer_count;
     auto staging = vkcore.allocBuf(
         total_bytes,
         vk::BufferUsageFlagBits::eTransferDst,
@@ -332,8 +343,9 @@ LayeredReadback renderLayered(
         toColorAttachment());
 
     LayeredReadback result;
+    result.layers.resize(layer_count);
     const auto execution_count =
-        multiview ? 1u : stereo_view_count;
+        multiview ? 1u : layer_count;
     for (std::uint32_t execution = 0;
          execution < execution_count; ++execution) {
         vk::RenderingAttachmentInfo color;
@@ -349,7 +361,7 @@ LayeredReadback renderLayered(
 
         vk::RenderingInfo rendering;
         rendering.renderArea =
-            vk::Rect2D{{0, 0}, test_extent};
+            vk::Rect2D{{0, 0}, render_extent};
         rendering.layerCount = 1;
         rendering.viewMask =
             multiview ? stereo_view_mask : 0u;
@@ -359,12 +371,13 @@ LayeredReadback renderLayered(
         const vk::Viewport viewport{
             0.0f,
             0.0f,
-            static_cast<float>(test_extent.width),
-            static_cast<float>(test_extent.height),
+            static_cast<float>(render_extent.width),
+            static_cast<float>(render_extent.height),
             0.0f,
             1.0f,
         };
-        const vk::Rect2D scissor{{0, 0}, test_extent};
+        const vk::Rect2D scissor{
+            {0, 0}, render_extent};
         command->setViewport(0, viewport);
         command->setScissor(0, scissor);
         command->bindPipeline(
@@ -384,11 +397,10 @@ LayeredReadback renderLayered(
         vk::ImageLayout::eColorAttachmentOptimal,
         vk::ImageLayout::eTransferSrcOptimal,
         toTransferSource());
-    std::array<vk::BufferImageCopy,
-               stereo_view_count>
-        copies;
+    std::vector<vk::BufferImageCopy>
+        copies(layer_count);
     for (std::uint32_t layer = 0;
-         layer < stereo_view_count; ++layer) {
+         layer < layer_count; ++layer) {
         copies[layer].bufferOffset =
             layer_bytes * layer;
         copies[layer].imageSubresource = {
@@ -398,8 +410,8 @@ LayeredReadback renderLayered(
             1,
         };
         copies[layer].imageExtent = vk::Extent3D{
-            test_extent.width,
-            test_extent.height,
+            render_extent.width,
+            render_extent.height,
             1,
         };
     }
@@ -416,7 +428,7 @@ LayeredReadback renderLayered(
     const auto bytes =
         vkcore.readBuf(staging, total_bytes);
     for (std::uint32_t layer = 0;
-         layer < stereo_view_count; ++layer) {
+         layer < layer_count; ++layer) {
         const auto begin =
             bytes.begin() +
             static_cast<std::ptrdiff_t>(
@@ -814,7 +826,10 @@ TEST_CASE(
 
     const auto device = vkcore.getDevice();
     auto descriptor_pool =
-        createFramePool(device, 3);
+        createFramePool(
+            device,
+            1 + stereo_view_count +
+                cube_face_count);
     const auto frame_layout =
         factory.frameDescriptorSetLayout();
     auto multiview_set = allocateFrameSet(
@@ -828,6 +843,47 @@ TEST_CASE(
         sequential_sets[view] = allocateFrameSet(
             device, descriptor_pool.get(), frame_layout,
             sequential_buffers[view],
+            sizeof(FrameUniformData));
+    }
+    std::array<FrameUniformData,
+               cube_face_count>
+        cube_frames;
+    std::array<BufferWrapper,
+               cube_face_count>
+        cube_buffers;
+    std::array<vk::UniqueDescriptorSet,
+               cube_face_count>
+        cube_sets;
+    for (std::uint32_t face = 0;
+         face < cube_face_count; ++face) {
+        cube_frames[face] = frames[0];
+        cube_frames[face].camera_position.x =
+            0.1f *
+            static_cast<float>(face + 1);
+        cube_frames[face].projection[0][0] =
+            0.9f -
+            0.1f *
+                static_cast<float>(face);
+        cube_frames[face].camera_position.w =
+            0.05f *
+            static_cast<float>(face + 1);
+        cube_frames[face].view_index = face;
+        cube_frames[face].view_count =
+            cube_face_count;
+        cube_buffers[face] = vkcore.allocBuf(
+            sizeof(FrameUniformData),
+            vk::BufferUsageFlagBits::eUniformBuffer,
+            vma::MemoryUsage::eAuto,
+            vma::AllocationCreateFlagBits::
+                eHostAccessSequentialWrite);
+        vkcore.writeBuf(
+            cube_buffers[face],
+            &cube_frames[face], 0,
+            sizeof(FrameUniformData));
+        cube_sets[face] = allocateFrameSet(
+            device, descriptor_pool.get(),
+            frame_layout,
+            cube_buffers[face],
             sizeof(FrameUniformData));
     }
 
@@ -1326,6 +1382,15 @@ TEST_CASE(
     REQUIRE(
         fullscreen_passes
             .boundInputImageViewsForTesting(
+                sequential_input_pass,
+                authored_layer_capacity - 1)
+            .front() ==
+        render_targets.getImageLayerView(
+            capacity_target,
+            authored_layer_capacity - 1));
+    REQUIRE(
+        fullscreen_passes
+            .boundInputImageViewsForTesting(
                 multiview_input_pass)
             .front() ==
         render_targets.getImageSubresourceView(
@@ -1807,6 +1872,28 @@ TEST_CASE(
         sequential_image, sequential_views, factory,
         sequential_pipeline,
         sequential_set_handles, false);
+    std::array<vk::ImageView,
+               cube_face_count>
+        cube_face_views;
+    std::array<vk::DescriptorSet,
+               cube_face_count>
+        cube_frame_sets;
+    for (std::uint32_t face = 0;
+         face < cube_face_count; ++face) {
+        cube_face_views[face] =
+            render_targets
+                .getAttachmentImageLayerView(
+                    cube_target, face);
+        cube_frame_sets[face] =
+            cube_sets[face].get();
+    }
+    const auto cube_capture =
+        renderLayered(
+            render_targets.getImage(
+                cube_target),
+            cube_face_views, factory,
+            sequential_pipeline,
+            cube_frame_sets, false);
 
     REQUIRE(multiview.rendering_count == 1);
     REQUIRE(
@@ -1821,6 +1908,20 @@ TEST_CASE(
     REQUIRE(
         multiview.layers[0] !=
         multiview.layers[1]);
+    REQUIRE(
+        cube_capture.rendering_count ==
+        cube_face_count);
+    REQUIRE(
+        cube_capture.layers.size() ==
+        cube_face_count);
+    for (std::uint32_t face = 0;
+         face < cube_face_count; ++face) {
+        REQUIRE(
+            cube_capture.layers[face] !=
+            cube_capture.layers[
+                (face + 1) %
+                cube_face_count]);
+    }
 
     const auto first_pixel =
         [](const std::vector<std::uint8_t> &bytes) {
