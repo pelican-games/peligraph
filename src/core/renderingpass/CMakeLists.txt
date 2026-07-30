@@ -9,6 +9,7 @@ target_sources(pelican_core PRIVATE
     renderstrategyregistry.cpp
     rendercompilerprogram.cpp
     vulkanrendercompilerprogram.cpp
+    vulkannativescopeexecutor.cpp
     renderpipelinegpuarena.cpp
     renderfeatureparameteraccess.cpp
     logicalframegraphadapter.cpp

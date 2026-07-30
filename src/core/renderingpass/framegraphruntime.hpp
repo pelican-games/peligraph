@@ -21,6 +21,8 @@
 
 namespace Pelican {
 
+class PreparedVulkanNativeScopeGraph;
+
 struct CompiledFrameGraphBarrier {
     std::string resource;
     size_t from_node_index = 0;
@@ -51,6 +53,8 @@ struct CompiledFrameGraphExecution {
     FrameExecutionPlan execution_plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
     std::shared_ptr<const VulkanTargetPlan> target_plan;
+    std::shared_ptr<const PreparedVulkanNativeScopeGraph>
+        native_scopes;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
     std::vector<CompiledMaterialRouteBinding> material_routes;
     std::unordered_map<std::string, GlobalRenderTargetId>
@@ -87,10 +91,12 @@ struct RendererRuntimeGeneration {
     std::vector<std::string> enabled_feature_names;
     std::vector<RenderingPassId> rendering_pass_ids;
     std::unordered_map<std::string, RenderingPassId> name_to_id;
+    // Declared before programs so provider executors and their private device
+    // objects retire before the registry resources they can reference.
+    std::shared_ptr<const RenderPipelineGpuArena> gpu_arena;
     std::unordered_map<RenderingPassId, CompiledRenderProgram,
                        RenderingPassId::Hash>
         programs;
-    std::shared_ptr<const RenderPipelineGpuArena> gpu_arena;
     std::shared_ptr<const WindowOutputGeneration> window_output;
 
     const CompiledRenderProgram *find(
@@ -110,6 +116,8 @@ struct RenderPipelineProgramPreparation {
     FrameExecutionPlan execution_plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
     std::shared_ptr<const VulkanTargetPlan> target_plan;
+    std::shared_ptr<const PreparedVulkanNativeScopeGraph>
+        native_scopes;
     std::unordered_map<std::string, GlobalRenderTargetId>
         render_target_bindings;
     std::unordered_map<std::string, FrameGraphBufferId>

@@ -3,6 +3,7 @@
 #include "rendercompilerprogram.hpp"
 #include "renderingsamplecount.hpp"
 #include "rendertargetdefinition.hpp"
+#include "../../project/vulkancompletephysicalplan.hpp"
 
 #include <memory>
 #include <string>
@@ -49,6 +50,15 @@ class VulkanRenderCompilerPhysicalPackage final
         std::string,
         std::shared_ptr<const VulkanTargetPlan>>
         target_plans;
+    // Optional same-layer complete artifacts. Presence means the matching
+    // target plan was produced with
+    // applyVerifiedVulkanCompletePhysicalPlanPackage and may contain
+    // executable NativeScope declarations.
+    std::unordered_map<
+        std::string,
+        std::shared_ptr<
+            const VerifiedVulkanCompletePhysicalPlanPackage>>
+        verified_complete_physical_plans;
 
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;

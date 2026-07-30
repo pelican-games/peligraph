@@ -2729,4 +2729,67 @@ verifyVulkanCompletePhysicalPlanPackage(
     };
 }
 
+VulkanTargetPlan applyVerifiedVulkanCompletePhysicalPlanPackage(
+    const VulkanTargetPlan &automatic_plan,
+    const VerifiedVulkanCompletePhysicalPlanPackage &verified) {
+    const auto &package = verified.package;
+    if (verified.package_fingerprint !=
+        vulkanCompletePhysicalPlanPackageFingerprint(package)) {
+        throw std::runtime_error(
+            "Verified Vulkan complete physical plan fingerprint is stale");
+    }
+    if (package.graph != automatic_plan.graph ||
+        package.logical_graph_fingerprint !=
+            automatic_plan.logical_graph_fingerprint ||
+        package.automatic_plan_fingerprint !=
+            automatic_plan.automatic_plan_fingerprint ||
+        package.backend_candidate !=
+            automatic_plan.backend_selection.selected_candidate) {
+        throw std::runtime_error(
+            "Verified Vulkan complete physical plan does not match its "
+            "automatic target plan");
+    }
+
+    auto result = automatic_plan;
+    result.resources = package.resources;
+    result.scopes = package.scopes;
+    result.attachments = package.attachments;
+    result.alias_groups = package.alias_groups;
+    result.required_physical_features =
+        package.required_physical_features;
+    result.external_depth_export =
+        package.external_depth_export;
+    return result;
+}
+
+void validateVulkanTargetPlanMatchesCompletePhysicalPackage(
+    const VulkanTargetPlan &target_plan,
+    const VerifiedVulkanCompletePhysicalPlanPackage &verified) {
+    const auto &package = verified.package;
+    if (verified.package_fingerprint !=
+        vulkanCompletePhysicalPlanPackageFingerprint(package)) {
+        throw std::runtime_error(
+            "Verified Vulkan complete physical plan fingerprint is stale");
+    }
+    if (target_plan.graph != package.graph ||
+        target_plan.logical_graph_fingerprint !=
+            package.logical_graph_fingerprint ||
+        target_plan.automatic_plan_fingerprint !=
+            package.automatic_plan_fingerprint ||
+        target_plan.backend_selection.selected_candidate !=
+            package.backend_candidate ||
+        target_plan.resources != package.resources ||
+        target_plan.scopes != package.scopes ||
+        target_plan.attachments != package.attachments ||
+        target_plan.alias_groups != package.alias_groups ||
+        target_plan.required_physical_features !=
+            package.required_physical_features ||
+        target_plan.external_depth_export !=
+            package.external_depth_export) {
+        throw std::runtime_error(
+            "Vulkan runtime target plan does not match its verified "
+            "complete physical package");
+    }
+}
+
 } // namespace Pelican

@@ -256,6 +256,37 @@ vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
                : vk::ImageLayout::eUndefined;
 }
 
+void RenderTargetLayoutTracker::assumeLayout(
+    RenderTargetContainer &rt_container,
+    GlobalRenderTargetId rt_id,
+    vk::ImageLayout layout,
+    bool history_read,
+    RenderTargetImageKind image_kind) {
+    if (isSpecialRenderTarget(rt_id)) return;
+    if (image_kind == RenderTargetImageKind::attachment &&
+        !rt_container.hasSeparateAttachment(rt_id)) {
+        image_kind = RenderTargetImageKind::resolved;
+    }
+    const auto surface =
+        rt_container.surfaceIndex(rt_id, history_read);
+    const auto key =
+        layoutKey(rt_id, surface, image_kind);
+    if (const auto alias_group =
+            rt_container.aliasGroup(rt_id)) {
+        alias_groups_requiring_dependency.erase(
+            *alias_group);
+        auto [active, inserted] =
+            active_alias_resources.try_emplace(
+                *alias_group, key);
+        if (!inserted && active->second != key) {
+            layouts[active->second] =
+                vk::ImageLayout::eUndefined;
+        }
+        active->second = key;
+    }
+    layouts[key] = layout;
+}
+
 void RenderTargetLayoutTracker::reset() {
     for (const auto &[group, resource] :
          active_alias_resources) {

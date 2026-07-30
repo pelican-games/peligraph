@@ -15,6 +15,7 @@
 #include "renderingpassruntimecompiler.hpp"
 #include "renderingsamplecount.hpp"
 #include "subgraphreplacementregistry.hpp"
+#include "vulkannativescopeexecutor.hpp"
 #include "vulkanrendercompilerpackage.hpp"
 #include "rendertargetconfigregistration.hpp"
 #include "rendertargetcontainer.hpp"
@@ -375,6 +376,8 @@ registerPreparedRenderingPassConfigVariant(
     RenderPipelineGpuRegistrationArena &gpu_arena,
     const PassImplementationRegistrySnapshot
         &pass_implementation_providers,
+    const VulkanNativeScopeExecutorRegistrySnapshot
+        &native_scope_providers,
     RenderingPassConfigRegistrationResult &result) {
     auto &physical =
         requireVulkanRenderCompilerPhysicalPackage(
@@ -518,6 +521,46 @@ registerPreparedRenderingPassConfigVariant(
                 "Physical target plan not found for rendering pass: " +
                 pass_name);
         }
+        std::shared_ptr<
+            const PreparedVulkanNativeScopeGraph>
+            native_scopes;
+        if (const auto complete =
+                physical
+                    .verified_complete_physical_plans
+                    .find(pass_name);
+            complete !=
+            physical
+                .verified_complete_physical_plans
+                .end()) {
+            auto &vulkan_core =
+                GET_MODULE(VulkanManageCore);
+            native_scopes =
+                prepareVulkanNativeScopeExecutors(
+                    native_scope_providers,
+                    *complete->second,
+                    *found_target_plan->second,
+                    found_plan->second,
+                    render_target_bindings,
+                    buffer_bindings,
+                    VulkanNativeScopeDeviceContext{
+                        .device =
+                            vulkan_core.getDevice(),
+                        .physical_device =
+                            vulkan_core
+                                .getPhysDevice(),
+                        .graphics_queue_family =
+                            vulkan_core
+                                .getGraphicsQueueFamilyIndex(),
+                        .vulkan_core =
+                            &vulkan_core,
+                        .pipeline_factory =
+                            &dependencies.runtime
+                                 .pipeline_factory,
+                        .shader_library =
+                            &dependencies.runtime
+                                 .shader_library,
+                    });
+        }
         program_preparations.push_back(
             RenderPipelineProgramPreparation{
                 .owner_scope = owner_scope,
@@ -533,6 +576,8 @@ registerPreparedRenderingPassConfigVariant(
                     prepared.compiled_pipeline,
                 .target_plan =
                     found_target_plan->second,
+                .native_scopes =
+                    std::move(native_scopes),
                 .render_target_bindings =
                     render_target_bindings,
                 .buffer_bindings = buffer_bindings,
@@ -653,6 +698,9 @@ registerRenderingPassConfigVariantsData(
         graphTransformRegistry().snapshot();
     auto render_strategy_providers =
         renderStrategyRegistry().snapshot();
+    auto native_scope_providers =
+        vulkanNativeScopeExecutorRegistry()
+            .snapshot();
 
     // One top-level program sees and compiles the complete variant family.
     // Its backend package structure is checked before any mutable GPU
@@ -818,6 +866,7 @@ registerRenderingPassConfigVariantsData(
                 prepared_variants[index], base_extent,
                 dependencies[index], gpu_arena,
                 pass_implementation_providers,
+                native_scope_providers,
                 results[index]);
         program_preparations.insert(
             program_preparations.end(),

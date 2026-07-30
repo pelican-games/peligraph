@@ -30,6 +30,16 @@ class RenderTargetLayoutTracker {
                                   const RenderTargetContainer *rt_container = nullptr,
                                   RenderTargetImageKind image_kind =
                                       RenderTargetImageKind::resolved) const;
+    // Records a transition performed by a manual NativeScope without
+    // emitting another barrier. The NativeScope owns synchronization; the
+    // tracker only resumes from its declared outer layout.
+    void assumeLayout(
+        RenderTargetContainer &rt_container,
+        GlobalRenderTargetId rt_id,
+        vk::ImageLayout layout,
+        bool history_read = false,
+        RenderTargetImageKind image_kind =
+            RenderTargetImageKind::resolved);
     void reset();
     std::size_t memoryDependencyCountForTesting() const noexcept {
         return memory_dependency_count;

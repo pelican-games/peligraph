@@ -1057,6 +1057,21 @@ owner/generation lease付きNativeScope executor providerと、prepare transacti
 device-object生成が必要である。したがって「packageを検証できること」と「production runtimeで
 実行できること」は別のgateとして観測できる。
 
+2026-07-31のWP238dでは、この二つ目のgateをsource-level extensionとして接続した。custom
+compilerのVulkan packageはverified complete artifactを対応するruntime target planと対で持ち、
+GPU registryを変更する前にfingerprintと全physical fieldの一致を検証する。executor registryは
+active owner/engine fallback、registration generation、provider capability、type-erased code leaseを
+snapshotし、prepare結果とprovider codeを同じruntime generationへ保持する。公開game-DLL ABIは
+まだ追加しない。
+
+recordはphysical scope/view invocationごとに一度だけ行い、scope内の通常node bodyを置き換える。
+engineはscope外のFrameGraph dependencyと`automatic` boundary image transitionを担当し、providerは
+内部command/barrierを担当する。`manual`/`unchecked`はproviderがbarrierを発行するが、engine-owned
+imageを宣言されたouter layoutへ戻す契約とする。runtime resource facadeは宣言boundaryだけを
+render-target/MSAA attachment/resolve、frame target、frame-graph buffer、provider-owned externalへ
+loweringする。in-flight frameが旧renderer generationを保持する限り旧executor/code/device objectも
+retireされない。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -1128,8 +1143,10 @@ device-object生成が必要である。したがって「packageを検証でき
   任意MRT/resource port、Vulkan state/attachment adapter、generic raster execution dialectを接続。
   既存fullscreen containerの利用はruntime内部のcompatibility detailに限定
 - WP238cでenvironment-bound complete Vulkan physical package、strict same-layer verifier、
-  data-only `NativeScope` boundaryとcanonical fingerprint/ejectを追加。NativeScope executor
-  providerとruntime command ownershipは未接続
+  data-only `NativeScope` boundaryとcanonical fingerprint/ejectを追加
+- WP238dでsource-level executor provider、owner/generation code lease、prepare/rollback、
+  typed runtime resource facade、automatic outer sync、scope単位command ownershipと
+  renderer-generation retirementを接続。公開game-DLL ABIと実GPU command fixtureは未接続
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
   physical control、MSAA/external scope fusion、NativeScope runtime、CPU・external・video runtime
   workはまだ追加しない

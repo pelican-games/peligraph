@@ -16,6 +16,7 @@
 #include "../renderingpass/graphtransformregistry.hpp"
 #include "../renderingpass/renderstrategyregistry.hpp"
 #include "../renderingpass/subgraphreplacementregistry.hpp"
+#include "../renderingpass/vulkannativescopeexecutor.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 #include "../userpublic/details/component/registerer.hpp"
@@ -46,6 +47,7 @@ void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
     render_subgraph_internal::releaseProviderOwner(owner);
     render_graph_transform_internal::releaseProviderOwner(owner);
     render_strategy_internal::releaseProviderOwner(owner);
+    vulkan_native_scope_internal::releaseProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
     physics_internal::releaseProviderOwner(owner);
 #endif
@@ -227,6 +229,7 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
         render_subgraph_internal::activateProviderOwner(owner);
         render_graph_transform_internal::activateProviderOwner(owner);
         render_strategy_internal::activateProviderOwner(owner);
+        vulkan_native_scope_internal::activateProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
         physics_internal::activateProviderOwner(owner);
 #endif
@@ -282,6 +285,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         render_subgraph_internal::activateProviderOwner(owner);
         render_graph_transform_internal::activateProviderOwner(owner);
         render_strategy_internal::activateProviderOwner(owner);
+        vulkan_native_scope_internal::activateProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
         physics_internal::activateProviderOwner(owner);
 #endif
@@ -329,6 +333,8 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
                 render_graph_transform_internal::activateProviderOwner(
                     active->owner);
                 render_strategy_internal::activateProviderOwner(
+                    active->owner);
+                vulkan_native_scope_internal::activateProviderOwner(
                     active->owner);
             }
 #if PELICAN_WITH_PHYSICS

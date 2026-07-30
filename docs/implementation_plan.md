@@ -128,6 +128,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP238a | common FrameExecutionPlan vertical slice | ✅ 完了（2026-07-30）。open endpoint/capability IR、render/compute/copy収束、closure/fingerprint、compiler/runtime/dump、atomic reload |
 | WP238b | Generic Raster Pass ABI vertical slice | ✅ 完了（2026-07-30）。backend非依存draw/state contract、open実装ID、任意MRT/resource port、Vulkan adapter、execution-plan dialect、sprite dogfood |
 | WP238c | complete physical plan / NativeScope data boundary | ✅ CPU slice完了（2026-07-30）。完全physical package、canonical round-trip/fingerprint、strict verifier、typed NativeScope effect/ownership/sync。runtime executorは後続 |
+| WP238d | NativeScope executor provider / runtime publication | ✅ source-level runtime slice完了（2026-07-31）。owner/generation lease、prepare/rollback、typed resource view、automatic outer sync、scope単位dispatch、generation retirement。公開game-DLL ABIと実GPU command fixtureは後続 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -140,7 +141,8 @@ WP231〜237の受け入れ詳細:
 [`WP237`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)、
 [`WP238a`](design_reviews/2026-07-30_wp238a_frame_execution_plan.md)、
 [`WP238b`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)、
-[`WP238c`](design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md)。
+[`WP238c`](design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md)、
+[`WP238d`](design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md)。
 
 WP206b の pass-local material variant slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
@@ -328,12 +330,29 @@ footprint、attachment subresource、alias互換性、alternate format evidence�
 
 `VulkanNativeScopeDeclaration`は既存physical scopeに対するdata-only implementation boundaryで、
 typed resource effect、ownership、queue、feature/extension、sync mode、tooling/device-loss/
-hot-reload能力、opaque implementation configを保持する。現段階ではruntime callbackやVulkan
-handleを受け取らず、通常rendererへpublishされない。次の実装はowner/generation lease付き
-executor provider、prepare側でのdevice-object生成、automatic sync lowering、transaction
-rollbackを一つのruntime sliceとして接続する。詳細は
+hot-reload能力、opaque implementation configを保持する。WP238c自体はruntime callbackや
+Vulkan handleを受け取らないdata gateとして維持する。詳細は
 [`design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md`](design_reviews/2026-07-30_wp238c_complete_physical_native_scope.md)
 を正とする。
+
+### WP238d: NativeScope executor provider / runtime publication
+
+custom compilerのverified complete packageを対応するruntime target planへ束縛し、GPU mutation前に
+両者の完全一致を検証する。source-level executor registryはimplementationをactive ownerから
+engine fallbackの順で解決し、provider owner/registration generation/API/capabilityと、codeを
+生存させるgeneration leaseをprepared executorへ残す。provider `prepare`は既存GPU登録transaction
+内でdevice/core/pipeline serviceを使え、失敗時はactive generationを変えずcandidate objectを
+破棄する。
+
+rendererは各viewのphysical scope先頭でcallbackを一度recordし、scope内の通常node bodyを抑止する。
+外部graph barrierはengine、内部command/barrierはproviderが所有する。`automatic`はtyped effectと
+attachment aspectから外側image layoutを導出し、`manual`/`unchecked`は作者がbarrierを所有した上で
+宣言outer layoutへ戻す。record contextは宣言済みrender-target/frame-target/buffer、MSAA resolve/
+attachment、layer/mip viewとFrameResourcesだけを渡す。runtime dumpにはprovider世代とresource
+loweringを出す。詳細は
+[`design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md`](design_reviews/2026-07-31_wp238d_native_scope_executor_runtime.md)
+を正とする。公開game-DLL raw command ABI、command-producing実GPU fixture、capture/device-loss実測は
+このsource runtime seamを使った具体例の後まで凍結しない。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
@@ -534,8 +553,9 @@ XR2b最終gateを満たす。
 2. queue family/queue assignment、手動barrier/event/semaphoreを扱うaggressive fragment
 3. MSAA/history/depth/storage/transfer/bufferまで含むalias範囲の拡張と、対象tile GPU /
    XR実機での性能・validation gate
-4. complete physical/data-only `NativeScope` boundaryはWP238cで実装済み。
-   open external runtimeとNativeScope executor/ownership/publicationは未実装
+4. complete physical/data-only `NativeScope` boundaryはWP238c、source-level executorの
+   ownership/publicationはWP238dで実装済み。open external runtime、公開game-DLL ABI、
+   command-producing実GPU fixtureは未実装
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 

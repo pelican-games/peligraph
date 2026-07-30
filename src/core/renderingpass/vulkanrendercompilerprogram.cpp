@@ -626,6 +626,22 @@ void validateVulkanPhysicalPackage(
                 "invalid target-plan index entry");
         }
     }
+    for (const auto &[name, verified] :
+         physical.verified_complete_physical_plans) {
+        const auto target =
+            physical.target_plans.find(name);
+        if (name.empty() ||
+            verified == nullptr ||
+            target ==
+                physical.target_plans.end() ||
+            target->second == nullptr) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package has an invalid "
+                "verified complete physical-plan entry");
+        }
+        validateVulkanTargetPlanMatchesCompletePhysicalPackage(
+            *target->second, *verified);
+    }
     if (frame_graph_names.size() !=
         physical.target_plans.size()) {
         throw std::runtime_error(

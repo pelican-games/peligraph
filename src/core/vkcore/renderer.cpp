@@ -33,6 +33,7 @@
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/vulkannativescopeexecutor.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
@@ -1059,10 +1060,32 @@ GpuTimingNodeDescriptor plannedTimingNode(
     const SpriteRenderModules &sprite,
     std::size_t ordinal) {
     const auto &node = frame_graph.nodes.at(ordinal);
+    bool native_scope_has_work = false;
+    if (frame_graph.native_scopes != nullptr &&
+        frame_graph.target_plan != nullptr) {
+        const auto scope = std::find_if(
+            frame_graph.target_plan->scopes.begin(),
+            frame_graph.target_plan->scopes.end(),
+            [&](const auto &candidate) {
+                return std::find(
+                           candidate.nodes.begin(),
+                           candidate.nodes.end(),
+                           node.name) !=
+                       candidate.nodes.end();
+            });
+        native_scope_has_work =
+            scope !=
+                frame_graph.target_plan->scopes.end() &&
+            !scope->nodes.empty() &&
+            scope->nodes.front() == node.name &&
+            frame_graph.native_scopes->find(
+                scope->id) != nullptr;
+    }
     const bool anchor_has_work =
         node.kind != FramePlanNodeKind::anchor ||
         (node.name == "__anchor_sprite" &&
-         sprite.scene != nullptr);
+         sprite.scene != nullptr) ||
+        native_scope_has_work;
     return GpuTimingNodeDescriptor{
         ordinal,
         std::string{framePlanNodeKindName(node.kind)},
@@ -1370,6 +1393,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
     bool rendering_scope_active = false;
     std::size_t active_rendering_scope =
         std::numeric_limits<std::size_t>::max();
+    bool native_scope_active = false;
+    std::size_t active_native_scope =
+        std::numeric_limits<std::size_t>::max();
     std::vector<std::uint8_t> completed_nodes(
         frame_graph.nodes.size(), 0);
     GlobalRenderTargetId latest_scene_color =
@@ -1420,6 +1446,26 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             frame_graph.plan.nodes[node_index].kind != execution_node.kind) {
             throw std::runtime_error("Frame graph execution no longer matches frame plan");
         }
+        const VulkanPhysicalScopePlan *physical_scope =
+            nullptr;
+        const PreparedVulkanNativeScopeExecutor
+            *native_scope_executor = nullptr;
+        if (frame_graph.target_plan != nullptr) {
+            if (scheduled.scope_index >=
+                frame_graph.target_plan->scopes.size()) {
+                throw std::runtime_error(
+                    "logical-frame schedule references an invalid "
+                    "physical scope");
+            }
+            physical_scope =
+                &frame_graph.target_plan
+                     ->scopes[scheduled.scope_index];
+            if (frame_graph.native_scopes != nullptr) {
+                native_scope_executor =
+                    frame_graph.native_scopes->find(
+                        physical_scope->id);
+            }
+        }
         const CompiledPass *render_pass =
             execution_node.kind ==
                     FramePlanNodeKind::render
@@ -1427,9 +1473,85 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                       execution_node.index)
                 : nullptr;
         const bool fused_rendering_scope =
+            native_scope_executor == nullptr &&
             render_pass != nullptr &&
             render_pass->rendering
                 .fused_rendering_scope;
+        std::vector<std::uint8_t>
+            starting_native_scope_nodes(
+                frame_graph.nodes.size(),
+                0);
+        if (native_scope_executor != nullptr) {
+            if (physical_scope == nullptr ||
+                native_scope_executor->scopeId() !=
+                    physical_scope->id) {
+                throw std::logic_error(
+                    "prepared NativeScope does not match the scheduled "
+                    "physical scope");
+            }
+            if (scheduled.beginsScopeExecution()) {
+                if (native_scope_active ||
+                    rendering_scope_active) {
+                    throw std::logic_error(
+                        "physical NativeScope executions overlap");
+                }
+                if (scheduled.scope_node_count == 0 ||
+                    scheduled.scope_node_count !=
+                        physical_scope->nodes.size() ||
+                    schedule_position +
+                            scheduled.scope_node_count >
+                        authored_schedule.size()) {
+                    throw std::runtime_error(
+                        "NativeScope schedule is incomplete");
+                }
+                for (std::size_t offset = 0;
+                     offset <
+                     scheduled.scope_node_count;
+                     ++offset) {
+                    const auto &candidate =
+                        authored_schedule[
+                            schedule_position + offset];
+                    if (candidate.scope_index !=
+                            scheduled.scope_index ||
+                        candidate.scope_node_index !=
+                            offset ||
+                        candidate.scope_node_count !=
+                            scheduled.scope_node_count ||
+                        candidate.execution_index !=
+                            scheduled.execution_index ||
+                        candidate.view_index !=
+                            scheduled.view_index) {
+                        throw std::runtime_error(
+                            "NativeScope schedule is not contiguous");
+                    }
+                    if (candidate.node_index >=
+                        frame_graph.nodes.size()) {
+                        throw std::runtime_error(
+                            "NativeScope schedule references an invalid "
+                            "node");
+                    }
+                    if (frame_graph
+                            .nodes[candidate.node_index]
+                            .name !=
+                        physical_scope->nodes[offset]) {
+                        throw std::runtime_error(
+                            "NativeScope schedule node order differs from "
+                            "its physical scope");
+                    }
+                    starting_native_scope_nodes[
+                        candidate.node_index] = 1;
+                }
+            } else if (
+                !native_scope_active ||
+                active_native_scope !=
+                    scheduled.scope_index) {
+                throw std::runtime_error(
+                    "NativeScope continuation has no active execution");
+            }
+        } else if (native_scope_active) {
+            throw std::runtime_error(
+                "NativeScope ended before its scheduled boundary");
+        }
         std::vector<const CompiledPass *>
             starting_scope_passes;
         std::vector<std::uint8_t>
@@ -1514,6 +1636,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 "fused physical rendering scope ended before its "
                 "scheduled boundary");
         }
+        std::optional<VulkanNativeScopeRuntimeInvocation>
+            native_runtime_invocation;
 
         std::string node_debug_name;
         if (modules.debug_utils.commandLabelsEnabled()) {
@@ -1536,7 +1660,69 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             ScopedCommandDebugLabel barrier_label{
                 modules.debug_utils,
                 render_ctx.cmd_buf, "barriers"};
-            if (fused_rendering_scope &&
+            if (native_scope_executor != nullptr &&
+                scheduled.beginsScopeExecution()) {
+                if (begins_recorded_node) {
+                    for (std::size_t offset = 0;
+                         offset <
+                         scheduled.scope_node_count;
+                         ++offset) {
+                        const auto &consumer =
+                            authored_schedule[
+                                schedule_position +
+                                offset];
+                        const auto &consumer_node =
+                            frame_graph.nodes.at(
+                                consumer.node_index);
+                        for (const auto &barrier :
+                             consumer_node
+                                 .incoming_barriers) {
+                            if (barrier.from_node_index >=
+                                frame_graph.nodes.size()) {
+                                throw std::runtime_error(
+                                    "Compiled frame graph barrier "
+                                    "source is out of range");
+                            }
+                            if (starting_native_scope_nodes[
+                                    barrier
+                                        .from_node_index]) {
+                                // The provider owns all ordering and
+                                // synchronization inside its exact scope.
+                                continue;
+                            }
+                            executeCompiledFrameGraphBarrier(
+                                render_ctx, frame_graph,
+                                modules, layout_tracker,
+                                consumer.node_index,
+                                barrier,
+                                completed_nodes);
+                        }
+                    }
+                }
+                native_runtime_invocation.emplace(
+                    beginVulkanNativeScopeRuntimeInvocation(
+                        *native_scope_executor,
+                        render_ctx,
+                        frame_target_format,
+                        RenderPassViewInvocation{
+                            scheduled
+                                .logical_view_count,
+                            scheduled.view_index},
+                        modules
+                            .render_target_container,
+                        modules
+                            .frame_graph_resources,
+                        modules.vk_utils,
+                        layout_tracker));
+                native_scope_active = true;
+                active_native_scope =
+                    scheduled.scope_index;
+            } else if (
+                native_scope_executor != nullptr) {
+                // One callback records the complete physical scope. Its
+                // remaining logical nodes retain trace/dependency identity
+                // but do not dispatch engine bodies.
+            } else if (fused_rendering_scope &&
                 scheduled.beginsScopeExecution()) {
                 if (begins_recorded_node) {
                     std::vector<std::uint8_t>
@@ -1654,7 +1840,71 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 GpuTimingSubrange::body);
         }
 
-        if (execution_node.kind == FramePlanNodeKind::render) {
+        if (native_scope_executor != nullptr) {
+            if (scheduled.beginsScopeExecution()) {
+                if (!native_runtime_invocation) {
+                    throw std::logic_error(
+                        "NativeScope execution was not prepared");
+                }
+                recordVulkanNativeScopeRuntimeInvocation(
+                    *native_runtime_invocation,
+                    render_ctx,
+                    modules.frame_resources);
+                endVulkanNativeScopeRuntimeInvocation(
+                    *native_runtime_invocation,
+                    modules.render_target_container,
+                    layout_tracker);
+            } else if (native_runtime_invocation) {
+                throw std::logic_error(
+                    "NativeScope continuation prepared a second callback");
+            }
+            if (render_pass != nullptr) {
+                if (!render_pass->definition
+                         .output_color.empty()) {
+                    latest_scene_color =
+                        render_pass->definition
+                            .output_color.front();
+                }
+                if (isConcreteRenderTarget(
+                        render_pass->definition
+                            .output_depth)) {
+                    latest_scene_depth =
+                        render_pass->definition
+                            .output_depth;
+                }
+            }
+            if (node_trace != nullptr) {
+                node_trace->push_back(
+                    {
+                        {"name", execution_node.name},
+                        {"kind", "native_scope"},
+                        {"logical_kind",
+                         framePlanNodeKindName(
+                             execution_node.kind)},
+                        {"order", node_index},
+                        {"scope",
+                         native_scope_executor
+                             ->scopeId()},
+                        {"implementation",
+                         native_scope_executor
+                             ->selection()
+                             .implementation},
+                        {"provider",
+                         native_scope_executor
+                             ->selection()
+                             .provider},
+                        {"recorded",
+                         scheduled
+                             .beginsScopeExecution()},
+                    });
+            }
+            if (scheduled.endsScopeExecution()) {
+                native_scope_active = false;
+                active_native_scope =
+                    std::numeric_limits<
+                        std::size_t>::max();
+            }
+        } else if (execution_node.kind == FramePlanNodeKind::render) {
             const auto &pass = *render_pass;
             if (fused_rendering_scope) {
                 modules.pass_executor
@@ -1948,6 +2198,11 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         throw std::runtime_error(
             "fused physical rendering scope remained open after the "
             "logical frame schedule");
+    }
+    if (native_scope_active) {
+        throw std::runtime_error(
+            "NativeScope remained active after the logical frame "
+            "schedule");
     }
     if (modules.render_timing != nullptr) modules.render_timing->endGpuRange();
 }
@@ -3031,6 +3286,76 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     if (frame_graph->target_plan != nullptr) {
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);
+    }
+    if (frame_graph->native_scopes != nullptr) {
+        nlohmann::json scopes =
+            nlohmann::json::array();
+        for (const auto &scope :
+             frame_graph->native_scopes->scopes()) {
+            nlohmann::json resources =
+                nlohmann::json::array();
+            for (const auto &resource :
+                 scope.resources()) {
+                resources.push_back(
+                    {
+                        {"logical_resource",
+                         resource.boundary
+                             .logical_resource},
+                        {"semantic_type",
+                         resource.boundary
+                             .semantic_type},
+                        {"access",
+                         logicalAccessModeName(
+                             resource.boundary
+                                 .access)},
+                        {"ownership",
+                         vulkanNativeScopeResourceOwnershipName(
+                             resource.boundary
+                                 .ownership)},
+                        {"runtime_kind",
+                         vulkanNativeScopePreparedResourceKindName(
+                             resource.kind)},
+                    });
+            }
+            const auto &selection =
+                scope.selection();
+            scopes.push_back(
+                {
+                    {"scope", scope.scopeId()},
+                    {"implementation",
+                     selection.implementation},
+                    {"provider",
+                     selection.provider},
+                    {"provider_owner",
+                     selection.owner},
+                    {"registration_generation",
+                     selection
+                         .registration_generation},
+                    {"provider_api_version",
+                     selection
+                         .provider_api_version},
+                    {"capabilities",
+                     selection.capabilities},
+                    {"synchronization",
+                     vulkanNativeScopeSynchronizationModeName(
+                         scope.declaration()
+                             .synchronization)},
+                    {"queue_capability",
+                     scope.declaration()
+                         .queue_capability},
+                    {"resources",
+                     std::move(resources)},
+                });
+        }
+        result["native_scope_executors"] = {
+            {"graph",
+             frame_graph->native_scopes
+                 ->graph()},
+            {"package_fingerprint",
+             frame_graph->native_scopes
+                 ->packageFingerprint()},
+            {"scopes", std::move(scopes)},
+        };
     }
     if (frame_graph->sample_count_plan != nullptr &&
         frame_graph->render_pipeline->sample_count_policy.authored) {

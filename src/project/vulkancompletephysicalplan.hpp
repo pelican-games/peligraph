@@ -134,4 +134,17 @@ verifyVulkanCompletePhysicalPlanPackage(
         format_capabilities = {},
     std::span<const std::string> enabled_extensions = {});
 
+// Reifies a verified same-layer replacement as the VulkanTargetPlan consumed
+// by the current runtime. The automatic plan keeps compiler provenance and
+// target-environment decisions; only verifier-owned physical fields change.
+VulkanTargetPlan applyVerifiedVulkanCompletePhysicalPlanPackage(
+    const VulkanTargetPlan &automatic_plan,
+    const VerifiedVulkanCompletePhysicalPlanPackage &verified);
+
+// Rejects a custom compiler package before mutable GPU registration when its
+// runtime target plan and verified complete artifact have drifted apart.
+void validateVulkanTargetPlanMatchesCompletePhysicalPackage(
+    const VulkanTargetPlan &target_plan,
+    const VerifiedVulkanCompletePhysicalPlanPackage &verified);
+
 } // namespace Pelican

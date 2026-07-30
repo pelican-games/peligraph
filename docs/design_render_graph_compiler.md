@@ -1008,6 +1008,21 @@ feature/extension closureを検証する。backend-private resourceはNativeScop
 engine-visible resource集合の追加・削除はv1では許可しない。これにより既存runtime object生成を
 暗黙に迂回せず、物理IR自体の変更とraw command実行ABIの導入を別々に進められる。
 
+WP238dではraw command実行を、公開ABIではなくsource-level executor providerとして追加した。
+`VulkanRenderCompilerPhysicalPackage`はverified complete artifactを対応するruntime
+`VulkanTargetPlan`と対で保持し、GPU mutation前に全physical fieldとfingerprintの一致を検証する。
+provider選択はowner/generation/API/capability付きでsnapshotされ、非engine providerはcallbackと
+virtual destructorを含むcode generationを生存させるleaseが必須である。prepare結果は
+`CompiledFrameGraphExecution`へ入り、GPU registration rollback、single publication、in-flight
+generation retirementを既存経路と共有する。
+
+record contextはcommand buffer、view invocation、FrameResourcesと、宣言boundaryからloweringした
+image/attachment/resolve/subresource/frame-target/bufferだけを公開する。scope外dependencyと
+`automatic` image transitionはengine、内部同期はproviderが所有する。`manual`/`unchecked`は
+providerがbarrierを発行し、engine-owned imageを宣言outer layoutへ戻す。scope内の通常node bodyは
+実行せず、callbackをscope/viewごとに一度だけrecordする。公開game-DLL向けversioned/noexcept ABIは、
+command-producing実GPU fixtureとcapture/device-loss gateを得るまで追加しない。
+
 ## 8. 拡張の段階
 
 利用者が必要な深さだけ降りられるよう、次を別々の入口として提供する。
@@ -1826,8 +1841,9 @@ gate:
 未完了:
 
 - previewへのruntime transform / tagged subgraph / physical-plan表示
-- verified complete physical packageはWP238cで追加済み。`NativeScope` executor provider、
-  device-object ownership、runtime publicationは未完了
+- verified complete physical packageはWP238c、source-level `NativeScope` executor provider、
+  device-object ownership、runtime publicationはWP238dで追加済み。公開game-DLL ABIと
+  command-producing実GPU fixtureは未完了
 - Metal backend context/packageと共通planner再利用fixture
 - CPU/external physical packageとexecution linker
 - game-DLL向けversioned/noexcept ABI、owner lease、hot reload
@@ -1838,9 +1854,9 @@ gate:
 2. WP204 後続 — MSAA/external/異種attachmentを含む広いscope fusion、一般のload-store /
    queue / barrierのaggressive physical verifier、MSAA/history/depth/storage/transfer/bufferを
    含むalias範囲拡張、対象GPU実測gate
-3. WP238c後続 — data-only complete package / `NativeScope` verifierを、具体的な
-   Vulkan-only使用例、owner lease、prepare/rollback付きexecutor providerへ接続する。
-   raw callback ABIはこのruntime fixtureを得てから必要なら設計
+3. WP238d後続 — source-level executor seamへcommand-producing Vulkan-only使用例を載せ、
+   validation/capture/device-loss/reloadを実GPUで確認する。raw game-DLL callback ABIは
+   このfixtureを得てから必要なら設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 

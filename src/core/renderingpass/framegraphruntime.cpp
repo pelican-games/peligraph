@@ -86,6 +86,8 @@ CompiledFrameGraphExecution compileExecution(
     FrameExecutionPlan execution_plan,
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline,
     std::shared_ptr<const VulkanTargetPlan> target_plan,
+    std::shared_ptr<const PreparedVulkanNativeScopeGraph>
+        native_scopes,
     std::unordered_map<std::string, GlobalRenderTargetId>
         render_target_bindings,
     std::unordered_map<std::string, FrameGraphBufferId>
@@ -112,6 +114,8 @@ CompiledFrameGraphExecution compileExecution(
         std::move(execution_plan);
     execution.render_pipeline = std::move(render_pipeline);
     execution.target_plan = std::move(target_plan);
+    execution.native_scopes =
+        std::move(native_scopes);
     if (execution.target_plan != nullptr &&
         execution.target_plan->sample_count_plan) {
         execution.sample_count_plan =
@@ -455,6 +459,7 @@ FrameGraphRuntimeContainer::prepareGeneration(
             std::move(program.execution_plan),
             std::move(program.render_pipeline),
             std::move(program.target_plan),
+            std::move(program.native_scopes),
             std::move(program.render_target_bindings),
             std::move(program.buffer_bindings));
         candidate->programs.insert_or_assign(
