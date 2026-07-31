@@ -3,9 +3,8 @@
 対象読者: エンジン担当、WP の受け入れ判定をする人、そして「この機構は実装済みか」を
 他の文書から引く人。
 
-ステータス: **v1(2026-07-31)**。判定は commit 済みの HEAD `1a938ba`(branch
-`codex/render-target-runtime-slice`)に対して行いました。作業ツリーの未コミット変更は
-含めていません。本書は
+ステータス: **v1.1(2026-07-31)**。判定は commit `d58f841`(branch
+`agent/wp240a-preset-default`)の WP240a 実装に対して行いました。本書は
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md) を置き換えるものではなく、
 その ○ / △ / ✕ 判定の**根拠表**です。
 
@@ -88,7 +87,7 @@ validation layer、player を fail-on-no-GPU で実行する責務は将来の C
 CI2 は存在しません。GPU ラベル付きの Catch2 実行体は `test/CMakeLists.txt` の
 `pelican_define_test(... GPU ...)` が 18 本、`GOLDEN GPU` の golden 実行体が 4 本、さらに
 player を起動する process integration が `LABELS gpu` で登録されています(同ファイルに
-`LABELS gpu` は 22 箇所)。**いずれも開発者ローカルの `ctest -L gpu` 依存**です。
+`LABELS gpu` は 23 箇所)。**いずれも開発者ローカルの `ctest -L gpu` 依存**です。
 
 したがって本書の E2 / E3 / E4 は「誰かの手元で一度通った」ことの記録であり、常設の回帰網では
 ありません。† も同様で、**「byte 固定の基準が存在する」ことを意味するだけ**です。基準との
@@ -97,9 +96,9 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 `contract_boundary_gate.py`、そして `golden_inventory.py` による inventory の整合と
 `expected.png` の sha256 一致(= baseline ファイルが黙って差し替わっていないこと)です。
 
-ローカル受け入れ記録として、WP239 回帰修正後の 2026-07-31 に
-`ctest -C Debug -L gpu` を全数実行し、**121 / 121 passed、既知 4 skipped**
-（実時間 402 秒）を確認しました。同じ HEAD の CPU gate は
+ローカル受け入れ記録として、WP240a 完了時の 2026-07-31 に
+`ctest -C Debug -L gpu` を全数実行し、**122 / 122 passed、既知 4 skipped**
+（実時間 405 秒）を確認しました。同じ HEAD の CPU gate は
 **942 / 942 passed、環境依存 1 skipped**です。これは常設 CI2 の代わりではありませんが、
 本台帳の E2 / E3 根拠が同一 HEAD で再実行可能な状態へ戻ったことを示します。
 
@@ -133,7 +132,7 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 
 | 機構 | 等級 | 根拠 | 次の等級に必要なもの |
 |---|---|---|---|
-| typed pipeline resolve / immutable `CompiledRenderPipeline` | **E3†** | CPU: `renderpipeline_resolve_test` 15 TEST_CASE。GPU: `golden_framegraph_test` "Renderer execution matches plan order and captured traces" が `test/fixtures/renderer_execution_traces.json` と `canonical_frame_plan_trace.txt` に対して実行順・level・node 集合を固定 | 残件なし |
+| typed pipeline resolve / immutable `CompiledRenderPipeline` | **E3† +E5** | CPU: `renderpipeline_resolve_test` 15 TEST_CASE。GPU: `golden_framegraph_test` "Renderer execution matches plan order and captured traces" が `test/fixtures/renderer_execution_traces.json` と `canonical_frame_plan_trace.txt` に対して実行順・level・node 集合を固定。Project dogfood: `projects/animgraph_demo/passes/main.json` が `hybrid_v1` preset を選び、`animgraph_demo_preset_headless_player` が runtime frame plan の directional shadow / deferred / forward / snapshot / present 展開と PNG 出力を検査 | preset 選択経路の残件なし。project-owned preset 定義は別機構 |
 | 論理グラフ compiler(型 / SSA 値 / footprint / intent) | **E1** | CPU のみ: `logicalrendergraph_test` 10 TEST_CASE。論理グラフは runtime generation に保存されず、`compileVulkanTargetPlan()` の入力としてのみ生きます | 論理グラフ dump の fixture 固定。現在 `test/fixtures/` に該当 fixture はありません |
 | target planning(desktop / tile-local / transient / alias) | **E3** | CPU: `targetplanning_test` 10、`targetrenderplanning_test` 34(hazard stress の seed 再現、pin/eject round-trip を含む)。GPU: `headless_render_test` "runtime target planner executes a fused tile-local scope" / "executes aliased image lifetimes" / "dependency-safe physical scopes reorder and fuse real Vulkan rendering" | tile-local / transient / alias を有効にした golden ケースがありません。加えて resize 越しの再結合テストもありません |
 | plan pin / physical fragment の eject と貼り戻し | **E3** | GPU: `headless_render_test` "hybrid_v1 preset registers and renders a headless frame" が `ejectable_pin_package` / `ejectable_physical_fragment` の JSON round-trip と fingerprint 一致を実行時に検証 | 一般 scope / queue-barrier fragment。[`implementation_plan.md`](implementation_plan.md) は WP204 を「general scope/queueと実機GPU gate待ち」としています |
@@ -234,25 +233,29 @@ rendering config が参照する feature は次で全部です。
 | project | features | 備考 |
 |---|---|---|
 | `example` | `engine://features/ui.json` | 他は fullscreen の SSAO / bloom チェーンを手書き |
-| `animgraph_demo` | `engine://features/ui.json` | 同上 |
+| `animgraph_demo` | `engine://features/shadow_directional.json` | `engine://render_pipelines/hybrid_v1.json` を project 空間から選択 |
 | `sprite_demo` | `engine://features/sprite.json` | `ssao_clear` が **`"type": "raster"`**(WP238b の dogfood) |
 | `vrm_xr_demo` | (なし) | |
 
-**つまり `projects/` 配下では、ViewFamily 系(CSM / planar reflection / cube capture)、
-clustered lighting、TAA、draw sort、graph transform、render strategy、physical fragment、
-plan pin のいずれも一度も使われていません。** `grep` で 0 件です。
+WP240a により、`projects/` 配下から `hybrid_v1` preset、directional CSM ViewFamily、
+builtin draw sort、deferred / forward material routing、opaque snapshot を使う経路が初めて入りました。
+planar reflection / cube capture、clustered lighting、TAA、graph transform、render strategy、
+physical fragment、plan pin は引き続き project 空間での使用が 0 件です。
 
-これは次の帰結を持ちます。**player を起動する process integration テスト
-(`rpc_headless_player` / `wsi_fault_window_player` / frame-plan dump 系)はすべて
-`projects/example` か `projects/vrm_xr_demo` を使うため、新機能を一切通りません。**
+`animgraph_demo_preset_headless_player` は committed project を直接起動し、preset の runtime
+frame plan 展開と PNG 出力を検査します。したがって preset 選択経路は authoring だけでなく
+常設の project-space process integration を持ちます。一方、従来の
+`rpc_headless_player` / `wsi_fault_window_player` / frame-plan dump 系は引き続き
+`projects/example` か `projects/vrm_xr_demo` を使います。
 `projects/sprite_demo` はどのテストからも参照されていないので、そこに書かれた raster pass も
 自動テストでは一度も実行されません。
 
 ### 4.2 テストが書く一時 project での dogfood
 
-E5 の実体はここにあります。`headless_render_test` と `golden_harness` は一時ディレクトリに
-project ツリー(`project.json` / `pipeline.json` / `shaders/*.surface` / `*.frag`)を書き出し、
-**`src/` を触らずに機能が成立すること**を確認しています。
+従来の E5 は、`headless_render_test` と `golden_harness` が一時ディレクトリに project ツリー
+(`project.json` / `pipeline.json` / `shaders/*.surface` / `*.frag`)を書き出す形が中心でした。
+WP240a では committed project を直接起動する process integration も加わりました。どちらも
+**`src/` を触らずに機能が成立すること**を確認する証拠として、次の表にまとめます。
 
 | 機構 | project 側に置かれるもの | 検証 |
 |---|---|---|
@@ -263,6 +266,7 @@ project ツリー(`project.json` / `pipeline.json` / `shaders/*.surface` / `*.fr
 | compute → material vertex displacement | project-owned compute shader | golden `compute_buffer`(byte 固定) |
 | pass-local material variant | project-owned surface / pass | 2 本目の opaque pass が描かれること |
 | MSAA + hybrid preset | `project://features/shadow_directional.json` + `render_strategy` / `graph_transforms` の authoring | sample 数と画素 |
+| engine preset 選択 | committed `projects/animgraph_demo/passes/main.json` の `pipeline.preset` + feature 参照 | `animgraph_demo_preset_headless_player` が directional shadow / deferred / forward / snapshot / present の runtime plan 展開と PNG 出力を検査 |
 
 ### 4.3 E5 に達していないもの
 
@@ -315,6 +319,6 @@ E0 は「parse / schema を受理するテストが実在する」ことを主�
 
 ### 5.4 判定基準時点
 
-本書の全判定は commit `d1c8081` に対するものです。台帳を更新するときは冒頭のステータス行の
+本書の全判定は commit `d58f841` に対するものです。台帳を更新するときは冒頭のステータス行の
 commit を差し替え、差分の出た行だけを触ります。**作業ツリーの未コミット変更は等級の根拠に
 しません。**

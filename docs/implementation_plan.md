@@ -133,7 +133,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP239a | complete-plan verification contextのreload回帰修正 | ✅ 完了（2026-07-31）。automatic planとfragment-linked planを分離保持し、reload CPU回帰を追加 |
 | WP239b | hybrid_v1 screen input view-family binding回帰修正 | ✅ 完了（2026-07-31）。family arrayのcanonical layered view契約へテストと生成を統一 |
 | WP239c | planar reflection resource port image-view ABI回帰修正 | ✅ 完了（2026-07-31）。sequential captureをmaterial境界でfamily-array descriptorへ適応 |
-| WP240a | 既定 rendering config の preset 化 | **未着手**。`pelican new` の111行手書きconfigをpreset 4行へ。engine改修なし・実測検証済み |
+| WP240a | 既定 rendering config の preset 化 | ✅ 完了（2026-07-31）。新規projectと`animgraph_demo`を`hybrid_v1` + directional shadowへ移行し、project-space headless GPU回帰を常設 |
 | WP240b | 背景と環境光 — 既定レンダラの最小見栄え | **未着手**。ライトを消すとemissive以外が黒。skybox featureとambientをproject空間へ |
 | WP240c | project空間 material の宣言と実行時ロード | **未着手・最大**。`applyLoweredMaterialForRoute`の呼び出し元が`test/`のみ、glTF `alphaMode`未解釈 |
 
@@ -621,6 +621,20 @@ hybrid_v1 の deferred 経路で正しく描画された。
 - 移行した project の headless 描画が CTest に登録され、`gpu` ラベル全数が緑
 - `example` の描画結果が変わっていないこと(verbose config 経路の非回帰)
 - `ctest -C Debug -LE gpu` が緑、`git diff --check` クリーン
+
+**完了結果(2026-07-31)**:
+
+- `pelican_cli project init` の生成 config を上記 4 行へ置換し、生成直後の project を描く
+  `devcli_project_init_command` で preset / feature / ownership 境界も検査するようにした。
+- `projects/animgraph_demo` を移行し、`animgraph_demo_preset_headless_player` が project の宣言から
+  directional shadow、deferred、forward opaque / transparent、opaque snapshot、present まで
+  runtime frame plan に展開されることと PNG 出力を検査する。
+- `projects/example` は未変更で、同 config を使う既存 golden / player 回帰を含む GPU gate は
+  **122 / 122 passed**（既知の実行環境依存 4 case skipped）。CPU gate は
+  **942 / 942 passed**（環境依存 1 case skipped）。
+- 機能差と project 選定は
+  [`2026-07-31_wp240a_preset_default_report.md`](design_reviews/2026-07-31_wp240a_preset_default_report.md)
+  に記録した。
 
 依存: なし。見積: 小。
 
