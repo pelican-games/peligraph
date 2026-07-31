@@ -64,6 +64,9 @@ CPU gate と同じ exact SKIP policy を `test/ci/gpu_skip_allowlist.txt` に対
 (詳細は `gpu_skip_allowlist.txt` のコメントと WP241)。skip されたテストは赤くならないので、
 落ちたテストより見つけにくい。
 
+WP241 はこの4件を allowlist に加えず修正した。2026-08-01 の再実行は GPU 125/125、
+非許可 skip 0、`SKIP exact policy: PASS`。allowlist は引き続き空である。
+
 GPU の無い機械で走らせると大半が skip して gate は落ちる。これは意図どおりで、
 上の「fail-on-no-GPU」の実体である。その場合は「no Vulkan device」の診断行が先頭に出る。
 

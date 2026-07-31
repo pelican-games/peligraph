@@ -136,7 +136,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP240a | 既定 rendering config の preset 化 | ✅ 完了（2026-07-31）。新規projectと`animgraph_demo`を`hybrid_v1` + directional shadowへ移行し、project-space headless GPU回帰を常設 |
 | WP240b | 背景と環境光 — 既定レンダラの最小見栄え | ✅ 完了（2026-07-31）。単色sky/ambientをfeature化し、既定値をfragmentへ一元化。ライト0のdeferred/forward金属を実GPU画素で検証 |
 | WP240c | project空間 material の宣言と実行時ロード | ✅ 完了（2026-07-31）。glTF producerをloweringへ収束し、strict asset index、常設texture resolver、runtime material登録・binding・hot reloadを接続 |
-| WP241 | skip を名乗る 4 件の GPU テスト失敗 | **未着手**。`catch (std::exception&)` → `SKIP` が engine の fail-fast を握り潰している。WP240c 後(`93cf13b`)に再確認、握り潰しているエラーも同一 |
+| WP241 | skip を名乗る 4 件の GPU テスト失敗 | ✅ 完了（2026-08-01）。broad catch→SKIP を横断除去し、2系統のfixture契約違反を修正。GPU 125/125、SKIP 0 |
 | WP242a | 影を落とせるライトを複数にする | **未着手**。inventory index 0 のライトだけが影を落とし、他は 1.0 を返す |
 | WP242b | point / spot の shadow view provider | **未着手**。provider は directional 1 種のみ。cube shadow は src/ に存在しない |
 | WP242c | 影のフィルタと bias の project 空間化 | **未着手**。単一タップ、bias と遮蔽値がハードコード |
@@ -803,6 +803,11 @@ hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原�
 (1 を独立 WP にすると受け入れが明確になる)。
 
 ### WP241: skip を名乗っている 4 件の GPU テスト失敗
+
+**完了（2026-08-01）**。実装境界、原因、検証結果は
+[`design_reviews/2026-08-01_wp241_skip_failures_report.md`](design_reviews/2026-08-01_wp241_skip_failures_report.md)
+を正とする。実装範囲1は独立コミット `b623fe3` として先行し、隠れていた2系統の
+例外が4件すべてで実際の失敗になることを確認してからfixtureを修正した。
 
 **目的**: `gpu` ラベルの 4 件が、engine の fail-fast エラーを握り潰して `SKIP` として
 報告している。エラーを表に出し、原因を直す。

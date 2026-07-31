@@ -4,17 +4,7 @@
 # Deliberately empty. No `gpu`-labelled test currently has a legitimate reason to
 # skip on a machine that has a Vulkan device.
 #
-# As of 2026-07-31 four tests do skip, and all four are hidden failures rather than
-# missing capability -- each wraps its whole body in `catch (const std::exception &)`
-# and reports the engine's own fail-fast error as "unavailable":
-#
-#   RPC load_gltf publishes once and preserves inventory on preflight and GPU failure
-#     -> render-pipeline candidate has no compatible pass for live material 0
-#        (route 'deferred_geometry', shader contract 'gbuffer_v1')
-#   HR1-M updates one same-layout material and rolls back invalid candidates
-#   HR1-M watcher gate and 1000 reloads keep resources bounded
-#   WP206b named variant owns its GPU record and reloads atomically with its base
-#     -> material texture 'albedo_detail' is absent from shader reflection at binding 7
-#
-# They are not listed here on purpose: allowlisting them would bless the very thing
-# this gate exists to catch. See WP241 in docs/implementation_plan.md.
+# WP241 removed broad exception-to-SKIP handlers and fixed the four failures they
+# hid. The 2026-08-01 GPU gate ran 125 tests with zero observed skips. A test may
+# still skip after an explicit device/extension capability check, but such a name
+# belongs here only when the GPU gate is intentionally allowed to lack it.
