@@ -1292,6 +1292,18 @@ add_test(
 )
 set_tests_properties(devcli_project_init_command PROPERTIES LABELS gpu)
 
+add_test(
+    NAME animgraph_demo_preset_headless_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
+        -DRENDER_CONFIG=${CMAKE_SOURCE_DIR}/projects/animgraph_demo/passes/main.json
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/animgraph_demo_preset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_preset_project_headless.cmake
+)
+set_tests_properties(animgraph_demo_preset_headless_player PROPERTIES
+    TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test pelican_core)
 endif()

@@ -42,6 +42,34 @@ foreach(path IN ITEMS
     endif()
 endforeach()
 
+file(READ "${project_dir}/passes/main_rendering_config.json" rendering_config)
+string(JSON generated_preset ERROR_VARIABLE preset_error
+    GET "${rendering_config}" pipeline preset)
+if(NOT preset_error STREQUAL "NOTFOUND" OR
+   NOT generated_preset STREQUAL "engine://render_pipelines/hybrid_v1.json")
+    message(FATAL_ERROR
+        "generated rendering config does not select hybrid_v1\n${rendering_config}")
+endif()
+string(JSON generated_feature_count ERROR_VARIABLE feature_count_error
+    LENGTH "${rendering_config}" features)
+string(JSON generated_feature ERROR_VARIABLE feature_error
+    GET "${rendering_config}" features 0)
+if(NOT feature_count_error STREQUAL "NOTFOUND" OR
+   NOT feature_error STREQUAL "NOTFOUND" OR
+   NOT generated_feature_count EQUAL 1 OR
+   NOT generated_feature STREQUAL "engine://features/shadow_directional.json")
+    message(FATAL_ERROR
+        "generated rendering config does not select the default feature set\n${rendering_config}")
+endif()
+foreach(forbidden_member IN ITEMS render_targets rendering_passes)
+    string(JSON ignored ERROR_VARIABLE member_error
+        TYPE "${rendering_config}" "${forbidden_member}")
+    if(member_error STREQUAL "NOTFOUND")
+        message(FATAL_ERROR
+            "generated preset config unexpectedly owns ${forbidden_member}\n${rendering_config}")
+    endif()
+endforeach()
+
 file(READ "${project_dir}/.gitattributes" gitattributes)
 foreach(line IN ITEMS "*.glb -text" "*.vrm -text" "*.png -text" "*.wav -text" "*.spv -text")
     string(FIND "${gitattributes}" "${line}" found_at)
