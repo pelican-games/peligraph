@@ -13,6 +13,12 @@
 | 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
 | 3 | `PELICAN_SET_FREE` | variant ごとの補助枠。debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture、`PELICAN_SKINNED` は binding 2 の `SkinPalette` SSBO を使う。binding 2 はスキン variant だけエンジン所有。 |
 
+`LightUBO` の shadow 行列列の後ろには `environmentAmbientRadiance` と
+`environmentSkyRadiance` の `vec4` がある。`sky_ambient` feature の runtime parameter
+`color * ambient_intensity` / `color * sky_intensity` を linear-sRGB radiance として供給する。
+feature が無いときは両方 zero である。非ゼロ既定値は feature JSON だけが所有し、
+LightUBO の初期化や shader に別の fallback は置かない。
+
 機械可読な正本は [`material_resources_manifest.json`](material_resources_manifest.json) に置く。
 `.surface` の custom texture は宣言順に set 2 binding 7 から割り当て、`role: color`
 (または `color_space: srgb`) は SRGB view、`role: data` は UNORM view を使う。
@@ -448,6 +454,8 @@ reflectionは全output locationのnumeric typeをschemaへ照合する。
 `engine://shaders/include/pelican_lighting_v1.glsl` である。後者は
 `pelican_light_count()`、`pelican_light(i, world_position)`、
 `pelican_shadow(i, world_position)`、`pelican_env_ambient(normal)` を公開する。
+`pelican_env_ambient` は現行の単色段階では `environmentAmbientRadiance.rgb` を返し、
+feature 無効時は zero を返す。`normal` は将来の方向依存 IBL と ABI を共有するために残す。
 同梱 standard/toon lighting はこの関数群だけを使う。params は
 `pelican_param_<name>()`、texture は `pelican_sample_<name>(uv)` という生成 accessor で読む。
 

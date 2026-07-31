@@ -149,6 +149,8 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_LIGHT_UBO_BINDING, std140) uni
     uint directionalShadowPadding2;
     vec4 directionalShadowCascadeSplits[2];
     mat4 shadowViewProjections[8];
+    vec4 environmentAmbientRadiance;
+    vec4 environmentSkyRadiance;
 } pelicanLights;
 
 #endif

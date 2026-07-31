@@ -21,12 +21,16 @@ if(NOT preset_error STREQUAL "NOTFOUND" OR
 endif()
 string(JSON feature_count ERROR_VARIABLE feature_count_error
     LENGTH "${rendering_config}" features)
-string(JSON feature ERROR_VARIABLE feature_error
+string(JSON shadow_feature ERROR_VARIABLE shadow_feature_error
     GET "${rendering_config}" features 0)
+string(JSON sky_feature ERROR_VARIABLE sky_feature_error
+    GET "${rendering_config}" features 1)
 if(NOT feature_count_error STREQUAL "NOTFOUND" OR
-   NOT feature_error STREQUAL "NOTFOUND" OR
-   NOT feature_count EQUAL 1 OR
-   NOT feature STREQUAL "engine://features/shadow_directional.json")
+   NOT shadow_feature_error STREQUAL "NOTFOUND" OR
+   NOT sky_feature_error STREQUAL "NOTFOUND" OR
+   NOT feature_count EQUAL 2 OR
+   NOT shadow_feature STREQUAL "engine://features/shadow_directional.json" OR
+   NOT sky_feature STREQUAL "engine://features/sky_ambient.json")
     message(FATAL_ERROR
         "project rendering config does not select the default feature set\n${rendering_config}")
 endif()
@@ -38,6 +42,12 @@ foreach(forbidden_member IN ITEMS render_targets rendering_passes)
             "project preset config unexpectedly owns ${forbidden_member}\n${rendering_config}")
     endif()
 endforeach()
+
+file(READ "${PROJECT_DIR}/scene.json" scene_config)
+if(scene_config MATCHES "\"name\"[ \t\r\n]*:[ \t\r\n]*\"light\"")
+    message(FATAL_ERROR
+        "preset project must exercise sky ambient with zero scene lights\n${scene_config}")
+endif()
 
 file(READ "${PROJECT_DIR}/project.json" project_config)
 string(JSON default_pass ERROR_VARIABLE default_pass_error
@@ -84,6 +94,7 @@ foreach(expected_node IN ITEMS
         shadow_depth
         deferred_geometry
         deferred_lighting
+        sky_background
         forward_opaque
         __snapshot_opaque_color
         __snapshot_opaque_depth

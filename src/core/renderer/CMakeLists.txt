@@ -14,6 +14,7 @@ target_sources(pelican_core PRIVATE
     viewfamilyproviderregistry.cpp
     directionalshadowviewprovider.cpp
     directionalshadowcascade.cpp
+    skyambientlighting.cpp
     materialrender.cpp
     uicontainer.cpp
     uirenderer.cpp

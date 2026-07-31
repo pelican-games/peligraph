@@ -185,7 +185,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "4e2caa11620c45ad822118652e7c25666487e14b9a2d15955cfe8ecdc43615ea",
+      "expected_png_sha256": "b33f30efa0612be3c2078db40f3012d0e37368071f63dd79915d8a0f733d0ff8",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -202,7 +202,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "b992a1223e232b66510267bbefef76f2cce45b8a533fd5c75dd42d629de47104",
+      "expected_png_sha256": "a194e33bcf8f47c203926e00e6367a89d8b24a9ee01f25cfe6cbecbe21af8ed3",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -219,7 +219,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "ae845897553ed3c4496f0d61094c1d1c244bb60b1741c9521b1bb43433afaf92",
+      "expected_png_sha256": "feccd3b0db8908b0f9b2868d2939b2ed1bfecfa91536cf619fd23c12e5d5d95a",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -236,7 +236,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "0b9745e557f3d5a5c29f6372b63b420e03ea5b9f049224cc7d8580ad6d957f73",
+      "expected_png_sha256": "35273ea37941582d5eec6b3de0fb48ce624398077995d96e6b38d86d3199fcfe",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -302,7 +302,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "f052edd5ca62b34f07e575b3d49cec8e098bb01d56df07c2b641c7d060b678e0",
+      "expected_png_sha256": "e6ef792d6117283936513e061c71b7be41541463f560ef8dadef9bcf009132e1",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -319,7 +319,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "208f691090865d35a6893d55ca1fb178c6855ff6db98ee5652f56d55c8ca80c0",
+      "expected_png_sha256": "cbbbb0667f13f7b1dea2f9b3986c49e2089a5ea75e4a729c7b0f061ccc12a6d6",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -336,7 +336,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "f052edd5ca62b34f07e575b3d49cec8e098bb01d56df07c2b641c7d060b678e0",
+      "expected_png_sha256": "e6ef792d6117283936513e061c71b7be41541463f560ef8dadef9bcf009132e1",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -353,7 +353,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "fc8a601bbd2fc1f6abf6501e8ac7acb2b79caf89ea322ab4bdd3e0837bfdeaa4",
+      "expected_png_sha256": "142cde65e14df99186bc92caf0dfaaab2ef8ebbc08f3b3dcf116c1947cbf4ba3",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -370,7 +370,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "6afbbee62ee590655231485f54b5466e0dc68d2f6b81b388ed3f58e05ee29805",
+      "expected_png_sha256": "36e3027298af3c7001013d1f79ab58bb440cf116c3149e390f0f08e38a40cb0b",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -387,7 +387,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "d4577fe9fd04ae741fd9e9ec14fbb0e6dfd25b2f39682b89810c312b5e7da9cb",
+      "expected_png_sha256": "c7c603e4842c22bd78e334b220aaac10bdfc3b22dd98973dd106c9df95c6e112",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -438,7 +438,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "2471bbdf995f2842ef4a242cd950d28e4afd1463ae46aa36be2e73c5bd0edfd0",
+      "expected_png_sha256": "0fd853405a371ebb284a594b5d7f2a539a75d47867362d3650fac0a43f20818a",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -606,7 +606,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "3a5936e8f665ccecf6b6ffead23661198ee59d11471ce38d43bfb1353e51e2ed",
+      "expected_png_sha256": "1ffc8ca8e7aeeb74f00da8c6e7c4e05061729768096a2c64f4c3caa5f454c7eb",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -623,7 +623,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "af9b22ace2d7ee4f92d0286f266a29aa974ea8b4ca10c4d2a48091249be69b7b",
+      "expected_png_sha256": "23cb89e0f1e25484e82efd5540aa2ae07fe39084c20178cdb24f69ec42a72cc0",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -640,7 +640,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "68f8a8167a2549a52583a787cf80e0b522febbfc453f8b4e7f1e6f778afcad7f",
+      "expected_png_sha256": "db3bb04aa4f218f9112c48433cc6485a70d349a272b0b750dd7504251d9a5735",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -657,7 +657,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "ea23af2b51e3e48b11f7f2cfcb7a22c015aa135875d04ea1d5626f36af73cd3e",
+      "expected_png_sha256": "5d8af27c30e9b398d1f0ac28ac8739ace9adf824e32f514028d1e6357a4cc0ca",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -674,7 +674,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "66f9ad26e24144aaa495bd4e48e54f948b871d9617f69aef4d846d26ee84e9bc",
+      "expected_png_sha256": "98460d8ac1cd357d6dd38d880432641c5c1525501fb0d5cbbfbebdd0daca9dfe",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -691,7 +691,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "66f9ad26e24144aaa495bd4e48e54f948b871d9617f69aef4d846d26ee84e9bc",
+      "expected_png_sha256": "98460d8ac1cd357d6dd38d880432641c5c1525501fb0d5cbbfbebdd0daca9dfe",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -708,7 +708,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "05b0410862cab2e6f382c268447cc208de6fbaac425b44068507e0f1c2fd296b",
+      "expected_png_sha256": "f3ff234e8bb74356e8e0e5ea889b0639acee5c32b696f76021999f37dd282fb1",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -791,7 +791,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "affc8b637e0ffe1445f3e0a8cecef0d3eee81f51e8c0b59efa4b957a0c3819ee",
+      "expected_png_sha256": "2dc7db4a8a49dff191bcb54cd45e0065c3945e881c3b67f482362015f0713b50",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -808,7 +808,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "22de60b7f78d03a92ea3c03aed28735cdb4631f09666fff127e9076f5f763132",
+      "expected_png_sha256": "182412c18f58485baa842c413cfb8e79f14b4c3854ac8e8ef1b16695b3f1952c",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -825,7 +825,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "89f846647724abce03bf8df6d4c70fd562e8d9ef63c69cde214ac224345a449b",
+      "expected_png_sha256": "33845dba491e27a4a7a9c80703ed67ef78348e10c71a35994340fc7459253350",
       "tolerance": true,
       "vat": "on_only",
       "traces": [
@@ -842,7 +842,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "b01ba279dba77c62e58d6f98754006cf5f9122da3173817b0446da624fd4574a",
+      "expected_png_sha256": "502a8128951aea1eb59b3c4b90c9e8c76ad16022823d4abb0c45181f1ac310d0",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -859,7 +859,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "cd0897eebb68642183d1c243fccf459b4743087d5cb40429d30c7e844d48a458",
+      "expected_png_sha256": "61165668997eca2f54a01a04509e0936af02430756b8ff370d87afdf5228eb57",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -876,7 +876,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "ba1ea24c4c35fce0be05233d9615249364e452a6e33d9f54994d513582e0b565",
+      "expected_png_sha256": "de081f54806e06ee3567341b297095420d38a8fc446a47ccfc670c372dd52988",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [

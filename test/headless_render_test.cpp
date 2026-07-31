@@ -4900,7 +4900,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                        {"scope", "geometry"}}}}}}},
                 {"features",
                  nlohmann::json::array(
-                     {"project://features/shadow_directional.json"})},
+                     {"project://features/shadow_directional.json",
+                      "engine://features/sky_ambient.json"})},
                 {"render_strategy",
                  {{"name",
                    "headless.hybrid_authored"}}},
@@ -5500,6 +5501,488 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             std::filesystem::remove_all(temp_dir);
         }
         SKIP(std::string{"Vulkan hybrid rendering unavailable: "} + ex.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "sky ambient feature keeps deferred and forward metals visible with zero lights",
+    "[headless][render][sky][ambient][wp240b]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    bool runtime_ready = false;
+
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "hybrid.json",
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features",
+                 nlohmann::json::array(
+                     {nlohmann::json{
+                         {"ref",
+                          "engine://features/sky_ambient.json"},
+                         {"parameters",
+                          {
+                              {"color_r", 0.2},
+                              {"color_g", 0.4},
+                              {"color_b", 0.8},
+                              {"ambient_intensity", 0.75},
+                              {"sky_intensity", 0.1},
+                          }},
+                     }})},
+            }
+                .dump(2));
+
+        auto project =
+            makeProjectConfig(
+                "scene.json", "assets.json");
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "hybrid.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource)
+            .setSourceByData(project.dump());
+        GET_MODULE(PathResolver)
+            .setup(temp_dir, false);
+
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer =
+            GET_MODULE(Renderer);
+        const auto main_render_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "main_render");
+        const auto execution =
+            GET_MODULE(
+                FrameGraphRuntimeContainer)
+                .find(main_render_id);
+        REQUIRE(execution != nullptr);
+        REQUIRE(
+            execution->render_pipeline !=
+            nullptr);
+        REQUIRE(
+            std::find(
+                execution->render_pipeline
+                    ->feature_names.begin(),
+                execution->render_pipeline
+                    ->feature_names.end(),
+                "sky_ambient") !=
+            execution->render_pipeline
+                ->feature_names.end());
+        REQUIRE(
+            std::find(
+                execution->render_pipeline
+                    ->shader_defines.begin(),
+                execution->render_pipeline
+                    ->shader_defines.end(),
+                "PELICAN_FEATURE_SKY_AMBIENT") !=
+            execution->render_pipeline
+                ->shader_defines.end());
+        runtime_ready = true;
+
+        constexpr std::string_view
+            deferred_surface_source =
+                R"surface(//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(0.9, 0.9, 0.9, 1.0);
+    surface.roughness = 0.6;
+    surface.metallic = 1.0;
+    surface.occlusion = 1.0;
+    surface.emissive = vec3(0.0);
+}
+)surface";
+        constexpr std::string_view
+            deferred_surface_reference =
+                "project://shaders/wp240b_deferred.surface";
+        const auto deferred_surface =
+            parseSurfaceFormat(
+                deferred_surface_source,
+                deferred_surface_reference);
+        const auto deferred_lowered =
+            lowerSurfaceDefaults(
+                deferred_surface,
+                deferred_surface_reference);
+        REQUIRE(
+            deferred_lowered.route ==
+            MaterialRouteClass::
+                deferred_geometry);
+        const auto deferred_shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    deferred_surface,
+                    deferred_surface_reference,
+                    deferred_lowered,
+                    execution->render_pipeline
+                        ->shader_defines);
+
+        const auto openpbr_reference =
+            std::string{
+                "engine://surfaces/openpbr/opaque_single.surface"};
+        const auto openpbr_surface =
+            parseSurfaceFormat(
+                engineResourceOrThrow(
+                    "surfaces/openpbr/opaque_single.surface"),
+                openpbr_reference);
+        const MaterialSurfaceCatalog
+            openpbr_catalog{
+                {openpbr_reference,
+                 openpbr_surface}};
+        const auto openpbr_document =
+            parseMaterialFormatJson(
+                nlohmann::json::parse(
+                    R"json({
+                      "schema":"pelican.material",
+                      "version":1,
+                      "materials":[{
+                        "name":"wp240b_forward_metal",
+                        "surface":"engine://surfaces/openpbr/opaque_single.surface",
+                        "values":{
+                          "base_color":[0.9,0.9,0.9,1.0],
+                          "base_metalness":1.0,
+                          "coat_weight":0.5
+                        },
+                        "routing":{
+                          "alpha_mode":"opaque",
+                          "double_sided":false
+                        }
+                      }]
+                    })json"),
+                openpbr_catalog);
+        const auto forward_lowered =
+            lowerMaterial(
+                openpbr_document
+                    .materials.front(),
+                openpbr_surface);
+        REQUIRE(
+            forward_lowered.route ==
+            MaterialRouteClass::
+                forward_opaque);
+        const auto forward_shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    openpbr_surface,
+                    openpbr_reference,
+                    forward_lowered,
+                    execution->render_pipeline
+                        ->shader_defines);
+
+        const auto &standard =
+            GET_MODULE(
+                StandardMaterialResource);
+        const auto make_material =
+            [&](SurfaceShaderBundleIds shaders,
+                const LoweredMaterial &lowered) {
+                MaterialInfo material{
+                    .vert_shader =
+                        shaders.vertex,
+                    .frag_shader =
+                        shaders.fragment,
+                    .base_color_texture =
+                        standard.whiteTexture(),
+                    .metallic_roughness_texture =
+                        standard
+                            .metallicRoughnessDefaultTexture(),
+                    .normal_texture =
+                        standard.normalDefaultTexture(),
+                    .emissive_texture =
+                        standard.emissiveDefaultTexture(),
+                };
+                applyLoweredMaterialForRoute(
+                    material, lowered);
+                return material;
+            };
+        auto &materials =
+            GET_MODULE(MaterialContainer);
+        const auto deferred_material =
+            materials.registerMaterial(
+                make_material(
+                    deferred_shaders,
+                    deferred_lowered));
+        const auto forward_material =
+            materials.registerMaterial(
+                make_material(
+                    forward_shaders,
+                    forward_lowered));
+        REQUIRE(isValidMaterialId(
+            deferred_material));
+        REQUIRE(isValidMaterialId(
+            forward_material));
+
+        auto &geometry =
+            GET_MODULE(VertBufContainer);
+        ModelTemplate deferred_model;
+        deferred_model.asset_id =
+            ModelAssetId{2401};
+        deferred_model.material_primitives = {
+            ModelTemplate::
+                MaterialPrimitives{
+                    .material =
+                        deferred_material,
+                    .primitives =
+                        {geometry
+                             .addPrimitiveEntry(
+                                 makeScreenQuad(
+                                     0.3f,
+                                     0.0f))},
+                    .source_material_index =
+                        0},
+        };
+        ModelTemplate forward_model;
+        forward_model.asset_id =
+            ModelAssetId{2402};
+        forward_model.material_primitives = {
+            ModelTemplate::
+                MaterialPrimitives{
+                    .material =
+                        forward_material,
+                    .primitives =
+                        {geometry
+                             .addPrimitiveEntry(
+                                 makeScreenQuad(
+                                     0.3f,
+                                     0.0f))},
+                    .source_material_index =
+                        0},
+        };
+        auto &instances =
+            GET_MODULE(
+                PolygonInstanceContainer);
+        const auto deferred_instance =
+            instances.placeModelInstance(
+                deferred_model);
+        const auto forward_instance =
+            instances.placeModelInstance(
+                forward_model);
+        instances.setTrs(
+            deferred_instance,
+            {-0.45f, 0.0f, 0.0f},
+            glm::quat{
+                1.0f, 0.0f, 0.0f, 0.0f},
+            glm::vec3{1.0f});
+        instances.setTrs(
+            forward_instance,
+            {0.45f, 0.0f, 0.0f},
+            glm::quat{
+                1.0f, 0.0f, 0.0f, 0.0f},
+            glm::vec3{1.0f});
+
+        auto &camera =
+            GET_MODULE(Camera);
+        camera.setPos(
+            {0.0f, 0.0f, 2.0f});
+        camera.setDir(
+            {0.0f, 0.0f, -1.0f});
+        camera.setUp(
+            {0.0f, 1.0f, 0.0f});
+
+        renderer.render();
+        auto &vkcore =
+            GET_MODULE(VulkanManageCore);
+        vkcore.waitIdle();
+
+        const auto light_bytes =
+            vkcore.readBuf(
+                GET_MODULE(LightContainer)
+                    .lightBuffer(),
+                sizeof(LightUBO));
+        REQUIRE(light_bytes.size() ==
+                sizeof(LightUBO));
+        LightUBO light_data{};
+        std::memcpy(
+            &light_data,
+            light_bytes.data(),
+            sizeof(light_data));
+        REQUIRE(
+            light_data
+                .directionalLightCount == 0);
+        REQUIRE(
+            light_data.pointLightCount == 0);
+        REQUIRE(
+            light_data.spotLightCount == 0);
+        REQUIRE(
+            std::abs(
+                light_data
+                    .environmentAmbientRadiance
+                    .r -
+                0.15f) < 0.00001f);
+        REQUIRE(
+            std::abs(
+                light_data
+                    .environmentAmbientRadiance
+                    .g -
+                0.3f) < 0.00001f);
+        REQUIRE(
+            std::abs(
+                light_data
+                    .environmentAmbientRadiance
+                    .b -
+                0.6f) < 0.00001f);
+        REQUIRE(
+            std::abs(
+                light_data
+                    .environmentSkyRadiance
+                    .r -
+                0.02f) < 0.00001f);
+        REQUIRE(
+            std::abs(
+                light_data
+                    .environmentSkyRadiance
+                    .g -
+                0.04f) < 0.00001f);
+        REQUIRE(
+            std::abs(
+                light_data
+                    .environmentSkyRadiance
+                    .b -
+                0.08f) < 0.00001f);
+
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(
+            pixels.size() ==
+            32u * 32u * 4u);
+        const auto corner_sum =
+            static_cast<unsigned>(
+                pixels[0]) +
+            static_cast<unsigned>(
+                pixels[1]) +
+            static_cast<unsigned>(
+                pixels[2]);
+        REQUIRE(corner_sum > 0);
+        std::array<
+            unsigned, 2>
+            half_maximum{
+                0u, 0u};
+        std::array<
+            std::size_t, 2>
+            visible_pixels{
+                0u, 0u};
+        for (std::size_t y = 0;
+             y < 32; ++y) {
+            for (std::size_t x = 0;
+                 x < 32; ++x) {
+                const auto offset =
+                    (y * 32 + x) * 4;
+                const auto sum =
+                    static_cast<unsigned>(
+                        pixels[offset]) +
+                    static_cast<unsigned>(
+                        pixels[offset + 1]) +
+                    static_cast<unsigned>(
+                        pixels[offset + 2]);
+                const auto half =
+                    x < 16 ? 0u : 1u;
+                half_maximum[half] =
+                    std::max(
+                        half_maximum[half],
+                        sum);
+                const auto distance =
+                    std::abs(
+                        static_cast<int>(
+                            pixels[offset]) -
+                        static_cast<int>(
+                            pixels[0])) +
+                    std::abs(
+                        static_cast<int>(
+                            pixels[offset + 1]) -
+                        static_cast<int>(
+                            pixels[1])) +
+                    std::abs(
+                        static_cast<int>(
+                            pixels[offset + 2]) -
+                        static_cast<int>(
+                            pixels[2]));
+                if (sum > corner_sum + 20 &&
+                    distance > 20) {
+                    ++visible_pixels[half];
+                }
+            }
+        }
+        INFO(
+            "sky sum=" << corner_sum <<
+            ", deferred max=" <<
+            half_maximum[0] <<
+            ", forward max=" <<
+            half_maximum[1]);
+        REQUIRE(
+            half_maximum[0] >
+            corner_sum + 20);
+        REQUIRE(
+            half_maximum[1] >
+            corner_sum + 20);
+        REQUIRE(
+            visible_pixels[0] > 8);
+        REQUIRE(
+            visible_pixels[1] > 8);
+
+        const auto frame_plan =
+            renderer.currentFramePlanJson();
+        const auto sky_node =
+            std::find_if(
+                frame_plan.at("nodes").begin(),
+                frame_plan.at("nodes").end(),
+                [](const auto &node) {
+                    return node.at("name") ==
+                           "sky_background";
+                });
+        REQUIRE(
+            sky_node !=
+            frame_plan.at("nodes").end());
+        REQUIRE(
+            sky_node->at("reads") ==
+            nlohmann::json::array(
+                {"scene_depth", "lit_color"}));
+        REQUIRE(
+            sky_node->at("writes") ==
+            nlohmann::json::array(
+                {"lit_color"}));
+
+        vkcore.waitIdle();
+        std::filesystem::remove_all(
+            temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        if (runtime_ready) {
+            throw;
+        }
+        SKIP(
+            std::string{
+                "Vulkan sky ambient rendering unavailable: "} +
+            error.what());
     }
 #endif
 }

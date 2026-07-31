@@ -3,8 +3,8 @@
 対象読者: エンジン担当、WP の受け入れ判定をする人、そして「この機構は実装済みか」を
 他の文書から引く人。
 
-ステータス: **v1.1(2026-07-31)**。判定は commit `d58f841`(branch
-`agent/wp240a-preset-default`)の WP240a 実装に対して行いました。本書は
+ステータス: **v1.2(2026-07-31)**。判定は branch
+`agent/wp240b-sky-ambient` の WP240b 実装に対して行いました。本書は
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md) を置き換えるものではなく、
 その ○ / △ / ✕ 判定の**根拠表**です。
 
@@ -96,10 +96,10 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 `contract_boundary_gate.py`、そして `golden_inventory.py` による inventory の整合と
 `expected.png` の sha256 一致(= baseline ファイルが黙って差し替わっていないこと)です。
 
-ローカル受け入れ記録として、WP240a 完了時の 2026-07-31 に
-`ctest -C Debug -L gpu` を全数実行し、**122 / 122 passed、既知 4 skipped**
-（実時間 405 秒）を確認しました。同じ HEAD の CPU gate は
-**942 / 942 passed、環境依存 1 skipped**です。これは常設 CI2 の代わりではありませんが、
+ローカル受け入れ記録として、WP240b 完了時の 2026-07-31 に
+`ctest -C Debug -L gpu` を全数実行し、**123 / 123 passed、既知 4 skipped**
+（実時間 419 秒）を確認しました。同じ HEAD の CPU gate は
+**940 / 940 passed、環境依存 1 skipped**です。これは常設 CI2 の代わりではありませんが、
 本台帳の E2 / E3 根拠が同一 HEAD で再実行可能な状態へ戻ったことを示します。
 
 ## 2. 一覧表
@@ -164,6 +164,7 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 | material same-pixel local-read(WP220) | **E3 +E5** | GPU: `headless_render_test` "material same-pixel resource executes through the tile-local input ABI"(project-owned `.surface` の `resource_ports` から sampler / input attachment のどちらへ降りても同じ accessor) | golden ケース化 |
 | material screen input(refraction / depth) | **E3† +E5** | golden `snapshot_refraction` が inventory 登録済みで byte 固定 | 残件なし |
 | material / compute の typed resource port | **E3 +E5** | GPU: `headless_render_test` "compute output displaces material vertices through typed resource ports"、golden `compute_buffer` | 残件なし(`compute_buffer` は byte 固定) |
+| 単色 sky + ambient feature(WP240b) | **E3 +E5** | CPU: `featurecompose_test` "sky ambient feature is purgeable and binds runtime-only values to hybrid" と `lightpolicy_test` "sky ambient runtime values have no engine fallback and require feature parameters"。GPU: `headless_render_test` "sky ambient feature keeps deferred and forward metals visible with zero lights" が directional / point / spot 0、LightUBO radiance、背景画素、deferred metal と forward OpenPBR metal の非黒画素を検証。project 側は preset を変えず feature instance だけを宣言 | IBL は未実装。cubemap / irradiance / prefiltered environment / BRDF LUT と実デバイス E4 |
 | static texture dimension(KTX2 cube 等) | **E3 +E5** | GPU: `headless_render_test` "KTX2 cubemap material samples the declared face through Vulkan" | 残件なし |
 | typed image subresource(mip / layer)と depth pyramid | **E3 +E5** | GPU: `headless_render_test` "typed image subresources execute a two-stage depth pyramid and rebind after resize"(resize 後の dispatch group 再計算と stale candidate 拒否を含む) | 残件なし |
 | raster attachment subresource(WP235) | **E2** | CPU: `renderingpass_helpers_test` / `frameplanner_test` / `targetrenderplanning_test` の `[wp235]`。GPU: `multiview_execution_test` が実 device 上で `wp235_subresource_target`(fixed 3 mip / 複数 layer)を確保し、`wp235_attachment_probe` pass の `base_mip_level: 1` / `base_array_layer: 2` な raster attachment view が single-view の左右 invocation と multiview invocation それぞれで正しい subresource view へ解決されること、および pass target extent が mip 1 相当(幅・高さとも 1/2)へ縮むことを検証 | 特定 mip / layer へ raster 出力した結果を読み戻す GPU テスト |
@@ -233,7 +234,7 @@ rendering config が参照する feature は次で全部です。
 | project | features | 備考 |
 |---|---|---|
 | `example` | `engine://features/ui.json` | 他は fullscreen の SSAO / bloom チェーンを手書き |
-| `animgraph_demo` | `engine://features/shadow_directional.json` | `engine://render_pipelines/hybrid_v1.json` を project 空間から選択 |
+| `animgraph_demo` | `engine://features/shadow_directional.json`、`engine://features/sky_ambient.json` | `engine://render_pipelines/hybrid_v1.json` を project 空間から選択。scene light は 0 |
 | `sprite_demo` | `engine://features/sprite.json` | `ssao_clear` が **`"type": "raster"`**(WP238b の dogfood) |
 | `vrm_xr_demo` | (なし) | |
 
@@ -267,6 +268,7 @@ WP240a では committed project を直接起動する process integration も加
 | pass-local material variant | project-owned surface / pass | 2 本目の opaque pass が描かれること |
 | MSAA + hybrid preset | `project://features/shadow_directional.json` + `render_strategy` / `graph_transforms` の authoring | sample 数と画素 |
 | engine preset 選択 | committed `projects/animgraph_demo/passes/main.json` の `pipeline.preset` + feature 参照 | `animgraph_demo_preset_headless_player` が directional shadow / deferred / forward / snapshot / present の runtime plan 展開と PNG 出力を検査 |
+| 単色 sky / ambient | 一時 project の `hybrid_v1` preset + `sky_ambient` feature instance。色・ambient強度・sky強度を project から上書き | `headless_render_test` がライト 0 の LightUBO 値と、背景・deferred metal・forward OpenPBR metal の画素を検査。committed `animgraph_demo` も同 feature を参照して player integration を通る |
 
 ### 4.3 E5 に達していないもの
 

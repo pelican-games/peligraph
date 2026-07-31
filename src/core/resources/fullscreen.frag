@@ -306,13 +306,14 @@ void main() {
     }
 #endif
     
-    // 環境光をより充実させる
-    float sky = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 openPbrAmbient = albedo * (1.0 - metallic) * ao *
-                          mix(vec3(0.015), vec3(0.06, 0.07, 0.09), sky);
-    vec3 standardAmbient = mix(vec3(0.03) * albedo * ao,
-                               albedo * 0.12 * ao, metallic);
-    vec3 ambient = openPbrBase ? openPbrAmbient : standardAmbient;
+    vec3 ambientRadiance = vec3(0.0);
+#ifdef PELICAN_FEATURE_SKY_AMBIENT
+    ambientRadiance =
+        pelicanLights.environmentAmbientRadiance.rgb;
+#endif
+    // The solid fallback intentionally lights metals as well. Directional
+    // environment response belongs to the later IBL feature.
+    vec3 ambient = albedo * ao * ambientRadiance;
     vec3 color = ambient + Lo + emissive;
     
 #if !defined(PELICAN_FEATURE_HDR) && !defined(PELICAN_HYBRID_SCENE_LINEAR)

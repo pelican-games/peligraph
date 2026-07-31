@@ -44,12 +44,22 @@ namespace Pelican
 		void publishPrepared(PreparedLoad&& prepared) noexcept;
 		void load(const std::vector<LightLoadEntry>& lights);
 		void update();
+		void update(
+			const SkyAmbientLighting&
+				sky_ambient);
 		void update(const glm::mat4& shadow_view_projection);
 		void update(
 			std::span<const glm::mat4>
 				shadow_view_projections,
 			std::span<const float>
 				cascade_far_distances);
+		void update(
+			std::span<const glm::mat4>
+				shadow_view_projections,
+			std::span<const float>
+				cascade_far_distances,
+			const SkyAmbientLighting&
+				sky_ambient);
 
 		bool setDirectionalLightDirection(const std::string& name, glm::vec3 direction);
 		bool setDirectionalLightIntensity(const std::string& name, float intensity);

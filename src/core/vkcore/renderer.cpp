@@ -5,6 +5,7 @@
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/skyambientlighting.hpp"
 #include "../renderer/spriterenderer.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../renderer/atlasassetresource.hpp"
@@ -292,7 +293,12 @@ void updateFrameLights(
     FrameGraphResourceContainer
         &frame_graph_resources,
     const RenderViewFamilies
-        &view_families) {
+        &view_families,
+    const CompiledRenderPipeline
+        &render_pipeline) {
+    const auto sky_ambient =
+        resolveSkyAmbientLighting(
+            render_pipeline);
     if (const auto *shadow_family =
             view_families.find(
                 directionalShadowRenderViewFamilyId);
@@ -320,9 +326,11 @@ void updateFrameLights(
         }
         light_container.update(
             view_projections,
-            cascade_far_distances);
+            cascade_far_distances,
+            sky_ambient);
     } else {
-        light_container.update();
+        light_container.update(
+            sky_ambient);
     }
     constexpr auto source =
         FrameGraphHostBufferSource::scene_lights_v2;
@@ -3890,7 +3898,8 @@ void Renderer::renderLogicalFrame(
     updateFrameLights(
         modules.light_container,
         modules.frame_graph_resources,
-        resolved_view_families);
+        resolved_view_families,
+        *frame_graph.render_pipeline);
 
     const auto &draw_sorting =
         frame_graph.render_pipeline->draw_sorting;

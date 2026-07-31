@@ -1164,10 +1164,17 @@ void writeVatProject(const std::filesystem::path &root) {
     writeTextFile(root / "assets" / "asset_data.json", R"json({"models":[]})json");
     writeTextFile(root / "ui" / "ui_overlay.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
 
-    std::filesystem::create_directories(root / "passes");
-    std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
-                               root / "passes/main_rendering_config.json",
-                               std::filesystem::copy_options::overwrite_existing);
+    writeTextFile(
+        root / "passes" /
+            "main_rendering_config.json",
+        R"json({
+  "pipeline": {
+    "preset": "engine://render_pipelines/hybrid_v1.json"
+  },
+  "features": [
+    "engine://features/sky_ambient.json"
+  ]
+})json");
 }
 
 void writeFeatureProject(const std::filesystem::path &root) {

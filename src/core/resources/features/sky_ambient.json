@@ -1,0 +1,78 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "sky_ambient",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "scalars": [
+      {
+        "name": "color_r",
+        "type": "float",
+        "range": [0.0, 64.0],
+        "default": 0.12,
+        "shader_define": false
+      },
+      {
+        "name": "color_g",
+        "type": "float",
+        "range": [0.0, 64.0],
+        "default": 0.16,
+        "shader_define": false
+      },
+      {
+        "name": "color_b",
+        "type": "float",
+        "range": [0.0, 64.0],
+        "default": 0.24,
+        "shader_define": false
+      },
+      {
+        "name": "ambient_intensity",
+        "type": "float",
+        "range": [0.0, 64.0],
+        "default": 0.5,
+        "shader_define": false
+      },
+      {
+        "name": "sky_intensity",
+        "type": "float",
+        "range": [0.0, 64.0],
+        "default": 1.0,
+        "shader_define": false
+      }
+    ]
+  },
+  "passes": [
+    {
+      "insert": "after:deferred_lighting",
+      "pass": {
+        "name": "sky_background",
+        "type": "fullscreen",
+        "output": {
+          "color": ["lit_color"],
+          "depth": null
+        },
+        "input": ["scene_depth"],
+        "input_sampling": [
+          {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        ],
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://sky_ambient"
+        },
+        "uses_light_data": true,
+        "color_load_op": "load"
+      }
+    }
+  ],
+  "render_target_overrides": {
+    "scene_depth": {
+      "usage": ["SAMPLED"]
+    }
+  },
+  "shader_defines": ["PELICAN_FEATURE_SKY_AMBIENT"]
+}

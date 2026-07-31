@@ -67,6 +67,13 @@ namespace Pelican
 		glm::vec3 color;
 	};
 
+	struct SkyAmbientLighting
+	{
+		glm::vec3 color{0.0f};
+		float ambient_intensity = 0.0f;
+		float sky_intensity = 0.0f;
+	};
+
 	struct LightUBO
 	{
 		uint32_t directionalLightCount;
@@ -85,6 +92,8 @@ namespace Pelican
 			glm::mat4,
 			maximumDirectionalShadowCascades>
 			shadowViewProjections;
+		glm::vec4 environmentAmbientRadiance;
+		glm::vec4 environmentSkyRadiance;
 	};
 
 	static_assert(
@@ -109,6 +118,23 @@ namespace Pelican
 			LightUBO,
 			directionalShadowCascadeSplits) +
 			sizeof(glm::vec4) * 2);
+	static_assert(
+		offsetof(
+			LightUBO,
+			environmentAmbientRadiance) ==
+		offsetof(
+			LightUBO,
+			shadowViewProjections) +
+			sizeof(glm::mat4) *
+				maximumDirectionalShadowCascades);
+	static_assert(
+		offsetof(
+			LightUBO,
+			environmentSkyRadiance) ==
+		offsetof(
+			LightUBO,
+			environmentAmbientRadiance) +
+			sizeof(glm::vec4));
 	static_assert(sizeof(LightUBO) % 16 == 0);
 
 	struct DirectionalShadowView

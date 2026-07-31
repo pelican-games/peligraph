@@ -119,8 +119,11 @@ float pelican_shadow(uint light_index, vec3 world_position) {
 }
 
 vec3 pelican_env_ambient(vec3 normal) {
-    float sky = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
-    return mix(vec3(0.015), vec3(0.06, 0.07, 0.09), sky);
+#ifdef PELICAN_FEATURE_SKY_AMBIENT
+    return pelicanLights.environmentAmbientRadiance.rgb;
+#else
+    return vec3(0.0);
+#endif
 }
 
 #endif
