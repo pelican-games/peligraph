@@ -101,7 +101,7 @@ void writeUiFixture(const std::filesystem::path &root,
     if (!scene) throw std::runtime_error("failed to write WP169 scene fixture");
 
     std::ofstream assets{root / "assets.json", std::ios::binary};
-    assets << R"json({"models":[]})json";
+    assets << R"json({"schema":"pelican.asset_data","version":1,"models":[]})json";
     if (!assets) throw std::runtime_error("failed to write WP169 asset fixture");
 }
 

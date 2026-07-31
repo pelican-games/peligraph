@@ -1,1 +1,10 @@
-{"models":[{"name":"animgraph_demo","path":"assets/animgraph_demo.gltf"}]}
+{
+  "schema": "pelican.asset_data",
+  "version": 1,
+  "models": [
+    {
+      "name": "animgraph_demo",
+      "path": "assets/animgraph_demo.gltf"
+    }
+  ]
+}

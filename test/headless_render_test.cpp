@@ -1507,7 +1507,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "hybrid.json",
             nlohmann::json{
@@ -1817,7 +1817,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -2375,7 +2375,7 @@ TEST_CASE(
             temp_dir / "scene.json",
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(temp_dir / "assets.json",
-                      R"json({"models":[]})json");
+                      R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         std::filesystem::create_directories(
@@ -2854,7 +2854,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -3046,7 +3046,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -3427,7 +3427,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -3872,7 +3872,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -4103,7 +4103,7 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(temp_dir / "features");
         std::filesystem::create_directories(temp_dir / "shaders");
         std::filesystem::create_directories(temp_dir / "materials");
@@ -4430,7 +4430,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "hybrid.json",
             nlohmann::json{
@@ -4879,7 +4879,9 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         writeTextFile(
             scene_path,
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
-        writeTextFile(asset_path, R"json({"models":[]})json");
+        writeTextFile(
+            asset_path,
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "features");
         writeTextFile(
@@ -5521,7 +5523,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "hybrid.json",
             nlohmann::json{
@@ -6004,7 +6006,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "object_id_present.frag",
@@ -6663,7 +6665,7 @@ TEST_CASE(
             temp_dir / "scene.json",
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(temp_dir / "assets.json",
-                      R"json({"models":[]})json");
+                      R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "gpu_arena_fullscreen.vert",
@@ -6831,7 +6833,9 @@ TEST_CASE(
         writeTextFile(
             scene_path,
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
-        writeTextFile(asset_path, R"json({"models":[]})json");
+        writeTextFile(
+            asset_path,
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "gpu_arena_fullscreen.vert",
@@ -7352,7 +7356,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "depth_pyramid_fullscreen.vert",

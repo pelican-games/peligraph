@@ -372,7 +372,7 @@ endfunction()
 
 function(write_empty_project root)
     write_common_project("${root}")
-    file(WRITE "${root}/assets/asset_data.json" "{\"models\":[]}\n")
+    file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
     file(WRITE "${root}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
@@ -414,6 +414,8 @@ function(write_vat_project root)
     write_common_project("${root}")
     file(WRITE "${root}/assets/asset_data.json" [=[
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "vat_model", "path": "assets/tiny_vat.glb"}
   ]
@@ -448,7 +450,7 @@ endfunction()
 
 function(write_physics_project root)
     write_common_project("${root}")
-    file(WRITE "${root}/assets/asset_data.json" "{\"models\":[]}\n")
+    file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
     file(WRITE "${root}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",

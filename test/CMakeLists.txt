@@ -1126,6 +1126,7 @@ set_tests_properties(compute_buffer_headless_player PROPERTIES LABELS gpu)
 
 pelican_define_test(importmanifest_test pelican_project)
 pelican_define_test(importrules_test pelican_project)
+pelican_define_test(assetdataformat_test pelican_project)
 target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

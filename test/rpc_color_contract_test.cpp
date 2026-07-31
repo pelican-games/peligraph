@@ -152,7 +152,8 @@ TEST_CASE("RPC capture reports contract 2 and absolute encoded-sRGB color", "[rp
   "schema":"pelican.scene","version":1,
   "scenes":{"default_scene":{"objects":[]}}
 })json");
-    writeFile(root / "assets.json", R"json({"models":[]})json");
+    writeFile(root / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeFile(root / "ui/ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(root / "shaders/fullscreen.vert", R"glsl(
 #version 450
@@ -281,7 +282,8 @@ TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and
   "schema":"pelican.scene","version":1,
   "scenes":{"default_scene":{"objects":[]}}
 })json");
-    writeFile(project_dir.root / "assets.json", R"json({"models":[]})json");
+    writeFile(project_dir.root / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeFile(project_dir.root / "ui/ui.json",
               R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(project_dir.root / "shaders/fullscreen.vert", R"glsl(

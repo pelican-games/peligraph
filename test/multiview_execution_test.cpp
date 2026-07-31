@@ -66,7 +66,7 @@ class TempProject {
         std::ofstream{root_ / "scene.json", std::ios::binary}
             << R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json";
         std::ofstream{root_ / "assets.json", std::ios::binary}
-            << R"json({"schema":"pelican.assets","version":1,"assets":{}})json";
+            << R"json({"schema":"pelican.asset_data","version":1,"models":[]})json";
     }
 
     ~TempProject() {

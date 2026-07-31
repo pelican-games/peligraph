@@ -1020,7 +1020,7 @@ void writeStemProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "solid.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "solid.frag", solidFullscreenFragmentShader());
@@ -1054,7 +1054,7 @@ void writeSnapshotRefractionProject(const std::filesystem::path &root) {
   "version": 1,
   "scenes": {"default_scene": {"objects": []}}
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "opaque.frag", R"glsl(
@@ -1112,7 +1112,7 @@ void writeExplicitOrderProject(const std::filesystem::path &root,
   "version": 1,
   "scenes": {"default_scene": {"objects": []}}
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "blue.frag", explicitOrderBlueFragmentShader());
@@ -1161,7 +1161,7 @@ void writeVatProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets" / "asset_data.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets" / "asset_data.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui_overlay.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
 
     writeTextFile(
@@ -1188,7 +1188,7 @@ void writeFeatureProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "present.frag", R"glsl(
@@ -1368,7 +1368,7 @@ void writeLogicalFrameStereoProject(const std::filesystem::path &root) {
       }]}}
     })json");
     writeTextFile(root / "assets.json",
-                  R"json({"models":[{"name":"ground","path":"assets/ground.glb"}]})json");
+                  R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"ground","path":"assets/ground.glb"}]})json");
     writeTextFile(root / "ui" / "ui.json",
                   R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
@@ -1428,7 +1428,7 @@ void writeTemporalAccumulationProject(const std::filesystem::path &root) {
     project["name"] = "temporal accumulation golden";
     writeTextFile(root / "project.json", project.dump(2));
     writeTextFile(root / "scene.json", R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "current.frag", R"glsl(
@@ -1495,7 +1495,7 @@ void writeVelocitySmokeProject(const std::filesystem::path &root) {
     project["name"] = "velocity smoke";
     writeTextFile(root / "project.json", project.dump(2));
     writeTextFile(root / "scene.json", R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "present.frag", solidFullscreenFragmentShader());
@@ -1514,7 +1514,7 @@ void writeSkinnedVelocityProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", project.dump(2));
     TestSkeletalFixture::writeGlb(root / "character.glb");
     writeTextFile(root / "assets.json",
-                  R"json({"models":[{"name":"character","path":"character.glb"}]})json");
+                  R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})json");
     writeTextFile(root / "scene.json", R"json({
       "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
         "name":"Character","components":[
@@ -1566,7 +1566,7 @@ void writeMorphVelocityProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", project.dump(2));
     TestMorphFixture::writeGlb(root / "morph.glb");
     writeTextFile(root / "assets.json",
-                  R"json({"models":[{"name":"morph","path":"morph.glb"}]})json");
+                  R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"morph","path":"morph.glb"}]})json");
     writeTextFile(root / "scene.json", R"json({
       "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
         "name":"Morph","components":[
@@ -1624,7 +1624,7 @@ void writeUiU1Project(const std::filesystem::path &root) {
     project["name"] = "ui u1 golden";
     writeTextFile(root / "project.json", project.dump(2));
     writeTextFile(root / "scene.json", R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "present.frag", R"glsl(
 #version 450
@@ -1693,7 +1693,7 @@ void writeSkeletalProject(const std::filesystem::path &root) {
         ]}, {"name":"Key","components":[
           {"name":"light","type":"directional","direction":[0.2,-0.3,-1.0],"intensity":3.0,"color":[1.0,0.9,0.8]}
         ]}]}}})json");
-    writeTextFile(root / "assets.json", R"json({"models":[{"name":"character","path":"character.glb"}]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     std::filesystem::create_directories(root / "passes");
     std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
@@ -1727,7 +1727,7 @@ void writeUsdStaticGeometryProject(const std::filesystem::path &root) {
          }})},
     });
     writeTextFile(root / "scene.json", scene.dump(2));
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     std::filesystem::create_directories(root / "passes");
     std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
@@ -1765,9 +1765,9 @@ void writeUsdOpenPbrMaterialProject(const std::filesystem::path &root) {
          }})},
     });
     writeTextFile(root / "scene.json", scene.dump(2));
-    writeTextFile(root / "assets.json", R"json({"models":[{
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[{
       "name":"coat","path":"model.glb","material_bindings":"material_bindings.json"
-    }]})json");
+    }],"materials":[{"path":"materials.json"}]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     std::filesystem::create_directories(root / "passes");
     std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
@@ -1794,7 +1794,7 @@ void writeDebugDrawProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "present.frag", R"glsl(
@@ -1864,7 +1864,7 @@ void writeDebugTextProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "present.frag", R"glsl(
@@ -2001,7 +2001,7 @@ void writeHdrProject(const std::filesystem::path &root, bool hdr_enabled) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "hdr_source.frag", hdrSourceFragmentShader());
@@ -2227,6 +2227,8 @@ void writeShadowProject(const std::filesystem::path &root, bool shadow_enabled) 
   }
 })json");
     writeTextFile(root / "assets.json", R"json({
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "ground", "path": "assets/ground.glb"}
   ]
@@ -2508,6 +2510,8 @@ void writeGpuOcclusionProject(
         writeTextFile(
             root / "assets.json",
             R"json({
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "ground", "path": "assets/ground.glb"},
     {"name": "marker", "path": "assets/marker.glb"}
@@ -3808,6 +3812,8 @@ void writeMorphSkinnedShadowProject(const std::filesystem::path &root) {
     TestMorphFixture::writeGlb(root / "assets" / "morph.glb",
                                {.skinned = true, .mesh_weight = 1.0});
     writeTextFile(root / "assets.json", R"json({
+      "schema":"pelican.asset_data",
+      "version":1,
       "models":[
         {"name":"ground","path":"assets/ground.glb"},
         {"name":"morph","path":"assets/morph.glb"}
@@ -3833,6 +3839,8 @@ void writeMaterialInstanceOverrideProject(const std::filesystem::path &root) {
     writeShadowProject(root, false);
     TestMorphFixture::writeGlb(root / "assets" / "tint.glb");
     writeTextFile(root / "assets.json", R"json({
+      "schema":"pelican.asset_data",
+      "version":1,
       "models":[{"name":"tint","path":"assets/tint.glb"}]
     })json");
     writeTextFile(root / "scene.json", R"json({
@@ -3856,6 +3864,8 @@ void writeVrmExpressionProject(const std::filesystem::path &root) {
     TestMorphFixture::writeGlb(root / "assets" / "expression.vrm",
                                {.skinned = true, .vrm_expression = true});
     writeTextFile(root / "assets.json", R"json({
+      "schema":"pelican.asset_data",
+      "version":1,
       "models":[{"name":"expression","path":"assets/expression.vrm"}]
     })json");
     writeTextFile(root / "scene.json", R"json({
@@ -3878,6 +3888,8 @@ void writeVrmXrDemoGoldenProject(const std::filesystem::path &root) {
     writeShadowProject(root, false);
     TestVrmXrDemoFixture::writeGlb(root / "assets" / "vrm_xr_character.vrm");
     writeTextFile(root / "assets.json", R"json({
+      "schema":"pelican.asset_data",
+      "version":1,
       "models":[{"name":"vrm_xr_character","path":"assets/vrm_xr_character.vrm"}]
     })json");
     writeTextFile(root / "scene.json", R"json({
@@ -3897,6 +3909,8 @@ void writeMaterialAbsoluteOverrideProject(const std::filesystem::path &root) {
     TestMaterialAbsoluteOverrideFixture::writeGlb(
         root / "assets" / "absolute.glb");
     writeTextFile(root / "assets.json", R"json({
+      "schema":"pelican.asset_data",
+      "version":1,
       "models":[{"name":"absolute","path":"assets/absolute.glb"}]
     })json");
     writeTextFile(root / "scene.json", R"json({
@@ -4010,7 +4024,9 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
       }
     })json");
 
-    nlohmann::json assets{{"models", nlohmann::json::array()},
+    nlohmann::json assets{{"schema", "pelican.asset_data"},
+                          {"version", 1},
+                          {"models", nlohmann::json::array()},
                           {"textures", nlohmann::json::array({
                               {{"name", "atlas"}, {"path", "assets/atlas.json"}, {"sampler", "nearest"}}
                           })}};
@@ -4130,7 +4146,7 @@ void writeComputeProject(const std::filesystem::path &root,
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "write_color.comp", computeWriteColorShader());
@@ -4231,7 +4247,7 @@ void writeOrthographicCameraProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "ortho_camera.frag", orthographicCameraFragmentShader());
@@ -4292,7 +4308,7 @@ void writeOrbitCameraControllerProject(const std::filesystem::path &root) {
     }
   }
 })json");
-    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "orbit_camera.frag", orbitCameraControllerFragmentShader());
@@ -6399,7 +6415,8 @@ void writeJitterCaptureProject(const std::filesystem::path &root,
       "schema":"pelican.scene","version":1,
       "scenes":{"default_scene":{"objects":[]}}
     })json");
-    writeTextFile(root / "assets.json", R"json({})json");
+    writeTextFile(root / "assets.json",
+                  R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(root / "ui" / "ui.json",
                   R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeTextFile(root / "features" / "jitter.json",

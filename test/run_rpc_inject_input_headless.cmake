@@ -56,6 +56,8 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
 
 file(WRITE "${OUT_DIR}/project/assets/asset_data.json" [=[
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "character", "path": "assets/models/character.glb"}
   ]

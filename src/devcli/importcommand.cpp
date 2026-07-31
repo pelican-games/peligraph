@@ -1,5 +1,6 @@
 #include "importcommand.hpp"
 
+#include "../project/assetdataformat.hpp"
 #include "gltfsceneextract.hpp"
 #include "rulesimport.hpp"
 
@@ -287,15 +288,7 @@ void verifyManifestOutputs(const std::filesystem::path &delivery_root, const Imp
 ImportCommandResult registerImportedModels(const ProjectPaths &project, const ImportManifest &manifest,
                                            const std::vector<std::filesystem::path> &resolved_outputs) {
     auto asset_data = readJsonFile(project.asset_data_file, "asset_data_json");
-    if (!asset_data.is_object()) {
-        throw std::runtime_error("asset_data_json must be an object");
-    }
-    if (!asset_data.contains("models")) {
-        asset_data["models"] = nlohmann::json::array();
-    }
-    if (!asset_data.at("models").is_array()) {
-        throw std::runtime_error("asset_data_json models must be an array");
-    }
+    (void)parseAssetDataFormatJson(asset_data);
 
     std::unordered_set<std::string> existing_names;
     std::unordered_set<std::string> existing_paths;

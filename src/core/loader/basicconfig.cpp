@@ -4,6 +4,7 @@
 #include "../watch/contentdigest.hpp"
 #include "pathresolver.hpp"
 #include "projectsrc.hpp"
+#include "../../project/assetdataformat.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -378,9 +379,7 @@ std::string resolveExistingModelReferenceString(PathResolver &resolver, const st
 
 std::string rewriteAssetPaths(std::string data) {
     auto json = nlohmann::json::parse(data);
-    if (!json.contains("models") || !json.at("models").is_array()) {
-        return data;
-    }
+    (void)parseAssetDataFormatJson(json);
 
     auto &resolver = GET_MODULE(PathResolver);
     for (auto &model : json.at("models")) {

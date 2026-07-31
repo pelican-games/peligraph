@@ -157,6 +157,8 @@ constexpr std::string_view scene_json = R"json({
 )json";
 
 constexpr std::string_view asset_data_json = R"json({
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": []
 }
 )json";

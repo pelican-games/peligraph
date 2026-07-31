@@ -112,7 +112,7 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
         }]}}
     })json");
     writeText(temp_dir / "assets.json",
-              R"json({"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
+              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -317,7 +317,8 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
     const auto yup = fixture_root / "root_yup_m_usda";
     std::filesystem::copy_file(yup / "model.glb", temp_dir / "model.glb");
     std::filesystem::copy_file(yup / "scene.json", temp_dir / "scene.json");
-    writeText(temp_dir / "assets.json", R"json({"models":[]})json");
+    writeText(temp_dir / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -406,7 +407,8 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
     std::filesystem::copy(delivery, temp_dir,
                           std::filesystem::copy_options::recursive |
                               std::filesystem::copy_options::overwrite_existing);
-    writeText(temp_dir / "assets.json", R"json({"models":[]})json");
+    writeText(temp_dir / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp_dir, false);

@@ -107,7 +107,8 @@ TEST_CASE("extracted scene loads through SceneLoader with glTF world transforms"
     TestGltfSceneFixture::writeGlb(glb, true);
     const auto extracted = DevCli::extractGltfScene(glb, "hierarchy.glb");
     writeText(temp.path / "scene.json", extracted.dump(2) + "\n");
-    writeText(temp.path / "assets.json", R"json({"models":[]})json");
+    writeText(temp.path / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp.path, false);

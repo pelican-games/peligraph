@@ -129,7 +129,9 @@ void configureGpu(const Sandbox &box) {
     const auto scene = box.root / "scene.json";
     const auto assets = box.root / "assets.json";
     writeText(scene, "{}");
-    writeText(assets, "{}");
+    writeText(
+        assets,
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config", {{"window_size", {{"width", 16}, {"height", 16}}},
                           {"scene_data_json", scene.generic_string()},
