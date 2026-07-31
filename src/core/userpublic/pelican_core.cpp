@@ -3,6 +3,7 @@
 #include "../appflow/teardown.hpp"
 #include "../asset/model.hpp"
 #include "../log.hpp"
+#include "../material/projectmaterialasset.hpp"
 #include "../vkcore/core.hpp"
 
 #include "../ecs/predefined.hpp"
@@ -17,6 +18,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../vkcore/renderer.hpp"
 #include <components/spriteview.hpp>
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
@@ -73,9 +75,14 @@ bool PelicanCore::run() {
         GET_MODULE(ECSPredefinedRegistration).reg();
         (void)initializeConfiguredGameLogic();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
+        // glTF materials lower through route-specific surface shaders. Publish
+        // the render graph first so their initial compilation sees the same
+        // feature defines and material-output ABI as the frame executor.
+        (void)GET_MODULE(Renderer);
         // Model CPU preparation is parallel, but its Vulkan/resource commit is
         // deliberately forced onto the startup thread before ECS systems run.
         // This also makes the permanent startup metric cover the whole phase.
+        (void)GET_MODULE(ProjectMaterialAssetContainer);
         (void)GET_MODULE(ModelAssetContainer);
 
         // Runtime resources now represent the initial disk contents, so this

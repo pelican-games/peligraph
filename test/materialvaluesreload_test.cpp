@@ -3,6 +3,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/watch/assetkey.hpp"
@@ -129,7 +130,9 @@ void configureGpu(const Sandbox &box) {
     const auto scene = box.root / "scene.json";
     const auto assets = box.root / "assets.json";
     writeText(scene, "{}");
-    writeText(assets, "{}");
+    writeText(
+        assets,
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config", {{"window_size", {{"width", 16}, {"height", 16}}},
                           {"scene_data_json", scene.generic_string()},
@@ -138,6 +141,18 @@ void configureGpu(const Sandbox &box) {
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
+}
+
+void configureIndexedProjectGpu(const Sandbox &box) {
+    configureGpu(box);
+    GET_MODULE(ProjectSource).setSourceByData(
+        nlohmann::json{
+            {"basic_config",
+             {{"window_size",
+               {{"width", 16}, {"height", 16}}},
+              {"scene_data_json", "scene.json"},
+              {"asset_data_json", "assets.json"}}}}
+            .dump());
 }
 
 SurfaceFormatDocument wp76Surface() {
@@ -222,6 +237,36 @@ void writeLiveMaterial(const std::filesystem::path &path, double scalar,
              {"surface", "project://shaders/live.surface"},
              {"values", std::move(values)}}
         })}}
+        .dump(2));
+}
+
+void writeIndexedLiveMaterial(const std::filesystem::path &path,
+                              double scalar) {
+    writeText(path, nlohmann::json{
+        {"schema", "pelican.material"},
+        {"version", 1},
+        {"materials", nlohmann::json::array({
+            {{"name", "live"},
+             {"surface", "project://shaders/live.surface"},
+             {"values", {{"scalar_first", scalar}}},
+             {"textures",
+              {{"albedo_detail", "project://color.png"}}}}
+        })}}
+        .dump(2));
+}
+
+void writeMaterialAssetIndex(
+    const Sandbox &box,
+    std::initializer_list<std::string_view> paths) {
+    auto materials = nlohmann::json::array();
+    for (const auto path : paths) {
+        materials.push_back({{"path", path}});
+    }
+    writeText(box.root / "assets.json", nlohmann::json{
+        {"schema", "pelican.asset_data"},
+        {"version", 1},
+        {"models", nlohmann::json::array()},
+        {"materials", std::move(materials)}}
         .dump(2));
 }
 
@@ -613,6 +658,104 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
                  "Vulkan named material variant reload unavailable: "} +
              error.what());
     }
+}
+
+TEST_CASE("WP240c project material registry wires texture and values reload",
+          "[wp240c][project-material][material-values-reload][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Sandbox box;
+    FastModuleContainer modules;
+    configureIndexedProjectGpu(box);
+    writeMaterialAssetIndex(box, {"live.material.json"});
+    std::filesystem::create_directories(box.root / "shaders");
+    writeText(
+        box.root / "shaders" / "live.surface",
+        readText(
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                "test" / "fixtures" / "surface_format" /
+                "valid" / "wp76.surface"));
+    std::filesystem::copy_file(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+            "test" / "fixtures" / "usd0c" /
+            "root_materials_coat" / "textures" /
+            "bcfd899348e6d036_checker_1001.png",
+        box.root / "color.png",
+        std::filesystem::copy_options::overwrite_existing);
+    const auto material_path =
+        box.root / "live.material.json";
+    writeIndexedLiveMaterial(material_path, 2.0);
+
+    GET_MODULE(PathResolver).setup(box.root, false);
+    // Keep Vulkan alive until the project registry and all material
+    // resources have been destroyed.
+    (void)GET_MODULE(VulkanManageCore);
+    const auto &project_materials =
+        GET_MODULE(ProjectMaterialAssetContainer);
+    const auto material =
+        project_materials.materialByName("live");
+    auto &materials = GET_MODULE(MaterialContainer);
+    REQUIRE(
+        readAt<float>(
+            materials.materialValuesForTesting(material),
+            0) == Catch::Approx(2.0f));
+
+    auto &reload = GET_MODULE(watch::ReloadService);
+    const auto snapshot =
+        reload.transactions().registry().snapshot();
+    REQUIRE(snapshot.find(
+        "material-document",
+        watch::makeAssetKey("live.material.json")));
+    REQUIRE(snapshot.find(
+        "texture",
+        watch::makeAssetKey("color.png")));
+
+    writeIndexedLiveMaterial(material_path, 7.0);
+    const auto material_key =
+        watch::makeAssetKey("live.material.json");
+    REQUIRE(reload.applyRequestForTesting(
+        {material_key,
+         watch::ReloadKind::modified, {}, 1}));
+    REQUIRE(
+        project_materials.materialByName("live") ==
+        material);
+    REQUIRE(
+        readAt<float>(
+            materials.materialGpuValuesForTesting(
+                material),
+            0) == Catch::Approx(7.0f));
+    GET_MODULE(VulkanManageCore).waitIdle();
+#endif
+}
+
+TEST_CASE("WP240c project material names are unique across documents",
+          "[wp240c][project-material][gpu]") {
+    setupLogger();
+    Sandbox box;
+    FastModuleContainer modules;
+    configureIndexedProjectGpu(box);
+    writeMaterialAssetIndex(
+        box, {"first.material.json",
+              "second.material.json"});
+    std::filesystem::create_directories(
+        box.root / "shaders");
+    writeText(
+        box.root / "shaders" / "live.surface",
+        liveSurface(false));
+    writeLiveMaterial(
+        box.root / "first.material.json", 2.0, false);
+    writeLiveMaterial(
+        box.root / "second.material.json", 3.0, false);
+    GET_MODULE(PathResolver).setup(box.root, false);
+
+    REQUIRE_THROWS_WITH(
+        GET_MODULE(ProjectMaterialAssetContainer),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate project material name 'live'") &&
+            Catch::Matchers::ContainsSubstring(
+                "first.material.json") &&
+            Catch::Matchers::ContainsSubstring(
+                "second.material.json"));
 }
 
 TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",

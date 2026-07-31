@@ -1,4 +1,6 @@
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "vrm_xr_character", "path": "assets/vrm_xr_character.vrm"},
     {"name": "ground", "path": "assets/ground.glb"}

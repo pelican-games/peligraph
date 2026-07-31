@@ -13,7 +13,8 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
   "basic_config": {"asset_data_json": "assets.json"}
 }
 ]=])
-file(WRITE "${OUT_DIR}/project/assets.json" "{}\n")
+file(WRITE "${OUT_DIR}/project/assets.json"
+     "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
 file(WRITE "${OUT_DIR}/project/ui/hang.psd" "fixture\n")
 file(WRITE "${OUT_DIR}/project/imports.rules.json" [=[
 {

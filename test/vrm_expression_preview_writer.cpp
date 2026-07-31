@@ -56,6 +56,8 @@ int main(int argc, char **argv) {
         };
         write(root / "project.json", project.dump(2) + "\n");
         write(root / "assets.json", R"json({
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name":"character","path":"assets/wp123_expression.vrm"}
   ]

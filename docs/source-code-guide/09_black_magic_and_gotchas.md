@@ -29,7 +29,7 @@ static std::optional<Foo>& __get() {
 
 ### 破棄順
 
-[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L44) の先頭で local `FastModuleContainer` を作ります。その destructor は、初期化と逆順に module の `optional.reset()` を行います。
+[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L46) の先頭で local `FastModuleContainer` を作ります。その destructor は、初期化と逆順に module の `optional.reset()` を行います。
 
 ```text
 GET_MODULE(A) -> A constructor内でGET_MODULE(B)
@@ -663,7 +663,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 
 | 症状 | 最初の確認 | 次の確認 |
 |---|---|---|
-| 起動中に module constructor 例外 | module initialization log、[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L44) | constructor 内の `GET_MODULE` 依存 chain |
+| 起動中に module constructor 例外 | module initialization log、[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L46) | constructor 内の `GET_MODULE` 依存 chain |
 | 起動後の `GET_MODULE` で例外 | `freezeCreation()` 後の新規 module 生成でないか | `prepareRuntimeModules()` / prepare フェーズへの依存先解決の移動 |
 | entity が突然無効 | [`EntityId` generation](../../src/core/userpublic/details/ecs/entity.hpp#L12)、scene transition | remove/clear と stale handle test |
 | component pointer の値が別 entity になる | [`swap-delete`](../../src/core/userpublic/details/ecs/chunk.cpp#L71) | pointer を structural mutation 越しに保持していないか |
@@ -888,12 +888,12 @@ TEST_CASE("...") {
 
 | skip していたテスト | 握り潰されていた engine の例外 |
 |---|---|
-| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L269) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialcontainer.cpp#L3056) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
-| [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L333) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L899) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
-| [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L452) | 同上 |
-| [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L618) | 同上 |
+| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L270) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialcontainer.cpp#L3056) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+| [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L378) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L899) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
+| [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L497) | 同上 |
+| [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L761) | 同上 |
 
-`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L333) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L328) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
+`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L378) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L330) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
 
 > 🧩 **難所 — 捕まるものと捕まらないものが逆に見える**(`catch (const std::exception &)` と Catch2)
 >
@@ -911,7 +911,7 @@ TEST_CASE("...") {
 > SKIP(...)                     → TestSkipException                    → 素通り → skip
 > ```
 >
-> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は、このリポジトリ内に 3 段階の実例があります。(1) **明示的な能力問い合わせ** — [`getRuntimeCapabilities().multiview`](../../test/golden_harness.cpp#L8482) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L2915) を見て skip し、本体は囲まない。(2) **メッセージで絞って再送出** — [`requireGoldenVulkanDevice()`](../../test/golden_harness.cpp#L5703) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。(3) **起動完了ラッチ** — [`headless_render_test.cpp` 内](../../test/headless_render_test.cpp#L1501) の `runtime_ready` は bring-up を抜けた時点で `true` になり、以後の例外は [`if (runtime_ready) throw;`](../../test/headless_render_test.cpp#L1795) で skip させません。**(1) が本来の形**で、(2)(3) は既存テストを最小限の変更で救う形です。
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は、このリポジトリ内に 3 段階の実例があります。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L8528) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L2915) を見て skip し、本体は囲まない。(2) **メッセージで絞って再送出** — [`requireGoldenVulkanDevice()`](../../test/golden_harness.cpp#L5735) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。(3) **起動完了ラッチ** — [`headless_render_test.cpp` 内](../../test/headless_render_test.cpp#L1501) の `runtime_ready` は bring-up を抜けた時点で `true` になり、以後の例外は [`if (runtime_ready) throw;`](../../test/headless_render_test.cpp#L1795) で skip させません。**(1) が本来の形**で、(2)(3) は既存テストを最小限の変更で救う形です。
 >
 > **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
 

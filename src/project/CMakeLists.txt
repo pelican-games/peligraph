@@ -1,10 +1,12 @@
 add_library(pelican_project
+    assetdataformat.cpp
     assetsmanifest.cpp
     executionplan.cpp
     featurecompose.cpp
     featurejitter.cpp
     graphvariantpolicy.cpp
     gpudrawtiming.cpp
+    gltfmateriallowering.cpp
     importmanifest.cpp
     importrules.cpp
     jsonrpc.cpp

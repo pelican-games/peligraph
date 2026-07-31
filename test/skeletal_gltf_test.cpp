@@ -55,7 +55,8 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     TestSkeletalFixture::writeGlb(
         root / "bad_default_scene.glb",
         TestSkeletalFixture::Options{.invalid_default_scene = true});
-    writeText(root / "assets.json", R"json({"models":[{"name":"character","path":"character.glb"}]})json");
+    writeText(root / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})json");
     writeText(root / "scene.json", R"json({
       "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
         "name":"Character","components":[
@@ -134,7 +135,8 @@ TEST_CASE("animation graph key is reserved in component v1", "[skeletal][scene]"
         ("pelican_wp38_graph_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root);
     const TempDir guard{root};
-    writeText(root / "assets.json", R"json({"models":[]})json");
+    writeText(root / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeText(root / "scene.json", R"json({"schema":"pelican.scene","version":1,
       "scenes":{"default_scene":{"objects":[{"name":"Bad","components":[
         {"name":"animation","clip":"x.glb#animation/Walk","graph":{}}

@@ -123,6 +123,8 @@ file(WRITE "${ARTIFACT_ROOT}/project/project.json" [=[
 
 file(WRITE "${ARTIFACT_ROOT}/project/assets/asset_data.json" [=[
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "character", "path": "assets/models/character.glb"}
   ]

@@ -50,7 +50,7 @@ Copy-Item -LiteralPath $ProjectPass -Destination `
 @'
 {"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{"name":"CurrentBehavior","components":[{"name":"behavior","type":"wp162_reload_behavior","params":{"count":2,"label":"committed"}}]}]},"unused_scene":{"objects":[{"name":"OffscreenBehavior","components":[{"name":"behavior","type":"wp162_reload_behavior","params":{"count":99,"label":"offscreen"}}]}]}}}
 '@ | Set-Content -LiteralPath (Join-Path $project 'scenes/main.scene.json') -Encoding ascii
-'{"models":[]}' | Set-Content -LiteralPath `
+'{"schema":"pelican.asset_data","version":1,"models":[]}' | Set-Content -LiteralPath `
     (Join-Path $project 'assets/asset_data.json') -Encoding ascii
 '{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}' | `
     Set-Content -LiteralPath (Join-Path $project 'ui/ui_overlay.json') -Encoding ascii

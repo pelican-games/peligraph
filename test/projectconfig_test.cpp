@@ -80,6 +80,8 @@ struct ProjectSandbox {
         writeText(root / "assets" / "model.glb", "fake model");
         writeText(root / "assets" / "image.png", "fake image");
         writeText(root / "assets" / "assets.json", R"json({
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     {"name": "model", "path": "assets/model.glb"}
   ]

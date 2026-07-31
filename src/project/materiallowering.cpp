@@ -1,4 +1,5 @@
 #include "materiallowering.hpp"
+#include "gltfmateriallowering.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -222,6 +223,14 @@ DeferredEligibility openPbrEligibility(const MaterialDefinition &material,
     if (surface.render_state.blend != SurfaceBlendMode::opaque)
         return incompatible("blend_requires_forward");
     if (!surface.screen_inputs.empty()) return incompatible("screen_input_requires_forward");
+    if (std::find(material.defines.begin(), material.defines.end(),
+                  gltfCoreOpenPbrSurfaceDefine) != material.defines.end()) {
+        // The glTF adapter uses an OpenPBR wrapper only to supply its six
+        // routing states. Its fixed core slots retain the standard deferred
+        // model so producer convergence does not change opaque shading.
+        return {true, DeferredMaterialModel::standard_pbr_v1,
+                "gltf_core_standard_pbr"};
+    }
     if (!scalarEquals(material, surface, "coat_weight", 0.0))
         return incompatible("coat_weight_nonzero");
     if (!scalarEquals(material, surface, "base_diffuse_roughness", 0.0))
@@ -254,6 +263,10 @@ MaterialRouteDecision automaticRoute(const SurfaceFormatDocument &surface,
         eligibility.model == DeferredMaterialModel::openpbr_base_v1) {
         return {MaterialRouteClass::deferred_geometry,
                 MaterialRouteReason::automatic_openpbr_base};
+    }
+    if (eligibility.compatible) {
+        return {MaterialRouteClass::deferred_geometry,
+                MaterialRouteReason::automatic_deferred_compatible};
     }
     if (surface.hooks.lighting_v1) {
         return {MaterialRouteClass::forward_opaque,

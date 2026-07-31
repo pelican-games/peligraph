@@ -5,7 +5,7 @@
 ## この章で学ぶこと
 
 - 二層モデル(ランタイム層/ソース層)— エンジンが読む形式と読まない形式の厳密な線引き
-- モデル・テクスチャの追加方法と `asset_data.json`、および**そこに登録できない形式**(`.vrma`)
+- モデル・テクスチャ・マテリアルの追加方法と `asset_data.json`、および**そこに登録できない形式**(`.vrma`)
 - DCC(Blender / Houdini)連携 — glTF ハブ、`pelican.import` manifest、`pelican_cli import`
 - 焼き込みアニメーション 2 形式: `pelican.transform_seq`(JSONL)と `pelican.vat`(GLB 内 VAT)
 - `#` フラグメント参照・アセットコンテナの現状
@@ -29,6 +29,8 @@
 
 ```json
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     { "name": "alicia",        "path": "assets/models/AliciaSolid.vrm" },
     { "name": "DamagedHelmet", "path": "assets/models/DamagedHelmet.glb" },
@@ -43,7 +45,8 @@
 
 仕様上の注意:
 
-- `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。※この JSON には `schema`/`version` エンベロープがありません(R10 規約の現行例外)。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
+- `schema: "pelican.asset_data"` と `version: 1` は必須です。現行版だけを受理する strict v1 で、旧い未版形式は受理しません。
+- `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ファイルが無ければ解決後の絶対パス入りで fail-fast。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。マテリアルは pbrMetallicRoughness の 4 テクスチャ(baseColor / metallicRoughness / normal / emissive)として登録されます(色テクスチャは SRGB view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
@@ -57,6 +60,8 @@
 
 ```json
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [],
   "textures": [
     { "name": "demo_atlas", "path": "assets/demo.atlas.json", "sampler": "nearest" }
@@ -79,6 +84,39 @@
 
 - 画像デコーダ: PNG/JPG = stb_image、`.exr` = tinyexr(✅WP26。single-part・scanline・half/float 限定)、**`.ktx2` = 自前パーサ(✅WP92)**。
 - KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ、全ミップ必須。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
+
+### プロジェクトマテリアル(`materials` セクション ✅WP240c)
+
+`pelican.material` v1 文書は `asset_data.json` の任意の `materials` 配列で索引します。索引要素は
+`path` だけを持ち、名前は material 文書内の `materials[].name` を正本とします。
+
+```json
+{
+  "schema": "pelican.asset_data",
+  "version": 1,
+  "models": [
+    {
+      "name": "helmet",
+      "path": "assets/models/helmet.glb",
+      "material_bindings": "assets/material_bindings/helmet.json"
+    }
+  ],
+  "materials": [
+    { "path": "materials/helmet.material.json" }
+  ]
+}
+```
+
+- 起動時に `.surface` を解決し、`parseSurfaceFormat` → material lowering → shader compile →
+  GPU material 登録まで実行します。`engine://textures/{white,black,flat_normal,flat_gray}` と
+  `project://*` の texture 参照は常設 resolver が解決します。
+- `pelican.material_bindings` v1 の `binding.material` は glTF 内 named material と
+  project material の両方を探索します。同名が両域にある場合、または project 文書間で
+  material 名が重複した場合は、曖昧な優先順位を設けず名指しで失敗します。
+- `binding.routing` は実行時にも照合されます。OpenPBR の
+  `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
+- material values と参照 texture は既存のファイル監視経路へ登録され、実行中の
+  hot reload 対象です。surface/routing/文書構造の変更は values reload の範囲外です。
 
 ### `.vrma`(VRM Animation)— 宣言レーンのないランタイム層形式(🚧WP176/177/178)
 
@@ -172,7 +210,7 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 現状の注意: 変換ツール集 **pelican-import-tools は独立リポジトリとして実装済み**(✅WP81 = K3。Python 製 `psd_extract` + `atlas_pack`、出力は `pelican.atlas` + import manifest)ですが、本リポジトリには含まれません。Houdini アダプタも別リポジトリです。Blender ブリッジは依然 📐(FBX→glb の標準変換レーンは「Blender headless」と決定済み)。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import・rules)はすべて完成しています。
 
-**USD レーン(✅WP118/119/124)**: import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene v1)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変 — エンジン側にあるのは fixture / golden / manifest 受理のみで、`pelican_cli import --rules` のレシピ表に usd はありません)。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
+**USD レーン(✅WP118/119/124/240c)**: import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene v1)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
 
 import manifest の受理拡張: outputs の schema に `pelican.material`(v1)が追加され、**`khronos.ktx2` 出力には `version: 2` が必須**になりました(欠落・不一致は expected/actual 付きの名指しエラー)。
 

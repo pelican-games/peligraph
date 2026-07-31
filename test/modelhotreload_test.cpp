@@ -48,7 +48,11 @@ void writeText(const std::filesystem::path &path, std::string_view value) {
 }
 
 void configureProject(const std::filesystem::path &root, const nlohmann::json &models) {
-    writeText(root / "assets.json", nlohmann::json{{"models", models}}.dump());
+    writeText(root / "assets.json",
+              nlohmann::json{{"schema", "pelican.asset_data"},
+                             {"version", 1},
+                             {"models", models}}
+                  .dump());
     writeText(root / "scene.json",
               R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
     GET_MODULE(PathResolver).setup(root, false);

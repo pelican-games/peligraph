@@ -61,7 +61,7 @@
 エンジン全体を最短で追うなら、次のリンクを順に開いてください。
 
 1. [`main()`](../../src/player/main.cpp#L437) — CLIで起動条件を確定する。
-2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L44) — 設定、ECS、scene、loopを組み立てる。
+2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L46) — 設定、ECS、scene、loopを組み立てる。
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L128) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。

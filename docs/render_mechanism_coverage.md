@@ -1,8 +1,8 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v21)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v22)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v21(2026-07-31)**。84 行の技法候補を現行コードとテストへ再照合し、
+ステータス: **v22(2026-07-31)**。84 行の技法候補を現行コードとテストへ再照合し、
 WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
 WP209aのstatic texture dimension/material sampler authoring、WP209bの2D runtime RT
 mip/layer/subresource view、WP218の任意長・型付きmaterial output ABI、
@@ -12,22 +12,17 @@ WP229のViewFamily-local clustered selection、WP233のtyped shader asset差替�
 WP234のruntime ViewFamily provider registryと標準C++ algorithm package purge、
 WP235のraster attachment mip/layer view、WP236のruntime cube target/view、
 WP237の交換可能なsix-face capture/provider、WP238bの汎用raster pass ABI
-(`"type": "raster"`)まで反映した。
+(`"type": "raster"`)、WP240cのproject material索引・runtime lowering・
+primitive bindingまで反映した。
 instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
 3D target、typed integer material image inputは
 後続である。
 
-**v21 での訂正(v20 からの差分)**:
+**v22 での訂正(v21 からの差分)**:
 
-1. WP238b の `"type": "raster"` authoring kind を §1-1 / §1-2 / G15 へ反映し、G15 を
-   「v1 閉集合」から**部分解消**へ格下げした。draw operation は direct draw 一種類のままなので、
-   H5(mesh shader)/ H6(tessellation)の ✕ は据え置きである。
-2. G8 を WP210c〜210g と突き合わせ、「実 culling dogfood が未完」「multi-segment が未完」が
-   既に解消済みであることを §3 と H1 / H2 へ反映した。残件は GPU から見える state key に絞った。
-3. 本文の source 参照を `5a4f95e` 時点で全件開き直し、行番号が総崩れしていたものを
-   **ファイル + symbol 名のアンカー**へ置き換えた(行番号は再び陳腐化するため原則付けない)。
-   WP238a / 238c / 238d / 238e は source extension であってユーザー空間の機構ではないため、
-   §0 の判定規則に従い G としては立てない。
+1. WP240c で `pelican.asset_data` v1 の `materials[]` から project material を起動時に
+   lowering・GPU登録し、`pelican.material_bindings` の既存 ABI で glTF primitive へ
+   割り当てる経路を §1-1 へ反映した。新しい技法 hook ではないため A1〜A12 の判定は不変。
 
 監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md) と
@@ -42,7 +37,8 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 [`design_reviews/2026-07-29_wp235_raster_attachment_subresource.md`](design_reviews/2026-07-29_wp235_raster_attachment_subresource.md)、
 [`design_reviews/2026-07-30_wp236_runtime_cube_render_target.md`](design_reviews/2026-07-30_wp236_runtime_cube_render_target.md)、
 [`design_reviews/2026-07-30_wp237_replaceable_cube_capture.md`](design_reviews/2026-07-30_wp237_replaceable_cube_capture.md)、
-[`design_reviews/2026-07-30_wp238b_generic_raster_pass.md`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)。
+[`design_reviews/2026-07-30_wp238b_generic_raster_pass.md`](design_reviews/2026-07-30_wp238b_generic_raster_pass.md)、
+[`design_reviews/2026-07-31_wp240c_project_material_report.md`](design_reviews/2026-07-31_wp240c_project_material_report.md)。
 
 ## 0. 判定規則
 
@@ -72,6 +68,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 | fullscreen / raster input | image **および storage buffer**、image は filter/address 指定。同じ`input`語彙をraster passも使う(image=sampled、buffer=storageのみ) | [renderingpasstargetjsonparser.cpp](../src/core/renderingpass/renderingpasstargetjsonparser.cpp) の`parseInputResourcesFromJson`、[fullscreenpasscontainer.cpp](../src/core/fullscreenpass/fullscreenpasscontainer.cpp) のinput descriptor構築 |
 | raster pass(WP238b) | pass type `"raster"`。`draw`(open/versionedな`implementation` + typed direct operation)、`raster_state`(topology/cull/front_face/depth test-write-compare/attachment別blend・write mask)、`shader`(versioned implementation + vertex/optional fragment)、`resource_ports`。**draw operationは`direct`一種類のみ**(G15)。CPU testと`projects/sprite_demo`の`ssao_clear`置き換えまでで、画素goldenは未作成(§4) | [rasterpass.hpp](../src/project/rasterpass.hpp) の`RasterPassContract`、[genericrasterpassinfojsonparser.cpp](../src/core/renderingpass/genericrasterpassinfojsonparser.cpp)、[renderingpassjsonhelpers.cpp](../src/core/renderingpass/renderingpassjsonhelpers.cpp) の`makePassInfo` |
 | material surface | `pelican_vertex_displace_v1` / `pelican_surface_v1` / `pelican_material_outputs_v1` / `pelican_brdf_v1` / `pelican_ambient_v1` / `pelican_lighting_v1` の6 hook(`brdf`と`lighting`は排他)、custom params/texture、generated accessor | [surfaceformat.cpp](../src/project/surfaceformat.cpp) の`validateSurfaceHooks`、[surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp) の生成側 |
+| project material asset | `pelican.asset_data` v1 の `materials[]`(path-only索引)から `pelican.material` v1 を起動時に lowering・shader compile・GPU登録。engine/project texture resolver、values/texture hot reload、glTF/project二つのnamed-material解決域と衝突拒否、既存`pelican.material_bindings`のrouting照合 | [projectmaterialasset.cpp](../src/core/material/projectmaterialasset.cpp) の`ProjectMaterialAssetContainer`、[projectmaterialtextureresolver.cpp](../src/core/material/projectmaterialtextureresolver.cpp)、[modeltemplate.cpp](../src/core/model/modeltemplate.cpp) の`applyPrimitiveMaterialBindings` |
 | material render state | opaque/blend/**additive**、none/**front**/back cull、depth test/write/compare | [surfaceformat.cpp](../src/project/surfaceformat.cpp) の`parseRenderState` |
 | material selection | material `tags` + pass `material_filter.include/exclude`。compile済みcompact range、flat/preview/XR共通 | [drawqueuebuilder.cpp](../src/core/renderer/drawqueuebuilder.cpp) |
 | material screen input | `opaque_color` / depth / linearized depth、opaque snapshot、sampler/input-attachment自動lowering、XR layered binding | [surfacecompiler.cpp](../src/core/shader/surfacecompiler.cpp) |

@@ -92,10 +92,14 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     const auto duplicate_path = temp_dir / "duplicate.glb";
     const auto normalized_path =
         temp_dir / "normalized.glb";
+    const auto routing_path =
+        temp_dir / "material_routing.glb";
     TestGltfFragmentFixture::writeGlb(glb_path);
     TestGltfFragmentFixture::writeGlb(duplicate_path, true);
     TestGltfFragmentFixture::
         writeNormalizedPositionGlb(normalized_path);
+    TestGltfFragmentFixture::
+        writeMaterialRoutingGlb(routing_path);
     writeText(temp_dir / "scene.json", R"json({
         "schema":"pelican.scene",
         "version":1,
@@ -108,7 +112,7 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
         }]}}
     })json");
     writeText(temp_dir / "assets.json",
-              R"json({"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
+              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -154,6 +158,35 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
             0.25f);
     REQUIRE(materials.textureCountForTesting() == texture_count + 2);
     REQUIRE(materials.materialCountForTesting() == material_count + 1);
+
+    const auto routed =
+        loader.loadGltfBinary(
+            routing_path.string());
+    REQUIRE(routed.named_materials.size() == 3);
+    const auto material_by_name =
+        [&](std::string_view name) {
+            const auto found = std::find_if(
+                routed.named_materials.begin(),
+                routed.named_materials.end(),
+                [&](const auto &entry) {
+                    return entry.name == name;
+                });
+            REQUIRE(found !=
+                    routed.named_materials.end());
+            return found->material;
+        };
+    REQUIRE(
+        materials.routeForMaterial(
+            material_by_name("OpaqueMaterial")) ==
+        MaterialRouteClass::deferred_geometry);
+    REQUIRE(
+        materials.routeForMaterial(
+            material_by_name("MaskMaterial")) ==
+        MaterialRouteClass::deferred_geometry);
+    REQUIRE(
+        materials.routeForMaterial(
+            material_by_name("BlendMaterial")) ==
+        MaterialRouteClass::forward_transparent);
 
     const auto full_path =
         loader.loadGltfBinary(glb_path.string(), fragment("mesh", "RootB/Cube"));
@@ -284,7 +317,8 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
     const auto yup = fixture_root / "root_yup_m_usda";
     std::filesystem::copy_file(yup / "model.glb", temp_dir / "model.glb");
     std::filesystem::copy_file(yup / "scene.json", temp_dir / "scene.json");
-    writeText(temp_dir / "assets.json", R"json({"models":[]})json");
+    writeText(temp_dir / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -373,7 +407,8 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
     std::filesystem::copy(delivery, temp_dir,
                           std::filesystem::copy_options::recursive |
                               std::filesystem::copy_options::overwrite_existing);
-    writeText(temp_dir / "assets.json", R"json({"models":[]})json");
+    writeText(temp_dir / "assets.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp_dir, false);

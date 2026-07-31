@@ -3,6 +3,7 @@
 #include "../animation/animationservice.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../material/projectmaterialasset.hpp"
 #include "../model/gltf.hpp"
 #include "../parallel_prepare.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
@@ -142,12 +143,19 @@ PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference
 
 void applyDeclarationBindings(ModelTemplate &model,
                               const ModelDeclaration &declaration) {
+    const auto project_materials =
+        GET_MODULE(ProjectMaterialAssetContainer)
+            .namedMaterials();
+    validateNamedMaterialResolutionDomains(
+        model, project_materials,
+        declaration.name);
     if (!declaration.material_bindings) return;
     const auto fragment = fragmentText(declaration.fragment);
     applyPrimitiveMaterialBindings(
         model, *declaration.material_bindings, declaration.name,
         fragment.empty() ? std::nullopt
-                         : std::optional<std::string_view>{fragment});
+                         : std::optional<std::string_view>{fragment},
+        project_materials);
 }
 
 ModelDeclaration resolveDeclaration(std::string name, std::string reference,

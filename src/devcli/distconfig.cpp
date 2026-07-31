@@ -1,5 +1,6 @@
 #include "distconfig.hpp"
 
+#include "../project/assetdataformat.hpp"
 #include "../project/importmanifest.hpp"
 #include "../core/model/vatformat.hpp"
 
@@ -384,9 +385,7 @@ void addMaybeExistingGlbCandidate(ReferenceScan &scan, const std::filesystem::pa
 
 void collectAssetDataGlbs(const nlohmann::json &asset_data, const std::filesystem::path &project_root,
                           ReferenceScan &scan) {
-    if (!asset_data.is_object()) {
-        throw std::runtime_error("asset_data_json must be an object");
-    }
+    (void)parseAssetDataFormatJson(asset_data);
 
     const auto models = asset_data.find("models");
     if (models == asset_data.end()) {

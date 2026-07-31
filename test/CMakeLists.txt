@@ -1126,6 +1126,7 @@ set_tests_properties(compute_buffer_headless_player PROPERTIES LABELS gpu)
 
 pelican_define_test(importmanifest_test pelican_project)
 pelican_define_test(importrules_test pelican_project)
+pelican_define_test(assetdataformat_test pelican_project)
 target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -1352,7 +1353,7 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
-            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/wsi_fault_window
             -DCONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wsi_fault_window.cmake

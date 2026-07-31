@@ -3,8 +3,8 @@
 対象読者: エンジン担当、WP の受け入れ判定をする人、そして「この機構は実装済みか」を
 他の文書から引く人。
 
-ステータス: **v1.2(2026-07-31)**。判定は branch
-`agent/wp240b-sky-ambient` の WP240b 実装に対して行いました。本書は
+ステータス: **v1.3(2026-07-31)**。判定は branch
+`agent/wp240c-project-material` の WP240c 実装に対して行いました。本書は
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md) を置き換えるものではなく、
 その ○ / △ / ✕ 判定の**根拠表**です。
 
@@ -96,10 +96,10 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 `contract_boundary_gate.py`、そして `golden_inventory.py` による inventory の整合と
 `expected.png` の sha256 一致(= baseline ファイルが黙って差し替わっていないこと)です。
 
-ローカル受け入れ記録として、WP240b 完了時の 2026-07-31 に
-`ctest -C Debug -L gpu` を全数実行し、**123 / 123 passed、既知 4 skipped**
-（実時間 419 秒）を確認しました。同じ HEAD の CPU gate は
-**940 / 940 passed、環境依存 1 skipped**です。これは常設 CI2 の代わりではありませんが、
+ローカル受け入れ記録として、WP240c 完了時の 2026-07-31 に
+`ctest -C Debug -L gpu` を全数実行し、**125 / 125 passed、既知 4 skipped**
+を確認しました。同じ HEAD の CPU gate は
+**944 / 944 passed、環境依存 1 skipped**です。これは常設 CI2 の代わりではありませんが、
 本台帳の E2 / E3 根拠が同一 HEAD で再実行可能な状態へ戻ったことを示します。
 
 ## 2. 一覧表
@@ -164,6 +164,7 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 | material same-pixel local-read(WP220) | **E3 +E5** | GPU: `headless_render_test` "material same-pixel resource executes through the tile-local input ABI"(project-owned `.surface` の `resource_ports` から sampler / input attachment のどちらへ降りても同じ accessor) | golden ケース化 |
 | material screen input(refraction / depth) | **E3† +E5** | golden `snapshot_refraction` が inventory 登録済みで byte 固定 | 残件なし |
 | material / compute の typed resource port | **E3 +E5** | GPU: `headless_render_test` "compute output displaces material vertices through typed resource ports"、golden `compute_buffer` | 残件なし(`compute_buffer` は byte 固定) |
+| project material declaration / runtime binding(WP240c) | **E3† +E5** | CPU: `assetdataformat_test` の strict `pelican.asset_data` v1、`materialbinding_test` の glTF/project 解決域・衝突・routing 照合。GPU: golden `usd0c_openpbr_material` が path-only `materials[]` から実 `ProjectMaterialAssetContainer` を初期化し、project material + texture + `pelican.material_bindings` を通して OpenPBR を描画。`materialvaluesreload_test` が values と参照 texture の live reload を検証 | per-instance の一般 GameContext authoring と surface/routing topology の live reload は別境界 |
 | 単色 sky + ambient feature(WP240b) | **E3 +E5** | CPU: `featurecompose_test` "sky ambient feature is purgeable and binds runtime-only values to hybrid" と `lightpolicy_test` "sky ambient runtime values have no engine fallback and require feature parameters"。GPU: `headless_render_test` "sky ambient feature keeps deferred and forward metals visible with zero lights" が directional / point / spot 0、LightUBO radiance、背景画素、deferred metal と forward OpenPBR metal の非黒画素を検証。project 側は preset を変えず feature instance だけを宣言 | IBL は未実装。cubemap / irradiance / prefiltered environment / BRDF LUT と実デバイス E4 |
 | static texture dimension(KTX2 cube 等) | **E3 +E5** | GPU: `headless_render_test` "KTX2 cubemap material samples the declared face through Vulkan" | 残件なし |
 | typed image subresource(mip / layer)と depth pyramid | **E3 +E5** | GPU: `headless_render_test` "typed image subresources execute a two-stage depth pyramid and rebind after resize"(resize 後の dispatch group 再計算と stale candidate 拒否を含む) | 残件なし |
@@ -175,7 +176,7 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 
 | 機構 | 等級 | 根拠 | 次の等級に必要なもの |
 |---|---|---|---|
-| WSI epoch recovery(WP215/216/217) | **E1 +E4(部分)** | CPU: `swapchainrecovery_test` 19 TEST_CASE、`frametarget_test` / `outputcompilefacts_test` / `submissionlifetime_test`。**すべて CPU シミュレーション**です。E4 側: `wsi_fault_window_player` が実 window に対する ordered fault injection を実行しますが、**Windows 限定・`Debug` 限定**で、`test/run_wsi_fault_window.cmake` は他 config では `return()` するため CTest 上は緑のまま素通りします。使う project は `projects/example`、`--xr off` | [`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md) §14.5 の手動 platform gate(RDP 接続 / 切断、display mode 変更、monitor 移動、DPI 変更、X11 / Wayland)。1 つも実施記録がありません |
+| WSI epoch recovery(WP215/216/217) | **E1 +E4(部分)** | CPU: `swapchainrecovery_test` 19 TEST_CASE、`frametarget_test` / `outputcompilefacts_test` / `submissionlifetime_test`。**すべて CPU シミュレーション**です。E4 側: `wsi_fault_window_player` が実 window に対する ordered fault injection を実行しますが、**Windows 限定・`Debug` 限定**で、`test/run_wsi_fault_window.cmake` は他 config では `return()` するため CTest 上は緑のまま素通りします。使う project は self-contained な `projects/animgraph_demo`、`--xr off` | [`design_wsi_epoch_recovery.md`](design_wsi_epoch_recovery.md) §14.5 の手動 platform gate(RDP 接続 / 切断、display mode 変更、monitor 移動、DPI 変更、X11 / Wayland)。1 つも実施記録がありません |
 | XR 基盤(XR0〜XR4: discovery / session / action / view space / feature policy / activation) | **E1** | CPU のみ: `xrdiscovery_test` / `xrsession_test` / `xraction_test` / `xrviewspace_test` / `xrfeaturepolicy_test` / `xractivation_test` / `xrcompositiontarget_test`(いずれも `pelican_define_test(... pelican_openxr)` で GPU ラベル無し)。`vrm_xr_demo_test` は GPU ラベル付きですが、TEST_CASE は VRM fixture の決定性・geometry・activation 契約であって XR 実行経路ではありません | 実 OpenXR ランタイム(Simulator を含む)での実行。現状すべて fake / injected table です |
 | XR multiview 実行(WP203b) | **E3** | GPU: `multiview_execution_test` "typed Vulkan multiview renders two frame records in one execution"(**このファイル唯一の TEST_CASE**)。golden 側は `golden_temporal_test` の stereo / OpenXR TAA 遷移ケース | golden 画像で XR / multiview 実行されるケースが 1 件もありません。`renderer_execution_traces.json` の 664 node は**全て** `single_view` です |
 | OpenXR array swapchain / composition depth(WP203c) | **E1** | CPU: `xrcompositiontarget_test` などが fake / injected table で失敗経路を検証。`graphvariantpolicy_test` / `targetrenderplanning_test` の `[wp203c]` | 実 OpenXR ランタイムを使うテストは存在しません。`implementation_plan.md` が「Simulator/実機 gate待ち」としている通りで、これが E4 の本丸です |
@@ -246,8 +247,9 @@ physical fragment、plan pin は引き続き project 空間での使用が 0 件
 `animgraph_demo_preset_headless_player` は committed project を直接起動し、preset の runtime
 frame plan 展開と PNG 出力を検査します。したがって preset 選択経路は authoring だけでなく
 常設の project-space process integration を持ちます。一方、従来の
-`rpc_headless_player` / `wsi_fault_window_player` / frame-plan dump 系は引き続き
-`projects/example` か `projects/vrm_xr_demo` を使います。
+`rpc_headless_player` / frame-plan dump 系は引き続き
+`projects/example` か `projects/vrm_xr_demo` を使います。`wsi_fault_window_player` は
+forward material routing を持つ self-contained な `projects/animgraph_demo` を使います。
 `projects/sprite_demo` はどのテストからも参照されていないので、そこに書かれた raster pass も
 自動テストでは一度も実行されません。
 
@@ -269,6 +271,7 @@ WP240a では committed project を直接起動する process integration も加
 | MSAA + hybrid preset | `project://features/shadow_directional.json` + `render_strategy` / `graph_transforms` の authoring | sample 数と画素 |
 | engine preset 選択 | committed `projects/animgraph_demo/passes/main.json` の `pipeline.preset` + feature 参照 | `animgraph_demo_preset_headless_player` が directional shadow / deferred / forward / snapshot / present の runtime plan 展開と PNG 出力を検査 |
 | 単色 sky / ambient | 一時 project の `hybrid_v1` preset + `sky_ambient` feature instance。色・ambient強度・sky強度を project から上書き | `headless_render_test` がライト 0 の LightUBO 値と、背景・deferred metal・forward OpenPBR metal の画素を検査。committed `animgraph_demo` も同 feature を参照して player integration を通る |
+| project material runtime | U-USD0c 一時 project の strict `pelican.asset_data` v1 `materials[]`、`pelican.material`、project texture、GLB、`pelican.material_bindings` | golden `usd0c_openpbr_material` が harness-side 登録なしで `ProjectMaterialAssetContainer` を通り、OpenPBR の最終画素と execution trace を固定 |
 
 ### 4.3 E5 に達していないもの
 

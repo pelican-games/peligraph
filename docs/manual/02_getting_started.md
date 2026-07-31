@@ -223,6 +223,8 @@ mygame/
 
 ```json
 {
+  "schema": "pelican.asset_data",
+  "version": 1,
   "models": [
     { "name": "mymodel", "path": "assets/models/mymodel.glb" }
   ]

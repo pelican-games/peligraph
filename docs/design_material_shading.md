@@ -12,6 +12,9 @@
 追補(2026-07-26): WP206aでmaterial-owned stable tag/filter、WP206bでpass-local
 named variantをadditive契約として実装した。instance/draw-owned layerと
 opaque/transparent phaseを跨ぐvariant-aware queueは後続とする。
+追補(2026-07-31): §3-12 の strict `pelican.asset_data` v1 `materials[]`、
+project material runtime lowering、既存binding解決域の拡張、glTF producer収束を
+WP240cで実装した。宣言形と版は同節の決定から変更していない。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
 `design_render_pipeline_extensibility.md`、`design_scene_format.md`、
 [PF] シェーダ stem 規約、[PFW] サブセット原則。
@@ -627,12 +630,12 @@ manifest からも scene からも参照されておらず、`src/` での読み
   食い違いという失敗モードだけが増える。
 - **material 名は project 全体で一意**とする。現行 parser の一意性検査は文書スコープなので、
   文書横断のレジストリを新設し、衝突は名指し hard error にする。
-- **`asset_data.json` に `schema` / `version` を導入する。** 現状この文書は未版形式で、
-  パーサは `.at("models")` しか読んでいない。ここへ描画の意味を変えるキーを足すと、
+- **`asset_data.json` に `schema` / `version` を導入する。** WP240c 実装前、この文書は未版形式で、
+  パーサは `.at("models")` しか読んでいなかった。ここへ描画の意味を変えるキーを足すと、
   [`design_project_format_web_profile.md`](design_project_format_web_profile.md) の
   「意味を変えるキーは web 側が明示的に拒否する義務がある」を満たせなくなる
   (版が無ければ web は何を拒否すべきか判別できない)。**索引を足すのと同じ WP で版を付ける。**
-  既存 4 project の書き換えを伴うが、いま払うのが最も安い。
+  これは WP240c で strict v1 化と既存 4 project の書き換えまで実施済みである。
 - 版は strict v1(§0「版の扱い」)。旧版受理の分岐は作らない。
 
 #### 決定 2: 割り当ては `pelican.material_bindings` の解決先を広げて行う

@@ -445,7 +445,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 - **transform_seq は `rot`、scene / rpc は `rotation`**(意図的な別スキーマ判定)。
 - **カメラの `yfov` はラジアン、ライトのコーン角は度、`--camera` の fov も度**。
-- **schema/version エンベロープの有無が形式ごとに異なる**: scene / input_actions / import / material / render_feature / frame_plan / ui / anim_graph / atlas / input_seq / settings にはあり、asset_data / rendering config にはない。
+- **schema/version エンベロープの有無が形式ごとに異なる**: scene / asset_data / input_actions / import / material / render_feature / frame_plan / ui / anim_graph / atlas / input_seq / settings にはあり、rendering config にはない。
 
 ### 文書の鮮度の問題
 

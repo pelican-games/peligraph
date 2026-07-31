@@ -773,7 +773,7 @@ TEST_CASE(
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "native_fullscreen.vert",

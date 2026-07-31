@@ -29,8 +29,18 @@ PrimitiveMaterialBindingDocument bindingDocument() {
 ModelTemplate twoPrimitiveModel() {
     ModelTemplate model;
     model.named_materials = {
-        {"first", GlobalMaterialId{10}},
-        {"second", GlobalMaterialId{20}},
+        {
+            "first",
+            GlobalMaterialId{10},
+            MaterialVariantRouting{
+                MaterialAlphaMode::blend, true},
+        },
+        {
+            "second",
+            GlobalMaterialId{20},
+            MaterialVariantRouting{
+                MaterialAlphaMode::opaque, false},
+        },
     };
     model.material_primitives = {
         ModelTemplate::MaterialPrimitives{
@@ -81,6 +91,59 @@ TEST_CASE("model template binding errors name missing material mapping and fragm
         Catch::Matchers::ContainsSubstring("two") &&
             Catch::Matchers::ContainsSubstring("mesh/Body") &&
             Catch::Matchers::ContainsSubstring("whole-model"));
+}
+
+TEST_CASE("binding routing is consumed and project names extend the resolution domain",
+          "[material-binding][model-template][wp240c]") {
+    auto mismatched = bindingDocument();
+    mismatched.bindings.front().routing = {
+        MaterialAlphaMode::blend, true};
+    auto model = twoPrimitiveModel();
+    REQUIRE_THROWS_WITH(
+        applyPrimitiveMaterialBindings(
+            model, mismatched, "two"),
+        Catch::Matchers::ContainsSubstring(
+            "/World/First") &&
+            Catch::Matchers::ContainsSubstring(
+                "second") &&
+            Catch::Matchers::ContainsSubstring(
+                "routing"));
+
+    model = twoPrimitiveModel();
+    model.named_materials.erase(
+        model.named_materials.begin() + 1);
+    const std::array project_materials{
+        ModelTemplate::NamedMaterial{
+            "second", GlobalMaterialId{30},
+            MaterialVariantRouting{
+                MaterialAlphaMode::opaque, false}},
+    };
+    applyPrimitiveMaterialBindings(
+        model, bindingDocument(), "two",
+        std::nullopt, project_materials);
+    REQUIRE(model.material_primitives.size() == 2);
+    REQUIRE(model.material_primitives[0].material ==
+            GlobalMaterialId{30});
+    REQUIRE(model.material_primitives[1].material ==
+            GlobalMaterialId{10});
+}
+
+TEST_CASE("glTF and project material name collision is a named hard error",
+          "[material-binding][model-template][wp240c][error]") {
+    const auto model = twoPrimitiveModel();
+    const std::array project_materials{
+        ModelTemplate::NamedMaterial{
+            "first", GlobalMaterialId{99},
+            MaterialVariantRouting{
+                MaterialAlphaMode::blend, true}},
+    };
+    REQUIRE_THROWS_WITH(
+        validateNamedMaterialResolutionDomains(
+            model, project_materials, "two"),
+        Catch::Matchers::ContainsSubstring("two") &&
+            Catch::Matchers::ContainsSubstring("first") &&
+            Catch::Matchers::ContainsSubstring("glTF") &&
+            Catch::Matchers::ContainsSubstring("project"));
 }
 
 TEST_CASE("lowered material binder resolves overridden texture references by declared role",
