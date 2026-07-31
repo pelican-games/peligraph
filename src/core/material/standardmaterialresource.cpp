@@ -5,6 +5,7 @@
 #include "../shader/shaderlibrary.hpp"
 #include "battery/embed.hpp"
 #include "materialcontainer.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 namespace Pelican {
@@ -137,6 +138,65 @@ GlobalTextureId StandardMaterialResource::defaultTexture(MaterialDummyTexture fa
         return tex_black;
     }
     throw std::runtime_error("unknown material dummy texture");
+}
+
+ShaderBundleId
+StandardMaterialResource::gltfFragmentShader(
+    const SurfaceFormatDocument &surface,
+    std::string_view surface_reference,
+    const LoweredMaterial &lowered,
+    std::vector<std::string> shader_defines) {
+    shader_defines.emplace_back(
+        "PELICAN_COMPACT_STANDARD_VERTEX_ABI");
+    shader_defines.insert(
+        shader_defines.end(),
+        lowered.defines.begin(),
+        lowered.defines.end());
+    std::ranges::sort(shader_defines);
+    shader_defines.erase(
+        std::unique(
+            shader_defines.begin(),
+            shader_defines.end()),
+        shader_defines.end());
+
+    const auto cached = std::find_if(
+        gltf_fragment_shaders.begin(),
+        gltf_fragment_shaders.end(),
+        [&](const auto &entry) {
+            return entry.surface ==
+                       surface_reference &&
+                   entry.route == lowered.route &&
+                   entry.defines == shader_defines;
+        });
+    if (cached != gltf_fragment_shaders.end()) {
+        return cached->fragment;
+    }
+
+    auto additional_defines = shader_defines;
+    for (const auto &define : lowered.defines) {
+        const auto found = std::find(
+            additional_defines.begin(),
+            additional_defines.end(),
+            define);
+        if (found != additional_defines.end()) {
+            additional_defines.erase(found);
+        }
+    }
+    const auto shaders =
+        GET_MODULE(ShaderLibrary)
+            .loadFromSurfaceForMaterial(
+                surface, surface_reference,
+                lowered,
+                std::move(additional_defines));
+    gltf_fragment_shaders.push_back(
+        GltfFragmentShader{
+            .surface =
+                std::string{surface_reference},
+            .route = lowered.route,
+            .defines = std::move(shader_defines),
+            .fragment = shaders.fragment,
+        });
+    return shaders.fragment;
 }
 
 } // namespace Pelican

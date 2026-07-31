@@ -4,9 +4,13 @@
 
 #include "../log.hpp"
 #include "../build_features.hpp"
+#include "../loader/engineresources.hpp"
 #include "../material/material.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
+#include "../../project/gltfmateriallowering.hpp"
 #include "gltf.hpp"
 #include "gltfimage.hpp"
 #include "vatformat.hpp"
@@ -405,6 +409,41 @@ class LiveGltfResourceSink final : public GltfResourceSink {
     }
 };
 
+std::vector<std::string>
+activeMaterialShaderDefines() {
+    const auto *passes =
+        FastModuleContainer::tryGet<
+            RenderingPassContainer>();
+    if (passes == nullptr) {
+        return {};
+    }
+    const auto generation = passes->snapshot();
+    if (generation == nullptr) {
+        return {};
+    }
+    for (const auto pass_id :
+         generation->rendering_pass_ids) {
+        const auto *program =
+            generation->find(pass_id);
+        if (program == nullptr ||
+            !program->frame_graph.render_pipeline) {
+            continue;
+        }
+        const auto has_material_pass =
+            std::any_of(
+                program->rendering_pass.passes.begin(),
+                program->rendering_pass.passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.isMaterial();
+                });
+        if (has_material_pass) {
+            return program->frame_graph
+                .render_pipeline->shader_defines;
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 struct InternalGltfLoader {
@@ -417,6 +456,10 @@ struct InternalGltfLoader {
     std::optional<AssetFragmentRef> fragment;
     bool scene_node_instance = false;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
+    bool compile_surface_shaders = false;
+    std::vector<std::string>
+        material_shader_defines;
+    MaterialSurfaceCatalog gltf_surfaces;
     std::vector<std::optional<GlobalMaterialId>> material_map;
     std::vector<MaterialInfo> material_infos;
     std::vector<std::optional<GlobalTextureId>> texture_map;
@@ -508,6 +551,34 @@ struct InternalGltfLoader {
         }
 
         return std_mat.whiteTexture();
+    }
+
+    const SurfaceFormatDocument &gltfSurface(
+        std::string_view reference) {
+        const auto existing =
+            gltf_surfaces.find(
+                std::string{reference});
+        if (existing != gltf_surfaces.end()) {
+            return existing->second;
+        }
+        constexpr std::string_view engine_prefix =
+            "engine://";
+        if (!reference.starts_with(
+                engine_prefix)) {
+            throw std::runtime_error(
+                "glTF lowering selected non-engine surface '" +
+                std::string{reference} + "'");
+        }
+        const auto source =
+            engineResourceOrThrow(
+                reference.substr(
+                    engine_prefix.size()));
+        auto [inserted, _] =
+            gltf_surfaces.emplace(
+                std::string{reference},
+                parseSurfaceFormat(
+                    source, reference));
+        return inserted->second;
     }
 
 #if PELICAN_WITH_VAT
@@ -1591,9 +1662,64 @@ struct InternalGltfLoader {
             }
         }
 
-        material_infos.at(material_index) = Pelican::MaterialInfo{
+        const auto effective_name =
+            material.name.empty()
+                ? source_path + "#material/" +
+                      std::to_string(material_index)
+                : material.name;
+        MaterialBase base;
+        base.base_color_factor = {
+            vectorValueOr(base_factor, 0, 1.0),
+            vectorValueOr(base_factor, 1, 1.0),
+            vectorValueOr(base_factor, 2, 1.0),
+            vectorValueOr(base_factor, 3, 1.0),
+        };
+        base.metallic_factor =
+            material.pbrMetallicRoughness
+                .metallicFactor;
+        base.roughness_factor =
+            material.pbrMetallicRoughness
+                .roughnessFactor;
+        base.emissive_factor = {
+            static_cast<double>(
+                emissiveFactor(0) *
+                emissive_strength),
+            static_cast<double>(
+                emissiveFactor(1) *
+                emissive_strength),
+            static_cast<double>(
+                emissiveFactor(2) *
+                emissive_strength),
+        };
+        auto definition =
+            makeGltfCoreMaterialDefinition({
+                .name = effective_name,
+                .base = std::move(base),
+                .alpha_mode =
+                    material.alphaMode,
+                .alpha_cutoff =
+                    material.alphaCutoff,
+                .double_sided =
+                    material.doubleSided,
+            });
+        const auto &surface =
+            gltfSurface(
+                *definition.surface);
+        const auto lowered =
+            lowerMaterial(
+                definition, surface);
+        const auto fragment_shader =
+            compile_surface_shaders
+                ? std_mat.gltfFragmentShader(
+                      surface,
+                      *definition.surface,
+                      lowered,
+                      material_shader_defines)
+                : std_mat.standardFragShader();
+
+        MaterialInfo material_info{
             .vert_shader = std_mat.standardVertShader(),
-            .frag_shader = std_mat.standardFragShader(),
+            .frag_shader = fragment_shader,
             .base_color_texture = base_color_texture,
             .metallic_roughness_texture = metallic_roughness_texture,
             .normal_texture = normal_texture,
@@ -1614,6 +1740,10 @@ struct InternalGltfLoader {
             .normal_scale = static_cast<float>(material.normalTexture.scale),
             .occlusion_strength = static_cast<float>(material.occlusionTexture.strength),
         };
+        applyLoweredMaterialForRoute(
+            material_info, lowered);
+        material_infos.at(material_index) =
+            std::move(material_info);
         material_map.at(material_index) =
             resources.registerMaterial(material_infos.at(material_index));
         resolved_materials[material_index] = material_map.at(material_index).value();
@@ -2205,6 +2335,8 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,
+        true,
+        activeMaterialShaderDefines(),
     };
     return loader.load();
 }
@@ -2220,6 +2352,8 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,
+        false,
+        {},
     };
     return loader.load();
 }

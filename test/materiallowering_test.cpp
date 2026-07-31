@@ -1,4 +1,5 @@
 #include "../src/project/materiallowering.hpp"
+#include "../src/project/gltfmateriallowering.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -537,6 +538,120 @@ TEST_CASE("six routing variants lower only through lighting hook and fixed forwa
                         Catch::Matchers::ContainsSubstring("bad_blend_route") &&
                             Catch::Matchers::ContainsSubstring("blend_single_sided") &&
                             Catch::Matchers::ContainsSubstring("pipeline state"));
+}
+
+TEST_CASE("glTF core materials converge through the six OpenPBR routing wrappers",
+          "[material-lowering][gltf][wp240c]") {
+    struct Case {
+        std::string_view alpha_mode;
+        bool double_sided;
+        std::string_view surface;
+        MaterialRouteClass route;
+    };
+    constexpr std::array cases{
+        Case{"OPAQUE", false, "opaque_single",
+             MaterialRouteClass::deferred_geometry},
+        Case{"OPAQUE", true, "opaque_double",
+             MaterialRouteClass::deferred_geometry},
+        Case{"MASK", false, "mask_single",
+             MaterialRouteClass::deferred_geometry},
+        Case{"MASK", true, "mask_double",
+             MaterialRouteClass::deferred_geometry},
+        Case{"BLEND", false, "blend_single",
+             MaterialRouteClass::forward_transparent},
+        Case{"BLEND", true, "blend_double",
+             MaterialRouteClass::forward_transparent},
+    };
+    const auto root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "src" / "core" / "resources" / "surfaces" /
+        "openpbr";
+
+    for (const auto &test_case : cases) {
+        CAPTURE(std::string{test_case.alpha_mode},
+                test_case.double_sided);
+        MaterialBase base;
+        base.base_color_factor =
+            {0.2, 0.4, 0.8, 0.35};
+        auto definition =
+            makeGltfCoreMaterialDefinition({
+                .name = "gltf_source",
+                .base = base,
+                .alpha_mode =
+                    std::string{test_case.alpha_mode},
+                .alpha_cutoff = 0.625,
+                .double_sided =
+                    test_case.double_sided,
+            });
+
+        const auto expected_reference =
+            "engine://surfaces/openpbr/" +
+            std::string{test_case.surface} +
+            ".surface";
+        REQUIRE(definition.surface ==
+                expected_reference);
+        REQUIRE(definition.routing.has_value());
+        REQUIRE(
+            definition.routing->double_sided ==
+            test_case.double_sided);
+        REQUIRE(definition.base.base_color_factor ==
+                base.base_color_factor);
+        REQUIRE(definition.defines ==
+                std::vector<std::string>{
+                    std::string{
+                        gltfCoreOpenPbrSurfaceDefine}});
+
+        const auto surface = parseSurfaceFormat(
+            readText(
+                root /
+                (std::string{test_case.surface} +
+                 ".surface")),
+            expected_reference);
+        const auto lowered =
+            lowerMaterial(definition, surface);
+        REQUIRE(lowered.route ==
+                test_case.route);
+        REQUIRE(lowered.routing ==
+                definition.routing);
+        const auto expected_state =
+            materialVariantRenderState(
+                *definition.routing);
+        REQUIRE(lowered.render_state.blend ==
+                expected_state.blend);
+        REQUIRE(lowered.render_state.cull ==
+                expected_state.cull);
+        REQUIRE(lowered.render_state.depth_test ==
+                expected_state.depth_test);
+        REQUIRE(lowered.render_state.depth_write ==
+                expected_state.depth_write);
+        REQUIRE(lowered.render_state.depth_compare ==
+                expected_state.depth_compare);
+
+        const auto cutoff =
+            std::find_if(
+                lowered.values_layout.members.begin(),
+                lowered.values_layout.members.end(),
+                [](const auto &member) {
+                    return member.name ==
+                           "alpha_cutoff";
+                });
+        REQUIRE(cutoff !=
+                lowered.values_layout.members.end());
+        REQUIRE(
+            readAt<float>(
+                lowered.values, cutoff->offset) ==
+            Catch::Approx(0.625f));
+    }
+
+    REQUIRE_THROWS_WITH(
+        makeGltfCoreMaterialDefinition({
+            .name = "bad_alpha",
+            .alpha_mode = "ADDITIVE",
+        }),
+        Catch::Matchers::ContainsSubstring(
+            "bad_alpha") &&
+            Catch::Matchers::ContainsSubstring(
+                "ADDITIVE"));
 }
 
 } // namespace Pelican

@@ -98,6 +98,24 @@ float pelican_openpbr_opacity(vec2 uv) {
 
 void pelican_openpbr_surface_v1(in PelicanSurfaceInputV1 input_data,
                                 inout PelicanSurfaceV1 surface) {
+#ifdef PELICAN_OPENPBR_GLTF_CORE_V1
+    // glTF core already arrives through the template's fixed PBR slots.
+    // This adapter adds only the selected OpenPBR wrapper semantics, so
+    // packed base-color alpha and metallic/roughness channels remain intact.
+    float opacity = pelican_openpbr_saturate(surface.base_color.a);
+    surface.normal =
+        pelican_openpbr_oriented_normal(normalize(surface.normal));
+#if PELICAN_OPENPBR_ALPHA_MODE == 1
+    if (opacity < pelican_openpbr_saturate(pelican_param_alpha_cutoff())) {
+        discard;
+    }
+#endif
+#if PELICAN_OPENPBR_ALPHA_MODE == 2
+    surface.base_color.a = opacity;
+#else
+    surface.base_color.a = 1.0;
+#endif
+#else
     vec2 uv = input_data.uv;
     float base_weight = pelican_openpbr_saturate(
         pelican_openpbr_scalar(pelican_param_base_weight(), pelican_sample_base_weight_map(uv)));
@@ -137,6 +155,7 @@ void pelican_openpbr_surface_v1(in PelicanSurfaceInputV1 input_data,
         discard;
     }
 #endif
+#endif
 }
 
 vec3 pelican_openpbr_direct_lighting(in PelicanSurfaceV1 surface,
@@ -159,19 +178,29 @@ vec3 pelican_openpbr_direct_lighting(in PelicanSurfaceV1 surface,
     // lighting. Consume that canonical value here instead of resampling the
     // authored base color and bypassing the override.
     vec3 weighted_base_color = surface.base_color.rgb;
+#ifdef PELICAN_OPENPBR_GLTF_CORE_V1
+    float diffuse_roughness = 0.0;
+    float metalness = pelican_openpbr_saturate(surface.metallic);
+#else
     float diffuse_roughness = pelican_openpbr_saturate(
         pelican_openpbr_scalar(pelican_param_base_diffuse_roughness(),
                                pelican_sample_base_diffuse_roughness_map(uv)));
     float metalness = pelican_openpbr_saturate(
         pelican_openpbr_scalar(pelican_param_base_metalness(),
                                pelican_sample_base_metalness_map(uv)));
+#endif
     float specular_weight = pelican_openpbr_scalar(
         pelican_param_specular_weight(), pelican_sample_specular_weight_map(uv));
     vec3 specular_color = pelican_openpbr_color(pelican_param_specular_color(),
                                                 pelican_sample_specular_color_map(uv));
+#ifdef PELICAN_OPENPBR_GLTF_CORE_V1
+    float specular_roughness =
+        pelican_openpbr_saturate(surface.roughness);
+#else
     float specular_roughness = pelican_openpbr_saturate(
         pelican_openpbr_scalar(pelican_param_specular_roughness(),
                                pelican_sample_specular_roughness_map(uv)));
+#endif
     float specular_ior = pelican_openpbr_scalar(
         pelican_param_specular_ior(), pelican_sample_specular_ior_map(uv));
 

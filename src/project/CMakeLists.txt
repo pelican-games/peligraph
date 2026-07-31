@@ -5,6 +5,7 @@ add_library(pelican_project
     featurejitter.cpp
     graphvariantpolicy.cpp
     gpudrawtiming.cpp
+    gltfmateriallowering.cpp
     importmanifest.cpp
     importrules.cpp
     jsonrpc.cpp
