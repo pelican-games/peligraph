@@ -133,6 +133,9 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP239a | complete-plan verification contextのreload回帰修正 | ✅ 完了（2026-07-31）。automatic planとfragment-linked planを分離保持し、reload CPU回帰を追加 |
 | WP239b | hybrid_v1 screen input view-family binding回帰修正 | ✅ 完了（2026-07-31）。family arrayのcanonical layered view契約へテストと生成を統一 |
 | WP239c | planar reflection resource port image-view ABI回帰修正 | ✅ 完了（2026-07-31）。sequential captureをmaterial境界でfamily-array descriptorへ適応 |
+| WP240a | 既定 rendering config の preset 化 | **未着手**。`pelican new` の111行手書きconfigをpreset 4行へ。engine改修なし・実測検証済み |
+| WP240b | 背景と環境光 — 既定レンダラの最小見栄え | **未着手**。ライトを消すとemissive以外が黒。skybox featureとambientをproject空間へ |
+| WP240c | project空間 material の宣言と実行時ロード | **未着手・最大**。`applyLoweredMaterialForRoute`の呼び出し元が`test/`のみ、glTF `alphaMode`未解釈 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -550,6 +553,168 @@ pass 'planar_reflection_forward_transparent'
 - `git diff --check` クリーン
 
 依存: なし（WP239a / 239b と独立、並行可）。見積: 中。
+
+### WP240: エンジン既定レンダリングシステム(240a / 240b / 240c)
+
+**背景**: [`render_evidence_ledger.md`](render_evidence_ledger.md) §4.1 の通り、`projects/` 配下 4 project が
+参照する feature は `ui` と `sprite` だけで、ViewFamily 系・clustered lighting・TAA・draw sort・
+graph transform・render strategy・physical fragment・plan pin は **project 空間での使用が 0 件**である。
+WP181〜238e で積み上げた拡張機構には**消費者が一人もいない**。
+
+エンジン既定のレンダリングシステムはその最初の消費者になる。同時にこれは
+「何が足りないか」を**需要順で確定させる作業**でもある。
+[`render_mechanism_coverage.md`](render_mechanism_coverage.md) §3 の G1〜G16 は監査由来の列挙であって
+需要順ではない。実際に既定レンダラを組んだときに詰まった順が正である。
+
+**先行検証(2026-07-31 実施・実測)**: 第 1 段階が engine 改修ゼロで成立することは確認済みである。
+一時 project の rendering config を次の 4 行にし、`DamagedHelmet.glb` を置いた scene を
+`pelican_player.exe --headless --frames 3 --size 512x512 --render-out <png>` で描いたところ、
+hybrid_v1 の deferred 経路で正しく描画された。
+
+```json
+{
+  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+  "features": ["engine://features/shadow_directional.json"]
+}
+```
+
+同時に判明した実測事実を各 WP の前提とする。
+
+1. 同じ scene から directional light を 1 つ抜くと、**emissive 以外がほぼ完全に黒**になる。
+   環境光は実効的に効いていない(WP240b の根拠)。
+2. `pelican_cli project init` が生成する `passes/main_rendering_config.json` は **111 行**で、
+   pass は `gbuffer_pass` / `ssao_pass` / `ssao_blur_pass` / `present` の 4 つ。
+   `present` が `uses_light_data: true` の fullscreen pass としてライティングと present を兼ねる。
+   **forward 経路も半透明も snapshot も持たない**、hybrid_v1 より単純で凍結された設計である。
+3. 空 scene では 111 行版と 4 行版の出力が **byte 一致**する。モデルを置くと差が出る
+   (hybrid_v1 側が forward / snapshot を持つため)。
+
+依存順序は 240a → 240b → 240c。240a は engine 改修を伴わないので単独で先行できる。
+なお前提だった WP239(`gpu` ラベル回帰)は 2026-07-31 に完了済みである。
+
+### WP240a: 既定 rendering config の preset 化
+
+**目的**: エンジンが「既定のレンダリングシステム」を持つことを、まず配布物の既定値として成立させる。
+新規 project が hybrid_v1 を継承し、以後 hybrid_v1 の改善に自動追随するようにする。
+
+**実装範囲**:
+
+1. `src/devcli/projectinit.cpp` の `rendering_config_json`(111 行の定数文字列、
+   現在 191〜302 行付近)を上記 4 行の preset 形式へ置き換える。
+   `default_rendering_pass` は `main_render` のままでよい
+   (hybrid_v1 の rendering pass 名が `main_render` であることを確認済み)。
+2. **これは等価な短縮ではなく機能の格上げである**。現テンプレートには
+   forward_opaque / forward_transparent / snapshot が無いので、置き換えによって
+   新規 project は半透明と refraction を初めて持つ。この差を
+   `docs/design_reviews/` のレポートに明記すること。
+3. `projects/` のいずれかを preset 形式へ移行する。**`example` は変換しない** —
+   bloom / refract / toon の手書きチェーンを持ち、preset と `render_targets` /
+   `rendering_passes` は排他なので機能を失う。`example` は「verbose config の実例」として残し、
+   移行対象は新規 project か `animgraph_demo` のように描画要求の薄いものを選ぶ。
+4. 移行した project を headless で描く CTest を追加し、**preset 経路が project 空間から
+   成立することを常設の証拠にする**。これが台帳の E5 を preset 経路について埋める。
+
+**受け入れ条件**:
+
+- `pelican_cli project init` が生成した project が、追加編集なしで headless 描画できる
+- 生成される rendering config が preset 参照であり、`render_targets` / `rendering_passes` を持たない
+- 移行した project の headless 描画が CTest に登録され、`gpu` ラベル全数が緑
+- `example` の描画結果が変わっていないこと(verbose config 経路の非回帰)
+- `ctest -C Debug -LE gpu` が緑、`git diff --check` クリーン
+
+依存: なし。見積: 小。
+
+### WP240b: 背景と環境光 — 既定レンダラが「それらしく見える」ための最小
+
+**目的**: ライトを消すと emissive 以外が黒になる現状を解消する。背景を持ち、
+金属や陰の側が真っ黒にならない状態を、**preset を保ったまま feature で**達成する。
+
+**確定している事実**:
+
+1. ライト 1 灯を抜くと emissive 以外がほぼ黒(実測)。
+2. 環境光は `src/core/resources/fullscreen.frag` の `standardAmbient` / `openPbrAmbient`
+   と `shaders/include/pelican_lighting_v1.glsl` の `pelican_env_ambient(vec3 normal)` で
+   法線由来の定数として計算されており、**project から与えるパラメータも hook も無い**。
+3. `skybox` / `env_map` / `irradiance` / `brdf_lut` は `src/` に存在しない(調査報告。要再確認)。
+4. feature は `render_targets` と `passes` を両方持て、`insertPassByAnchor` は canonical anchor に
+   限らず任意の pass 名を anchor に取れる(調査報告。**着手前に自分で確認すること**)。
+   これが成り立つなら、preset を保ったまま `deferred_lighting` や `scene_present` を
+   anchor にして skybox pass を挿せる。
+
+**実装範囲**:
+
+1. **skybox を engine feature として追加する。** `scene_depth` を input に取り、
+   遠クリップでない画素を discard する fullscreen pass で足りる。
+   まず単色 / グラデーションで成立させ、cubemap は次段でよい。
+2. **環境光を project 空間から与えられるようにする。** 最小は feature parameter による
+   色と強度の注入。ambient hook を開けるか、`pelican_ambient_v1` の既存 hook で足りるかは
+   実装者が判断する。**engine 側の定数ベタ書きを残したまま feature で上書きする形は採らない** —
+   既定値がどこにあるかが二重化する。
+3. IBL(prefiltered env + irradiance + BRDF LUT)は**この WP に含めない**。
+   単色 ambient で「黒くない」を達成してから、需要と計測を伴って別 WP で設計する。
+4. 追加した feature を WP240a で移行した project へ適用し、
+   **ライトを消しても形状が見える**ことを headless 描画で確認する。
+
+**受け入れ条件**:
+
+- skybox と ambient が **project 空間の feature 宣言だけ**で有効化でき、preset を書き換えない
+- directional light を 0 灯にした scene で、emissive 以外の形状が視認できる
+- 既定値の所在が一箇所であること(engine 定数と feature parameter の二重管理をしない)
+- 追加 feature を含む headless 描画が CTest に登録され、`gpu` ラベル全数が緑
+- `git diff --check` クリーン
+
+依存: WP240a。見積: 中。
+
+### WP240c: project 空間 material の宣言と実行時ロード
+
+**目的**: 既定レンダラの中身は結局「標準マテリアル」である。それを project が名乗り、
+実行時にロードする経路を作る。**本 WP が既定レンダリングシステムの最大の山**である。
+
+**確定している事実(いずれも自分で `grep` して確認済み)**:
+
+1. `src/` で `registerMaterial` を呼ぶのは `gltf.cpp` / `standardmaterialresource.cpp` /
+   `seqplayer.cpp` の 3 箇所だけ。
+2. `applyLoweredMaterialForRoute` の**呼び出し元は `test/` のみ**
+   (`golden_harness.cpp` / `headless_render_test.cpp` / `materialbinding_test.cpp`)。
+   定義は `src/core/material/material.cpp` にあるが、runtime から呼ばれていない。
+3. `engine://textures` は `src/core/resources/surfaces/openpbr/*.surface` の**参照側にしか現れず**、
+   これを `GlobalTextureId` へ解決するコードが `src/` に無い。
+4. `alphaMode` / `alphaCutoff` / `doubleSided` は **`src/` 全体で 0 件**。
+   `gltf.cpp` は `MaterialInfo.render_state` を設定しないので、半透明ガラスも
+   カットアウトの葉も**全て opaque・背面カリング有りで登録される**。
+
+つまり同梱の OpenPBR 6 variant も toon も refract も、**エンジンの中に居るだけで誰も使えない**。
+hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原因である。
+
+**実装範囲**:
+
+1. **glTF の `alphaMode` / `alphaCutoff` / `doubleSided` を解釈する。**
+   これは単独でも価値があり、他より先に片付けてよい。`MaterialInfo.render_state` と
+   route 選択へ接続し、`.glb` を置いただけで半透明とカットアウトが正しく分岐するようにする。
+2. **project 空間 material の宣言形を決める。** assets manifest / scene / material_bindings の
+   どこで surface と material を名乗るか。**これはユーザー空間境界の決定**であり、
+   [`design_project_format.md`](design_project_format.md) の分類規則に従うこと。
+   決めた形を設計文書へ書いてから実装すること。
+3. `engine://textures/*` と `project://*` を `GlobalTextureId` へ解決する**常設 resolver** を
+   `src/` へ置く。現在テストのラムダが代行している。
+4. `parseSurfaceFormat` → `lowerMaterial` → `loadFromSurfaceForMaterial` →
+   `applyLoweredMaterialForRoute` → `registerMaterial` の glue を engine 側へ移す。
+   現在この鎖を繋いでいるのは `test/headless_render_test.cpp` だけである。
+5. `MaterialValuesReloadHandler` / `TextureReloadHandler` をこの経路へ配線する。
+
+**受け入れ条件**:
+
+- project 空間に置いた `.material` / `.surface` が scene のメッシュへ割り当たり、
+  OpenPBR surface で描かれることを headless 描画で確認できる
+- `alphaMode: BLEND` を含む `.glb` を置くと `forward_transparent` に流れ、
+  `MASK` が cutout として描かれる
+- テクスチャ参照の解決が `src/` のコードで行われ、テストのラムダに依存しない
+- 宣言形が設計文書に記載され、**strict v1(単一版受理)**である(§0「版の扱い」)
+- material の hot reload がこの経路でも成立する
+- `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
+
+依存: WP240a。WP240b とは独立で並行可。見積: 大。**分割を検討してよい**
+(1 を独立 WP にすると受け入れが明確になる)。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
