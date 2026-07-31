@@ -287,23 +287,8 @@ TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and
               R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeFile(project_dir.root / "ui/ui.json",
               R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
-    writeFile(project_dir.root / "shaders/fullscreen.vert", R"glsl(
-#version 450
-layout(location=0) out vec2 uv;
-void main(){ uv=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2); gl_Position=vec4(uv*2.0-1.0,0,1); }
-)glsl");
-    writeFile(project_dir.root / "shaders/half.frag", R"glsl(
-#version 450
-layout(location=0) out vec4 outColor;
-void main(){ outColor=vec4(0.5,0.5,0.5,1.0); }
-)glsl");
     writeFile(project_dir.root / "passes/main.json", R"json({
-  "render_targets":[],
-  "rendering_passes":[{"name":"main","passes":[{
-    "name":"known_value","type":"fullscreen",
-    "output":{"color":"swapchain","depth":null},
-    "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/half"}
-  }]}]
+  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"}
 })json");
 
     const nlohmann::json project{
@@ -313,7 +298,8 @@ void main(){ outColor=vec4(0.5,0.5,0.5,1.0); }
                           {"framerate", 60}, {"default_scene_id", "default_scene"},
                           {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"},
                           {"rendering_config_json", "passes/main.json"},
-                          {"ui_config_json", "ui/ui.json"}, {"default_rendering_pass", "main"}}},
+                          {"ui_config_json", "ui/ui.json"},
+                          {"default_rendering_pass", "main_render"}}},
     };
     GET_MODULE(PathResolver).setup(project_dir.root, false);
     GET_MODULE(ProjectSource).setProjectData(project.dump());
