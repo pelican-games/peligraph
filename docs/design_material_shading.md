@@ -381,6 +381,20 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   副産物: 同梱 standard/toon も「lighting フックだけのスニペット」として
   完全に同型になる(dogfooding の純化)
 
+#### 単色環境光の v1 意味論(WP240b)
+
+`pelican_env_ambient(normal)` は安定 ABI のまま、`sky_ambient` feature が
+LightUBO へ供給した **linear-sRGB radiance** を返す。単色段階では `normal` を使わない。
+引数は将来の IBL 実装でも ABI を変えず方向依存の応答へ進めるために維持する。
+feature が無い場合は zero を返し、engine shader / C++ に非ゼロ fallback を持たない。
+色、surface 用強度、背景用強度の非ゼロ既定値は
+`engine://features/sky_ambient.json` だけが所有する。
+
+この ambient は「ライト 0 でも形状を視認できる」ための単色 fallback であり、金属も
+base color で照らす。物理的な金属反射の近似とは扱わない。prefiltered environment、
+irradiance、BRDF LUT と normal / roughness / view direction による応答は IBL feature の
+責務であり、WP240b の契約には含めない。
+
 ### 3-9. deferred / forward とパス振り分け規約(2026-07-08、2026-07-21 追補)
 
 **deferred 化してもユーザー契約は無傷**という設計検証済みの見通し:

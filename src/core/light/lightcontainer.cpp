@@ -335,7 +335,17 @@ namespace Pelican
 		
 	void LightContainer::update()
 	{
-		update(shadowViewProjection());
+		update(SkyAmbientLighting{});
+	}
+
+	void LightContainer::update(
+		const SkyAmbientLighting&
+			sky_ambient)
+	{
+		const std::array projections{
+			shadowViewProjection()};
+		update(
+			projections, {}, sky_ambient);
 	}
 
 	void LightContainer::update(
@@ -343,7 +353,9 @@ namespace Pelican
 	{
 		const std::array projections{
 			shadow_view_projection};
-		update(projections, {});
+		update(
+			projections, {},
+			SkyAmbientLighting{});
 	}
 
 	void LightContainer::update(
@@ -351,6 +363,20 @@ namespace Pelican
 			shadow_view_projections,
 		std::span<const float>
 			cascade_far_distances)
+	{
+		update(
+			shadow_view_projections,
+			cascade_far_distances,
+			SkyAmbientLighting{});
+	}
+
+	void LightContainer::update(
+		std::span<const glm::mat4>
+			shadow_view_projections,
+		std::span<const float>
+			cascade_far_distances,
+		const SkyAmbientLighting&
+			sky_ambient)
 	{
 		if (shadow_view_projections.empty() ||
 			shadow_view_projections.size() >
@@ -435,6 +461,16 @@ namespace Pelican
 					cascade_far_distances[index];
 			}
 		}
+		ubo.environmentAmbientRadiance =
+			glm::vec4{
+				sky_ambient.color *
+					sky_ambient.ambient_intensity,
+				0.0f};
+		ubo.environmentSkyRadiance =
+			glm::vec4{
+				sky_ambient.color *
+					sky_ambient.sky_intensity,
+				0.0f};
 
 		GET_MODULE(VulkanManageCore).writeBuf(
 			m_LightUBO, &ubo, 0, sizeof(ubo));

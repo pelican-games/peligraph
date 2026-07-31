@@ -1,7 +1,7 @@
 # レンダリング機能モジュール: パージ可能な GPU 機能と 1 行有効化
 
 対象読者: エンジン担当。
-ステータス: v1.2 ドラフト(2026-07-23。v1: 2026-07-04)。
+ステータス: v1.3 ドラフト(2026-07-31。v1: 2026-07-04)。
 前提: [SF](シェーダ自由化キット・実装済み)、[PF]/[PFW](凍結)、
 `design_roadmap_renderworld.md` §6(機能はなるべくアセットに)。
 
@@ -100,6 +100,18 @@ frontend として維持する。新しい logical graph では色・深度等�
 pattern / pin へ変換する adapter を使い、RPE6a で parser や runtime 挙動を変更しない。
 詳細は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §3.5、§6、§11。
 
+### 1.4 実行時スカラーと既定値の所有
+
+`parameters.scalars[].shader_define: false` は、値を shader variant へ焼かず、
+合成済み `CompiledRenderFeatureInstance` に保持する実行時パラメータである。
+薄い runtime adapter がこの値を Frame/Light UBO 等へ写し、shader は既存の
+set 0 ABI から読む。値を変えるたびに全 shader を再コンパイルしてはならない機能に使う。
+
+機能の非ゼロ既定値は **feature fragment だけが所有する**。engine C++ / shader に同じ
+fallback 値を置き、feature が存在するときだけ上書きする方式は禁止する。feature が無い
+合成結果に対する runtime adapter の値は zero / neutral とし、pass と define も存在しない。
+これにより「参照 = 存在」と既定値の単一所有を同時に守る。
+
 **異種 execution 追補(v1.2)**: `pelican.render_feature` は render authoring frontend であり、
 logical compile 後は typed import / export / effect を持つ `GraphFragment` へ変換する。fragment
 は合成、所有、hot reload、dump grouping の単位だが、暗黙の barrier / materialization /
@@ -117,6 +129,7 @@ write等がある場合だけでよい。純粋passへeffect boilerplateを要�
 | GPU 計測 | パスなし(フラグのみの fragment) | なし | timestamp query をパス境界に挿入。結果は quill ログ + 将来 rpc `get_gpu_timings`。「アセットでなくエンジン機構」だが有効化 UX を features に統一 |
 | HDR / トーンマップ | tonemap pass + RT overrides(RGBA16F 化) | `PELICAN_FEATURE_HDR`(出力の意味論) | RT override の実証。EXR(WP26)と接続 |
 | shadow(v1: directional 1 灯) | depth-only pass + shadow map RT | `PELICAN_FEATURE_SHADOW`(lighting でサンプリング)+ light UBO 拡張 | シェーダ合流の実証・**最難**。cascade は v2 |
+| sky + solid ambient | `scene_depth` を読む背景 pass + runtime 色/強度 | `PELICAN_FEATURE_SKY_AMBIENT` + LightUBO radiance | WP240b。単色の可視性 fallback。IBL / cubemap / irradiance / BRDF LUT は別 feature |
 | IBL | サンプリング側のみ(fragment + define) | `PELICAN_FEATURE_IBL` | prefiltered env の生成は**インポート時ベイク**(devcli / import-tools。起動時 compute は compute 基盤待ち) |
 | スキニング | vertex 変形(define + joint palette SSBO) | `PELICAN_FEATURE_SKINNING` | クリップ再生・サンプリング(CPU 側)は別軸のスケルタルアニメーション WP。GPU 合流点だけ本モデルに乗る |
 

@@ -1,0 +1,8 @@
+{
+  "pipeline": {
+    "preset": "engine://render_pipelines/hybrid_v1.json"
+  },
+  "features": [
+    "engine://features/sky_ambient.json"
+  ]
+}

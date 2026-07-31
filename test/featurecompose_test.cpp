@@ -433,6 +433,238 @@ TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes"
             }) == 1);
 }
 
+TEST_CASE(
+    "sky ambient feature is purgeable and binds runtime-only values to hybrid",
+    "[render-feature][sky][ambient][wp240b]") {
+    const auto compose =
+        [](nlohmann::json features) {
+            return composeRenderFeatureConfig(
+                nlohmann::json{
+                    {"pipeline",
+                     {{"preset",
+                       "engine://render_pipelines/hybrid_v1.json"}}},
+                    {"features",
+                     std::move(features)},
+                },
+                RenderFeatureComposeDependencies{
+                    loadEngineFeature, true});
+        };
+    const auto passCount =
+        [](const nlohmann::json &config,
+           std::string_view name) {
+            const auto &passes =
+                config.at("rendering_passes")
+                    .at(0)
+                    .at("passes");
+            return std::count_if(
+                passes.begin(), passes.end(),
+                [name](const auto &pass) {
+                    return pass.value(
+                               "name",
+                               std::string{}) ==
+                           name;
+                });
+        };
+
+    const auto without_feature =
+        compose(nlohmann::json::array());
+    REQUIRE(
+        passCount(
+            without_feature.config,
+            "sky_background") == 0);
+    REQUIRE(
+        std::find(
+            without_feature.shader_defines.begin(),
+            without_feature.shader_defines.end(),
+            "PELICAN_FEATURE_SKY_AMBIENT") ==
+        without_feature.shader_defines.end());
+
+    const auto defaults =
+        compose(nlohmann::json::array(
+            {"engine://features/sky_ambient.json"}));
+    REQUIRE(defaults.feature_names ==
+            std::vector<std::string>{
+                "sky_ambient"});
+    REQUIRE(
+        passCount(
+            defaults.config,
+            "sky_background") == 1);
+    const auto names =
+        passNames(defaults.config);
+    const auto lighting =
+        std::find(
+            names.begin(), names.end(),
+            "deferred_lighting");
+    const auto sky =
+        std::find(
+            names.begin(), names.end(),
+            "sky_background");
+    const auto forward =
+        std::find(
+            names.begin(), names.end(),
+            "forward_opaque");
+    REQUIRE(lighting != names.end());
+    REQUIRE(sky != names.end());
+    REQUIRE(forward != names.end());
+    REQUIRE(lighting < sky);
+    REQUIRE(sky < forward);
+
+    const auto &pass =
+        passByName(
+            defaults.config,
+            "sky_background");
+    REQUIRE(pass.at("input") ==
+            nlohmann::json::array(
+                {"scene_depth"}));
+    REQUIRE(pass.at("input_sampling") ==
+            nlohmann::json::array(
+                {{{"filter", "nearest"},
+                  {"address",
+                   "clamp_to_edge"}}}));
+    REQUIRE(pass.at("output").at("color") ==
+            nlohmann::json::array(
+                {"lit_color"}));
+    REQUIRE(pass.at("color_load_op") ==
+            "load");
+    REQUIRE(pass.at("uses_light_data") ==
+            true);
+    REQUIRE(pass.at("shader").at("fragment") ==
+            "engine://sky_ambient");
+    REQUIRE(
+        renderTargetByName(
+            defaults.config,
+            "scene_depth")
+            .at("usage") ==
+        nlohmann::json::array(
+            {"DEPTH_STENCIL_ATTACHMENT",
+             "TRANSFER_SRC",
+             "SAMPLED"}));
+    REQUIRE(
+        std::find(
+            defaults.shader_defines.begin(),
+            defaults.shader_defines.end(),
+            "PELICAN_FEATURE_SKY_AMBIENT") !=
+        defaults.shader_defines.end());
+    REQUIRE(
+        std::none_of(
+            defaults.shader_defines.begin(),
+            defaults.shader_defines.end(),
+            [](const std::string &define) {
+                return define.starts_with(
+                    "PELICAN_FEATURE_SKY_AMBIENT_");
+            }));
+
+    const auto compiled_defaults =
+        compileComposition(defaults);
+    REQUIRE(
+        compiled_defaults
+            .feature_instances.size() == 1);
+    const auto &default_parameters =
+        compiled_defaults
+            .feature_instances.front()
+            .parameters;
+    const auto parameter =
+        [&default_parameters](
+            std::string_view name) {
+            const auto found =
+                std::find_if(
+                    default_parameters.begin(),
+                    default_parameters.end(),
+                    [name](const auto &candidate) {
+                        return candidate.name ==
+                               name;
+                    });
+            REQUIRE(
+                found !=
+                default_parameters.end());
+            return std::get<double>(
+                found->value);
+        };
+    REQUIRE(parameter("color_r") == 0.12);
+    REQUIRE(parameter("color_g") == 0.16);
+    REQUIRE(parameter("color_b") == 0.24);
+    REQUIRE(
+        parameter("ambient_intensity") ==
+        0.5);
+    REQUIRE(parameter("sky_intensity") ==
+            1.0);
+
+    const auto overridden =
+        compose(nlohmann::json::array(
+            {nlohmann::json{
+                {"ref",
+                 "engine://features/sky_ambient.json"},
+                {"parameters",
+                 {{"color_r", 0.25},
+                  {"ambient_intensity",
+                   0.75}}},
+            }}));
+    const auto overridden_pipeline =
+        compileComposition(overridden);
+    const auto &overridden_parameters =
+        overridden_pipeline
+            .feature_instances.front()
+            .parameters;
+    const auto color_r =
+        std::find_if(
+            overridden_parameters.begin(),
+            overridden_parameters.end(),
+            [](const auto &candidate) {
+                return candidate.name ==
+                       "color_r";
+            });
+    const auto intensity =
+        std::find_if(
+            overridden_parameters.begin(),
+            overridden_parameters.end(),
+            [](const auto &candidate) {
+                return candidate.name ==
+                       "ambient_intensity";
+            });
+    REQUIRE(color_r !=
+            overridden_parameters.end());
+    REQUIRE(intensity !=
+            overridden_parameters.end());
+    REQUIRE(
+        std::get<double>(color_r->value) ==
+        0.25);
+    REQUIRE(
+        std::get<double>(intensity->value) ==
+        0.75);
+
+    auto runtime_config = defaults.config;
+    for (auto &target :
+         runtime_config.at("render_targets")) {
+        target["width"] = 16;
+        target["height"] = 16;
+    }
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            runtime_config);
+    REQUIRE(graphs.size() == 1);
+    const auto plan =
+        planFrameGraph(graphs.front());
+    const auto plan_json =
+        framePlanToJson(
+            plan, &compiled_defaults);
+    const auto node =
+        std::find_if(
+            plan_json.at("nodes").begin(),
+            plan_json.at("nodes").end(),
+            [](const auto &candidate) {
+                return candidate.at("name") ==
+                       "sky_background";
+            });
+    REQUIRE(node !=
+            plan_json.at("nodes").end());
+    REQUIRE(node->at("reads") ==
+            nlohmann::json::array(
+                {"scene_depth", "lit_color"}));
+    REQUIRE(node->at("writes") ==
+            nlohmann::json::array(
+                {"lit_color"}));
+}
+
 TEST_CASE("pipeline preset accepts an explicit typed draw-sort override",
           "[render-feature][pipeline-preset][draw-sort][wp184]") {
     const auto authored = nlohmann::json{

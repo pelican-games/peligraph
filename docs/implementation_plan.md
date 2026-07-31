@@ -134,7 +134,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP239b | hybrid_v1 screen input view-family binding回帰修正 | ✅ 完了（2026-07-31）。family arrayのcanonical layered view契約へテストと生成を統一 |
 | WP239c | planar reflection resource port image-view ABI回帰修正 | ✅ 完了（2026-07-31）。sequential captureをmaterial境界でfamily-array descriptorへ適応 |
 | WP240a | 既定 rendering config の preset 化 | ✅ 完了（2026-07-31）。新規projectと`animgraph_demo`を`hybrid_v1` + directional shadowへ移行し、project-space headless GPU回帰を常設 |
-| WP240b | 背景と環境光 — 既定レンダラの最小見栄え | **未着手**。ライトを消すとemissive以外が黒。skybox featureとambientをproject空間へ |
+| WP240b | 背景と環境光 — 既定レンダラの最小見栄え | ✅ 完了（2026-07-31）。単色sky/ambientをfeature化し、既定値をfragmentへ一元化。ライト0のdeferred/forward金属を実GPU画素で検証 |
 | WP240c | project空間 material の宣言と実行時ロード | **未着手・最大**。`applyLoweredMaterialForRoute`の呼び出し元が`test/`のみ、glTF `alphaMode`未解釈 |
 | WP241 | skip を名乗る 4 件の GPU テスト失敗 | **未着手**。`catch (std::exception&)` → `SKIP` が engine の fail-fast を握り潰している |
 
@@ -677,6 +677,24 @@ hybrid_v1 の deferred 経路で正しく描画された。
 - 既定値の所在が一箇所であること(engine 定数と feature parameter の二重管理をしない)
 - 追加 feature を含む headless 描画が CTest に登録され、`gpu` ラベル全数が緑
 - `git diff --check` クリーン
+
+**完了結果(2026-07-31)**:
+
+- `engine://features/sky_ambient.json` が `deferred_lighting` 後へ
+  `sky_background` を挿入し、`scene_depth` の遠クリップ画素だけへ単色背景を描く。
+  色、ambient 強度、sky 強度は runtime-only scalar で、非ゼロ既定値は同 JSON だけが所有する。
+- 合成済み feature instance を薄い runtime adapter が毎フレーム解決し、LightUBO 末尾の
+  ambient / sky radiance へ運ぶ。feature が無ければ pass / define / radiance は全て zero になる。
+  deferred と forward OpenPBR の完全金属をライト 0 で描く GPU テストが両 route の非黒画素を検査する。
+- 新規 project template と `projects/animgraph_demo` が preset を変更せず feature を参照する。
+  `animgraph_demo` は scene light 0 の committed project として player integration を通した。
+- 旧 shader ambient の除去で意図して変わった golden 24 case を目視確認後に再基準化した。
+  VAT playback は黒一色へ退化させず、一時 project が同 feature を明示する可視な基準へ移行した。
+- Debug build 成功。GPU gate は **123 / 123 passed**（既知 4 case skipped、419 秒）、
+  CPU gate は **940 / 940 passed**（環境依存 1 case skipped、27 秒）。
+  詳細は
+  [`2026-07-31_wp240b_sky_ambient_report.md`](design_reviews/2026-07-31_wp240b_sky_ambient_report.md)
+  に記録した。
 
 依存: WP240a。見積: 中。
 

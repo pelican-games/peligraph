@@ -52,12 +52,16 @@ if(NOT preset_error STREQUAL "NOTFOUND" OR
 endif()
 string(JSON generated_feature_count ERROR_VARIABLE feature_count_error
     LENGTH "${rendering_config}" features)
-string(JSON generated_feature ERROR_VARIABLE feature_error
+string(JSON generated_shadow_feature ERROR_VARIABLE shadow_feature_error
     GET "${rendering_config}" features 0)
+string(JSON generated_sky_feature ERROR_VARIABLE sky_feature_error
+    GET "${rendering_config}" features 1)
 if(NOT feature_count_error STREQUAL "NOTFOUND" OR
-   NOT feature_error STREQUAL "NOTFOUND" OR
-   NOT generated_feature_count EQUAL 1 OR
-   NOT generated_feature STREQUAL "engine://features/shadow_directional.json")
+   NOT shadow_feature_error STREQUAL "NOTFOUND" OR
+   NOT sky_feature_error STREQUAL "NOTFOUND" OR
+   NOT generated_feature_count EQUAL 2 OR
+   NOT generated_shadow_feature STREQUAL "engine://features/shadow_directional.json" OR
+   NOT generated_sky_feature STREQUAL "engine://features/sky_ambient.json")
     message(FATAL_ERROR
         "generated rendering config does not select the default feature set\n${rendering_config}")
 endif()

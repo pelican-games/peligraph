@@ -190,7 +190,10 @@ constexpr std::string_view input_keyboard_profile_json = R"json({
 
 constexpr std::string_view rendering_config_json = R"json({
   "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "features": ["engine://features/shadow_directional.json"]
+  "features": [
+    "engine://features/shadow_directional.json",
+    "engine://features/sky_ambient.json"
+  ]
 }
 )json";
 

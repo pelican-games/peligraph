@@ -226,7 +226,9 @@ vec3 pelican_openpbr_lighting_v1(in PelicanSurfaceV1 surface,
                                  in PelicanSurfaceInputV1 input_data) {
     vec3 color = surface.emissive;
     vec3 ambient = pelican_env_ambient(surface.normal);
-    color += surface.base_color.rgb * (1.0 - surface.metallic) * ambient;
+    // This feature is a solid visibility fallback, not an IBL approximation.
+    // Keep metal visible until a directional environment BRDF is selected.
+    color += surface.base_color.rgb * ambient;
     for (uint index = 0u; index < pelican_light_count(); ++index) {
         PelicanLightV1 light = pelican_light(index, input_data.world_position);
         color += pelican_openpbr_direct_lighting(surface, input_data, light) *

@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "../src/core/light/lightcontainer.hpp"
+#include "../src/core/renderer/skyambientlighting.hpp"
+#include "../src/project/renderpipeline.hpp"
 
 #include <bit>
 #include <cstdint>
@@ -193,6 +196,55 @@ TEST_CASE(
             packed.elements[
                 last_record + 1]
                 .x) == 30.0f);
+}
+
+TEST_CASE(
+    "sky ambient runtime values have no engine fallback and require feature parameters",
+    "[light][sky][ambient][wp240b]") {
+    CompiledRenderPipeline pipeline;
+    const auto absent =
+        resolveSkyAmbientLighting(pipeline);
+    REQUIRE(absent.color ==
+            glm::vec3{0.0f});
+    REQUIRE(absent.ambient_intensity ==
+            0.0f);
+    REQUIRE(absent.sky_intensity ==
+            0.0f);
+
+    pipeline.feature_instances = {
+        CompiledRenderFeatureInstance{
+            .feature =
+                std::string{
+                    skyAmbientRenderFeatureName},
+            .reference =
+                "engine://features/sky_ambient.json",
+            .parameters =
+                {
+                    {"color_r", 0.2},
+                    {"color_g", 0.4},
+                    {"color_b", 0.8},
+                    {"ambient_intensity",
+                     0.75},
+                    {"sky_intensity", 0.1},
+                },
+        },
+    };
+    const auto authored =
+        resolveSkyAmbientLighting(pipeline);
+    REQUIRE((
+        authored.color ==
+        glm::vec3{
+            0.2f, 0.4f, 0.8f}));
+    REQUIRE(authored.ambient_intensity ==
+            0.75f);
+    REQUIRE(authored.sky_intensity ==
+            0.1f);
+
+    pipeline.feature_instances.front()
+        .parameters.pop_back();
+    REQUIRE_THROWS_WITH(
+        resolveSkyAmbientLighting(pipeline),
+        "render feature 'sky_ambient' is missing required runtime parameter 'sky_intensity'");
 }
 
 } // namespace Pelican

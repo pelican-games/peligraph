@@ -345,7 +345,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 
 push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン領域 offset 0..63 の `engineMvp` は**名前に反して MVP ではなく `view_projection_jittered`(world → jittered clip)**です — 独自 vertex シェーダは model 行列で作った world position にこれを 1 回掛けるだけにし、**jitter を後から足してはいけません**(§6.8 の projection jitter が二重適用になります)。この意味論・64B の範囲・symbol 名は v1 で凍結です([../shader_contract.md](../shader_contract.md) の「`engineMvp` v1 の規範意味論」)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
 
-エンジン同梱シェーダ(`engine://`、抜粋): `fullscreen` / `ssao` / `ssao_blur` / `bloom_*` / `tonemap` / **`output_transform`** / `shadow_depth` / `skinned` / `skinned_shadow_depth` / **`velocity` / `velocity_skinned`** / **`taa_resolve` / `taa_composite`** / **`sprite`** / `debug_draw` / `debug_text` / `default` / `vat` / `ui`、マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl` / **`openpbr_lighting.glsl`**、**OpenPBR wrapper 6 種 `engine://surfaces/openpbr/*.surface`**、公開 include 群 `shaders/include/pelican_*.glsl`。
+エンジン同梱シェーダ(`engine://`、抜粋): `fullscreen` / `ssao` / `ssao_blur` / `bloom_*` / `tonemap` / **`sky_ambient`** / **`output_transform`** / `shadow_depth` / `skinned` / `skinned_shadow_depth` / **`velocity` / `velocity_skinned`** / **`taa_resolve` / `taa_composite`** / **`sprite`** / `debug_draw` / `debug_text` / `default` / `vat` / `ui`、マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl` / **`openpbr_lighting.glsl`**、**OpenPBR wrapper 6 種 `engine://surfaces/openpbr/*.surface`**、公開 include 群 `shaders/include/pelican_*.glsl`。
 
 🚧 HLSL / Slang: `.surface` の `language` フィールドとして形式上は受理されますが、既定バックエンドは GLSL 以外を reject します(他言語は spv-link experimental の視野 — §6.7)。
 
@@ -361,13 +361,14 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(12 個・✅すべて実装済み):
+エンジン同梱 feature(13 個・✅すべて実装済み):
 
 | feature | 内容 |
 |---|---|
 | `hdr.json` | `format_class: scene` の RT を float16 化(切替はエンジンの色リゾルバが feature の有無で行う)し、`scene_ldr_in` を挟んでトーンマップパスを `after:tonemap` アンカーに挿入 |
 | `clustered_lighting.json` | computeでViewFamily/view別のcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入。planar reflection併用時はreflection-local selectorも自動合成 |
 | `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
+| `sky_ambient.json` | `scene_depth` の遠クリップだけを塗る単色背景と、deferred/forward共通の単色環境光。色・ambient強度・sky強度はruntime parameter。IBLは含まない |
 | `planar_reflection.json` | 指定world planeでmain viewを反転し、独立解像度のdeferred G-buffer/SSAO/lightingを`$reflection/planar` familyへ追加。結果をforward transparentの`planar_reflection` resource portへ割り当て |
 | `cube_capture.json` | stable `$capture/cube` family の 6 面 sequential capture。`cube_capture_color`(現在 1 mip)を作る。cube 専用のパス種別は増やさない(本節後半)✅WP237 |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
@@ -432,10 +433,34 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
   ```
 
   `"$resolution"` は int の `resolution` に、`"$cascade_count"` は int の `cascade_count` に置換されるため、`{"cascade_count": 4, "resolution": 2048}` を渡すだけで 2048×2048 の 4 layer array target になります。文字列の一部としての `$名前` は置換対象ではありません(RT 名の named binding だけが `$scene_color@history` のような接尾辞付き参照を扱います)。
-- `scalars` の `shader_define`(bool・既定 `true`)を `false` にすると、そのパラメータは値付き define を**出しません**。解像度やカメラ位置のように CPU 側だけで使う値に付けます — `true` のままだと値を変えるたびにシェーダキャッシュキーが変わり、**全シェーダが再コンパイル**されます。同梱では `cube_capture.json` の 6 スカラー全部、`planar_reflection.json` の `prefilter_radius` 以外、`shadow_directional.json` の `cascade_count` 以外が `false` です。
+- `scalars` の `shader_define`(bool・既定 `true`)を `false` にすると、そのパラメータは値付き define を**出しません**。物理 planning や runtime adapter から UBO へ送る値に付けます — `true` のままだと値を変えるたびにシェーダキャッシュキーが変わり、**全シェーダが再コンパイル**されます。同梱では `cube_capture.json` の 6 スカラー全部、`planar_reflection.json` の `prefilter_radius` 以外、`shadow_directional.json` の `cascade_count` 以外、および `sky_ambient.json` の 5 スカラー全部が `false` です。
 - `shader_assets`は`shader`の型付きslotだけへ完全一致の`$name`として置けます。compute taskの文字列`shader`、またはgraphics passの`shader.vertex|skinned_vertex|fragment|compute`と宣言stageが一致しなければcompose時に拒否します。`skinned_vertex`は`vertex` stageです。instance値は`engine://`にも`project://`にもでき、feature JSONを複製せずalgorithm assetだけを交換できます。
-- スカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
+- `shader_define: true` のスカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
 - 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
+
+単色背景と環境光は preset を変更せず、次の feature 宣言だけで有効になります。
+値を省略したときの非ゼロ既定値は `sky_ambient.json` だけが所有します。feature を外した場合は
+背景 pass と define が消え、LightUBO の環境 radiance は zero になります。
+
+```json
+"features": [
+  {
+    "ref": "engine://features/sky_ambient.json",
+    "parameters": {
+      "color_r": 0.12,
+      "color_g": 0.16,
+      "color_b": 0.24,
+      "ambient_intensity": 0.5,
+      "sky_intensity": 1.0
+    }
+  }
+]
+```
+
+値は linear-sRGB radiance で、5 scalar はすべて `shader_define: false` です。変更しても
+shader variant は増えず、次フレームの LightUBO へ反映されます。現段階の ambient は
+ライトが 0 灯でも非 emissive の形状を視認するための単色 fallback であり、cubemap、
+irradiance、prefiltered environment、BRDF LUT は IBL feature の責務です。
 
 directional shadowは同じ仕組みでCSMを有効化できます。指定を省けば従来互換の1 cascadeです。
 
