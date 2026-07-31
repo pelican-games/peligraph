@@ -613,6 +613,17 @@ TEST_CASE("glTF core materials converge through the six OpenPBR routing wrappers
                 test_case.route);
         REQUIRE(lowered.routing ==
                 definition.routing);
+        if (test_case.alpha_mode != "BLEND") {
+            REQUIRE(
+                lowered.deferred_eligibility.model ==
+                DeferredMaterialModel::standard_pbr_v1);
+            REQUIRE(
+                std::find(
+                    lowered.defines.begin(),
+                    lowered.defines.end(),
+                    "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") ==
+                lowered.defines.end());
+        }
         const auto expected_state =
             materialVariantRenderState(
                 *definition.routing);

@@ -112,8 +112,6 @@ void pelican_openpbr_surface_v1(in PelicanSurfaceInputV1 input_data,
 #endif
 #if PELICAN_OPENPBR_ALPHA_MODE == 2
     surface.base_color.a = opacity;
-#else
-    surface.base_color.a = 1.0;
 #endif
 #else
     vec2 uv = input_data.uv;
@@ -253,6 +251,30 @@ vec3 pelican_openpbr_direct_lighting(in PelicanSurfaceV1 surface,
 
 vec3 pelican_openpbr_lighting_v1(in PelicanSurfaceV1 surface,
                                  in PelicanSurfaceInputV1 input_data) {
+#ifdef PELICAN_OPENPBR_GLTF_CORE_V1
+    // The glTF adapter selects an OpenPBR wrapper for routing state only.
+    // Preserve the established core-material lighting while gaining the
+    // wrapper's mask, blend, and double-sided behavior.
+    vec3 color =
+        surface.emissive +
+        surface.base_color.rgb *
+            pelican_env_ambient(surface.normal);
+    for (uint index = 0u;
+         index < pelican_light_count(); ++index) {
+        PelicanLightV1 light =
+            pelican_light(
+                index, input_data.world_position);
+        float ndotl =
+            max(dot(surface.normal, light.direction),
+                0.0);
+        color +=
+            surface.base_color.rgb * light.radiance *
+            (ndotl * light.attenuation *
+             pelican_shadow(
+                 index, input_data.world_position));
+    }
+    return color;
+#else
     vec3 color = surface.emissive;
     vec3 ambient = pelican_env_ambient(surface.normal);
     // This feature is a solid visibility fallback, not an IBL approximation.
@@ -264,6 +286,7 @@ vec3 pelican_openpbr_lighting_v1(in PelicanSurfaceV1 surface,
                  pelican_shadow(index, input_data.world_position);
     }
     return max(color, vec3(0.0));
+#endif
 }
 
 #endif
