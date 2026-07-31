@@ -6,6 +6,7 @@
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "vulkan_test_support.hpp"
 #include "morph_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -37,11 +38,8 @@ void requireMorphVulkan() {
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 }
 
 PublishMorphWeightFrameDescV1 publishDesc(const ModelTemplate &model,

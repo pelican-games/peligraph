@@ -13,6 +13,7 @@
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "skeletal_fixture.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -71,8 +72,8 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
         {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true; launch.headless_extent = vk::Extent2D{16, 16};
-    try { (void)GET_MODULE(StandardMaterialResource); }
-    catch (const std::exception &ex) { SKIP(std::string{"Vulkan unavailable: "} + ex.what()); }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 
     auto &loader = GET_MODULE(GltfLoader);
     const auto loaded = loader.loadGltfBinary((root / "character.glb").string());

@@ -3,6 +3,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/renderer/atlasassetresource.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -16,11 +17,8 @@ TEST_CASE("AtlasAssetResource grows descriptor pools after the active pool fills
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
-    try {
-        (void)GET_MODULE(VulkanManageCore);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan headless initialization unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless initialization unavailable");
 
     auto &atlas = GET_MODULE(AtlasAssetResource);
     REQUIRE(atlas.descriptorPoolCountForTesting() == 1);

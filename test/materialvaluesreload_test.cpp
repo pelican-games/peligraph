@@ -9,6 +9,7 @@
 #include "../src/core/watch/assetkey.hpp"
 #include "../src/core/watch/filewatcher.hpp"
 #include "../src/core/watch/reloadservice.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -293,9 +294,10 @@ TEST_CASE("HR2-S commits surface shader variants and material layout as one tran
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     Sandbox box;
-    try {
-        FastModuleContainer modules;
-        configureGpu(box);
+    FastModuleContainer modules;
+    configureGpu(box);
+    TestSupport::requireVulkanDevice(
+        "Vulkan HR2-S cross-file reload unavailable");
         GET_MODULE(PathResolver).setup(box.root, false);
         // Keep Vulkan alive until every shader bundle is destroyed.
         (void)GET_MODULE(VulkanManageCore);
@@ -369,9 +371,6 @@ TEST_CASE("HR2-S commits surface shader variants and material layout as one tran
         REQUIRE(std::equal(after_shader_failure.begin(), after_shader_failure.end(),
                            stable_values.begin()));
         GET_MODULE(VulkanManageCore).waitIdle();
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan HR2-S cross-file reload unavailable: "} + error.what());
-    }
 #endif
 }
 
@@ -379,9 +378,10 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
           "[wp105][material-values-reload][gpu]") {
     setupLogger();
     Sandbox box;
-    try {
-        FastModuleContainer modules;
-        configureGpu(box);
+    FastModuleContainer modules;
+    configureGpu(box);
+    TestSupport::requireVulkanDevice(
+        "Vulkan material values reload unavailable");
         const auto surface = wp76Surface();
         MaterialSurfaceCatalog catalog{{"project://wp76.surface", surface}};
         auto alternate = surface;
@@ -489,18 +489,16 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         REQUIRE(status.last_reload_error);
         REQUIRE(status.last_reload_error->message.find("material_a") != std::string::npos);
         GET_MODULE(VulkanManageCore).waitIdle();
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan material values reload unavailable: "} + error.what());
-    }
 }
 
 TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with its base",
           "[wp206b][material-variant][material-values-reload][gpu]") {
     setupLogger();
     Sandbox box;
-    try {
-        FastModuleContainer modules;
-        configureGpu(box);
+    FastModuleContainer modules;
+    configureGpu(box);
+    TestSupport::requireVulkanDevice(
+        "Vulkan named material variant reload unavailable");
         const auto surface = wp76Surface();
         const MaterialSurfaceCatalog catalog{
             {"project://wp76.surface", surface}};
@@ -653,11 +651,6 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
             Catch::Matchers::ContainsSubstring(
                 "cross-phase variants require a variant-aware draw queue"));
         GET_MODULE(VulkanManageCore).waitIdle();
-    } catch (const std::exception &error) {
-        SKIP(std::string{
-                 "Vulkan named material variant reload unavailable: "} +
-             error.what());
-    }
 }
 
 TEST_CASE("WP240c project material registry wires texture and values reload",
@@ -762,9 +755,10 @@ TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",
           "[wp105][material-values-reload][gpu][stress]") {
     setupLogger();
     Sandbox box;
-    try {
-        FastModuleContainer modules;
-        configureGpu(box);
+    FastModuleContainer modules;
+    configureGpu(box);
+    TestSupport::requireVulkanDevice(
+        "Vulkan material values reload stress unavailable");
         const auto surface = wp76Surface();
         MaterialSurfaceCatalog catalog{{"project://wp76.surface", surface}};
         const auto path = box.root / "stress.material.json";
@@ -824,9 +818,6 @@ TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",
                 Catch::Approx(8.0f));
         watcher.stop();
         GET_MODULE(VulkanManageCore).waitIdle();
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan material values reload stress unavailable: "} + error.what());
-    }
 }
 
 } // namespace Pelican

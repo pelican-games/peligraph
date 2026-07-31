@@ -16,6 +16,7 @@
 #include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "gltf_fragment_fixture.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -323,14 +324,12 @@ void main(){ outColor=vec4(0.5,0.5,0.5,1.0); }
     GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     GET_MODULE(ECSPredefinedRegistration).reg();
 
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-        std::istringstream empty_input;
-        std::ostringstream empty_output;
-        runEngineRpcServer(empty_input, empty_output);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan headless rendering unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless rendering unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    std::istringstream empty_input;
+    std::ostringstream empty_output;
+    runEngineRpcServer(empty_input, empty_output);
 
     const auto success = runRpcRequest(
         1, "load_gltf", {{"path", "asset.glb"}, {"name", "anchor"}});

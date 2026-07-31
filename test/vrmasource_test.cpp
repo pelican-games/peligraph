@@ -13,6 +13,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "morph_fixture.hpp"
 #include "vrma_fixture.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -173,11 +174,8 @@ void requireVulkan() {
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 }
 
 constexpr auto blendGraph = R"json({
