@@ -180,11 +180,12 @@ LoweredMaterial loadLowered(const std::filesystem::path &path,
 }
 
 GlobalMaterialId registerValuesMaterial(MaterialContainer &materials,
-                                        const LoweredMaterial &lowered) {
+                                        const LoweredMaterial &lowered,
+                                        SurfaceShaderBundleIds shaders) {
     const auto &standard = GET_MODULE(StandardMaterialResource);
     MaterialInfo info{
-        .vert_shader = standard.standardVertShader(),
-        .frag_shader = standard.standardFragShader(),
+        .vert_shader = shaders.vertex,
+        .frag_shader = shaders.fragment,
         .base_color_texture = standard.whiteTexture(),
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
@@ -194,11 +195,13 @@ GlobalMaterialId registerValuesMaterial(MaterialContainer &materials,
     return materials.registerMaterial(std::move(info));
 }
 
-MaterialInfo makeValuesMaterialInfo(const LoweredMaterial &lowered) {
+MaterialInfo makeValuesMaterialInfo(
+    const LoweredMaterial &lowered,
+    SurfaceShaderBundleIds shaders) {
     const auto &standard = GET_MODULE(StandardMaterialResource);
     MaterialInfo info{
-        .vert_shader = standard.standardVertShader(),
-        .frag_shader = standard.standardFragShader(),
+        .vert_shader = shaders.vertex,
+        .frag_shader = shaders.fragment,
         .base_color_texture = standard.whiteTexture(),
         .metallic_roughness_texture =
             standard.metallicRoughnessDefaultTexture(),
@@ -271,22 +274,6 @@ void writeMaterialAssetIndex(
         .dump(2));
 }
 
-GlobalMaterialId registerSurfaceValuesMaterial(
-    MaterialContainer &materials, const LoweredMaterial &lowered,
-    SurfaceShaderBundleIds shaders) {
-    const auto &standard = GET_MODULE(StandardMaterialResource);
-    MaterialInfo info{
-        .vert_shader = shaders.vertex,
-        .frag_shader = shaders.fragment,
-        .base_color_texture = standard.whiteTexture(),
-        .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
-        .normal_texture = standard.normalDefaultTexture(),
-        .emissive_texture = standard.emissiveDefaultTexture(),
-    };
-    applyLoweredMaterial(info, lowered);
-    return materials.registerMaterial(std::move(info));
-}
-
 } // namespace
 
 TEST_CASE("HR2-S commits surface shader variants and material layout as one transaction",
@@ -314,7 +301,7 @@ TEST_CASE("HR2-S commits surface shader variants and material layout as one tran
         MaterialSurfaceCatalog catalog{{"project://shaders/live.surface", surface}};
         auto lowered = loadLowered(material_path, catalog);
         auto &materials = GET_MODULE(MaterialContainer);
-        const auto material = registerSurfaceValuesMaterial(
+        const auto material = registerValuesMaterial(
             materials, lowered, shader_bundles);
         const auto material_key = watch::makeAssetKey("live.material.json");
         const auto surface_key = watch::makeAssetKey("shaders/live.surface");
@@ -379,10 +366,13 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
     setupLogger();
     Sandbox box;
     FastModuleContainer modules;
-    configureGpu(box);
-    TestSupport::requireVulkanDevice(
-        "Vulkan material values reload unavailable");
+        configureGpu(box);
+        TestSupport::requireVulkanDevice(
+            "Vulkan material values reload unavailable");
         const auto surface = wp76Surface();
+        const auto shaders =
+            GET_MODULE(ShaderLibrary).loadFromSurface(
+                surface, "project://wp76.surface");
         MaterialSurfaceCatalog catalog{{"project://wp76.surface", surface}};
         auto alternate = surface;
         alternate.params.push_back(alternate.params.front());
@@ -394,9 +384,11 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
 
         auto &materials = GET_MODULE(MaterialContainer);
         const auto material_a = registerValuesMaterial(
-            materials, loadLowered(path_a, catalog, "material_a"));
+            materials, loadLowered(path_a, catalog, "material_a"),
+            shaders);
         const auto material_b = registerValuesMaterial(
-            materials, loadLowered(path_a, catalog, "material_b"));
+            materials, loadLowered(path_a, catalog, "material_b"),
+            shaders);
         const auto pipeline_a = materials.pipelineLayout(material_a);
         const auto descriptor_a = materials.materialDescriptorRevisionForTesting(material_a);
         const auto key_a = watch::makeAssetKey("pair.material.json");
@@ -497,9 +489,12 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
     Sandbox box;
     FastModuleContainer modules;
     configureGpu(box);
-    TestSupport::requireVulkanDevice(
-        "Vulkan named material variant reload unavailable");
+        TestSupport::requireVulkanDevice(
+            "Vulkan named material variant reload unavailable");
         const auto surface = wp76Surface();
+        const auto shaders =
+            GET_MODULE(ShaderLibrary).loadFromSurface(
+                surface, "project://wp76.surface");
         const MaterialSurfaceCatalog catalog{
             {"project://wp76.surface", surface}};
         const auto path = box.root / "variant.material.json";
@@ -518,7 +513,7 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
 
         auto &materials = GET_MODULE(MaterialContainer);
         auto base_info =
-            makeValuesMaterialInfo(base_lowered);
+            makeValuesMaterialInfo(base_lowered, shaders);
         base_info.base_color_factor =
             {0.25f, 0.5f, 0.75f, 1.0f};
         const auto base = materials.registerMaterial(
@@ -529,7 +524,7 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
             registrations;
         auto variant_info =
             makeValuesMaterialInfo(
-                variants.front().material);
+                variants.front().material, shaders);
         variant_info.base_color_factor =
             {0.9f, 0.9f, 0.9f, 0.9f};
         registrations.push_back({
@@ -635,7 +630,8 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
             stable_variant));
 
         auto transparent_variant =
-            makeValuesMaterialInfo(variants.front().material);
+            makeValuesMaterialInfo(
+                variants.front().material, shaders);
         transparent_variant.route =
             base_lowered.route ==
                     MaterialRouteClass::forward_transparent
@@ -757,15 +753,19 @@ TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",
     Sandbox box;
     FastModuleContainer modules;
     configureGpu(box);
-    TestSupport::requireVulkanDevice(
-        "Vulkan material values reload stress unavailable");
+        TestSupport::requireVulkanDevice(
+            "Vulkan material values reload stress unavailable");
         const auto surface = wp76Surface();
+        const auto shaders =
+            GET_MODULE(ShaderLibrary).loadFromSurface(
+                surface, "project://wp76.surface");
         MaterialSurfaceCatalog catalog{{"project://wp76.surface", surface}};
         const auto path = box.root / "stress.material.json";
         writeMaterial(path, "stress", 1.0);
         const auto key = watch::makeAssetKey("stress.material.json");
         auto &materials = GET_MODULE(MaterialContainer);
-        const auto material = registerValuesMaterial(materials, loadLowered(path, catalog));
+        const auto material = registerValuesMaterial(
+            materials, loadLowered(path, catalog), shaders);
         const std::array bindings{
             MaterialContainer::ReloadableMaterialValuesBinding{"stress", material}};
         materials.registerReloadableMaterialValuesFile(key, path, catalog, bindings);
