@@ -37,6 +37,7 @@
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/core/watch/reloadservice.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1488,7 +1489,9 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         if (!temp_dir.empty()) {
             std::filesystem::remove_all(temp_dir);
         }
-        SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            ex, "Vulkan headless rendering unavailable");
+        throw;
     }
 }
 
@@ -1498,7 +1501,6 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
-    bool runtime_ready = false;
     try {
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
@@ -1567,7 +1569,6 @@ TEST_CASE(
                  ->render_compiler_program ==
             *execution->render_pipeline
                  ->render_compiler_program);
-        runtime_ready = true;
 
         constexpr std::string_view surface_source =
             R"surface(//! pelican.surface v1
@@ -1792,13 +1793,9 @@ vec3 pelican_lighting_v1(
         if (!temp_dir.empty()) {
             std::filesystem::remove_all(temp_dir);
         }
-        if (runtime_ready) {
-            throw;
-        }
-        SKIP(
-            std::string{
-                "Vulkan cubemap rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan cubemap rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -2354,10 +2351,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan material resource rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan material resource rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -2832,10 +2828,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan upscale rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan upscale rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -3023,10 +3018,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan tile-local rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan tile-local rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -3037,7 +3031,6 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
-    bool runtime_ready = false;
     try {
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
@@ -3134,7 +3127,6 @@ vec3 pelican_lighting_v1(
         }
 
         auto &renderer = GET_MODULE(Renderer);
-        runtime_ready = true;
         const auto pass_id =
             GET_MODULE(RenderingPassContainer)
                 .getRenderingPassIdByName(
@@ -3401,14 +3393,9 @@ vec3 pelican_lighting_v1(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        if (runtime_ready) {
-            throw;
-        }
-        SKIP(
-            std::string{
-                "Vulkan material local-read rendering "
-                "unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan material local-read rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -3849,11 +3836,10 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan dependency-safe physical scope "
-                "rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan dependency-safe physical scope rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -4082,10 +4068,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan alias rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan alias rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -4409,9 +4394,9 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
         if (!temp_dir.empty()) {
             std::filesystem::remove_all(temp_dir);
         }
-        SKIP(std::string{
-                 "Vulkan material variant rendering unavailable: "} +
-             error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan material variant rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -4857,10 +4842,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan clustered lighting unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan clustered lighting unavailable");
+        throw;
     }
 #endif
 }
@@ -5502,7 +5486,9 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         if (!temp_dir.empty()) {
             std::filesystem::remove_all(temp_dir);
         }
-        SKIP(std::string{"Vulkan hybrid rendering unavailable: "} + ex.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            ex, "Vulkan hybrid rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -5513,7 +5499,6 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
-    bool runtime_ready = false;
 
     try {
         FastModuleContainer modules;
@@ -5606,7 +5591,6 @@ TEST_CASE(
                 "PELICAN_FEATURE_SKY_AMBIENT") !=
             execution->render_pipeline
                 ->shader_defines.end());
-        runtime_ready = true;
 
         constexpr std::string_view
             deferred_surface_source =
@@ -5978,13 +5962,9 @@ void pelican_surface_v1(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        if (runtime_ready) {
-            throw;
-        }
-        SKIP(
-            std::string{
-                "Vulkan sky ambient rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan sky ambient rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -6640,10 +6620,9 @@ void pelican_surface_v1(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan extended G-buffer rendering unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan extended G-buffer rendering unavailable");
+        throw;
     }
 #endif
 }
@@ -6809,10 +6788,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        SKIP(
-            std::string{
-                "Vulkan pipeline reload unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan pipeline reload unavailable");
+        throw;
     }
 #endif
 }
@@ -7331,9 +7309,9 @@ TEST_CASE(
         if (!temp_dir.empty()) {
             std::filesystem::remove_all(temp_dir);
         }
-        SKIP(std::string{
-                 "Vulkan GPU arena transaction unavailable: "} +
-             ex.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            ex, "Vulkan GPU arena transaction unavailable");
+        throw;
     }
 #endif
 }
@@ -7345,7 +7323,6 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
-    bool runtime_ready = false;
     try {
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
@@ -7534,7 +7511,6 @@ TEST_CASE(
                     present->pass_id) ==
             std::vector<vk::ImageView>{
                 initial_mip_one_view});
-        runtime_ready = true;
 
         const auto render_and_require_green =
             [&] {
@@ -7738,14 +7714,10 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        if (runtime_ready) {
-            throw;
-        }
-        SKIP(
-            std::string{
-                "Vulkan depth-pyramid subresource rendering "
-                "unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan depth-pyramid subresource rendering unavailable");
+        throw;
     }
 #endif
 }

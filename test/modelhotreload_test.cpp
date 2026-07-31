@@ -16,6 +16,7 @@
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "skeletal_fixture.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -100,11 +101,8 @@ TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]"
         {{"name", "mesh_a"}, {"path", "fragment.glb#mesh/MeshA"}},
         {{"name", "mesh_b"}, {"path", "fragment.glb#mesh/MeshB"}},
     }));
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 
     auto &models = GET_MODULE(ModelAssetContainer);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
@@ -204,11 +202,8 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     FastModuleContainer modules;
     configureProject(sandbox.root,
                      nlohmann::json::array({{{"name", "live"}, {"path", "model.glb"}}}));
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
     auto &models = GET_MODULE(ModelAssetContainer);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     auto &reload = GET_MODULE(watch::ReloadService);
@@ -253,11 +248,8 @@ TEST_CASE("WP147 repeated HR2-G reload keeps another model animation running",
         {{"name", "reloaded"}, {"path", "reloaded.glb"}},
         {{"name", "stable"}, {"path", "stable.glb"}},
     }));
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 
     auto &models = GET_MODULE(ModelAssetContainer);
     auto &reload = GET_MODULE(watch::ReloadService);
@@ -356,11 +348,8 @@ TEST_CASE("HR2-G defers model material slot reuse across in-flight frames",
     configureProject(sandbox.root, nlohmann::json::array({
         {{"name", "live"}, {"path", "model.glb#mesh/MeshA"}},
     }));
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
     auto &models = GET_MODULE(ModelAssetContainer);
     auto &materials = GET_MODULE(MaterialContainer);
     auto &geometry = GET_MODULE(VertBufContainer);
@@ -397,11 +386,8 @@ TEST_CASE("HR2-G survives 1000 geometry reloads without allocation growth",
     configureProject(sandbox.root, nlohmann::json::array({
         {{"name", "geometry"}, {"path", "model.glb#mesh/MeshA"}},
     }));
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
     auto &models = GET_MODULE(ModelAssetContainer);
     auto &materials = GET_MODULE(MaterialContainer);
     auto &geometry = GET_MODULE(VertBufContainer);

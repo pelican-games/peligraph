@@ -5,6 +5,7 @@
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
@@ -17,11 +18,8 @@ void requireOverrideVulkan() {
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan unavailable: "} + error.what());
-    }
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 }
 
 GlobalMaterialId registerTemplateMaterial() {

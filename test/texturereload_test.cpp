@@ -9,6 +9,7 @@
 #include "../src/core/watch/filewatcher.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "ktx2_test_writer.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <array>
 #include <catch2/catch_test_macros.hpp>
@@ -95,9 +96,10 @@ TEST_CASE("HR1-T reload keeps identity, rebinds shape changes, and rolls back fa
           "[wp100][texture-reload][gpu]") {
     setupLogger();
     Sandbox box;
-    try {
-        FastModuleContainer modules;
-        configureGpu(box);
+    FastModuleContainer modules;
+    configureGpu(box);
+    TestSupport::requireVulkanDevice(
+        "Vulkan texture reload unavailable");
         const auto path = box.root / "color.png";
         writeBytes(path, std::span{redPng});
         const auto key = watch::makeAssetKey("color.png");
@@ -143,18 +145,16 @@ TEST_CASE("HR1-T reload keeps identity, rebinds shape changes, and rolls back fa
         GET_MODULE(VulkanManageCore).waitIdle();
         GET_MODULE(DeletionQueue).flushAll();
         REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan texture reload unavailable: "} + error.what());
-    }
 }
 
 TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX2 drift",
           "[wp100][texture-reload][gpu][stress]") {
     setupLogger();
     Sandbox box;
-    try {
-        FastModuleContainer modules;
-        configureGpu(box);
+    FastModuleContainer modules;
+    configureGpu(box);
+    TestSupport::requireVulkanDevice(
+        "Vulkan texture reload stress unavailable");
         const auto path = box.root / "stress.png";
         writeBytes(path, std::span{redPng});
         const auto key = watch::makeAssetKey("stress.png");
@@ -224,9 +224,6 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
         GET_MODULE(VulkanManageCore).waitIdle();
         GET_MODULE(DeletionQueue).flushAll();
         REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
-    } catch (const std::exception &error) {
-        SKIP(std::string{"Vulkan texture reload stress unavailable: "} + error.what());
-    }
 }
 
 } // namespace Pelican

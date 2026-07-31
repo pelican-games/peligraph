@@ -17,6 +17,7 @@
 #include "../src/project/materialformat.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "gltf_fragment_fixture.hpp"
+#include "vulkan_test_support.hpp"
 #include "vat_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -127,11 +128,9 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
 
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &ex) {
-        SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
-    }
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless rendering unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 
     auto &materials = GET_MODULE(MaterialContainer);
     auto &loader = GET_MODULE(GltfLoader);
@@ -334,11 +333,9 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
 
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &ex) {
-        SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
-    }
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless rendering unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 
     auto &loader = GET_MODULE(GltfLoader);
     REQUIRE(primitiveCount(loader.loadGltfBinary((yup / "model.glb").string())) == 1);
@@ -423,11 +420,9 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{16, 16};
-    try {
-        (void)GET_MODULE(StandardMaterialResource);
-    } catch (const std::exception &ex) {
-        SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
-    }
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless rendering unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
 
     auto model = GET_MODULE(GltfLoader).loadGltfBinary((delivery / "model.glb").string());
     REQUIRE(primitiveCount(model) == 1);

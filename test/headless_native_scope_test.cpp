@@ -23,6 +23,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
+#include "vulkan_test_support.hpp"
 
 #include <algorithm>
 #include <array>
@@ -762,7 +763,6 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
-    bool runtime_ready = false;
     try {
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
@@ -822,7 +822,6 @@ TEST_CASE(
             1.0 / 60.0);
 
         auto &renderer = GET_MODULE(Renderer);
-        runtime_ready = true;
         auto &vulkan =
             GET_MODULE(VulkanManageCore);
         std::optional<
@@ -1022,13 +1021,9 @@ TEST_CASE(
             std::filesystem::remove_all(
                 temp_dir);
         }
-        if (runtime_ready) {
-            throw;
-        }
-        SKIP(
-            std::string{
-                "Vulkan NativeScope execution unavailable: "} +
-            error.what());
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan NativeScope execution unavailable");
+        throw;
     }
 #endif
 }
