@@ -5197,14 +5197,15 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 material_id, opaque->definition) ==
             std::vector<vk::ImageView>{
                 GET_MODULE(RenderTargetContainer)
-                    .getImageView(shadow_map)});
+                    .getLayeredImageView(shadow_map)});
         const auto first_views = materials.boundScreenInputImageViewsForTesting(
             refraction_id, transparent->definition);
         REQUIRE(first_views ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_depth),
-                    GET_MODULE(RenderTargetContainer).getImageView(shadow_map)});
+                    GET_MODULE(RenderTargetContainer)
+                        .getLayeredImageView(shadow_map)});
         renderer.recreateRenderTargetsAndRebindForTesting({32, 32});
         REQUIRE(materials.screenInputBindingRevisionForTesting(
                     refraction_id, transparent->definition) > first_revision);
@@ -5217,13 +5218,14 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 material_id, opaque->definition) ==
             std::vector<vk::ImageView>{
                 GET_MODULE(RenderTargetContainer)
-                    .getImageView(shadow_map)});
+                    .getLayeredImageView(shadow_map)});
         REQUIRE(materials.boundScreenInputImageViewsForTesting(
                     refraction_id, transparent->definition) ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_depth),
-                    GET_MODULE(RenderTargetContainer).getImageView(shadow_map)});
+                    GET_MODULE(RenderTargetContainer)
+                        .getLayeredImageView(shadow_map)});
 
         auto &geometry = GET_MODULE(VertBufContainer);
         ModelTemplate model;
@@ -5319,7 +5321,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(previous_shadow_views ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer)
-                        .getImageView(shadow_map)});
+                        .getLayeredImageView(
+                            shadow_map)});
 
         auto reloaded_shadow_feature =
             nlohmann::json::parse(
@@ -5426,7 +5429,7 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(reloaded_shadow_views ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer)
-                        .getImageView(
+                        .getLayeredImageView(
                             reloaded_shadow_map)});
 
         renderer.render();

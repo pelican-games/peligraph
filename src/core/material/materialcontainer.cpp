@@ -4083,26 +4083,6 @@ MaterialContainer::buildScreenInputDescriptor(
                                     cube,
                                 resource.history,
                                 parity);
-                } else if (
-                    array_view &&
-                    rt_views.arrayLayers(
-                        resource.target) == 1) {
-                    image_view =
-                        rt_views
-                            .getImageSubresourceViewForFrame(
-                                resource.target,
-                                ImageSubresourceRange{
-                                    .base_mip_level = 0,
-                                    .level_count =
-                                        rt_views.mipLevels(
-                                            resource.target),
-                                    .base_array_layer = 0,
-                                    .layer_count = 1,
-                                },
-                                ImageSubresourceViewDimension::
-                                    two_d_array,
-                                resource.history,
-                                parity);
                 } else if (array_view) {
                     image_view =
                         rt_views

@@ -152,6 +152,9 @@ DECLARE_MODULE(RenderTargetContainer) {
                                          uint32_t frame_index) const;
     const ImageWrapper &getAttachmentImage(
         GlobalRenderTargetId id, bool history_read = false) const;
+    // Scalar compatibility accessor. For an array render target this returns
+    // an e2D view of layer 0; consumers whose ABI is an array must call
+    // getLayeredImageView() instead.
     vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
                                        uint32_t frame_index) const;
@@ -192,6 +195,8 @@ DECLARE_MODULE(RenderTargetContainer) {
         ImageSubresourceRange subresource,
         bool array_view,
         bool history_read = false) const;
+    // Returns one e2DArray view spanning every layer, including the
+    // single-layer case. This is the descriptor view for family-array ABIs.
     vk::ImageView getLayeredImageView(
         GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getLayeredImageViewForFrame(
