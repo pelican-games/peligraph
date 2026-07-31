@@ -136,6 +136,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP240a | 既定 rendering config の preset 化 | ✅ 完了（2026-07-31）。新規projectと`animgraph_demo`を`hybrid_v1` + directional shadowへ移行し、project-space headless GPU回帰を常設 |
 | WP240b | 背景と環境光 — 既定レンダラの最小見栄え | **未着手**。ライトを消すとemissive以外が黒。skybox featureとambientをproject空間へ |
 | WP240c | project空間 material の宣言と実行時ロード | **未着手・最大**。`applyLoweredMaterialForRoute`の呼び出し元が`test/`のみ、glTF `alphaMode`未解釈 |
+| WP241 | skip を名乗る 4 件の GPU テスト失敗 | **未着手**。`catch (std::exception&)` → `SKIP` が engine の fail-fast を握り潰している |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -755,6 +756,55 @@ hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原�
 
 依存: WP240a。WP240b とは独立で並行可。見積: 大。**分割を検討してよい**
 (1 を独立 WP にすると受け入れが明確になる)。
+
+### WP241: skip を名乗っている 4 件の GPU テスト失敗
+
+**目的**: `gpu` ラベルの 4 件が、engine の fail-fast エラーを握り潰して `SKIP` として
+報告している。エラーを表に出し、原因を直す。
+
+**発見の経緯**: `test/ci/run_gpu_gate.py`(2026-07-31 追加)の初回実行で検出した。
+**同じ実行で `ctest` 自身は「122 件中 0 失敗、100% passed」と報告している。**
+skip されたテストは赤くならないので、落ちたテストより見つけにくい。
+
+**確定している事実**:
+
+1. 4 件はいずれも**テスト本体全体を `try { ... } catch (const std::exception &error) { SKIP(...) }`
+   で囲んでいる**。このエンジンは fail-fast で `throw std::runtime_error` する設計なので、
+   **検出すべき回帰がそのまま silent skip になる**。
+2. 実際に出ているメッセージは 2 系統。
+
+   | テスト | 握り潰されているエラー |
+   |---|---|
+   | RPC load_gltf publishes once and preserves inventory on preflight and GPU failure | `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+   | HR1-M updates one same-layout material and rolls back invalid candidates | `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
+   | HR1-M watcher gate and 1000 reloads keep resources bounded | 同上 |
+   | WP206b named variant owns its GPU record and reloads atomically with its base | 同上 |
+
+3. これらは GPU 不在による skip では**ない**。同じ実行で他の 118 件は実 device 上で通っている。
+4. 最後の 1 件は [`render_evidence_ledger.md`](render_evidence_ledger.md) が
+   **E3 +E5** と判定した WP206b の根拠テストである。根拠が実行されていないので**等級の再判定が要る**。
+
+**実装範囲**:
+
+1. **`catch (const std::exception &) → SKIP` の idiom を 4 件から除去する。**
+   capability 不足による skip と、実行して失敗したことは別物である。前者が必要なら
+   **device / extension の有無を明示的に問い合わせて skip** し、テスト本体は囲まない。
+   同じ idiom が他のテストにも無いか `grep` して、あれば同様に扱うこと。
+2. 露出した 2 系統の失敗を直す。`albedo_detail` の 3 件は同一原因の可能性が高い。
+3. 直したうえで `test/ci/gpu_skip_allowlist.txt` を更新する。**空のまま通るのが正常**で、
+   allowlist へ足すのは「device capability が無いと本当に実行不能」と示せる場合だけ。
+
+**受け入れ条件**:
+
+- `python -B test/ci/run_gpu_gate.py --build-dir build --config Debug --artifacts-dir <dir>` が
+  **exit 0**(`SKIP exact policy: PASS` かつ ctest 自体も緑)
+- 4 件が skip ではなく実行され、通過する
+- テスト本体を包む `catch (const std::exception &) → SKIP` が残っていない
+- `render_evidence_ledger.md` の WP206b named variant の等級を再判定する
+- `ctest -C Debug -LE gpu` が緑、`git diff --check` クリーン
+
+依存: なし。見積: 中。**WP240b / 240c と並行可**だが、`albedo_detail` の原因が
+material 経路にあるなら WP240c と衝突しうるので、着手前に担当を確認すること。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
