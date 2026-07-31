@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.13)
 
+# battery::embed writes each target's embed.hpp with file(GENERATE) from its own directory,
+# but the consuming target lives in src/core/resources. Under CMP0118's OLD behaviour the
+# GENERATED property does not cross that directory boundary, so the generate step rejects
+# the header as a missing source. 3.13 above leaves the policy unset, which CMake 4.x
+# resolves as OLD -- configure then fails for anyone on a current CMake even though CI's
+# older toolchain still passes.
+if(POLICY CMP0118)
+  cmake_policy(SET CMP0118 NEW)
+endif()
+
 project(pelican2)
 
 if(DEFINED SKIP_TEST)
