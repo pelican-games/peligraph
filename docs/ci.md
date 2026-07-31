@@ -43,6 +43,30 @@ ctest --test-dir build -C Debug -LE gpu --output-on-failure
 
 GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu -N` を使う。
 
+### GPU gate(`run_gpu_gate.py`)
+
+CI2 は存在しないが、**gate 自体は名前の付いたコマンドとして用意してある**。Vulkan device の
+ある機械で次を実行する。CI2 が立つときはこれを呼ぶだけでよい。
+
+```powershell
+python -B test/ci/run_gpu_gate.py `
+  --build-dir build `
+  --config Debug `
+  --artifacts-dir build/ci-artifacts-gpu
+```
+
+CPU gate と同じ exact SKIP policy を `test/ci/gpu_skip_allowlist.txt` に対して適用する。
+判定ロジックは `test/ci/skip_policy.py` に両 gate 共通で置き、self-test は
+`test/ci/test_skip_policy.py`(`python -m unittest test_skip_policy`)。
+
+**`ctest` が緑でも gate は落ちうる。** それがこの gate の存在理由である。2026-07-31 の実行では
+`ctest` が「122 件中 0 失敗」と報告した一方、gate は 4 件の非許可 skip を検出して FAIL した
+(詳細は `gpu_skip_allowlist.txt` のコメントと WP241)。skip されたテストは赤くならないので、
+落ちたテストより見つけにくい。
+
+GPU の無い機械で走らせると大半が skip して gate は落ちる。これは意図どおりで、
+上の「fail-on-no-GPU」の実体である。その場合は「no Vulkan device」の診断行が先頭に出る。
+
 Pythonはエンジン／ゲームの実行依存ではない。`BUILD_TESTING=OFF`なら探索自体を行わず、
 `BUILD_TESTING=ON`でも`PELICAN_PYTHON_TESTS=OFF`（既定）はPythonを探索しない。
 手元で任意登録する場合だけ`AUTO`、完全なgateを要求するCI0/clean-cloneは
