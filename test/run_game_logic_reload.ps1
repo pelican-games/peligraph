@@ -22,7 +22,7 @@ Copy-Item -LiteralPath $FixtureModel -Destination (Join-Path $project 'assets/ch
 @'
 {"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}}
 '@ | Set-Content -LiteralPath (Join-Path $project 'scenes/main.scene.json') -Encoding ascii
-'{"models":[{"name":"character","path":"assets/character.glb"}]}' | Set-Content -LiteralPath (Join-Path $project 'assets/asset_data.json') -Encoding ascii
+'{"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"assets/character.glb"}]}' | Set-Content -LiteralPath (Join-Path $project 'assets/asset_data.json') -Encoding ascii
 '{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}' | Set-Content -LiteralPath (Join-Path $project 'ui/ui_overlay.json') -Encoding ascii
 
 $sourceDll = Join-Path $OutDir 'wp90_live.dll'

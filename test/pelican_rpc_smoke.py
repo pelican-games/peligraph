@@ -72,7 +72,14 @@ def make_project(root: Path, rendering_config: Path) -> Path:
             },
         },
     )
-    write_json(project / "assets/asset_data.json", {"models": []})
+    write_json(
+        project / "assets/asset_data.json",
+        {
+            "schema": "pelican.asset_data",
+            "version": 1,
+            "models": [],
+        },
+    )
     write_json(
         project / "ui/ui_overlay.json",
         {

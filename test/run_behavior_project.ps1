@@ -17,7 +17,7 @@ Copy-Item -LiteralPath $ProjectPass -Destination (Join-Path $project 'passes/mai
 @'
 {"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{"name":"BehaviorOnly","components":[{"name":"behavior","type":"wp155_project_behavior"},{"name":"behavior","type":"wp155_project_behavior","params":{"label":"second"}}]}]}}}
 '@ | Set-Content -LiteralPath (Join-Path $project 'scenes/main.scene.json') -Encoding ascii
-'{"models":[]}' | Set-Content -LiteralPath (Join-Path $project 'assets/asset_data.json') -Encoding ascii
+'{"schema":"pelican.asset_data","version":1,"models":[]}' | Set-Content -LiteralPath (Join-Path $project 'assets/asset_data.json') -Encoding ascii
 '{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}' | Set-Content -LiteralPath (Join-Path $project 'ui/ui_overlay.json') -Encoding ascii
 
 $liveDll = Join-Path $OutDir 'wp155_behavior.dll'
