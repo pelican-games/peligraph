@@ -1,6 +1,9 @@
 
 # fixture payloads must be byte-exact (sha256 / parser offset contracts); never convert line endings
 test/fixtures/** -text
+
+# git runs hooks through sh even on Windows, and sh rejects a CRLF shebang
+tools/hooks/* text eol=lf
 *.glb binary
 *.vrm binary
 *.spv binary

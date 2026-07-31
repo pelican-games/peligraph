@@ -1,0 +1,80 @@
+#!/bin/sh
+# Keep `#L<line>` links in staged docs pointing at what they were written to point at.
+# Install with:  git config core.hooksPath tools/hooks
+#
+# Relocatable links are fixed and re-staged. Links the tool refuses to guess at block the
+# commit, because a link that silently points at unrelated code is worse than one that is
+# loudly missing. Escape hatch: git commit --no-verify
+
+set -u
+
+repo_root=$(git rev-parse --show-toplevel) || exit 0
+cd "$repo_root" || exit 0
+
+staged_docs=$(git diff --cached --name-only --diff-filter=ACMR \
+    -- 'docs/source-code-guide/*.md' 'docs/manual/*.md')
+[ -n "$staged_docs" ] || exit 0
+
+# uv provisions its own interpreter from the script's inline metadata, so no system Python
+# is needed. doclink declares no dependencies, so a bare interpreter works too.
+if command -v uv >/dev/null 2>&1; then
+    set -- uv run --quiet --script tools/doclink.py
+elif command -v python3 >/dev/null 2>&1; then
+    set -- python3 -B tools/doclink.py
+elif command -v python >/dev/null 2>&1; then
+    set -- python -B tools/doclink.py
+else
+    echo "pre-commit: neither uv nor python found; skipping the doc link check." >&2
+    echo "            install uv, or run 'uv run tools/doclink.py check' elsewhere." >&2
+    exit 0
+fi
+
+# Rewriting a document that also carries unstaged edits would force us to `git add` those
+# edits too, silently widening the commit. Leave such documents alone and say so.
+targets=""
+skipped=""
+for f in $staged_docs; do
+    if [ -n "$(git diff --name-only -- "$f")" ]; then
+        skipped="$skipped $f"
+    elif [ -z "$targets" ]; then
+        targets="$f"
+    else
+        targets="$targets,$f"
+    fi
+done
+
+if [ -n "$skipped" ]; then
+    echo "pre-commit: these staged docs also have unstaged edits, so their links were left alone:" >&2
+    for f in $skipped; do echo "              $f" >&2; done
+fi
+
+[ -n "$targets" ] || exit 0
+
+output=$("$@" update --staged --only "$targets" 2>&1)
+status=$?
+
+rewritten=""
+for f in $(echo "$targets" | tr ',' ' '); do
+    if [ -n "$(git diff --name-only -- "$f")" ]; then
+        git add -- "$f"
+        rewritten="$rewritten $f"
+    fi
+done
+if [ -n "$(git status --porcelain -- docs/link_anchors.json)" ]; then
+    git add -- docs/link_anchors.json
+fi
+
+if [ -n "$rewritten" ]; then
+    echo "pre-commit: doclink relocated stale source links and re-staged:"
+    for f in $rewritten; do echo "              $f"; done
+fi
+
+if [ $status -ne 0 ]; then
+    echo "$output" >&2
+    echo "" >&2
+    echo "pre-commit: some doc links could not be relocated (see above)." >&2
+    echo "            fix them, or commit with --no-verify to defer." >&2
+    exit 1
+fi
+
+exit 0

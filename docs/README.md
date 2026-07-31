@@ -74,7 +74,9 @@
 - `adding_features.md` — 機能追加レシピ集(cookbook)
 - `render_mechanism_coverage.md` — user-spaceで書ける描画技法と、不足する再利用可能機構の現行監査
 - `render_authoring_ergonomics.md` — 描画機構の書き味・診断・配布上の摩擦と、誤認を除いた改善優先度
+- `render_evidence_ledger.md` — 描画機構ごとに「実装済み」の証拠がどこまで強いかを E0〜E5 で台帳化(`render_mechanism_coverage.md` の根拠表。実機ゲート未通過のものを名指しする)
 - `ci.md` — Windows/MSVC CPU gate、`gpu` ラベル、SKIP exact policy の運用
+- `link_anchors.json` — 生成物。`tools/doclink.py` が文書内の `#L<行>` リンクを追従させるためのアンカー台帳(手で編集しない)
 - `example_assets.md` — example の外部 binary asset 22件の取得・provenance・ライセンス台帳
 - `rendering_phase1_review.md` — Validation Run の流儀
 
