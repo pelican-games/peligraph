@@ -103,7 +103,7 @@ pelican2/
 ⑦描画                        vkcore/renderer.cpp → renderer/ 各パス実装
 ```
 
-- ①: 時刻の前進は `updateFrameState` の**中ではなく**、それを呼ぶ直前の [`loop.cpp` 内](../../src/core/appflow/loop.cpp#L401)(headless)/ [#L544](../../src/core/appflow/loop.cpp#L544)(通常)/ [#L485](../../src/core/appflow/loop.cpp#L485)(XR)で行われます。`updateFrameState` のフェーズ列([framephase.hpp](../../src/core/appflow/framephase.hpp) の `FramePhase`)は `freeze_events` / `freeze_input` / `freeze_actions` / `deliver_events` / `update_game` の 5 つで、時刻前進も描画も含みません
+- ①: 時刻の前進は `updateFrameState` の**中ではなく**、それを呼ぶ直前の [`loop.cpp` 内](../../src/core/appflow/loop.cpp#L401)(headless)/ [対話ループ内](../../src/core/appflow/loop.cpp#L544)(通常)/ [その XR 分岐](../../src/core/appflow/loop.cpp#L485)(XR)で行われます。`updateFrameState` のフェーズ列([framephase.hpp](../../src/core/appflow/framephase.hpp) の `FramePhase`)は `freeze_events` / `freeze_input` / `freeze_actions` / `deliver_events` / `update_game` の 5 つで、時刻前進も描画も含みません
 - ②: [inputstate.cpp](../../src/core/os/inputstate.cpp) — GLFW コールバックはキューに積むだけで、フレーム先頭で 1 回だけ `InputSnapshot` を確定します(決定性・記録可能性の土台)
 - ⑥: ゲームコードの `update(GameContext&)` はここで呼ばれます。登録機構は [details/system/registerer.hpp](../../src/core/userpublic/details/system/registerer.hpp)。**エンジン同梱のシステムも特権なしで同じ (order, 名前) 総順序に参加**します — オブジェクト behavior を回す `BehaviorSystem`(order = 50。[`behavior.hpp` 内](../../src/core/userpublic/behavior.hpp#L19)、実体は [gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))/ カメラコントローラ `BuiltinCameraControllerSystem`(order = 10000。[userpublic/cameracontrollersystem.cpp](../../src/core/userpublic/cameracontrollersystem.cpp))/ トリガー判定 `PhysicsTriggerSystem`(order = `INT_MAX`。[phys/physworld.cpp](../../src/core/phys/physworld.cpp))。order がこれらより大きいユーザーシステムは、それぞれより後に走ります
 - ⑦: パス種別ごとの実装は [materialrender.cpp](../../src/core/renderer/materialrender.cpp)(gbuffer)・[fullscreenpassrenderer.cpp](../../src/core/renderer/fullscreenpassrenderer.cpp)・[shadowdepthpasscontainer.cpp](../../src/core/renderer/shadowdepthpasscontainer.cpp)・[debugdraw.cpp](../../src/core/renderer/debugdraw.cpp)・[debugtext.cpp](../../src/core/renderer/debugtext.cpp)・[uirenderer.cpp](../../src/core/renderer/uirenderer.cpp)
@@ -180,7 +180,7 @@ pelican2/
 
 ### ツール(devcli)
 
-[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(雛形 **16 エントリ**生成。正は [#L370](../../src/devcli/projectinit.cpp#L263) の `templateFiles()`)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
+[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(雛形 **16 エントリ**生成。正は [同ファイル](../../src/devcli/projectinit.cpp#L263) の `templateFiles()`)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
 
 ## 12.7 横断的な実装パターン(読むときの目印)
 

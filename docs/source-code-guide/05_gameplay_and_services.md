@@ -343,7 +343,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [#L133](../../test/physquery_test.cpp#L133)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L133)。
 >
 > **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L530) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L621) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L470))。provider の列挙順を結果へ漏らさない最後の関門です。
 
@@ -648,7 +648,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 > 4. 遷移を新規開始していなければ elapsed += dt
 > ```
 >
-> **手がかり**: `next.source_is_snapshot = transition.has_value()` — 「遷移中からの割り込みだけ」がスナップショットを持ちます(待機状態からの遷移は source が実 state なので不要)。`states[target].phase = 0.0` により、同 tick の exit→enter でクロックが必ず 0 に戻ります。`chooseTransition()` の `static TransitionV1 forced_transition;` は**関数ローカル static** を毎回上書きしてポインタを返す形で、安全なのは `duration = 0.0` を必ず設定していて、呼び出し側が duration 0 の枝で即座に state を切り替え `transition` に**保存しない**からです。forced に duration を持たせる改造をすると、次の `forceState()` で書き換わる生きたポインタになります。テストは [`animgraph_test.cpp`](../../test/animgraph_test.cpp#L163) の "interrupt materializes one snapshot and alpha zero output is byte identical"、[#L207](../../test/animgraph_test.cpp#L207)、[#L137](../../test/animgraph_test.cpp#L137)。
+> **手がかり**: `next.source_is_snapshot = transition.has_value()` — 「遷移中からの割り込みだけ」がスナップショットを持ちます(待機状態からの遷移は source が実 state なので不要)。`states[target].phase = 0.0` により、同 tick の exit→enter でクロックが必ず 0 に戻ります。`chooseTransition()` の `static TransitionV1 forced_transition;` は**関数ローカル static** を毎回上書きしてポインタを返す形で、安全なのは `duration = 0.0` を必ず設定していて、呼び出し側が duration 0 の枝で即座に state を切り替え `transition` に**保存しない**からです。forced に duration を持たせる改造をすると、次の `forceState()` で書き換わる生きたポインタになります。テストは [`animgraph_test.cpp`](../../test/animgraph_test.cpp#L163) の "interrupt materializes one snapshot and alpha zero output is byte identical"、[即時切替とクロック復帰](../../test/animgraph_test.cpp#L207)、[遷移選択の優先順位](../../test/animgraph_test.cpp#L137)。
 >
 > **不変条件**: スナップショットは 1 遷移につき 1 枚(多段割り込みで積み増さない)。`alpha == 0` の出力はスナップショット byte と完全一致。遷移を開始した tick では `elapsed` を進めない。`chooseTransition()` が返す forced 用ポインタを duration 0 の即時経路以外で保持しない。
 
@@ -867,7 +867,7 @@ policyは可変長パラメータの**手前にある通常の引数**なので�
 | behavior params | [`Pelican::behaviorParamsPolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L84) | 全フィールドが`defaulted(...)`。enumは`enumValues(...)`必須 |
 | component | [`Pelican::componentPolicy("codec_name")`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L86) | codec名が非空。required / defaulted の混在は可 |
 
-各フィールドは [`required(field<&T::m>("name"))`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L345) か [`defaulted(field<&T::m>("name"), default_value)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L351) のどちらかで包む必要があります。そのほかconsteval検査として、フィールド名の一意性、全フィールドが同一owner型であること、範囲の有限性と順序、`maxStructFieldEnumValues = 8`（[#L44](../../src/core/userpublic/details/schema/structfieldschema.hpp#L44)）があります。
+各フィールドは [`required(field<&T::m>("name"))`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L345) か [`defaulted(field<&T::m>("name"), default_value)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L351) のどちらかで包む必要があります。そのほかconsteval検査として、フィールド名の一意性、全フィールドが同一owner型であること、範囲の有限性と順序、`maxStructFieldEnumValues = 8`（[`maxStructFieldEnumValues` の定義](../../src/core/userpublic/details/schema/structfieldschema.hpp#L44)）があります。
 
 > 🧩 **難所 — 不完全型のまま consteval**([`field<&T::m>()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L249) / [`structFields()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L445))
 >
@@ -908,7 +908,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 > 4. swap(destination, temporary)        ← ここまで destination は無傷
 > ```
 >
-> **手がかり**: `setStructDefault` / `decodeStructPolicyField` / `encodeStructPolicyField` はどれも `Declaration::member`(メンバポインタが非型テンプレート引数として型へ埋まっている)経由で `temporary.*member` に触るので、実行時のオフセット表は存在しません。テストは [`structfieldschema_test.cpp`](../../test/structfieldschema_test.cpp#L119) の "…scalar keys atomically" と [#L149](../../test/structfieldschema_test.cpp#L149) の "…without partial publication"。
+> **手がかり**: `setStructDefault` / `decodeStructPolicyField` / `encodeStructPolicyField` はどれも `Declaration::member`(メンバポインタが非型テンプレート引数として型へ埋まっている)経由で `temporary.*member` に触るので、実行時のオフセット表は存在しません。テストは [`structfieldschema_test.cpp`](../../test/structfieldschema_test.cpp#L119) の "…scalar keys atomically" と [`BehaviorParams` 検証テスト](../../test/structfieldschema_test.cpp#L149) の "…without partial publication"。
 >
 > **不変条件**: 3 本目の encode fold を「無駄だから」と消さない。unknown 検査を decode の後ろへ動かさない(エラーコードの優先順位が変わります)。destination への書き込みは最後の `swap` 1 回だけに保つ。`Params` に throw する swap や非 nothrow なムーブを持ち込まない(`using std::swap; swap(a,b);` の 2 段 ADL(実引数依存探索 — 引数の型が属する名前空間からも関数を探す C++ の名前探索規則。`using std::swap;` で既定を候補に入れつつ、その型の名前空間に専用の `swap` があればそちらが選ばれます)形と `is_nothrow_swappable_v` が見ている式は同じものなので、throw するメンバ swap を足すと静かに static_assert が落ちます)。
 

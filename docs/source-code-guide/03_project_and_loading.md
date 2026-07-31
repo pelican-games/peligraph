@@ -71,10 +71,10 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 | API | 宣言 | 役割 |
 |---|---|---|
 | `sceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L600) | 現在の改訂を取得（初回は遅延load） |
-| `updateSceneDocument()` | [#L610](../../src/core/loader/basicconfig.cpp#L610) | scene v1バイト列で差し替え |
-| `invalidateSceneDocument()` | [#L614](../../src/core/loader/basicconfig.cpp#L614) | 次回の再構築を強制 |
-| `importSceneDocument()` | [#L619](../../src/core/loader/basicconfig.cpp#L619) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
-| `saveSceneDocument()` | [#L663](../../src/core/loader/basicconfig.cpp#L663) | ディスクへ書き戻し、`SceneSaveResult`（revision / digest / byte数）を返す |
+| `updateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L610) | scene v1バイト列で差し替え |
+| `invalidateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L614) | 次回の再構築を強制 |
+| `importSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L619) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
+| `saveSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L663) | ディスクへ書き戻し、`SceneSaveResult`（revision / digest / byte数）を返す |
 
 保存の失敗は型付きです。[`SceneSaveErrorCode`](../../src/core/loader/basicconfig.hpp#L19) は `ExternalModification` / `Unavailable` / `IoFailure` の三つで、[`SceneSaveError`](../../src/core/loader/basicconfig.hpp#L25) が保持します。`scene_baseline_digest` と保存直前のディスク内容を突き合わせるため、**エディタの外でファイルが書き換わっていれば `ExternalModification` で拒否**します。
 
@@ -86,7 +86,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 >
 > **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。
 >
-> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([#L685](../../src/core/loader/basicconfig.cpp#L685))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([#L724](../../src/core/loader/basicconfig.cpp#L724))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
+> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([書く前の検査](../../src/core/loader/basicconfig.cpp#L685))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の検査](../../src/core/loader/basicconfig.cpp#L724))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
 >
 > **骨子**:
 > ```text
@@ -189,7 +189,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 
 この時点ではECS型やGPUには触れません。
 
-> 🧩 **難所 — 3値のDFSが名前を出す**([`normalizeScene()`](../../src/project/sceneformat.cpp#L68) 内の visit ラムダ [#L166](../../src/project/sceneformat.cpp#L166))
+> 🧩 **難所 — 3値のDFSが名前を出す**([`normalizeScene()`](../../src/project/sceneformat.cpp#L68) 内の visit ラムダ [本体](../../src/project/sceneformat.cpp#L166))
 >
 > **何をする所か**: `parent` エッジをたどって親子関係の循環を検出し、循環に参加しているobject名を並べたメッセージでthrowします。
 >
@@ -203,7 +203,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 > stack.pop(); state[i] = 2
 > ```
 >
-> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([#L132-L147](../../src/project/sceneformat.cpp#L132))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L110) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
+> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([前段の検査](../../src/project/sceneformat.cpp#L132))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L110) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
 >
 > **不変条件**: 3値stateの `1` と `2` を統合しない。エラーには循環に参加する名前の並びを載せる(「循環あり」だけにしない)。重複名・未知親・曖昧親の検査はDFSより前に済ませる。
 
@@ -284,7 +284,7 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 >
 > **何をする所か**: 同じ漸化式の逆向きです。エディタが `preserve: "world"` で親を付け替えるとき、新しい親のworld TRSから「worldを保ったままの子のlocal TRS」を逆算します。
 >
-> **素朴に読むと**: `local = parent^-1 * world` を書くだけに見えます。ところがTRS(平行移動・回転・非一様スケール)は逆演算に対して**閉じていません**。親が非一様スケールと回転を同時に持つと、真の相対変換はせん断を含み、正準TRSでは表現できません。せん断が出る仕組みは合成側([`composeWorld()`](../../src/core/loader/editorprojectiontransaction.cpp#L127))を見ると分かります — `world.pos = parent.pos + parent.R * (parent.S * local.pos)` / `world.R = parent.R * local.R` / `world.S = parent.S * local.S` で、**親のスケールは親の軸に沿って**掛かります。子が回転していると伸縮の軸と子の軸が揃わないので、子の直交していた軸が斜交します。これがせん断で、「回転させた直交軸に沿った軸別スケール」しか書けない正準TRSの表現範囲の外です。素朴に計算しても数値そのものは出るので、壊れ方は「公開した瞬間に物体が歪む/ずれる」という無音の形になります。だからこの関数は計算して終わりではなく、**逆算 → もう一度合成 → 元のworldと一致しなければ `TransformUnrepresentable` で拒否** という表現可能性の検査になっています。検査の位置も一律ではありません。除算の**前**に並ぶゼロスケール判定と親TRSの有限性判定([#L229-L241](../../src/core/loader/editorprojectiontransaction.cpp#L229))は `inf` / `NaN` を作らないためのガードで、クォータニオンのノルム判定([#L257](../../src/core/loader/editorprojectiontransaction.cpp#L257))は除算の**後**に来る表現可能性検査の一部です — 前者は `TransformZeroParentScale` / `TransformNonFinite`、後者は `TransformUnrepresentable` と、出るエラーコードも別です。ただし「非有限の検査は除算前だけ」ではありません。逆算した結果そのものの有限性も除算の後にもう一度見ていて([#L252](../../src/core/loader/editorprojectiontransaction.cpp#L252))、こちらのエラーコードは `TransformNonFinite` です。
+> **素朴に読むと**: `local = parent^-1 * world` を書くだけに見えます。ところがTRS(平行移動・回転・非一様スケール)は逆演算に対して**閉じていません**。親が非一様スケールと回転を同時に持つと、真の相対変換はせん断を含み、正準TRSでは表現できません。せん断が出る仕組みは合成側([`composeWorld()`](../../src/core/loader/editorprojectiontransaction.cpp#L127))を見ると分かります — `world.pos = parent.pos + parent.R * (parent.S * local.pos)` / `world.R = parent.R * local.R` / `world.S = parent.S * local.S` で、**親のスケールは親の軸に沿って**掛かります。子が回転していると伸縮の軸と子の軸が揃わないので、子の直交していた軸が斜交します。これがせん断で、「回転させた直交軸に沿った軸別スケール」しか書けない正準TRSの表現範囲の外です。素朴に計算しても数値そのものは出るので、壊れ方は「公開した瞬間に物体が歪む/ずれる」という無音の形になります。だからこの関数は計算して終わりではなく、**逆算 → もう一度合成 → 元のworldと一致しなければ `TransformUnrepresentable` で拒否** という表現可能性の検査になっています。検査の位置も一律ではありません。除算の**前**に並ぶゼロスケール判定と親TRSの有限性判定([この2つ](../../src/core/loader/editorprojectiontransaction.cpp#L229))は `inf` / `NaN` を作らないためのガードで、クォータニオンのノルム判定([`norm_squared` の算出](../../src/core/loader/editorprojectiontransaction.cpp#L257))は除算の**後**に来る表現可能性検査の一部です — 前者は `TransformZeroParentScale` / `TransformNonFinite`、後者は `TransformUnrepresentable` と、出るエラーコードも別です。ただし「非有限の検査は除算前だけ」ではありません。逆算した結果そのものの有限性も除算の後にもう一度見ていて([結果側の判定](../../src/core/loader/editorprojectiontransaction.cpp#L252))、こちらのエラーコードは `TransformNonFinite` です。
 >
 > **骨子**:
 > ```text
@@ -305,7 +305,7 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 
 ### 5. 名前binding
 
-名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L512)、呼び出しは [#L329](../../src/core/loader/scene.cpp#L329) / [#L424](../../src/core/loader/scene.cpp#L424)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
+名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L512)、呼び出しは [親子あり経路](../../src/core/loader/scene.cpp#L329) / [親子なし経路](../../src/core/loader/scene.cpp#L424)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
 
 bindingは生ポインタを保持しません。アクセス時に`tryComponent<TransformComponent>()`でIDのgenerationとComponent存在を再検証します。
 
@@ -372,7 +372,7 @@ tinygltf Model
 >   buildSkinPalette(): palette[offset+i] = model_matrix[layout_node[i]] * inverse_bind[i]
 > ```
 >
-> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L947))。joint配列への追記([#L981](../../src/core/model/gltf.cpp#L981))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L178) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([`produced()`](../../src/core/animation/animationjobs.cpp#L411) / [`td::copy()`](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([`skeletalanimation.hpp` 内](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
+> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L947))。joint配列への追記([その位置](../../src/core/model/gltf.cpp#L981))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L178) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([`produced()`](../../src/core/animation/animationjobs.cpp#L411) / [`std::copy()`](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([`skeletalanimation.hpp` 内](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
 >
 > **不変条件**: binding群はoffset 0から結合paletteを隙間なく覆う。`JOINTS_0` は必ず `joint_offset` 加算済みでGPUへ届く。skinned primitiveの頂点はnode変換を含まない。
 
@@ -389,7 +389,7 @@ tinygltf Model
 > 三角形の3頂点のどれかが頭関連 -> third_person_only、それ以外 -> both
 > ```
 >
-> **手がかり**: `indices` が空なら 0,1,2,… を生成して三角形列として扱う([#L10-L18](../../src/core/model/vrmfirstperson.cpp#L10))ので、非indexedプリミティブも同じ経路です。TRIANGLES以外は呼び出し側([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1594))と本体([#L25](../../src/core/model/vrmfirstperson.cpp#L25))の両方で弾きます。分割後は both 側と third 側が別プリミティブとして `variants` へ積まれる([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1633))ので、1つのglTFプリミティブから2つの描画レンジが生まれます。ヘッダのコメントが規範で、各群の中では**元の三角形順が保たれます**([`vrmfirstperson.hpp` 内](../../src/core/model/vrmfirstperson.hpp#L27))。テストは [`vrmfirstperson_test.cpp` 内](../../test/vrmfirstperson_test.cpp#L7) と [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L241)。
+> **手がかり**: `indices` が空なら 0,1,2,… を生成して三角形列として扱う([index 列の生成](../../src/core/model/vrmfirstperson.cpp#L10))ので、非indexedプリミティブも同じ経路です。TRIANGLES以外は呼び出し側([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1594))と本体([三角形数の検査](../../src/core/model/vrmfirstperson.cpp#L25))の両方で弾きます。分割後は both 側と third 側が別プリミティブとして `variants` へ積まれる([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1633))ので、1つのglTFプリミティブから2つの描画レンジが生まれます。ヘッダのコメントが規範で、各群の中では**元の三角形順が保たれます**([`vrmfirstperson.hpp` 内](../../src/core/model/vrmfirstperson.hpp#L27))。テストは [`vrmfirstperson_test.cpp` 内](../../test/vrmfirstperson_test.cpp#L7) と [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L241)。
 >
 > **不変条件**: 呼び出しは `joint_offset` 加算より前。分類の単位は頂点ではなく三角形。`auto` が返すのは both / third の2群だけ。
 
@@ -397,7 +397,7 @@ tinygltf Model
 >
 > **何をする所か**: 頂点シェーダだけを差し替えた派生マテリアルを登録し、そのIDをモデル内ローカルのmaterial ID空間へ割り当てます。
 >
-> **素朴に読むと**: `using ModelLocalMaterialId = int;`([#L408](../../src/core/model/gltf.cpp#L408))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [#L424](../../src/core/model/gltf.cpp#L424) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp` 内](../../src/core/renderer/polygoninstancecontainer.cpp#L1123) がその index で初期値表を引き直すため、この表が無いと [`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1787) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
+> **素朴に読むと**: `using ModelLocalMaterialId = int;`([宣言](../../src/core/model/gltf.cpp#L408))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [同じ構造体](../../src/core/model/gltf.cpp#L424) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp` 内](../../src/core/renderer/polygoninstancecontainer.cpp#L1123) がその index で初期値表を引き直すため、この表が無いと [`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1787) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
 >
 > **骨子**:
 > ```text
@@ -407,7 +407,7 @@ tinygltf Model
 > generated_material_sources[派生ID] = 元の material index(無ければ noSourceMaterialIndex)
 > ```
 >
-> **手がかり**: `skinned_material_variants` は「この元materialのskinned派生は作成済み」というキャッシュ([#L1407-L1408](../../src/core/model/gltf.cpp#L1407))で、同じ元から二重に派生を作らない同一性保証も兼ねます(`registerVatMaterial()` に同種のキャッシュが無いのは、`base_vertex` がプリミティブごとに違って共有できないためです)。`source_material_index` は再グループ化のキーでもあり、[`modeltemplate.cpp` 内](../../src/core/model/modeltemplate.cpp#L103) は「解決後のmaterial」と「元のindex」の**組**でまとめ直します。テストは [`material absolute overrides are source-material scoped and temporal`](../../test/materialinstanceoverride_test.cpp#L257)「material absolute overrides are source-material scoped」。
+> **手がかり**: `skinned_material_variants` は「この元materialのskinned派生は作成済み」というキャッシュ([参照箇所](../../src/core/model/gltf.cpp#L1407))で、同じ元から二重に派生を作らない同一性保証も兼ねます(`registerVatMaterial()` に同種のキャッシュが無いのは、`base_vertex` がプリミティブごとに違って共有できないためです)。`source_material_index` は再グループ化のキーでもあり、[`modeltemplate.cpp` 内](../../src/core/model/modeltemplate.cpp#L103) は「解決後のmaterial」と「元のindex」の**組**でまとめ直します。テストは [`material absolute overrides are source-material scoped and temporal`](../../test/materialinstanceoverride_test.cpp#L257)「material absolute overrides are source-material scoped」。
 >
 > **不変条件**: `-1` は採番しない。派生を登録したら必ず `generated_material_sources` へ元のindexを残す。負のIDは `ModelTemplate` の外へ出さない(外向きは `source_material_index`)。
 
@@ -415,7 +415,7 @@ tinygltf Model
 >
 > **何をする所か**: モデル全体で1本の `default_weights` 配列へこのmesh分の既定weightを追記し、そのスライスの先頭位置を `morph_weight_offset` として返します。
 >
-> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([#L783-L784](../../src/core/model/gltf.cpp#L783))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` 内](../../src/core/model/gltf.cpp#L1717))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [`vertbufcontainer.cpp` 内](../../src/core/model/vertbufcontainer.cpp#L211))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([#L764-L770](../../src/core/model/gltf.cpp#L764))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([#L775-L781](../../src/core/model/gltf.cpp#L775))。
+> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([その return](../../src/core/model/gltf.cpp#L783))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` 内](../../src/core/model/gltf.cpp#L1717))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [`vertbufcontainer.cpp` 内](../../src/core/model/vertbufcontainer.cpp#L211))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([この検査](../../src/core/model/gltf.cpp#L764))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([その throw](../../src/core/model/gltf.cpp#L775))。
 >
 > **骨子**:
 > ```text
@@ -425,7 +425,7 @@ tinygltf Model
 > GPU: weight_base = instance_index * PELICAN_MAX_MORPH_WEIGHTS + metadata.weight_offset
 > ```
 >
-> **手がかり**: `target_count == 0` なら何も積まず 0 を返す([#L763](../../src/core/model/gltf.cpp#L763))ので、morphを持たないプリミティブは全部offset 0を共有します(`target_count` が0なのでシェーダは即returnします、[`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L71))。同じ容量検査は [`td::to_string()`](../../src/core/model/vertbufcontainer.cpp#L141) にもあり、GPU公開の直前でもう一度掛かります。`maxMorphWeightsPerInstance = 256`([`morphtarget.hpp` 内](../../src/core/model/morphtarget.hpp#L14))はインスタンスあたりのweight総数の上限で、プリミティブあたりのtarget数の上限 `maxMorphTargetsPerPrimitive = 64` とは別物です。テストは [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L62) / [#L133](../../test/morph_gltf_test.cpp#L133)。
+> **手がかり**: `target_count == 0` なら何も積まず 0 を返す([早期 return](../../src/core/model/gltf.cpp#L763))ので、morphを持たないプリミティブは全部offset 0を共有します(`target_count` が0なのでシェーダは即returnします、[`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L71))。同じ容量検査は [`std::to_string()`](../../src/core/model/vertbufcontainer.cpp#L141) にもあり、GPU公開の直前でもう一度掛かります。`maxMorphWeightsPerInstance = 256`([`morphtarget.hpp` 内](../../src/core/model/morphtarget.hpp#L14))はインスタンスあたりのweight総数の上限で、プリミティブあたりのtarget数の上限 `maxMorphTargetsPerPrimitive = 64` とは別物です。テストは [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L62) / [per-instance の weight frame](../../test/morph_gltf_test.cpp#L133)。
 >
 > **不変条件**: `morph_weight_offset` はprimitiveが持つ(mesh単位へ移さない)。容量検査は `default_weights` へ積む前に行う。`node.weights` の要素数不一致はthrowであってfallbackではない。
 
@@ -457,12 +457,12 @@ API面の主な変化は次の通りです。
 
 | API | 位置 | 内容 |
 |---|---|---|
-| `removeModelInstance()` | [#L298](../../src/core/renderer/polygoninstancecontainer.hpp#L298) | 戻り値が `void` → **`bool`** |
-| `preflightModelInstance()` | [#L292](../../src/core/renderer/polygoninstancecontainer.hpp#L292) | 確保前の容量チェック（const） |
-| `stageModelInstance()` | [#L293](../../src/core/renderer/polygoninstancecontainer.hpp#L293) | [`StagedModelInstance`](../../src/core/renderer/polygoninstancecontainer.hpp#L232) を返す |
-| `publishModelInstance()` | [#L296](../../src/core/renderer/polygoninstancecontainer.hpp#L296) | `noexcept` の単一公開点 |
-| `prepareTrs()` / `publishPreparedTrs()` / `rollbackPreparedTrs()` | [#L310-L313](../../src/core/renderer/polygoninstancecontainer.hpp#L310) | TRS更新のprepare/publish |
-| `isModelInstanceAlive()` | [#L317](../../src/core/renderer/polygoninstancecontainer.hpp#L317) | 生存判定 |
+| `removeModelInstance()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L298) | 戻り値が `void` → **`bool`** |
+| `preflightModelInstance()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L292) | 確保前の容量チェック（const） |
+| `stageModelInstance()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L293) | [`StagedModelInstance`](../../src/core/renderer/polygoninstancecontainer.hpp#L232) を返す |
+| `publishModelInstance()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L296) | `noexcept` の単一公開点 |
+| `prepareTrs()` / `publishPreparedTrs()` / `rollbackPreparedTrs()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L310) | TRS更新のprepare/publish |
+| `isModelInstanceAlive()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L317) | 生存判定 |
 | `instanceCountForTesting()` | [`advanceMorphHistoryAfterRender()`](../../src/core/renderer/polygoninstancecontainer.hpp#L345) | **live数**（`live_instance_count`）を返す |
 | `slotCountForTesting()` | [`advanceMaterialOverrideHistoryAfterRender()`](../../src/core/renderer/polygoninstancecontainer.hpp#L346) | スロット総数 |
 
@@ -492,7 +492,7 @@ instances.publishModelInstance(std::move(staged_instance));
 >
 > **何をする所か**: stackレイアウトで、固定サイズを引いた残り幅を `Fill` の子へweight比で配り、整数除算で出た端数まで配り切ります。
 >
-> **素朴に読むと**: `while (!pool.empty())` の中でclampされた要素を pool から外し、`remaining` と `total_weight` を引き直してやり直す形が、目的の見えない不動点ループに見えます。これはflexboxのfreezeループと同じ形で、`min` / `max` に当たった要素をその値で凍結してから残り幅と総weightを引き直す処理です。1パスの比例配分で済ませると、clampされた分の余りが誰にも配られずレイアウトに隙間が残ります。凍結が1つも起きなかった回で初めて確定させ、`break` で抜けます(この `break` が無いと同じ配分を延々と繰り返します)。後半の `pool[(remaining - assigned - rem) % pool.size()]` は整数除算の切り捨てで生じた `R = remaining - assigned` ピクセルを配る処理で、`rem` を `R` から1へ減らすと `(remaining - assigned - rem)` は 0,1,2,… と増えるので、結果は「poolの先頭R要素に1pxずつ」です。丸め誤差を最後の要素へ押し付けたり四捨五入したりしないのは、レイアウトが `std::int64_t` の厳密ピクセルで決定性を要求するからで、同じdocumentと同じ幅なら常に同じ1pxの配り先になります。`remaining < 0` のときにfill要素を `min` に落として即returnする分岐([#L106-L109](../../src/core/ui/layout.cpp#L106))も、負の `remaining` をweightで割らないための前提です。
+> **素朴に読むと**: `while (!pool.empty())` の中でclampされた要素を pool から外し、`remaining` と `total_weight` を引き直してやり直す形が、目的の見えない不動点ループに見えます。これはflexboxのfreezeループと同じ形で、`min` / `max` に当たった要素をその値で凍結してから残り幅と総weightを引き直す処理です。1パスの比例配分で済ませると、clampされた分の余りが誰にも配られずレイアウトに隙間が残ります。凍結が1つも起きなかった回で初めて確定させ、`break` で抜けます(この `break` が無いと同じ配分を延々と繰り返します)。後半の `pool[(remaining - assigned - rem) % pool.size()]` は整数除算の切り捨てで生じた `R = remaining - assigned` ピクセルを配る処理で、`rem` を `R` から1へ減らすと `(remaining - assigned - rem)` は 0,1,2,… と増えるので、結果は「poolの先頭R要素に1pxずつ」です。丸め誤差を最後の要素へ押し付けたり四捨五入したりしないのは、レイアウトが `std::int64_t` の厳密ピクセルで決定性を要求するからで、同じdocumentと同じ幅なら常に同じ1pxの配り先になります。`remaining < 0` のときにfill要素を `min` に落として即returnする分岐([その分岐](../../src/core/ui/layout.cpp#L106))も、負の `remaining` をweightで割らないための前提です。
 >
 > **骨子**:
 > ```text
@@ -513,7 +513,7 @@ instances.publishModelInstance(std::move(staged_instance));
 >
 > **何をする所か**: UI座標をbinary64(IEEE 754の倍精度浮動小数点)で計算してから整数ピクセルへ落とし、float32で厳密に表せる範囲を超えた座標を拒否します。
 >
-> **素朴に読むと**: `t2 + 0.5` を `floor` するだけの3行に見えますが、宣言側のコメントがこれを正の設計演算として明記しています — `floor((binary64(edge) + binary64(size)*anchor) + 0.5)`([`types.hpp` 内](../../src/core/ui/types.hpp#L63))。`std::round` / `std::lround` を使わないのは、それらが丸めモードに関係なくhalf-away-from-zero(0から遠い側へ丸める)で、`-0.5` と `+0.5` が非対称になるからです。`floor(x + 0.5)` なら規則が1つで、負側でも同じ向きに揃います。ただし `x + 0.5` の**加算自体**が丸められるので、FPUの丸めモードが `FE_TONEAREST`(最近接偶数丸め)でないと同じ入力から違うピクセルが出ます — 両関数の先頭にある `assert(std::fegetround() == FE_TONEAREST)` はその前提の宣言であって飾りではありません(ImGuiや外部DLLが丸めモードを触ると壊れます)。`checkedI32()` がint32の範囲だけでなく `|value| > 2^24` でもthrowするのは、UI矩形が最終的に [`buildDrawBatch()`](../../src/core/ui/drawcommands.cpp#L10) で `static_cast<float>` の頂点座標になるからです([#L39-L42](../../src/core/ui/drawcommands.cpp#L39))。float32が整数を厳密に表せるのは 2^24 までで、それを超えると「1pxずれる」ではなく「隣のピクセルと同じ座標になる」= クリップと当たり判定が食い違います。int32の範囲で通してしまうと、この破綻はGPU上でしか現れません。
+> **素朴に読むと**: `t2 + 0.5` を `floor` するだけの3行に見えますが、宣言側のコメントがこれを正の設計演算として明記しています — `floor((binary64(edge) + binary64(size)*anchor) + 0.5)`([`types.hpp` 内](../../src/core/ui/types.hpp#L63))。`std::round` / `std::lround` を使わないのは、それらが丸めモードに関係なくhalf-away-from-zero(0から遠い側へ丸める)で、`-0.5` と `+0.5` が非対称になるからです。`floor(x + 0.5)` なら規則が1つで、負側でも同じ向きに揃います。ただし `x + 0.5` の**加算自体**が丸められるので、FPUの丸めモードが `FE_TONEAREST`(最近接偶数丸め)でないと同じ入力から違うピクセルが出ます — 両関数の先頭にある `assert(std::fegetround() == FE_TONEAREST)` はその前提の宣言であって飾りではありません(ImGuiや外部DLLが丸めモードを触ると壊れます)。`checkedI32()` がint32の範囲だけでなく `|value| > 2^24` でもthrowするのは、UI矩形が最終的に [`buildDrawBatch()`](../../src/core/ui/drawcommands.cpp#L10) で `static_cast<float>` の頂点座標になるからです([頂点への変換](../../src/core/ui/drawcommands.cpp#L39))。float32が整数を厳密に表せるのは 2^24 までで、それを超えると「1pxずれる」ではなく「隣のピクセルと同じ座標になる」= クリップと当たり判定が食い違います。int32の範囲で通してしまうと、この破綻はGPU上でしか現れません。
 >
 > **骨子**:
 > ```text
@@ -522,7 +522,7 @@ instances.publishModelInstance(std::move(staged_instance));
 > checkedI32  : int32 範囲外 または |v| > 2^24   -> overflow_error("exact float32 integer domain")
 > ```
 >
-> **手がかり**: `#pragma STDC FENV_ACCESS ON` がMSVC以外で立っている([`types.cpp` 内](../../src/core/ui/types.cpp#L10)、[`layout.cpp` 内](../../src/core/ui/layout.cpp#L10))のは、コンパイラに浮動小数点環境を勝手に仮定させないためです。`checkedFloor()` の上限判定が `value >= -static_cast<double>(int64_min)` という書き方なのは、`int64_max` をdoubleで厳密に表せないからです([#L55-L56](../../src/core/ui/types.cpp#L55))。レイアウト側の `edge()`([`edge()`](../../src/core/ui/layout.cpp#L24))はint32範囲しか見ません — 2^24 の検査はpxへ変換する [`uiToPx()`](../../src/core/ui/types.cpp#L101) 側の責任です。テストは [`UI binary64 half-up vectors and viewport edge rounding are normative`](../../test/ui_foundation_test.cpp#L61)「UI binary64 half-up vectors and viewport edge rounding are normative」。
+> **手がかり**: `#pragma STDC FENV_ACCESS ON` がMSVC以外で立っている([`types.cpp` 内](../../src/core/ui/types.cpp#L10)、[`layout.cpp` 内](../../src/core/ui/layout.cpp#L10))のは、コンパイラに浮動小数点環境を勝手に仮定させないためです。`checkedFloor()` の上限判定が `value >= -static_cast<double>(int64_min)` という書き方なのは、`int64_max` をdoubleで厳密に表せないからです([その判定](../../src/core/ui/types.cpp#L55))。レイアウト側の `edge()`([`edge()`](../../src/core/ui/layout.cpp#L24))はint32範囲しか見ません — 2^24 の検査はpxへ変換する [`uiToPx()`](../../src/core/ui/types.cpp#L101) 側の責任です。テストは [`UI binary64 half-up vectors and viewport edge rounding are normative`](../../test/ui_foundation_test.cpp#L61)「UI binary64 half-up vectors and viewport edge rounding are normative」。
 >
 > **不変条件**: 丸めは `floor(x + 0.5)` 固定(`round` 系へ置き換えない)。丸めモードは `FE_TONEAREST`。GPUへ出る座標は `|value| <= 2^24`。
 
@@ -542,7 +542,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: surfaceのparameter宣言順にstd140(GLSLのuniform block標準レイアウト規則)のオフセットを割り付け、values領域の総サイズを決めます。
 >
-> **素朴に読むと**: `vec3` に `{12, 16}` を返すのが「std140ではvec3は16バイト」という一般論と食い違って見えます。std140の規則は「開始位置は16の倍数、占有は12」で、直後に `float` が来ればその4バイトへ滑り込みます。だからパッカーは2つの値を別々の目的に使い分けます — `alignUp(offset, alignment)` で次の**開始位置**を決め、`offset += size` で**自分が食う量**だけ進めます([#L356-L359](../../src/project/materiallowering.cpp#L356))。`size` を16にすると、規則どおりに計算するGLSLコンパイラ側とCPU側で4バイトずれ、vec3より後ろの**全パラメータ**が1つずつずれて読まれます。バリデーションレイヤもreflectionも検出できず、色が微妙に違うだけの症状になるのが最悪の性質です。だから12と16を分けて持つことが必須で、alignmentは次の要素の開始位置、sizeは自分が食う量、と役割が違います。最後に構造体全体を `layout.alignment`(既定16、[`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L29))へ切り上げるのも規則どおりです。
+> **素朴に読むと**: `vec3` に `{12, 16}` を返すのが「std140ではvec3は16バイト」という一般論と食い違って見えます。std140の規則は「開始位置は16の倍数、占有は12」で、直後に `float` が来ればその4バイトへ滑り込みます。だからパッカーは2つの値を別々の目的に使い分けます — `alignUp(offset, alignment)` で次の**開始位置**を決め、`offset += size` で**自分が食う量**だけ進めます([その2行](../../src/project/materiallowering.cpp#L356))。`size` を16にすると、規則どおりに計算するGLSLコンパイラ側とCPU側で4バイトずれ、vec3より後ろの**全パラメータ**が1つずつずれて読まれます。バリデーションレイヤもreflectionも検出できず、色が微妙に違うだけの症状になるのが最悪の性質です。だから12と16を分けて持つことが必須で、alignmentは次の要素の開始位置、sizeは自分が食う量、と役割が違います。最後に構造体全体を `layout.alignment`(既定16、[`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L29))へ切り上げるのも規則どおりです。
 >
 > **骨子**:
 > ```text
@@ -553,7 +553,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > layout.size = alignUp(offset, 16)
 > ```
 >
-> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`surface values use declaration-order std140 offsets`](../../test/materiallowering_test.cpp#L45)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[`material.hpp` 内](../../src/core/material/material.hpp#L86) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([#L362-L369](../../src/project/materiallowering.cpp#L362))。
+> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`surface values use declaration-order std140 offsets`](../../test/materiallowering_test.cpp#L45)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[`material.hpp` 内](../../src/core/material/material.hpp#L86) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([その throw](../../src/project/materiallowering.cpp#L362))。
 >
 > **不変条件**: `size` と `alignment` を1つの値へ畳まない。割り付けは宣言順。構造体全体のサイズは16バイト境界へ切り上げる。
 
@@ -561,7 +561,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: `render_path: automatic` のmaterialをdeferred(G-buffer経由)へ流してよいかを判定し、駄目ならforward側のrouteを返します。
 >
-> **素朴に読むと**: `coat_weight == 0`、`specular_weight == 1`、`specular_ior == 1.5` …と、値が**規定の既定値と一致するか**を `1e-6` の許容で調べる条件が並びます。範囲検査でも能力検査でもないので、何を守っているのかコードからは読めません。理由はG-bufferが運べるのがOpenPBRのごく一部(base color / roughness / metalness / normal)だけで、それ以外のパラメータは「既定値のまま」でなければG-buffer経由で再現できないことです。だから条件は能力の判定ではなく「**既定から動いていないことの確認**」で、1つでも動いていればforwardへ回すしかありません。比較対象がmaterialの上書き値だけでなくsurface側の `default_value` にもフォールバックする([`effectiveValue()` 内](../../src/project/materiallowering.cpp#L166))のはそのためです。テクスチャ側も同じ理由で、値が既定でも `*_map` が付いていればピクセルごとに動くので不適格です([#L224-L228](../../src/project/materiallowering.cpp#L224) の4つ)。`blend` がopaqueでない、`screen_input` を使う、の2つだけは深度・順序の理由で別枠になっています。
+> **素朴に読むと**: `coat_weight == 0`、`specular_weight == 1`、`specular_ior == 1.5` …と、値が**規定の既定値と一致するか**を `1e-6` の許容で調べる条件が並びます。範囲検査でも能力検査でもないので、何を守っているのかコードからは読めません。理由はG-bufferが運べるのがOpenPBRのごく一部(base color / roughness / metalness / normal)だけで、それ以外のパラメータは「既定値のまま」でなければG-buffer経由で再現できないことです。だから条件は能力の判定ではなく「**既定から動いていないことの確認**」で、1つでも動いていればforwardへ回すしかありません。比較対象がmaterialの上書き値だけでなくsurface側の `default_value` にもフォールバックする([`effectiveValue()` 内](../../src/project/materiallowering.cpp#L166))のはそのためです。テクスチャ側も同じ理由で、値が既定でも `*_map` が付いていればピクセルごとに動くので不適格です([texture 側の条件](../../src/project/materiallowering.cpp#L224) の4つ)。`blend` がopaqueでない、`screen_input` を使う、の2つだけは深度・順序の理由で別枠になっています。
 >
 > **骨子**:
 > ```text
@@ -576,7 +576,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > すべて既定 -> {compatible, openpbr_base_v1} -> automaticRoute が deferred_geometry
 > ```
 >
-> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([#L247-L250](../../src/project/materiallowering.cpp#L247))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L393) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp` 内](../../test/materiallowering_test.cpp#L239)「OpenPBR base subset routes deferred while extended lobes stay forward」。
+> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([route の決定](../../src/project/materiallowering.cpp#L247))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L393) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp` 内](../../test/materiallowering_test.cpp#L239)「OpenPBR base subset routes deferred while extended lobes stay forward」。
 >
 > **不変条件**: 既定値の一覧とG-bufferのチャネル構成は対で動かす。`reason` 文字列は診断の一部なので条件と1対1に保つ。判定は既定からの逸脱の有無であって、値の妥当性検査ではない。
 
@@ -588,7 +588,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: importルールのglobパターンを、プロジェクト相対パスへ突き合わせます。
 >
-> **素朴に読むと**: 同じ形のDP(動的計画法 — 部分問題の可否を表へ埋めながら前進させる解き方)が2つ並び、片方は文字を、片方はパスセグメントを舐めます。`*` と `**` の遷移式は字面上まったく同じ2本(パターンを進める = 0個マッチ、値を1つ進めてパターンを留める = 1個以上)なので、両者の違いがどこから生まれるのかコードから読み取れません。違いは遷移式ではなく**何を1単位とするDPか**にあります。`*` のDPは `splitPath()` 済みの1セグメント内だけを走るので、区切り文字を消費する術が構造的にありません = `*` は `/` を越えられません。`**` のDPはセグメントの列を走るので、同じ2本の遷移が「0個以上のディレクトリ階層」になります。つまりglobの意味論が正規表現の特別扱いではなく、DPを2段に分けたこと自体で表現されています。どちらもpush型(`dp[i][j]` が真のときだけ前進し、偽なら `continue`)なので、バックトラック実装にありがちな `a*a*a*b` の指数爆発が起きません — 外部から与えられるルール文字列を舐めるので、これは性能ではなく安全性の選択です。片方だけ「便利だから」と `*` に `/` を跨がせると、ルールの優先順位(最初に一致したruleが勝つ、[#L285-L289](../../src/project/importrules.cpp#L285))が変わり、import先が黙って入れ替わります。
+> **素朴に読むと**: 同じ形のDP(動的計画法 — 部分問題の可否を表へ埋めながら前進させる解き方)が2つ並び、片方は文字を、片方はパスセグメントを舐めます。`*` と `**` の遷移式は字面上まったく同じ2本(パターンを進める = 0個マッチ、値を1つ進めてパターンを留める = 1個以上)なので、両者の違いがどこから生まれるのかコードから読み取れません。違いは遷移式ではなく**何を1単位とするDPか**にあります。`*` のDPは `splitPath()` 済みの1セグメント内だけを走るので、区切り文字を消費する術が構造的にありません = `*` は `/` を越えられません。`**` のDPはセグメントの列を走るので、同じ2本の遷移が「0個以上のディレクトリ階層」になります。つまりglobの意味論が正規表現の特別扱いではなく、DPを2段に分けたこと自体で表現されています。どちらもpush型(`dp[i][j]` が真のときだけ前進し、偽なら `continue`)なので、バックトラック実装にありがちな `a*a*a*b` の指数爆発が起きません — 外部から与えられるルール文字列を舐めるので、これは性能ではなく安全性の選択です。片方だけ「便利だから」と `*` に `/` を跨がせると、ルールの優先順位(最初に一致したruleが勝つ、[rule 層の走査](../../src/project/importrules.cpp#L285))が変わり、import先が黙って入れ替わります。
 >
 > **骨子**:
 > ```text
@@ -601,7 +601,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >   それ以外            -> pattern[i] == value[j] なら dp[i+1][j+1] = true
 > ```
 >
-> **手がかり**: `splitPath()`([`splitPath()`](../../src/project/importrules.cpp#L141))は空セグメントも残す(`a//b` は3要素)ので、`*` が空文字列にも一致することと合わせて挙動が決まります。この2段のDPを使うのは3層のうちrule層だけで、defaults層は拡張子の完全一致です([#L291-L296](../../src/project/importrules.cpp#L291))。テストは [`import globstar spans zero or more complete path segments`](../../test/importrules_test.cpp#L49)「import globstar spans zero or more complete path segments」と [#L26](../../test/importrules_test.cpp#L26)(優先順位)。
+> **手がかり**: `splitPath()`([`splitPath()`](../../src/project/importrules.cpp#L141))は空セグメントも残す(`a//b` は3要素)ので、`*` が空文字列にも一致することと合わせて挙動が決まります。この2段のDPを使うのは3層のうちrule層だけで、defaults層は拡張子の完全一致です([defaults 層](../../src/project/importrules.cpp#L291))。テストは [`import globstar spans zero or more complete path segments`](../../test/importrules_test.cpp#L49)「import globstar spans zero or more complete path segments」と [`import rules evaluate explicit, defaults, builtin, and unmatched precedence`](../../test/importrules_test.cpp#L26)(優先順位)。
 >
 > **不変条件**: `*` は1セグメント内で閉じる。DPはpush型で、パターン長×値長の表を超えて探索しない。ルールは最初に一致したものが勝つ。
 
@@ -624,7 +624,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: 監視対象のstoreを一巡して各ファイルの安定digestを取り、前回のinventoryとlive digestに照らしてreloadを積みます。
 >
-> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていればハッシュを全部取り直します — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L47) へ渡すcancelクロージャ([#L330-L334](../../src/core/watch/filewatcher.cpp#L330))は別の理由です。プロジェクト全体のSHA-256は数秒かかりうるのに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([#L364](../../src/core/watch/filewatcher.cpp#L364))と、generation一致で `true` を返す出口([#L384-L388](../../src/core/watch/filewatcher.cpp#L384))の2つがあるためです。
+> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていればハッシュを全部取り直します — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L47) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L330))は別の理由です。プロジェクト全体のSHA-256は数秒かかりうるのに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L364))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L384))の2つがあるためです。
 >
 > **骨子**:
 > ```text
@@ -638,7 +638,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >     # 違えば scan 中に通知が来ている: もう一周(部分ではなく全体)
 > ```
 >
-> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[#L447-L448](../../src/core/watch/filewatcher.cpp#L447) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([#L329-L337](../../src/core/watch/filewatcher.cpp#L329))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L346)「disabled changes resume through arm-scan barrier exactly once」と [#L216](../../test/filewatcher_test.cpp#L216)(gate cancellation)。
+> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L447) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L329))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L346)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L216)(gate cancellation)。
 >
 > **不変条件**: generationはscanの**前**に控える。scan中に通知が来たら部分ではなく全体を取り直す。epochが動いたら結果を採用せず `false` で降りる。
 
@@ -646,7 +646,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: watcherが見つけたdigestを「外部の変更」と「エンジン自身の保存」へ振り分け、reloadを積むかどうかを返します。
 >
-> **素朴に読むと**: digestが一致していてepochも一致しているのにreloadを積む経路があるのが引っかかります。エンジン自身が保存したファイルは、watcherから見れば外部変更と区別できません。そこで保存側が「このdigestが来たら自分の書き込みだ」というトークン([`SelfWriteToken`](../../src/core/watch/contentdigest.hpp#L42))を置きます。条件は4つあり、digest一致 / epoch一致 / `runtime_applied` / `live_digest` 一致が揃ったときだけ `consumed_self_write` になります。`match` と `may_consume` を先に計算したうえで `state.self_write.reset()` を分岐の**前**に無条件で実行するのが要点で、トークンは1回の観測で必ず消えます(消費されても、外れても)。消えなければ、一致し続ける限り永久にリロードが抑止されます。`runtime_applied` がfalseのときに消費しないのは「ディスクには書けたが、実行中の状態への適用は失敗した」場合で、そのとき `registerSelfWrite()` は `live_digest` を更新しない([#L150](../../src/core/watch/contentdigest.cpp#L150))ので、下の `live_digest == digest` の近道にも掛からず `queue_reload` になります — ファイルとランタイムが食い違ったまま静かに固定されるのを防ぐ、あえての積み直しです。epoch違いを `live_digest` 一致の近道へ落とさない([#L168-L171](../../src/core/watch/contentdigest.cpp#L168))のはコメントが規範で、gateが閉じて開き直った後(= 世界が入れ替わったかもしれない後)は古いtransactionの抑止を効かせない、という決めです。
+> **素朴に読むと**: digestが一致していてepochも一致しているのにreloadを積む経路があるのが引っかかります。エンジン自身が保存したファイルは、watcherから見れば外部変更と区別できません。そこで保存側が「このdigestが来たら自分の書き込みだ」というトークン([`SelfWriteToken`](../../src/core/watch/contentdigest.hpp#L42))を置きます。条件は4つあり、digest一致 / epoch一致 / `runtime_applied` / `live_digest` 一致が揃ったときだけ `consumed_self_write` になります。`match` と `may_consume` を先に計算したうえで `state.self_write.reset()` を分岐の**前**に無条件で実行するのが要点で、トークンは1回の観測で必ず消えます(消費されても、外れても)。消えなければ、一致し続ける限り永久にリロードが抑止されます。`runtime_applied` がfalseのときに消費しないのは「ディスクには書けたが、実行中の状態への適用は失敗した」場合で、そのとき `registerSelfWrite()` は `live_digest` を更新しない([その代入](../../src/core/watch/contentdigest.cpp#L150))ので、下の `live_digest == digest` の近道にも掛からず `queue_reload` になります — ファイルとランタイムが食い違ったまま静かに固定されるのを防ぐ、あえての積み直しです。epoch違いを `live_digest` 一致の近道へ落とさない([そのコメント](../../src/core/watch/contentdigest.cpp#L168))のはコメントが規範で、gateが閉じて開き直った後(= 世界が入れ替わったかもしれない後)は古いtransactionの抑止を効かせない、という決めです。
 >
 > **骨子**:
 > ```text
@@ -661,7 +661,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > それ以外              -> queue_reload
 > ```
 >
-> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L371) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L688) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L101)「ContentDigest streams bytes and separates observed live pending and self-write」と [#L150](../../test/filewatcher_test.cpp#L150)。
+> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L371) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L688) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L101)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L150)。
 >
 > **不変条件**: トークンは1回の観測で必ず消える。epochが違うトークンは抑止に使わない。`runtime_applied` がfalseの保存はreloadを積み直す。
 
@@ -736,7 +736,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 - [`stage(raw_document, revision)`](../../src/core/loader/authoringscenedocument.hpp#L114) — **オブジェクト宣言のidentityを固定したまま**の未公開改訂。component配列やparentエッジは変えられますが、object宣言のidentityは動きません。
 - [`structuralStage()`](../../src/core/loader/authoringscenedocument.hpp#L116) → [`AuthoringSceneDocumentStage`](../../src/core/loader/authoringscenedocument.hpp#L130) — object配列そのものを触る唯一の経路。`insertObject` / `removeObject` / `restoreObject` / `renameObject` / `reorderObject` を持ち、`finish(revision) &&` で確定します。変更種別は [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L63) の `Insert` / `Remove` / `Restore` / `Rename` / `Reorder` です。
 
-実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L714) がコマンド列を見て振り分けます（[#L741-L766](../../src/core/loader/editorprojectiontransaction.cpp#L741)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
+実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L714) がコマンド列を見て振り分けます（[その分岐](../../src/core/loader/editorprojectiontransaction.cpp#L741)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
 
 > **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 
@@ -763,7 +763,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 >
 > **何をする所か**: 上のstage / structuralStageを実際に使う側です。JSONコマンド列を未公開の文書へ適用し、全adapterを prepare → publish → 文書公開 → finish の順に流します。どこで失敗しても呼び出し前の状態へ戻します。
 >
-> **素朴に読むと**: 最初に引っかかるのは `prepared.push_back(adapter)` が `adapter->prepare(context)` の**前**にあることです。順序ミスに見えますが意図的で、prepareが例外を投げたadapter自身も巻き戻し対象に入れるための前倒しです。逆にすると、途中まで状態を掴んだadapterがrollbackされずに残ります。次が `prepared.empty() ? Rejected : Failed` の分岐 — adapterに一度も触れていなければ「受理していない(Rejected)」、一つでも触れたなら「実行して失敗した(Failed)」で、RPC応答の `status` 文字列がここで決まります。そして `publish()` / `rollback()` / `finish()` は全て `noexcept` です([`publish()`](../../src/core/loader/editorprojectiontransaction.hpp#L166))。「非確保」まで明文化されているのは `rollback()` だけで、[#L167-L168](../../src/core/loader/editorprojectiontransaction.hpp#L167) の `Both paths must be allocation-free.` はrollbackのpublish前/後の2経路を指します — `publish()` / `finish()` の非確保はヘッダに書かれておらず、実装側の慣行です。確保・decode・検証は全部prepareへ前倒しされていて、これを崩すと「publish途中でthrowして半分だけ公開」が起こりえます。
+> **素朴に読むと**: 最初に引っかかるのは `prepared.push_back(adapter)` が `adapter->prepare(context)` の**前**にあることです。順序ミスに見えますが意図的で、prepareが例外を投げたadapter自身も巻き戻し対象に入れるための前倒しです。逆にすると、途中まで状態を掴んだadapterがrollbackされずに残ります。次が `prepared.empty() ? Rejected : Failed` の分岐 — adapterに一度も触れていなければ「受理していない(Rejected)」、一つでも触れたなら「実行して失敗した(Failed)」で、RPC応答の `status` 文字列がここで決まります。そして `publish()` / `rollback()` / `finish()` は全て `noexcept` です([`publish()`](../../src/core/loader/editorprojectiontransaction.hpp#L166))。「非確保」まで明文化されているのは `rollback()` だけで、[宣言のコメント](../../src/core/loader/editorprojectiontransaction.hpp#L167) の `Both paths must be allocation-free.` はrollbackのpublish前/後の2経路を指します — `publish()` / `finish()` の非確保はヘッダに書かれておらず、実装側の慣行です。確保・decode・検証は全部prepareへ前倒しされていて、これを崩すと「publish途中でthrowして半分だけ公開」が起こりえます。
 >
 > **骨子**:
 > ```text
@@ -776,7 +776,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 > catch: for a in reverse(prepared): a->rollback()
 > ```
 >
-> **手がかり**: [`EditorProjectionPublicationMode`](../../src/core/loader/editorprojectiontransaction.hpp#L34) の `StagedNoexcept` と `InverseToken` の差が効きます。publish後のfault注入が `InverseToken` にしか適用されないのは、publish後でも逆トークンで戻せるadapterだけがそこで失敗を許されるからです。`rollback()` は「publish前ならprepared状態の破棄、publish後なら逆トークンの適用」の**両義**で、[`TransformProjectionAdapter::rollback()`](../../src/core/loader/editorprojectiontransaction.cpp#L690) の `published_` 分岐がその実例です。テストは [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L225) / [#L385](../../test/editorprojectiontransaction_test.cpp#L385)。
+> **手がかり**: [`EditorProjectionPublicationMode`](../../src/core/loader/editorprojectiontransaction.hpp#L34) の `StagedNoexcept` と `InverseToken` の差が効きます。publish後のfault注入が `InverseToken` にしか適用されないのは、publish後でも逆トークンで戻せるadapterだけがそこで失敗を許されるからです。`rollback()` は「publish前ならprepared状態の破棄、publish後なら逆トークンの適用」の**両義**で、[`TransformProjectionAdapter::rollback()`](../../src/core/loader/editorprojectiontransaction.cpp#L690) の `published_` 分岐がその実例です。テストは [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L225) / [`Structural spawn destroy and mixed command faults restore document and runtime exactly`](../../test/editorprojectiontransaction_test.cpp#L385)。
 >
 > **不変条件**: publish以降はthrowも確保もしない。文書公開はadapter publishの**後**、finishの**前**(入れ替えると、文書だけ新しくランタイムが古い中間状態を観測できます)。rollback / finish は必ず逆順。
 
@@ -821,7 +821,7 @@ WP176〜WP178で入った、アニメーションクリップの交換形式で�
 
 > **注意:** [`vrmaretarget.hpp` 内](../../src/core/animation/vrmaretarget.hpp#L122) のコメント（`This is not an AnimationSource and does not publish to an instance, graph, renderer, or ABI.`）はWP177時点のままで、WP178で入った登録経路を反映していません。ソース側のコメントが古い箇所です。
 
-> 🧩 **難所 — rest差分の回転移送**([`VrmaRetargetedClip::sample()`](../../src/core/animation/vrmaretarget.cpp#L418) / スケール決定は [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.cpp#L463) 内 [#L557](../../src/core/animation/vrmaretarget.cpp#L557))
+> 🧩 **難所 — rest差分の回転移送**([`VrmaRetargetedClip::sample()`](../../src/core/animation/vrmaretarget.cpp#L418) / スケール決定は [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.cpp#L463) 内 [`translation_scale` の初期化](../../src/core/animation/vrmaretarget.cpp#L557))
 >
 > **何をする所か**: 上の箇条書きは方針とプロファイルまでで、**移送の式そのもの**が書かれていません。R0プロファイルの中身は「回転はrest差分で移送」「hipsのtranslationだけrest高さ比でスケール」の2規則です。
 >
@@ -835,7 +835,7 @@ WP176〜WP178で入った、アニメーションクリップの交換形式で�
 >              scale = |target_world_hips.y| / |source_world_hips.y|   (hips のみ許可)
 > ```
 >
-> **手がかり**: hips以外のtranslationチャンネルは受理段階で**拒否**されます(`only hips translation is supported`)。R0はroot motion抽出を持たず、hipsのtranslationは普通のbody channelのまま、という上の設計決定の実装面です。またR0のrest参照は2種類に分かれます — 回転移送が使うのは各ボーンの *local* rest(`source_rest` / `target_rest`)だけで、親チェーンの向きの差は補正しません。hipsのtranslation係数だけが **world** rest 行列のY成分を見ます([#L561-L564](../../src/core/animation/vrmaretarget.cpp#L561))。前者の割り切りのせいで、骨の比率が大きく違うrigでは肘や膝がずれますが、これは実装漏れではなくプロファイルv1の定義域です。`sample()` の出力は **target rigの元node index** で並ぶ点にも注意(layout順への写像は `animationservice.cpp` の `sampleVrma()` が `rig.layout_to_original` で行います)。
+> **手がかり**: hips以外のtranslationチャンネルは受理段階で**拒否**されます(`only hips translation is supported`)。R0はroot motion抽出を持たず、hipsのtranslationは普通のbody channelのまま、という上の設計決定の実装面です。またR0のrest参照は2種類に分かれます — 回転移送が使うのは各ボーンの *local* rest(`source_rest` / `target_rest`)だけで、親チェーンの向きの差は補正しません。hipsのtranslation係数だけが **world** rest 行列のY成分を見ます([高さ比の算出](../../src/core/animation/vrmaretarget.cpp#L561))。前者の割り切りのせいで、骨の比率が大きく違うrigでは肘や膝がずれますが、これは実装漏れではなくプロファイルv1の定義域です。`sample()` の出力は **target rigの元node index** で並ぶ点にも注意(layout順への写像は `animationservice.cpp` の `sampleVrma()` が `rig.layout_to_original` で行います)。
 >
 > **不変条件**: 回転の合成順序を `target_rest * inverse(source_rest) * sample` から動かさない。方針を足すなら [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) に値を増やして `version` を上げる。rig hashのcanonical文字列フォーマットは互換の一部で、フィールド追加は末尾のみ。
 

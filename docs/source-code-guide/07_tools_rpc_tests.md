@@ -227,7 +227,7 @@ transport が socket ではなく stream interface なのがポイントです�
 
 キュー容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L99) です。溢れたリクエストには reader スレッドが即座に `-32000` を返します(`data.reason == "busy"`)。
 
-[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L28) には構造化 `data` が付きました([#L34](../../src/core/communication/rpcserver.hpp#L34)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L36))。`capture_gpu` 失敗時の実例です([`ngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L1189))。
+[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L28) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L34)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L36))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L1189))。
 
 ```cpp
 throw JsonRpcHandlerError{
@@ -244,23 +244,23 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 
 | method | 実装行 | 状態変更 |
 |---|---|---|
-| `reload_game_logic` | [#L794](../../src/core/communication/rpcserver.cpp#L794) | game DLL(`pelican_game_logic`)を再ロード |
-| `get_status` | [#L821](../../src/core/communication/rpcserver.cpp#L821) | instance、project、scene、frame/time、seed、store 状態と各種診断を返す |
-| `set_seed` | [#L991](../../src/core/communication/rpcserver.cpp#L991) | deterministic RNG を reseed |
-| `set_input_profile` | [#L999](../../src/core/communication/rpcserver.cpp#L999) | input profile を切替 |
-| `inject_input` | [#L1010](../../src/core/communication/rpcserver.cpp#L1010) | canonical input queue へ key/mouse/axis event を積む |
-| `start_input_record` / `stop_input_record` | [#L1023](../../src/core/communication/rpcserver.cpp#L1023) / [#L1035](../../src/core/communication/rpcserver.cpp#L1035) | 入力記録の開始/終了 |
-| `start_input_replay` / `stop_input_replay` | [#L1047](../../src/core/communication/rpcserver.cpp#L1047) / [#L1071](../../src/core/communication/rpcserver.cpp#L1071) | 入力再生の開始/終了。開始側は再生だけでなく `EngineTime` を記録時 fps の fixed step へ切り替え、reload gate を閉じ、preview lease を強制 abort します |
-| `inject_event` | [#L1084](../../src/core/communication/rpcserver.cpp#L1084) | 名前から登録済み event layer へ JSON payload を積む |
-| `set_time` | [#L1098](../../src/core/communication/rpcserver.cpp#L1098) | time を直接設定。frame index は進めない |
-| `update_transforms` | [#L1105](../../src/core/communication/rpcserver.cpp#L1105) | update を pending queue へ積む |
-| `load_gltf` | [#L1114](../../src/core/communication/rpcserver.cpp#L1114) | transient glTF を scene に追加 |
-| `load_scene` | [#L1125](../../src/core/communication/rpcserver.cpp#L1125) | scene を clear/load、pending transforms を破棄 |
-| `set_camera` | [#L1135](../../src/core/communication/rpcserver.cpp#L1135) | 名前付き object を active camera にする |
-| `step_frame` | [#L1143](../../src/core/communication/rpcserver.cpp#L1143) | pending flush → time advance → 5 phase update → render |
-| `render_frame` | [#L1155](../../src/core/communication/rpcserver.cpp#L1155) | time/frame を進めず、pending flush → seq update → render |
-| `capture_gpu` | [#L1163](../../src/core/communication/rpcserver.cpp#L1163) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
-| `get_frame_plan` | [#L1194](../../src/core/communication/rpcserver.cpp#L1194) | planner の JSON を返す |
+| `reload_game_logic` | [再ロード](../../src/core/communication/rpcserver.cpp#L794) | game DLL(`pelican_game_logic`)を再ロード |
+| `get_status` | [状態取得](../../src/core/communication/rpcserver.cpp#L821) | instance、project、scene、frame/time、seed、store 状態と各種診断を返す |
+| `set_seed` | [seed 設定](../../src/core/communication/rpcserver.cpp#L991) | deterministic RNG を reseed |
+| `set_input_profile` | [profile 切替](../../src/core/communication/rpcserver.cpp#L999) | input profile を切替 |
+| `inject_input` | [入力注入](../../src/core/communication/rpcserver.cpp#L1010) | canonical input queue へ key/mouse/axis event を積む |
+| `start_input_record` / `stop_input_record` | [記録開始](../../src/core/communication/rpcserver.cpp#L1023) / [記録終了](../../src/core/communication/rpcserver.cpp#L1035) | 入力記録の開始/終了 |
+| `start_input_replay` / `stop_input_replay` | [再生開始](../../src/core/communication/rpcserver.cpp#L1047) / [再生終了](../../src/core/communication/rpcserver.cpp#L1071) | 入力再生の開始/終了。開始側は再生だけでなく `EngineTime` を記録時 fps の fixed step へ切り替え、reload gate を閉じ、preview lease を強制 abort します |
+| `inject_event` | [event 注入](../../src/core/communication/rpcserver.cpp#L1084) | 名前から登録済み event layer へ JSON payload を積む |
+| `set_time` | [時刻設定](../../src/core/communication/rpcserver.cpp#L1098) | time を直接設定。frame index は進めない |
+| `update_transforms` | [pending 積み](../../src/core/communication/rpcserver.cpp#L1105) | update を pending queue へ積む |
+| `load_gltf` | [glTF 追加](../../src/core/communication/rpcserver.cpp#L1114) | transient glTF を scene に追加 |
+| `load_scene` | [scene 差替](../../src/core/communication/rpcserver.cpp#L1125) | scene を clear/load、pending transforms を破棄 |
+| `set_camera` | [camera 指定](../../src/core/communication/rpcserver.cpp#L1135) | 名前付き object を active camera にする |
+| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L1143) | pending flush → time advance → 5 phase update → render |
+| `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L1155) | time/frame を進めず、pending flush → seq update → render |
+| `capture_gpu` | [GPU 捕捉](../../src/core/communication/rpcserver.cpp#L1163) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
+| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L1194) | planner の JSON を返す |
 | `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L1199) | 最後の frame を PNG 保存 |
 
 `set_seed` と replay は役割が別です。`set_seed` は `DeterministicRng` の種を撒き直すだけで、時間の刻みも入力も固定しません。再現可能な実行は「seed」「fixed step の時間」「記録済み入力」の3つが揃って初めて成立し、後ろ2つを与えるのが `start_input_replay` です。
@@ -271,22 +271,22 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 
 | method | 実装行 | 概要 |
 |---|---|---|
-| `scene_tree` | [#L908](../../src/core/communication/rpcserver.cpp#L908) | オブジェクト木と component メタデータ |
-| `get_scene_revision` | [#L911](../../src/core/communication/rpcserver.cpp#L911) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
-| `get_components` | [#L914](../../src/core/communication/rpcserver.cpp#L914) | 1 オブジェクトの authored / runtime JSON + schema |
-| `list_assets` | [#L917](../../src/core/communication/rpcserver.cpp#L917) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
-| `export_scene_snapshot` | [#L920](../../src/core/communication/rpcserver.cpp#L920) | semantic scene bytes + sha256 digest |
-| `import_scene_snapshot` | [#L923](../../src/core/communication/rpcserver.cpp#L923) | digest 検証つき置換 |
-| `save_scene` | [#L931](../../src/core/communication/rpcserver.cpp#L931) | 原子的な全文書保存 |
-| `open_editor_session` / `resume_editor_session` | [#L942](../../src/core/communication/rpcserver.cpp#L942) / [#L945](../../src/core/communication/rpcserver.cpp#L945) | actor 登録・再接続 |
-| `can_edit` / `can_preview` | [#L948](../../src/core/communication/rpcserver.cpp#L948) / [#L951](../../src/core/communication/rpcserver.cpp#L951) | 編集ゲート判定 |
-| `eval_preview` | [#L954](../../src/core/communication/rpcserver.cpp#L954) | 公開せずリクエストローカルに評価 |
-| `render_preview` | [#L957](../../src/core/communication/rpcserver.cpp#L957) | preview グラフでキャプチャ(第6章 §6.19) |
-| `edit` | [#L960](../../src/core/communication/rpcserver.cpp#L960) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
-| `undo` / `redo` | [`nternal::selectInputProfile()`](../../src/core/communication/rpcserver.cpp#L963) / [#L966](../../src/core/communication/rpcserver.cpp#L966) | actor 単位 |
-| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [#L969](../../src/core/communication/rpcserver.cpp#L969) 〜 [#L978](../../src/core/communication/rpcserver.cpp#L978) | preview ticket(lease)の発行・更新・確定・破棄 |
-| `get_edit_result` / `get_preview_result` | [#L981](../../src/core/communication/rpcserver.cpp#L981) / [#L984](../../src/core/communication/rpcserver.cpp#L984) | 非同期結果取得 |
-| `query_journal` | [#L987](../../src/core/communication/rpcserver.cpp#L987) | ジャーナル照会 |
+| `scene_tree` | [木の取得](../../src/core/communication/rpcserver.cpp#L908) | オブジェクト木と component メタデータ |
+| `get_scene_revision` | [revision 取得](../../src/core/communication/rpcserver.cpp#L911) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
+| `get_components` | [component 取得](../../src/core/communication/rpcserver.cpp#L914) | 1 オブジェクトの authored / runtime JSON + schema |
+| `list_assets` | [asset 一覧](../../src/core/communication/rpcserver.cpp#L917) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
+| `export_scene_snapshot` | [書き出し](../../src/core/communication/rpcserver.cpp#L920) | semantic scene bytes + sha256 digest |
+| `import_scene_snapshot` | [取り込み](../../src/core/communication/rpcserver.cpp#L923) | digest 検証つき置換 |
+| `save_scene` | [原子的保存](../../src/core/communication/rpcserver.cpp#L931) | 原子的な全文書保存 |
+| `open_editor_session` / `resume_editor_session` | [session 開始](../../src/core/communication/rpcserver.cpp#L942) / [session 再開](../../src/core/communication/rpcserver.cpp#L945) | actor 登録・再接続 |
+| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L948) / [preview 可否](../../src/core/communication/rpcserver.cpp#L951) | 編集ゲート判定 |
+| `eval_preview` | [局所評価](../../src/core/communication/rpcserver.cpp#L954) | 公開せずリクエストローカルに評価 |
+| `render_preview` | [preview 描画](../../src/core/communication/rpcserver.cpp#L957) | preview グラフでキャプチャ(第6章 §6.19) |
+| `edit` | [コマンド適用](../../src/core/communication/rpcserver.cpp#L960) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
+| `undo` / `redo` | [`internal::selectInputProfile()`](../../src/core/communication/rpcserver.cpp#L963) / [redo の登録](../../src/core/communication/rpcserver.cpp#L966) | actor 単位 |
+| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/rpcserver.cpp#L969) 〜 [lease 破棄](../../src/core/communication/rpcserver.cpp#L978) | preview ticket(lease)の発行・更新・確定・破棄 |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/rpcserver.cpp#L981) / [preview 結果](../../src/core/communication/rpcserver.cpp#L984) | 非同期結果取得 |
+| `query_journal` | [journal 照会](../../src/core/communication/rpcserver.cpp#L987) | ジャーナル照会 |
 
 > 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L1581) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L1652) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L1676))
 >
@@ -305,7 +305,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >   両方が component_slot|value_field で object と slot が同じ -> 真
 > ```
 >
-> **手がかり**: [`domainObjects()`](../../src/core/communication/editorjournal.cpp#L1590) が拾うキー名の一覧は、**op の `kind` ごとに違うフィールド名の総和**です — `value_field` / `component_slot` は `object`、`object_existence`(spawn)はプリフライト後に埋め戻される `object`、`object_subtree`(destroy)は `root` と配列 `objects`、`parent_edge`(reparent)は `child` / `old_parent` / `new_parent` と配列 `descendants`。単数フィールドと配列フィールドを別扱いで読むので、新しいopを足すときにここへ追記するのは、**そのopが既存にない名前でobject IDを持つ場合だけ**です。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L486) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+> **手がかり**: [`domainObjects()`](../../src/core/communication/editorjournal.cpp#L1590) が拾うキー名の一覧は、**op の `kind` ごとに違うフィールド名の総和**です — `value_field` / `component_slot` は `object`、`object_existence`(spawn)はプリフライト後に埋め戻される `object`、`object_subtree`(destroy)は `root` と配列 `objects`、`parent_edge`(reparent)は `child` / `old_parent` / `new_parent` と配列 `descendants`。単数フィールドと配列フィールドを別扱いで読むので、新しいopを足すときにここへ追記するのは、**そのopが既存にない名前でobject IDを持つ場合だけ**です。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L486) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L558) / [二アクター重なりの事例](../../test/editorjournal_test.cpp#L662)。
 >
 > **不変条件**: 判定は保守側へ倒す(検出漏れは静かなロストアップデート、過検出は明示的な `undo_conflict` / `preview_lease_conflict` で済む)。パス比較は必ず `/` 境界を見る。
 
@@ -349,7 +349,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 > postconditionsHold(source, document()) が偽 -> undo_conflict
 > ```
 >
-> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2846))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2500))の**二重**になっています。テストは [`WP161 actor undo and redo are ordinary atomic transactions`](../../test/editorjournal_test.cpp#L519) / [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2846))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2500))の**二重**になっています。テストは [`WP161 actor undo and redo are ordinary atomic transactions`](../../test/editorjournal_test.cpp#L519) / [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L558) / [二アクター重なりの事例](../../test/editorjournal_test.cpp#L662)。
 >
 > **不変条件**: 3検査はAND。順番は変えてよいが、どれも消してはいけない。undoが成功したら `undo_stack.pop_back()` と `redo_stack.push_back()` は必ず対で動かす(片方だけだとredoが別トランザクションを指します)。
 
@@ -374,7 +374,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >   abort  : ライブ状態を committed へ復元し、tombstone を置いて lease を落とす
 > ```
 >
-> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L1885) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L1719) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L1704) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L691)(lease matrix)と [#L766](../../test/editorjournal_test.cpp#L766)。
+> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L1885) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L1719) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L1704) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L691)(lease matrix)と [開通後の runtime 検証](../../test/editorjournal_test.cpp#L766)。
 >
 > **不変条件**: `forceAbort()` の内部でthrowさせない。予約は成功でも失敗でも必ず落とす。leaseの `write_set` はopenで確定しupdateで変えない。editがcommitしたらpreview leaseは必ず落とす。
 
@@ -441,7 +441,7 @@ signature にフラグが入りました([test/CMakeLists.txt](../../test/CMakeL
 cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 ```
 
-`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([#L26](../../test/CMakeLists.txt#L26))。コメントが理由です。
+`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L26))。コメントが理由です。
 
 > Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
 
@@ -707,7 +707,7 @@ with PelicanRpc("projects/example") as rpc:
 ```
 
 - [`PelicanRpc(project_dir, exe_path=None)`](../../tools/pelican_rpc.py#L23) が `pelican_player` を `--rpc --headless --project <dir>` で起動します。
-- 実行体の既定探索は `build/src/player/Debug/pelican_player.exe` を、リポジトリルート → cwd → cwd の各祖先の順に探します([#L54-L76](../../tools/pelican_rpc.py#L54))。見つからなければ探索した全 path を並べた `FileNotFoundError` になります。
+- 実行体の既定探索は `build/src/player/Debug/pelican_player.exe` を、リポジトリルート → cwd → cwd の各祖先の順に探します([`_resolve_executable()` 全体](../../tools/pelican_rpc.py#L54))。見つからなければ探索した全 path を並べた `FileNotFoundError` になります。
 - [`call(method, params)`](../../tools/pelican_rpc.py#L78) は 1 行 1 リクエストの NDJSON を書き、1 行読み、`id` 一致と `jsonrpc == "2.0"` を検証してから `result` を **そのまま** 返します。エラーは [`PelicanRpcError(code, message, data)`](../../tools/pelican_rpc.py#L13) です。
 - 薄いショートカットが `get_status` / `step_frame` / `set_time` / `render_frame` / `capture` / `load_scene` / `scene_tree` / `get_components` / `list_assets` / `export_scene_snapshot` / `import_scene_snapshot` / `eval_preview` / `render_preview` に用意されています。
 - `terminate()`(別名 `close`)と `with` 文をサポートします。
