@@ -1,6 +1,7 @@
 # 第10章 前提知識の補足(このコードが当然としていること)
 
 調査時点: 2026-07-21 / 基準コミット: `8819779`
+(§10.1 末尾の 5 項目 — cube イメージ / subresource range / mip 数の上限 / タイル常駐 / dynamic rendering local read — のみ 2026-07-31 / 基準コミット `5a4f95e`)
 
 第2〜9章の「🧩 難所」ブロックが**このコードベース固有の難しさ**を扱うのに対して、この章は **pelican2 のコードが「知っている前提」で書かれている一般知識**をまとめたものです。仕様の細部や定番イディオムの名前を知らないと、コード自体は素直なのに読めない — そういう箇所を拾ってあります。
 
@@ -87,6 +88,55 @@ vulkan-hpp は `VULKAN_HPP_NO_EXCEPTIONS` を定義していなければ既定�
 `VkBufferImageCopy` の `bufferRowLength` と `bufferImageHeight` は、バッファ側のメモリを「もっと大きな 2D/3D イメージの部分領域」として扱うためのテクセル単位の指定です。仕様では「どちらかが 0 のとき、その軸については `imageExtent` に従って隙間なく詰まっている(tightly packed)とみなす」と定められています。つまり単純に「画像全体を幅×高さ×バイト数ぶんのバッファへそのまま吸い出す」場合は、両方 0 にしておくのが正しく、幅を入れる必要はありません。ここを実際の幅で埋めても同じ結果になりますが、パディング付きの行ピッチを扱うとき以外は 0 が定型です。`imageSubresource` の `aspectMask` / `mipLevel` / `layerCount` は別途明示が必要で、省略できません。
 
 **このリポジトリでは**: `OffscreenFrameTarget::readbackLastFrameRGBA8()`(offscreenframetarget.cpp:240)が `bufferOffset` / `bufferRowLength` / `bufferImageHeight` をすべて 0 にし、`imageSubresource`(color / mip 0 / layer 1)と `imageExtent = {width, height, 1}` を明示します(255〜263 行)。`copyImageToBuffer` で `eTransferSrcOptimal` の color image を `extent.width * extent.height * 4` バイトのホスト可視ステージングへ吸い出し(268 行)、`readBuf` で `std::vector<uint8_t>` に返します。行パディング無しの密詰めで吸うので、返るバッファはそのまま連続した RGBA8 画素になり、ゴールデン画像テストやスクショが行ピッチ補正なしで比較・保存できます。ここが決定性ヘッドレス出力の最終段で、`bufferRowLength` を実幅で埋めても結果は同じですが、0 が最短の「詰めて配置」宣言です。
+
+### cube イメージは「6 レイヤ + CUBE_COMPATIBLE フラグ」でしかない
+
+Vulkan にキューブ専用のイメージ型はありません。`VkImageCreateInfo::arrayLayers = 6` の 2D イメージに `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` を立てると、そのイメージから `VK_IMAGE_VIEW_TYPE_CUBE` のビューを作れるようになる、という関係です。cube ビューは `layerCount == 6` かつ `baseArrayLayer` が 6 の倍数でなければならず、イメージ側も幅と高さが等しい必要があります。同じイメージから **面ごとの 2D ビュー**も作れるので、「ラスタ出力は面ごとの 2D ビュー、サンプリングは方向ベクトルの cube ビュー」という使い分けが 1 枚のイメージ上で成立します。逆に言えば、cube かどうかはイメージの**作成フラグとビューの型**の話であって、レイヤ配置は 2D 配列と同じです。
+
+**このリポジトリでは**: 物理形状は `ImageResourceDimension`(`src/project/imageresourcedimension.hpp`、9〜15 行)の `two_d` / `cube` で表し、その直前のコメントが規範です。
+
+> Physical image shape is independent from the view-family layout selected
+> by the scheduler. A cube image may still expose 2D face views for raster
+> output and a cube view for direction-space sampling.
+
+生成側は `dimension == cube` で `array_layers != 6` または幅≠高さを例外にし(`src/core/renderingpass/rendertargetcontainer.cpp` 246〜254 行)、`eCubeCompatible` を立てます(280〜285 行)。ビュー側は `createImageView()`(72 行)が `eCube` に対して「cube-compatible イメージであること / `layer_count == 6` / `base_array_layer % 6 == 0`」の 3 条件を検査します(85〜94 行)。面ごとの 2D ビューは `createSequentialImageViews()`(128 行)がレイヤ数ぶん作り、レイヤ全体を 1 本で見る 2D array ビューは `createLayeredImageView()`(143 行)です。cube capture(環境マップ)がラスタ時は面ごと、サンプリング時は方向ベクトル、と同じ画像を 2 通りに見られるのはこの作り分けのおかげです。
+
+### image view の subresource range(baseMipLevel / levelCount / baseArrayLayer / layerCount)
+
+`VkImageViewCreateInfo::subresourceRange` は「イメージのどの部分を見るか」を切り取る窓です。`levelCount` に `VK_REMAINING_MIP_LEVELS`、`layerCount` に `VK_REMAINING_ARRAY_LAYERS` を渡すと「base から残り全部」を意味します。**アタッチメントとして使うビューは `levelCount == 1` でなければならず**、そのときのレンダーエリアは元 extent を `>> baseMipLevel` した実サイズ(最小 1)になります。2 つのビューが同じイメージの**重ならない**範囲を指していれば、同時に別用途で使えます。
+
+**このリポジトリでは**: `ImageSubresourceRange`(`src/project/imagesubresource.hpp`:79)が `base_mip_level` / `level_count` / `base_array_layer` / `layer_count` に加えて `mip_count_mode`(`fixed` / `remaining`)を持ち、`resolveImageSubresourceRange()`(169 行)が **Vulkan のビューを作る前に必ず明示的な数へ解決**します(コメント: `remaining is an authored/runtime-relative count, resolved to an explicit count before a Vulkan image view is cached or created`)。範囲の妥当性は `validImageSubresourceRange()`(149 行)、重なり判定は `imageSubresourceRangesOverlap()`(189 行)です。生成したビューは `(range, dimension)` を鍵にキャッシュされます(`rendertargetcontainer.hpp` の `subresource_image_views` 36 行 / `attachment_subresource_image_views` 46 行)。レンダーエリアの縮小は `attachmentExtent()` が担当します。
+
+```cpp
+// render_pass_frame_setup.cpp:118-128
+const auto mip = attachment.subresource->base_mip_level;
+return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
+```
+
+`remaining` をそのまま Vulkan へ渡さず先に解決するのは、キャッシュ鍵として比較するときに「同じ範囲なのに別の鍵」になるのを避けるためで、宣言側の相対表現と物理側の絶対値をこの 1 か所で切り離しています。
+
+### mip 数の上限は `floor(log2(max(w,h))) + 1`
+
+2D イメージが持てる mip の最大数は `floor(log2(max(width, height))) + 1` です。C++20 の `std::bit_width(n)` が `n > 0` のときちょうどこの値を返すので、`std::log2` を浮動小数で計算して丸め誤差を踏む定番のバグを避けられます。extent が変われば最大数も変わるため、「フルチェーンが欲しい」という宣言はイメージを作り直すたびに解決し直す必要があります。
+
+**このリポジトリでは**: `maximumImageMipLevels()`(`src/project/imagesubresource.hpp`:44、中身は `std::bit_width(largest)`)と `resolveImageMipLevels()`(50 行)。宣言側は `ImageMipLevelCount{mode: fixed|full_chain, count}`(33 行)で、モード enum `ImageMipLevelMode`(16 行)に付く 14〜15 行のコメントが規範です。
+
+> The authored count remains independent from a concrete output extent.
+> full_chain is resolved again whenever the runtime recreates the image.
+
+`fixed` で extent を超える数を書けば例外、`full_chain` は毎回 extent から解き直します。宣言→物理の伝播は `VulkanPhysicalResourcePlan::mip_levels`(`src/project/targetrenderplanning.hpp`:205)を経て `rendertargetcontainer.cpp` の `resolveImageMipLevels()` 呼び出し(255〜258 行)に着地します。ウィンドウを 1 px 広げただけで mip 段数が変わりうるので、この解決を「一度きりの定数」にしないことがリサイズ耐性の条件です。
+
+### LAZILY_ALLOCATED メモリと TRANSIENT_ATTACHMENT(タイル常駐)
+
+タイルベース GPU では、1 つのレンダリングパスの中でしか使わないアタッチメントを DRAM へ書き戻さず、タイルメモリに留めたままにできます。Vulkan ではこれを `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` と `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` の組で表現します。lazily-allocated メモリは実際には物理メモリが割り当てられないことがあり、アタッチメント以外の用途(サンプリング・コピー・storage)には使えません。デスクトップ GPU にはこのメモリタイプ自体が無いことも多く、その場合は普通のイメージへフォールバックする必要があります。
+
+**このリポジトリでは**: `RenderTargetStorageMode`(`src/core/renderingpass/rendertargetstoragemode.hpp`:10〜14)の `transient_attachment` / `tile_local_attachment` が、確保時に `vk::MemoryPropertyFlagBits::eLazilyAllocated` を **preferred** として渡します(`rendertargetcontainer.cpp` 259〜269 行)。どの resource がそこへ落ちるかを決めるのは物理ターゲット計画で、条件は `tile_local_eligible`(`src/project/targetrenderplanning.cpp`:2173〜2191)にまとまっています — 読みが `same_pixel` であること、書きも読みもあること、attachment アクセスだけであること(storage / transfer / host が混ざらない)、single sample、`require_store` でないこと、など。1 つでも外れれば `materialized` に戻ります。この enum のコメントが「render-target allocator が実際に実装しているモードだけを渡す」ことを明言しており、計画側の表現(`VulkanResourceRepresentation`)とは意図的に別の型になっています。
+
+### dynamic rendering local read(input attachment を dynamic rendering で使う)
+
+従来 `VkRenderPass` の subpass でしかできなかった「同じピクセルの前段出力を input attachment として読む」を dynamic rendering でも可能にするのが `VK_KHR_dynamic_rendering_local_read` です。有効にすると (a) イメージレイアウト `VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR`、(b) `vkCmdSetRenderingInputAttachmentIndicesKHR` によるカラー/深度 → input attachment index の対応付け、(c) パイプライン側の `VkRenderingInputAttachmentIndexInfoKHR` が使えるようになります。同一レンダリングインスタンス内の前段→後段の依存は、イメージバリアではなく `VK_DEPENDENCY_BY_REGION_BIT` 付きのメモリバリア(= フレームバッファローカル依存)で表します。これは「タイルを跨がない読み方だけが許される」ことの表明で、`same_pixel` 以外の読みには使えません。
+
+**このリポジトリでは**: 拡張の照会は `src/core/vkcore/core.cpp` 310〜322 行(拡張が列挙にあるときだけ `PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR` を chain して問い合わせる)、有効化は 427〜430 行(拡張名の追加)と 491〜510 行(feature を立て、非対応なら `unlink()` で chain から外す)です。**必須ではない optional feature** なので、無い環境でも起動します。コマンド側の設定は `VulkanManageCore::setRenderingInputAttachmentIndices()`(`core.hpp`:103、実装 `core.cpp`:774)、パイプライン側は `GraphicsPipelineRenderingLocalReadContract`(`src/core/shader/pipelinefactory.hpp`:27〜44)を `vk::RenderingInputAttachmentIndexInfoKHR` へ積みます(`pipelinefactory.cpp` 417〜421 行、非対応時は 455〜461 行で `unlink()`)。レイアウト遷移の stage/access は `render_target_layout_tracker.cpp` の `eRenderingLocalReadKHR` の枝(50 行・97 行)、融合 scope 内の依存が by-region なのは `RenderPassExecutor::renderingScopeDependency()`(`render_pass_executor.cpp`:459〜488)です。[第6章](06_rendering_vulkan_shader.md) §6.1 の「難所 — 論理グラフは値に版を打つ」で `same_pixel` が物理表現の決定入力だと書いたのは、最終的にこの拡張の制約に接続するためです。
 
 ## 10.2 glTF / 3D アセット形式の仕様
 

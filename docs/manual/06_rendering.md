@@ -1,11 +1,11 @@
 # 第6章 レンダリング
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-31 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - レンダリングパイプラインを **JSON だけ**で定義する方法(rendering config)
-- パス種別(`material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`)と compute タスク
+- パス種別(`material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`)と compute タスク
 - カラーパイプライン(SRGB スワップチェーン + リニアワークフロー)で気をつけること
 - feature(1 行で有効化できるパージ可能な GPU 機能)— canonical anchor・パラメータ・named binding
 - フレームグラフ(依存宣言 → 機械最適化 → 手詰め)とプランダンプ
@@ -50,6 +50,11 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `compute_tasks` | 配列 | compute タスク(§6.6) |
 | `snapshots` | 配列 | 名前付きスクリーンスナップショット(§6.8)✅WP83 |
 | `resolver_version` | int | 省略可(省略時 2 を補完)。**2 のみ受理** ✅WP73 |
+| `draw_sort` | object | 描画順ポリシー(後述「描画順ポリシー」)✅WP183/184 |
+| `graph_transforms` | 配列 | 論理グラフ全体を変換する provider の順序付き chain(後述「差し替えプロバイダの入口」)✅WP202a |
+| `render_strategy` | object | renderer の seed config そのものを生成する provider の選択(同上)✅WP202b |
+
+このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
 名前の重複(RT・パス・バッファ)はすべて hard error です。
 
@@ -94,10 +99,15 @@ cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2D�
 | フィールド | 必須 | 既定 | 内容 |
 |---|---|---|---|
 | `name` | ✔ | — | パス列内で一意 |
-| `type` | ✔ | — | `material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
+| `type` | ✔ | — | `material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / attachment / attachment配列)と `depth`(null / attachment)の**両キー必須**。attachmentは従来の名前または`{target, subresource}`。`"swapchain"` は color のみ |
-| `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
-| `resource_ports` | 任意 | — | **`fullscreen` 限定**。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
+| `input` | 任意 | — | **`fullscreen` / `output_transform` / `raster` / `material` 限定**(ほかの type に書くと `Only fullscreen, raster, and material passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
+| `resource_ports` | 任意 | — | **`fullscreen` / `raster` 限定**(ほかは `Only fullscreen and raster passes support resource_ports`)。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
+| `view_family` | 任意 | `$main` | このパスを実行する ViewFamily の ID(§6.12)。compute タスクにも同じキーがある |
+| `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` = `scene`、`output_transform` / `ui` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
+| `regions` | 任意 | — | subgraph replacement 用の region タグ(string 配列)。重複は `has duplicate region tag`(後述「差し替えプロバイダの入口」)|
+| `implementation` | 任意 | — | **`fullscreen` 限定**。`{"provider": "<名前>"}` **ちょうど 1 キー**。ほかの type に書くと `Pass implementation providers currently support fullscreen passes only`(同上)|
+| `draw` / `raster_state` | `raster` では `draw` のみ必須 | — | **`raster` 限定**(ほかの type に書くと `Only raster passes support draw` / `Only raster passes support raster_state`)。後述「type: raster」|
 | `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、mip/layer subresource、read footprintから依存とbarrierを導出する |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
@@ -149,7 +159,8 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 ### type 別の要点
 
 - **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
-- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む(最大 8 入力)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
+- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む。**入力枚数にエンジン固定の上限はありません**(✅WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った 8 は descriptor pool のサイズ見積もりで、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
+- **`raster`** — 汎用ラスタパス(✅WP238b)。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
 - **`ui`** — UI オーバーレイ([第7章](07_input_ui.md))。WP87 以降は `engine://features/ui.json` 経由の挿入が標準です。
@@ -157,6 +168,131 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 - **`debug_draw` / `debug_text` / `imgui`** — 通常は feature 経由で挿入されます(§6.5)。
 
 なお `sprite` という**パス型はありません** — スプライトは feature + anchor 方式で描かれます(§6.9)。
+
+### type: raster — 汎用ラスタパス(✅WP238b)
+
+`material` でも `fullscreen` でもないラスタ技法(クリア三角形、プロシージャルジオメトリ、
+デバッグ描画の自作版など)を、エンジンにパス種別を足さずに書くための型です。
+新しい技法ごとにエンジン側の `PassInfo` とパーサと実行分岐を増やす構造をやめる、
+というのが設計意図です(設計の正: [../design_heterogeneous_execution_graph.md](../design_heterogeneous_execution_graph.md))。
+
+`sprite_demo` が実際に使っている実物([../../projects/sprite_demo/passes/main.json](../../projects/sprite_demo/passes/main.json) の 1 行を整形):
+
+```json
+{
+  "name": "ssao_clear",
+  "type": "raster",
+  "output": { "color": "ssao_blur", "depth": null },
+  "draw": {
+    "implementation": "sprite_demo.clear_triangle@1",
+    "operation": "direct",
+    "vertex_count": 3
+  },
+  "shader": {
+    "implementation": "sprite_demo.clear_shader@1",
+    "vertex": "shaders/fullscreen",
+    "fragment": "shaders/white"
+  },
+  "clear_color": [1, 1, 1, 1]
+}
+```
+
+**`shader`(必須・object)** — 受理するフィールドは `implementation` / `vertex` / `fragment` だけです
+(ほかは `Unknown raster shader field '<key>'`)。`vertex` は必須。`fragment` は任意ですが、
+`output.color` が 1 枚以上あるときは必須です(`Raster pass with color outputs requires a fragment shader`)。
+`implementation` は省略時 `pelican.raster.authored_shader@1` で、書く場合は
+**`namespace.name@major` の canonical 構文**でなければ
+`Raster pass shader implementation must use canonical namespace.name@major syntax` になります。
+
+**`draw`(必須・object)**
+
+| フィールド | 既定 | 内容 |
+|---|---|---|
+| `implementation` | `pelican.raster.authored_direct@1` | 描画コマンドを生成した algorithm の provenance。backend が消費するのは `operation` の側で、この ID ではありません |
+| `operation` | `"direct"` | **現状 `"direct"` のみ**。ほかを書くと `has unsupported typed operation '<x>'` |
+| `vertex_count` | 3 | direct draw の頂点数 |
+| `instance_count` | 1 | インスタンス数 |
+| `first_vertex` | 0 | 先頭頂点 |
+| `first_instance` | 0 | 先頭インスタンス |
+
+`draw` 自体を省略すると `<パス名> requires a draw object` です。
+
+**`raster_state`(任意・object)**
+
+| フィールド | 既定 | 値 |
+|---|---|---|
+| `topology` | `triangle_list` | `point_list` / `line_list` / `line_strip` / `triangle_list` / `triangle_strip` |
+| `cull` | `none` | `none` / `front` / `back` |
+| `front_face` | `counter_clockwise` | `counter_clockwise` / `clockwise` |
+| `depth_test` / `depth_write` | `false` | bool |
+| `depth_compare` | `less` | `never` / `less` / `equal` / `less_equal` / `greater` / `not_equal` / `greater_equal` / `always` |
+| `color_attachments` | — | 配列。**要素数は `output.color` の枚数と厳密一致**(`color_attachments count must match pass color outputs`)。各要素は `blend` / `write_mask` の 2 キーのみ |
+
+`color_attachments[].blend` / `.write_mask` の値の語彙は §6.7 の `material_output_states` と**同一のパーサ**です。
+ただしキーは別で、`material_outputs` / `material_output_states` は material パス限定です
+(`Only material passes support material_outputs`)。raster パスの blend / write mask は
+必ず `raster_state.color_attachments[]` に書きます。
+
+`input` / `resource_ports` も受理します。resource port は image が `sampled`、buffer が `storage` に限られ、
+1 つの resource へ複数 port は割り当てられません。color attachment 数にもエンジン固定の上限はありません。
+
+### 描画順ポリシー `draw_sort`(✅WP183/184)
+
+不透明・半透明それぞれの DrawQueue の並べ替え手法を、rendering config のトップレベルで選びます。
+
+```json
+{
+  "draw_sort": {
+    "opaque": { "provider": "state_batched_v1" },
+    "transparent": { "provider": "back_to_front_v1" },
+    "xr_view_policy": "logical_view_center"
+  }
+}
+```
+
+- 受理するキーは `opaque` / `transparent` / `xr_view_policy` の 3 つだけ、phase オブジェクトは `provider` 1 キーだけです。
+- 既定値は **`opaque` = `state_batched_v1` / `transparent` = `back_to_front_v1` / `xr_view_policy` = `logical_view_center`**。同梱プリセット `engine://render_pipelines/hybrid_v1.json` もこの 3 つをそのまま書いています。
+- `xr_view_policy` は `logical_view_center`(既定・左右眼の中心を 1 回だけ評価)または `per_view`(view ごとに sort をやり直す)。未知の値は `resolved draw_sort has unknown xr_view_policy: <x>` です。
+- **`per_view` は view 数がちょうど 2 のときだけ有効**で、それ以外の view 数のステレオ描画では実行時に `XR per_view draw sorting requires exactly two views` で落ちます。
+- provider は公開 ABI(`src/core/userpublic/render/draw_sort_abi_v1.hpp`)で、ゲーム DLL 側から自作の並べ替えを登録して名前で選べます。
+- secondary ViewFamily(planar reflection 等)の透明パスは、**同じ provider を view ごとに再評価**します(§6.5 / §6.12)。
+
+### 差し替えプロバイダの入口(✅WP200/201/202a/202b)
+
+エンジンは「どの粒度をユーザー空間へ開くか」を 4 段階に分けて公開しています。
+**マニュアルは JSON の入口だけを示します** — 各 ABI の設計論と C 側の契約は
+[../design_render_pipeline_extensibility.md](../design_render_pipeline_extensibility.md) が正です。
+`projects/` の同梱プロジェクトはまだこの 4 つを使っていない(使っているのは golden fixture 側)ため、下の JSON は**パーサ実装から起こした(例)**です。
+
+| 粒度 | config の書き場所 | 既定 provider | 対象 |
+|---|---|---|---|
+| 1 パスの実装 | pass の `implementation.provider` | `builtin.fullscreen_v1` | **fullscreen パス限定**。logical な pass contract を保ったままシェーダ対を差し替える |
+| 連続区間の置換 | pass の `regions[]` + パス列の `region_replacements[]` | `builtin.identity_v1` | **連続した fullscreen パス**を最大 256 パスへ展開・置換する |
+| 論理グラフ全体の変換 | トップレベル `graph_transforms[]` | (省略可) | feature 合成後の config を順序付き chain(最大 32 段)で変換する |
+| renderer の seed 生成 | トップレベル `render_strategy` | `builtin.authored_config_v1` | preset 展開後・feature 合成前の seed config **全体**を provider が生成する |
+
+```json
+{
+  "render_strategy": { "name": "project.custom_renderer", "provider": "project.render_strategy", "parameters": {} },
+  "graph_transforms": [ { "name": "project.msaa_like", "parameters": {} } ],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "region_replacements": [ { "region": "region.post", "provider": "game.custom_post" } ],
+      "passes": [
+        { "name": "tone", "type": "fullscreen", "regions": ["region.post"],
+          "input": ["scene_linear"],
+          "shader": { "vertex": "engine://fullscreen", "fragment": "engine://scene_present" },
+          "output": { "color": "display_linear", "depth": null } }
+      ]
+    }
+  ]
+}
+```
+
+- `render_strategy` / `graph_transforms[]` の要素はどちらも `name`(必須)/ `provider` / `parameters` の 3 キーだけです。
+- `region_replacements[]` の要素は `{region}` か `{region, provider}` のちょうど 1〜2 キー、1 パス列あたり最大 64 件です。region タグの重複、保護ノード(`output_transform` / `__anchor_*`)の置換、非連続なタグ付けはすべて起動時の名指しエラーになります。
+- **黙った fallback はしません** — 未登録 provider、ABI 版の不一致、provider の出力が契約を満たさない場合は、いずれもパス名と provider 名入りの compile error です。
 
 ## 6.3 カラーパイプライン(✅WP72〜74)
 
@@ -225,7 +361,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(11 個・✅すべて実装済み):
+エンジン同梱 feature(12 個・✅すべて実装済み):
 
 | feature | 内容 |
 |---|---|
@@ -233,6 +369,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `clustered_lighting.json` | computeでViewFamily/view別のcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入。planar reflection併用時はreflection-local selectorも自動合成 |
 | `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
 | `planar_reflection.json` | 指定world planeでmain viewを反転し、独立解像度のdeferred G-buffer/SSAO/lightingを`$reflection/planar` familyへ追加。結果をforward transparentの`planar_reflection` resource portへ割り当て |
+| `cube_capture.json` | stable `$capture/cube` family の 6 面 sequential capture。`cube_capture_color`(現在 1 mip)を作る。cube 専用のパス種別は増やさない(本節後半)✅WP237 |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
 | `velocity.json` | モーションベクタ RT(`R16G16_SFLOAT`)+ `velocity` パスを `before:post_main` に挿入(✅WP88) |
 | `taa.json` | **標準 TAA**(resolve + composite の二パス + halton23/8 の jitter provider + スカラーパラメータ。§6.8)✅WP113 |
@@ -241,7 +378,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `debug_text.json` | ビットマップ文字 HUD([第7章](07_input_ui.md)) |
 | `gpu_timing.json` | パスなしの計測フラグ。フレームグラフの**ノードごとに `barriers` / `body` の GPU タイムスタンプ**を取り、ログ・`get_status.gpu_timing`・ImGui に出す(✅WP29/143。XR では左右眼とミラーを別 view として分離。§6.14) |
 
-fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)、`render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input / material resource追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**、**`integrations`(下記)**。`shadow_directional.json` の全文例は前版と同じです。
+fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)、`render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)、`passes`(`insert: "begin" | "before:<アンカー|パス名>" | "after:<...>" | "end"`。`begin` は `rendering_passes` がちょうど 1 本のときだけ有効)、`pass_overrides`(既存パスへの `input` / `resource_ports` / `material_resources` 追加。この 3 キー以外は `render feature pass override has unsupported field '<key>'`)、`shader_defines`、**`parameters`(下記)**、**`surface_resources`(下記)**、**`projection_jitter`(§6.8)**、**`integrations`(下記)**。`shadow_directional.json` の全文例は前版と同じです。
 
 別featureとの組合せでだけ必要なfragmentは`integrations`へ置けます。全base featureを合成した
 後に`requires`のfeature名がすべて存在するときだけ適用されるため、`features`配列の記述順へ
@@ -277,8 +414,25 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 ]
 ```
 
-- feature 側は `parameters`(`pelican.render_feature_parameters` v1)で宣言します: `render_targets`(name / required / default / role / format_class / usage — **RT の named binding**)、`scalars`(`float` / `int` / `bool`。`default` 必須、float/int は `range: [min,max]` 必須)、`shader_assets`(name / `stage: vertex|fragment|compute` / default)。
+- feature 側は `parameters`(`pelican.render_feature_parameters` v1)で宣言します: `render_targets`(name / required / default / role / format_class / usage / extent_scale / width / height / sample_count — **RT の named binding**)、`scalars`(`float` / `int` / `bool`。`default` 必須、float/int は `range: [min,max]` 必須、任意で `shader_define`)、`shader_assets`(name / `stage: vertex|fragment|compute` / default)。
 - feature 本文の中では **`$<パラメータ名>`** プレースホルダで参照します(`$scene_color@history` も可)。未解決・型不適合は feature 名・パラメータ名入りの compose エラー。
+- スカラーの `$名前` は fragment JSON の**どのスカラー位置にも書けます**。文字列が `"$名前"` **ちょうど一致**のときはパラメータの JSON 型がそのまま残るので、シェーダ define だけでなく**物理宣言も 1 つの値で駆動**できます。同梱 feature の実例:
+
+  ```json
+  "render_targets": [{
+    "name": "shadow_map",
+    "extent_scale": 1.0,
+    "width": "$resolution",
+    "height": "$resolution",
+    "format": "D32_SFLOAT",
+    "format_class": "data",
+    "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
+    "layers": "$cascade_count"
+  }]
+  ```
+
+  `"$resolution"` は int の `resolution` に、`"$cascade_count"` は int の `cascade_count` に置換されるため、`{"cascade_count": 4, "resolution": 2048}` を渡すだけで 2048×2048 の 4 layer array target になります。文字列の一部としての `$名前` は置換対象ではありません(RT 名の named binding だけが `$scene_color@history` のような接尾辞付き参照を扱います)。
+- `scalars` の `shader_define`(bool・既定 `true`)を `false` にすると、そのパラメータは値付き define を**出しません**。解像度やカメラ位置のように CPU 側だけで使う値に付けます — `true` のままだと値を変えるたびにシェーダキャッシュキーが変わり、**全シェーダが再コンパイル**されます。同梱では `cube_capture.json` の 6 スカラー全部、`planar_reflection.json` の `prefilter_radius` 以外、`shadow_directional.json` の `cascade_count` 以外が `false` です。
 - `shader_assets`は`shader`の型付きslotだけへ完全一致の`$name`として置けます。compute taskの文字列`shader`、またはgraphics passの`shader.vertex|skinned_vertex|fragment|compute`と宣言stageが一致しなければcompose時に拒否します。`skinned_vertex`は`vertex` stageです。instance値は`engine://`にも`project://`にもでき、feature JSONを複製せずalgorithm assetだけを交換できます。
 - スカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
 - 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
@@ -349,7 +503,8 @@ captureします。Deferred geometryはreflection用G-bufferとlightingを通り
 そのcolor/depthへloadして同じreflection familyから再描画されます。その直後のopaque
 color/depth snapshotをreflection-local scene inputとしてForward transparentを再描画します。
 transparent surfaceはcanonical passと同じsort providerを反射cameraごとに再評価するため、
-main cameraと鏡映cameraで奥行き順が異なってもmain-view順序を流用しません。
+main cameraと鏡映cameraで奥行き順が異なってもmain-view順序を流用しません
+(ここでいう sort provider は §6.2 の `draw_sort` で選ぶものです)。
 
 公開結果targetは`planar_reflection_color`で、canonical `forward_transparent` passでは同名の
 `planar_reflection` material resource portへ自動bindingされます。reflection内のtransparent
@@ -444,6 +599,34 @@ main viewと共有します。headerが現在のFrameUBOと一致しない場合
 するため、別familyのselectionや未生成領域を誤用しません。cube capture併用時も同じ契約で
 6-view専用selectionを作ります。secondary multiviewとcube capture用BRDF-aware prefilterは
 後続です。
+
+### feature が所有する material 入力契約 `surface_resources`(✅WP205)
+
+feature が作った RT を、**material 側の公開アクセサとして配る**ための宣言です。
+同梱 `src/core/resources/features/shadow_directional.json` の実物:
+
+```json
+"surface_resources": [
+  {
+    "contract": "directional_shadow",
+    "resource": "shadow_map",
+    "producer": "shadow_depth",
+    "material_contracts": ["forward_opaque_v1", "forward_transparent_v1"],
+    "fullscreen_consumers": [
+      { "fragment": "engine://fullscreen", "uses_light_data": true }
+    ]
+  }
+]
+```
+
+- 受理するフィールドは `contract` / `resource` / `producer` / `material_contracts` / `fullscreen_consumers` の 5 個だけです。
+- **`contract` は v1 では `directional_shadow` の 1 つだけ**が公開契約です。ほかを書くと `does not name a public feature-owned material input contract`。任意の名前で自作契約を生やす入口ではありません(語彙を増やすときは語彙 WP としてエスカレーションする、という §6.5 冒頭の方針どおりです)。
+- `material_contracts` に書けるのは forward 系(`forward_opaque_v1` / `forward_transparent_v1`)だけです(`material_contracts must name forward material contracts`)。
+- `resource` が RT として存在しない、`producer` がその RT を書いていない場合は、feature 名とインデックス入りの compose エラーになります。
+- 選ばれた consumer パスには合成後に `surface_resources` が**自動注入**されます。解決は全 feature がパスを挿し終わってから行われるため、**`features` 配列の記述順に依存しません**(producer が consumer の前に書かれていても後でも結果は同じ)。
+- material 側から見た受け取り口は `.surface` の screen input 契約 `directional_shadow` で、これは feature 専有のため `.surface` から直接 authoring できません(§6.7)。生成アクセサは `pelican_shadow()` です。
+
+同梱 `shadow_directional.json` をプロジェクトへコピーして参照しても出力が **byte 一致**することは、golden の `shadow_b_layer_engine` / `shadow_b_layer_project` が同一 RGBA8 ハッシュで固定されていることで機械的に保証されています(`test/fixtures/wp73_rgba8_hashes.json`)。§6.5 冒頭の「同梱 feature は特権なしの標準ライブラリ」の実証です。
 
 ### canonical anchor(✅WP73)
 
@@ -614,6 +797,34 @@ indirect command read への stage/access barrier もプランから自動発行
 `groups` / image `groups_from` / `indirect`の併記は起動時エラーです。
 `local_size`は常にshader側の宣言がauthorityです。
 
+### バッファサイズを RT の extent から決める(`size_from_extent`)
+
+タイル単位のバッファ(clustered lighting の selection buffer など)は、バイト数を手書きせず
+**参照する RT の実 extent から導出**できます。`clustered_lighting.json` の実物:
+
+```json
+"buffers": [
+  {
+    "name": "clustered_light_selection",
+    "lifetime": "persistent",
+    "size_from_extent": {
+      "resource": "lit_color",
+      "tile_width": 32,
+      "tile_height": 32,
+      "header_bytes": 48,
+      "bytes_per_tile": 260,
+      "copies": 2
+    }
+  }
+]
+```
+
+- 受理するフィールドは `resource` / `tile_width` / `tile_height` / `header_bytes` / `bytes_per_tile` / `copies` の 6 個だけです(ほかは `.size_from_extent has unknown field '<x>'`)。
+- サイズは `resource` の extent をタイルサイズで**切り上げ除算**し、`header_bytes + tiles × bytes_per_tile` を `copies` 個ぶん確保します。`copies` は省略時 1 で、ViewFamily の view 数ぶん領域を分けたいときに使います(planar reflection 版は 2、cube capture 版は 6)。
+- `tile_width` / `tile_height` / `bytes_per_tile` は正の整数が必須です。`copies` は省略可(既定 1)ですが、書いた場合は 0 を許しません。
+- **`size` と `size_from_extent` の併記はエラー**(`cannot declare both size and size_from_extent`)。
+- RT の extent が変わると再計算されるので、ウィンドウリサイズや `resolution` パラメータ変更にそのまま追随します。
+
 ### GPU が indexed draw 数を決める
 
 同じフレームの compute task が material pass の indexed draw command と draw count を
@@ -772,6 +983,31 @@ pelican_player --project mygame --headless --dump-frame-plan   # stderr に出�
 ```
 
 出力にはノードごとの `order` / `level` / `reads` / `writes`(`@history` 読みは `reads_history`)と導出された `barriers`、`snapshot_copy` ノードが含まれます。
+
+**`execution_plan`(🚧WP238a)** — 同じダンプに backend 非依存の共通 IR が併記されます
+(`schema: "pelican.frame_execution_plan"`)。ノードごとの semantic dialect、選択された implementation と
+endpoint、required / provided capability、resource use(current / previous epoch × read / write × footprint)、
+依存、bridge、fingerprint が見えます。endpoint の `class` は `host` / `device` / `external` の
+3 値だけが閉じた語彙で、queue も `backend` 名も open な ID です。
+
+この IR は**現時点では観測面**です。パブリッシュ時に FramePlan と graph 名・ノード数・
+`order` / `level` / `view_family` が一致することを検証されますが、
+**実行順・level・barrier の権威は今も FramePlan(`planFrameGraph()`)側**にあります。
+また rendering config に書くキーはありません。
+
+**`native_scope_executors`(🚧WP238d)** — 検証済みの完全 physical package が
+1 個以上の physical scope を「provider が自前で command を記録する NativeScope 実行」へ
+切り替えたときだけ出ます。complete-plan fingerprint、scope と implementation の identity、
+provider の owner / generation、capability、synchronization mode(`automatic` / `manual` / `unchecked`)、
+queue capability、lowered resource kind が見えます。scope が覆った区間では、通常の
+render / compute / transfer / output / marker のノード本体は provider の callback へ置き換わります。
+
+> 🚧 NativeScope はこの時点では **source-level の拡張**です。rendering config に書くキーはなく、
+> **ゲーム DLL 向けの raw Vulkan callback ABI も公開されていません**。同梱の builtin provider は
+> `builtin.vulkan` 1 本で、その唯一の implementation が空マーカー `builtin.vulkan.noop_marker@1` です。
+> この境界に乗る production の描画機能はまだありません
+> (正: [../design_render_graph_compiler.md](../design_render_graph_compiler.md) /
+> [../design_heterogeneous_execution_graph.md](../design_heterogeneous_execution_graph.md))。
 
 ### target planning と Vulkan plan pin
 
@@ -1174,6 +1410,11 @@ blend constant/dual-source blendの境界は
 [WP219実装報告](../design_reviews/2026-07-28_wp219_material_output_states_report.md)
 を参照してください。
 
+`material_outputs` / `material_output_states` は **material パス限定**です
+(ほかの type に書くと `Only material passes support material_outputs`)。
+`raster` パスの attachment blend / write mask は、値の語彙は同じですが
+`raster_state.color_attachments[]` の側に書きます(§6.2)。
+
 `material_outputs` を省略した pass は既存プロジェクト向けの内蔵5-MRT/1-color ABIを
 維持します。独自スキーマは生成 fragment shader が必要なため、現時点では runtime
 shader compiler を有効にした開発ビルドで使います。shaderc OFF の配布物は
@@ -1514,6 +1755,13 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `uses an explicit file extension; use an extensionless ... shader stem` | shader 参照に拡張子を書いた |
 | `Shader stem could not be resolved: ... Tried: ...` | stem のパスミス(試行一覧がエラーに含まれる) |
 | `Unknown pass type: ...` | `type` の typo(§6.2 の一覧参照) |
+| `Only raster passes support draw` / `... support raster_state` | `draw` / `raster_state` を `raster` 以外の type に書いた(§6.2) |
+| `<pass> requires a draw object` / `Raster pass requires shader: <pass>` | `raster` パスに `draw` / `shader` が無い |
+| `Raster pass shader implementation must use canonical namespace.name@major syntax` | `shader.implementation` が `namespace.name@major` 形式でない |
+| `raster_state color_attachments count must match pass color outputs` | `color_attachments` の要素数が `output.color` の枚数と違う |
+| `Pass implementation providers currently support fullscreen passes only` | `implementation` を fullscreen 以外の type に書いた(§6.2) |
+| `tagged region v1 supports contiguous fullscreen passes only` / `... requires contiguous authored passes` | `regions` タグが非連続、または fullscreen 以外のパスに付いている(§6.2) |
+| `resolved draw_sort has unknown xr_view_policy: <x>` / `XR per_view draw sorting requires exactly two views` | `draw_sort.xr_view_policy` の値が不正 / `per_view` を view 数 2 以外で使った(§6.2) |
 | `Only rendering resolver_version 2 is supported` | `resolver_version` に 2 以外を書いた |
 | `insert anchor was not found: <name>` | feature の挿入先が存在しない(標準アンカー 8 個 + パス名が有効) |
 | `Ambiguous writes-writes dependency for resource X between A and B` | 書き込み順が導出不能。after/before か中間リソースで解消 |
@@ -1758,7 +2006,11 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 - [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1・J1/J1b/J1c + 標準 TAA すべて実装済み)
 - [../design_usd_openpbr.md](../design_usd_openpbr.md) — USD レーン + OpenPBR(v2.1・M-PBR0/U-USD0 実装済み)
 - [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md) — OpenPBR 写像表の正
-- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.2・XR0〜XR4 + WP203a〜c local implementation済み。desktop mirror WSI lifecycleはWP215〜217計画済み。現実装のSimulator/物理HMD・対象GPU実測gateは未)
+- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.2・XR0〜XR4 + WP203a〜c local implementation済み。desktop mirror WSI lifecycleは**WP215〜217で実装済み**(RDP / ディスプレイ切替などの manual platform gate と XR 実機 gate は未消化)。現実装のSimulator/物理HMD・対象GPU実測gateは未)
+- [../design_render_pipeline_extensibility.md](../design_render_pipeline_extensibility.md) — レンダーパイプライン拡張境界(draw sort / pass implementation / subgraph replacement / graph transform / render strategy の設計の正)
+- [../design_render_graph_compiler.md](../design_render_graph_compiler.md) — 論理型カーネル・target planning・Vulkan physical plan・generic raster pass の設計の正
+- [../design_heterogeneous_execution_graph.md](../design_heterogeneous_execution_graph.md) — 共通実行計画(FrameExecutionPlan)と NativeScope 境界の設計の正
+- [../design_wsi_epoch_recovery.md](../design_wsi_epoch_recovery.md) — window 出力の lifecycle(surface / swapchain epoch。WP215〜217 実装済み)
 - [../design_2d_game_layer.md](../design_2d_game_layer.md) — 2D ゲーム層(v2.4・S2D 実装済み)
 - [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
 - [../design_debug_profiling.md](../design_debug_profiling.md) — デバッグ・プロファイリング(v1.1・条件付き受理。D-P0a/D-P1a/D-P2a/D-P2b 実装済み、§6.14)

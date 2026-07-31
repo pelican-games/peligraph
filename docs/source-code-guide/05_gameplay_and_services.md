@@ -345,7 +345,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >
 > **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([physqueryinternal.hpp#L7](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [#L133](../../test/physquery_test.cpp#L133)。
 >
-> **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([physicsruntime.cpp#L521](../../src/core/phys/physicsruntime.cpp#L521) / [#L672](../../src/core/phys/physicsruntime.cpp#L672))。provider の列挙順を結果へ漏らさない最後の関門です。
+> **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L530) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L621) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L470))。provider の列挙順を結果へ漏らさない最後の関門です。
 
 > 🧩 **難所 — GJK 最近点の全列挙**([`closestToOrigin()`](../../src/core/phys/physquerysweep.cpp#L289) / [`closestForSubset()`](../../src/core/phys/physquerysweep.cpp#L229))
 >

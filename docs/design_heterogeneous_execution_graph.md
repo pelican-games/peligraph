@@ -1157,7 +1157,7 @@ debug-utils validation error 0、extension closure、二世代replacement、GPU�
   validation/readback capture、generation replacementとGPU完了後retirementを接続。
   公開game-DLL ABIとcontrolled device-loss注入は未接続
 - MSAA/history/depth/storage/bufferまでのalias拡張、一般のload/store等のaggressive
-  physical control、MSAA/external scope fusion、NativeScope runtime、CPU・external・video runtime
+  physical control、MSAA/external scope fusion、CPU・external・video runtime
   workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain

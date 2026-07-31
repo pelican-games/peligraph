@@ -1,8 +1,8 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2.7)
+# レンダーパイプライン拡張境界とポリシー統合(v2.8)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2.7 実装方針(2026-07-29。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.8 実装方針(2026-07-31。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
@@ -71,6 +71,16 @@ flat/preview/XRは同じinvocationへ入り、previewは共有GPU登録を持た
 v2.7 / WP222は、render graph、surface shader、graphics pipeline、material metadata/valueを
 同じwatcher batchから一つのcandidateへprepareし、stale検査とruntime publicationの間に
 pre-publication commitを置く。graphだけ新しくmaterialだけ古い中間世代を公開しない。
+v2.8 / WP235〜WP238eは、拡張ladderの下端を設計上の予約から実装済みの境界へ進めた。
+WP235はraster attachmentを`(target, optional subresource)`のtyped viewへ、WP236はruntime
+render targetをcube-compatible image shapeへ広げ、WP237はその六方向camera policyを
+削除可能な標準`cube_capture` packageへ出した。WP238aはbackend非依存の
+`FrameExecutionPlan`を既存`FramePlan`の隣に置き、WP238bは`type: "raster"` authoring kindと
+portableな`RasterPassContract`で、custom raster techniqueごとにengine中央のpass kindを
+増やす構造を止めた。WP238cは`pelican.vulkan_complete_physical_plan` version 1と
+data-only `NativeScope`宣言を、WP238dはそのsource-level executor provider runtimeを、
+WP238eは実commandを記録するVulkan fixtureと正確なverification contextからのinstall APIを
+追加した。公開game-DLL callback ABIはまだ凍結していない。
 
 関連文書:
 
@@ -279,6 +289,9 @@ eject は層別にする。物理 plan を論理 graph へ損失なく戻すこ�
   backend candidate を logical graph fingerprint 付きで同じ物理層へコピーする
 - 実装済みの `physical_target_plan.ejectable_physical_fragment` — 自動planの
   resource/scope/alias記述をlogical/environment fingerprint付きで同じ物理層へコピーする
+- 実装済みの `physical_target_plan.ejectable_complete_physical_plan` — engineが見る全
+  physical resource / scope / attachment / alias group と `NativeScope` 宣言を、
+  environment fingerprint付きの完全な同一層 package としてコピーする(WP238c)
 - 将来の `eject-render-pipeline` — resolved authoring / logical graph / Vulkan physical
   fragment / complete raw plan のいずれかを同じ層の編集形式で project へコピー
 - 元 preset の名前・版・content hash を provenance として残す
@@ -332,8 +345,17 @@ swapchain、OpenXR session、Vulkan command recording、未知の pass kind 等�
 `RenderingPassConfigRegistrationDependencies::Options::render_compiler_program`を追加した。
 nullはbuilt-in mixed program、非nullはtransaction内の全variantで同じprogramを使う。
 programはCPU candidateだけを返し、GPU object作成、runtime publication、rollbackを直接
-行えない。これはgame-DLL ABIではなく、complete raw plan / NativeScope fixtureが揃うまで
-source-level seamとして扱う。
+行えない。これはgame-DLL ABIではなくsource-level seamである。
+
+WP238c / WP238d / WP238eはその隣に二つ目のsource-level seamを置いた。custom compiler
+programはverified complete physical packageを対応するruntime target planと対で持ち、
+runtimeはowner/generation lease付きexecutor providerを通してphysical scope単位の
+command記録を差し替える。標準programへ委譲する場合は
+`installVerifiedVulkanCompletePhysicalPlanPackage`が、default compilerの保持する
+canonical logical graph、target topology、probe済みformat capability、実際に有効化された
+device extension集合に対して検証してからtarget plan indexを一括更新する。programが
+private device factsを再構成したり近似でverifierを呼んだりしない。これも公開game-DLL ABI
+ではなく、prepare/rollback/retireは既存のregistration transactionとrenderer generationに従う。
 
 したがって、**content pass はすべて eject 後に変更可能**だが、present、
 canonical output transform、XR frame lifecycle、barrier 実行は普通の content
@@ -1039,6 +1061,14 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE13j / WP232（済 2026-07-29） | planar 7-level mip filter、pass-owned family-array material ABI、scalar-family adapter | mip別dispatch/bytes、Surface sampler2DArray reflection、scalar/array両pass共有、実GPU |
 | RPE13k / WP233（済 2026-07-29） | typed shader asset parameter、標準render algorithm resource package | project shader差替え、標準asset build purge、ON/OFF reflection実GPU |
 | RPE13l / WP234（済 2026-07-29） | stable-ID runtime ViewFamily provider registry、標準planar C++ package | caller優先解決、planar source/object purge、shadow/reflection ON/OFF実GPU |
+| RPE13m / WP235（済 2026-07-29） | raster attachmentを`(target, optional ImageSubresourceRange)`のtyped viewへ拡張、physical attachment/scope/fingerprintの`(resource, range)`同一性 | swapchain・多重mip・範囲外・view数不一致・MSAA非零mipのreject、3mip×4layer targetでmip 1のsequential 2D viewとmultiview array view、縮小render extentの実GPU |
+| RPE13n / WP236（済 2026-07-30） | cube-compatible runtime render target(`dimension: "cube"`)、physical image shapeとdescriptor view dimensionの分離、`samplerCube` resource port | 固定正方形・6 layer強制、cube portのstorage/local-read拒否、2dとcubeのalias非互換、`eCubeCompatible`実image生成・cube descriptor・非零mip face attachmentの実GPU |
+| RPE13o / WP237（済 2026-07-30） | 交換可能な標準`cube_capture` package(六方向camera policy、stable `$capture/cube` family)、secondary familyのruntime view cardinality一般化 | caller-authored family優先、標準package OFFでsource/object/registry不在、runtime layer容量由来のfullscreen descriptor variant、6 face sequential描画とface別readbackの実GPU |
+| RPE14a / WP238a（済 2026-07-30） | backend非依存`FrameExecutionPlan`、open endpoint/capability選択、resource/effect/dependency closure、canonical order + stable fingerprint。実行所有権は既存`FramePlan`のまま | render/compute/copyのdialect写像、非連結component許可、capability/dependency/fingerprint負例、generation内のexecution fingerprint整合とrollback |
+| RPE14b / WP238b（済 2026-07-30） | authoring kind `type: "raster"`とbackend非依存`RasterPassContract`、open geometry/shader implementation ID、任意MRT/typed resource port、Vulkan state/attachment adapter | portable contract正規化と19 attachment、integer targetのblend拒否、fused scopeのlogical location→physical slot写像と未使用slot無効化、`sprite_demo`の`ssao_clear` dogfood |
+| RPE14c / WP238c（済 2026-07-30） | `pelican.vulkan_complete_physical_plan` version 1のeject/parse/fingerprintとstrict same-layer verifier、data-only `NativeScope`宣言 | stale logical graph/automatic plan/backend candidate、node coverage欠落・依存逆転、lifetime/alias/attachment不整合、隠れresource access・不足feature/extension・不完全同期のreject。GPU objectは生成しない |
+| RPE14d / WP238d（済 2026-07-31） | source-level `NativeScope` executor provider registry、owner/generation code lease、prepare/rollback、typed runtime resource facade、automatic outer sync、renderer-generation retirement | provider選択とcapability不足reject、owner retire後のsnapshot存続、in-flight generation leaseの保持、target/package drift reject。built-in providerは空marker |
+| RPE14e / WP238e（済 2026-07-31） | default compilerが保持するcanonical logical / device verification contextからの`installVerifiedVulkanCompletePhysicalPlanPackage`、実command記録のVulkan fixture | 実際に`vkCreateDevice`へ渡したextension closureとの照合、stale/重複/drift package reject、隔離scopeのdynamic rendering clearをheadless RGBA readbackで検証、validation error 0、二世代replacementとGPU完了後のexact retire |
 
 ### 12.1 いま着手する範囲
 
@@ -1132,16 +1162,19 @@ materialized attachmentだけは一つのdynamic rendering instanceへ融合し�
 sprite anchorは元node indexでなく実行済みphysical orderを参照する。attachment Loadはlogical
 shadow graphでも分離read/writeではなくversioned read-write useになり、手動fixtureと実configの
 意味を一致させた。
-各段階の詳細gateは
-`design_render_graph_compiler.md` §12 を正とする。
+RPE12c / WP221 までの各段階の詳細gateは
+`design_render_graph_compiler.md` §12 を正とする。RPE13a / WP223 以降の段は RGC §12 に個別節を
+持たないため、各 WP の受け入れ記録は `docs/design_reviews/` の該当 report を正とする。
+RPE8d / WP219 は RPE8c 節、RPE9 / WP192 と RPE10a〜RPE10b3 / WP193〜WP196 は「それ以後」節に
+含まれ、個別節を持たない。
 
 ### 12.2 後回しにするもの
 
 - OIT の方式選定
-- `PassInfo` の未知 custom pass kind ABI
+- `PassInfo` の未知 custom pass kind ABI（`type: "raster"` 追加後も `PassInfo` は closed variant）
 - public `GraphVariantProvider` の ABI 凍結
 - MSAA/external/異種attachmentを含む一般scope-fusion、load-store / queue-barrier physical fragment
-- complete raw physical plan の公開形式
+- raster operation の indexed / indirect+count / mesh・task / custom vertex stream variant
 - `NativeScope` の game-DLL ABI
 - bindless / GPU-driven sort
 - forward object へ SSR / SSAO / decal を適用する個別方式
@@ -1153,9 +1186,33 @@ backend candidateだけを固定するWP204 Phase Aのpinと、自動planへ安�
 Phase B v1 fragment、宣言済み候補からdevice検証済みmaterialized-image formatを選ぶ
 runtime slice、verified attachment operation、write-only transient、same-pixel tile-local、
 materialized image alias runtime、dependency-safe reorderと限定materialized scope fusionは
-実装済みである。それより強い一般のload-store / MSAA・external scope-fusion / queue-barrier、
-complete raw plan、`NativeScope`は、現在のverifierを
-具体的な利用要求と対象GPU fixtureで拡張してから公開形式・ABIを凍結する。
+実装済みである。それより強い一般のload-store / MSAA・external scope-fusion / queue-barrierは、
+現在のverifierを具体的な利用要求と対象GPU fixtureで拡張してから公開形式を凍結する。
+
+complete raw physical planの公開形式はこの後回しリストから外し、`NativeScope`もsource-level
+実行まで到達した(リストに残るのはそのgame-DLL ABIである)。`PassInfo`の未知custom pass kind
+ABIは外していない。
+
+- 技法ごとにengine中央のpass kindを増やす構造は、WP238b(`22840ef`)がbackend非依存の
+  `RasterPassContract`とauthoring kind `type: "raster"`として解消した。engine中央enumへ
+  技法名を足す代わりに、open/versionedなimplementation IDを持つalgorithmが有限のoperationを
+  生成し、backendはoperationだけをloweringする。ただし`PassInfo`自体は今もclosed variantで、
+  `makePassInfo`は未知の`type`文字列をrejectする。未知pass kindの登録ABIと、direct draw以外の
+  operation variant(indexed / indirect / mesh・task / custom vertex stream)は上のリストへ残る。
+- complete raw physical planはWP238c(`357d301`)が
+  `pelican.vulkan_complete_physical_plan` version 1として公開形式を固定し、
+  eject / parse / fingerprint / strict same-layer verifierまで実装した。
+- `NativeScope`はWP238cのdata-only宣言に続き、WP238d(`5a4f95e`)が
+  source-level executor provider registry、owner/generation code lease、prepare/rollback、
+  typed runtime resource facade、renderer-generation retirementまで接続した。WP238eは
+  さらにdefault compilerが保持する正確なlogical / device verification contextからの
+  install APIと、実commandを記録するVulkan fixtureを追加し、headless RGBA readback、
+  validation error 0、二世代replacement、GPU完了後のretireを実測した。
+
+`NativeScope`の凍結対象として残るのはgame-DLL ABIだけである。engine built-in providerは
+現在も空markerで、commandを記録するのはWP238eのtest providerである。versioned・`noexcept`の
+C facade、DLL世代境界を越えるhandle / serviceの範囲、controlled device-loss再構築testが
+揃ってから、公開ABIを設計するかどうかを判断する。
 Vulkan physical plan と `NativeScope` という入口自体は本設計で予約済みであり、
 論理型へ押し込んで代替しない。
 

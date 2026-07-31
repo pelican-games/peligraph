@@ -209,7 +209,7 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1242) に集約されています。現在 **43 メソッド**で、うち 23 が編集系です。
+engine method の登録は [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1203) に集約されています。現在 **43 メソッド**で、うち 23 が編集系です。
 
 #### 実行制御・診断系(20)
 

@@ -1,7 +1,7 @@
 # 第11章 実装状況と文書マップ
 
-対象: pelican2(2026-07-21 時点・WP179 完了地点、HEAD=`d13fc26`、branch
-`codex/rendering-phase1-refactor`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-31 時点・WP238e 完了地点、HEAD=`d1c8081`、branch
+`codex/render-target-runtime-slice`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -13,9 +13,12 @@
 ## 11.1 WP 全台帳
 
 判定は「実装コミット + test 登録 + design_reviews の完了レポート +
-implementation archive」によります(2026-07-19 調査)。
+implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180 以降は
+2026-07-31 にコミットと `src/` 上の型の実在で再判定)。
 
-凡例: **済** = マージ済みで機能する / **未** = 登録済み・未実装 / **予約** = 番号予約のみ。
+凡例: **済** = マージ済みで機能する / **済(外部 gate 待ち)** = 実装と自動テストは
+完了しているが実機・実測の受け入れが未消化 / **未** = 登録済み・未実装 /
+**予約** = 番号予約のみ。
 
 ### WP1〜63(基盤期。詳細は各章)
 
@@ -212,19 +215,111 @@ implementation archive」によります(2026-07-19 調査)。
 | 178 | VRMA-I0 | 済 | typed AnimationSource/graph/sink + generation/rebind | VRMA body/表情/視線を同revision適用 |
 | 179 | E2 — physics trigger | 済 | 決定的な対称Enter/Exit、stay抑止、destroy/remove Exit | typed behaviorへ通常E1配送 |
 
+### WP180〜202b(RPE — レンダーパイプライン拡張境界、2026-07-22〜25)
+
+| WP | タイトル | 状態 | 1行説明 | ユーザーから見える面 |
+|---|---|---|---|---|
+| 180 | RPE1 — typed render-pipeline resolve boundary | 済 | registration/preview/XR に散っていた authoring 解決を GPU mutation 前の純粋境界 `resolveRenderPipeline()` へ集約 | 見えない(挙動不変・byte 一致が受け入れ条件) |
+| 181 | RPE2 — typed immutable `CompiledRenderPipeline` | 済 | runtime が JSON key を読むのをやめ、`FramePlan::composition_metadata` を撤去 | frame-plan dump は typed plan からその場 serialize(byte 不変) |
+| 182 | RPE3 — `DrawQueueBuilder` | 済 | primitive snapshot / state sort / indirect materialize を Vulkan 非依存の純 CPU builder へ分離 | 見えない |
+| 183 | RPE4 — owner-aware `RenderPolicyRegistry` + draw sort provider | 済 | draw sort 手法を engine builtin / game DLL で交換できる versioned provider 境界 | 公開 ABI `src/core/userpublic/render/draw_sort_abi_v1.hpp`([第6章](06_rendering.md) §6.2)|
+| 184 | RPE5 — world bounds / phase 別 queue / 透明 sort / XR view policy | 済 | opaque=`state_batched_v1` と transparent=`back_to_front_v1` を別 queue 化、XR は `logical_view_center` / `per_view` | rendering config の `draw_sort`。透明物が奥→手前で描かれる |
+| 185 | RPE6a — logical type kernel / typed shadow graph | 済 | `Image/Buffer/Stream/ObjectSet/Value` の意味型・`TypePattern`・conversion・logical port を純データ型として実装 | 新 dump schema `pelican.logical_render_graph` |
+| 186 | RPE6b0 — canonical logical value graph | 済 | `(resource, version)` の producer 一意化、data edge 導出、`LogicalAccessIntent` | logical dump v2 |
+| 187 | RPE6b1 — hybrid typed screen input | 済 | `opaque_color` / `opaque_depth` / `scene_depth` / `linear_view_depth` を typed contract 化 | `.surface` の名前付き `screen_inputs`。depth-fade / 屈折 material |
+| 188 | RPE6c0 — target planning contracts | 済 | data-only な topology snapshot / backend probe / diagnostic ID / 3 profile | rendering config の `target_planning`([第6章](06_rendering.md) §6.6)|
+| 189 | RPE6c1 — desktop/tile target planner | 済 | read footprint から desktop materialized / tile-local transient を決定的に lowering | 見えない(CPU fixture 段階)|
+| 190 | RPE7/RPE8 — typed sample count + executable MSAA | 済 | `SampleCountPolicy` を実 device capability → Vulkan image/pipeline/resolve へ接続 | **MSAA が実際に効く**。`multisampling` / `pipeline.settings.msaa` |
+| 191 | physical target planner runtime integration | 済 | data-only plan と runtime bridge を単一 lowering へ統合、runtime の JSON 再走査を削除 | G-buffer の名前・枚数を変えても planner 変更が不要 |
+| 192 | RPE9 — builtin `GraphVariantPolicy` | 済 | flat/preview/XR の判定を immutable typed policy へ | 見えない |
+| 193 | RPE10a — runtime publication root | 済 | compiled pass/graph/plan/route/sample/variant を一 generation として prepare → 単一 CAS publish | dump に `runtime_generation` |
+| 194 | RPE10b1 — append-only GPU registration transaction | 済 | GPU registry 群を RAII transaction 化、5 段 fault point で部分登録を残さない | dump に arena generation / scope manifest |
+| 195 | RPE10b2 — GPU owner-scope replacement / generation lease | 済 | 同 owner scope の再登録で同名 resource を新 handle へ置換、旧 Vulkan resource は lease 解放まで生存 | rendering config の hot reload が壊れなくなる |
+| 196 | RPE10b3 — submission-fence lifetime + watcher publication | 済 | GPU submission lease を実 queue submit へ結び、root+preset+feature を一 transaction 化 | **rendering config / feature / preset の保存が実行中に atomic 反映** |
+| 197 | Python / test-tool build isolation | 済 | `BUILD_TESTING` へ移行、`PELICAN_PYTHON_TESTS` と `PELICAN_WITH_SPIRV_LINK`(既定 OFF)を追加 | **Python なしでビルドできる** |
+| 198 | host shaderc / target SPIR-V provider boundary | 済 | `PELICAN_RUNTIME_SHADER_COMPILER=ON` は Vulkan SDK shaderc を必須化、FetchContent fallback を廃止 | SDK 欠落時は案内付き configure error |
+| 199 | Python opt-in development boundary | 済 | `PELICAN_PYTHON_TESTS` 既定を AUTO → OFF | 通常 configure が Python を探さない |
+| 200 | RPE11a — fullscreen `PassImplementation` provider | 済 | 同じ logical pass contract を満たす **shader pair だけ**を差し替える公開 provider | pass の `implementation.provider`([第6章](06_rendering.md) §6.2)|
+| 201 | RPE11b — tagged region / subgraph replacement | 済 | 1 パス → 最大 256 パスへの展開を、region 境界の logical type 一致を条件に許可 | pass の `regions` + パス列の `region_replacements` |
+| 202a | RPE11c — global `GraphTransform` | 済 | 論理グラフ全体の構造変更(最大 32 段 chain)| トップレベル `graph_transforms` |
+| 202b | RPE11d — renderer-wide `RenderStrategy` | 済 | preset / verbose authoring から renderer seed config **全体**を生成 | トップレベル `render_strategy` |
+
+### WP203a〜214(XR multiview / physical plan / 描画機構 / 版の単一化、2026-07-25〜27)
+
+| WP | タイトル | 状態 | 1行説明 | ユーザーから見える面 |
+|---|---|---|---|---|
+| 203a | XR2b-a — view execution target planning | 済 | `auto`/`sequential`/required `multiview`、resource の shared/sequential/layered layout、理由付き fallback | `xr.view_execution`([第6章](06_rendering.md) §6.12)|
+| 203b | XR2b-b — array resource / `gl_ViewIndex` / one-execution | 済 | array image/view、per-view UBO、view-masked dynamic rendering、mixed-scope scheduler | 二回 `render()` を残さない契約が実装で満たされた |
+| 203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | **済(外部 gate 待ち)** | 2-layer 2D-array color swapchain + `XR_KHR_composition_layer_depth`、`xr.multiview_auto` の実測 profile gate | Meta XR Simulator / 物理 HMD / 対象 GPU の実測 gate が未消化 |
+| 204 | physical plan eject / direct authoring | **済(外部 gate 待ち)** | plan pin、physical fragment v1〜v3、verified format/attachment、transient / tile-local / image alias、dependency-safe reorder | `vulkan_plan_pins` / `vulkan_physical_fragments`([第6章](06_rendering.md) §6.6)。一般 scope/queue と実機 GPU gate が未 |
+| 205 | 公開 shadow contract + B 層 shadow 受光 | 済 | 公開 directional shadow resource / light relation + generated `pelican_shadow()` | feature の `surface_resources`。project へコピーした shadow feature が同値で動く |
+| 206a | stable draw tag / filter | 済 | material 所有の安定 tag と pass 側 filter | pass の `material_filter`([第6章](06_rendering.md) §6.7)|
+| 206b | pass-local material variant / multipass route | 済 | pass ローカルの named surface / render-state variant | inverted-hull outline が entity 複製なしに書ける |
+| 207a | compute Frame/Light + sampled resource port | 済 | fullscreen/compute の named image port | pass / compute task の `resource_ports` |
+| 207b | material/geometry typed frame-graph resource port | 済 | material vertex/fragment の typed readonly buffer / sampled image port | compute 結果を material から読める |
+| 208 | lighting data contract v2 + clustered dogfood | 済 | scalable light inventory + cluster selection | 32 灯上限の解消。`engine://features/clustered_lighting.json` |
+| 209a | static texture dimension + material sampler authoring | 済 | 2D/cube/2D-array/3D の KTX2 + sampler filter/address/compare/aniso | material から native cubemap を sampling できる |
+| 209b | RT mip/layer/subresource view | 済 | 2D runtime RT の fixed/full mip、array layer、sampled/storage subresource | depth pyramid を layer 1 上で実 GPU dogfood |
+| 210a〜g | indirect dispatch + GPU-written draw arguments | 済 | typed indirect dispatch → GPU-written indexed draw/count → depth-pyramid occlusion → segment table → hot reload → XR per-view → timing 判断入力 | GPU culling が project 側 compute shader だけで書ける |
+| 211 | `dist-bake` + shaderc OFF feature delivery | 未 | precompiled variant manifest で runtime shader compiler なし配布 | 配布 / Quest 前に必須。`src/` に該当実装なし |
+| 212 | VRS / foveation backend contract | 未 | Quest SA2 の device facts 待ち | 未着手 |
+| 213 | 版の単一化 A — import manifest の version 必須化 | 済 | 4 形式の version 省略許容を廃止 | version 無し manifest は名前入り hard error |
+| 214 | 版の単一化 B — physics service V1 の削除 | 済 | physics の service/API/provider 受理面を V2 だけに | V1 provider DLL は動かない |
+
+### WP215〜238e(WSI epoch / material ABI / ViewFamily / 共通実行計画、2026-07-27〜31)
+
+| WP | タイトル | 状態 | 1行説明 | ユーザーから見える面 |
+|---|---|---|---|---|
+| 215 | transactional window output root / frame token | 済 | `OutputCompileFacts` + candidate arena、`IFrameTarget` を move-only な frame token へ | resize / format 変更で部分状態が見えない |
+| 216 | nonblocking `SwapchainEpoch` / XR mirror retirement | **済(外部 gate 待ち)** | swapchain 依存 object を immutable epoch へ、`device.waitIdle()` / `glfwWaitEvents()` を削除 | **最小化中も RPC/reload/ECS/audio が進む**。XR 実機 gate が未 |
+| 217 | `SurfaceEpoch` recreation / present support revalidation | **済(外部 gate 待ち)** | fresh surface の再生成と present support 再検証 | **`VK_ERROR_SURFACE_LOST_KHR` から回復する**。live fault gate 済み、RDP / ディスプレイ切替の manual platform gate が未 |
+| 218 | strategy-private arbitrary material outputs / typed MRT | 済 | 固定 5-MRT を廃し `pelican.material_outputs` v1(任意長 schema・engine 上限なし) | **G-buffer の枚数と型を作者が決められる**([第6章](06_rendering.md) §6.7)|
+| 219 | material output attachment state | 済 | field 名キーの疎な `material_output_states`(blend / write mask) | output ごとに additive / R-only write |
+| 220 | material same-pixel local-read ABI | 済 | `.surface` の screen input / image port を sampler **または** input attachment へ物理解決 | 公開アクセサ不変のまま tile GPU 上で subpass 相当の融合 |
+| 221 | top-level render compiler program / open backend package | 済 | flat/preview/XR の compile 入口を一回の compiler program invocation へ抽出 | 描画挙動不変。**公開 game-DLL ABI は未凍結**(source-level のみ)|
+| 222 | coordinated render graph / surface / material pipeline reload | 済 | 同じ watcher batch の render config + `.surface` + material values を一 transaction へ昇格 | **グラフとシェーダを同時に保存しても atomic に反映、失敗時は全て旧世代** |
+| 223 | runtime ViewFamily foundation | 済 | stable family/view ID、Camera/OpenXR provider、family 別 temporal identity | `$main/$mono`、FrameUBO の stable family token |
+| 224 | secondary ViewFamily relation/runtime | 済 | 論理〜Vulkan relation、family 別 FrameUBO、directional shadow provider | pass/compute task の `view_family` |
+| 225 | cascaded secondary ViewFamily | 済 | CSM provider、array target、sequential schedule、cascade 別 culling | **3-cascade CSM が実 GPU で動く**(`cascade_count`)|
+| 226 | planar reflection ViewFamily / 汎用 secondary culling | 済 | reflection provider、clip plane ABI、独立解像度 | `engine://features/planar_reflection.json` |
+| 227 | planar reflection Forward opaque capture | 済 | Forward 再描画 + late binding 継承 + clustered compiler ABI | 反射に不透明 Forward 物が写る |
+| 228 | secondary ViewFamily transparent capture / family-local sort | 済 | 同一 sort provider の view 別再評価、reflection-local snapshot | 反射に半透明物が正しい順で写る |
+| 229 | ViewFamily-local clustered light selection | 済 | selection ABI v2、family token、XR 左右眼領域 | 反射内で多灯 clustered lighting が効く |
+| 230 | planar reflection oblique near-plane projection | 済 | Vulkan ZO 一般式、透視/非対称/正射影/X 反転 | 水面下の物が反射に写り込まない |
+| 231 / 231b | image extent dispatch / remaining-mip material view | 済 | typed output extent からの local-size 切り上げ除算、remaining mip descriptor | compute の dispatch 数を手書きしなくてよい |
+| 232 | planar reflection mip filter / family-array material ABI | 済 | 7-level low-pass、pass-owned view lowering、scalar-family adapter | roughness に応じたぼけた反射 |
+| 233 | replaceable render algorithm asset/package | 済 | typed shader asset parameter + 標準 package の project 差替え・build purge | **標準 prefilter シェーダを project 側で差し替えられる** |
+| 234 | runtime ViewFamily provider package | 済 | 汎用 family registry、caller 優先解決、標準 planar policy の build purge | caller-authored family が常に優先される |
+| 235 | raster attachment mip/layer view | 済 | typed attachment view + 論理〜Vulkan 物理計画 | 特定 mip / layer へ直接 raster 出力できる |
+| 236 | runtime cube render target | 済 | resource/view 形状分離、cube-compatible allocation、face attachment、`samplerCube` | **runtime cubemap を描いて material から読める** |
+| 237 | replaceable cube capture algorithm | 済 | stable 6-face provider、Deferred + Forward capture、package purge | `engine://features/cube_capture.json` |
+| 238a | common `FrameExecutionPlan` vertical slice | 済 | backend 非依存の共通 IR。粗い endpoint class `{host, device, external}` と open な backend identity だけを持つ | `get_frame_plan` / `--dump-frame-plan` に `execution_plan` が併記される(観測面のみ。実行順の権威は FramePlan 側)|
+| 238b | Generic Raster Pass ABI vertical slice | 済 | technique ごとに `PassInfo` variant を増やさず `type: "raster"` 一つ。contract は Vulkan 型 / shader module / binding 番号を持たない | pass 種別 `raster`(`draw` / `raster_state`)。sprite_demo で dogfood |
+| 238c | complete physical plan / `NativeScope` data boundary | 済 | 完全 physical package の canonical round-trip + strict verifier。`NativeScope` 宣言は data-only | dump の `physical_target_plan.ejectable_complete_physical_plan`(sparse な physical fragment とは別 ABI)|
+| 238d | `NativeScope` executor provider / runtime publication | **🚧 source slice のみ** | source-level executor registry、owner/generation lease、scope 単位 dispatch | `get_frame_plan.native_scope_executors`。**公開 game-DLL ABI は未追加**で、rendering config に書くキーも無い。同梱 builtin provider は `builtin.vulkan` 1 本で、その唯一の implementation が空マーカー `builtin.vulkan.noop_marker@1` |
+| 238e | `NativeScope` command-producing Vulkan fixture | **🚧 source slice のみ** | default Vulkan package が保持する canonical logical graph / target topology / automatic plan / format capability / 実 extension closure から complete package を再検証・一括 install する helper。test provider が隔離 scope で実 Vulkan clear を記録 | 変化なし(呼び出し元は test のみ)。**公開 game-DLL raw command ABI と意図的な `VK_ERROR_DEVICE_LOST` 注入は未実装** |
+
+> WP238a〜c のレポート日は 2026-07-30、WP238d/238e は 2026-07-31 ですが、**実際のコミット日は 5 本とも 2026-07-31** です。
+> 上表の並びはコミット順に揃えています。
+
 audit stop の系譜(正しい停止の運用実績): WP113(スカラー配送不能 → WP114 先行)/ WP120(morph 機構不在 → 3 分割)/ WP123(override 表現力不足 → WP122b 先行)。いずれも停止レポートが後続 WP の仕様の正になっています。
 
-**要するに: WP1〜179 のうち実装対象として着手したものは完了済みです
-(WP113/120/123 は正しい停止後に分割・再派遣で着地)。active ledger に
-未完了 WP はありません。予約 = WP22 pointcache / WP32 IBL /
-WP36 GPU particle。**
+**要するに: WP1〜202b・WP205〜210g・WP213〜215・WP218〜238e は完了済みです
+(WP113/120/123 は正しい停止後に分割・再派遣で着地)。active ledger に残るのは
+外部 gate 待ちの 4 本 — WP203c(OpenXR array/depth を実装済み・Meta XR Simulator と
+物理 HMD、対象 GPU の実測 gate 待ち)、WP204(physical plan eject。一般 scope/queue と
+実機 GPU gate 待ち)、WP216 / WP217(実装済み・XR 実機と RDP / ディスプレイ切替の
+manual platform gate 待ち)です。未着手は WP211 `dist-bake`(配布・Quest 前に必須)と
+WP212 VRS/foveation(Quest SA2 の device 待ち)。予約 = WP22 pointcache /
+WP32 IBL / WP36 GPU particle。**
 
 WP 番号外の 2026-07-15 リファクタ群(design_reviews/ にレポートあり): module access hardening、PhysQuery 決定的クエリ基盤、purgeable physics provider boundary + provider DLL lifecycle。
 
 今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md)が
-正です。Tier 1 の残りは HR2-I(input/profile hot reload)と U3(UI hot
-reload)。続いて VRMA watcher 配線、唯一残った負債 CI2、anim_graph v2 /
-clip events が候補です。XR2b は WP203a〜c のローカル実装まで済み、現実装の
+正です。ただし **前回のマニュアル更新(2026-07-21)以降のコミットはほぼ全量が
+WP180〜238e のレンダラ再構築に充てられた**ため、backlog の Tier 1(HR2-I = input/profile hot reload、U3 = UI hot
+reload)と VRMA watcher 配線、唯一残った負債 CI2、anim_graph v2 / clip events は
+いずれも着手されていません。XR2b は WP203a〜c のローカル実装まで済み、現実装の
 Simulator/物理 HMD と対象 GPU 実測 gate が active です。
 
 web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照してください。
@@ -232,7 +327,8 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 ## 11.2 設計文書マップ(docs/ ⇔ 本マニュアル)
 
 矛盾時の優先順位: **凍結済み > ドラフト、設計文書 > 指示書**。
-実装状態は 2026-07-19 のコード・test・完了レポート基準です。
+実装状態はレンダリング系が 2026-07-31、それ以外が 2026-07-19 の
+コード・test・完了レポート基準です。
 
 ### 凍結・規範文書
 
@@ -258,7 +354,13 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_postprocess_temporal.md](../design_postprocess_temporal.md) | ✅ T1/T2(WP88/95)。TAA は [design_taa_jitter.md](../design_taa_jitter.md) へ | [第6章](06_rendering.md) |
 | [design_taa_jitter.md](../design_taa_jitter.md) | ✅ v2.1(条件付き受理)・J1/J1b/J1c/T-TAA すべて実装済み(WP112〜115) | [第6章](06_rendering.md) |
 | [design_usd_openpbr.md](../design_usd_openpbr.md) | ✅ v2.1(条件付き受理)・M-PBR0a/0b + U-USD0a/0b/0c 実装済み(WP116〜119/124)。U-USD1 系は未 | [第5章](05_assets.md)・[第6章](06_rendering.md) |
-| [design_openxr.md](../design_openxr.md) | ✅ v2.2・XR0〜XR4 + Meta XR Simulator gate実装済み(WP125〜138)。WP203a〜cでXR2b array/multiview/depth/profile gate、WP204でtile-local local readとのplanner/synthetic Vulkan接続をローカル実装済み。desktop mirror WSI lifecycleはWP215〜217計画済み。現実装のSimulator/物理HMD・対象GPU実測、standaloneは未 | [第6章](06_rendering.md) §6.12・[第2章](02_getting_started.md) |
+| [design_openxr.md](../design_openxr.md) | ✅ v2.2・XR0〜XR4 + Meta XR Simulator gate実装済み(WP125〜138)。WP203a〜cでXR2b array/multiview/depth/profile gate、WP204でtile-local local readとのplanner/synthetic Vulkan接続をローカル実装済み。desktop mirror WSI lifecycleは**WP215〜217で実装済み**(XR実機・RDP/ディスプレイ切替のmanual platform gateは未消化)。現実装のSimulator/物理HMD・対象GPU実測、standaloneは未 | [第6章](06_rendering.md) §6.12・[第2章](02_getting_started.md) |
+| [design_render_pipeline_extensibility.md](../design_render_pipeline_extensibility.md) [RPE] | ✅ RPE1〜RPE11d を実装済み(WP180〜202b)。draw sort / pass implementation / subgraph replacement / graph transform / render strategy の設計の正 | [第6章](06_rendering.md) §6.2 |
+| [design_render_graph_compiler.md](../design_render_graph_compiler.md) [RGC] | ✅ 論理型カーネル・target planning・Vulkan physical plan・generic raster pass(WP185〜191/204/235〜238c)。**公開 ABI は未凍結** | [第6章](06_rendering.md) §6.2・§6.6 |
+| [design_heterogeneous_execution_graph.md](../design_heterogeneous_execution_graph.md) [HEG] | 🚧 共通実行計画(WP238a)と generic raster dialect(WP238b)は実装済み。NativeScope(WP238c/d/e)は **source-level のみ**で公開 game-DLL ABI は未 | [第6章](06_rendering.md) §6.2・§6.6 |
+| [design_wsi_epoch_recovery.md](../design_wsi_epoch_recovery.md) [WSI] | ✅ WP215/216/217 実装済み(ユーザー決定 2026-07-27)。RDP / ディスプレイ切替の manual platform gate は未消化 | [第6章](06_rendering.md)・[第2章](02_getting_started.md) |
+| [render_mechanism_coverage.md](../render_mechanism_coverage.md) | ✅ 描画技法をコードへ再照合した棚卸し。残ギャップ(area/IES ライト、acceleration structure、bindless、VRS/foveation、instance 所有 tag、stencil 等)は同文書のギャップ表が正 | [第6章](06_rendering.md) |
+| [render_authoring_ergonomics.md](../render_authoring_ergonomics.md) | 🚧 U2/U3/U5 の解消まで反映。**WP218 以降(material output ABI / ViewFamily / WP238 系)は未反映** | [第6章](06_rendering.md) |
 | [design_debug_profiling.md](../design_debug_profiling.md) | ✅ D-P0〜D-P2 実装済み(WP139/140/143/145)。D-P3/D-P5/D-P4/D-P6/OPT は未 | [第10章](10_tools.md) |
 | [shader_contract.md](../shader_contract.md) | ✅(FrameUBO/SSBO/resources manifest + material sampler/input-attachment ABIまで反映) | [第6章](06_rendering.md) |
 | [design_input_actions.md](../design_input_actions.md) | ✅ I1〜I4 すべて(WP39/49/89/91) | [第7章](07_input_ui.md) |
@@ -309,11 +411,23 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 > **設計決定(temporal のユーザー管理境界・2026-07-16):** [design_taa_jitter.md](../design_taa_jitter.md) §0-1 の境界表が規範。判定基準は**「5 年後に発展しているのはどちら側か」** — 品質・アルゴリズム(taa.json 構成・resolve/composite シェーダ・パラメータ・ジッタ系列)は全部ユーザー管理、データ供給と安全境界(ジッタ適用点・単一提供者排他・FrameUBO 供給 field)だけがエンジン語彙。語彙が足りなければ**追加の語彙 WP でエスカレーション**する(こっそり特権化しない)。`halton23` 等の名前付きジッタ系列も非特権の便宜にすぎない(同じ数表の直書きと全 byte 一致することが fixture で証明されている — WP115)。
 
+> **設計決定(版の扱い・2026-07-26 ユーザー決定):** 全ての versioned 形式は版フィールドを持ち、**現行版ちょうど 1 つだけを受理する**。版が省略可能な形式は必須化する(WP213/214)。旧版を受理する分岐も、旧版を新版へ昇格する処理も足さない — 版を上げるときは旧版の受理を同時に削除する。ただし**版システム自体は将来のために維持する**(いま版フィールドを削ると、互換が実際に必要になった時点で全形式へ足し直しになる)。**例外**: ABI の版一致チェックは互換残しではなく**食い違い検出**(古いゲーム DLL を silent crash でなく明確なエラーにする)なので保持する。**runtime epoch は version ではない** — `SurfaceEpoch` / `SwapchainEpoch` / temporal reset epoch は process-local な寿命マーカーであり、保存形式の解釈には使わない。正本 = [implementation_plan.md](../implementation_plan.md) §0「版の扱い」。
+
+> **設計決定(build 依存の境界・2026-07-24):** Python はエンジン/ゲームの通常 build 依存から外れた(`PELICAN_PYTHON_TESTS` 既定 OFF)。shaderc は Vulkan SDK の明示 provider であり、**cross target へ暗黙の source-build fallback を持ち込まない**。CI gate や fixture 生成ツールを無理に C++ へ移植しない、という開発境界も同時に固定された(WP197〜199)。
+
+> **設計決定(描画 mechanism WP の共通方針・2026-07-26):** technique 名をエンジンの enum へ足さず typed な resource / view / execution / selection 語彙を足す / パーサと API だけで完了にせず project-owned な feature・material・shader の dogfood を 1 本通す / logical authoring は trust-first・optimize-by-default(矛盾は hard error、単なる曖昧 tie は deterministic + advisory)/ raw binding は C 層の escape hatch として残す / physical 指定は WP204 の fragment へ link し logical config へ Vulkan の field を漏らさない / feature 未参照時に追加 pass・resource・variant を持たない(WP206〜212)。
+
 > **方向決定(Quest standalone = SA トラック・2026-07-17):** MVP は PCVR(Quest Link)のまま、standalone は段階計画として記録: SA0(NDK/clang spike)→ SA1(GLFW 非依存の platform 層)→ SA2(standalone session — XR1〜3 を再利用)→ SA3(性能: multiview + dist-bake 必須級)。今から守る door-keeper 4 件(clang CI smoke / Windows 専用コードのユニット境界 / B3/B4 前提化 / タイル GPU 設計規律)。
 
 ## 11.3 既知の食い違い(設計文書 vs コード)
 
-2026-07-19 の再調査で更新。**常にコードが正**。
+2026-07-19 の再調査で更新(レンダリング系は 2026-07-31 に再確認)。**常にコードが正**。
+
+### バグ探索の消化状況
+
+- **2026-07-21 の読み取り専用バグ探索(正本: [`design_reviews/2026-07-21_readonly_bug_hunt.md`](../design_reviews/2026-07-21_readonly_bug_hunt.md))で confirmed とされた 25 件は、25 件すべて修正済み**です。先行既知の 2 件(sprite-1 / vk-1)も修正済みで、**未処理は判断保留だった bug-18(`gamelogicreload.cpp` の `pollAttempt`)1 件だけ**です。個票は同レポートが正本なので、本章には転記しません。
+- **2026-07-26 のバグ探索第 2 波は別調査**です(id 体系が違う。正本: [`design_reviews/2026-07-26_bughunt_priority.md`](../design_reviews/2026-07-26_bughunt_priority.md)。54 主張 → CONFIRMED 39 / PARTIAL 11 / REFUTED 4)。この波の window 出力群は WP215〜217 の lifecycle として設計・実装され、ほかも 07-26〜27 の `fix(` コミット群で消化されています。
+- ⚠ 第 2 波の **V1(`DEVICE_LOST` の検出分岐が死にコード)は部分解消にとどまります**。現在 typed な device-loss 分類が入っているのは WSI 経路(`swapchainrecovery` / `frametarget`)と NativeScope の capability bit だけで、**エンジン全体の device-loss 回復ポリシー(ドライバ TDR とエンジンのバグを区別する)はまだありません**。
 
 ### 挙動に関わるもの
 
@@ -342,14 +456,16 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 本マニュアル(`docs/manual/`)は 2026-07-10 に全域調査から書き起こされ、
 **2026-07-16 に WP64〜110**、**2026-07-17 に WP111〜137**、
-**2026-07-19 に WP138〜179 の状態・event/physics/VRMA 差分**を反映しました。
+**2026-07-19 に WP138〜179 の状態・event/physics/VRMA 差分**、
+**2026-07-31 に WP180〜238e(レンダラ再構築。前回の宣言基準 `d13fc26` 以降 230 コミット
+= merge を除く)**を反映しました。
 維持のためのルール:
 
 1. **コードが正。** 設計文書と食い違ったら、実装を確認してマニュアルを実装に合わせる(意図の説明として設計文書を引用するのは可)。
 2. **実装状況バッジを守る。** ✅実装済み / 🚧実装中 / 📐設計のみ(未実装)。WP がマージされたら該当章のバッジと §11.1 の台帳を更新する。設計文書にしかない機能を「使える」と書かない。
 3. **JSON 例は実物から。** `projects/example/`・`projects/sprite_demo/`・`projects/animgraph_demo/`・`test/fixtures/`・`src/core/resources/` の実ファイル、またはパーサ実装で検証した形だけを載せる。創作例には「(例)」と明記。
 4. **章の追加**: `NN_slug.md` で採番し、[00_index.md](00_index.md) の目次と、関係する章の相互リンクを更新する。章の冒頭形式(タイトル → 対象行 → 「この章で学ぶこと」→ 末尾「関連文書」)を踏襲する。
-5. **バッジ更新のタイミング**: 形式(スキーマ)に触れる WP・strict 化 WP・機能追加 WP のマージ時。直近では HR2-I・U3・VRMA watcher・CI2・XR2b の着地時に関係章を書き換える。
+5. **バッジ更新のタイミング**: 形式(スキーマ)に触れる WP・strict 化 WP・機能追加 WP のマージ時。直近では HR2-I・U3・VRMA watcher・CI2 の着地時、**XR2b(WP203c)/ WP204 / WP216 / WP217 は外部 gate を通過した時点**で関係章を書き換える。加えて WP211 `dist-bake` の着地時に第2章・第10章を、**WP238 系の公開 game-DLL ABI が凍結された時点**で第6章を書き換える(それまで NativeScope を「使える」と書かない)。
 6. **一緒に直すもの(再発防止)**: golden ケースを足したら `test/golden/inventory.json` にも登録する(件数の自動発見はもう無い)。RPC メソッドを足したら [第10章](10_tools.md) の表と、編集系なら [第13章](13_editor.md) にも書く。CLI 引数を足したら第10章 §10.2 の表に足す。
 7. **§11.3 の食い違い一覧は「解消したら消す」**。設計文書側が改訂されたか、実装が設計に追いついたら該当行を削除する。
 
