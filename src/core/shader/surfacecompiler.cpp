@@ -1016,12 +1016,18 @@ std::string defaultValueForResourceAccessor(
         "unknown surface resource element while generating SPIR-V stub");
 }
 
-std::vector<std::string> generatedAccessorNames(const SurfaceFormatDocument &surface) {
+std::vector<std::string> generatedAccessorNames(
+    const SurfaceFormatDocument &surface,
+    vk::ShaderStageFlagBits stage) {
     std::vector<std::string> names;
     for (const auto &param : surface.params) names.push_back("pelican_param_" + param.name);
     for (const auto &texture : surface.textures) names.push_back("pelican_sample_" + texture.name);
     for (const auto &input : surface.screen_inputs) names.push_back("pelican_screen_" + input);
     for (const auto &resource : surface.resource_ports) {
+        if (!(resourceStages(resource.stage) &
+              stage)) {
+            continue;
+        }
         if (resource.kind ==
             SurfaceResourcePortKind::image) {
             names.push_back(
@@ -1159,7 +1165,8 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
 
 std::vector<std::string> engineExports(const SurfaceFormatDocument &surface,
                                        vk::ShaderStageFlagBits stage) {
-    auto names = generatedAccessorNames(surface);
+    auto names =
+        generatedAccessorNames(surface, stage);
     if (stage == vk::ShaderStageFlagBits::eFragment) {
         names.emplace_back("pelican_light_count");
         names.emplace_back("pelican_light");
