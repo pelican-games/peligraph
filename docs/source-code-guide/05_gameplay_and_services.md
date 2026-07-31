@@ -8,20 +8,20 @@
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp#L25`](../../src/core/userpublic/gamecontext.cpp#L25) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L25) |
 | 時刻（`frameIndex()`含む） | `EngineTime` | [`#L53`](../../src/core/userpublic/gamecontext.cpp#L53) |
 | ログ | quill logger | [`#L65`](../../src/core/userpublic/gamecontext.cpp#L65) |
 | object/transform | `GameObjects` | [`#L77`](../../src/core/userpublic/gamecontext.cpp#L77) |
 | sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`#L86`](../../src/core/userpublic/gamecontext.cpp#L86) |
-| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`#L132`](../../src/core/userpublic/gamecontext.cpp#L132) |
-| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`#L151`](../../src/core/userpublic/gamecontext.cpp#L151) |
-| camera | `Camera` | [`#L241`](../../src/core/userpublic/gamecontext.cpp#L241) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`#L245`](../../src/core/userpublic/gamecontext.cpp#L245) |
-| audio | `Audio`またはfeature disabled error | [`#L265`](../../src/core/userpublic/gamecontext.cpp#L265) |
-| scene遷移 | `SceneLoader::requestLoad` | [`#L301`](../../src/core/userpublic/gamecontext.cpp#L301) |
-| debug text | `DebugText` | [`#L309`](../../src/core/userpublic/gamecontext.cpp#L309) |
-| event | event registry | [`gamecontext.hpp#L89`](../../src/core/userpublic/gamecontext.hpp#L89) |
-| settings/save | `Persistence` | [`gamecontext.cpp#L313`](../../src/core/userpublic/gamecontext.cpp#L313) |
+| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L132) |
+| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L151) |
+| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L241) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L245) |
+| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L265) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L301) |
+| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L309) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L89) |
+| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L313) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -29,7 +29,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp#L50-L53`](../../src/core/userpublic/gamecontext.hpp#L50) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L50) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -55,7 +55,7 @@ public:
 PELICAN_REGISTER_SYSTEM(PlayerSystem, 100);
 ```
 
-実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L8) です。継承もvirtual関数も不要で、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) Conceptが`void update(GameContext&)`の存在を検出します。`PELICAN_REGISTER_SYSTEM`の定義は [registerer.hpp#L173](../../src/core/userpublic/details/system/registerer.hpp#L173)（IMPLは [L155](../../src/core/userpublic/details/system/registerer.hpp#L155)）です。
+実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L8) です。継承もvirtual関数も不要で、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) Conceptが`void update(GameContext&)`の存在を検出します。`PELICAN_REGISTER_SYSTEM`の定義は [`PELICAN_REGISTER_SYSTEM()`](../../src/core/userpublic/details/system/registerer.hpp#L173)（IMPLは [L155](../../src/core/userpublic/details/system/registerer.hpp#L155)）です。
 
 registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)（engine / game DLL）が付き、game logic reload時にはowner単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L142) されます。登録は [`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L30) を返し、`PELICAN_REGISTER_SYSTEM_IMPL`が生成する静的objectがそれを保持します。個別解除は [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L141) です。
 
@@ -84,7 +84,7 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 [`HasGameSystemEvent`](../../src/core/userpublic/details/system/registerer.hpp#L43) がcompile時に検出します。updateを持たずevent handlerだけのSystemも登録できます。
 
-第三のフックとして [`HasGameSystemQueuedEvent`](../../src/core/userpublic/details/system/registerer.hpp#L48)（`void dispatchQueuedEvent(const QueuedEvent&, GameContext&)`）が加わりました。型ごとのcatalogを経由せず`QueuedEvent`をそのまま受け取る口で、engine内では`BehaviorSystem`だけが使います（§5.13）。これにより「updateもevent handlerも無いSystemは登録error」の条件が`!has_queued_event && event_handlers.empty()`へ緩和されています（[registerer.hpp#L106-L110](../../src/core/userpublic/details/system/registerer.hpp#L106)）。
+第三のフックとして [`HasGameSystemQueuedEvent`](../../src/core/userpublic/details/system/registerer.hpp#L48)（`void dispatchQueuedEvent(const QueuedEvent&, GameContext&)`）が加わりました。型ごとのcatalogを経由せず`QueuedEvent`をそのまま受け取る口で、engine内では`BehaviorSystem`だけが使います（§5.13）。これにより「updateもevent handlerも無いSystemは登録error」の条件が`!has_queued_event && event_handlers.empty()`へ緩和されています（[`registerer.hpp` 内](../../src/core/userpublic/details/system/registerer.hpp#L106)）。
 
 どのevent型に対して`onEvent`があるかを列挙する仕組みが、このコードベースで特に「黒魔術」に見える部分です。概要は以下です。
 
@@ -107,7 +107,7 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 RPCの`inject_event`からpayloadを構築するには、さらにdefault construct可能で、[`ISerializable<Event, JsonArchiveLoader>`](../../src/core/userpublic/serialize/serialize.hpp#L11)、つまり`event.ref(archive)`が必要です。
 
-event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[registerer.hpp#L50](../../src/core/userpublic/details/event/registerer.hpp#L50)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。宣言に`structFields`を使う場合は`eventPayloadPolicy`が必須で、全フィールドが`required(...)`かつ`bool`/enum不可という制約が掛かります（§5.14）。
+event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[`registerer.hpp` 内](../../src/core/userpublic/details/event/registerer.hpp#L50)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。宣言に`structFields`を使う場合は`eventPayloadPolicy`が必須で、全フィールドが`required(...)`かつ`bool`/enum不可という制約が掛かります（§5.14）。
 
 ### runtime表現
 
@@ -124,7 +124,7 @@ teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpubl
 
 ### 名前と重複
 
-[`__registerEvent()`](../../src/core/userpublic/details/event/registerer.cpp#L238) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) で最後の`::`以前を除去します（正規化は [registerer.cpp#L241](../../src/core/userpublic/details/event/registerer.cpp#L241)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
+[`__registerEvent()`](../../src/core/userpublic/details/event/registerer.cpp#L238) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L241)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
 
 - 同じ名前・同じ型の再登録はno-op
 - 同名・別型はerror
@@ -165,7 +165,7 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L17) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
-XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[loop.cpp#L501-L503](../../src/core/appflow/loop.cpp#L501)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L501)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。
 
 ### L2: 順序付きInputEvent
 
@@ -187,7 +187,7 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 >           event_seq += offset                                   ← 間隔はそのまま
 > ```
 >
-> **手がかり**: `startReplay()` / `stopReplay()` がどちらも `replay_sequence_offset.reset()` するので、offset は 1 回の replay に閉じています(`std::optional` の空が「まだ決めていない」印)。空フレームでは `queueEvents()` ごと飛ばすため、先頭が空だと offset の決定は最初に event が現れたフレームまで遅れます。テストは [`inputsequence_test.cpp#L55`](../../test/inputsequence_test.cpp#L55) の "replay reconstructs held and released snapshots through InputState" と、単調性違反を弾く側の [#L41](../../test/inputsequence_test.cpp#L41)。
+> **手がかり**: `startReplay()` / `stopReplay()` がどちらも `replay_sequence_offset.reset()` するので、offset は 1 回の replay に閉じています(`std::optional` の空が「まだ決めていない」印)。空フレームでは `queueEvents()` ごと飛ばすため、先頭が空だと offset の決定は最初に event が現れたフレームまで遅れます。テストは [`replay reconstructs held and released snapshots through InputState`](../../test/inputsequence_test.cpp#L55) の "replay reconstructs held and released snapshots through InputState" と、単調性違反を弾く側の [`input_seq rejects non-monotonic event_seq and missing frame markers`](../../test/inputsequence_test.cpp#L41)。
 >
 > **不変条件**: offset は replay 開始後 1 回だけ決め、以後変えない(記録の相対順序と間隔が保存されます)。オーバーフロー検査は必ず加算の**前**に、引き算の形で行う。`queueEvent()` の単調性検査を緩めて「注入側で番号を付け替える」設計へ寄せない。
 
@@ -199,7 +199,7 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 - mouse cursor差分とinjectされたaxis deltaを加算。
 - snapshotはtrivially copyable/standard layout（前者は「memcpyで丸ごと複製・保存してよい型」、後者は「メンバの並びがC構造体と同じで先頭アドレスから素直に読める型」を指すC++の型カテゴリ名です）で、記録・再生しやすい値型。
 
-[`FrameInput`](../../src/core/os/inputstate.hpp#L173) はsnapshotに加え、そのフレームのordered event `span`を貸し出します。spanのownerは`InputStateCore`です。次の`beginFrame()`まで保持するとdebug assertになります（[`FrameInputBorrowState`](../../src/core/os/inputstate.hpp#L162)、コメントは [inputstate.hpp#L172](../../src/core/os/inputstate.hpp#L172)）。
+[`FrameInput`](../../src/core/os/inputstate.hpp#L173) はsnapshotに加え、そのフレームのordered event `span`を貸し出します。spanのownerは`InputStateCore`です。次の`beginFrame()`まで保持するとdebug assertになります（[`FrameInputBorrowState`](../../src/core/os/inputstate.hpp#L162)、コメントは [`inputstate.hpp` 内](../../src/core/os/inputstate.hpp#L172)）。
 
 ### L4: Action map
 
@@ -227,7 +227,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 >   consumed.merge(consumed_by_set)               ← set を抜けてから
 > ```
 >
-> **手がかり**: fixture では `jump`(gameplay)と `confirm`(menu)が両方 `kbd:space` です([gameplay_menu.json](../../test/fixtures/input_actions/valid/gameplay_menu.json) / [keyboard.json](../../test/fixtures/input_actions/valid/keyboard.json))。stack が `{"gameplay","menu"}` のとき menu が先に評価されて Space を消費するので、`confirm.held` が真・`jump.held` が偽になります([inputactions_test.cpp#L161](../../test/inputactions_test.cpp#L161))。`pose` 型 action はループ先頭で `continue` するため一切消費しません(pose は別経路の `frame_input.pose_samples` から入ります)。`ConsumedControls::merge()` は全フィールドの論理和なので、記録は増える一方で消えません。
+> **手がかり**: fixture では `jump`(gameplay)と `confirm`(menu)が両方 `kbd:space` です([gameplay_menu.json](../../test/fixtures/input_actions/valid/gameplay_menu.json) / [keyboard.json](../../test/fixtures/input_actions/valid/keyboard.json))。stack が `{"gameplay","menu"}` のとき menu が先に評価されて Space を消費するので、`confirm.held` が真・`jump.held` が偽になります([`inputactions_test.cpp` 内](../../test/inputactions_test.cpp#L161))。`pose` 型 action はループ先頭で `continue` するため一切消費しません(pose は別経路の `frame_input.pose_samples` から入ります)。`ConsumedControls::merge()` は全フィールドの論理和なので、記録は増える一方で消えません。
 >
 > **不変条件**: 2 つの `merge` の位置を内側へ動かさない(同一 set 内は互いに非干渉 = 宣言順非依存)。`readBinding()` へ渡すのは `consumed` だけに保つ。同一 action の複数 binding は加算 + clamp であり、先勝ちにしない。`released` は全 binding を見終わってから決める。
 
@@ -245,7 +245,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L104) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L109) を公開します。前者はrendererのtemporal reset（[renderer.cpp#L1285-L1292](../../src/core/vkcore/renderer.cpp#L1285)）、後者はXR eye projectionの入力（[loop.cpp#L499](../../src/core/appflow/loop.cpp#L499)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L104) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L109) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1285)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L499)）です。
 
 ### scene cameraロード
 
@@ -253,7 +253,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 `GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L716) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[camera.hpp#L77](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L659) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L562)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L707) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L659) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L562)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L707) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -316,7 +316,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > 最後            : phys::internal::orderXxxHits() で正準順へ
 > ```
 >
-> **手がかり**: builtin 実装([builtinphysicsprovider.cpp#L74](../../src/core/phys/builtinphysicsprovider.cpp#L74))は渡された配列の添字をそのまま `collider_index` に返すだけなので、「圧縮後の添字」の意味が一目で分かります。同ファイル冒頭の `static_assert` が `phys::shapeCastContactEpsilon == Physics::shapeCastContactEpsilonV2` を固定していて、純粋層と ABI 層の ε は同一でなければなりません。敵対的な返値の再現は [`test/fixtures/physics_provider_dll/provider.cpp`](../../test/fixtures/physics_provider_dll/provider.cpp) です。
+> **手がかり**: builtin 実装([`builtinphysicsprovider.cpp` 内](../../src/core/phys/builtinphysicsprovider.cpp#L74))は渡された配列の添字をそのまま `collider_index` に返すだけなので、「圧縮後の添字」の意味が一目で分かります。同ファイル冒頭の `static_assert` が `phys::shapeCastContactEpsilon == Physics::shapeCastContactEpsilonV2` を固定していて、純粋層と ABI 層の ε は同一でなければなりません。敵対的な返値の再現は [`test/fixtures/physics_provider_dll/provider.cpp`](../../test/fixtures/physics_provider_dll/provider.cpp) です。
 >
 > **不変条件**: provider callback から provider の登録 / 解除を呼ばない(`Registry::mutex` は `std::shared_mutex` で、provider 呼び出しは `shared_lock` を握ったまま行われます。登録側は `unique_lock` なので再帰取得は UB)。provider の列挙順に依存しない。検証は all-or-nothing のまま保ち、1 件だけ捨てて続行するように書き換えない。reserved / 未知 flag のゼロ検査は ABI 前方互換の要なので緩めない。
 
@@ -343,7 +343,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([physqueryinternal.hpp#L7](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [#L133](../../test/physquery_test.cpp#L133)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [#L133](../../test/physquery_test.cpp#L133)。
 >
 > **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L530) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L621) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L470))。provider の列挙順を結果へ漏らさない最後の関門です。
 
@@ -388,13 +388,13 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > 40 回使い切ったら nullopt(偽陽性より偽陰性を選ぶ)
 > ```
 >
-> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [physquery.hpp#L124](../../src/core/phys/physquery.hpp#L124) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
+> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [`physquery.hpp` 内](../../src/core/phys/physquery.hpp#L124) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
 >
 > **不変条件**: `step` の下限を消さない(終了しなくなります)。逆に大きくすると TOI を飛び越えて貫通を見逃します。`kDistanceTolerance`(2e-5)は ABI 層の `shapeCastContactEpsilonV2`(1e-5)とは別物で、ABI 検証は `time_of_impact <= 1 + 1e-5` を要求するため、`1 + kDistanceTolerance` 超過の判定を緩めると host 側で `provider_error` になります。
 
 > 🧩 **難所 — EPA の四面体と面選択**([`penetration()`](../../src/core/phys/physquerysweep.cpp#L657) / [`closestCanonicalFace()`](../../src/core/phys/physquerysweep.cpp#L621))
 >
-> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [physquery.hpp#L128](../../src/core/phys/physquery.hpp#L128) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。`shapeCast` が `initial_overlap = true` で返す `penetration_depth` / `normal` の出どころです。
+> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`physquery.hpp` 内](../../src/core/phys/physquery.hpp#L128) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。`shapeCast` が `initial_overlap = true` で返す `penetration_depth` / `normal` の出どころです。
 >
 > **素朴に読むと**: 2 か所が初見でまず読めません。(a) [`enclosingTetrahedron()`](../../src/core/phys/physquerysweep.cpp#L544) が **26 方向サンプル + 4 点の総当り**という力技になっている理由。EPA は原点を内包する四面体からしか始められませんが、GJK が返す終端 simplex は点 / 線分 / 三角形かもしれません。通常は次元を 1 つずつ上げる増分構成をしますが退化ケースの分岐が多いので、ここでは {-1,0,1}³ の 26 方向で support 点(support 関数 — 与えた方向 d に対し、形状上で dot(p, d) が最大になる点、つまりその方向の一番端の点を返す関数。凸形状はこの関数だけで完全に表現でき、GJK / EPA の反復はこの関数の呼び出しだけで進みます)を足し、`C(n,4)` を総当りして**最小重心座標が最大**の四面体を選びます。「原点を最も余裕を持って内包する = 最も条件の良い面が張れる」という選び方で、この最大化が抜けるとほぼ退化した四面体を掴み、`makeFace()` が全滅して `faces.size() != 4` で `nullopt` へ落ちます。(b) `closestCanonicalFace()` の三重条件。同心の箱のような対称ペアでは**同じ深さの面が同時に何枚も存在**し、float 誤差と面の生成順で勝者が変わると MTD の向きがコンパイラ依存になります。そこで最小距離から `shapeCastTieEpsilon` 以内の面だけを候補にし、**符号反転した法線**(= 実際に返る MTD 方向)に対する辞書式キー `(dot(n, preferred), n.x, n.y, n.z)` の最大を採ります。`preferred` は `normalize(-delta)`(delta=0 なら +X)なので「動いてきた方向へ押し返す面」が優先されます。条件式の `!canonicalNormalGreater(selected, candidate, ...)` は「先の比較が偽で、かつ逆向きも偽」= キー完全一致 を表す遠回りな書き方で、そのときだけ頂点インデックス三つ組の辞書順で決めます。
 >
@@ -410,7 +410,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >
 > **手がかり**: `addBoundaryEdge` の「逆向き辺があれば消す、なければ積む」は可視面群の**シルエット抽出**の定石で、ここを理解しないと穴の張り直しが読めません。`facePenetration()` は 3 頂点で `closestToOrigin()` を再利用して接触点を出します(直前の難所と繋がります)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L301) の "shapeCast reports deterministic initial-overlap minimum translation"。
 >
-> **不変条件**: MTD の tie-break キーと `preferred` の定義は [physquery.hpp#L133](../../src/core/phys/physquery.hpp#L133) の**公開契約**です(変えると `shapeCast` の外向き API が変わります)。`penetration()` が `nullopt` を返しても `shapeCast` は落ちず GJK の法線 + depth 0 へ縮退するので、この fallback を消すと退化ペアで hit が消えます。`makeFace()` の向き正規化(距離が負なら反転)は「原点が内部にある」前提なので、四面体選択を緩めるとこの前提が壊れます。
+> **不変条件**: MTD の tie-break キーと `preferred` の定義は [`physquery.hpp` 内](../../src/core/phys/physquery.hpp#L133) の**公開契約**です(変えると `shapeCast` の外向き API が変わります)。`penetration()` が `nullopt` を返しても `shapeCast` は落ちず GJK の法線 + depth 0 へ縮退するので、この fallback を消すと退化ペアで hit が消えます。`makeFace()` の向き正規化(距離が負なら反転)は「原点が内部にある」前提なので、四面体選択を緩めるとこの前提が壊れます。
 
 ### World binding層
 
@@ -425,7 +425,7 @@ builtin providerはbroad phase spatial indexを持たず、queryごとに全bind
 
 ### trigger event ✅実装済み（WP179 / E2）
 
-呼び出し元は専用のゲームSystem `PhysicsTriggerSystem` です（[physworld.cpp#L30-L45](../../src/core/phys/physworld.cpp#L30)）。orderは `std::numeric_limits<int>::max()` なので、組み込み`BuiltinCameraControllerSystem`（10000）を含む**すべてのゲームSystemの後**に走ります。
+呼び出し元は専用のゲームSystem `PhysicsTriggerSystem` です（[`PhysicsTriggerSystem`](../../src/core/phys/physworld.cpp#L30)）。orderは `std::numeric_limits<int>::max()` なので、組み込み`BuiltinCameraControllerSystem`（10000）を含む**すべてのゲームSystemの後**に走ります。
 
 [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L548) は、
 `trigger=true` collider ごとに provider の overlap query を行い、full
@@ -457,7 +457,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >       等しいペアは両方進めるだけ(Stay は出さない)
 > ```
 >
-> **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([entity.hpp#L16](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L498) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [#L460](../../test/physworld_test.cpp#L460) / [#L469](../../test/physworld_test.cpp#L469)。
+> **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([`entity.hpp` 内](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L498) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [`PhysWorld trigger replay emits only symmetric Enter and Exit deltas`](../../test/physworld_test.cpp#L460) / [`PhysWorld trigger changes use canonical EntityId pair order`](../../test/physworld_test.cpp#L469)。
 >
 > **不変条件**: canonical 化 → sort → unique → マージの順を崩さない(マージは両列がソート済み・重複なしであることに全面的に依存しています)。`unavailable` で `active_trigger_pairs` を触らない。`clear()` は Exit を出さない。Enter/Exit は必ず両視点 2 発ずつ、lower-self が先。
 
@@ -502,7 +502,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >  └────────┘   下から: support < plane              → 素通り
 > ```
 >
-> **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [physquery.hpp#L124](../../src/core/phys/physquery.hpp#L124) の規約に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
+> **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [`physquery.hpp` 内](../../src/core/phys/physquery.hpp#L124) の規約に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
 >
 > **不変条件**: `projectedRadius()` は純粋層の `support()` と同じ形状規約に一致していること(ずれると乗れる / 抜けるが形状ごとに食い違います)。比較は当該反復の**開始姿勢**に対して行う。`one_way_tolerance >= skin_width` が実質の前提です(既定 2e-4 vs 1e-4)。
 
@@ -604,7 +604,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 > layout 順:     [root]    [mid]    [child]    parents = [-1, 0, 1]  ← 常に親 < 子
 > ```
 >
-> **手がかり**: `invalidNode = uint32 max` は `original_to_layout` の「layout に載らない node」印です。`buildAsset()` の `same_layout` 判定は parents / node_names / 両方向マップの一致で決まり、一致すれば reload 後も **layout identity を据え置き**ます — ここが「モデルを差し替えても pose handle が生き残るか」の分岐点です。テストは [`animation_jobs_test.cpp`](../../test/animation_jobs_test.cpp#L139) の fixture 1(joint でない祖先も layout に載る = layout は skin の joint 集合ではない)と [#L169](../../test/animation_jobs_test.cpp#L169) の fixture 2(同じ joint 数でも layout が違えば拒否)。
+> **手がかり**: `invalidNode = uint32 max` は `original_to_layout` の「layout に載らない node」印です。`buildAsset()` の `same_layout` 判定は parents / node_names / 両方向マップの一致で決まり、一致すれば reload 後も **layout identity を据え置き**ます — ここが「モデルを差し替えても pose handle が生き残るか」の分岐点です。テストは [`animation_jobs_test.cpp`](../../test/animation_jobs_test.cpp#L139) の fixture 1(joint でない祖先も layout に載る = layout は skin の joint 集合ではない)と [`WP99 fixture 2 rejects equal-count poses from a different rig layout`](../../test/animation_jobs_test.cpp#L169) の fixture 2(同じ joint 数でも layout が違えば拒否)。
 >
 > **不変条件**: `parents[i] < i`(root は -1)。`localToModel()` の 1 パスがこれに依存します。`layout_to_original` と `original_to_layout` は互いの逆写像なので、片方だけ触らないこと。
 
@@ -626,7 +626,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 >   frame.palette を自前バッファへ差し替えて publish
 > ```
 >
-> **手がかり**: `pose_accessed` は「書いた」ではなく「acquire した」で立ちます(保守的ですが決定的)。フェーズ順は `(phase, priority, registration_identity, source_ordinal)` の 4 段安定ソートで、VRM 側の priority は [vrm_application_v1.hpp#L31](../../src/core/userpublic/animation/vrm_application_v1.hpp#L31)(snapshot 0 / lookAt 100 / resolve 200 / commit 200)。`registration_identity` が `source_ordinal` より**先**に効くのがタイブレークの肝です。コールバックが `ok` 以外を返すと `blocked_commits` に `(instance, revision)` が積まれ、同じ revision の後続 publish が `callback_failed` で弾かれます — 半端なフレームを出さないための門です。フェーズを実行する位置は [第2章 §2.5](02_runtime_lifecycle.md) の `update_game` 順を参照してください。
+> **手がかり**: `pose_accessed` は「書いた」ではなく「acquire した」で立ちます(保守的ですが決定的)。フェーズ順は `(phase, priority, registration_identity, source_ordinal)` の 4 段安定ソートで、VRM 側の priority は [`vrm_application_v1.hpp` 内](../../src/core/userpublic/animation/vrm_application_v1.hpp#L31)(snapshot 0 / lookAt 100 / resolve 200 / commit 200)。`registration_identity` が `source_ordinal` より**先**に効くのがタイブレークの肝です。コールバックが `ok` 以外を返すと `blocked_commits` に `(instance, revision)` が積まれ、同じ revision の後続 publish が `callback_failed` で弾かれます — 半端なフレームを出さないための門です。フェーズを実行する位置は [第2章 §2.5](02_runtime_lifecycle.md) の `update_game` 順を参照してください。
 >
 > **不変条件**: 1 フェーズ実行につき staged frame は 1 枚。staged frame の palette は必ず自前バッファで、呼び出し側のポインタを保持しない。`pose_accessed` が立ったら palette は必ず作り直す(最適化するなら「書き込みがあったか」を別途追跡することになり、読み取り専用 acquire との区別を ABI へ足す必要があります)。
 
@@ -691,7 +691,7 @@ class PELICAN_API Behavior {
 | `params<Params>()` | 登録時の`Params`型への参照。型不一致は`std::logic_error("behavior params type does not match the registered Params type")` |
 | `createObject` / `createSpriteObject` / `removeObject` | 遅延構造変更 |
 
-構造変更APIについてはヘッダのコメントが規範です（[behavior.hpp#L50-L52](../../src/core/userpublic/behavior.hpp#L50)）。
+構造変更APIについてはヘッダのコメントが規範です（[`behavior.hpp` 内](../../src/core/userpublic/behavior.hpp#L50)）。
 
 > Structural changes requested by a behavior callback are applied at the
 > next behavior boundary. A deferred create has no live EntityId yet and
@@ -701,13 +701,13 @@ class PELICAN_API Behavior {
 
 [`PELICAN_REGISTER_BEHAVIOR(Type, stable_name, schema_version)`](../../src/core/userpublic/details/behavior/registerer.hpp#L319)（IMPLは [L298](../../src/core/userpublic/details/behavior/registerer.hpp#L298)）です。展開は`PELICAN_REGISTER_SYSTEM`と同じ`__COUNTER__` + event catalog走査方式で、[`collectBehaviorEventHandlers<Type>()`](../../src/core/userpublic/details/behavior/registerer.hpp#L99) が **そのマクロより前に見えているevent型** についてだけ `onEvent(const Event&, BehaviorContext&)` を検出します。
 
-compile時制約（[registerer.hpp#L201-L211](../../src/core/userpublic/details/behavior/registerer.hpp#L201)）:
+compile時制約（[`registerer.hpp` 内](../../src/core/userpublic/details/behavior/registerer.hpp#L201)）:
 
 - `std::derived_from<Type, Behavior>`
 - `Type` / `Params` ともに `std::default_initializable`
 - `Params` が `std::is_nothrow_swappable_v`（DLL reload時のparams差し替えがno-throwである必要があるため）
 
-runtime制約（[同#L213-L218](../../src/core/userpublic/details/behavior/registerer.hpp#L213)）:
+runtime制約（[同](../../src/core/userpublic/details/behavior/registerer.hpp#L213)）:
 
 - `behavior stable name must not be empty`
 - `behavior schema version must be positive`（`schema_version >= 1`）
@@ -767,11 +767,11 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 ```
 
 - game DLLがロード済みなのに未登録の型名 → `Unknown behavior type '<type>' on object '<name>'` でload失敗
-- game DLL不在 → warningを出して **pending** 扱いで進む（[behaviorarena.cpp#L100-L113](../../src/core/gamelogic/behaviorarena.cpp#L100)）
+- game DLL不在 → warningを出して **pending** 扱いで進む（[`behaviorarena.cpp` 内](../../src/core/gamelogic/behaviorarena.cpp#L100)）
 
 ### 実行順
 
-[`BehaviorSystem`](../../src/core/gamelogic/behaviorarena.cpp#L39) は **通常のゲームSystemとして** registryへ登録されます（[behaviorarena.cpp#L49-L52](../../src/core/gamelogic/behaviorarena.cpp#L49)）。orderは`behaviorSystemOrder = 50`、名前は`"BehaviorSystem"`です。
+[`BehaviorSystem`](../../src/core/gamelogic/behaviorarena.cpp#L39) は **通常のゲームSystemとして** registryへ登録されます（[`BehaviorSystemRegistration`](../../src/core/gamelogic/behaviorarena.cpp#L49)）。orderは`behaviorSystemOrder = 50`、名前は`"BehaviorSystem"`です。
 
 - `update(ctx)` → `BehaviorAttachmentArena::update(ctx)`
 - `dispatchQueuedEvent(event, ctx)` → `BehaviorAttachmentArena::dispatchEvent(event, ctx)`
@@ -794,7 +794,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 ### DLL reload
 
-[`gamelogicreload.cpp#L180`](../../src/core/gamelogic/gamelogicreload.cpp#L180) が [`internal::validateBehaviorReload(active_owner, candidate_owner, authoring_scenes)`](../../src/core/userpublic/details/behavior/registerer.hpp#L285) を呼び、`schema_version`の差分と型の消滅を候補DLL採用前に検証します。
+[`gamelogicreload.cpp` 内](../../src/core/gamelogic/gamelogicreload.cpp#L180) が [`internal::validateBehaviorReload(active_owner, candidate_owner, authoring_scenes)`](../../src/core/userpublic/details/behavior/registerer.hpp#L285) を呼び、`schema_version`の差分と型の消滅を候補DLL採用前に検証します。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 
@@ -859,7 +859,7 @@ template <class Policy, class... PolicyFields>
 consteval auto structFields(Policy policy, PolicyFields... policy_fields);
 ```
 
-policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[#L413](../../src/core/userpublic/details/schema/structfieldschema.hpp#L413) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
+policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[`StructUseSitePolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L413) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
 
 | policy | 取得方法 | 強制されること |
 |---|---|---|
