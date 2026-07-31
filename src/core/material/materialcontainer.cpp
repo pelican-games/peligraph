@@ -4439,31 +4439,37 @@ MaterialContainer::ensureScreenInputDescriptor(
                         target_position -
                         pass.input_targets.begin()));
         }
+        auto descriptor_view_dimension =
+            view_dimension;
+        if (!input_attachment &&
+            binding->port.view ==
+                ShaderResourcePortView::
+                    family_array &&
+            (view_dimension ==
+                 PassInputViewDimension::
+                     shared_2d ||
+             view_dimension ==
+                 PassInputViewDimension::
+                     sequential_2d)) {
+            // Material pipelines are shared across compatible pass variants.
+            // Shared and sequential physical targets still have array-backed
+            // storage, so expose the complete family as one array descriptor
+            // and keep the shader ABI stable across those variants.
+            descriptor_view_dimension =
+                PassInputViewDimension::
+                    family_2d_array;
+        }
         auto descriptor_dimension =
             !input_attachment &&
-                    (view_dimension ==
+                    (descriptor_view_dimension ==
                          PassInputViewDimension::
                              layered_2d_array ||
-                     view_dimension ==
+                     descriptor_view_dimension ==
                          PassInputViewDimension::
                              family_2d_array)
                 ? ImageSubresourceViewDimension::
                       two_d_array
                 : ImageSubresourceViewDimension::two_d;
-        if (binding->port.view ==
-                ShaderResourcePortView::
-                    family_array &&
-            view_dimension ==
-                PassInputViewDimension::
-                    shared_2d) {
-            // One-view families may use the scalar physical target
-            // representation. Adapt that image to a one-layer array view so
-            // one material shader ABI remains valid in both the secondary
-            // family and a layered main family.
-            descriptor_dimension =
-                ImageSubresourceViewDimension::
-                    two_d_array;
-        }
         if (binding->port.view ==
             ShaderResourcePortView::cube) {
             if (input_attachment) {
@@ -4513,7 +4519,19 @@ MaterialContainer::ensureScreenInputDescriptor(
                 "material resource port '" +
                 required.port.name +
                 "' shader image-view ABI does not match pass '" +
-                pass.name + "'");
+                pass.name + "' (shader=" +
+                std::string{
+                    reflectedImageViewDimensionName(
+                        required.image_view_dimension)} +
+                ", pass=" +
+                std::string{
+                    reflectedImageViewDimensionName(
+                        expected_shader_view)} +
+                ", declared=" +
+                std::string{
+                    shaderResourcePortViewName(
+                        binding->port.view)} +
+                ")");
         }
         if (binding->port.view ==
                 ShaderResourcePortView::shared_2d &&
@@ -4543,7 +4561,10 @@ MaterialContainer::ensureScreenInputDescriptor(
                         family_2d_array &&
             view_dimension !=
                     PassInputViewDimension::
-                        shared_2d) {
+                        shared_2d &&
+            view_dimension !=
+                    PassInputViewDimension::
+                        sequential_2d) {
             throw std::runtime_error(
                 "material resource port '" +
                 required.port.name +
@@ -4592,7 +4613,7 @@ MaterialContainer::ensureScreenInputDescriptor(
                     .history =
                         binding->history,
                     .view_dimension =
-                        view_dimension,
+                        descriptor_view_dimension,
                     .descriptor_dimension =
                         descriptor_dimension,
                     .sampling =
