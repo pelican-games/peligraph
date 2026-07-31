@@ -130,6 +130,9 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP238c | complete physical plan / NativeScope data boundary | ✅ CPU slice完了（2026-07-30）。完全physical package、canonical round-trip/fingerprint、strict verifier、typed NativeScope effect/ownership/sync。runtime executorは後続 |
 | WP238d | NativeScope executor provider / runtime publication | ✅ source-level runtime slice完了（2026-07-31）。owner/generation lease、prepare/rollback、typed resource view、automatic outer sync、scope単位dispatch、generation retirement |
 | WP238e | NativeScope command-producing Vulkan fixture | ✅ 完了（2026-07-31）。exact logical/device verification context、実command記録、validation error 0、readback capture、generation rebuild/retirement。公開game-DLL ABIとdevice-loss注入は後続 |
+| WP239a | complete-plan verification contextのreload回帰修正 | **未着手・最優先**。`d1c8081`(WP238e)がpipeline reloadを全面拒否している |
+| WP239b | hybrid_v1 screen input view-family binding回帰修正 | **未着手**。`79dca25`から`gpu`ラベルのhybrid_v1が赤 |
+| WP239c | planar reflection resource port image-view ABI回帰修正 | **未着手**。`272ea14`(WP232)からplanar reflection golden caseが赤 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -369,6 +372,168 @@ debug-utils validation error 0、二世代のhot replacement、in-flight GPU lea
 retirementを同時にgateした。詳細は
 [`design_reviews/2026-07-31_wp238e_native_scope_vulkan_fixture.md`](design_reviews/2026-07-31_wp238e_native_scope_vulkan_fixture.md)
 を正とする。公開game-DLL ABIと意図的な`VK_ERROR_DEVICE_LOST`注入は未実装である。
+
+### WP239: `gpu` ラベル回帰の修復（239a / 239b / 239c）
+
+2026-07-31 に `ctest -C Debug -L gpu` を全数実行した結果、**116 件中 4 件が失敗**していた
+（108 passed / 4 failed / 4 skipped、実時間 396 秒）。4 件は独立した 3 つの原因に分かれ、
+それぞれを WP239a / 239b / 239c が所有する。**1 WP = 1 ブランチ = 1 PR**（§0）は維持する。
+
+原因は `git bisect` で確定し、**各原因コミットの直前を実際にビルドして緑を確認**した。
+
+| 失敗テスト | 原因コミット | 直前の緑を確認したコミット | 所有 WP |
+|---|---|---|---|
+| fixed spatial upscale carries render/output extents and per-input sampling | `d1c8081` | `5a4f95e` | WP239a |
+| dependency-safe physical scopes reorder and fuse real Vulkan rendering | `d1c8081` | `5a4f95e` | WP239a |
+| hybrid_v1 preset registers and renders a headless frame | `79dca25` | `5ba40c7` | WP239b |
+| planar reflection executes a clipped secondary view family on the GPU | `272ea14` | `369ae47` | WP239c |
+
+**この 4 件が長期間放置された理由を WP の一部として扱う**。CI0 の CPU gate は
+`ctest -LE gpu`（[`ci.md`](ci.md)）なので `gpu` ラベルは常設の回帰網に入っていない。
+WP239b / 239c の 2 件は 2 日以上、誰にも気づかれずに赤いままだった。修正だけでは
+同じことが再発するため、各 WP の受け入れ条件に**全 `gpu` ラベルの緑**を含める。
+
+再現手順は 3 WP 共通:
+
+```sh
+cmake -S . -B build -DSKIP_DEVSTUDIO=ON -DPELICAN_WITH_SPIRV_LINK=ON
+cmake --build build --config Debug --parallel
+ctest --test-dir build -C Debug -L gpu --output-on-failure
+```
+
+Python を PATH に置いていない環境では SPIRV-Tools の configure が失敗する。
+`-DPython3_EXECUTABLE=<path>` で明示する（uv 管理の interpreter でよい）。
+
+### WP239a: complete-plan verification context の reload 回帰
+
+**目的**: `d1c8081`（WP238e）が追加した verification context 検証が、通常の
+rendering pipeline reload を全面的に拒否している。これを解消し、WP238e が守ろうとした
+「complete physical plan の検証入力は実 device facts と一致する」という保証は維持する。
+
+**症状**: reload 時に次が出て `ReloadService::applyRequestForTesting()` が false を返す。
+
+```
+Failed to load main rendering configuration:
+  Render compiler Vulkan package has an invalid complete-plan verification context
+render pipeline reload failed: ...（同文）
+```
+
+**確定している事実**:
+
+1. **初回ロードは通る**。失敗するのは reload 経路だけで、`gpu` ラベル 108 件は緑のまま。
+   両テストとも `pipeline.json` の `ReloadKind::modified` を適用した行で落ちる
+   （`headless_render_test.cpp:2723` と `:3641`）。
+2. throw 元は `vulkanrendercompilerprogram.cpp` の verification context 検証ループ
+   （`physical.target_plan_compilation.verification_contexts` を回す箇所）。
+3. `d1c8081` は `renderingsamplecount.cpp` の `compileRenderingTargetPlans()` で
+   `topology` と `format_capabilities` を非 const 化して verification context へ
+   `std::move` するよう変えている。
+4. `targetrenderplanning_test` の CPU verifier 群は緑。**CPU テストは reload 経路を
+   通っていない**。
+
+**実装範囲**:
+
+1. **どの条件が発火しているかを最初に特定する。** 現在の検証は 8 個の述語を 1 つの `if`
+   に OR で並べ、失敗時に同じ 1 文を投げる。§0 の fail-fast は「名指し hard error」を
+   要求しているので、**この診断不能な単一メッセージ自体を欠陥として扱い、条件ごとに
+   別メッセージへ分割する**。分割は修正の前提作業であり、修正後も残す。
+2. 特定した原因を修正する。reload で verification context と target plan の対応が崩れる
+   なら、崩れない側を正とする。**検証を緩めて通す修正は採らない** —
+   WP238e が閉じた「private device facts を再構成させない」保証を失うため。
+3. reload 経路を CPU テストで固定する。今回の欠陥が `gpu` ラベルでしか出なかったこと
+   自体が網の穴であり、同じ形の回帰を CPU gate で捕まえられるようにする。
+
+**受け入れ条件**:
+
+- 上記 2 テストが緑
+- `ctest -C Debug -L gpu` が全数緑（4 skipped は Vulkan 非依存の既存 SKIP のみ）
+- `ctest -C Debug -LE gpu` が緑
+- verification context 検証の失敗が、8 条件それぞれ別のメッセージで名指しされる
+- reload 経路を通る CPU テストが追加され、`d1c8081` を revert すると赤になる
+- `git diff --check` クリーン
+
+依存: なし。見積: 中。**HEAD が壊れている状態なので最優先**。
+
+### WP239b: hybrid_v1 の screen input view-family binding 回帰
+
+**目的**: `79dca25`（producer view-family arrays）以降、hybrid_v1 preset の material
+screen input が期待と別の image view に束縛されている。正しい束縛先を決定し、実装か
+テストのどちらが陳腐化しているかを判定して閉じる。
+
+**症状**: `headless_render_test.cpp:5200`
+
+```
+REQUIRE( materials.boundScreenInputImageViewsForTesting(material_id, opaque->definition)
+         == std::vector<vk::ImageView>{ ...getImageView(shadow_map) } )
+with expansion:
+  { 1C252400000000B5 }  ==  { 612F93000000004E }
+```
+
+**確定している事実**:
+
+1. **要素数は両辺とも 1 で、中身の image view が別物**。配列長の問題ではない。
+2. `79dca25` は shadow map を producer view-family array としてモデル化し、
+   `materialcontainer.cpp` / `materialscreeninput.{cpp,hpp}` / `shaderresourceinterface.cpp`
+   / `render_pass_executor.cpp` を同時に変えている。
+3. テストは family 非依存の `RenderTargetContainer::getImageView(shadow_map)` を期待値に
+   使っている。array 化後にこの accessor が何を返すべきかが論点。
+
+**実装範囲**:
+
+1. array 化後の `getImageView()` の契約を確定する。**material が束縛すべきは特定
+   family / layer の view か、array 全体の view か**を決め、決めた側に合わせて実装
+   またはテストを直す。
+2. テスト側の陳腐化だった場合も、**単に期待値を実測へ書き換えない**。何を保証したい
+   テストだったのかを保ったまま、array 契約で表現し直す。
+3. 判定理由を `docs/design_reviews/` のレポートに残す。
+
+**受け入れ条件**:
+
+- hybrid_v1 の headless GPU テストが緑
+- `ctest -C Debug -L gpu` が全数緑
+- `getImageView()` の array 化後の契約が、コメントまたは設計文書に明記されている
+- `git diff --check` クリーン
+
+依存: なし（WP239a と独立、並行可）。見積: 中。
+
+### WP239c: planar reflection resource port の image-view ABI 回帰
+
+**目的**: `272ea14`（WP232、mip 越し planar reflection filter）が
+`materialcontainer.cpp` に追加した image-view ABI 一致検査が、planar reflection の
+golden GPU ケースを拒否している。ABI 検査と feature 側の宣言のどちらが正かを決めて閉じる。
+
+**症状**: `golden_cases_test.cpp:18` が例外で落ちる。
+
+```
+material resource port 'planar_reflection' shader image-view ABI does not match
+pass 'planar_reflection_forward_transparent'
+```
+
+**確定している事実**:
+
+1. `272ea14` の直前（`369ae47`）では同テストが緑。
+2. このエラー文言を導入したコミットは `272ea14` ただ 1 つ。
+3. 対象は transparent 側の pass（`planar_reflection_forward_transparent`）。
+   WP228 が入れた planar transparent capture との組み合わせで出ている。
+
+**実装範囲**:
+
+1. `planar_reflection` resource port の宣言側 image-view 形状と、mip filter 導入後に
+   pass が要求する形状の食い違いを特定する。
+2. **ABI 検査を緩める方向は採らない**。検査は WP232 が意図して入れたもので、
+   不一致を silent に通すと descriptor 不整合が実行時まで遅延する。
+3. `render_evidence_ledger.md` が planar reflection を **E3 +E5** としている根拠は
+   この golden ケースなので、修正後に等級の再判定が必要になる（台帳側の更新は
+   本 WP の範囲外だが、レポートに影響を明記する）。
+
+**受け入れ条件**:
+
+- planar reflection の golden GPU ケースが緑
+- `ctest -C Debug -L gpu` が全数緑
+- ABI 検査自体は維持されている（検査の削除・条件緩和による通過は不可）
+- `git diff --check` クリーン
+
+依存: なし（WP239a / 239b と独立、並行可）。見積: 中。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
