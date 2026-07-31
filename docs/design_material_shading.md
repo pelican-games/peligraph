@@ -202,10 +202,12 @@ B の規律(レビューで確定):
 - `render_state`(v1.1 追加、マテリアルの拡張キー): blend
   (`opaque|blend|additive`)・depth_write・cull の最小セット。
   glTF 由来の alphaMode/doubleSided はこれへの別名として受理
-- 適用: scene v1 のオブジェクトに `material` コンポーネント
-  (`{"name": "material", "ref": "lava"}`)で割当。glb 側マテリアルの
-  上書き。**glb extras**(`pelican_material: "lava"`)でも同じことが言える
-  (DCC 側で割当を焼く経路 — R6 の extras 規約と同じ)
+- ~~適用: scene v1 のオブジェクトに `material` コンポーネント
+  (`{"name": "material", "ref": "lava"}`)で割当~~ —
+  **§3-12 が置き換えた(2026-07-31)。** 割当は `pelican.material_bindings` の
+  解決先を project material レジストリへ広げて行う。`material` コンポーネントは
+  新設しない。同様に「glTF 由来の alphaMode/doubleSided は `render_state` への
+  別名として受理」も実装前の想定であり、実装された形は `routing` である
 
 ### 3-5. バインディングモデルの併用(classic + bindless、2026-07-08 方向決定)
 
@@ -574,6 +576,120 @@ dogfooding(標準スニペットを公開ライブラリで書く)は必要条�
 - precompiled C(.spv)は**パス別 artifact map**(`stem.depth.spv` 等の命名
   規約)を持つ — 「.spv は variant 非対応」と §3-3 のパス variant 要求の
   矛盾の解消
+
+### 3-12. project 空間での宣言・割り当てと glTF 再現(2026-07-31 決定)
+
+**本節は §3-4 の「適用」項を置き換える。** §3-4 は 2026-07-08 に scene の `material`
+コンポーネントと glb extras による割当を提案したが、その後 `pelican.material_bindings` v1
+が実装され、より細かい粒度(primitive 単位)と強い検証(全 primitive 被覆、モデル実体との
+照合)を持つ機構が既に動いている。以下を正とする。
+
+形式そのもの(§3〜§3-11)は一切変えない。**版を上げる形式はゼロ**である。
+
+#### 決定 1: material 文書の索引は `asset_data.json` に置き、同ファイルを versioned 化する
+
+`pelican.material` 文書は project のどこにあってもよいが、**どれが存在するかを名乗る場所**が
+これまで無かった。`projects/example/materials/*.material.json` は project.json からも
+manifest からも scene からも参照されておらず、`src/` での読み手は ImGui の表示専用コードだけ
+という状態だった。
+
+索引は `assets/asset_data.json` に置く。[`design_scene_format.md`](design_scene_format.md) §2-2 が
+「ファイル参照をコンポーネント params に直接書くことを禁止。必ず `asset_data_json` の id を
+経由する」と定めており、scene から論理名で material を指す以上、行き先は asset_data 以外に
+無い。`models[].material_bindings` が既に同ファイルに居ることとも整合する。
+
+```json
+{
+  "schema": "pelican.asset_data",
+  "version": 1,
+  "models":    [ { "name": "helmet", "path": "assets/models/DamagedHelmet.glb" } ],
+  "materials": [ { "path": "materials/lava.material.json" } ]
+}
+```
+
+- **`materials[]` の要素は `path` のみで、`name` を持たない。** `models[]` が `{name, path}`
+  なのは `.glb` が project 向けの名前を自分で持たないためである。`pelican.material` 文書は
+  中に `name` を必須で持つので、索引にも名前を置くと 1 つのものに名前が 2 つでき、
+  食い違いという失敗モードだけが増える。
+- **material 名は project 全体で一意**とする。現行 parser の一意性検査は文書スコープなので、
+  文書横断のレジストリを新設し、衝突は名指し hard error にする。
+- **`asset_data.json` に `schema` / `version` を導入する。** 現状この文書は未版形式で、
+  パーサは `.at("models")` しか読んでいない。ここへ描画の意味を変えるキーを足すと、
+  [`design_project_format_web_profile.md`](design_project_format_web_profile.md) の
+  「意味を変えるキーは web 側が明示的に拒否する義務がある」を満たせなくなる
+  (版が無ければ web は何を拒否すべきか判別できない)。**索引を足すのと同じ WP で版を付ける。**
+  既存 4 project の書き換えを伴うが、いま払うのが最も安い。
+- 版は strict v1(§0「版の扱い」)。旧版受理の分岐は作らない。
+
+#### 決定 2: 割り当ては `pelican.material_bindings` の解決先を広げて行う
+
+`binding.material` は現在 GLB 内の glTF material 名(`ModelTemplate::named_materials`)にしか
+解決しない。ここに **project material レジストリを解決先として加える**。
+
+- 両方に同名があれば**名指し hard error**([`design_asset_containers.md`](design_asset_containers.md)
+  §1「曖昧はエラー」)。
+- **`materials[]` を宣言していない project では解決結果が 1 ビットも変わらない。**
+  よってこれは解決域の加算であり、`pelican.material_bindings` の版は上げない。
+- `binding.routing` は現在パースされるだけで `applyPrimitiveMaterialBindings` が読んでいない。
+  これは形式の問題ではなく単なる欠落なので、同じ WP で実行時に消費するようにする。
+
+scene に `material` コンポーネントを新設する案は**採らない**。理由は 2 つ。
+`material_bindings` が既に primitive 単位で動いており、per-object のコンポーネントより粒度が
+細かいこと。そして per-instance の material 差し替えが現状存在しないことである
+(`publishMaterialInstanceOverride` のペイロードは `MaterialInstanceOverrideValues` で、
+**値の上書き専用**。別 surface を持つマテリアルへの差し替えには使えない)。
+
+同じモデルの 2 インスタンスへ別マテリアルを割り当てる要求は本節の範囲外とする。
+「同じマテリアルで値だけ違う」なら既存の instance override で足りる。
+
+#### 決定 3: glTF 再現は producer の収束で行い、patch 構文は作らない
+
+**`pelican.material` は最初から glTF を再現する形になっている。**
+
+| `pelican.material` | glTF |
+|---|---|
+| `base` の 9 キー | `pbrMetallicRoughness` とキー名 1:1 |
+| `routing: {alpha_mode, double_sided}` | `alphaMode` × `doubleSided` |
+| 同梱 surface `{opaque,mask,blend}_{single,double}` の 6 本 | 3 × 2 = 全組み合わせ |
+
+`materiallowering.cpp` の `materialVariantRenderState(routing)` が routing から期待 pipeline
+state を導き、surface の `render_state` と完全一致しなければ例外にする。routing とは
+「6 つの wrapper のどれを選ぶか」そのものである。
+
+にもかかわらず glTF 由来のマテリアルはこの経路を通っていない。`MaterialInfo` の producer が
+**2 つに割れている**ためである。
+
+- `gltf.cpp` — 直接組む。`render_state` / `route` / `shader_contract` を設定せず、
+  `alphaMode` / `alphaCutoff` / `doubleSided` を**読まない**(`src/` 全体で 0 件)
+- `lowerMaterial` → `applyLoweredMaterialForRoute` — 完全だが `test/` からしか呼ばれない
+
+**glTF 経路を lowering へ通して producer を収束させる。** これにより
+alphaMode / doubleSided / cutoff の扱いが二重に実装されず、glTF マテリアルは構造上
+project 空間で表現可能になる。§3-4 が「glTF 由来の alphaMode/doubleSided は `render_state` への
+別名として受理」と書いているのは実装前の想定で、実装された形は `routing` である。
+
+「上書き」は 2 種を区別する。
+
+- **置き換え**(この primitive を別マテリアルにする)= 決定 2 で成立する
+- **部分上書き**(glTF のマテリアルのまま roughness だけ変える)= **表現できない。
+  そして表現できるようにしない。**
+
+部分上書きのために継承構文(`base_from` 等)を足すと、新しい意味論と版の議論を
+形式へ持ち込むことになる。代わりに **materialize**(`.glb` → `pelican.material` +
+`pelican.material_bindings` を生成)を用意し、「生成された文書を編集する」ことを patch とする。
+これは USD delivery が既に採っている形(`materials.json` + `material_bindings.json` +
+`model.glb` をセットで出力)と同じであり、再生成による同期という逃げ道も同じである。
+
+ただし**素の `.glb` を materialize するツールは現在存在しない**。
+`importmanifest.cpp` は外部 importer が `pelican.material` を出力すると宣言したことを
+検証するだけである。materialize は収束とは別 WP とし、収束を先に行う。
+
+#### web profile への義務
+
+`materials[]` は描画の意味を変えるキーなので、
+[`design_project_format_web_profile.md`](design_project_format_web_profile.md) の
+サブセット原則により **web 側は実装するか明示的に拒否するかを選ばねばならない**。無視は不可。
+`asset_data.json` の版導入は、web がその判定を行うための前提でもある。
 
 ## 4. マテリアルシェーダの契約(安定 API 化)
 

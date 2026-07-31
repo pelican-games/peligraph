@@ -100,6 +100,41 @@ web ランタイムが読むキーと無視するキーを固定する。
 | `basic_config.window_title` / `window_size` / `fullscreen` / `framerate` | **無視**(canvas 側が決める)。debug ログにのみ出す |
 | 未知キー | 無視(将来の前方互換) |
 
+### 3-1. `asset_data.json` の版導入と `materials[]`(2026-07-31 決定・WW 未着手)
+
+[`design_material_shading.md`](design_material_shading.md) §3-12 の決定により、
+`asset_data.json` は次の 2 点が変わる。**web 側の対応が決まるまで、エンジン側の実装は
+「web が何を拒否すべきか判別できる形」を先に用意する義務がある。**
+
+1. **`schema: "pelican.asset_data"` / `version: 1` を持つ versioned 形式になる。**
+   これまで未版だったため、web は「読めない版」を検出できなかった。導入後は `project.json` と
+   同じ hard error 意味論を適用する — `pelican.asset_data` 以外・version 1 以外は
+   **読めるふりをしない**。
+2. **`materials[]` が追加される。** 要素は `{ "path": <project 相対の pelican.material 文書> }`。
+
+`materials[]` は §1-1 の分類でいう「**描画の意味を変えるキー**」である。索引が非空なら
+その project のメッシュは glTF 由来ではないマテリアルで描かれる。したがって web は
+**`materials[]` というキーの存在自体に対して**次のいずれかを選ばねばならず、
+黙って無視して glTF マテリアルで描くことは**サブセット原則違反**になる。
+
+- **索引を読む** — `pelican.material` 文書を解決し、
+  `pelican.material_bindings` の解決先へ加える(エンジンと同じ意味論)
+- **明示的に拒否する** — `materials[]` が非空の project を「この web ランタイムでは
+  再現できない」として名指しで読み込み拒否する
+
+**個々の material をどこまで再現するかは本節の管轄ではない。**
+[`design_material_shading.md`](design_material_shading.md) §3-1 の規律 5 が既に
+「web は A 段(`base` + `defines` + `values` + `textures`、`shader` / `surface` キー無し)まで
+対応。B/C 段は native 限定で web は WARN + 既定 PBR フォールバック」と定めており、
+それが正である。索引を読むことを選んだ場合も、`surface` を持つ material に出会ったら
+その規律に従えばよい。
+
+`materials[]` が**空または不在の project は従来どおり**であり、この判断を要しない。
+拒否を選んだ場合でも `models[]` だけの project は引き続き読めるべきである。
+
+未決: 索引を読むか拒否するか。`my_webpage/docs/implementation_plan_web.md` へ
+WW を起こす必要がある。
+
 ## 4. シェーダ stem 参照(共通形式への唯一の追加)
 
 ### 問題
