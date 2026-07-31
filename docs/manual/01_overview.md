@@ -131,7 +131,7 @@ vkcore(Vulkan 低層)
 
 > **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。
 
-> **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。※歴史的経緯で asset_data.json / ui_overlay.json / rendering config には未適用。
+> **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。`asset_data.json` は `pelican.asset_data` v1 として strict v1 化済み。※歴史的経緯で ui_overlay.json / rendering config には未適用。
 
 > **設計決定 9(API ではなくデータ契約):** 外部ツール(DCC・DAM・エディタ)との統合はプラグイン API ではなくファイル契約(glTF ハブ、pelican.import、asset store)と JSON-RPC で行う。エディタ(devstudio)にも特権はない(D0: 編集操作はまず rpc メソッドとして定義される)。※WP149〜172 でこの原則が実装に落ちた: 編集 / undo / redo / 保存 / プレビューはすべて JSON-RPC メソッドとして定義され、player 内の ImGui Inspector も rpc と**同じ `EditorCommandService`** を呼ぶ([editorcommandservice.hpp](../../src/core/communication/editorcommandservice.hpp) / [inspector.cpp](../../src/core/imgui/inspector.cpp))。詳細は [第13章](13_editor.md)。
 

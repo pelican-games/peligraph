@@ -105,6 +105,8 @@ web ランタイムが読むキーと無視するキーを固定する。
 [`design_material_shading.md`](design_material_shading.md) §3-12 の決定により、
 `asset_data.json` は次の 2 点が変わる。**web 側の対応が決まるまで、エンジン側の実装は
 「web が何を拒否すべきか判別できる形」を先に用意する義務がある。**
+native engine 側の strict v1 と `materials[]` runtime は WP240c で実装済みであり、
+本節に残る「WW 未着手」は web 側が索引を読むか明示拒否するかの選択だけを指す。
 
 1. **`schema: "pelican.asset_data"` / `version: 1` を持つ versioned 形式になる。**
    これまで未版だったため、web は「読めない版」を検出できなかった。導入後は `project.json` と

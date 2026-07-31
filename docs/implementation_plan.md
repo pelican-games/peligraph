@@ -135,7 +135,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP239c | planar reflection resource port image-view ABI回帰修正 | ✅ 完了（2026-07-31）。sequential captureをmaterial境界でfamily-array descriptorへ適応 |
 | WP240a | 既定 rendering config の preset 化 | ✅ 完了（2026-07-31）。新規projectと`animgraph_demo`を`hybrid_v1` + directional shadowへ移行し、project-space headless GPU回帰を常設 |
 | WP240b | 背景と環境光 — 既定レンダラの最小見栄え | ✅ 完了（2026-07-31）。単色sky/ambientをfeature化し、既定値をfragmentへ一元化。ライト0のdeferred/forward金属を実GPU画素で検証 |
-| WP240c | project空間 material の宣言と実行時ロード | **未着手・最大**。`applyLoweredMaterialForRoute`の呼び出し元が`test/`のみ、glTF `alphaMode`未解釈 |
+| WP240c | project空間 material の宣言と実行時ロード | ✅ 完了（2026-07-31）。glTF producerをloweringへ収束し、strict asset index、常設texture resolver、runtime material登録・binding・hot reloadを接続 |
 | WP241 | skip を名乗る 4 件の GPU テスト失敗 | **未着手**。`catch (std::exception&)` → `SKIP` が engine の fail-fast を握り潰している |
 
 WP231〜237の受け入れ詳細:
@@ -771,6 +771,30 @@ hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原�
 - `asset_data.json` が `pelican.asset_data` v1 として strict v1 で受理される(§0「版の扱い」)
 - material の hot reload がこの経路でも成立する
 - `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
+
+**完了結果(2026-07-31)**:
+
+- glTF material producer を `lowerGltfMaterial` → `applyLoweredMaterialForRoute` へ収束した。
+  `alphaMode` / `alphaCutoff` / `doubleSided` は `gltf.cpp` の個別分岐ではなく、
+  `{opaque,mask,blend}_{single,double}` の routing から得る。これは
+  `4fa1586` として実装範囲 1 だけを先行コミットした。
+- `asset_data.json` を `pelican.asset_data` strict v1 とし、path-only の `materials[]` を追加した。
+  runtime owner が surface parse、material lowering、shader compile、GPU material/variant 登録を行い、
+  engine/project texture resolver と values/texture reload を既存の監視経路へ接続する。
+- `pelican.material_bindings` の解決域へ project material を加え、project 内重複、
+  glTF/project 同名衝突、routing 不一致をいずれも名指し hard error にした。
+  `materials[]` が無い場合は project 解決域を加えない。
+- U-USD0c の既存 golden をテスト専用 material 登録から実際の
+  `ProjectMaterialAssetContainer` 経路へ移し、project material + OpenPBR + primitive binding の
+  実 GPU 描画を固定した。glTF の MASK/BLEND 6 状態、texture/value reload、衝突、strict v1 も
+  focused 回帰で固定した。
+- Debug 全 target build、CPU gate **944 / 944 passed**（既存の環境依存 1 case skipped）、
+  GPU gate **125 / 125 passed**（既存 4 case skipped）を確認した。WSI live fault test は、
+  alpha routing を表現できない旧 deferred-only `example` への偶発依存を外し、
+  self-contained な `animgraph_demo` で同じ 6 fault 契約を検査する。
+- 実装・回帰・使い方は
+  [`2026-07-31_wp240c_project_material_report.md`](design_reviews/2026-07-31_wp240c_project_material_report.md)
+  に記録した。
 
 依存: WP240a。WP240b とは独立で並行可。見積: 大。**分割を検討してよい**
 (1 を独立 WP にすると受け入れが明確になる)。

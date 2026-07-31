@@ -84,7 +84,7 @@ pelican2/
 
 1. **CLI パース** — [player/main.cpp#L226](../../src/player/main.cpp#L226) `parseLaunchConfig`。argparse で全引数を解釈し、[EngineLaunchConfig](../../src/core/launchconfig.hpp) に詰める。`--project` 省略時の暗黙探索は [main.cpp#L165](../../src/player/main.cpp#L165) `findExampleProjectNearExecutable`(exe の祖先から `projects/example/project.json` を探す)
 2. **コア生成** — [main.cpp#L434](../../src/player/main.cpp#L434) `main` → `Pelican::PelicanCore pl{...}`([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp))。モジュールコンテナに LaunchConfig を書き込み、[PathResolver](../../src/core/loader/pathresolver.hpp)`.setup()` と [ProjectSource](../../src/core/loader/projectsrc.hpp) にプロジェクト JSON を渡す
-3. **設定合成** — [basicconfig.cpp#L295](../../src/core/loader/basicconfig.cpp#L295) `validateProjectJson`(schema/version の hard error ゲート)→ CLI > project.json > [default_config.json](../../src/core/resources/default_config.json) の 3 段合成
+3. **設定合成** — [basicconfig.cpp#L295](../../src/core/loader/basicconfig.cpp#L296) `validateProjectJson`(schema/version の hard error ゲート)→ CLI > project.json > [default_config.json](../../src/core/resources/default_config.json) の 3 段合成
 4. **ループ開始** — `pl.run()` → [loop.cpp#L332](../../src/core/appflow/loop.cpp#L332) `Loop::run`。ここがフレーム編成の唯一の場所で、通常 / headless / rpc の 3 経路に分岐する。ウィンドウモードで `--rpc` が付いた場合は `WindowedRpcHost` を生成し、フレーム境界(`processFrameBoundary()`)でのみリクエストを処理します([windowedrpchost.cpp](../../src/core/communication/windowedrpchost.cpp))
 5. **描画** — [renderer.cpp](../../src/core/vkcore/renderer.cpp) `executeRenderingPasses` → `executePlannedFrameGraph`。✅WP64 で一本化済み: 全構成が FramePlan 順で実行される。ノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)の dispatch も同ファイル
 6. **終了処理** — [teardown.cpp](../../src/core/appflow/teardown.cpp) `RuntimeTeardownGuard` が例外経路でも waitIdle → 物理 → ECS → モデルの順に noexcept で掃除
@@ -112,11 +112,11 @@ pelican2/
 
 | ファイル / 形式 | スキーマ解説 | パーサ(検証・hard error の実装) |
 |---|---|---|
-| `project.json` | [第3章](03_project_format.md) | [loader/basicconfig.cpp#L295](../../src/core/loader/basicconfig.cpp#L295) `validateProjectJson` |
+| `project.json` | [第3章](03_project_format.md) | [loader/basicconfig.cpp#L295](../../src/core/loader/basicconfig.cpp#L296) `validateProjectJson` |
 | パス参照(project:// / engine:// / user:// / #) | [第3章](03_project_format.md) | [loader/pathresolver.cpp](../../src/core/loader/pathresolver.cpp) |
 | `*.scene.json`(pelican.scene v1) | [第4章](04_scene_ecs.md) | 純ロジック(エンベロープ・識別子): [project/sceneformat.cpp](../../src/project/sceneformat.cpp) / **コンポーネント受理仕様の正**: [loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec テーブル / 振り分け・バインド: [loader/scene.cpp](../../src/core/loader/scene.cpp) |
 | scene の `behavior` コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | [gamelogic/behaviorarena.cpp#L70](../../src/core/gamelogic/behaviorarena.cpp#L70) `prepareSceneBehaviorAttachments()`(`scene.cpp` は `behavior` を ECS 経路から外すだけ) |
-| `asset_data.json` | [第5章](05_assets.md) | [loader/basicconfig.cpp#L350](../../src/core/loader/basicconfig.cpp#L350)(`models[]` のパス書き換え) |
+| `asset_data.json`(`pelican.asset_data` v1) | [第5章](05_assets.md) | 純ロジック(エンベロープ・models/materials/textures): [project/assetdataformat.cpp](../../src/project/assetdataformat.cpp) / model 登録: [asset/model.cpp](../../src/core/asset/model.cpp) / project material 登録: [material/projectmaterialasset.cpp](../../src/core/material/projectmaterialasset.cpp) |
 | `.vrma`(VRM Animation GLB) | [第5章](05_assets.md) | デコード: [loader/vrmadecoder.cpp](../../src/core/loader/vrmadecoder.cpp)(拡張子 `.vrma` が alias ゲート)/ リターゲット: [animation/vrmaretarget.cpp](../../src/core/animation/vrmaretarget.cpp)(版付き profile v1)/ 統合: [animation/animationservice.cpp](../../src/core/animation/animationservice.cpp) |
 | rendering config | [第6章](06_rendering.md) | [renderingpass/](../../src/core/renderingpass) の *jsonparser 群(RT フォーマット 45 種: [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) `format_names` / パス種別 8 種 + `imgui`: 同 `makePassInfo`) |
 | feature fragment(pelican.render_feature) | [第6章](06_rendering.md) | 純ロジック: [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
@@ -180,7 +180,7 @@ pelican2/
 
 ### ツール(devcli)
 
-[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(雛形 **16 エントリ**生成。正は [#L370](../../src/devcli/projectinit.cpp#L263) の `templateFiles()`)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
+[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(雛形 **16 エントリ**生成。正は [#L370](../../src/devcli/projectinit.cpp#L268) の `templateFiles()`)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
 
 ## 12.7 横断的な実装パターン(読むときの目印)
 

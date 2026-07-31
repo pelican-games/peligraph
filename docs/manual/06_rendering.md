@@ -1636,12 +1636,14 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 - wrapper は `{opaque,mask,blend}_{single,double}` の 6 種(BRDF 本体は単一 include `openpbr_lighting.glsl`)。v1 サブセット = base / specular / IOR / coat 1 層 / emission / normal + coat normal / opacity / alpha_cutoff。非対応入力(transmission 等)は authored かつ寄与時のみ名前入り WARN。写像表の正は [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md)。
 - `pelican.material` の additive キー: `textures`(宣言済みスロットの per-material 差し替え)/ `routing`(`alpha_mode` + `double_sided` — opaque/mask は depth write、blend は read-only)/ `defines`。
-- **primitive binding**: `pelican.material_bindings` v1(プリミティブ → マテリアル名の whole-model 契約)を asset_data の `models[].material_bindings` で参照できます(✅WP116。fragment モデルには適用不可)。
+- **project material**: `asset_data.json` の `materials[]` へ文書を索引すると、起動時に surface lowering・shader compile・GPU 登録が行われます(✅WP240c)。texture 参照と material values/texture hot reload も runtime 経路に接続済みです。
+- **primitive binding**: `pelican.material_bindings` v1(プリミティブ → マテリアル名の whole-model 契約)を asset_data の `models[].material_bindings` で参照できます(✅WP116/240c。fragment モデルには適用不可)。`binding.material` は glTF 内 named material と project material の両域を探索し、同名衝突は hard error、`binding.routing` の不一致も hard error です。
+- **glTF 再現**: glTF material も同じ lowering 経路を通り、`alphaMode` / `alphaCutoff` / `doubleSided` は routing 6 状態から得ます。BLEND は `forward_transparent`、MASK は cutout wrapper へ流れます。
 
-### 現状の重要な限界(バッジの肝)
+### 現状と重要な限界
 
 - レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon` / `openpbr_coat_sphere`)で実証済みです。
-- **手書きの `.material.json` をプロジェクト起動時に読み込んでモデルへ割り当てる宣言的レーンは依然 🚧**です。既定のバインディング解決は **GLB 内の named material** にのみ働き(binding ABI ✅WP116)、OpenPBR golden もテストハーネスが登録を行っています。
+- project 宣言レーンは ✅WP240c — `.material.json` を起動時に読み込み、binding でモデルへ割り当てた OpenPBR を実 GPU golden まで検証しています。宣言例と strict `pelican.asset_data` v1 は [第5章](05_assets.md) §5.2 を参照してください。
 - **per-instance マテリアルオーバーライド**(factor / UV の乗算 + material 別の絶対上書き)は ✅WP122/122b で renderer 機構として実装済みです。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.13)経由で、GameContext API はありません。
 - **spv-link(M3b/WP80)は experimental**: build時に`PELICAN_WITH_SPIRV_LINK=ON`、実行時に環境変数 `PELICAN_SPV_LINK=experimental` の両方を明示した場合だけ SPIR-V リンクバックエンドに切り替わります。build unitの既定はOFF、runtimeの既定は常にソース経路です。
 - 設計文書 [../design_material_shading.md](../design_material_shading.md) は v1.2 のまま実装が追い越しています。**現行契約の正は [../shader_contract.md](../shader_contract.md)** です。
