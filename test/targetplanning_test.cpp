@@ -557,7 +557,8 @@ TEST_CASE(
     REQUIRE(resolved.back().name ==
             "directional_shadow");
     REQUIRE(resolved.back().view_policy ==
-            MaterialPassInputViewPolicy::shared_2d);
+            MaterialPassInputViewPolicy::
+                family_array);
 
     auto unknown = reflected;
     unknown.back().name =
