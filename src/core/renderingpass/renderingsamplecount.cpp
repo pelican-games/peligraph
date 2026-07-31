@@ -1871,15 +1871,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                                   VulkanTargetPlanPinPackage>{
                                   *pin->second},
                     .fragment_package =
-                        fragment ==
-                                fragments_by_graph.end()
-                            ? std::optional<
-                                  VulkanPhysicalFragmentPackage>{}
-                            : std::optional<
-                                  VulkanPhysicalFragmentPackage>{
-                                  *fragment->second},
-                    .fragment_format_capabilities =
-                        format_capabilities,
+                        std::nullopt,
+                    .fragment_format_capabilities = {},
                     .automatic_attachments =
                         physicalAttachmentPlans(
                             definition),
@@ -1887,9 +1880,28 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(
                 definition, plan_value);
+        std::shared_ptr<const VulkanTargetPlan>
+            automatic_plan;
+        if (fragment != fragments_by_graph.end()) {
+            // A physical fragment is linked after retaining the exact
+            // automatic plan. Complete-plan verification must use this
+            // unmodified base, not the fragment-linked runtime plan whose
+            // fingerprint intentionally still identifies that base.
+            automatic_plan =
+                std::make_shared<const VulkanTargetPlan>(
+                    plan_value);
+            plan_value = linkVulkanPhysicalFragment(
+                logical_graph, topology,
+                std::move(plan_value),
+                *fragment->second,
+                format_capabilities);
+        }
         auto plan =
             std::make_shared<const VulkanTargetPlan>(
                 std::move(plan_value));
+        if (automatic_plan == nullptr) {
+            automatic_plan = plan;
+        }
         validateRuntimePhysicalPlan(
             *plan, target_by_name, swapchain_format,
             format_capabilities,
@@ -2028,7 +2040,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                         const CompiledLogicalRenderGraph>(
                         std::move(logical_graph)),
                 .topology = std::move(topology),
-                .automatic_plan = plan,
+                .automatic_plan =
+                    std::move(automatic_plan),
+                .compiled_plan = plan,
                 .format_capabilities =
                     std::move(format_capabilities),
             });

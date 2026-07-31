@@ -109,6 +109,12 @@ struct RenderingTargetPlanVerificationContext {
     TargetTopologySnapshot topology;
     std::shared_ptr<const VulkanTargetPlan>
         automatic_plan;
+    // The plan published by this compilation. It is the automatic plan
+    // itself unless a verified physical fragment was linked. Keeping both
+    // identities prevents validation from treating a linked plan as the
+    // automatic fingerprint source.
+    std::shared_ptr<const VulkanTargetPlan>
+        compiled_plan;
     std::vector<VulkanPhysicalResourceFormatCapability>
         format_capabilities;
     // Filled by the Vulkan compiler layer, which owns the actual logical

@@ -637,35 +637,76 @@ void validateVulkanPhysicalPackage(
     for (const auto &context :
          physical.target_plan_compilation
              .verification_contexts) {
-        if (context.logical_graph == nullptr ||
-            context.automatic_plan == nullptr ||
-            context.logical_graph->name.empty() ||
-            context.automatic_plan->graph !=
-                context.logical_graph->name ||
-            !compiled_by_name.contains(
-                context.logical_graph->name) ||
-            !verification_graphs
-                 .insert(context.logical_graph->name)
-                 .second ||
-            (compiled_by_name.at(
-                 context.logical_graph->name) !=
-                 context.automatic_plan &&
-             !physical
-                  .verified_complete_physical_plans
-                  .contains(
-                      context.logical_graph->name)) ||
-            context.automatic_plan
-                    ->logical_graph_fingerprint !=
-                vulkanTargetPlanLogicalGraphFingerprint(
-                    *context.logical_graph) ||
-            context.automatic_plan
-                    ->automatic_plan_fingerprint !=
-                vulkanAutomaticTargetPlanFingerprint(
-                    context.topology,
-                    *context.automatic_plan)) {
+        if (context.logical_graph == nullptr) {
             throw std::runtime_error(
-                "Render compiler Vulkan package has an invalid "
-                "complete-plan verification context");
+                "Render compiler Vulkan package complete-plan "
+                "verification context has no logical graph");
+        }
+        if (context.automatic_plan == nullptr) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context has no automatic plan for graph '" +
+                context.logical_graph->name + "'");
+        }
+        if (context.compiled_plan == nullptr) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context has no compiled plan for graph '" +
+                context.logical_graph->name + "'");
+        }
+        const auto &graph = context.logical_graph->name;
+        if (graph.empty()) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context has an unnamed logical graph");
+        }
+        if (context.automatic_plan->graph != graph) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context graph does not match its "
+                "automatic plan for graph '" +
+                graph + "'");
+        }
+        const auto compiled = compiled_by_name.find(graph);
+        if (compiled == compiled_by_name.end()) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context has no compiled target plan for "
+                "graph '" +
+                graph + "'");
+        }
+        if (!verification_graphs.insert(graph).second) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package has duplicate "
+                "complete-plan verification contexts for graph '" +
+                graph + "'");
+        }
+        if (compiled->second != context.compiled_plan &&
+            !physical.verified_complete_physical_plans.contains(graph)) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context compiled plan is not the "
+                "indexed target plan for graph '" +
+                graph + "'");
+        }
+        if (context.automatic_plan->logical_graph_fingerprint !=
+            vulkanTargetPlanLogicalGraphFingerprint(
+                *context.logical_graph)) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context logical graph fingerprint does "
+                "not match for graph '" +
+                graph + "'");
+        }
+        if (context.automatic_plan->automatic_plan_fingerprint !=
+            vulkanAutomaticTargetPlanFingerprint(
+                context.topology,
+                *context.automatic_plan)) {
+            throw std::runtime_error(
+                "Render compiler Vulkan package complete-plan "
+                "verification context automatic plan fingerprint does "
+                "not match for graph '" +
+                graph + "'");
         }
     }
     for (const auto &[name, verified] :

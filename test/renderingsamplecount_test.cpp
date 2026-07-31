@@ -458,6 +458,29 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
         std::optional<
             VulkanPhysicalFragmentPackage>{
             fragment});
+    REQUIRE(linked.verification_contexts.size() == 1);
+    const auto &verification =
+        linked.verification_contexts.front();
+    REQUIRE(verification.logical_graph != nullptr);
+    REQUIRE(verification.automatic_plan != nullptr);
+    REQUIRE(verification.compiled_plan ==
+            linked.plans.front());
+    REQUIRE(verification.automatic_plan !=
+            verification.compiled_plan);
+    REQUIRE_FALSE(
+        verification.automatic_plan
+            ->applied_fragment_package.has_value());
+    REQUIRE(
+        verification.automatic_plan
+            ->automatic_plan_fingerprint ==
+        vulkanAutomaticTargetPlanFingerprint(
+            verification.topology,
+            *verification.automatic_plan));
+    REQUIRE(
+        verification.compiled_plan
+            ->automatic_plan_fingerprint ==
+        verification.automatic_plan
+            ->automatic_plan_fingerprint);
 }
 
 TEST_CASE(
