@@ -136,7 +136,10 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP240a | 既定 rendering config の preset 化 | ✅ 完了（2026-07-31）。新規projectと`animgraph_demo`を`hybrid_v1` + directional shadowへ移行し、project-space headless GPU回帰を常設 |
 | WP240b | 背景と環境光 — 既定レンダラの最小見栄え | ✅ 完了（2026-07-31）。単色sky/ambientをfeature化し、既定値をfragmentへ一元化。ライト0のdeferred/forward金属を実GPU画素で検証 |
 | WP240c | project空間 material の宣言と実行時ロード | ✅ 完了（2026-07-31）。glTF producerをloweringへ収束し、strict asset index、常設texture resolver、runtime material登録・binding・hot reloadを接続 |
-| WP241 | skip を名乗る 4 件の GPU テスト失敗 | **未着手**。`catch (std::exception&)` → `SKIP` が engine の fail-fast を握り潰している |
+| WP241 | skip を名乗る 4 件の GPU テスト失敗 | **未着手**。`catch (std::exception&)` → `SKIP` が engine の fail-fast を握り潰している。WP240c 後(`93cf13b`)に再確認、握り潰しているエラーも同一 |
+| WP242a | 影を落とせるライトを複数にする | **未着手**。inventory index 0 のライトだけが影を落とし、他は 1.0 を返す |
+| WP242b | point / spot の shadow view provider | **未着手**。provider は directional 1 種のみ。cube shadow は src/ に存在しない |
+| WP242c | 影のフィルタと bias の project 空間化 | **未着手**。単一タップ、bias と遮蔽値がハードコード |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -851,6 +854,99 @@ skip されたテストは赤くならないので、落ちたテストより見
 
 依存: なし。見積: 中。**WP240b / 240c と並行可**だが、`albedo_detail` の原因が
 material 経路にあるなら WP240c と衝突しうるので、着手前に担当を確認すること。
+
+### WP242: 影 — 既定レンダラの第 5 段階(242a / 242b / 242c)
+
+**位置づけ**: [`design_material_shading.md`](design_material_shading.md) §3-12 で閉じた
+WP240 系列(preset 既定化 → 背景と環境光 → project 空間 material)の続きで、
+需要順の不足リスト 4 位・5 位にあたる。どちらも「**詰む**」判定である。
+「部屋に電球を何個か置いて影を落とす」という最も普通の要求で、この 2 つに同時にぶつかる。
+
+**確定している事実(2026-07-31、`93cf13b` で確認)**:
+
+1. **影を落とせるのは inventory index 0 のライト 1 灯だけ。** 判定は 2 箇所に
+   独立して書かれている。forward は `pelican_lighting_v1.glsl` の `pelican_shadow()`
+   冒頭で `pelican_light_inventory_index(light_index) != 0u` なら `1.0`(影なし)を返し、
+   deferred は `fullscreen.frag` が同じ判定を持つ。
+2. **LightUBO は 1 灯分しか場所がない。** `shadowViewProjections` は **cascade で添字**
+   されており、ライトごとの行列を置く配列ではない(`src/core/light/light.hpp`)。
+3. **provider は directional 1 種のみ。** `viewfamilyproviderregistry.cpp` が登録するのは
+   `registerDirectionalShadowViewFamilyProvider` だけで、point / spot / cube shadow は
+   `src/` に 1 件も存在しない。
+4. ライト数の固定上限は `MAX_DIRECTIONAL_LIGHTS = 8` / `MAX_POINT_LIGHTS = 16` /
+   `MAX_SPOT_LIGHTS = 8`。ただし clustered lighting 経由ならこの上限は効かないので、
+   **本 WP の詰みどころではない**(coverage.md G5 と混同しないこと)。
+
+### WP242a: 影を落とせるライトを複数にする
+
+**目的**: 影を落とせるライトが 1 灯という制限を外す。ライトごとの shadow 行列を
+GPU へ運ぶ経路を作り、消費側の index 0 固定を解除する。
+
+**実装範囲**:
+
+1. **2 箇所の `inventory_index != 0` 判定を、ライトごとの shadow 有無の問い合わせへ置き換える。**
+   forward(`pelican_lighting_v1.glsl`)と deferred(`fullscreen.frag`)で**同じ意味論**に
+   なることを保証すること。現在は独立に書かれており、片方だけ直すと経路によって
+   見た目が変わる。
+2. **ライトごとの shadow 行列と shadow map slice を運ぶ形を決める。** 現在の
+   `shadowViewProjections[cascade]` は 1 灯前提なので、(ライト, cascade) の二次元へ
+   拡張するか、shadow を落とすライトだけの compact な表にするかを選ぶ。
+   **固定長配列を増やすだけの拡張は採らない** — 上限が別の場所へ移るだけである。
+3. cascade 側の既存契約(WP225 の cascaded secondary view family)を壊さないこと。
+   directional 1 灯 + 3 cascade の現行 golden が byte 一致で通り続けること。
+
+**受け入れ条件**:
+
+- directional 2 灯以上がそれぞれ影を落とし、headless 描画の画素で確認できる
+- forward と deferred で同じシーンの影が一致する(片方だけ直っていない)
+- 既存の `shadow_on` / `morph_skinned_shadow` golden が byte 一致
+- `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
+
+依存: なし。見積: 大。**WP241 とは独立**。
+
+### WP242b: point / spot の shadow view provider
+
+**目的**: directional にしか無い shadow view provider を point / spot へ広げる。
+
+**実装範囲**:
+
+1. spot は 1 view、point は cube 6 面。**cube capture の既存機構**
+   (WP237 の `$face/` view provider)が流用できるか、新設が要るかを最初に判断すること。
+   [`render_evidence_ledger.md`](render_evidence_ledger.md) は cube capture feature を
+   **E1**(feature 経路を通す GPU テストが無い)としているので、流用するなら
+   その経路に初めて実証が付く。
+2. provider registry へ登録し、`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` の
+   OFF 側で消えることを既存 build-unit smoke で確認できる形にすること。
+3. WP242a のライトごと shadow 経路の上に載せる。
+
+**受け入れ条件**:
+
+- spot と point がそれぞれ影を落とし、headless 描画の画素で確認できる
+- point の 6 面が face ごとに正しく引かれている(1 面だけ描いて通る形にしない)
+- `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` で provider ごと外れる
+- `gpu` ラベル全数と `ctest -LE gpu` が緑
+
+依存: **WP242a**。見積: 大。
+
+### WP242c: 影のフィルタと bias の project 空間化
+
+**目的**: 影の縁が 1 タップでジャギーであること、bias と遮蔽値が engine 内にハードコード
+されていることを解消する。**品質の話なので 242a / 242b より後**。
+
+**実装範囲**:
+
+1. PCF(複数タップ)を入れる。タップ数は project 空間の feature parameter で選べること。
+2. bias と遮蔽の強さを feature parameter へ出す。**engine 側の定数を残したまま
+   feature で上書きする形は採らない**(既定値の所在が二重化する。WP240b と同じ規律)。
+3. forward と deferred で同じフィルタが効くこと。
+
+**受け入れ条件**:
+
+- PCF のタップ数・bias・遮蔽強度が project 空間の宣言だけで変えられる
+- 既定値の所在が一箇所
+- `gpu` ラベル全数が緑
+
+依存: WP242a。見積: 中。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
