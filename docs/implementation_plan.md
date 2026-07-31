@@ -781,8 +781,11 @@ skip されたテストは赤くならないので、落ちたテストより見
    | WP206b named variant owns its GPU record and reloads atomically with its base | 同上 |
 
 3. これらは GPU 不在による skip では**ない**。同じ実行で他の 118 件は実 device 上で通っている。
-4. 最後の 1 件は [`render_evidence_ledger.md`](render_evidence_ledger.md) が
-   **E3 +E5** と判定した WP206b の根拠テストである。根拠が実行されていないので**等級の再判定が要る**。
+4. 最後の 1 件は WP206b の reload atomicity を見る唯一のテストである。
+   ただし [`render_evidence_ledger.md`](render_evidence_ledger.md) が WP206b を **E3 +E5** と
+   する根拠は `headless_render_test` の "project-owned material variant renders a second
+   opaque pass" という**別のテスト**であり、そちらは通っている。**等級そのものは揺らがない**が、
+   reload 側は誰も検証していない状態が続いている。
 
 **実装範囲**:
 
@@ -800,7 +803,8 @@ skip されたテストは赤くならないので、落ちたテストより見
   **exit 0**(`SKIP exact policy: PASS` かつ ctest 自体も緑)
 - 4 件が skip ではなく実行され、通過する
 - テスト本体を包む `catch (const std::exception &) → SKIP` が残っていない
-- `render_evidence_ledger.md` の WP206b named variant の等級を再判定する
+- WP206b の reload atomicity が実際に検証された状態になる(現在このテストだけが見ており、
+  それが skip している)
 - `ctest -C Debug -LE gpu` が緑、`git diff --check` クリーン
 
 依存: なし。見積: 中。**WP240b / 240c と並行可**だが、`albedo_detail` の原因が

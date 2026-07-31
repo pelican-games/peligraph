@@ -1,10 +1,12 @@
 # Pelican2 ソースコード読解ガイド
 
-調査時点: 2026-07-21
+調査時点: 2026-07-31
 
-対象ブランチ: `codex/rendering-phase1-refactor`
+対象ブランチ: `codex/render-target-runtime-slice`
 
-基準コミット: `d13fc26`
+基準コミット: `dbbf82a`
+
+章によっては冒頭に自前の調査時点を書いています(第10章)。その章についてはそちらの日付とコミットが正です。
 
 この文書群は、Pelican2を「利用する方法」ではなく、**ソースコードがどう分割され、起動後に何がどの順で動き、複雑な実装がなぜその形になっているか**を理解するための読解ガイドです。
 
@@ -47,9 +49,12 @@
 | [第7章](07_tools_rpc_tests.md) | 曖昧な重なり判定 / `edit` の逐次プリフライト / undo 前提の三段検証 / preview lease の状態機械 / preview の状態不変性検証 |
 | [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 |
 
+この表は各章の代表を拾ったものです。表に載っていない難所ブロックもあるので、その章の全件が要るときは
+`難所 —` で検索してください。
+
 一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**各章の初出箇所で 1〜2 文の説明を添えてあります**。
 
-難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 62 項目)。
+難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 67 項目)。
 
 ## 最短の読解ルート
 
@@ -60,7 +65,7 @@
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L128) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
-6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3668) — フレームグラフをGPUコマンドへ変換する。flat画面は [`render()`](../../src/core/vkcore/renderer.cpp#L4472) がその1-viewラッパ。
+6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3668) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3677)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4472) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4515)。
 7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L119)）。
 
 ## リンクの見方

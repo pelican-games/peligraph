@@ -122,7 +122,7 @@ cleaners: [B, A]
 > rig の解決 = ledger.validate() ∧ sameHandle() ∧ アセット側 atomic == handle.generation
 > ```
 >
-> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L173) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationservice.cpp#L137) という別表へ退避されます。テストは [`animgraph_test.cpp#L330`](../../test/animgraph_test.cpp#L330)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp#L330`](../../test/animation_jobs_test.cpp#L330)。
+> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L173) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationservice.cpp#L137) という別表へ退避されます。テストは [`animgraph_test.cpp#L363`](../../test/animgraph_test.cpp#L363)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp#L330`](../../test/animation_jobs_test.cpp#L330)。
 >
 > **不変条件**: generation 0 を有効値として外へ出さない。消えたリソースの identity を ledger から**消さない**(tombstone を残す)。`invalid_handle` と `stale_generation` の使い分けを崩さない。
 
@@ -130,7 +130,9 @@ cleaners: [B, A]
 
 `ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([modelinstance.hpp#L21](../../src/core/renderer/modelinstance.hpp#L21))。
 
-- `scene_epoch` が進むのは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L595)(scene clear / 再ロード)の **1 か所だけ** です([`++scene_epoch`](../../src/core/renderer/polygoninstancecontainer.cpp#L545))。個別 slot が死んで再利用されるときに進むのは [`instance_generations[index]`](../../src/core/renderer/polygoninstancecontainer.cpp#L536)、つまり `generation` の方です。いずれも animation generation や model asset content revision からは独立です。
+- **identity は `PolygonInstanceContainer` から [`ModelInstanceSlots`](../../src/core/renderer/modelinstanceslots.hpp#L14) へ切り出されました。** `index` / `generation` / `scene_epoch` を持っているのはこの class で、`PolygonInstanceContainer` 側にはもう `scene_epoch` も世代表もありません(`instance_slots` メンバ越しに問い合わせます)。
+- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L82) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L595)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L62) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
+- `clear()` 自体も §9.17 の prepare/publish 形です。epoch 枯渇(`scene epoch exhausted`)を投げうる検査は [`ModelInstanceSlots::prepareClear()`](../../src/core/renderer/modelinstanceslots.cpp#L73) が先に済ませ、実際の書き換えは `noexcept` の `clearPrepared()` が行います。`clear()` を読むときはこの 2 段を 1 つの操作として読んでください。
 - 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L360)。
 - [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L340) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
 - `instanceCountForTesting()` は **live 数** を返すよう変わり、スロット総数は `slotCountForTesting()` です。両者の差は空きスロットです。
@@ -141,7 +143,7 @@ cleaners: [B, A]
 >
 > **何をする所か**: 別々にコンパイルされた DLL とエンジンの間で、C の plain struct を版下位互換のまま受け渡します。呼び出し側が `struct_size` を書き、エンジンが自分の知る分だけを書き戻します。
 >
-> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1726) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1596) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1751))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1078) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L37)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`animation_abi_dll_test.cpp#L42`](../../test/animation_abi_dll_test.cpp#L42))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
+> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1726) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1596) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1751))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1078) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L38)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`animation_abi_dll_test.cpp#L42`](../../test/animation_abi_dll_test.cpp#L42))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
 >
 > **骨子**:
 > ```text
@@ -449,7 +451,7 @@ game system registry はこれとは別機構で、現在は `(order,name)` 順�
 
 ### change detection の意味
 
-non-force system は matching chunk の component version と `last_run_tick` を比較します。component を raw pointer から直接書き換えただけでは version が上がりません。公開 mutation は [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L353) または [`markComponentChanged()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L640) を通す必要があります。
+non-force system は matching chunk の component version と `last_run_tick` を比較します。component を raw pointer から直接書き換えただけでは version が上がりません。公開 mutation は [`setComponent<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L364) または [`markComponentChanged()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L640) を通す必要があります。
 
 一方、built-in system の多くは `registerSystemForce` なので毎 frame 動きます。最適化時に force を外すなら、すべての mutation 経路が version を更新するか先に確認してください。
 
@@ -558,26 +560,35 @@ hot reload は shader compile と pipeline rebuild を transactional にしま�
 
 - reload の publish は render 冒頭で [`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2412) が consume し、[`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2379) が fullscreen input descriptor を明示 rebind します(執筆時点の `handleShaderHotReload()` は分割されました)。
 - compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2176) 時に一度作り、hot reload path では作り直していません。
-- material は [`prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L190) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
+- material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L366) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
 
 したがって hot reload の安全な基本範囲は、既存 set/binding/type と push constant layout を保った shader body の変更です。layout-changing reload を正式対応するなら、pipeline 使用者ごとの descriptor rebuild notification が必要です。
 
 ## 9.12 GPU object は「C++で不要」になった時点では壊せない
 
-pipeline、image view、buffer などは、CPU では旧 object に見えても GPU が前 frame の command から参照中かもしれません。[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は resource type を virtual base へ型消去し、defer frame を記録します。
+pipeline、image view、buffer などは、CPU では旧 object に見えても GPU が前 frame の command から参照中かもしれません。[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は resource type を virtual base([`DeferredResourceBase`](../../src/core/vkcore/deletionqueue.hpp#L22))へ型消去して溜めます。
 
-2 frames-in-flight 後に [`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L45) が `optional<T>.reset()` して本物の RAII destructor を呼びます。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L608) が代表例です。
+**溜め方は「defer した frame 番号を記録する」形から「実 submission へ紐付ける」形へ変わりました**(執筆時点の「2 frames-in-flight 後に `releaseEligible()` が破棄する」「`in_flight_frames` を数える」という記述は失効しています)。現在は次の 3 手です。
+
+1. [`defer()`](../../src/core/vkcore/deletionqueue.hpp#L90) は現在の [`RetirementBatch`](../../src/core/vkcore/deletionqueue.hpp#L50) に積むだけ。
+2. [`leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) がその batch を握る [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53)(実体は `shared_ptr<const void>`)を返す。
+3. [`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L73) が次の submission 用に新しい batch へ切り替える。
+
+**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L3710) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L4416) → [`deletion_queue.confirmSubmission()`](../../src/core/vkcore/renderer.cpp#L4418) です。
+
+つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L81) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L608) が代表的な defer 元です。
 
 変更時の原則は次です。
 
 - GPU が参照し得る旧 object を local temporary の destructor に任せない。
 - new object を公開した後、old object を deletion queue へ移す。
+- **新しい submit 経路を足したら、lease を取って submission 完了まで手放さない。** lease を持たずに `confirmSubmission()` を呼ぶと、その batch は下の難所ブロックの理由で**その場で**破棄されます。
 - queue に入れる object が dependent object より先に破棄されても Vulkan 規約上安全か確認する。
-- shutdown は wait-idle → pending flush → module destruction の順を維持する。
+- shutdown は wait-idle → pending flush → module destruction の順を維持する。[`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L83) は fence も wait-idle も見ずに全 batch を落とすので、呼ぶ側が先に idle にする責任を持ちます(実際 [loop.cpp#L287-L289](../../src/core/appflow/loop.cpp#L287) は `waitIdle()` の直後、teardown は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) の `wait_idle` を先頭・`deletion_queue` を末尾に置いています)。
 
 ### teardown 開始後の `defer()` はエラー
 
-`DeletionQueueCore` に [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L40) フラグと [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L80) が入りました。`defer()` は先頭でこれを呼ぶため、**受け入れ停止後に defer するとエラーになります**。
+`DeletionQueueCore` は [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L77) フラグと [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L80) を持ちます。**`defer()` だけでなく `leaseForNextSubmission()` と `confirmSubmission()` も先頭でこれを呼ぶ**ので、受け入れ停止後はこの 3 本すべてが `std::logic_error` になります([deletionqueue_test.cpp#L129-L135](../../test/deletionqueue_test.cpp#L129) が 3 本とも検査しています)。
 
 teardown の最終段は phase で分岐します。
 
@@ -588,27 +599,35 @@ teardown の最終段は phase で分岐します。
 
 したがって「module の destructor から GPU object を defer する」コードは、terminal shutdown では失敗します。destructor は既に所有している資源で完結させるか、明示 teardown 段階へ移してください。受け入れ状態の確認は `acceptingResources()`(core)/ `acceptingResourcesForTesting()`(module ラッパ)です。
 
-> 🧩 **難所 — drain 中は受け付けない**([`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L55) / [`beginFrame()`](../../src/core/vkcore/deletionqueue.cpp#L74))
+> 🧩 **難所 — 破棄の時刻を決めているのは refcount 1 本**([`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L73) / [`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L83))
 >
-> **何をする所か**: defer された資源を「積んだ frame + in-flight 分」だけ寝かせ、期限の来たものだけ本物のデストラクタへ落とします。`beginFrame()` が毎 frame の入口です。
+> **何をする所か**: defer された資源を、それを参照している実 GPU submission が完了するまで生かし、完了したものだけ本物のデストラクタへ落とします。
 >
-> **素朴に読むと**: `draining` を立てて 4 行の `DrainScope` で必ず倒す、という同じ形が [releaseEligible](../../src/core/vkcore/deletionqueue.cpp#L60) と [flushAll](../../src/core/vkcore/deletionqueue.cpp#L83) に重複していて、「念のための再入禁止」に見えます。実際に塞いでいるのはもっと具体的な事故です — `release()` の実体は [`optional<T>.reset()`](../../src/core/vkcore/deletionqueue.hpp#L28)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer` の `DeferredRelease::~DeferredRelease()`](../../src/core/model/vertbufcontainer.cpp#L437) は owner のメソッドを呼び戻します)。そこから `defer()` が呼ばれると [`pending.push_back`](../../src/core/vkcore/deletionqueue.hpp#L57) が走り、`std::vector` が再確保された瞬間に走査中の `it` の指す先が消えて、直後の [`pending.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L67) が UB になります。`flushAll()` は先に空 vector と `swap` してあるので erase は壊れませんが、drain 中に積まれた資源が「全部流した」はずの queue に黙って居残ります。drain 中の `defer()` を [`logic_error`](../../src/core/vkcore/deletionqueue.cpp#L50) にするのは、この 2 つを「壊れる」から「その場で分かる」へ変えるためで、`DrainScope` が try-catch でなく RAII なのは、`release()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。もう 1 つの [`if (current_frame < in_flight_frames) return;`](../../src/core/vkcore/deletionqueue.cpp#L77) は「最初の数 frame は掃除を遅らせる」という設計上の猶予ではなく、**符号なし減算の保護**です。`current_frame` は `uint64_t` なので、起動直後に `1 - 2` を計算しても負にはならず `2^64 - 1` へ回り込み(ラップアラウンド — 符号なし整数の演算は範囲外へ出ると剰余を取って反対側の端へ折り返す規則)、`it->frame <= oldest_frame` が全件真になって **GPU がまだ使っている資源を即座に破棄します**。この 2 行を「無駄な分岐」として消すと、起動直後の 1 frame だけが壊れる、再現性の低い不具合になります。
+> **素朴に読むと**: 鍵は [`std::vector<std::weak_ptr<RetirementBatch>> batches`](../../src/core/vkcore/deletionqueue.hpp#L76) が **`weak_ptr` である**ことで、この vector は寿命を一切持ちません。batch を生かしている強参照は 2 本だけ — 次に積む先である [`current_batch`](../../src/core/vkcore/deletionqueue.hpp#L75) と、`leaseForNextSubmission()` が配った `GpuSubmissionLease` です。`confirmSubmission()` は `current_batch` を新しい batch で**上書き**するので、**lease を誰も持っていなければその瞬間に旧 batch の refcount が 0 になり、GPU がまだ読んでいる資源がその場で破棄されます**。「queue に積んだのだから遅延している」と読むと、この 1 本の依存が見えません。`batches` が `weak_ptr` なのは `flushAll()` のためで、生きている batch だけ `releaseAll()` し、失効したものは [`batches.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L98) で落とします — つまり `batches` は所有者ではなく「まだ破棄されていない batch の台帳」です。
+>
+> もう 1 つが `draining` で、`draining` を立てて 4 行の `DrainScope` で必ず倒す形は「念のための再入禁止」に見えますが、塞いでいるのは具体的な事故です。`release()` の実体は [`resource.reset()`](../../src/core/vkcore/deletionqueue.hpp#L45)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer::releaseModelGeometry()`](../../src/core/model/vertbufcontainer.cpp#L495) が defer する `DeferredRelease` のデストラクタは、lease を取り直したうえで owner のメソッドを呼び戻します)。そこから `defer()` が来ると [`resources.push_back`](../../src/core/vkcore/deletionqueue.hpp#L58) が走査中の vector を再確保し、`confirmSubmission()` が来ると `batches.push_back` が `flushAll()` のイテレータを無効にします。だから 3 本とも先頭で [`DeletionQueueCore::requireAccepting()`](../../src/core/vkcore/deletionqueue.cpp#L54) を呼び、drain 中は `std::logic_error` にします。これは「壊れる」を「その場で分かる」へ変える置き換えで、`DrainScope` が try-catch でなく RAII なのは、`releaseAll()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。`flushAll()` 自身の再入も同じく `std::logic_error` です。
 >
 > **骨子**:
 > ```text
-> beginFrame():  requireAccepting()            ← accepting と draining をここで見る
->                ++current_frame
->                if (current_frame < in_flight_frames) return;   ← 下の減算を守るためだけの 2 行
->                releaseEligible(current_frame - in_flight_frames)
+> defer(r)                 requireAccepting(); current_batch->add(r)
+> leaseForNextSubmission() requireAccepting(); return shared_ptr{ upstream, current_batch }
+> confirmSubmission()      requireAccepting(); ++completed_submissions
+>                          batch が空なら何もしない
+>                          batches.push_back(new); current_batch = new
+>                          ↑ ここで旧 batch の強参照は lease だけになる
+>                            lease が無ければ refcount 0 → 即破棄
 >
-> releaseEligible(): draining=true + DrainScope(RAII で false へ戻す)
->                    pending を走査し frame <= oldest を release() → erase(it)
->                    ↑ この release() の中から defer() が来たら logic_error
+> フレーム側                target.endLogicalFrame(lease) → slot に保持
+>                          fence 完了を観測 → slots.complete(slot) → lease 解放 → 破棄
+>
+> flushAll()               draining=true + DrainScope(RAII で false へ戻す)
+>                          batches を走査し lock() できた batch を releaseAll()
+>                          ↑ この中から defer / lease / confirm が来たら logic_error
 > ```
 >
-> **手がかり**: `in_flight_frames` は [`in_flight_frames_num = 2`](../../src/core/vkcore/rendertarget.hpp#L24) 由来なので、この保護が実際に効くのは frame 1 の 1 回だけです。`flushAll()` は wait-idle を呼びません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L34) と、`wait_idle` step を先に通す [teardown の順序](../../src/core/appflow/teardown.cpp#L49))。テストは [`deletionqueue_test.cpp#L37`](../../test/deletionqueue_test.cpp#L37)(in-flight 分だけ遅れて破棄)/ [#L104](../../test/deletionqueue_test.cpp#L104)(drain 後は `defer()` も `beginFrame()` も throw)です。
+> **手がかり**: `flushAll()` は fence も wait-idle も見ません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L34) と、`wait_idle` step を先に通す [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) と、それを走査する [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L107))。`pendingCount()` は [`PendingCounter`](../../src/core/vkcore/deletionqueue.hpp#L18) を `DeferredResource` の生成/解放で増減させた live 数で、デストラクタはこれが 0 でなければ WARNING を出して wait-idle → flush する安全網に入ります([deletionqueue.cpp#L22-L45](../../src/core/vkcore/deletionqueue.cpp#L22))。テストは [`"DeletionQueueCore releases resources only after the bound GPU submission completes"`](../../test/deletionqueue_test.cpp#L37)(lease を手放すまで破棄されない)/ [`"DeletionQueueCore tracks retirement batches by actual submission lease"`](../../test/deletionqueue_test.cpp#L60)(batch ごとに独立して retire する)/ [`"DeletionQueueCore teardown drain closes the queue and rejects late resources"`](../../test/deletionqueue_test.cpp#L118)(drain 後は 3 本とも throw)です。
 >
-> **不変条件**: `draining` を立てる区間には必ず RAII で対になる復帰を置く(早期 return と例外の両方を塞ぐ)。`releaseEligible()` の引数は `current_frame >= in_flight_frames` のときだけ計算する。`release()` の実行中に `pending` を触らない。
+> **不変条件**: submission に紐付けたい資源は `leaseForNextSubmission()` の lease を submission 完了まで保持する(保持しないなら `confirmSubmission()` の時点で破棄されてよい資源だけを defer する)。`draining` を立てる区間には必ず RAII で対になる復帰を置く。`releaseAll()` の実行中に `resources` / `batches` を触らない。`batches` を `shared_ptr` に変えない — 所有しないことが「lease だけが寿命を決める」という契約そのものです。
 
 ## 9.13 宣言・schema はあるが、runtime が未完成または別経路のもの
 
@@ -669,6 +688,8 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 | resize 後だけ texture が古い | target recreate と fullscreen rebind | 該当 pass が独自 descriptor を cache していないか |
 | headless capture が真っ黒 | frame plan と execution trace | target layout、pass output、golden fixture |
 | shutdown crash | wait-idle と deletion queue | ECS `deinit()` が既に壊れた GPU module を触っていないか |
+| defer した GPU 資源が早すぎるタイミングで消える | `leaseForNextSubmission()` の lease を submission 完了まで保持しているか(§9.12) | `flushAll()` の前に wait-idle しているか |
+| テストは緑なのに機能が壊れている | `ctest` の Skipped 件数(特に `-L gpu`) | テストが `catch (const std::exception &) → SKIP` で engine の例外を skip へ変えていないか(§9.20) |
 
 ## 9.15 大きな変更の安全チェックリスト
 
@@ -687,13 +708,14 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 - JSON definition、validation、runtime compilation、execution dispatch の4層を更新したか。
 - resize 後の image view rebind があるか。
 - hot reload 後の descriptor rebuild があるか。
-- old GPU object を遅延破棄したか。
+- old GPU object を遅延破棄したか。submit 経路を足したなら submission lease を取って完了まで保持したか(§9.12)。
 - buffer と image の両方に正しい stage/access barrier があるか。
 - headless と swapchain の両 frame target で成立するか。
 - flat と `#xr` の両 graph variant で成立するか。
 - temporal history(history RT、object/skin/morph/override history)の reset 経路を更新したか。
 - view 数変化時の FrameResources slot 再構成(device idle 待ち)を守ったか。
 - plan fixture、execution trace、golden image を確認したか。
+- `gpu` ラベルのテストを走らせ、**新しい skip が 1 件も出ていない**ことを確認したか(§9.20)。`ctest` の「0 失敗」だけでは足りません。
 
 ### public API/RPC を変更する
 
@@ -823,11 +845,74 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 ## 9.19 preview / `render_preview` の隔離
 
-- `render_preview` は **`Renderer::renderLogicalFrame()` を通りません**([`previewgraph.hpp#L12-L14`](../../src/core/renderingpass/previewgraph.hpp#L12) のコメント)。したがって temporal history、FrameResources slot、layout tracker などのライブ状態を汚しません。
+- `render_preview` は **`Renderer::renderLogicalFrame()` を通りません**([`PreviewGraphProgram`](../../src/core/renderingpass/previewgraph.hpp#L20) 直前のコメント)。したがって temporal history、FrameResources slot、layout tracker などのライブ状態を汚しません。
 - 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3047) です。
 - 上限は 2048px / 16 MiB([previewexecutor.hpp#L54-L55](../../src/core/vkcore/previewexecutor.hpp#L54))。超過は `PreviewCaptureTooLarge` です。
 - `PreviewCaptureRequest::graph_generation` が `PreviewGraphProgram::generation` と食い違えば `std::invalid_argument("preview graph generation mismatch")` で拒否されます(stale preview の防止)。
 - **現在の出力は CPU 模式ラスタです**([第6章 §6.19](06_rendering_vulkan_shader.md))。material も shader も評価しないので、`render_preview` の画像を最終描画の代用と見なさないでください。
+
+## 9.20 テストの `catch (const std::exception &) → SKIP` は、回帰を緑のまま隠す
+
+この章で扱ってきた不変条件のほとんどは、**破ると engine が `throw std::runtime_error` する**形で守られています。fail-fast がこのコードベースの検出手段です。一方、GPU を要するテストの多くは device の無い環境で落ちないよう、次の形を持っています。
+
+```cpp
+TEST_CASE("...") {
+    try {
+        // ... テスト本体 ...
+    } catch (const std::exception &error) {
+        SKIP(std::string{"Vulkan ... unavailable: "} + error.what());
+    }
+}
+```
+
+**この 2 つが噛み合うと、engine が正しく検出した回帰が、そのまま「環境が無い」という skip になります。** skip したテストは赤くなりません。落ちたテストより見つけにくい、というのがこの落とし穴の本体です。
+
+### 実際に起きたこと(WP241)
+
+2026-07-31 時点で、`gpu` ラベルの 122 件のうち 4 件がこの形で skip しており、`ctest` は同じ実行を「0 失敗」と報告していました。残る 118 件は同じ実行で実 device 上を通っているので、**device 不在による skip ではありません**。
+
+| skip していたテスト | 握り潰されていた engine の例外 |
+|---|---|
+| [`rpc_color_contract_test.cpp#L269`](../../test/rpc_color_contract_test.cpp#L269) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialcontainer.cpp#L3056) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+| [`materialvaluesreload_test.cpp#L333`](../../test/materialvaluesreload_test.cpp#L333) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L899) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
+| [`materialvaluesreload_test.cpp#L452`](../../test/materialvaluesreload_test.cpp#L452) | 同上 |
+| [`materialvaluesreload_test.cpp#L618`](../../test/materialvaluesreload_test.cpp#L618) | 同上 |
+
+`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L333) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L328) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
+
+> 🧩 **難所 — 捕まるものと捕まらないものが逆に見える**(`catch (const std::exception &)` と Catch2)
+>
+> **何をする所か**: 「device が無ければ skip、あれば実行」を 1 つの `try/catch` で表現しようとしています。
+>
+> **素朴に読むと**: 「全部囲んでいるのだから、テストが失敗しても skip になってしまうのでは」と読み、逆に「失敗が握り潰されている」報告を見ると「`REQUIRE` が効いていないのでは」と読みます。どちらも外れです。Catch2 の `REQUIRE` 失敗が投げるのは `Catch::TestFailureException`、`SKIP()` が投げるのは `Catch::TestSkipException` で、**どちらも `std::exception` を継承していない空の struct** です(`catch2/internal/catch_test_failure_exception.hpp`)。だから `catch (const std::exception &)` は**アサーション失敗を一切拾いません**。拾うのは engine が投げる `std::runtime_error` のような `std::exception` 由来の例外だけ — この非対称が誤解の源です。
+>
+> さらに 1 段ややこしいのは、**engine の throw が `REQUIRE(...)` の式の中で起きた場合は捕まらない**ことです。`REQUIRE` の展開は式評価を自前の `try { ... } catch(...) { handleUnexpectedInflightException(); }` で囲んでおり、そこで失敗として記録したうえで `TestFailureException` を投げ直します。つまり **同じ例外でも、素の文として投げられれば skip、`REQUIRE` の中から投げられれば失敗**になります。上の 4 件が skip になったのは前者だったからで、テストの書き手が意図して分けた区別ではありません(この分岐は `CATCH_CONFIG_FAST_COMPILE` を定義すると消え、その場合は `REQUIRE` 内の例外も外側の `catch` へ届きます。このリポジトリでは未定義です)。
+>
+> **骨子**:
+> ```text
+> engine の throw(素の文)      → std::runtime_error → 外側の catch が拾う → SKIP  ← 隠れる
+> engine の throw(REQUIRE 内)  → Catch2 が記録 → TestFailureException  → 素通り → 失敗
+> REQUIRE(a == b) の不一致      → TestFailureException                 → 素通り → 失敗
+> SKIP(...)                     → TestSkipException                    → 素通り → skip
+> ```
+>
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は、このリポジトリ内に 3 段階の実例があります。(1) **明示的な能力問い合わせ** — [`getRuntimeCapabilities().multiview`](../../test/golden_harness.cpp#L8482) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L2915) を見て skip し、本体は囲まない。(2) **メッセージで絞って再送出** — [`requireGoldenVulkanDevice()`](../../test/golden_harness.cpp#L5696) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。(3) **起動完了ラッチ** — [`headless_render_test.cpp#L1501`](../../test/headless_render_test.cpp#L1501) の `runtime_ready` は bring-up を抜けた時点で `true` になり、以後の例外は [`if (runtime_ready) throw;`](../../test/headless_render_test.cpp#L1795) で skip させません。**(1) が本来の形**で、(2)(3) は既存テストを最小限の変更で救う形です。
+>
+> **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
+
+### この idiom がどこにあるか
+
+`test/*.cpp` で `catch (const std::exception ...)` のハンドラ本体に `SKIP(` を持つブロックは調査時点で 42 か所あり、そのうち再送出・メッセージ絞り込み・`runtime_ready` ラッチのいずれかで判断を狭めているのは 7 か所だけです。探すときはこの形で当たれます。
+
+```powershell
+rg -n -A3 "catch \(const std::exception" test --glob "*.cpp" | rg -B1 "SKIP\("
+```
+
+### gate 側の受け止め
+
+skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。**このリストは意図的に空**で、上の 4 件を載せると gate の存在意義が消えます。逆に、リストに書いた名前が 1 件も現れなければそれも失敗にするので、リストは腐りません([skip_policy.py#L83-L88](../../test/ci/skip_policy.py#L83))。
+
+なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L27) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L48) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L940) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
 
 ---
 
