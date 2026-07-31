@@ -30,7 +30,7 @@ pelican_cli
 - `vrm`([`vrmcommand.cpp`](../../src/devcli/vrmcommand.cpp))は VRM semantic のダンプ/検査です(テスト: [`run_devcli_vrm_dump.cmake`](../../test/run_devcli_vrm_dump.cmake))。
 - 既存の `import` には `--rules` サブモード(ルールベース import、[`rulesimport.cpp`](../../src/devcli/rulesimport.cpp) + [`importrules.hpp`](../../src/project/importrules.hpp)、テスト: [`run_devcli_rules_import.cmake`](../../test/run_devcli_rules_import.cmake))と glTF scene 抽出([`gltfsceneextract.cpp`](../../src/devcli/gltfsceneextract.cpp)、テスト: [`run_devcli_gltf_extract.cmake`](../../test/run_devcli_gltf_extract.cmake))が加わりました。
 
-`--rules` から外部ツールを起動する経路のために [`DevCli::runProcess(ProcessOptions)`](../../src/devcli/processrunner.hpp#L37) が追加されました。ヘッダのコメントが規範です。
+`--rules` から外部ツールを起動する経路のために [`DevCli::runProcess(ProcessOptions)`](../../src/devcli/processrunner.hpp#L34) が追加されました。ヘッダのコメントが規範です。
 
 > Runs one child in its own process group, captures stdout/stderr, and kills the
 > complete group on timeout or cancellation. Arguments are filesystem::path so
@@ -118,7 +118,7 @@ GLB 候補は asset catalog と project 以下の import manifest の両方か�
 
 結果は [`renderDistConfigPreset()`](../../src/devcli/distconfig.cpp#L884) が `set(PELICAN_WITH_... CACHE BOOL ... FORCE)` 形式の CMake include file にします。各判定の理由も comment へ出るため、「なぜこの依存が配布物に入ったか」を追跡できます。
 
-command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L913)、結合仕様は [`run_devcli_dist_config.cmake`](../../test/run_devcli_dist_config.cmake#L1) です。
+command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L917)、結合仕様は [`run_devcli_dist_config.cmake`](../../test/run_devcli_dist_config.cmake#L1) です。
 
 > 🧩 **難所 — 前方一致では判定しない**([`isWithinRoot()`](../../src/devcli/distconfig.cpp#L121) / [`pathComponents()`](../../src/devcli/distconfig.cpp#L113))
 >
@@ -134,13 +134,13 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L913
 >   1つでも不一致 -> false / 全一致 -> true
 > ```
 >
-> **手がかり**: 呼び出しは2箇所だけで、どちらも直前に [`weaklyCanonicalOrThrow()`](../../src/devcli/distconfig.cpp#L70) を通した絶対パスを渡しています — [`resolveProjectRef()`](../../src/devcli/distconfig.cpp#L227) と [`addMaybeExistingGlbCandidate()`](../../src/devcli/distconfig.cpp#L375)。root 側も [`loadProjectFiles()`](../../src/devcli/distconfig.cpp#L285) が `canonicalDirectoryOrThrow()` で正規化済みにしています。つまり `..` を実際に潰しているのは `weakly_canonical` であって `isWithinRoot()` ではありません。
+> **手がかり**: 呼び出しは2箇所だけで、どちらも直前に [`weaklyCanonicalOrThrow()`](../../src/devcli/distconfig.cpp#L70) を通した絶対パスを渡しています — [`resolveProjectRef()`](../../src/devcli/distconfig.cpp#L205) と [`addMaybeExistingGlbCandidate()`](../../src/devcli/distconfig.cpp#L369)。root 側も [`loadProjectFiles()`](../../src/devcli/distconfig.cpp#L285) が `canonicalDirectoryOrThrow()` で正規化済みにしています。つまり `..` を実際に潰しているのは `weakly_canonical` であって `isWithinRoot()` ではありません。
 >
 > **不変条件**: 両引数は正規化済みの絶対パスであること。これはコード上どこにも明文化されていない暗黙の前提で、新しい呼び出し箇所を足すときの最大の落とし穴です。パスの包含判定に `pathString()` の前方一致を使わない。
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L8) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L10) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L8) を表示します。
 
 現実装は full editor ではなく prototype です。
 
@@ -185,7 +185,7 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 
 ### engine binding 層: `pelican_core`
 
-[`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) は `istream` / `ostream` と method handler map を持ちます。1行を1 request とし、[`handleLine()`](../../src/core/communication/rpcserver.cpp#L743) で parse → handler → response serialize を行います。[`run()`](../../src/core/communication/rpcserver.cpp#L779) は EOF まで1行ずつ読み、必ず1行の response を flush します。1行だけを処理する [`processLine()`](../../src/core/communication/rpcserver.cpp#L739) が公開されているのが windowed 経路の土台です。
+[`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) は `istream` / `ostream` と method handler map を持ちます。1行を1 request とし、[`handleLine()`](../../src/core/communication/rpcserver.cpp#L761) で parse → handler → response serialize を行います。[`run()`](../../src/core/communication/rpcserver.cpp#L755) は EOF まで1行ずつ読み、必ず1行の response を flush します。1行だけを処理する [`processLine()`](../../src/core/communication/rpcserver.cpp#L715) が公開されているのが windowed 経路の土台です。
 
 transport が socket ではなく stream interface なのがポイントです。production 起動では stdin/stdout、unit test では stringstream を差し替えられます。
 
@@ -304,7 +304,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >
 > **不変条件**: プリフライトはlive文書とliveランタイムに副作用を持たない。inverseは必ずforwardの逆順。spawnの `object_id` は必ずプリフライト結果から取る(自前で採番しない)。
 
-> 🧩 **難所 — undo前提の三段検証**([`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L2004))
+> 🧩 **難所 — undo前提の三段検証**([`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L2007))
 >
 > **何をする所か**: `undo` / `redo` を「逆命令の普通のトランザクション」として実行してよいかを、実行前に3つの独立した条件で検査します。
 >
@@ -320,15 +320,15 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 > postconditionsHold(source, document()) が偽 -> undo_conflict
 > ```
 >
-> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2808))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2462))の**二重**になっています。テストは [`editorjournal_test.cpp#L519`](../../test/editorjournal_test.cpp#L519) / [#L558](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2846))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2500))の**二重**になっています。テストは [`editorjournal_test.cpp#L519`](../../test/editorjournal_test.cpp#L519) / [#L558](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
 >
 > **不変条件**: 3検査はAND。順番は変えてよいが、どれも消してはいけない。undoが成功したら `undo_stack.pop_back()` と `redo_stack.push_back()` は必ず対で動かす(片方だけだとredoが別トランザクションを指します)。
 
-> 🧩 **難所 — preview leaseの状態機械**([`commitPendingPreview()`](../../src/core/communication/editorjournal.cpp#L2221) / [`forceAbort()`](../../src/core/communication/editorjournal.cpp#L2191))
+> 🧩 **難所 — preview leaseの状態機械**([`commitPendingPreview()`](../../src/core/communication/editorjournal.cpp#L2259) / [`forceAbort()`](../../src/core/communication/editorjournal.cpp#L2229))
 >
 > **何をする所か**: `open_preview` / `update_preview` / `commit_preview` / `abort_preview` をフレーム境界でまとめて処理し、lease(排他権)の取得・維持・破棄と、外部要因による強制破棄を行います。
 >
-> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(実体を消しても「このticketは確かに存在して終了した」という痕跡だけを残すレコード)は `abort_preview` の冪等性 — 同じ操作を何度行っても結果が変わらない性質 — のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で、leaseが無いときも失敗したときも `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからです。呼び出し元の [`commitPending()`](../../src/core/communication/editorjournal.cpp#L2462) 自体が `noexcept` のフレーム境界フックとして登録されていて、ここから例外が漏れれば `std::terminate` でプロセスごと落ちます(「フレームの一部だけ失敗する」ではありません)。だから `forceAbort()` の唯一の逃げ道は `false` を返して次のフレーム境界に委ねることです。
+> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(実体を消しても「このticketは確かに存在して終了した」という痕跡だけを残すレコード)は `abort_preview` の冪等性 — 同じ操作を何度行っても結果が変わらない性質 — のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で、leaseが無いときも失敗したときも `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからです。呼び出し元の [`commitPending()`](../../src/core/communication/editorjournal.cpp#L2500) 自体が `noexcept` のフレーム境界フックとして登録されていて、ここから例外が漏れれば `std::terminate` でプロセスごと落ちます(「フレームの一部だけ失敗する」ではありません)。だから `forceAbort()` の唯一の逃げ道は `false` を返して次のフレーム境界に委ねることです。
 >
 > **骨子**:
 > ```text
@@ -345,11 +345,11 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >   abort  : ライブ状態を committed へ復元し、tombstone を置いて lease を落とす
 > ```
 >
-> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L1882) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L1719) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L1704) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp#L691`](../../test/editorjournal_test.cpp#L691)(lease matrix)と [#L766](../../test/editorjournal_test.cpp#L766)。
+> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L1885) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L1719) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L1704) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp#L691`](../../test/editorjournal_test.cpp#L691)(lease matrix)と [#L766](../../test/editorjournal_test.cpp#L766)。
 >
 > **不変条件**: `forceAbort()` の内部でthrowさせない。予約は成功でも失敗でも必ず落とす。leaseの `write_set` はopenで確定しupdateで変えない。editがcommitしたらpreview leaseは必ず落とす。
 
-> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L143) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L131))
+> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L144) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L131))
 >
 > **何をする所か**: `eval_preview` / `render_preview` の前後で共有エンジン状態のスナップショットを取り、**厳密一致**しなければ `state_changed` を投げます。成功時も例外時も検査します。
 >
@@ -392,7 +392,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 - `set_time` → `render_frame` は、任意時刻を sampling/capture する用途です。
 - `inject_input` → `step_frame` は、入力がその frame の game system へ届く標準経路です。
 
-transform update も即適用ではなく pending です。複数 update をまとめてから `step_frame` / `render_frame` の境界で [`flushPendingTransforms()`](../../src/core/communication/rpcserver.cpp#L422) します。
+transform update も即適用ではなく pending です。複数 update をまとめてから `step_frame` / `render_frame` の境界で [`flushPendingTransforms()`](../../src/core/communication/rpcserver.cpp#L398) します。
 
 ### protocol 上の注意
 
@@ -479,7 +479,7 @@ WP174 / TEST0 で `golden_image_test.cpp` は **分割・廃止** されまし�
 | [`golden_cases_test`](../../test/golden_cases_test.cpp) | 画像比較本体(`runGoldenImages()` / `runRgba8Hashes()` ほか) |
 | [`golden_temporal_test`](../../test/golden_temporal_test.cpp) | jitter / TAA / stereo / velocity 系 |
 | [`golden_timing_test`](../../test/golden_timing_test.cpp) | GPU timing の identity / ring / compute / sprite |
-| [`golden_framegraph_test`](../../test/golden_framegraph_test.cpp) | [`runRendererTrace()`](../../test/golden_harness.hpp#L19) で planner の node 順と実行 trace が一致すること、[`runFullscreenRebind()`](../../test/golden_harness.hpp#L20) で hot reload / resize 後の descriptor 再結合 |
+| [`golden_framegraph_test`](../../test/golden_framegraph_test.cpp) | [`runRendererTrace()`](../../test/golden_harness.hpp#L27) で planner の node 順と実行 trace が一致すること、[`runFullscreenRebind()`](../../test/golden_harness.hpp#L28) で hot reload / resize 後の descriptor 再結合 |
 
 `test/CMakeLists.txt` の `pelican_golden_test_sources` がこの 4 本を列挙し、全て `pelican_define_test(... GOLDEN GPU pelican_golden_harness)` で登録されるため `RESOURCE_LOCK pelican_golden_gpu` が付きます。
 
@@ -594,7 +594,7 @@ with PelicanRpc("projects/example") as rpc:
     tree = rpc.scene_tree()
 ```
 
-- [`PelicanRpc(project_dir, exe_path=None)`](../../tools/pelican_rpc.py#L28) が `pelican_player` を `--rpc --headless --project <dir>` で起動します。
+- [`PelicanRpc(project_dir, exe_path=None)`](../../tools/pelican_rpc.py#L23) が `pelican_player` を `--rpc --headless --project <dir>` で起動します。
 - 実行体の既定探索は `build/src/player/Debug/pelican_player.exe` を、リポジトリルート → cwd → cwd の各祖先の順に探します([#L54-L76](../../tools/pelican_rpc.py#L54))。見つからなければ探索した全 path を並べた `FileNotFoundError` になります。
 - [`call(method, params)`](../../tools/pelican_rpc.py#L78) は 1 行 1 リクエストの NDJSON を書き、1 行読み、`id` 一致と `jsonrpc == "2.0"` を検証してから `result` を **そのまま** 返します。エラーは [`PelicanRpcError(code, message, data)`](../../tools/pelican_rpc.py#L13) です。
 - 薄いショートカットが `get_status` / `step_frame` / `set_time` / `render_frame` / `capture` / `load_scene` / `scene_tree` / `get_components` / `list_assets` / `export_scene_snapshot` / `import_scene_snapshot` / `eval_preview` / `render_preview` に用意されています。
@@ -624,7 +624,7 @@ return !config.headless && !config.rpc && !config.input_replay && !config.golden
        !config.xr_active;
 ```
 
-つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp#L153`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L153))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L50) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
+つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp#L153`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L153))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L57) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
 
 テストは [`test/assetbrowser_test.cpp`](../../test/assetbrowser_test.cpp) と [`test/inspector_test.cpp`](../../test/inspector_test.cpp) です。
 

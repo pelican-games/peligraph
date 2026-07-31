@@ -97,7 +97,7 @@ cleaners: [B, A]
 >          H h;(未初期化)                       → 警告のみ
 > ```
 >
-> **手がかり**: 基底クラス持ちの集成体なので `A a{{1}}` も `A a{1}`(brace elision — 集成体初期化で入れ子の内側の `{}` を省略してよい、という規則)も通ります。リテラルからの生成に書き方が 2 通りあるように見えるのはこれが理由です。animation ABI 側の [`PELICAN_ANIM_HANDLE`](../../src/core/userpublic/animation/abi_v1.hpp#L23) は名前が似ているだけの別物で、C ABI 用の 16 バイト POD です(暗黙変換も比較演算子も持ちません)。
+> **手がかり**: 基底クラス持ちの集成体なので `A a{{1}}` も `A a{1}`(brace elision — 集成体初期化で入れ子の内側の `{}` を省略してよい、という規則)も通ります。リテラルからの生成に書き方が 2 通りあるように見えるのはこれが理由です。animation ABI 側の [`PELICAN_ANIM_HANDLE`](../../src/core/userpublic/animation/abi_v1.hpp#L25) は名前が似ているだけの別物で、C ABI 用の 16 バイト POD です(暗黙変換も比較演算子も持ちません)。
 >
 > **不変条件**: `operator Base()` を消すと logging/indexing の呼び出し側が広範囲に壊れるので、当面は「別 handle 型の `==` は通る」を前提に読んでください。`Hash` は派生型を受けるため、`BasicHandle` を非 CRTP に書き換えると連想コンテナが全部壊れます。
 
@@ -105,7 +105,7 @@ cleaners: [B, A]
 
 **それでも `ResourceContainer` 系の GPU ハンドルだけは依然として世代なし** です。GPU resource handle と、世代付きの Entity / ModelInstance / Registration handle を同じ寿命モデルだと考えないでください。
 
-> 🧩 **難所 — generation は 0 を跨がない**([`ResourceGenerationLedger`](../../src/core/animation/animationserviceabi.hpp#L40) / [`isValid()`](../../src/core/userpublic/animation/abi_v1.hpp#L46))
+> 🧩 **難所 — generation は 0 を跨がない**([`ResourceGenerationLedger`](../../src/core/animation/animationserviceabi.hpp#L40) / [`isValid()`](../../src/core/userpublic/animation/abi_v1.hpp#L48))
 >
 > **何をする所か**: animation ABI ハンドルの世代を進めます。`if (++x == 0) ++x;` という同じ 3 語が [`animationservice.cpp`](../../src/core/animation/animationservice.cpp#L635) だけで 7 か所に現れます。
 >
@@ -122,7 +122,7 @@ cleaners: [B, A]
 > rig の解決 = ledger.validate() ∧ sameHandle() ∧ アセット側 atomic == handle.generation
 > ```
 >
-> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L171) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationservice.cpp#L137) という別表へ退避されます。テストは [`animgraph_test.cpp#L330`](../../test/animgraph_test.cpp#L330)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp#L330`](../../test/animation_jobs_test.cpp#L330)。
+> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L173) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationservice.cpp#L137) という別表へ退避されます。テストは [`animgraph_test.cpp#L330`](../../test/animgraph_test.cpp#L330)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp#L330`](../../test/animation_jobs_test.cpp#L330)。
 >
 > **不変条件**: generation 0 を有効値として外へ出さない。消えたリソースの identity を ledger から**消さない**(tombstone を残す)。`invalid_handle` と `stale_generation` の使い分けを崩さない。
 
@@ -130,18 +130,18 @@ cleaners: [B, A]
 
 `ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([modelinstance.hpp#L21](../../src/core/renderer/modelinstance.hpp#L21))。
 
-- `scene_epoch` が進むのは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L521)(scene clear / 再ロード)の **1 か所だけ** です([`++scene_epoch`](../../src/core/renderer/polygoninstancecontainer.cpp#L545))。個別 slot が死んで再利用されるときに進むのは [`instance_generations[index]`](../../src/core/renderer/polygoninstancecontainer.cpp#L536)、つまり `generation` の方です。いずれも animation generation や model asset content revision からは独立です。
-- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L317)。
-- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L298) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
+- `scene_epoch` が進むのは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L595)(scene clear / 再ロード)の **1 か所だけ** です([`++scene_epoch`](../../src/core/renderer/polygoninstancecontainer.cpp#L545))。個別 slot が死んで再利用されるときに進むのは [`instance_generations[index]`](../../src/core/renderer/polygoninstancecontainer.cpp#L536)、つまり `generation` の方です。いずれも animation generation や model asset content revision からは独立です。
+- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L360)。
+- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L340) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
 - `instanceCountForTesting()` は **live 数** を返すよう変わり、スロット総数は `slotCountForTesting()` です。両者の差は空きスロットです。
 
-登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L292)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L293) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L296)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は §9.17。
+登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L334)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L335) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L338)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は §9.17。
 
-> 🧩 **難所 — `struct_size` の 3 段ルール**([`getApiV1()`](../../src/core/animation/animationservice.cpp#L1671) / [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L14))
+> 🧩 **難所 — `struct_size` の 3 段ルール**([`getApiV1()`](../../src/core/animation/animationservice.cpp#L1726) / [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15))
 >
 > **何をする所か**: 別々にコンパイルされた DLL とエンジンの間で、C の plain struct を版下位互換のまま受け渡します。呼び出し側が `struct_size` を書き、エンジンが自分の知る分だけを書き戻します。
 >
-> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1672) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1556) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1699))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1042) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L37)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`animation_abi_dll_test.cpp#L42`](../../test/animation_abi_dll_test.cpp#L42))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
+> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1726) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1596) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1751))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1078) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L37)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`animation_abi_dll_test.cpp#L42`](../../test/animation_abi_dll_test.cpp#L42))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
 >
 > **骨子**:
 > ```text
@@ -156,7 +156,7 @@ cleaners: [B, A]
 >
 > **手がかり**: 版数の軸が 3 本あります — `version`(descriptor のレイアウト版)、`engine_abi_version` / `service_version`(関数表の意味論の版)、`capability_bits`(機能単位)。`reserved0/1 != 0` を `reserved_not_zero` で弾くのは、新しい ABI の呼び出し側が古いエンジンに当たったことを検出するためです。[`abi_v1.hpp#L653-L659`](../../src/core/userpublic/animation/abi_v1.hpp#L653) の `static_assert` は 2 つのサイズと 4 か所のオフセットだけを固定しており、**それ以外のフィールド順はコンパイラが何も守ってくれません**。テストは [`animation_abi_dll_test.cpp#L73`](../../test/animation_abi_dll_test.cpp#L73)(凍結プレフィクス)/ [#L103](../../test/animation_abi_dll_test.cpp#L103)(old-client と new-engine の双方向)で、`storage[caller_size]` の番兵によって越境書き込みが無いことを検査しています。
 >
-> **不変条件**: 既存フィールドの順序・型・サイズを変えない(追加は末尾のみ)。末尾に足したら、その descriptor を読む側の `minimum` を凍結プレフィクスのサイズへ明示的に下げる(前例は engine 側で 5 か所 — [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1042) と、同じ descriptor を検証する `ProbeRuntime` 側の [advanceCursor](../../src/core/animation/animationprobe.cpp#L247)(desc / result の 2 つ)/ [publishAnimationFrame](../../src/core/animation/animationprobe.cpp#L381) / [advanceTemporalHistoryAfterRender](../../src/core/animation/animationprobe.cpp#L400)。片側だけ直すと取りこぼします)。書き戻しは必ず `min(caller_size, sizeof(produced))` にする。ABI 面の関数は `noexcept` を保ち、例外を `Status` へ変換する。
+> **不変条件**: 既存フィールドの順序・型・サイズを変えない(追加は末尾のみ)。末尾に足したら、その descriptor を読む側の `minimum` を凍結プレフィクスのサイズへ明示的に下げる(前例は engine 側で 5 か所 — [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1078) と、同じ descriptor を検証する `ProbeRuntime` 側の [advanceCursor](../../src/core/animation/animationprobe.cpp#L256)(desc / result の 2 つ)/ [publishAnimationFrame](../../src/core/animation/animationprobe.cpp#L448) / [advanceTemporalHistoryAfterRender](../../src/core/animation/animationprobe.cpp#L467)。片側だけ直すと取りこぼします)。書き戻しは必ず `min(caller_size, sizeof(produced))` にする。ABI 面の関数は `noexcept` を保ち、例外を `Status` へ変換する。
 
 ## 9.3 `PELICAN_REGISTER_EVENT` / `PELICAN_REGISTER_SYSTEM` / `PELICAN_REGISTER_BEHAVIOR`
 
@@ -238,7 +238,7 @@ registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/deta
 
 [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) は namespace qualifier を落とします。`foo::Changed` と `bar::Changed` は同じ `Changed` になり、異なる型なら duplicate error です。
 
-RPC の `inject_event` 用 JSON loader は [`registerEvent<Event>()`](../../src/core/userpublic/details/event/registerer.hpp#L62) で選ばれます。
+RPC の `inject_event` 用 JSON loader は [`registerEvent<Event>()`](../../src/core/userpublic/details/event/registerer.hpp#L87) で選ばれます。
 
 - default constructible かつ `ref(JsonArchiveLoader&)` がある: payload を field へ load。
 - default constructible だが `ref` がない: default event を作り、渡された payload は使わない。
@@ -273,7 +273,7 @@ C++ の `GameContext::emit(event)` は copy した値をそのまま queue に�
 
 ## 9.4 `GameObjects::add()` の typestate builder
 
-[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L19) は fluent API に見えますが、内部では呼ぶたびに別 template 型を返します。
+[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L20) は fluent API に見えますが、内部では呼ぶたびに別 template 型を返します。
 
 ```cpp
 auto id = GameObjects::add()
@@ -288,7 +288,7 @@ auto id = GameObjects::add()
 - `IndexHolder<...>`: 値を渡した component が pointer 配列の何番目か。
 - `tuple<...>`: populate 時に代入する component data。
 
-`finish()` で初めて ID span と populate lambda へ落ち、[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L8) から ECS の transactional create へ入ります。template の目的は、runtime に型情報が消えた `void*` 配列へ、compile-time に正しい型と index で代入することです。
+`finish()` で初めて ID span と populate lambda へ落ち、[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L13) から ECS の transactional create へ入ります。template の目的は、runtime に型情報が消えた `void*` 配列へ、compile-time に正しい型と index で代入することです。
 
 ### reference lifetime の罠
 
@@ -303,11 +303,11 @@ auto builder = GameObjects::add().addComponent(MyComponent{...});
 auto id2 = builder.finish();
 ```
 
-builder を後で使うなら、component value を別の lvalue として `finish()` まで生存させてください。重複 Component ID は最終的に [`createEntities()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L93) が例外にします。
+builder を後で使うなら、component value を別の lvalue として `finish()` まで生存させてください。重複 Component ID は最終的に [`createEntities()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L365) が例外にします。
 
 ## 9.5 Component type erasure と lifecycle callback
 
-ECS chunk は C++ 型を知りません。登録時に [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L34) が次を callback に変えます。
+ECS chunk は C++ 型を知りません。登録時に [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L36) が次を callback に変えます。
 
 ```text
 T
@@ -333,7 +333,7 @@ non-trivial component の swap-delete(削除した要素の穴へ配列の末尾
 
 ### Component ID は dense index でもある
 
-[`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L83) は値としては ID をそのまま index に使いますが、**現在は `get(id)` 経由になりました**。未登録スロットの読み出しは [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L86) が `std::out_of_range("component index N is not registered")` を投げます。黙って壊れた metadata を返すことはありません。さらに archetype mask(archetype は「同じ component の組み合わせを持つ entity をまとめた区画」で、mask はその組み合わせを component ID 1 個 = 1 ビットとして表した値)は [`MAX_COMPONENTS = 64`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L21) の `uint64_t` です。
+[`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L86) は値としては ID をそのまま index に使いますが、**現在は `get(id)` 経由になりました**。未登録スロットの読み出しは [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L89) が `std::out_of_range("component index N is not registered")` を投げます。黙って壊れた metadata を返すことはありません。さらに archetype mask(archetype は「同じ component の組み合わせを持つ entity をまとめた区画」で、mask はその組み合わせを component ID 1 個 = 1 ビットとして表した値)は [`MAX_COMPONENTS = 64`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L21) の `uint64_t` です。
 
 したがって Component ID は次を満たす必要があります。
 
@@ -369,27 +369,27 @@ game code 向けの安定した `PELICAN_REGISTER_COMPONENT` public macro/boot h
 
 ## 9.6 Archetype/SoA chunk と pointer lifetime
 
-各 [`VariedArray`](../../src/core/userpublic/details/ecs/chunk.hpp#L17) は constructor で `stride * 4096` bytes を一度に aligned allocation します。[`chunk.cpp`](../../src/core/userpublic/details/ecs/chunk.cpp#L17) を参照してください。同じ component の値は連続し、system は `T* + count` で batch 処理できます。
+各 [`VariedArray`](../../src/core/userpublic/details/ecs/chunk.hpp#L25) は constructor で `stride * 4096` bytes を一度に aligned allocation します。[`chunk.cpp`](../../src/core/userpublic/details/ecs/chunk.cpp#L17) を参照してください。同じ component の値は連続し、system は `T* + count` で batch 処理できます。
 
 storage 自体は chunk の生存中に再 allocation されません。しかし pointer が永久に同じ entity を指すわけではありません。
 
 - entity remove は穴へ末尾 entity を move する swap-delete。
 - 別 entity の remove でも、自分が末尾なら自分の値が別 address へ移る。
-- 移った entity は **id 表の側も直す**必要があります。`EntityId` から行を引くのは [`id_table[id.index].ref`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L108)(= `{chunk_index, array_index}`)なので、[`remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L551) は末尾 entity を穴へ move した直後に、その entity の `ref` を穴の位置へ書き換えます([#L561-L564](../../src/core/userpublic/details/ecs/coretemplate.cpp#L561))(例: E1 が row 5、末尾の E2 が row 10 で、E1 を remove すると E2 は row 5 へ移るので、`id_table[E2.index].ref.array_index` を 10 → 5 にする)。この更新を落とすと E2 は消えた row 10 を指したままになり、[`resolve()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L308) の範囲検査で当面は「いない」扱い、その後 create が row 10 を埋めると別 entity の行を指します。
+- 移った entity は **id 表の側も直す**必要があります。`EntityId` から行を引くのは [`id_table[id.index].ref`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L108)(= `{chunk_index, array_index}`)なので、[`remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) は末尾 entity を穴へ move した直後に、その entity の `ref` を穴の位置へ書き換えます([#L561-L564](../../src/core/userpublic/details/ecs/coretemplate.cpp#L561))(例: E1 が row 5、末尾の E2 が row 10 で、E1 を remove すると E2 は row 5 へ移るので、`id_table[E2.index].ref.array_index` を 10 → 5 にする)。この更新を落とすと E2 は消えた row 10 を指したままになり、[`resolve()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L308) の範囲検査で当面は「いない」扱い、その後 create が row 10 を埋めると別 entity の行を指します。
 - scene load/clear は全 component を破棄。
 - `GameObjectId` は generation で再解決できるが、生 pointer には generation がない。
 
-したがって component pointer/reference は、structural mutation をまたいで cache しないでください。必要時に EntityId から [`tryComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L343) で再取得します。
+したがって component pointer/reference は、structural mutation をまたいで cache しないでください。必要時に EntityId から [`tryComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L354) で再取得します。
 
-create/remove/clear の再入は [`MutationScope`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L25) が拒否します。component `init()` / `deinit()` callback からさらに structural mutation すると、部分更新を防ぐため例外になります。
+create/remove/clear の再入は [`MutationScope`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L297) が拒否します。component `init()` / `deinit()` callback からさらに structural mutation すると、部分更新を防ぐため例外になります。
 
 ## 9.7 内部 ECS scheduler の並列性
 
-内部 ECS system は template 引数の pointer constness から read/write component index を抽出します。[`registerSystem()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L398) で `const T*` は read、`T*` は write です。現在の signature は instance 参照を受け取り `SystemId` を返す形で、登録時に [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L399) が「batch か per-chunk のどちらかの process 形」を必須にします。
+内部 ECS system は template 引数の pointer constness から read/write component index を抽出します。[`registerSystem()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L409) で `const T*` は read、`T*` は write です。現在の signature は instance 参照を受け取り `SystemId` を返す形で、登録時に [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L410) が「batch か per-chunk のどちらかの process 形」を必須にします。
 
 **WP148 / ECS0 でこの節は大きく変わりました。** 以前の「read/write は conflict graph を作らない」「cycle は例外にならない」という記述は失効しています。
 
-実行計画は [`internal::buildECSExecutionPlan(nodes, hazard_policy)`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作ります。[`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L660) は計画を Kahn 法(カーン法 — 依存先が残っていない(入次数 0 の)ノードを取り出しては、その分だけ相手の入次数を減らす、を繰り返すトポロジカルソート(依存の向きに矛盾しないよう一列に並べること)のアルゴリズム。同時に入次数 0 になったノードの集まりが、そのまま「並列に走らせてよい level」になります)で level 化し、level ごとに「全 System の `prepare_func` を owner thread で実行 → 全部を `JobSystem` へ schedule → `wait()`」を行います。
+実行計画は [`internal::buildECSExecutionPlan(nodes, hazard_policy)`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作ります。[`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) は計画を Kahn 法(カーン法 — 依存先が残っていない(入次数 0 の)ノードを取り出しては、その分だけ相手の入次数を減らす、を繰り返すトポロジカルソート(依存の向きに矛盾しないよう一列に並べること)のアルゴリズム。同時に入次数 0 になったノードの集まりが、そのまま「並列に走らせてよい level」になります)で level 化し、level ごとに「全 System の `prepare_func` を owner thread で実行 → 全部を `JobSystem` へ schedule → `wait()`」を行います。
 
 ```text
 level 0: A, B, C  -> parallel jobs -> wait
@@ -449,7 +449,7 @@ game system registry はこれとは別機構で、現在は `(order,name)` 順�
 
 ### change detection の意味
 
-non-force system は matching chunk の component version と `last_run_tick` を比較します。component を raw pointer から直接書き換えただけでは version が上がりません。公開 mutation は [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L353) または [`markComponentChanged()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L637) を通す必要があります。
+non-force system は matching chunk の component version と `last_run_tick` を比較します。component を raw pointer から直接書き換えただけでは version が上がりません。公開 mutation は [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L353) または [`markComponentChanged()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L640) を通す必要があります。
 
 一方、built-in system の多くは `registerSystemForce` なので毎 frame 動きます。最適化時に force を外すなら、すべての mutation 経路が version を更新するか先に確認してください。
 
@@ -473,10 +473,10 @@ behavior の公開は [`arena.publishSceneAttachments()`](../../src/core/loader/
 以前は engine が `"KeyLight"` / `"FillLight"` / `"PointLight1"` / `"SpotLight1"` といった名前を特別扱いし、`LightContainer::updateAnimation(float time)` が勝手にアニメーションさせていました。**この挙動と、原本値を保持していた `m_OriginalDirectionalLights` などの配列は削除されました。**
 
 - 代替は公開 API 4 本([`GameContext::setDirectionalLightDirection()` ほか](../../src/core/userpublic/gamecontext.hpp#L50))で、ライトの時間変化は **ユーザー空間の責務** になりました。実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L31) の `updateLightAnimation()` です。
-- setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L187)(呼び出しは [#L1295](../../src/core/vkcore/renderer.cpp#L1295))で GPU バッファへ反映されます。
+- setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L290)(呼び出しは [#L1295](../../src/core/vkcore/renderer.cpp#L1295))で GPU バッファへ反映されます。
 - 「アップグレード後にライトが動かなくなった」は仕様です。scene 名に依存した暗黙アニメーションを期待しているコードを探してください。
 
-代わりに **上限超過の警告** が入りました。[`collectLightCapWarnings()`](../../src/core/light/lightcontainer.hpp#L21) が `MAX_DIRECTIONAL_LIGHTS` / `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS` を超えた分について次を出します([lightcontainer.cpp#L52](../../src/core/light/lightcontainer.cpp#L52))。
+代わりに **上限超過の警告** が入りました。[`collectLightCapWarnings()`](../../src/core/light/lightcontainer.hpp#L23) が `MAX_DIRECTIONAL_LIGHTS` / `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS` を超えた分について次を出します([lightcontainer.cpp#L52](../../src/core/light/lightcontainer.cpp#L52))。
 
 ```text
 Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <N>)
@@ -498,11 +498,11 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 ### planner
 
 - 自動 edge は宣言順で「直前 writer → reader」の RAW(read-after-write — 書いた後に読む依存。以下 WAW は write-after-write、WAR は write-after-read で、いずれも順序が入れ替わると結果が変わる組み合わせです)。
-- WAW は明示 edge で全 writer を順序付けないと [`validateWritesAreOrdered()`](../../src/core/renderingpass/frameplanner.cpp#L545) が拒否。
+- WAW は明示 edge で全 writer を順序付けないと [`validateWritesAreOrdered()`](../../src/core/renderingpass/frameplanner.cpp#L1461) が拒否。
 - WAR は自動 edge なし。
 - `after` / `before` は control edge。
 - cycle は例外。
-- stable topological order は作るが、[`levels`](../../src/core/renderingpass/frameplanner.cpp#L723) は現在並列実行に使わない。
+- stable topological order は作るが、[`levels`](../../src/core/renderingpass/frameplanner.cpp#L1549) は現在並列実行に使わない。
 
 ### barrier
 
@@ -543,7 +543,7 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 
 画像全体または特定 mip を処理する task は、`{"groups_from":{"port":"reduced_depth"}}` のように typed image port を指定できます。port の `subresource.mip`、render target の現在 extent、shader reflection の [`local_size`](../../src/core/shader/shaderreflection.hpp) を runtime が結合し、X/Y group 数を切り上げ除算で求めます。`local_size_z` は 2D image contract のため 1 が必須です。固定 `groups`、image-derived `groups_from`、GPU-produced `indirect` は相互排他的です。粒子数のような任意の scalar parameter 由来 dispatch はこの契約へ混ぜず、typed indirect command buffer または将来の別契約で扱います。
 
-compute task は dedicated compute queue へ submit せず、graphics frame command buffer に記録します。一方 [`pickQueues()`](../../src/core/vkcore/core.cpp#L141) の fallback は graphics と compute を別 family として受理できます。現 frame graph compute は graphics queue に compute capability があることを実質仮定していますが、fallback path はそれを必須検証していません。async compute を実装する場合は command pool/submit だけでなく queue family ownership transfer も必要です。
+compute task は dedicated compute queue へ submit せず、graphics frame command buffer に記録します。一方 [`pickQueues()`](../../src/core/vkcore/core.cpp#L189) の fallback は graphics と compute を別 family として受理できます。現 frame graph compute は graphics queue に compute capability があることを実質仮定していますが、fallback path はそれを必須検証していません。async compute を実装する場合は command pool/submit だけでなく queue family ownership transfer も必要です。
 
 ## 9.11 Shader reflection と hot reload の境界
 
@@ -556,17 +556,17 @@ reflection は descriptor layout と pipeline layout を source/SPIR-V から自
 
 hot reload は shader compile と pipeline rebuild を transactional にします。しかし descriptor layout を変更する edit は、shader body だけの edit より危険です。
 
-- reload の publish は render 冒頭で [`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L857) が consume し、[`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L841) が fullscreen input descriptor を明示 rebind します(執筆時点の `handleShaderHotReload()` は分割されました)。
-- compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L407) 時に一度作り、hot reload path では作り直していません。
+- reload の publish は render 冒頭で [`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2412) が consume し、[`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2379) が fullscreen input descriptor を明示 rebind します(執筆時点の `handleShaderHotReload()` は分割されました)。
+- compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2176) 時に一度作り、hot reload path では作り直していません。
 - material は [`prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L190) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
 
 したがって hot reload の安全な基本範囲は、既存 set/binding/type と push constant layout を保った shader body の変更です。layout-changing reload を正式対応するなら、pipeline 使用者ごとの descriptor rebuild notification が必要です。
 
 ## 9.12 GPU object は「C++で不要」になった時点では壊せない
 
-pipeline、image view、buffer などは、CPU では旧 object に見えても GPU が前 frame の command から参照中かもしれません。[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L16) は resource type を virtual base へ型消去し、defer frame を記録します。
+pipeline、image view、buffer などは、CPU では旧 object に見えても GPU が前 frame の command から参照中かもしれません。[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は resource type を virtual base へ型消去し、defer frame を記録します。
 
-2 frames-in-flight 後に [`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L45) が `optional<T>.reset()` して本物の RAII destructor を呼びます。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L450) が代表例です。
+2 frames-in-flight 後に [`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L45) が `optional<T>.reset()` して本物の RAII destructor を呼びます。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L608) が代表例です。
 
 変更時の原則は次です。
 
@@ -577,13 +577,13 @@ pipeline、image view、buffer などは、CPU では旧 object に見えても 
 
 ### teardown 開始後の `defer()` はエラー
 
-`DeletionQueueCore` に [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L40) フラグと [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L44) が入りました。`defer()` は先頭でこれを呼ぶため、**受け入れ停止後に defer するとエラーになります**。
+`DeletionQueueCore` に [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L40) フラグと [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L80) が入りました。`defer()` は先頭でこれを呼ぶため、**受け入れ停止後に defer するとエラーになります**。
 
 teardown の最終段は phase で分岐します。
 
 | phase | 動作 |
 |---|---|
-| `ModuleRuntimePhase::shutting_down` | [`drainForTeardown()`](../../src/core/vkcore/deletionqueue.hpp#L65)。以後 `defer()` 不可 |
+| `ModuleRuntimePhase::shutting_down` | [`drainForTeardown()`](../../src/core/vkcore/deletionqueue.hpp#L102)。以後 `defer()` 不可 |
 | それ以外(`runtime_reset`) | `flushAll()`。queue は再利用可能なまま |
 
 したがって「module の destructor から GPU object を defer する」コードは、terminal shutdown では失敗します。destructor は既に所有している資源で完結させるか、明示 teardown 段階へ移してください。受け入れ状態の確認は `acceptingResources()`(core)/ `acceptingResourcesForTesting()`(module ラッパ)です。
@@ -592,7 +592,7 @@ teardown の最終段は phase で分岐します。
 >
 > **何をする所か**: defer された資源を「積んだ frame + in-flight 分」だけ寝かせ、期限の来たものだけ本物のデストラクタへ落とします。`beginFrame()` が毎 frame の入口です。
 >
-> **素朴に読むと**: `draining` を立てて 4 行の `DrainScope` で必ず倒す、という同じ形が [releaseEligible](../../src/core/vkcore/deletionqueue.cpp#L60) と [flushAll](../../src/core/vkcore/deletionqueue.cpp#L89) に重複していて、「念のための再入禁止」に見えます。実際に塞いでいるのはもっと具体的な事故です — `release()` の実体は [`optional<T>.reset()`](../../src/core/vkcore/deletionqueue.hpp#L28)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer` の `DeferredRelease::~DeferredRelease()`](../../src/core/model/vertbufcontainer.cpp#L437) は owner のメソッドを呼び戻します)。そこから `defer()` が呼ばれると [`pending.push_back`](../../src/core/vkcore/deletionqueue.hpp#L57) が走り、`std::vector` が再確保された瞬間に走査中の `it` の指す先が消えて、直後の [`pending.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L67) が UB になります。`flushAll()` は先に空 vector と `swap` してあるので erase は壊れませんが、drain 中に積まれた資源が「全部流した」はずの queue に黙って居残ります。drain 中の `defer()` を [`logic_error`](../../src/core/vkcore/deletionqueue.cpp#L50) にするのは、この 2 つを「壊れる」から「その場で分かる」へ変えるためで、`DrainScope` が try-catch でなく RAII なのは、`release()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。もう 1 つの [`if (current_frame < in_flight_frames) return;`](../../src/core/vkcore/deletionqueue.cpp#L77) は「最初の数 frame は掃除を遅らせる」という設計上の猶予ではなく、**符号なし減算の保護**です。`current_frame` は `uint64_t` なので、起動直後に `1 - 2` を計算しても負にはならず `2^64 - 1` へ回り込み(ラップアラウンド — 符号なし整数の演算は範囲外へ出ると剰余を取って反対側の端へ折り返す規則)、`it->frame <= oldest_frame` が全件真になって **GPU がまだ使っている資源を即座に破棄します**。この 2 行を「無駄な分岐」として消すと、起動直後の 1 frame だけが壊れる、再現性の低い不具合になります。
+> **素朴に読むと**: `draining` を立てて 4 行の `DrainScope` で必ず倒す、という同じ形が [releaseEligible](../../src/core/vkcore/deletionqueue.cpp#L60) と [flushAll](../../src/core/vkcore/deletionqueue.cpp#L83) に重複していて、「念のための再入禁止」に見えます。実際に塞いでいるのはもっと具体的な事故です — `release()` の実体は [`optional<T>.reset()`](../../src/core/vkcore/deletionqueue.hpp#L28)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer` の `DeferredRelease::~DeferredRelease()`](../../src/core/model/vertbufcontainer.cpp#L437) は owner のメソッドを呼び戻します)。そこから `defer()` が呼ばれると [`pending.push_back`](../../src/core/vkcore/deletionqueue.hpp#L57) が走り、`std::vector` が再確保された瞬間に走査中の `it` の指す先が消えて、直後の [`pending.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L67) が UB になります。`flushAll()` は先に空 vector と `swap` してあるので erase は壊れませんが、drain 中に積まれた資源が「全部流した」はずの queue に黙って居残ります。drain 中の `defer()` を [`logic_error`](../../src/core/vkcore/deletionqueue.cpp#L50) にするのは、この 2 つを「壊れる」から「その場で分かる」へ変えるためで、`DrainScope` が try-catch でなく RAII なのは、`release()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。もう 1 つの [`if (current_frame < in_flight_frames) return;`](../../src/core/vkcore/deletionqueue.cpp#L77) は「最初の数 frame は掃除を遅らせる」という設計上の猶予ではなく、**符号なし減算の保護**です。`current_frame` は `uint64_t` なので、起動直後に `1 - 2` を計算しても負にはならず `2^64 - 1` へ回り込み(ラップアラウンド — 符号なし整数の演算は範囲外へ出ると剰余を取って反対側の端へ折り返す規則)、`it->frame <= oldest_frame` が全件真になって **GPU がまだ使っている資源を即座に破棄します**。この 2 行を「無駄な分岐」として消すと、起動直後の 1 frame だけが壊れる、再現性の低い不具合になります。
 >
 > **骨子**:
 > ```text
@@ -606,7 +606,7 @@ teardown の最終段は phase で分岐します。
 >                    ↑ この release() の中から defer() が来たら logic_error
 > ```
 >
-> **手がかり**: `in_flight_frames` は [`in_flight_frames_num = 2`](../../src/core/vkcore/rendertarget.hpp#L24) 由来なので、この保護が実際に効くのは frame 1 の 1 回だけです。`flushAll()` は wait-idle を呼びません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L33) と、`wait_idle` step を先に通す [teardown の順序](../../src/core/appflow/teardown.cpp#L49))。テストは [`deletionqueue_test.cpp#L37`](../../test/deletionqueue_test.cpp#L37)(in-flight 分だけ遅れて破棄)/ [#L104](../../test/deletionqueue_test.cpp#L104)(drain 後は `defer()` も `beginFrame()` も throw)です。
+> **手がかり**: `in_flight_frames` は [`in_flight_frames_num = 2`](../../src/core/vkcore/rendertarget.hpp#L24) 由来なので、この保護が実際に効くのは frame 1 の 1 回だけです。`flushAll()` は wait-idle を呼びません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L34) と、`wait_idle` step を先に通す [teardown の順序](../../src/core/appflow/teardown.cpp#L49))。テストは [`deletionqueue_test.cpp#L37`](../../test/deletionqueue_test.cpp#L37)(in-flight 分だけ遅れて破棄)/ [#L104](../../test/deletionqueue_test.cpp#L104)(drain 後は `defer()` も `beginFrame()` も throw)です。
 >
 > **不変条件**: `draining` を立てる区間には必ず RAII で対になる復帰を置く(早期 return と例外の両方を塞ぐ)。`releaseEligible()` の引数は `current_frame >= in_flight_frames` のときだけ計算する。`release()` の実行中に `pending` を触らない。
 
@@ -623,7 +623,7 @@ teardown の最終段は phase で分岐します。
 | `.surface` / material format | **runtime 接続済み**(WP116/117/122)。`.surface` は surfacecompiler で pipeline に、`.material.json` は lowering を経て `MaterialContainer` へ | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp) / [`materiallowering.hpp`](../../src/project/materiallowering.hpp) |
 | Studio project editor | Qt/QML prototype。load/save、scene editing、engine IPC は未接続。**ただしエンジン側の編集面(編集 RPC / ImGui inspector)は実装済み**なので、対比して読むこと | [`MainWindow`](../../src/devstudio/view/mainwindow.cpp#L10) |
 | swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L435) |
-| frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L574) |
+| frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1290) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L20) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L109) |
 | 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L548) |
@@ -660,7 +660,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 | `edit` が `stale_revision` | `get_scene_revision` の `EditorWatchToken` | preview lease が `preview_epoch` を進めていないか |
 | windowed で RPC 応答が来ない | フレームが進んでいるか | queue busy 応答(`-32000` / `reason:"busy"`)が来ていないか |
 | RPC event payload が空 | event に `ref(JsonArchiveLoader&)` があるか | default-only JSON loader branch |
-| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L1148) | reads/writes、after/before、declaration index |
+| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3141) | reads/writes、after/before、declaration index |
 | XR だけ表示が壊れる | `#xr` variant の feature 除外(`xr_excluded_features`) | `graph_variant_transition_trace`、XR feature policy |
 | TAA の ghosting・再投影が乱れる | temporal reset のトリガ(set_time / camera 不連続 / resize / view 数 / variant 切替) | `resetTemporalHistory()`、previous object/skin/morph buffer |
 | game DLL reload 後に状態が消える/残る | `RegistrationOwner` と DLL 内 static の寿命 | engine 側 System の function-local static(こちらは残る) |
@@ -740,7 +740,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 | ECS entity | [`ECSEntityMutation::prepareCreate/prepareDestroy`](../../src/core/ecs/archetypemigration.hpp#L106) |
 | ECS 既存値 | `prepareComponentValue()` / `publishComponentValue()` / `rollbackComponentValue()` |
 | model instance | `preflightModelInstance()` → `stageModelInstance()` → `publishModelInstance()` |
-| behavior | [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L85) の `publish()` / `rollback()` / `finish()`(全て `noexcept`) |
+| behavior | [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L87) の `publish()` / `rollback()` / `finish()`(全て `noexcept`) |
 | physics | [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.hpp#L64) → [`publishPrepared()`](../../src/core/phys/physworld.hpp#L68)(`noexcept`) |
 | 編集投影 | [`EditorProjectionPublicationMode{StagedNoexcept, InverseToken}`](../../src/core/loader/editorprojectiontransaction.hpp#L34) |
 
@@ -786,7 +786,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 ### 6. 編集コミットはフレーム境界に 1 点だけ
 
-[`invokeEditorCommitQueueHook()`](../../src/core/appflow/framephase.cpp#L124) が reload 公開の後・`freeze_events` の直前に走ります。フックは **単一所有**で、2 回目の [`installEditorCommitQueueHook()`](../../src/core/appflow/framephase.hpp#L40) は `false` を返します。未設置なら zero-state no-op で、モジュールを作りません。
+[`invokeEditorCommitQueueHook()`](../../src/core/appflow/framephase.cpp#L122) が reload 公開の後・`freeze_events` の直前に走ります。フックは **単一所有**で、2 回目の [`installEditorCommitQueueHook()`](../../src/core/appflow/framephase.hpp#L40) は `false` を返します。未設置なら zero-state no-op で、モジュールを作りません。
 
 ### 7. 保存拒否の理由コード
 
@@ -824,7 +824,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 ## 9.19 preview / `render_preview` の隔離
 
 - `render_preview` は **`Renderer::renderLogicalFrame()` を通りません**([`previewgraph.hpp#L12-L14`](../../src/core/renderingpass/previewgraph.hpp#L12) のコメント)。したがって temporal history、FrameResources slot、layout tracker などのライブ状態を汚しません。
-- 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L1060) です。
+- 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3047) です。
 - 上限は 2048px / 16 MiB([previewexecutor.hpp#L54-L55](../../src/core/vkcore/previewexecutor.hpp#L54))。超過は `PreviewCaptureTooLarge` です。
 - `PreviewCaptureRequest::graph_generation` が `PreviewGraphProgram::generation` と食い違えば `std::invalid_argument("preview graph generation mismatch")` で拒否されます(stale preview の防止)。
 - **現在の出力は CPU 模式ラスタです**([第6章 §6.19](06_rendering_vulkan_shader.md))。material も shader も評価しないので、`render_preview` の画像を最終描画の代用と見なさないでください。

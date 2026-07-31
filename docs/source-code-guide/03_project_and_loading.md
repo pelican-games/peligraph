@@ -19,10 +19,10 @@ Runtime object
 | データ | 純粋層 | runtime層 |
 |---|---|---|
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L261) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L1505) | [`registerRenderingPassConfigData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L133) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) | [`registerRenderingPassConfigData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L133) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
-| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L631)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L784) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L82) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L153) |
+| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L312) |
 
 新形式を追加するときは、まず`src/project`へGPU非依存の受理/拒否規則を置き、次に`src/core`で実体化するのが既存パターンです。
 
@@ -33,7 +33,7 @@ Runtime object
 - `raw_data`: `PelicanCore(settings)`へ直接渡した上書きJSON
 - `project_data`: playerが読んだ`project.json`全体
 
-[`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L499) は次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L61) へ渡します。
+[`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L530) は次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L61) へ渡します。
 
 1. `raw_data` — API/起動時の上書き
 2. `project.json` の `basic_config`
@@ -82,7 +82,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 > **設計決定:** 保存経路の中断点を実装内部の分岐ではなくenumとして公開することで、「どの中断点でもディスク上のsceneが壊れない」という性質をテストから網羅的に叩けます。列挙名がそのまま保存手順の段階名になっています。
 
-> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L663))
+> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L693))
 >
 > **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。
 >
@@ -99,7 +99,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 > publishPreparedSceneDocument(next); baseline.swap(next_digest)   # 無throw / 比較ではなくbaseline更新
 > ```
 >
-> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L380) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L619) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp#L395`](../../test/sceneformat_test.cpp#L395)「SAVE0 is failure-atomic at every prepare point」。
+> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L411) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L649) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp#L395`](../../test/sceneformat_test.cpp#L395)「SAVE0 is failure-atomic at every prepare point」。
 >
 > **不変条件**: 直列化は1回だけ(以降の全段が同じバイト列を消費する)。ファイル置換より後にthrowしうる処理を置かない。baseline digestの更新はファイル置換と同一の無throw区間で行う。
 
@@ -149,7 +149,7 @@ std::variant<
 
 ### engine resource
 
-shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L110) がIDを実データへ変換します。
+shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L118) がIDを実データへ変換します。
 
 resource追加には次の三箇所が必要です。
 
@@ -213,7 +213,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 
 - `light`: ECSへ入れず`LightLoadEntry`へ
 - `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[scene.cpp#L300](../../src/core/loader/scene.cpp#L300)）
-- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L109) へ（[scene.cpp#L155](../../src/core/loader/scene.cpp#L155) で特別扱い）
+- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L111) へ（[scene.cpp#L155](../../src/core/loader/scene.cpp#L155) で特別扱い）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
 このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/collider/behaviorがECS Chunkに保存されるわけではありません。
@@ -299,7 +299,7 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 > 全成分が相対許容差 32*FLT_EPSILON 内で一致しなければ TransformUnrepresentable
 > ```
 >
-> **手がかり**: 許容差のラムダ `32.0F * epsilon * max(1, |left|, |right|)` は**相対**許容差で、絶対値の大きい座標でも桁落ちで誤検出しません(下限 `1.0F` があるので原点近傍では絶対許容差として働きます)。`makeReparentCommand()` は [`buildTransformNodes()`](../../src/core/loader/editorprojectiontransaction.cpp#L188) を **3回** 呼びます — 変更前worldの採取、親エッジ書き換え後(コメント通り「staged graphそのものがサイクルのpreflight」)、local差し替え後の事後条件証明です。[`projectNode()`](../../src/core/loader/editorprojectiontransaction.cpp#L164) の `node.state` は 0=未訪問 / 1=訪問中 / 2=完了 の白灰黒DFSで、1へ再入したらそれが親サイクルです。テストは [`editorprojectiontransaction_test.cpp#L458`](../../test/editorprojectiontransaction_test.cpp#L458)。
+> **手がかり**: 許容差のラムダ `32.0F * epsilon * max(1, |left|, |right|)` は**相対**許容差で、絶対値の大きい座標でも桁落ちで誤検出しません(下限 `1.0F` があるので原点近傍では絶対許容差として働きます)。`makeReparentCommand()` は [`buildTransformNodes()`](../../src/core/loader/editorprojectiontransaction.cpp#L189) を **3回** 呼びます — 変更前worldの採取、親エッジ書き換え後(コメント通り「staged graphそのものがサイクルのpreflight」)、local差し替え後の事後条件証明です。[`projectNode()`](../../src/core/loader/editorprojectiontransaction.cpp#L164) の `node.state` は 0=未訪問 / 1=訪問中 / 2=完了 の白灰黒DFSで、1へ再入したらそれが親サイクルです。テストは [`editorprojectiontransaction_test.cpp#L458`](../../test/editorprojectiontransaction_test.cpp#L458)。
 >
 > **不変条件**: 再合成の検証はadapterのprepareより**前**に済ませる(ランタイムへ触った後に「実は表現できなかった」を出さない)。許容差を緩めると、無音でずれたreparentが通るようになります。
 
@@ -311,7 +311,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 ### 6. SceneLoaded event
 
-ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L9) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L460)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
+ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L460)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
 
 ## 3.6 即時loadと要求load
 
@@ -323,7 +323,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 ## 3.7 ComponentのJSONロード
 
-sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L34) が担います。
+sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L37) が担います。
 
 1. runtime登録時に `name → ComponentId` を保存。
 2. `ComponentId → ComponentInfo`からJSON loader callbackを得る。
@@ -334,15 +334,15 @@ sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/
 
 ## 3.8 Asset modelから描画instanceまで
 
-[`ModelAssetContainer`](../../src/core/asset/model.hpp#L21) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2003) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L1993) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L210)）。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L1998) が使われます。
+[`ModelAssetContainer`](../../src/core/asset/model.hpp#L21) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2237) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2227) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L210)）。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2232) が使われます。
 
 これらの `loadGltf*()` は、現在は三段APIのラッパです（[`gltf.hpp`](../../src/core/model/gltf.hpp#L29)）。
 
 | 段 | 関数 | 性質 |
 |---|---|---|
-| prepare | [`prepareGltf()`](../../src/core/model/gltf.cpp#L1923) / [`prepareGltfBinary()`](../../src/core/model/gltf.cpp#L1918) / [`prepareGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L1928) | ファイル読み取りとparseまで |
-| inspect | [`inspect()`](../../src/core/model/gltf.cpp#L1978) | **副作用なし**の候補パス。fragment解決と検証だけ |
-| commit | [`commit()`](../../src/core/model/gltf.cpp#L1939) | GPU資源を確保して `ModelTemplate` を作る |
+| prepare | [`prepareGltf()`](../../src/core/model/gltf.cpp#L2157) / [`prepareGltfBinary()`](../../src/core/model/gltf.cpp#L2152) / [`prepareGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2162) | ファイル読み取りとparseまで |
+| inspect | [`inspect()`](../../src/core/model/gltf.cpp#L2212) | **副作用なし**の候補パス。fragment解決と検証だけ |
+| commit | [`commit()`](../../src/core/model/gltf.cpp#L2173) | GPU資源を確保して `ModelTemplate` を作る |
 
 glTFロードの大まかな変換は次です。
 
@@ -355,9 +355,9 @@ tinygltf Model
 → ModelTemplate
 ```
 
-執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L144) が担います。
+執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L302) が担います。
 
-> 🧩 **難所 — 128枚の結合palette**([`selectSkin()`](../../src/core/model/gltf.cpp#L943) / [`loadMesh()`](../../src/core/model/gltf.cpp#L1491))
+> 🧩 **難所 — 128枚の結合palette**([`selectSkin()`](../../src/core/model/gltf.cpp#L1179) / [`loadMesh()`](../../src/core/model/gltf.cpp#L1774))
 >
 > **何をする所か**: 1つのglTFにskinが複数あっても、joint を **単一の128スロットpaletteへ順に連結** します(palette は matrix palette — 各ジョイントの変換行列を番号順に並べた配列で、頂点シェーダは頂点が持つ `JOINTS_0` の番号でここを引き、`WEIGHTS_0` の重みで合成します)。各skinは `palette_offset` を貰い、そのskinを使うprimitiveの `JOINTS_0` にoffsetを足して書き換えます。
 >
@@ -372,7 +372,7 @@ tinygltf Model
 >   buildSkinPalette(): palette[offset+i] = model_matrix[layout_node[i]] * inverse_bind[i]
 > ```
 >
-> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([gltf.cpp#L947](../../src/core/model/gltf.cpp#L947))。joint配列への追記([#L981](../../src/core/model/gltf.cpp#L981))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L152) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([#L411](../../src/core/animation/animationjobs.cpp#L411) / [#L428](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([skeletalanimation.hpp#L11](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
+> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([gltf.cpp#L947](../../src/core/model/gltf.cpp#L947))。joint配列への追記([#L981](../../src/core/model/gltf.cpp#L981))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L178) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([#L411](../../src/core/animation/animationjobs.cpp#L411) / [#L428](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([skeletalanimation.hpp#L11](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
 >
 > **不変条件**: binding群はoffset 0から結合paletteを隙間なく覆う。`JOINTS_0` は必ず `joint_offset` 加算済みでGPUへ届く。skinned primitiveの頂点はnode変換を含まない。
 
@@ -380,7 +380,7 @@ tinygltf Model
 >
 > **何をする所か**: VRM 1.0 の firstPerson アノテーションが `auto` のメッシュを、「一人称でも見える三角形」と「三人称専用の三角形」の2群へ分けます。
 >
-> **素朴に読むと**: まず索引が3段に変換されるのが読みづらい所です。`JOINTS_0` の値は**そのskinのjoints配列内のローカル番号**で、`model.skins[skin_index].joints` を引いて初めてglTFのnode indexになり、そこから頭関連ノード表([`headRelatedNodes()`](../../src/core/model/gltf.cpp#L1464))を引いて分類します。もう一つが呼び出し**位置**の制約です。この呼び出しは、直後にある `joints[component] + joint_offset` の書き換え([gltf.cpp#L1617](../../src/core/model/gltf.cpp#L1617))より**前**でなければなりません。offset加算後へ動かすと、渡した `skin_joint_nodes` の範囲外になるか、たまたま範囲内なら別ボーンとして解決されて静かに誤分類されます。この順序制約はコード上どこにも書かれておらず、隣接する2箇所の並びとしてしか表れていません。分類規則自体も非対称です — 重み `> 0` の成分だけを見る(重み0のjointスロットは無視する)一方、頂点が1つでも頭関連なら**三角形ごと** `third_person_only_indices` へ落とします。`first_person_only` の群を作らないのは、VRMの `auto` が「一人称で頭を消す」だけを意味し、逆方向は明示アノテーションでしか作れないからで、[`VrmAutoTriangleSplit`](../../src/core/model/vrmfirstperson.hpp#L22) がバケツを2本しか持たないのはその反映です。
+> **素朴に読むと**: まず索引が3段に変換されるのが読みづらい所です。`JOINTS_0` の値は**そのskinのjoints配列内のローカル番号**で、`model.skins[skin_index].joints` を引いて初めてglTFのnode indexになり、そこから頭関連ノード表([`headRelatedNodes()`](../../src/core/model/gltf.cpp#L1747))を引いて分類します。もう一つが呼び出し**位置**の制約です。この呼び出しは、直後にある `joints[component] + joint_offset` の書き換え([gltf.cpp#L1617](../../src/core/model/gltf.cpp#L1617))より**前**でなければなりません。offset加算後へ動かすと、渡した `skin_joint_nodes` の範囲外になるか、たまたま範囲内なら別ボーンとして解決されて静かに誤分類されます。この順序制約はコード上どこにも書かれておらず、隣接する2箇所の並びとしてしか表れていません。分類規則自体も非対称です — 重み `> 0` の成分だけを見る(重み0のjointスロットは無視する)一方、頂点が1つでも頭関連なら**三角形ごと** `third_person_only_indices` へ落とします。`first_person_only` の群を作らないのは、VRMの `auto` が「一人称で頭を消す」だけを意味し、逆方向は明示アノテーションでしか作れないからで、[`VrmAutoTriangleSplit`](../../src/core/model/vrmfirstperson.hpp#L22) がバケツを2本しか持たないのはその反映です。
 >
 > **骨子**:
 > ```text
@@ -393,7 +393,7 @@ tinygltf Model
 >
 > **不変条件**: 呼び出しは `joint_offset` 加算より前。分類の単位は頂点ではなく三角形。`auto` が返すのは both / third の2群だけ。
 
-> 🧩 **難所 — -1を空けて負へ伸ばす**([`skinnedMaterial()`](../../src/core/model/gltf.cpp#L1406) / [`registerVatMaterial()`](../../src/core/model/gltf.cpp#L559))
+> 🧩 **難所 — -1を空けて負へ伸ばす**([`skinnedMaterial()`](../../src/core/model/gltf.cpp#L1689) / [`registerVatMaterial()`](../../src/core/model/gltf.cpp#L562))
 >
 > **何をする所か**: 頂点シェーダだけを差し替えた派生マテリアルを登録し、そのIDをモデル内ローカルのmaterial ID空間へ割り当てます。
 >
@@ -411,7 +411,7 @@ tinygltf Model
 >
 > **不変条件**: `-1` は採番しない。派生を登録したら必ず `generated_material_sources` へ元のindexを残す。負のIDは `ModelTemplate` の外へ出さない(外向きは `source_material_index`)。
 
-> 🧩 **難所 — morphはnode単位で切る**([`appendMorphDefaults()`](../../src/core/model/gltf.cpp#L761) / [`loadMesh()`](../../src/core/model/gltf.cpp#L1491))
+> 🧩 **難所 — morphはnode単位で切る**([`appendMorphDefaults()`](../../src/core/model/gltf.cpp#L997) / [`loadMesh()`](../../src/core/model/gltf.cpp#L1774))
 >
 > **何をする所か**: モデル全体で1本の `default_weights` 配列へこのmesh分の既定weightを追記し、そのスライスの先頭位置を `morph_weight_offset` として返します。
 >
@@ -459,7 +459,7 @@ API面の主な変化は次の通りです。
 |---|---|---|
 | `removeModelInstance()` | [#L298](../../src/core/renderer/polygoninstancecontainer.hpp#L298) | 戻り値が `void` → **`bool`** |
 | `preflightModelInstance()` | [#L292](../../src/core/renderer/polygoninstancecontainer.hpp#L292) | 確保前の容量チェック（const） |
-| `stageModelInstance()` | [#L293](../../src/core/renderer/polygoninstancecontainer.hpp#L293) | [`StagedModelInstance`](../../src/core/renderer/polygoninstancecontainer.hpp#L204) を返す |
+| `stageModelInstance()` | [#L293](../../src/core/renderer/polygoninstancecontainer.hpp#L293) | [`StagedModelInstance`](../../src/core/renderer/polygoninstancecontainer.hpp#L232) を返す |
 | `publishModelInstance()` | [#L296](../../src/core/renderer/polygoninstancecontainer.hpp#L296) | `noexcept` の単一公開点 |
 | `prepareTrs()` / `publishPreparedTrs()` / `rollbackPreparedTrs()` | [#L310-L313](../../src/core/renderer/polygoninstancecontainer.hpp#L310) | TRS更新のprepare/publish |
 | `isModelInstanceAlive()` | [#L317](../../src/core/renderer/polygoninstancecontainer.hpp#L317) | 生存判定 |
@@ -473,8 +473,8 @@ API面の主な変化は次の通りです。
 RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L586) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
 
 1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[scene.cpp#L600-L607](../../src/core/loader/scene.cpp#L600)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
-2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L1978) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L292) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
-3. [`commit()`](../../src/core/model/gltf.cpp#L1939) でGPU資源を確保し、`stageModelInstance()` でstagingします。
+2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2212) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L334) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
+3. [`commit()`](../../src/core/model/gltf.cpp#L2173) でGPU資源を確保し、`stageModelInstance()` でstagingします。
 4. エンティティ生成がthrowしたら `releaseModelGpuResources()` して `transient_models.pop_back()` します。
 5. 単一公開点（[scene.cpp#L652-L654](../../src/core/loader/scene.cpp#L652)）。
 
@@ -528,17 +528,17 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### render feature
 
-[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L1505) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
+[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
 ### material / surface
 
-[`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L631) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L784) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
+[`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
 
-これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L82)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L153)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
+これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L312)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L61) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
-> 🧩 **難所 — vec3の後ろ4 byte**([`std140SizeAlignment()`](../../src/project/materiallowering.cpp#L20) / [`makeSurfaceStd140Layout()`](../../src/project/materiallowering.cpp#L351))
+> 🧩 **難所 — vec3の後ろ4 byte**([`std140SizeAlignment()`](../../src/project/materiallowering.cpp#L31) / [`makeSurfaceStd140Layout()`](../../src/project/materiallowering.cpp#L415))
 >
 > **何をする所か**: surfaceのparameter宣言順にstd140(GLSLのuniform block標準レイアウト規則)のオフセットを割り付け、values領域の総サイズを決めます。
 >
@@ -557,7 +557,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **不変条件**: `size` と `alignment` を1つの値へ畳まない。割り付けは宣言順。構造体全体のサイズは16バイト境界へ切り上げる。
 
-> 🧩 **難所 — 逸脱がforwardへ落とす**([`openPbrEligibility()`](../../src/project/materiallowering.cpp#L205) / [`automaticRoute()`](../../src/project/materiallowering.cpp#L232))
+> 🧩 **難所 — 逸脱がforwardへ落とす**([`openPbrEligibility()`](../../src/project/materiallowering.cpp#L216) / [`automaticRoute()`](../../src/project/materiallowering.cpp#L243))
 >
 > **何をする所か**: `render_path: automatic` のmaterialをdeferred(G-buffer経由)へ流してよいかを判定し、駄目ならforward側のrouteを返します。
 >
@@ -576,13 +576,13 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > すべて既定 -> {compatible, openpbr_base_v1} -> automaticRoute が deferred_geometry
 > ```
 >
-> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([#L247-L250](../../src/project/materiallowering.cpp#L247))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L329) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp#L239`](../../test/materiallowering_test.cpp#L239)「OpenPBR base subset routes deferred while extended lobes stay forward」。
+> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([#L247-L250](../../src/project/materiallowering.cpp#L247))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L393) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp#L239`](../../test/materiallowering_test.cpp#L239)「OpenPBR base subset routes deferred while extended lobes stay forward」。
 >
 > **不変条件**: 既定値の一覧とG-bufferのチャネル構成は対で動かす。`reason` 文字列は診断の一部なので条件と1対1に保つ。判定は既定からの逸脱の有無であって、値の妥当性検査ではない。
 
 ### import manifest / import rules
 
-[`parseImportManifestJson()`](../../src/project/importmanifest.cpp#L249) はDCC納品物のtool/source/outputとSHA-256、対応schemaを検証します。runtime playerではなく、[`pelican_cli import`](../../src/devcli/importcommand.cpp#L358) が主利用者です。加えて [`importrules.hpp`](../../src/project/importrules.hpp) がmatch/recipe/defaultsの3層優先を持つルールベースimport（`pelican_cli import --rules`、[importcommand.cpp](../../src/devcli/importcommand.cpp#L362)）を提供します。
+[`parseImportManifestJson()`](../../src/project/importmanifest.cpp#L244) はDCC納品物のtool/source/outputとSHA-256、対応schemaを検証します。runtime playerではなく、[`pelican_cli import`](../../src/devcli/importcommand.cpp#L358) が主利用者です。加えて [`importrules.hpp`](../../src/project/importrules.hpp) がmatch/recipe/defaultsの3層優先を持つルールベースimport（`pelican_cli import --rules`、[importcommand.cpp](../../src/devcli/importcommand.cpp#L362)）を提供します。
 
 > 🧩 **難所 — `*` は `/` を越えない**([`segmentMatches()`](../../src/project/importrules.cpp#L155) / [`importGlobMatches()`](../../src/project/importrules.cpp#L258))
 >
@@ -620,7 +620,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 7. 形式パーサ実装とruntime接続済み範囲を混同していないか。
 8. componentを増やすなら、§3.11 のcodec五点セットを揃えたか。
 
-> 🧩 **難所 — 舐め直しで閉じる窓**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L353) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L301))
+> 🧩 **難所 — 舐め直しで閉じる窓**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L472) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L374))
 >
 > **何をする所か**: 監視対象のstoreを一巡して各ファイルの安定digestを取り、前回のinventoryとlive digestに照らしてreloadを積みます。
 >
@@ -661,7 +661,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > それ以外              -> queue_reload
 > ```
 >
-> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` #L371-L373](../../src/core/watch/filewatcher.cpp#L371) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L517) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp#L101`](../../test/filewatcher_test.cpp#L101)「ContentDigest streams bytes and separates observed live pending and self-write」と [#L150](../../test/filewatcher_test.cpp#L150)。
+> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` #L371-L373](../../src/core/watch/filewatcher.cpp#L371) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L688) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp#L101`](../../test/filewatcher_test.cpp#L101)「ContentDigest streams bytes and separates observed live pending and self-write」と [#L150](../../test/filewatcher_test.cpp#L150)。
 >
 > **不変条件**: トークンは1回の観測で必ず消える。epochが違うトークンは抑止に使わない。`runtime_applied` がfalseの保存はreloadを積み直す。
 
@@ -687,7 +687,7 @@ struct ComponentCodec {
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L19) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
-この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L44)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[editorruntimefactory.cpp#L972](../../src/core/communication/editorruntimefactory.cpp#L972) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[componentcodec.cpp#L329-L352](../../src/core/loader/componentcodec.cpp#L329)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[同 #L354-L385](../../src/core/loader/componentcodec.cpp#L354)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L45)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[editorruntimefactory.cpp#L972](../../src/core/communication/editorruntimefactory.cpp#L972) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[componentcodec.cpp#L329-L352](../../src/core/loader/componentcodec.cpp#L329)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[同 #L354-L385](../../src/core/loader/componentcodec.cpp#L354)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
 
 現在の登録は7種です（[componentcodec.cpp#L856-L871](../../src/core/loader/componentcodec.cpp#L856)）。
 
@@ -719,7 +719,7 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 
 ### query
 
-[`query()`](../../src/core/loader/authoringscenedocument.hpp#L108) は三層のviewを返します。
+[`query()`](../../src/core/loader/authoringscenedocument.hpp#L107) は三層のviewを返します。
 
 | 型 | 内容 |
 |---|---|
@@ -740,7 +740,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 
 > **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[authoringscenedocument.hpp#L54-L61](../../src/core/loader/authoringscenedocument.hpp#L54)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 
-> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L271) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L2040))
+> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L271) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L2057))
 >
 > **何をする所か**: commit済みのjournal recordに、spawnしたobjectのclosure(id + scene + 宣言index + 前後の兄弟id + authored JSON)を後から書き足し、再生時は同じidを同じ宣言区間へ戻します。
 >
@@ -821,7 +821,7 @@ WP176〜WP178で入った、アニメーションクリップの交換形式で�
 
 > **注意:** [`vrmaretarget.hpp#L122`](../../src/core/animation/vrmaretarget.hpp#L122) のコメント（`This is not an AnimationSource and does not publish to an instance, graph, renderer, or ABI.`）はWP177時点のままで、WP178で入った登録経路を反映していません。ソース側のコメントが古い箇所です。
 
-> 🧩 **難所 — rest差分の回転移送**([`VrmaRetargetedClip::sample()`](../../src/core/animation/vrmaretarget.cpp#L418) / スケール決定は [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.cpp#L462) 内 [#L557](../../src/core/animation/vrmaretarget.cpp#L557))
+> 🧩 **難所 — rest差分の回転移送**([`VrmaRetargetedClip::sample()`](../../src/core/animation/vrmaretarget.cpp#L418) / スケール決定は [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.cpp#L463) 内 [#L557](../../src/core/animation/vrmaretarget.cpp#L557))
 >
 > **何をする所か**: 上の箇条書きは方針とプロファイルまでで、**移送の式そのもの**が書かれていません。R0プロファイルの中身は「回転はrest差分で移送」「hipsのtranslationだけrest高さ比でスケール」の2規則です。
 >
@@ -848,7 +848,7 @@ retarget済みクリップは、`anim_graph` と同じ名前付きClip/Cursor語
 | `AnimationServiceRuntime::registerVrmaSource()` | [animationservice.hpp#L34](../../src/core/animation/animationservice.hpp#L34) | `VrmaRetargetedClip` をobject名 + source名で登録 |
 | `AnimationServiceRuntime::reloadVrmaSource()` | [同 #L37](../../src/core/animation/animationservice.hpp#L37) | 論理identityを保ったまま、そのsource assetのgenerationだけを進める |
 
-ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.hpp#L96) が `skeletal_clip` / `vrma_retargeted_clip` を区別します。clip descriptorの**加算的な末尾**（[abi_v1.hpp#L171-L180](../../src/core/userpublic/animation/abi_v1.hpp#L171)）に `profile_version` / `asset_identity` / `asset_generation` / `source_rig_sha256` / `target_rig_sha256` が載り、[`CursorStatusV1`](../../src/core/userpublic/animation/animgraph.hpp#L66) にも同じprovenanceが出ます。
+ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.hpp#L98) が `skeletal_clip` / `vrma_retargeted_clip` を区別します。clip descriptorの**加算的な末尾**（[abi_v1.hpp#L171-L180](../../src/core/userpublic/animation/abi_v1.hpp#L171)）に `profile_version` / `asset_identity` / `asset_generation` / `source_rig_sha256` / `target_rig_sha256` が載り、[`CursorStatusV1`](../../src/core/userpublic/animation/animgraph.hpp#L66) にも同じprovenanceが出ます。
 
 > **設計決定:** skeletal clipと別語彙を作らず、`AnimationClipKindV1` とprovenanceフィールドで区別しています。ゲームコードから見たClip/Cursorの扱いは`.vrma`由来かどうかで変わらず、reloadは論理identityを保ったままgenerationだけを進めます。ABIの追加は既存フィールドの後ろへの加算なので、古い呼び出し側は `reserved2` までで読み止められます。
 
