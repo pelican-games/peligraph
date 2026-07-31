@@ -3,7 +3,7 @@
 対象読者: エンジン担当、WP の受け入れ判定をする人、そして「この機構は実装済みか」を
 他の文書から引く人。
 
-ステータス: **v1(2026-07-31)**。判定は commit 済みの HEAD `d1c8081`(branch
+ステータス: **v1(2026-07-31)**。判定は commit 済みの HEAD `1a938ba`(branch
 `codex/render-target-runtime-slice`)に対して行いました。作業ツリーの未コミット変更は
 含めていません。本書は
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md) を置き換えるものではなく、
@@ -96,6 +96,12 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 `gpu` ラベル配下なので CI では走りません。CPU gate が常時守るのは、CPU テスト群、
 `contract_boundary_gate.py`、そして `golden_inventory.py` による inventory の整合と
 `expected.png` の sha256 一致(= baseline ファイルが黙って差し替わっていないこと)です。
+
+ローカル受け入れ記録として、WP239 回帰修正後の 2026-07-31 に
+`ctest -C Debug -L gpu` を全数実行し、**121 / 121 passed、既知 4 skipped**
+（実時間 402 秒）を確認しました。同じ HEAD の CPU gate は
+**942 / 942 passed、環境依存 1 skipped**です。これは常設 CI2 の代わりではありませんが、
+本台帳の E2 / E3 根拠が同一 HEAD で再実行可能な状態へ戻ったことを示します。
 
 ## 2. 一覧表
 

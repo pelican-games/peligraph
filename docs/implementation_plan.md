@@ -130,9 +130,9 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP238c | complete physical plan / NativeScope data boundary | ✅ CPU slice完了（2026-07-30）。完全physical package、canonical round-trip/fingerprint、strict verifier、typed NativeScope effect/ownership/sync。runtime executorは後続 |
 | WP238d | NativeScope executor provider / runtime publication | ✅ source-level runtime slice完了（2026-07-31）。owner/generation lease、prepare/rollback、typed resource view、automatic outer sync、scope単位dispatch、generation retirement |
 | WP238e | NativeScope command-producing Vulkan fixture | ✅ 完了（2026-07-31）。exact logical/device verification context、実command記録、validation error 0、readback capture、generation rebuild/retirement。公開game-DLL ABIとdevice-loss注入は後続 |
-| WP239a | complete-plan verification contextのreload回帰修正 | **未着手・最優先**。`d1c8081`(WP238e)がpipeline reloadを全面拒否している |
-| WP239b | hybrid_v1 screen input view-family binding回帰修正 | **未着手**。`79dca25`から`gpu`ラベルのhybrid_v1が赤 |
-| WP239c | planar reflection resource port image-view ABI回帰修正 | **未着手**。`272ea14`(WP232)からplanar reflection golden caseが赤 |
+| WP239a | complete-plan verification contextのreload回帰修正 | ✅ 完了（2026-07-31）。automatic planとfragment-linked planを分離保持し、reload CPU回帰を追加 |
+| WP239b | hybrid_v1 screen input view-family binding回帰修正 | ✅ 完了（2026-07-31）。family arrayのcanonical layered view契約へテストと生成を統一 |
+| WP239c | planar reflection resource port image-view ABI回帰修正 | ✅ 完了（2026-07-31）。sequential captureをmaterial境界でfamily-array descriptorへ適応 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -403,6 +403,22 @@ ctest --test-dir build -C Debug -L gpu --output-on-failure
 
 Python を PATH に置いていない環境では SPIRV-Tools の configure が失敗する。
 `-DPython3_EXECUTABLE=<path>` で明示する（uv 管理の interpreter でよい）。
+
+**完了結果（2026-07-31）**:
+
+- WP239a は `4c1c88c`、WP239b は `9a8b7de`、WP239c は `70d0e51` で修正した。
+- 4 件の直接再現テストは全て緑。
+- 最新 configure/build 後の `ctest -C Debug -LE gpu` は **942 / 942 passed**
+  （環境依存 1 skipped）、`ctest -C Debug -L gpu` は **121 / 121 passed**
+  （既知 4 skipped、実時間 402 秒）。
+- 全 CPU gate で、SPIR-V link の stage 別 export 漏れと directional shadow の古い
+  `shared_2d` 期待値も検出した。前者は `be67a6f` で実装修正し、後者は
+  `1a938ba` で `family_array` 契約へ更新した。
+- WP239b の判定は
+  [`2026-07-31_wp239b_family_array_binding_report.md`](design_reviews/2026-07-31_wp239b_family_array_binding_report.md)、
+  WP239c の判定は
+  [`2026-07-31_wp239c_planar_reflection_image_view_report.md`](design_reviews/2026-07-31_wp239c_planar_reflection_image_view_report.md)
+  を正とする。
 
 ### WP239a: complete-plan verification context の reload 回帰
 
