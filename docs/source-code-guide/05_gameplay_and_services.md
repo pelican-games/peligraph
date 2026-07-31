@@ -8,11 +8,11 @@
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L25) |
-| 時刻（`frameIndex()`含む） | `EngineTime` | [`#L53`](../../src/core/userpublic/gamecontext.cpp#L53) |
-| ログ | quill logger | [`#L65`](../../src/core/userpublic/gamecontext.cpp#L65) |
-| object/transform | `GameObjects` | [`#L77`](../../src/core/userpublic/gamecontext.cpp#L77) |
-| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`#L86`](../../src/core/userpublic/gamecontext.cpp#L86) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L26) |
+| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L54) |
+| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L66) |
+| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L78) |
+| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L87) |
 | light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L132) |
 | physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L151) |
 | camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L241) |
@@ -233,7 +233,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### raw inputとAction消費は別
 
-`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L165) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L228) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
 
 ## 5.6 Camera
 
@@ -343,7 +343,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L133)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
 >
 > **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L530) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L621) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L470))。provider の列挙順を結果へ漏らさない最後の関門です。
 
@@ -648,7 +648,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 > 4. 遷移を新規開始していなければ elapsed += dt
 > ```
 >
-> **手がかり**: `next.source_is_snapshot = transition.has_value()` — 「遷移中からの割り込みだけ」がスナップショットを持ちます(待機状態からの遷移は source が実 state なので不要)。`states[target].phase = 0.0` により、同 tick の exit→enter でクロックが必ず 0 に戻ります。`chooseTransition()` の `static TransitionV1 forced_transition;` は**関数ローカル static** を毎回上書きしてポインタを返す形で、安全なのは `duration = 0.0` を必ず設定していて、呼び出し側が duration 0 の枝で即座に state を切り替え `transition` に**保存しない**からです。forced に duration を持たせる改造をすると、次の `forceState()` で書き換わる生きたポインタになります。テストは [`animgraph_test.cpp`](../../test/animgraph_test.cpp#L163) の "interrupt materializes one snapshot and alpha zero output is byte identical"、[即時切替とクロック復帰](../../test/animgraph_test.cpp#L207)、[遷移選択の優先順位](../../test/animgraph_test.cpp#L137)。
+> **手がかり**: `next.source_is_snapshot = transition.has_value()` — 「遷移中からの割り込みだけ」がスナップショットを持ちます(待機状態からの遷移は source が実 state なので不要)。`states[target].phase = 0.0` により、同 tick の exit→enter でクロックが必ず 0 に戻ります。`chooseTransition()` の `static TransitionV1 forced_transition;` は**関数ローカル static** を毎回上書きしてポインタを返す形で、安全なのは `duration = 0.0` を必ず設定していて、呼び出し側が duration 0 の枝で即座に state を切り替え `transition` に**保存しない**からです。forced に duration を持たせる改造をすると、次の `forceState()` で書き換わる生きたポインタになります。テストは [`animgraph_test.cpp`](../../test/animgraph_test.cpp#L164) の "interrupt materializes one snapshot and alpha zero output is byte identical"、[即時切替とクロック復帰](../../test/animgraph_test.cpp#L208)、[遷移選択の優先順位](../../test/animgraph_test.cpp#L138)。
 >
 > **不変条件**: スナップショットは 1 遷移につき 1 枚(多段割り込みで積み増さない)。`alpha == 0` の出力はスナップショット byte と完全一致。遷移を開始した tick では `elapsed` を進めない。`chooseTransition()` が返す forced 用ポインタを duration 0 の即時経路以外で保持しない。
 
@@ -788,13 +788,13 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 | 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L87) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L54) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L106) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L69) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L56) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L106) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L69) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
 ### DLL reload
 
-[`gamelogicreload.cpp` 内](../../src/core/gamelogic/gamelogicreload.cpp#L180) が [`internal::validateBehaviorReload(active_owner, candidate_owner, authoring_scenes)`](../../src/core/userpublic/details/behavior/registerer.hpp#L285) を呼び、`schema_version`の差分と型の消滅を候補DLL採用前に検証します。
+[`gamelogicreload.cpp` 内](../../src/core/gamelogic/gamelogicreload.cpp#L192) が [`internal::validateBehaviorReload(active_owner, candidate_owner, authoring_scenes)`](../../src/core/userpublic/details/behavior/registerer.hpp#L285) を呼び、`schema_version`の差分と型の消滅を候補DLL採用前に検証します。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 

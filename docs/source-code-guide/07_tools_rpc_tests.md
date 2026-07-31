@@ -203,7 +203,7 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 
 ### protocol 層: `pelican_project`
 
-[`jsonrpc.hpp`](../../src/project/jsonrpc.hpp#L12) と [`jsonrpc.cpp`](../../src/project/jsonrpc.cpp#L148) は engine module を知りません。
+[`jsonrpc.hpp`](../../src/project/jsonrpc.hpp#L13) と [`jsonrpc.cpp`](../../src/project/jsonrpc.cpp#L148) は engine module を知りません。
 
 - JSON-RPC 2.0 request の parse。
 - `-32700` parse error、`-32600` invalid request、`-32601` method not found、`-32602` invalid params、`-32000` application error、`-32010` RenderDoc capture error。
@@ -257,10 +257,10 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `load_gltf` | [glTF 追加](../../src/core/communication/rpcserver.cpp#L1114) | transient glTF を scene に追加 |
 | `load_scene` | [scene 差替](../../src/core/communication/rpcserver.cpp#L1125) | scene を clear/load、pending transforms を破棄 |
 | `set_camera` | [camera 指定](../../src/core/communication/rpcserver.cpp#L1135) | 名前付き object を active camera にする |
-| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L1143) | pending flush → time advance → 5 phase update → render |
+| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L1104) | pending flush → time advance → 5 phase update → render |
 | `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L1155) | time/frame を進めず、pending flush → seq update → render |
 | `capture_gpu` | [GPU 捕捉](../../src/core/communication/rpcserver.cpp#L1163) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
-| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L1194) | planner の JSON を返す |
+| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L1155) | planner の JSON を返す |
 | `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L1199) | 最後の frame を PNG 保存 |
 
 `set_seed` と replay は役割が別です。`set_seed` は `DeterministicRng` の種を撒き直すだけで、時間の刻みも入力も固定しません。再現可能な実行は「seed」「fixed step の時間」「記録済み入力」の3つが揃って初めて成立し、後ろ2つを与えるのが `start_input_replay` です。
@@ -279,13 +279,13 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `import_scene_snapshot` | [取り込み](../../src/core/communication/rpcserver.cpp#L923) | digest 検証つき置換 |
 | `save_scene` | [原子的保存](../../src/core/communication/rpcserver.cpp#L931) | 原子的な全文書保存 |
 | `open_editor_session` / `resume_editor_session` | [session 開始](../../src/core/communication/rpcserver.cpp#L942) / [session 再開](../../src/core/communication/rpcserver.cpp#L945) | actor 登録・再接続 |
-| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L948) / [preview 可否](../../src/core/communication/rpcserver.cpp#L951) | 編集ゲート判定 |
+| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L948) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L99) | 編集ゲート判定 |
 | `eval_preview` | [局所評価](../../src/core/communication/rpcserver.cpp#L954) | 公開せずリクエストローカルに評価 |
-| `render_preview` | [preview 描画](../../src/core/communication/rpcserver.cpp#L957) | preview グラフでキャプチャ(第6章 §6.19) |
+| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L105) | preview グラフでキャプチャ(第6章 §6.19) |
 | `edit` | [コマンド適用](../../src/core/communication/rpcserver.cpp#L960) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
 | `undo` / `redo` | [`internal::selectInputProfile()`](../../src/core/communication/rpcserver.cpp#L963) / [redo の登録](../../src/core/communication/rpcserver.cpp#L966) | actor 単位 |
 | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/rpcserver.cpp#L969) 〜 [lease 破棄](../../src/core/communication/rpcserver.cpp#L978) | preview ticket(lease)の発行・更新・確定・破棄 |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/rpcserver.cpp#L981) / [preview 結果](../../src/core/communication/rpcserver.cpp#L984) | 非同期結果取得 |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L129) / [preview 結果](../../src/core/communication/rpcserver.cpp#L984) | 非同期結果取得 |
 | `query_journal` | [journal 照会](../../src/core/communication/rpcserver.cpp#L987) | ジャーナル照会 |
 
 > 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L1581) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L1652) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L1676))
@@ -400,7 +400,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 
 ### `get_status` の応答
 
-[`get_status`](../../src/core/communication/rpcserver.cpp#L821) は診断のハブです。既存の `reload.runtime.pelican.shaders.details`(第6章 6.10)に加え、次が載ります。
+[`get_status`](../../src/core/communication/rpcserver.cpp#L797) は診断のハブです。既存の `reload.runtime.pelican.shaders.details`(第6章 6.10)に加え、次が載ります。
 
 | キー | 内容 |
 |---|---|
@@ -428,7 +428,7 @@ transform update も即適用ではなく pending です。複数 update をま�
 - stdout は JSON-RPC 専用です。通常 log を stdout へ混ぜると client の1行 protocol を壊します。
 - `capture` は headless の `OffscreenFrameTarget` に加え、windowed でも surface が TRANSFER_SRC を持てば readback 可能です([`swapchainframetarget.cpp` 内](../../src/core/vkcore/swapchainframetarget.cpp#L448))。不可の場合は `capture unavailable_windowed` エラーになります。
 - `inject_event` は名前で登録された event type にだけ届きます。payload は登録型の binder が解釈します。
-- method handler の通常例外は application error `-32000` に正規化されます。[`handleLine()` の catch](../../src/core/communication/rpcserver.cpp#L743) を参照してください。`JsonRpcHandlerError` を投げれば code と構造化 `data` を指定できます。
+- method handler の通常例外は application error `-32000` に正規化されます。[`handleLine()` の catch](../../src/core/communication/rpcserver.cpp#L749) を参照してください。`JsonRpcHandlerError` を投げれば code と構造化 `data` を指定できます。
 - windowed RPC ではリクエストが **フレーム境界でしか処理されません**。queue 容量 64 を超えた分は reader スレッドが `-32000` / `data.reason == "busy"` で即答します。落とし穴は [第9章](09_black_magic_and_gotchas.md)にまとめてあります。
 
 ## 7.8 テスト構成: test を実装の仕様書として読む
@@ -441,7 +441,7 @@ signature にフラグが入りました([test/CMakeLists.txt](../../test/CMakeL
 cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 ```
 
-`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L26))。コメントが理由です。
+`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L42))。コメントが理由です。
 
 > Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
 
@@ -459,9 +459,9 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 
 | 段階 | 例 | 何を保証するか |
 |---|---|---|
-| pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L105)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L100)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) | schema、型変換、error 文言。GPU 不要 |
-| subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L160)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
-| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L67)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L10) | window なし Vulkan、render/readback |
+| pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L105)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) | schema、型変換、error 文言。GPU 不要 |
+| subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L202)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
+| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L67)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L11) | window なし Vulkan、render/readback |
 | process integration | [`run_rpc_headless.cmake`](../../test/run_rpc_headless.cmake#L1)、[`run_compute_headless.cmake`](../../test/run_compute_headless.cmake#L1)、devcli scripts | 実 executable、stdin/stdout、filesystem、終了 code |
 
 ### 執筆時点以降に増えた主なテスト群
@@ -500,17 +500,17 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 
 | 調べたいもの | 推奨テスト |
 |---|---|
-| ECS の生成・削除・rollback・世代 | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L160) |
+| ECS の生成・削除・rollback・世代 | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L202) |
 | game system 順序と GameContext | [`gamesystem_test.cpp`](../../test/gamesystem_test.cpp#L109) |
 | event の frame boundary | [`eventlayer_test.cpp`](../../test/eventlayer_test.cpp#L48) |
 | input queue、edge、borrow lifetime | [`inputstate_test.cpp`](../../test/inputstate_test.cpp#L14) |
 | action map と layer consumption | [`inputactions_test.cpp`](../../test/inputactions_test.cpp#L103) |
-| project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L166)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L148) |
-| physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L25)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L49) |
+| project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L166)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L149) |
+| physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L112)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L49) |
 | frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L190) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L20) |
-| shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L25)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L84) |
-| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L119) |
+| shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L29)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L84) |
+| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L167) |
 | persistence の atomic save/path | [`persistence_test.cpp`](../../test/persistence_test.cpp#L81) |
 
 ### Golden image test

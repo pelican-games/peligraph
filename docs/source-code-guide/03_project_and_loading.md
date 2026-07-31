@@ -19,7 +19,7 @@ Runtime object
 | データ | 純粋層 | runtime層 |
 |---|---|---|
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L261) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) | [`registerRenderingPassConfigData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L133) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) | [`registerRenderingPassConfigData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L648) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L312) |
@@ -70,10 +70,10 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 | API | 宣言 | 役割 |
 |---|---|---|
-| `sceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L600) | 現在の改訂を取得（初回は遅延load） |
+| `sceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L630) | 現在の改訂を取得（初回は遅延load） |
 | `updateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L610) | scene v1バイト列で差し替え |
 | `invalidateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L614) | 次回の再構築を強制 |
-| `importSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L619) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
+| `importSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L649) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
 | `saveSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L663) | ディスクへ書き戻し、`SceneSaveResult`（revision / digest / byte数）を返す |
 
 保存の失敗は型付きです。[`SceneSaveErrorCode`](../../src/core/loader/basicconfig.hpp#L19) は `ExternalModification` / `Unavailable` / `IoFailure` の三つで、[`SceneSaveError`](../../src/core/loader/basicconfig.hpp#L25) が保持します。`scene_baseline_digest` と保存直前のディスク内容を突き合わせるため、**エディタの外でファイルが書き換わっていれば `ExternalModification` で拒否**します。
@@ -372,7 +372,7 @@ tinygltf Model
 >   buildSkinPalette(): palette[offset+i] = model_matrix[layout_node[i]] * inverse_bind[i]
 > ```
 >
-> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L947))。joint配列への追記([その位置](../../src/core/model/gltf.cpp#L981))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L178) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([`produced()`](../../src/core/animation/animationjobs.cpp#L411) / [`std::copy()`](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([`skeletalanimation.hpp` 内](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
+> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L947))。joint配列への追記([その位置](../../src/core/model/gltf.cpp#L1217))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L178) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([`produced()`](../../src/core/animation/animationjobs.cpp#L411) / [`std::copy()`](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([`skeletalanimation.hpp` 内](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
 >
 > **不変条件**: binding群はoffset 0から結合paletteを隙間なく覆う。`JOINTS_0` は必ず `joint_offset` 加算済みでGPUへ届く。skinned primitiveの頂点はnode変換を含まない。
 
@@ -389,7 +389,7 @@ tinygltf Model
 > 三角形の3頂点のどれかが頭関連 -> third_person_only、それ以外 -> both
 > ```
 >
-> **手がかり**: `indices` が空なら 0,1,2,… を生成して三角形列として扱う([index 列の生成](../../src/core/model/vrmfirstperson.cpp#L10))ので、非indexedプリミティブも同じ経路です。TRIANGLES以外は呼び出し側([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1594))と本体([三角形数の検査](../../src/core/model/vrmfirstperson.cpp#L25))の両方で弾きます。分割後は both 側と third 側が別プリミティブとして `variants` へ積まれる([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1633))ので、1つのglTFプリミティブから2つの描画レンジが生まれます。ヘッダのコメントが規範で、各群の中では**元の三角形順が保たれます**([`vrmfirstperson.hpp` 内](../../src/core/model/vrmfirstperson.hpp#L27))。テストは [`vrmfirstperson_test.cpp` 内](../../test/vrmfirstperson_test.cpp#L7) と [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L241)。
+> **手がかり**: `indices` が空なら 0,1,2,… を生成して三角形列として扱う([index 列の生成](../../src/core/model/vrmfirstperson.cpp#L10))ので、非indexedプリミティブも同じ経路です。TRIANGLES以外は呼び出し側([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1594))と本体([三角形数の検査](../../src/core/model/vrmfirstperson.cpp#L25))の両方で弾きます。分割後は both 側と third 側が別プリミティブとして `variants` へ積まれる([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1633))ので、1つのglTFプリミティブから2つの描画レンジが生まれます。ヘッダのコメントが規範で、各群の中では**元の三角形順が保たれます**([`vrmfirstperson.hpp` 内](../../src/core/model/vrmfirstperson.hpp#L27))。テストは [`vrmfirstperson_test.cpp` 内](../../test/vrmfirstperson_test.cpp#L7) と [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L242)。
 >
 > **不変条件**: 呼び出しは `joint_offset` 加算より前。分類の単位は頂点ではなく三角形。`auto` が返すのは both / third の2群だけ。
 
@@ -415,7 +415,7 @@ tinygltf Model
 >
 > **何をする所か**: モデル全体で1本の `default_weights` 配列へこのmesh分の既定weightを追記し、そのスライスの先頭位置を `morph_weight_offset` として返します。
 >
-> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([その return](../../src/core/model/gltf.cpp#L783))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` 内](../../src/core/model/gltf.cpp#L1717))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [`vertbufcontainer.cpp` 内](../../src/core/model/vertbufcontainer.cpp#L211))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([この検査](../../src/core/model/gltf.cpp#L764))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([その throw](../../src/core/model/gltf.cpp#L775))。
+> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([その return](../../src/core/model/gltf.cpp#L1034))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` 内](../../src/core/model/gltf.cpp#L2043))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [`vertbufcontainer.cpp` 内](../../src/core/model/vertbufcontainer.cpp#L211))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([この検査](../../src/core/model/gltf.cpp#L764))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([その throw](../../src/core/model/gltf.cpp#L775))。
 >
 > **骨子**:
 > ```text
@@ -425,7 +425,7 @@ tinygltf Model
 > GPU: weight_base = instance_index * PELICAN_MAX_MORPH_WEIGHTS + metadata.weight_offset
 > ```
 >
-> **手がかり**: `target_count == 0` なら何も積まず 0 を返す([早期 return](../../src/core/model/gltf.cpp#L763))ので、morphを持たないプリミティブは全部offset 0を共有します(`target_count` が0なのでシェーダは即returnします、[`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L71))。同じ容量検査は [`std::to_string()`](../../src/core/model/vertbufcontainer.cpp#L141) にもあり、GPU公開の直前でもう一度掛かります。`maxMorphWeightsPerInstance = 256`([`morphtarget.hpp` 内](../../src/core/model/morphtarget.hpp#L14))はインスタンスあたりのweight総数の上限で、プリミティブあたりのtarget数の上限 `maxMorphTargetsPerPrimitive = 64` とは別物です。テストは [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L62) / [per-instance の weight frame](../../test/morph_gltf_test.cpp#L133)。
+> **手がかり**: `target_count == 0` なら何も積まず 0 を返す([早期 return](../../src/core/model/gltf.cpp#L763))ので、morphを持たないプリミティブは全部offset 0を共有します(`target_count` が0なのでシェーダは即returnします、[`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L71))。同じ容量検査は [`std::to_string()`](../../src/core/model/vertbufcontainer.cpp#L141) にもあり、GPU公開の直前でもう一度掛かります。`maxMorphWeightsPerInstance = 256`([`morphtarget.hpp` 内](../../src/core/model/morphtarget.hpp#L14))はインスタンスあたりのweight総数の上限で、プリミティブあたりのtarget数の上限 `maxMorphTargetsPerPrimitive = 64` とは別物です。テストは [`morph_gltf_test.cpp` 内](../../test/morph_gltf_test.cpp#L63) / [per-instance の weight frame](../../test/morph_gltf_test.cpp#L134)。
 >
 > **不変条件**: `morph_weight_offset` はprimitiveが持つ(mesh単位へ移さない)。容量検査は `default_weights` へ積む前に行う。`node.weights` の要素数不一致はthrowであってfallbackではない。
 
@@ -553,7 +553,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > layout.size = alignUp(offset, 16)
 > ```
 >
-> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`surface values use declaration-order std140 offsets`](../../test/materiallowering_test.cpp#L45)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[`material.hpp` 内](../../src/core/material/material.hpp#L86) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([その throw](../../src/project/materiallowering.cpp#L362))。
+> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`surface values use declaration-order std140 offsets`](../../test/materiallowering_test.cpp#L45)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[`material.hpp` 内](../../src/core/material/material.hpp#L86) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([その throw](../../src/project/materiallowering.cpp#L429))。
 >
 > **不変条件**: `size` と `alignment` を1つの値へ畳まない。割り付けは宣言順。構造体全体のサイズは16バイト境界へ切り上げる。
 
@@ -561,7 +561,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: `render_path: automatic` のmaterialをdeferred(G-buffer経由)へ流してよいかを判定し、駄目ならforward側のrouteを返します。
 >
-> **素朴に読むと**: `coat_weight == 0`、`specular_weight == 1`、`specular_ior == 1.5` …と、値が**規定の既定値と一致するか**を `1e-6` の許容で調べる条件が並びます。範囲検査でも能力検査でもないので、何を守っているのかコードからは読めません。理由はG-bufferが運べるのがOpenPBRのごく一部(base color / roughness / metalness / normal)だけで、それ以外のパラメータは「既定値のまま」でなければG-buffer経由で再現できないことです。だから条件は能力の判定ではなく「**既定から動いていないことの確認**」で、1つでも動いていればforwardへ回すしかありません。比較対象がmaterialの上書き値だけでなくsurface側の `default_value` にもフォールバックする([`effectiveValue()` 内](../../src/project/materiallowering.cpp#L166))のはそのためです。テクスチャ側も同じ理由で、値が既定でも `*_map` が付いていればピクセルごとに動くので不適格です([texture 側の条件](../../src/project/materiallowering.cpp#L224) の4つ)。`blend` がopaqueでない、`screen_input` を使う、の2つだけは深度・順序の理由で別枠になっています。
+> **素朴に読むと**: `coat_weight == 0`、`specular_weight == 1`、`specular_ior == 1.5` …と、値が**規定の既定値と一致するか**を `1e-6` の許容で調べる条件が並びます。範囲検査でも能力検査でもないので、何を守っているのかコードからは読めません。理由はG-bufferが運べるのがOpenPBRのごく一部(base color / roughness / metalness / normal)だけで、それ以外のパラメータは「既定値のまま」でなければG-buffer経由で再現できないことです。だから条件は能力の判定ではなく「**既定から動いていないことの確認**」で、1つでも動いていればforwardへ回すしかありません。比較対象がmaterialの上書き値だけでなくsurface側の `default_value` にもフォールバックする([`effectiveValue()` 内](../../src/project/materiallowering.cpp#L189))のはそのためです。テクスチャ側も同じ理由で、値が既定でも `*_map` が付いていればピクセルごとに動くので不適格です([texture 側の条件](../../src/project/materiallowering.cpp#L224) の4つ)。`blend` がopaqueでない、`screen_input` を使う、の2つだけは深度・順序の理由で別枠になっています。
 >
 > **骨子**:
 > ```text
@@ -624,7 +624,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: 監視対象のstoreを一巡して各ファイルの安定digestを取り、前回のinventoryとlive digestに照らしてreloadを積みます。
 >
-> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていればハッシュを全部取り直します — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L47) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L330))は別の理由です。プロジェクト全体のSHA-256は数秒かかりうるのに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L364))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L384))の2つがあるためです。
+> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていればハッシュを全部取り直します — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L47) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L424))は別の理由です。プロジェクト全体のSHA-256は数秒かかりうるのに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L364))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L384))の2つがあるためです。
 >
 > **骨子**:
 > ```text
@@ -638,7 +638,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >     # 違えば scan 中に通知が来ている: もう一周(部分ではなく全体)
 > ```
 >
-> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L447) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L329))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L346)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L216)(gate cancellation)。
+> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L447) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L329))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L346)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L217)(gate cancellation)。
 >
 > **不変条件**: generationはscanの**前**に控える。scan中に通知が来たら部分ではなく全体を取り直す。epochが動いたら結果を採用せず `false` で降りる。
 
@@ -661,7 +661,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > それ以外              -> queue_reload
 > ```
 >
-> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L371) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L688) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L101)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L150)。
+> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L491) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L688) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L102)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L151)。
 >
 > **不変条件**: トークンは1回の観測で必ず消える。epochが違うトークンは抑止に使わない。`runtime_applied` がfalseの保存はreloadを積み直す。
 
@@ -736,7 +736,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 - [`stage(raw_document, revision)`](../../src/core/loader/authoringscenedocument.hpp#L114) — **オブジェクト宣言のidentityを固定したまま**の未公開改訂。component配列やparentエッジは変えられますが、object宣言のidentityは動きません。
 - [`structuralStage()`](../../src/core/loader/authoringscenedocument.hpp#L116) → [`AuthoringSceneDocumentStage`](../../src/core/loader/authoringscenedocument.hpp#L130) — object配列そのものを触る唯一の経路。`insertObject` / `removeObject` / `restoreObject` / `renameObject` / `reorderObject` を持ち、`finish(revision) &&` で確定します。変更種別は [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L63) の `Insert` / `Remove` / `Restore` / `Rename` / `Reorder` です。
 
-実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L714) がコマンド列を見て振り分けます（[その分岐](../../src/core/loader/editorprojectiontransaction.cpp#L741)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
+実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L714) がコマンド列を見て振り分けます（[その分岐](../../src/core/loader/editorprojectiontransaction.cpp#L742)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
 
 > **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 

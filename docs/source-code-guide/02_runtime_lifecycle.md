@@ -28,7 +28,7 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L434) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L226) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L437) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L226) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
@@ -77,7 +77,7 @@ sequenceDiagram
 12. [`teardown.run()`](../../src/core/userpublic/pelican_core.cpp#L98) でruntime資源を順序付き解放し、続けて [`shutdownConfiguredGameLogic()`](../../src/core/userpublic/pelican_core.cpp#L99)。
 13. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L46)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L114)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
+12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L46)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L155)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
 標準例外も非標準例外もここで捕捉され、ログを出して`false`を返します。したがって、playerの終了コードは `pl.run() ? 0 : 1` です。
 
@@ -98,7 +98,7 @@ sequenceDiagram
 
 [`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) はoptionalが空なら`emplace()`し、破棄関数をstaticな`cleaners`へ積みます。従って、**最初に`GET_MODULE(T)`を呼んだ瞬間がTのconstructor実行時点**です。
 
-例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L1044) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L217) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L152) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L250) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
+例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L2716) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L217) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L152) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L250) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
 ```text
 Renderer
@@ -171,7 +171,7 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 
 > 🧩 **難所 — 一本の順序が二つのモードを兼ねる**([`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) / [`runProductionStep()`](../../src/core/appflow/teardown.cpp#L62))
 >
-> **何をする所か**: 上の8段階を、terminal shutdown と game-logic reload の `runtime_reset` の**両方**で回します。順序の定義は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L22) の1本だけで、モードごとの別経路はありません。
+> **何をする所か**: 上の8段階を、terminal shutdown と game-logic reload の `runtime_reset` の**両方**で回します。順序の定義は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) の1本だけで、モードごとの別経路はありません。
 >
 > **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [deletion queue 段](../../src/core/appflow/teardown.cpp#L76) が `FastModuleContainer::phase()` の値で分岐し、`shutting_down` なら `drainForTeardown()`（空にしたうえで以後の登録を拒否）、そうでなければ `flushAll()`（空にするだけで受付は継続）です。つまり mode フラグを8段階へ引き回すのではなく、入口で phase を動かしておき、後段は**そのときの phase を読んで**振る舞いを決めます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
 >
@@ -194,13 +194,13 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 >   ※ enterRunningPhase() も phase を動かせるが production では未使用(test が loop.cpp に無いことを検査)
 > ```
 >
-> **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L21) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [該当箇所](../../src/core/appflow/teardown.hpp#L47) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp` 内](../../test/lifetime_teardown_test.cpp#L195)(規範順序)/ [同ファイルの reset 側](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [同ファイルの起動失敗側](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
+> **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L21) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [該当箇所](../../src/core/appflow/teardown.hpp#L49) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp` 内](../../test/lifetime_teardown_test.cpp#L196)(規範順序)/ [同ファイルの reset 側](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [同ファイルの起動失敗側](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
 >
 > **不変条件**: teardown 経路では module を新規生成しない(`tryGet` のみ)。段階の順序を変えない。`run()` は何度呼んでも副作用が1回。`runtime_reset` は module phase を `shutting_down` にしない(reload 後もフレームを回し続けるため。`shutting_down` にすると deletion queue が `drainForTeardown()` で閉じ、以後のGPU資源登録が拒否されます)。
 
 ## 2.4 `Loop::run()` の五経路
 
-中心は [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) です。loop本体へ入る前に、入力のrecord/replay（[`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45)、[loop.cpp](../../src/core/appflow/loop.cpp#L347)）、replay時のfixed_step切替（[その分岐](../../src/core/appflow/loop.cpp#L353)）、camera bakeの開始（[その呼び出し](../../src/core/appflow/loop.cpp#L358)）、[`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L250) と [`FastModuleContainer::freezeCreation()`](../../src/core/appflow/loop.cpp#L380) が実行されます。
+中心は [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) です。loop本体へ入る前に、入力のrecord/replay（[`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45)、[loop.cpp](../../src/core/appflow/loop.cpp#L347)）、replay時のfixed_step切替（[その分岐](../../src/core/appflow/loop.cpp#L353)）、camera bakeの開始（[その呼び出し](../../src/core/appflow/loop.cpp#L365)）、[`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L250) と [`FastModuleContainer::freezeCreation()`](../../src/core/appflow/loop.cpp#L380) が実行されます。
 
 経路は次の五つです。
 
@@ -212,7 +212,7 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 | windowed + RPC | windowed かつ `rpc` | windowのフレーム。RPCはフレーム境界で処理 |
 | windowed | 上記以外 | windowのフレーム |
 
-windowed + RPC は他のwindowed経路と排他ではなく、同じwhileループへ**追加**される層です。ホスト自体はwhileループへ入る前に1個だけ作られ（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L430)）、ループ側に増えるのは `update_interactive_state` の中のdispatch1行だけです（[その1行](../../src/core/appflow/loop.cpp#L458)）。
+windowed + RPC は他のwindowed経路と排他ではなく、同じwhileループへ**追加**される層です。ホスト自体はwhileループへ入る前に1個だけ作られ（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L441)）、ループ側に増えるのは `update_interactive_state` の中のdispatch1行だけです（[その1行](../../src/core/appflow/loop.cpp#L458)）。
 
 ### windowed
 
@@ -230,13 +230,13 @@ Window::process
 → FramerateAdjust::wait
 ```
 
-GLFW callbackは [`Window`](../../src/core/os/window.hpp#L17) の`input_events`へイベントを積み、loopが`drainInputEvents()`して`InputState`へ渡します。ゲームロジックは直接GLFW状態を問い合わせません。windowedではF5キーでgame logic reloadを要求できます（[loop.cpp](../../src/core/appflow/loop.cpp#L460)）。`FramerateAdjust`はwindowedのみです。
+GLFW callbackは [`Window`](../../src/core/os/window.hpp#L17) の`input_events`へイベントを積み、loopが`drainInputEvents()`して`InputState`へ渡します。ゲームロジックは直接GLFW状態を問い合わせません。windowedではF5キーでgame logic reloadを要求できます（[loop.cpp](../../src/core/appflow/loop.cpp#L466)）。`FramerateAdjust`はwindowedのみです。
 
 フレーム内で状態更新にあたる部分は `update_interactive_state` ラムダ（[loop.cpp](../../src/core/appflow/loop.cpp#L455)）に集約され、windowedとwindowed+XRの両方から呼ばれます。ここが「そのフレームの状態更新が終わった直後」を表す唯一の点であり、windowed RPCのdispatchもF11キャプチャのarmもこの中にあります。
 
 ### windowed + RPC（フレーム境界dispatch） ✅実装済み
 
-`--rpc` をwindowedで指定すると、通常のwindowed経路に [`WindowedRpcHost`](../../src/core/communication/rpcserver.hpp#L78) が重なります（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L430)、`#if PELICAN_WITH_RPC`）。
+`--rpc` をwindowedで指定すると、通常のwindowed経路に [`WindowedRpcHost`](../../src/core/communication/rpcserver.hpp#L78) が重なります（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L440)、`#if PELICAN_WITH_RPC`）。
 
 ```cpp
 windowed_rpc_endpoint = std::make_unique<EngineRpcEndpoint>(std::cin, std::cout);
@@ -318,7 +318,7 @@ windowedでは、F11でRenderDocのin-applicationキャプチャを1フレーム
 
 > **設計決定:** キャプチャが失敗しても**論理フレームは必ず1回描画されます**。`captureArmedFrame()` へ渡すコールバックが `rendered` フラグを立てるので、`EndFrameCapture` が描画後に失敗しても二重描画にはなりません（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L322)）。デバッグ機能がフレーム進行の正しさを壊さない、という線引きです。
 
-[`RenderDocCapture`](../../src/core/renderdoc/renderdoccapture.hpp#L66) は `Renderer` がVulkan instanceを作る前に [`resolveLoopModules()`](../../src/core/appflow/loop.cpp#L153) で解決されます。RenderDoc自体をロードするのではなく、**既に注入されているAPIを観測するだけ**です。終了時は [`finishLoopResources()`](../../src/core/appflow/loop.cpp#L280) の先頭で `renderdoc_capture.beginShutdown()`（[loop.cpp](../../src/core/appflow/loop.cpp#L279)）を呼びます。XR経路にはキャプチャ点がありません（flat描画のみ対象）。
+[`RenderDocCapture`](../../src/core/renderdoc/renderdoccapture.hpp#L66) は `Renderer` がVulkan instanceを作る前に [`resolveLoopModules()`](../../src/core/appflow/loop.cpp#L153) で解決されます。RenderDoc自体をロードするのではなく、**既に注入されているAPIを観測するだけ**です。終了時は [`finishLoopResources()`](../../src/core/appflow/loop.cpp#L280) の先頭で `renderdoc_capture.beginShutdown()`（[loop.cpp](../../src/core/appflow/loop.cpp#L285)）を呼びます。XR経路にはキャプチャ点がありません（flat描画のみ対象）。
 
 ## 2.5 1フレームの五つの状態フェーズ
 
@@ -352,7 +352,7 @@ void updateFrameState() {
 - **位置が固定**: reload公開の後、`freeze_events` の直前。windowed / headless固定フレーム / RPC `step_frame` の全loop面で同じ位置です。
 - **未設置ならzero-state no-op**: hookが無い場合、moduleを生成せずmodule graphも変えません。
 
-実装者は現在 [`EditorJournal`](../../src/core/communication/editorjournal.cpp#L2673) の1箇所だけです。
+実装者は現在 [`EditorJournal`](../../src/core/communication/editorjournal.cpp#L2711) の1箇所だけです。
 
 > **設計決定:** 編集の公開点をフレーム境界の1箇所へ寄せることで、「エディタが動いていないビルド／セッションでは編集面が存在しない」状態を保っています。§2.4 のwindowed RPC dispatch（`updateFrameState()` の直後）と合わせて読むと、リクエスト受理→次フレーム冒頭で公開、という往復になります。
 
@@ -472,7 +472,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 - 形式の不正、GPU初期化失敗、Component不正は基本的に`std::runtime_error`でfail-fastです。
 - `PelicanCore::run()`がruntime全体の最終catchです。
-- job workerの例外は [`JobSystem`](../../src/core/job_system.cpp#L31) が`exception_ptr`に保持し、main threadの`wait()`で再throwします。
+- job workerの例外は [`JobSystem`](../../src/core/job_system.cpp#L51) が`exception_ptr`に保持し、main threadの`wait()`で再throwします。
 - shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L899)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L663)）。
 - teardownは例外を外へ出しません。
 
@@ -499,7 +499,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 flat / xr の `RenderingPassId` に対して、preview は**データだけのグラフプログラム**です（[`PreviewGraphProgram`](../../src/core/renderingpass/previewgraph.hpp#L20)）。
 
-- コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L217) が [`precompilePreviewGraph()`](../../src/core/renderingpass/previewgraph.hpp#L42) を呼び、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L67) が保持します。
+- コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L217) が [`precompilePreviewGraph()`](../../src/core/renderingpass/previewgraph.hpp#L42) を呼び、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L104) が保持します。
 - 共有のrender target / pass登録は**意図的に行いません**。ヘッダのコメント通り、`render_preview` がリクエストローカルな資源に対して実行するため、`Renderer::renderLogicalFrame()` には入りません。
 - 実行と隔離キャプチャは [`PreviewExecutor`](../../src/core/vkcore/previewexecutor.hpp#L61) が担当します。
 

@@ -38,7 +38,7 @@ cleaners: [B, A]
 破棄: A -> B
 ```
 
-依存を constructor 内で取得すれば、通常は dependent が先に壊れます。ただし GPU/ECS は destructor だけへ任せず、[`RuntimeTeardownGuard`](../../src/core/appflow/teardown.cpp#L31) が明示 cleanup を先に行います。
+依存を constructor 内で取得すれば、通常は dependent が先に壊れます。ただし GPU/ECS は destructor だけへ任せず、[`RuntimeTeardownGuard`](../../src/core/appflow/teardown.cpp#L145) が明示 cleanup を先に行います。
 
 > 🧩 **難所 — 遅延生成の 49 行**([`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149))
 >
@@ -294,7 +294,7 @@ auto id = GameObjects::add()
 
 ### reference lifetime の罠
 
-値付き `addComponent(const T&)` は、値を copy して builder に保存するのではなく [`std::tuple<const T&>`](../../src/core/userpublic/gameobjects.hpp#L70) を保存します。
+値付き `addComponent(const T&)` は、値を copy して builder に保存するのではなく [`std::tuple<const T&>`](../../src/core/userpublic/gameobjects.hpp#L113) を保存します。
 
 ```cpp
 // 安全: temporaryが破棄される前、同じfull-expressionでfinishする
@@ -365,7 +365,7 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 
 型 ID 宣言 macro は公開 header にありますが、runtime 登録入口は [`internal::getComponentRegisterer()`](../../src/core/userpublic/details/component/registerer.hpp#L89) です。production で自動登録されるのは [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L20) の built-in 群です。
 
-game code 向けの安定した `PELICAN_REGISTER_COMPONENT` public macro/boot hook は **現在も存在しません**(リポジトリ全体を grep しても不在)。`DECLARE_COMPONENT` しただけでは `ComponentInfoManager` に metadata が入らず、create/scene load できません。テストは internal API を直接呼んで登録しています。[`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L125) が例です。
+game code 向けの安定した `PELICAN_REGISTER_COMPONENT` public macro/boot hook は **現在も存在しません**(リポジトリ全体を grep しても不在)。`DECLARE_COMPONENT` しただけでは `ComponentInfoManager` に metadata が入らず、create/scene load できません。テストは internal API を直接呼んで登録しています。[`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L190) が例です。
 
 なお `registerComponent<T>()` の戻り値は `void` から [`RegistrationToken`](../../src/core/userpublic/details/component/registerer.hpp#L36) へ変わりました。
 
@@ -425,7 +425,7 @@ ECS unordered component hazard between systems '<A>' and '<B>' on component(s) '
 
 - **無警告の race はもう起きません。** ただし逆に、**自動直列化は WARNING でしか通知されません**。ログを見ていないと「なぜか並列化されない」「なぜか順序が登録順に固定された」ことに気づけません。性能を気にするなら WARNING を潰して明示 edge を書いてください。
 - **cycle は例外になりました。** `makeExecutionLevels()` が `executed_count != nodes.size()` を検査し、`ECS dependency cycle detected; unexecuted systems: '<name>' ...` を投げます([`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L138))。
-- **存在しない System への依存、重複依存も起動時エラー** です([`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L220))。`... depends on missing system id N; system would be unexecuted` / `... declares dependency on system '<name>' more than once; system would be unexecuted`。
+- **存在しない System への依存、重複依存も起動時エラー** です([`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L228))。`... depends on missing system id N; system would be unexecuted` / `... declares dependency on system '<name>' more than once; system would be unexecuted`。
 - 計画作成時に node は `node.id` で sort されるため([`std::sort()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L209))、同 level 内の並びは登録順で決定的です。**それでも同 level は並列実行されるので、開始順に依存しないでください。**
 - 実行計画は `execution_levels` にキャッシュされ、`execution_plan_dirty` か policy 変化のときだけ再構築されます。`registerSystem()` / `unregisterSystem()` が dirty を立てます。
 - system が batch 版 `process(std::vector<ChunkView<...>>)` と per-chunk 版 `process(tuple,count)` の両方を定義すると、独立した2つの `if constexpr` により **両方が呼ばれます**(この点は変わっていません)。
@@ -478,7 +478,7 @@ behavior の公開は [`arena.publishSceneAttachments()`](../../src/core/loader/
 - setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L291)(呼び出しは [ここ](../../src/core/vkcore/renderer.cpp#L1295))で GPU バッファへ反映されます。
 - 「アップグレード後にライトが動かなくなった」は仕様です。scene 名に依存した暗黙アニメーションを期待しているコードを探してください。
 
-代わりに **上限超過の警告** が入りました。[`collectLightCapWarnings()`](../../src/core/light/lightcontainer.hpp#L23) が `MAX_DIRECTIONAL_LIGHTS` / `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS` を超えた分について次を出します([`lightcontainer.cpp` 内](../../src/core/light/lightcontainer.cpp#L52))。
+代わりに **上限超過の警告** が入りました。[`collectLightCapWarnings()`](../../src/core/light/lightcontainer.hpp#L23) が `MAX_DIRECTIONAL_LIGHTS` / `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS` を超えた分について次を出します([`lightcontainer.cpp` 内](../../src/core/light/lightcontainer.cpp#L54))。
 
 ```text
 Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <N>)
