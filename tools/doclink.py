@@ -52,6 +52,10 @@ LINK_RE = re.compile(r"\[((?:[^\[\]]|\[[^\]]*\])*)\]\(([^)\s]+?)#L(\d+)\)")
 # moved and the number stayed. Worth surfacing, not worth blocking on.
 MEANINGLESS_LINE_RE = re.compile(r"^\s*(\}\s*;?|\{|\)\s*;?|#pragma once|namespace\s*\{|else\s*\{?)?\s*$")
 
+# Above this many exact matches, a ledger anchor is boilerplate rather than an identifier
+# and relocating by proximity is a coin flip dressed up as a decision.
+MAX_ANCHOR_OCCURRENCES = 4
+
 # Text that is a path or a file name refers to the file, not to a symbol inside it.
 FILE_TEXT_RE = re.compile(r"[/\\]|\.(hpp|cpp|h|json|txt|py|cmake|md|frag|vert|comp|js)$", re.IGNORECASE)
 CJK_RE = re.compile(r"[　-鿿＀-￯]")
@@ -205,6 +209,15 @@ def relocate_ledger(lines: list[str], anchor_text: str, recorded_line: int) -> d
         return {"status": "unresolved", "reason": "anchor text no longer present"}
     if len(hits) == 1:
         return {"status": "moved", "line": hits[0], "confidence": "unique anchor text"}
+    # An anchor's job is to identify one line. `endif()` occurs 48 times in the root
+    # CMakeLists, and normalising indentation away makes every one of them identical --
+    # proximity then picks confidently and wrongly. Past a handful of matches the anchor
+    # names nothing, so say so instead of guessing.
+    if len(hits) > MAX_ANCHOR_OCCURRENCES:
+        return {
+            "status": "unresolved",
+            "reason": f"anchor text occurs {len(hits)} times and identifies no single line",
+        }
     hits.sort(key=lambda line: abs(line - recorded_line))
     if abs(hits[1] - recorded_line) == abs(hits[0] - recorded_line):
         return {"status": "unresolved", "reason": f"anchor text occurs {len(hits)} times, ambiguous"}

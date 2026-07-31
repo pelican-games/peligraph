@@ -101,6 +101,22 @@ class RelocateLedger(unittest.TestCase):
         self.assertEqual(result["status"], "moved")
         self.assertEqual(result["line"], 3)
 
+    def test_refuses_a_boilerplate_anchor_that_names_no_single_line(self) -> None:
+        # Regression: `endif()` occurs 48 times in the root CMakeLists and normalising
+        # indentation away makes them identical. Proximity used to pick one confidently and
+        # wrongly, rewriting a link onto an unrelated closer.
+        lines = ["endif()"] * 30
+        lines[9] = "target_link_libraries(foo bar)"
+        result = doclink.relocate_ledger(lines, "endif()", 12)
+        self.assertEqual(result["status"], "unresolved")
+        self.assertIn("identifies no single line", result["reason"])
+
+    def test_still_relocates_an_anchor_with_a_few_occurrences(self) -> None:
+        lines = ["a", "shared();", "b", "c", "d", "shared();"]
+        result = doclink.relocate_ledger(lines, "shared();", 5)
+        self.assertEqual(result["status"], "moved")
+        self.assertEqual(result["line"], 6, "two occurrences still resolve by proximity")
+
     def test_reports_vanished_and_ambiguous_anchors(self) -> None:
         self.assertEqual(doclink.relocate_ledger(["a", "b"], "gone", 1)["status"], "unresolved")
         duplicated = ["x", "dup", "y", "dup", "z"]

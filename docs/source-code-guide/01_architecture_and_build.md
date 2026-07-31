@@ -164,7 +164,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 ## 1.6 ビルド機能フラグ
 
-トップレベルの定義は [`CMakeLists.txt`](../../CMakeLists.txt#L20) です。
+トップレベルの定義は [`option(PELICAN_RUNTIME_SHADER_COMPILER ...)` 以下のoption群](../../CMakeLists.txt#L41) です。
 
 | フラグ | ON時 | OFF時の動作 |
 |---|---|---|
@@ -180,14 +180,14 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | `PELICAN_WITH_RENDERDOC` | **既に注入済みの**RenderDoc APIを受動利用（F11キャプチャ、`capture_gpu` RPC） | [`renderdoccapture_stub.cpp`](../../src/core/renderdoc/renderdoccapture_stub.cpp) をリンクし、`RenderDocCapture` は常に `unavailable`（理由 `renderdoc_build_disabled`）。キャプチャ要求は理由付きで拒否 |
 | `PELICAN_ENABLE_ASAN` | ASan用compile/link option | 追加なし |
 
-物理providerの選択だけは `option()` ではなく `cmake_dependent_option()` で、`PELICAN_WITH_PHYSICS` がONのときにだけ現れます（[`CMakeLists.txt#L32-L45`](../../CMakeLists.txt#L32)）。
+物理providerの選択だけは `option()` ではなく `cmake_dependent_option()` で、`PELICAN_WITH_PHYSICS` がONのときにだけ現れます（[`CMakeLists.txt#L32-L45`](../../CMakeLists.txt#L42)）。
 
 | フラグ | 既定 | ON時 |
 |---|---|---|
 | `PELICAN_WITH_JOLT_PHYSICS` | OFF | optionalのJolt query providerを使う |
 | `PELICAN_WITH_BUILTIN_PHYSICS` | ON | Pelican内蔵のsphere/box/capsule query providerを使う |
 
-両方ONならJoltを優先し、内蔵providerは強制的にOFFへ戻されます（[同 L46-L50](../../CMakeLists.txt#L46)）。この2つだけはPUBLICではなく [`src/core/CMakeLists.txt#L17-L19`](../../src/core/CMakeLists.txt#L17) のPRIVATE compile definitionです。
+両方ONならJoltを優先し、内蔵providerは強制的にOFFへ戻されます（[同 L46-L50](../../CMakeLists.txt#L56)）。この2つだけはPUBLICではなく [`src/core/CMakeLists.txt#L17-L19`](../../src/core/CMakeLists.txt#L17) のPRIVATE compile definitionです。
 
 機能OFF時にヘッダのAPI形状を消すのではなく、できる限り同じ入口を保ち、明示的な「このバイナリでは無効」エラーへ寄せています。共通例外は [`BuildFeatureDisabledError`](../../src/core/build_features.hpp#L20) です。
 
@@ -206,9 +206,9 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2150)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |
 | miniaudio | 音声backend |
-| OpenXR SDK | loader + headers（[`CMakeLists.txt`](../../CMakeLists.txt#L246)、`PELICAN_WITH_OPENXR` 時） |
-| JoltPhysics | optionalの物理provider（[`CMakeLists.txt`](../../CMakeLists.txt#L394)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
-| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`CMakeLists.txt`](../../CMakeLists.txt#L180)） |
+| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L303)、`PELICAN_WITH_OPENXR` 時） |
+| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L453)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
+| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L200)） |
 | Dear ImGui | 開発者UI（`PELICAN_WITH_IMGUI` 時） |
 | picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L99) で PRIVATE リンク） |
 | RenderDoc in-application API | ヘッダのみvendor同梱（[`src/third_party/renderdoc/renderdoc_app.h`](../../src/third_party/renderdoc/renderdoc_app.h)）。外部取得もバイナリリンクもしません |
@@ -216,7 +216,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | Catch2 | 単体テスト |
 | Qt6/QML | Pelican Studio |
 
-外部依存のバージョンはトップレベル [`CMakeLists.txt`](../../CMakeLists.txt#L40) に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
+外部依存のバージョンはトップレベル [`FetchContent_Declare` の `GIT_TAG` 群](../../CMakeLists.txt#L105) に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
 
 ## 1.8 読解用のビルド
 
