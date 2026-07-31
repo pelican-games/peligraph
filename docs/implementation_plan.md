@@ -702,28 +702,54 @@ hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原�
 
 **実装範囲**:
 
-1. **glTF の `alphaMode` / `alphaCutoff` / `doubleSided` を解釈する。**
-   これは単独でも価値があり、他より先に片付けてよい。`MaterialInfo.render_state` と
-   route 選択へ接続し、`.glb` を置いただけで半透明とカットアウトが正しく分岐するようにする。
-2. **project 空間 material の宣言形を決める。** assets manifest / scene / material_bindings の
-   どこで surface と material を名乗るか。**これはユーザー空間境界の決定**であり、
-   [`design_project_format.md`](design_project_format.md) の分類規則に従うこと。
-   決めた形を設計文書へ書いてから実装すること。
+**宣言形は決定済み**である。[`design_material_shading.md`](design_material_shading.md) §3-12
+(2026-07-31)を正とし、本 WP で新たに設計判断を起こさないこと。同節は §3-4 の「適用」項を
+置き換えている。要点は 3 つで、**既存形式の版を上げるものは 1 つも無い**。
+
+- 索引は `assets/asset_data.json` の `materials[]`(要素は `path` のみ)。同じ WP で
+  同ファイルへ `schema: "pelican.asset_data"` / `version: 1` を導入する
+- 割当は `pelican.material_bindings` の `binding.material` 解決先に project material
+  レジストリを加える。両方に同名があれば名指し hard error。scene の `material`
+  コンポーネントは**新設しない**
+- glTF 再現は producer の収束で行う。patch 構文(`base_from` 等)は**作らない**
+
+**実装範囲**:
+
+1. **glTF 経路を lowering へ収束させる。** 現在 `MaterialInfo` の producer は
+   `gltf.cpp`(直接組む・不完全)と `lowerMaterial` → `applyLoweredMaterialForRoute`
+   (完全だが `test/` からのみ)の 2 つに割れている。glTF 由来のマテリアルを後者へ通す。
+   `alphaMode` / `alphaCutoff` / `doubleSided` の解釈は**この収束の帰結として**得る —
+   `gltf.cpp` に個別解釈を書き足す形は採らない。`routing` の 6 状態が
+   `{opaque,mask,blend}_{single,double}` の 6 wrapper と 1:1 であることを利用する。
+   **これは単独 WP へ切り出してよい**(受け入れが明確になる)。
+2. **`asset_data.json` を versioned 化し `materials[]` を足す。** strict v1。
+   既存 4 project を書き換える。material 名は project 全体で一意とし、文書横断の
+   レジストリを新設して衝突を名指し hard error にする。
 3. `engine://textures/*` と `project://*` を `GlobalTextureId` へ解決する**常設 resolver** を
    `src/` へ置く。現在テストのラムダが代行している。
 4. `parseSurfaceFormat` → `lowerMaterial` → `loadFromSurfaceForMaterial` →
    `applyLoweredMaterialForRoute` → `registerMaterial` の glue を engine 側へ移す。
    現在この鎖を繋いでいるのは `test/headless_render_test.cpp` だけである。
 5. `MaterialValuesReloadHandler` / `TextureReloadHandler` をこの経路へ配線する。
+6. **`binding.material` の解決先へ project material レジストリを加える。**
+   現在は `ModelTemplate::named_materials`(GLB 内の glTF material 名)のみ。
+   両方に同名があれば名指し hard error。`materials[]` を宣言していない project では
+   解決結果が変わらないことを回帰テストで固定すること。
+7. **`binding.routing` を実行時に消費する。** 現在 `applyPrimitiveMaterialBindings` は
+   `routing` 識別子を一度も読んでいない(パース時検証と test の dump にしか効かない)。
+   形式の問題ではなく欠落なので本 WP で埋める。
 
 **受け入れ条件**:
 
 - project 空間に置いた `.material` / `.surface` が scene のメッシュへ割り当たり、
   OpenPBR surface で描かれることを headless 描画で確認できる
 - `alphaMode: BLEND` を含む `.glb` を置くと `forward_transparent` に流れ、
-  `MASK` が cutout として描かれる
+  `MASK` が cutout として描かれる。**この分岐が `gltf.cpp` の個別解釈ではなく
+  lowering の `routing` 経路から来ていること**
+- `materials[]` を持たない既存 project の描画結果が変わらない(解決域拡張の非回帰)
+- material 名の project 内衝突と、glTF material 名との衝突が、いずれも名指しで失敗する
 - テクスチャ参照の解決が `src/` のコードで行われ、テストのラムダに依存しない
-- 宣言形が設計文書に記載され、**strict v1(単一版受理)**である(§0「版の扱い」)
+- `asset_data.json` が `pelican.asset_data` v1 として strict v1 で受理される(§0「版の扱い」)
 - material の hot reload がこの経路でも成立する
 - `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
 
