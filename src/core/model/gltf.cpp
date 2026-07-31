@@ -7,6 +7,7 @@
 #include "../loader/engineresources.hpp"
 #include "../material/material.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/materialshaderconfig.hpp"
 #include "../material/standardmaterialresource.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
@@ -409,41 +410,6 @@ class LiveGltfResourceSink final : public GltfResourceSink {
     }
 };
 
-std::vector<std::string>
-activeMaterialShaderDefines() {
-    const auto *passes =
-        FastModuleContainer::tryGet<
-            RenderingPassContainer>();
-    if (passes == nullptr) {
-        return {};
-    }
-    const auto generation = passes->snapshot();
-    if (generation == nullptr) {
-        return {};
-    }
-    for (const auto pass_id :
-         generation->rendering_pass_ids) {
-        const auto *program =
-            generation->find(pass_id);
-        if (program == nullptr ||
-            !program->frame_graph.render_pipeline) {
-            continue;
-        }
-        const auto has_material_pass =
-            std::any_of(
-                program->rendering_pass.passes.begin(),
-                program->rendering_pass.passes.end(),
-                [](const auto &pass) {
-                    return pass.definition.isMaterial();
-                });
-        if (has_material_pass) {
-            return program->frame_graph
-                .render_pipeline->shader_defines;
-        }
-    }
-    return {};
-}
-
 } // namespace
 
 struct InternalGltfLoader {
@@ -462,6 +428,8 @@ struct InternalGltfLoader {
     MaterialSurfaceCatalog gltf_surfaces;
     std::vector<std::optional<GlobalMaterialId>> material_map;
     std::vector<MaterialInfo> material_infos;
+    std::vector<std::optional<MaterialVariantRouting>>
+        material_routings;
     std::vector<std::optional<GlobalTextureId>> texture_map;
     std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
     std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;
@@ -1744,6 +1712,8 @@ struct InternalGltfLoader {
             material_info, lowered);
         material_infos.at(material_index) =
             std::move(material_info);
+        material_routings.at(material_index) =
+            lowered.routing;
         material_map.at(material_index) =
             resources.registerMaterial(material_infos.at(material_index));
         resolved_materials[material_index] = material_map.at(material_index).value();
@@ -2177,6 +2147,7 @@ struct InternalGltfLoader {
     ModelTemplate load() {
         material_map.resize(model.materials.size());
         material_infos.resize(model.materials.size());
+        material_routings.resize(model.materials.size());
         texture_map.resize(model.textures.size());
 
         const auto selection = selectLoad();
@@ -2254,6 +2225,8 @@ struct InternalGltfLoader {
             m.named_materials.push_back(ModelTemplate::NamedMaterial{
                 .name = model.materials[material_index].name,
                 .material = *material_map[material_index],
+                .routing =
+                    material_routings[material_index],
             });
         }
         if (selection.material_only) {

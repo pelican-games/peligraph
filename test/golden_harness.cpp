@@ -14,6 +14,7 @@
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/openxr/openxrmirrorsink.hpp"
@@ -963,34 +964,20 @@ void renderUsdOpenPbrMaterialFrame(RenderTarget &render_target,
         throw std::runtime_error("WP124 generated scene plus golden key light did not load");
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    const auto bundles = GET_MODULE(ShaderLibrary).loadFromSurface(
-        surface, reference, SurfacePass::main, lowered.defines);
-    auto &standard = GET_MODULE(StandardMaterialResource);
-    MaterialInfo info{
-        .vert_shader = bundles.vertex,
-        .frag_shader = bundles.fragment,
-        .base_color_texture = standard.whiteTexture(),
-        .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
-        .normal_texture = standard.normalDefaultTexture(),
-        .emissive_texture = standard.emissiveDefaultTexture(),
-    };
-    applyLoweredMaterial(info, lowered);
-    auto &materials = GET_MODULE(MaterialContainer);
-    for (std::size_t index = 0; index < lowered.textures.size(); ++index) {
-        const auto &texture = lowered.textures[index];
-        if (!texture.reference.starts_with(project_prefix)) continue;
-        const auto path = delivery / texture.reference.substr(project_prefix.size());
-        if (!std::filesystem::is_regular_file(path))
-            throw std::runtime_error("WP124 lowered texture is missing: " + path.string());
-        info.custom_textures[index].texture = materials.registerTextureFile(path);
-    }
-    const auto material_id = materials.registerMaterial(std::move(info));
+    const auto material_id =
+        GET_MODULE(ProjectMaterialAssetContainer)
+            .materialByName(lowered.name);
 
     auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName("coat");
     if (model.material_primitives.size() != 1 ||
         model.material_primitives.front().primitives.size() != 1)
         throw std::runtime_error("WP124 generated GLB/binding did not resolve one primitive");
-    for (auto &group : model.material_primitives) group.material = material_id;
+    if (model.material_primitives.front().material !=
+        material_id) {
+        throw std::runtime_error(
+            "WP240c project material registry was not "
+            "consumed by the primitive binding");
+    }
 
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
@@ -1770,14 +1757,43 @@ void writeUsdOpenPbrMaterialProject(const std::filesystem::path &root) {
     }],"materials":[{"path":"materials.json"}]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     std::filesystem::create_directories(root / "passes");
-    std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
-                               root / "passes/main.json",
-                               std::filesystem::copy_options::overwrite_existing);
+    writeTextFile(
+        root / "passes" / "main.json",
+        R"json({
+  "pipeline": {
+    "preset": "engine://render_pipelines/hybrid_v1.json"
+  }
+})json");
     for (const auto &name : {"manifest.json", "materials.json", "material_bindings.json",
                              "model.glb"}) {
         std::filesystem::copy_file(delivery / name, root / name,
                                    std::filesystem::copy_options::overwrite_existing);
     }
+    // The historical delivery embeds a glTF fallback with the same name as
+    // its project material. WP240c deliberately rejects that ambiguity, so
+    // stage the project-owned entry under an unambiguous name for this draw
+    // test. Collision behavior is covered independently.
+    const auto read_staged_json =
+        [](const std::filesystem::path &path) {
+            std::ifstream input{path, std::ios::binary};
+            if (!input.is_open()) {
+                throw std::runtime_error(
+                    "failed to open staged U-USD0c fixture: " +
+                    path.string());
+            }
+            return nlohmann::json::parse(input);
+        };
+    auto materials =
+        read_staged_json(root / "materials.json");
+    auto bindings =
+        read_staged_json(root / "material_bindings.json");
+    const auto project_material_name =
+        materials.at("materials").at(0).at("name").get<std::string>() +
+        "_project";
+    materials["materials"][0]["name"] = project_material_name;
+    bindings["bindings"][0]["material"] = project_material_name;
+    writeTextFile(root / "materials.json", materials.dump(2));
+    writeTextFile(root / "material_bindings.json", bindings.dump(2));
     std::filesystem::copy(delivery / "textures", root / "textures",
                           std::filesystem::copy_options::recursive |
                               std::filesystem::copy_options::overwrite_existing);
@@ -6018,7 +6034,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
         writeTextFile(scene_path, "{}");
-        writeTextFile(asset_path, "{}");
+        writeTextFile(
+            asset_path,
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
         GET_MODULE(ProjectSource).setSourceByData(makeProjectConfig(scene_path, asset_path).dump());
     }
 
@@ -10044,6 +10062,7 @@ void GoldenHarness::runRendererTrace() {
             continue;
         }
         CAPTURE(golden_case.name);
+        INFO("renderer trace case=" << golden_case.name);
         const auto rendered = renderCase(golden_case);
         std::vector<std::string> executed_order;
         std::string plan_line;

@@ -7,8 +7,8 @@
   "files": [
     {
       "file": "asset_data.json",
-      "size": 775,
-      "sha256": "d7e076254ecadf1789d0a7814fb7583349b5f63e6294e0c4408d708a3264fb87"
+      "size": 512,
+      "sha256": "c4332e2bfc500fa0cb00e4f5dd7a1b24c1d7092a398b49b1eaa2a9dd65c5665c"
     },
     {
       "file": "models/.gitkeep",

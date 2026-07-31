@@ -15642,46 +15642,10 @@
     "final_layouts": [
       {
         "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_0_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_1_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_2_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_3_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Threshold_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_0_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_1_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_2_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_3_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
-        "layout": "undefined",
+        "layout": "shader_read_only_optimal",
         "resource": "g_emissive"
       },
       {
@@ -15705,8 +15669,16 @@
         "resource": "lit_color"
       },
       {
+        "layout": "shader_read_only_optimal",
+        "resource": "opaque_color"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "opaque_depth"
+      },
+      {
         "layout": "depth_attachment_optimal",
-        "resource": "offscreen_depth"
+        "resource": "scene_depth"
       },
       {
         "layout": "shader_read_only_optimal",
@@ -15804,8 +15776,8 @@
             "clear": 1.0,
             "final_layout": "depth_attachment_optimal",
             "load": "clear",
-            "resource": "offscreen_depth",
-            "store": "dont_care"
+            "resource": "scene_depth",
+            "store": "store"
           }
         ],
         "blend": false,
@@ -15813,7 +15785,7 @@
         "inputs": [],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "gbuffer_pass",
+        "name": "deferred_geometry",
         "order": 0,
         "view_execution": "single_view",
         "view_index": 0
@@ -15899,7 +15871,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "lit_color",
             "samples": 1,
@@ -15936,8 +15908,145 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "lighting_pass",
+        "name": "deferred_lighting",
         "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "load",
+            "resource": "lit_color",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "scene_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "forward_opaque",
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "aspect": "color",
+        "byte_size": 32768,
+        "destination": "opaque_color",
+        "extent": [
+          64,
+          64
+        ],
+        "format": "R16G16B16A16_SFLOAT",
+        "kind": "snapshot_copy",
+        "logical_view_count": 1,
+        "name": "__snapshot_opaque_color",
+        "order": 5,
+        "semantics": "fixed_once_before_transparency",
+        "sequential_refraction": false,
+        "snapshot_after": "forward_opaque",
+        "source": "lit_color",
+        "texel_block_bytes": 8,
+        "transitions": [
+          {
+            "new_layout": "transfer_src_optimal",
+            "resource": "lit_color"
+          },
+          {
+            "new_layout": "transfer_dst_optimal",
+            "resource": "opaque_color"
+          },
+          {
+            "new_layout": "shader_read_only_optimal",
+            "resource": "opaque_color"
+          }
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "aspect": "depth",
+        "byte_size": 16384,
+        "destination": "opaque_depth",
+        "extent": [
+          64,
+          64
+        ],
+        "format": "D32_SFLOAT",
+        "kind": "snapshot_copy",
+        "logical_view_count": 1,
+        "name": "__snapshot_opaque_depth",
+        "order": 6,
+        "semantics": "fixed_once_before_transparency",
+        "sequential_refraction": false,
+        "snapshot_after": "forward_opaque",
+        "source": "scene_depth",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "new_layout": "transfer_src_optimal",
+            "resource": "scene_depth"
+          },
+          {
+            "new_layout": "transfer_dst_optimal",
+            "resource": "opaque_depth"
+          },
+          {
+            "new_layout": "shader_read_only_optimal",
+            "resource": "opaque_depth"
+          }
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "load",
+            "resource": "lit_color",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "scene_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "opaque_depth"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "opaque_color"
+          }
+        ],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "forward_transparent",
+        "order": 7,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15945,7 +16054,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4,
+        "order": 8,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15953,7 +16062,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15961,7 +16070,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6,
+        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15969,138 +16078,6 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Threshold_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "lit_color"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HighLuminanceExtraction",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_0_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Threshold_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_0",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_0_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_0",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_1_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_1",
         "order": 11,
         "view_execution": "single_view",
         "view_index": 0
@@ -16113,263 +16090,11 @@
               0.0,
               0.0,
               0.0,
-              0.0
+              1.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "clear",
-            "resource": "Bloom_Upsample_V_1_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_1",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_2_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_2",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_2_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_2",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_3_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_3",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_3_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_3_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_3",
-        "order": 16,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "Bloom_Downsample_H_2_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_3_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "UpsampleBlend_3",
-        "order": 17,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "Bloom_Downsample_H_1_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "UpsampleBlend_2",
-        "order": 18,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "Bloom_Downsample_H_0_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "UpsampleBlend_1",
-        "order": 19,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
             "resource": "display",
             "samples": 1,
             "store": "store"
@@ -16381,16 +16106,12 @@
           {
             "final_layout": "shader_read_only_optimal",
             "resource": "lit_color"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
           }
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "FinalBloomComposite",
-        "order": 20,
+        "name": "scene_present",
+        "order": 12,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16398,29 +16119,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 21,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "display",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": true,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "pelican_ui",
-        "order": 22,
+        "order": 13,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16428,7 +16127,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 23,
+        "order": 14,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16436,7 +16135,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 24,
+        "order": 15,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16444,13 +16143,13 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 25,
+        "order": 16,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 20,
+          "paired_storage_round_trip": 3,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -16465,28 +16164,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 26,
+        "order": 17,
         "paired_storage_edges": [
-          "gbuffer_pass:gbuffer_albedo->lighting_pass",
-          "gbuffer_pass:g_emissive->lighting_pass",
-          "lighting_pass:lit_color->HighLuminanceExtraction",
-          "HighLuminanceExtraction:Bloom_Threshold_RT->HorizontalBlur_0",
-          "HorizontalBlur_0:Bloom_Downsample_H_0_RT->VerticalBlur_0",
-          "VerticalBlur_0:Bloom_Upsample_V_0_RT->HorizontalBlur_1",
-          "HorizontalBlur_1:Bloom_Downsample_H_1_RT->VerticalBlur_1",
-          "VerticalBlur_1:Bloom_Upsample_V_1_RT->HorizontalBlur_2",
-          "HorizontalBlur_2:Bloom_Downsample_H_2_RT->VerticalBlur_2",
-          "VerticalBlur_2:Bloom_Upsample_V_2_RT->HorizontalBlur_3",
-          "HorizontalBlur_3:Bloom_Downsample_H_3_RT->VerticalBlur_3",
-          "VerticalBlur_3:Bloom_Upsample_V_3_RT->UpsampleBlend_3",
-          "VerticalBlur_2:Bloom_Upsample_V_2_RT->UpsampleBlend_3",
-          "UpsampleBlend_3:Bloom_Downsample_H_2_RT->UpsampleBlend_2",
-          "VerticalBlur_1:Bloom_Upsample_V_1_RT->UpsampleBlend_2",
-          "UpsampleBlend_2:Bloom_Downsample_H_1_RT->UpsampleBlend_1",
-          "VerticalBlur_0:Bloom_Upsample_V_0_RT->UpsampleBlend_1",
-          "lighting_pass:lit_color->FinalBloomComposite",
-          "UpsampleBlend_1:Bloom_Downsample_H_0_RT->FinalBloomComposite",
-          "pelican_ui:display->output_transform"
+          "deferred_geometry:gbuffer_albedo->deferred_lighting",
+          "deferred_geometry:g_emissive->deferred_lighting",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -16531,46 +16213,10 @@
     "final_layouts": [
       {
         "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_0_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_1_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_2_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Downsample_H_3_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Threshold_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_0_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_1_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_2_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
-        "resource": "Bloom_Upsample_V_3_RT"
-      },
-      {
-        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
-        "layout": "undefined",
+        "layout": "shader_read_only_optimal",
         "resource": "g_emissive"
       },
       {
@@ -16594,8 +16240,16 @@
         "resource": "lit_color"
       },
       {
+        "layout": "shader_read_only_optimal",
+        "resource": "opaque_color"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "opaque_depth"
+      },
+      {
         "layout": "depth_attachment_optimal",
-        "resource": "offscreen_depth"
+        "resource": "scene_depth"
       },
       {
         "layout": "shader_read_only_optimal",
@@ -16693,8 +16347,8 @@
             "clear": 1.0,
             "final_layout": "depth_attachment_optimal",
             "load": "clear",
-            "resource": "offscreen_depth",
-            "store": "dont_care"
+            "resource": "scene_depth",
+            "store": "store"
           }
         ],
         "blend": false,
@@ -16702,7 +16356,7 @@
         "inputs": [],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "gbuffer_pass",
+        "name": "deferred_geometry",
         "order": 0,
         "view_execution": "single_view",
         "view_index": 0
@@ -16788,7 +16442,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "lit_color",
             "samples": 1,
@@ -16825,8 +16479,172 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "lighting_pass",
+        "name": "deferred_lighting",
         "order": 3,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "load",
+            "resource": "lit_color",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "scene_depth"
+          }
+        ],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "sky_background",
+        "order": 4,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "load",
+            "resource": "lit_color",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "scene_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "forward_opaque",
+        "order": 5,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "aspect": "color",
+        "byte_size": 2048,
+        "destination": "opaque_color",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R16G16B16A16_SFLOAT",
+        "kind": "snapshot_copy",
+        "logical_view_count": 1,
+        "name": "__snapshot_opaque_color",
+        "order": 6,
+        "semantics": "fixed_once_before_transparency",
+        "sequential_refraction": false,
+        "snapshot_after": "forward_opaque",
+        "source": "lit_color",
+        "texel_block_bytes": 8,
+        "transitions": [
+          {
+            "new_layout": "transfer_src_optimal",
+            "resource": "lit_color"
+          },
+          {
+            "new_layout": "transfer_dst_optimal",
+            "resource": "opaque_color"
+          },
+          {
+            "new_layout": "shader_read_only_optimal",
+            "resource": "opaque_color"
+          }
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "aspect": "depth",
+        "byte_size": 1024,
+        "destination": "opaque_depth",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "D32_SFLOAT",
+        "kind": "snapshot_copy",
+        "logical_view_count": 1,
+        "name": "__snapshot_opaque_depth",
+        "order": 7,
+        "semantics": "fixed_once_before_transparency",
+        "sequential_refraction": false,
+        "snapshot_after": "forward_opaque",
+        "source": "scene_depth",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "new_layout": "transfer_src_optimal",
+            "resource": "scene_depth"
+          },
+          {
+            "new_layout": "transfer_dst_optimal",
+            "resource": "opaque_depth"
+          },
+          {
+            "new_layout": "shader_read_only_optimal",
+            "resource": "opaque_depth"
+          }
+        ],
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "load",
+            "resource": "lit_color",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "scene_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "opaque_depth"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "opaque_color"
+          }
+        ],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "forward_transparent",
+        "order": 8,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16834,7 +16652,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_sprite",
-        "order": 4,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16842,7 +16660,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_post_main",
-        "order": 5,
+        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16850,7 +16668,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_tonemap",
-        "order": 6,
+        "order": 11,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16858,171 +16676,6 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_post_ldr",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Threshold_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "lit_color"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HighLuminanceExtraction",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_0_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Threshold_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_0",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_0_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_0",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_1_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_1",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_1_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_1",
         "order": 12,
         "view_execution": "single_view",
         "view_index": 0
@@ -17035,230 +16688,11 @@
               0.0,
               0.0,
               0.0,
-              0.0
+              1.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "clear",
-            "resource": "Bloom_Downsample_H_2_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_2",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_2_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_2",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_3_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "HorizontalBlur_3",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_3_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_3_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "VerticalBlur_3",
-        "order": 16,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "Bloom_Downsample_H_2_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_3_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "UpsampleBlend_3",
-        "order": 17,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "Bloom_Downsample_H_1_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "UpsampleBlend_2",
-        "order": 18,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "Bloom_Downsample_H_0_RT",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
-          }
-        ],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "UpsampleBlend_1",
-        "order": 19,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
             "resource": "display",
             "samples": 1,
             "store": "store"
@@ -17270,16 +16704,12 @@
           {
             "final_layout": "shader_read_only_optimal",
             "resource": "lit_color"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
           }
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "FinalBloomComposite",
-        "order": 20,
+        "name": "scene_present",
+        "order": 13,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -17287,29 +16717,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_pelican_ui",
-        "order": 21,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "load",
-            "resource": "display",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": true,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "pelican_ui",
-        "order": 22,
+        "order": 14,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -17317,7 +16725,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_debug_draw",
-        "order": 23,
+        "order": 15,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -17325,7 +16733,7 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_debug_text",
-        "order": 24,
+        "order": 16,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -17333,13 +16741,13 @@
         "kind": "anchor",
         "logical_view_count": 1,
         "name": "__anchor_imgui",
-        "order": 25,
+        "order": 17,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 20,
+          "paired_storage_round_trip": 3,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -17354,28 +16762,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 26,
+        "order": 18,
         "paired_storage_edges": [
-          "gbuffer_pass:gbuffer_albedo->lighting_pass",
-          "gbuffer_pass:g_emissive->lighting_pass",
-          "lighting_pass:lit_color->HighLuminanceExtraction",
-          "HighLuminanceExtraction:Bloom_Threshold_RT->HorizontalBlur_0",
-          "HorizontalBlur_0:Bloom_Downsample_H_0_RT->VerticalBlur_0",
-          "VerticalBlur_0:Bloom_Upsample_V_0_RT->HorizontalBlur_1",
-          "HorizontalBlur_1:Bloom_Downsample_H_1_RT->VerticalBlur_1",
-          "VerticalBlur_1:Bloom_Upsample_V_1_RT->HorizontalBlur_2",
-          "HorizontalBlur_2:Bloom_Downsample_H_2_RT->VerticalBlur_2",
-          "VerticalBlur_2:Bloom_Upsample_V_2_RT->HorizontalBlur_3",
-          "HorizontalBlur_3:Bloom_Downsample_H_3_RT->VerticalBlur_3",
-          "VerticalBlur_3:Bloom_Upsample_V_3_RT->UpsampleBlend_3",
-          "VerticalBlur_2:Bloom_Upsample_V_2_RT->UpsampleBlend_3",
-          "UpsampleBlend_3:Bloom_Downsample_H_2_RT->UpsampleBlend_2",
-          "VerticalBlur_1:Bloom_Upsample_V_1_RT->UpsampleBlend_2",
-          "UpsampleBlend_2:Bloom_Downsample_H_1_RT->UpsampleBlend_1",
-          "VerticalBlur_0:Bloom_Upsample_V_0_RT->UpsampleBlend_1",
-          "lighting_pass:lit_color->FinalBloomComposite",
-          "UpsampleBlend_1:Bloom_Downsample_H_0_RT->FinalBloomComposite",
-          "pelican_ui:display->output_transform"
+          "deferred_geometry:gbuffer_albedo->deferred_lighting",
+          "deferred_geometry:g_emissive->deferred_lighting",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,

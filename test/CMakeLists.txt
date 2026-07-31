@@ -1353,7 +1353,7 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
-            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/wsi_fault_window
             -DCONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wsi_fault_window.cmake

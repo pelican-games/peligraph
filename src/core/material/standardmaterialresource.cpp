@@ -96,6 +96,16 @@ void pelican_surface_v1(
     }
     tex_black = mat_con.registerTexture(vk::Extent3D(4, 4, 1), texdata_black);
 
+    uint8_t texdata_gray[4 * 16];
+    for (int i = 0; i < 16; i++) {
+        texdata_gray[i * 4 + 0] = 128;
+        texdata_gray[i * 4 + 1] = 128;
+        texdata_gray[i * 4 + 2] = 128;
+        texdata_gray[i * 4 + 3] = 255;
+    }
+    tex_gray = mat_con.registerTexture(
+        vk::Extent3D(4, 4, 1), texdata_gray);
+
     // Roughness=1.0 (G=255), Metallic=0.0 (B=0), AO=1.0 (R=255)
     uint8_t texdata_metallic_roughness[4 * 16];
     for (int i = 0; i < 16; i++) {

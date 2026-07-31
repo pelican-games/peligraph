@@ -6,10 +6,10 @@
 #include "skeletalanimation.hpp"
 #include "vrmsemantic.hpp"
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,6 +112,7 @@ struct ModelTemplate {
     struct NamedMaterial {
         std::string name;
         GlobalMaterialId material;
+        std::optional<MaterialVariantRouting> routing;
     };
 
     std::vector<MaterialPrimitives> material_primitives;
@@ -126,8 +127,14 @@ struct ModelTemplate {
     std::uint64_t compatibility_revision = 0;
 };
 
-using PrimitiveMaterialResolver =
-    std::function<std::optional<GlobalMaterialId>(const PrimitiveMaterialBinding &binding)>;
+// Project-authored names are an additive resolution domain. Validate it
+// separately so an ambiguity fails even when a binding document does not
+// happen to reference the colliding name.
+void validateNamedMaterialResolutionDomains(
+    const ModelTemplate &model,
+    std::span<const ModelTemplate::NamedMaterial>
+        project_materials,
+    std::string_view model_name);
 
 // A non-empty mapping is a whole-model contract: every loaded primitive must
 // occur exactly once. Fragment loads cannot satisfy that contract and are
@@ -135,6 +142,7 @@ using PrimitiveMaterialResolver =
 void applyPrimitiveMaterialBindings(
     ModelTemplate &model, const PrimitiveMaterialBindingDocument &document,
     std::string_view model_name, std::optional<std::string_view> fragment = std::nullopt,
-    PrimitiveMaterialResolver resolve_material = {});
+    std::span<const ModelTemplate::NamedMaterial>
+        project_materials = {});
 
 } // namespace Pelican

@@ -3,6 +3,7 @@
 #include "../appflow/teardown.hpp"
 #include "../asset/model.hpp"
 #include "../log.hpp"
+#include "../material/projectmaterialasset.hpp"
 #include "../vkcore/core.hpp"
 
 #include "../ecs/predefined.hpp"
@@ -81,6 +82,7 @@ bool PelicanCore::run() {
         // Model CPU preparation is parallel, but its Vulkan/resource commit is
         // deliberately forced onto the startup thread before ECS systems run.
         // This also makes the permanent startup metric cover the whole phase.
+        (void)GET_MODULE(ProjectMaterialAssetContainer);
         (void)GET_MODULE(ModelAssetContainer);
 
         // Runtime resources now represent the initial disk contents, so this

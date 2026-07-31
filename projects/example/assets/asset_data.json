@@ -22,19 +22,5 @@
       "name": "character",
       "path": "assets/models/character.glb"
     }
-  ],
-  "materials": [
-    {
-      "path": "materials/toon.material.json"
-    },
-    {
-      "path": "materials/refract.material.json"
-    },
-    {
-      "path": "materials/openpbr_coat.material.json"
-    },
-    {
-      "path": "materials/depth_fade.material.json"
-    }
   ]
 }
