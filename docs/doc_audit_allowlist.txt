@@ -1,0 +1,21 @@
+# Identifiers the documentation may name even though `doclink.py audit` cannot find them
+# under src/ test/ tools/ projects/ cmake/. One exact name per line; text after `#` is the
+# reason and is printed back when the entry stops being needed.
+#
+# An entry whose identifier reappears in the tree fails the audit, so the list cannot rot
+# into a pile of stale exemptions.
+#
+# Do NOT add a name here to silence a genuine problem. If the docs describe a function that
+# was renamed or removed, the passage needs rewriting -- that is what the audit is for.
+
+# --- deliberately documented as gone, so readers searching the old name find the answer ---
+render_begin           # replaced by IFrameTarget::beginFrame(); ch06 explains the change
+try_render_begin       # same; blocking vs zero-wait is now the FrameBeginMode argument
+consumeExtentChanged   # no successor: the Renderer compares against internal_render_extent
+
+# --- outside this repository by nature ---
+roundEven              # GLSL builtin, explained as background knowledge in ch10
+glfwWaitEvents         # GLFW API
+
+# --- not an identifier at all ---
+runXxx                 # placeholder standing for the run* family in prose

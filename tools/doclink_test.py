@@ -149,6 +149,72 @@ class Rewrite(unittest.TestCase):
         self.assertNotEqual(first, second, "the second occurrence must get its own ledger entry")
 
 
+class Audit(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "docs" / "manual").mkdir(parents=True)
+        (self.root / "src").mkdir()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _doc(self, body: str) -> list[str]:
+        (self.root / "docs" / "manual" / "01_x.md").write_text(body, encoding="utf-8")
+        return ["docs/manual/01_x.md"]
+
+    def test_flags_a_link_landing_on_a_closing_brace(self) -> None:
+        (self.root / "src" / "a.cpp").write_text("void go() {\n  work();\n}\n", encoding="utf-8")
+        docs = self._doc("see [`go()`](../../src/a.cpp#L3)\n")
+        misaimed, ghosts = doclink.audit(self.root, docs)
+        self.assertEqual(len(misaimed), 1)
+        self.assertEqual(ghosts, [])
+
+    def test_flags_a_label_naming_something_absent_from_the_target(self) -> None:
+        (self.root / "src" / "a.cpp").write_text("\n".join(f"line{i}();" for i in range(1, 30)), encoding="utf-8")
+        docs = self._doc("see [`somewhereElse()`](../../src/a.cpp#L15)\n")
+        misaimed, _ = doclink.audit(self.root, docs)
+        self.assertEqual(len(misaimed), 1)
+
+    def test_accepts_a_prose_label_that_describes_rather_than_names(self) -> None:
+        # `constructor` and Japanese labels describe the place; only code-shaped labels
+        # make a claim that can be checked against the line.
+        (self.root / "src" / "a.cpp").write_text("\n".join(f"line{i}();" for i in range(1, 30)), encoding="utf-8")
+        docs = self._doc("[`constructor`](../../src/a.cpp#L15) と [その手前](../../src/a.cpp#L16)\n")
+        misaimed, _ = doclink.audit(self.root, docs)
+        self.assertEqual(misaimed, [])
+
+    def test_line_one_is_a_file_anchor_not_a_content_claim(self) -> None:
+        (self.root / "src" / "a.cpp").write_text("\nvoid go() {}\n", encoding="utf-8")
+        docs = self._doc("[`a.cpp`](../../src/a.cpp#L1)\n")
+        misaimed, _ = doclink.audit(self.root, docs)
+        self.assertEqual(misaimed, [])
+
+    def test_reports_a_documented_function_absent_from_the_tree(self) -> None:
+        (self.root / "src" / "a.cpp").write_text("void stillHere() {}\n", encoding="utf-8")
+        docs = self._doc("`stillHere()` は残り、`longGoneHelper()` は消えました\n")
+        _, ghosts = doclink.audit(self.root, docs)
+        self.assertEqual(len(ghosts), 1)
+        self.assertIn("longGoneHelper", ghosts[0])
+
+    def test_allowlist_exempts_and_then_complains_when_the_name_returns(self) -> None:
+        (self.root / "src" / "a.cpp").write_text("void stillHere() {}\n", encoding="utf-8")
+        allowlist = self.root / "docs" / "doc_audit_allowlist.txt"
+        allowlist.write_text("longGoneHelper  # removed in WP999\n", encoding="utf-8")
+        docs = self._doc("`longGoneHelper()` は消えました\n")
+        _, ghosts = doclink.audit(self.root, docs)
+        self.assertEqual(ghosts, [], "an allowlisted name must not be reported")
+
+        # It comes back: the exemption is now a lie and must be surfaced.
+        (self.root / "src" / "a.cpp").write_text("void longGoneHelper() {}\n", encoding="utf-8")
+        _, ghosts = doclink.audit(self.root, docs)
+        self.assertEqual(len(ghosts), 1)
+        self.assertIn("exists again", ghosts[0])
+
+    def test_rejects_a_duplicated_allowlist_entry(self) -> None:
+        (self.root / "docs" / "doc_audit_allowlist.txt").write_text("dup\ndup\n", encoding="utf-8")
+        with self.assertRaisesRegex(doclink.DocLinkError, "duplicate"):
+            doclink.audit(self.root, [])
+
+
 class EndToEnd(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

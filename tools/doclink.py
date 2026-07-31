@@ -526,9 +526,142 @@ def run(
     return 0
 
 
+# ------------------------------------------------------------------------------ audit
+#
+# `check` only asks whether each link still sits on its anchor. Two ways a reference goes
+# wrong without ever leaving its anchor:
+#
+#   1. the anchor was recorded on the wrong line to begin with, so following it faithfully
+#      keeps arriving at the wrong place;
+#   2. the prose names a function that has since been renamed or deleted, which no amount
+#      of line tracking can notice.
+#
+# `audit` looks for both. It is deliberately a separate mode: these are judgement calls a
+# person resolves, not drift a tool can fix.
+
+AUDIT_ALLOWLIST_PATH = Path("docs/doc_audit_allowlist.txt")
+MEANINGLESS_TARGET_RE = re.compile(r"^\s*(\}\s*;?|\{|\)\s*;?|,|#pragma once|namespace\s*\{|else\s*\{?)?\s*$")
+LABEL_NEIGHBOURHOOD = 3
+CALL_MENTION_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_~][A-Za-z0-9_]*)?)\(\)`")
+SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".glsl", ".frag", ".vert", ".comp", ".cmake", ".txt", ".py", ".json")
+IDENTIFIER_SCAN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+SOURCE_ROOTS = ("src", "test", "tools", "projects", "cmake")
+
+
+def load_audit_allowlist(repo_root: Path) -> dict[str, str]:
+    """Identifiers the docs may name even though the tree does not define them."""
+    path = repo_root / AUDIT_ALLOWLIST_PATH
+    if not path.exists():
+        return {}
+    allowed: dict[str, str] = {}
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, _, reason = line.partition("#")
+        name = name.strip()
+        if not name:
+            continue
+        if name in allowed:
+            raise DocLinkError(f"{AUDIT_ALLOWLIST_PATH.as_posix()}:{number}: duplicate entry: {name}")
+        allowed[name] = reason.strip() or "(reason not given)"
+    return allowed
+
+
+def source_identifiers(repo_root: Path) -> set[str]:
+    found: set[str] = set()
+    for root in SOURCE_ROOTS:
+        base = repo_root / root
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+                continue
+            if any(part in {"build", "_deps", "__pycache__"} for part in path.parts):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            found.update(IDENTIFIER_SCAN_RE.findall(text))
+    # Root-level CMakeLists.txt defines a good deal of the build vocabulary.
+    root_lists = repo_root / "CMakeLists.txt"
+    if root_lists.is_file():
+        found.update(IDENTIFIER_SCAN_RE.findall(root_lists.read_text(encoding="utf-8", errors="ignore")))
+    return found
+
+
+def audit(repo_root: Path, docs: list[str]) -> tuple[list[str], list[str]]:
+    misaimed: list[str] = []
+    ghosts: list[str] = []
+    allowed = load_audit_allowlist(repo_root)
+    known = source_identifiers(repo_root)
+
+    seen_allowed: set[str] = set()
+    for doc in docs:
+        absolute = repo_root / doc
+        text = absolute.read_text(encoding="utf-8")
+
+        for match in LINK_RE.finditer(text):
+            raw_text, rel, line_text = match.group(1), match.group(2), match.group(3)
+            if not rel.startswith(".."):
+                continue
+            recorded = int(line_text)
+            target = (absolute.parent / rel).resolve()
+            if not target.is_file():
+                continue
+            lines = _read_lines(target)
+            if recorded > len(lines):
+                misaimed.append(f"{doc}: [{_normalize(raw_text)}] {rel}#L{recorded} is past end of file")
+                continue
+            current = lines[recorded - 1]
+            # Line 1 is the conventional "this file" anchor; it is not a claim about content.
+            if recorded != 1 and MEANINGLESS_TARGET_RE.match(current):
+                misaimed.append(f"{doc}: [{_normalize(raw_text)}] {rel}#L{recorded} lands on `{current.strip()}`")
+                continue
+            # A label written in prose describes the place; only a label that *names*
+            # something can be checked against what is there.
+            if CJK_RE.search(raw_text):
+                continue
+            # Only labels that look like code make a claim about the target. An all-lowercase
+            # word with no `::` and no parentheses -- `constructor`, `destructor` -- is
+            # describing the place in English, the same way a Japanese label does.
+            named = [
+                m.group(1).split("::")[-1].lstrip("~")
+                for m in re.finditer(r"`([A-Za-z_][\w:~]*)(?:\(\))?`", raw_text)
+                if "::" in m.group(1) or m.group(0).endswith("()`") or not m.group(1).islower()
+            ]
+            if not named:
+                continue
+            window = "\n".join(lines[max(0, recorded - 1 - LABEL_NEIGHBOURHOOD) : recorded + LABEL_NEIGHBOURHOOD])
+            if all(not re.search(r"\b" + re.escape(name) + r"\b", window) for name in named):
+                misaimed.append(
+                    f"{doc}: [{_normalize(raw_text)}] {rel}#L{recorded} — none of {', '.join(named)} appears within "
+                    f"±{LABEL_NEIGHBOURHOOD} lines"
+                )
+
+        for match in CALL_MENTION_RE.finditer(text):
+            name = match.group(1)
+            leaf = name.split("::")[-1].lstrip("~")
+            if len(leaf) < 4 or leaf in known:
+                continue
+            if name in allowed or leaf in allowed:
+                seen_allowed.add(name if name in allowed else leaf)
+                continue
+            ghosts.append(f"{doc}: `{name}()` does not exist under {'/'.join(SOURCE_ROOTS)}")
+
+    # An allowlist entry that is once again present means the docs and the tree agree and
+    # the exemption should go, so say it rather than letting the list quietly rot.
+    for name, reason in allowed.items():
+        leaf = name.split("::")[-1].lstrip("~")
+        if leaf in known:
+            ghosts.append(f"{AUDIT_ALLOWLIST_PATH.as_posix()}: `{name}` exists again — drop the entry ({reason})")
+    return misaimed, ghosts
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("mode", nargs="?", choices=("check", "update"), default="check")
+    parser.add_argument("mode", nargs="?", choices=("check", "update", "audit"), default="check")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd(), help="repository root (default: cwd)")
     parser.add_argument("--staged", action="store_true", help="only documents present in the git index")
     parser.add_argument(
@@ -552,6 +685,22 @@ def main() -> int:
     if args.only:
         only = {part.strip() for part in args.only.split(",") if part.strip()}
     try:
+        if args.mode == "audit":
+            repo_root = args.repo_root.resolve()
+            docs = staged_docs(repo_root) if args.staged else list_docs(repo_root)
+            if only is not None:
+                docs = [doc for doc in docs if doc in only]
+            misaimed, ghosts = audit(repo_root, docs)
+            print(f"doclink audit: {len(misaimed)} misaimed link(s), {len(ghosts)} absent identifier(s)")
+            if misaimed:
+                print("\n-- link lands somewhere its label does not describe --")
+                for item in misaimed:
+                    print(f"  {item}")
+            if ghosts:
+                print(f"\n-- documented but absent from the tree (allowlist: {AUDIT_ALLOWLIST_PATH.as_posix()}) --")
+                for item in ghosts:
+                    print(f"  {item}")
+            return 1 if (misaimed or ghosts) else 0
         return run(
             args.mode,
             args.repo_root,
