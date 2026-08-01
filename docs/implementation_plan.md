@@ -1164,6 +1164,16 @@ standalone transform の経路だけ**である。少なくとも次の 2 つが
 - `load_scene` の後でも編集がランタイムへ届く
 - インスペクタ経由の編集で描画結果が変わることを、画素で確認するテストがあること
   (現状はライブ ECS のコンポーネントまでしか検証されていない)
+
+**画素テストの書き方(実測済み。ここを外すと理由を取り違えて落ちる)**:
+編集の commit は **`step_frame` の中でしか起きない**。`invokeEditorCommitQueueHook()` は
+`framephase.cpp` の `updateFrameState()` にあり、`rpcserver.cpp` でこれを呼ぶのは
+`step_frame` だけで `render_frame` は呼ばない。実測でも、`edit` が accepted を返した後に
+`render_frame` を 3 回回して撮った画は編集前と**バイト一致**(authored pos も revision も
+据え置き)で、`step_frame` を 1 回入れた瞬間に反映された。
+したがってテストは `edit` → **`step_frame`** → `capture` の順で書くこと。
+`--size` を固定し、実値で大きな差分が出ることと、値 0.0 の no-op で**バイト一致**になることの
+両方を assert すること。`save_scene` はテストに入れないこと(下記のとおり実行時反映には不要)。
 - `ctest` 全数が緑、`git diff --check` クリーン
 
 依存: なし。見積: 中。**WP243 とは独立**、並行可。
