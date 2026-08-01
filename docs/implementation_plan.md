@@ -33,8 +33,28 @@ cmake --build ./build --config Debug
 ctest --test-dir ./build -C Debug --output-on-failure
 ```
 
-- 完了条件は常に「ビルド成功 + 全テストグリーン + `git diff --check` クリーン」
+- 完了条件は常に「ビルド成功 + 全テストグリーン + `git diff --check` クリーン + **文書参照が緑**」
 - 描画挙動に触れる WP は `pelican_player.exe` の短時間起動確認も行う(`docs/rendering_phase1_review.md` の Validation Run と同じ流儀)
+
+#### 文書参照の完了条件(2026-08-01 追加)
+
+コードを動かすと `docs/source-code-guide/` と `docs/manual/` の `#L<行>` リンクがずれます。
+**ソースだけを触る WP では pre-commit フックが走らない**ため、誰も気づかないまま腐ります。
+実例として WP242a のマージで 85 本がずれていました。**WP を閉じる前に次の 2 つを緑にすること。**
+
+```sh
+uv run tools/doclink.py check    # 行のずれ。update で自動修正できる
+uv run tools/doclink.py audit    # 消えた関数の説明・飛び先の取り違え
+```
+
+- `check` が赤いのは**ただのずれ**なので、`uv run tools/doclink.py update` を実行して
+  差分ごとコミットすればよい。判断は要らない。
+- `audit` が赤いのは**文書が嘘をついている**という意味である。関数を改名・削除したなら、
+  それを説明している本文も直す。**行番号を動かしても直らない**。
+  改名した本人が一番安く直せるので、後続 WP へ送らないこと。
+- 「かつて存在した」ことを意図的に書く場合だけ
+  [`docs/doc_audit_allowlist.txt`](doc_audit_allowlist.txt) へ理由付きで登録する。
+  **問題を黙らせるために登録しない。**
 
 ### コード規約(既存コードから踏襲)
 
