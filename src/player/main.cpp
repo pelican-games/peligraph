@@ -18,6 +18,7 @@
 #include "../core/loader/pathresolver.hpp"
 #include "../core/loader/projectsrc.hpp"
 #include "../core/log.hpp"
+#include "../project/projectformat.hpp"
 
 namespace {
 
@@ -447,8 +448,13 @@ int main(int argc, char *argv[]) {
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     auto &path_resolver = Pelican::FastModuleContainer::get<Pelican::PathResolver>();
     if (parsed_launch_config.project_json) {
+        const auto project = Pelican::parseProjectEnvelopeText(
+            *parsed_launch_config.project_json,
+            {.ignore_engine_version =
+                 parsed_launch_config.ignore_engine_version});
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths,
-                            *parsed_launch_config.project_json, parsed_launch_config.user_dir_override);
+                            project.envelope,
+                            parsed_launch_config.user_dir_override);
     } else {
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
     }

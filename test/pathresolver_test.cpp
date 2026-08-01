@@ -40,6 +40,12 @@ nlohmann::json readJson(const std::filesystem::path &path) {
     return nlohmann::json::parse(file);
 }
 
+ProjectEnvelope projectEnvelope(nlohmann::json project) {
+    project["schema"] = "pelican.project";
+    project["version"] = 1;
+    return parseProjectEnvelopeJson(project).envelope;
+}
+
 std::filesystem::path weaklyCanonical(const std::filesystem::path &path) {
     std::error_code ec;
     const auto canonical = std::filesystem::weakly_canonical(path, ec);
@@ -287,7 +293,9 @@ TEST_CASE("PathResolver resolves user scheme with user-dir override", "[pathreso
     const auto user_root = sandbox.base / "user";
     auto &resolver = resolverForTest();
     resolver.resetForTesting();
-    resolver.setup(sandbox.root, false, nlohmann::json{{"name", "fixture-project"}}.dump(), user_root);
+    resolver.setup(sandbox.root, false,
+                   projectEnvelope({{"name", "fixture-project"}}),
+                   user_root);
 
     const auto resolved = resolver.resolveProjectRef("user://settings.json");
     REQUIRE(std::get<std::filesystem::path>(resolved) == weaklyCanonical(user_root / "settings.json"));
@@ -301,7 +309,8 @@ TEST_CASE("PathResolver keeps legacy project paths when no stores are declared",
     Sandbox sandbox;
     auto &resolver = resolverForTest();
     resolver.resetForTesting();
-    resolver.setup(sandbox.root, false, nlohmann::json{{"name", "fixture-project"}}.dump());
+    resolver.setup(sandbox.root, false,
+                   projectEnvelope({{"name", "fixture-project"}}));
 
     const auto resolved = resolver.resolveProjectRef("assets/a.txt");
     REQUIRE(std::get<std::filesystem::path>(resolved) == weaklyCanonical(sandbox.root / "assets" / "a.txt"));
@@ -320,7 +329,7 @@ TEST_CASE("PathResolver resolves declared asset stores and local overrides", "[p
         {"asset_stores", {{"main", {{"mount", "../outside"},
                                      {"manifest", "assets.manifest.json"}}}}},
     };
-    resolver.setup(sandbox.root, false, project.dump());
+    resolver.setup(sandbox.root, false, projectEnvelope(project));
     REQUIRE(std::get<std::filesystem::path>(resolver.resolveProjectRef("../outside/outside.txt")) ==
             weaklyCanonical(sandbox.outside / "outside.txt"));
     REQUIRE(resolver.stores().size() == 1);
@@ -337,7 +346,8 @@ TEST_CASE("PathResolver resolves declared asset stores and local overrides", "[p
         {"name", "fixture-project"},
         {"asset_stores", {{"main", {{"mount", "assets"}}}}},
     };
-    resolver.setup(sandbox.root, false, project_with_assets_store.dump());
+    resolver.setup(sandbox.root, false,
+                   projectEnvelope(project_with_assets_store));
     REQUIRE(std::get<std::filesystem::path>(resolver.resolveProjectRef("assets/a.txt")) ==
             weaklyCanonical(override_root / "a.txt"));
 
@@ -357,7 +367,8 @@ TEST_CASE("PathResolver rejects invalid asset store declarations and overrides",
                  {"nested", {{"mount", "assets/models"}}},
              }},
         };
-        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
+        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false,
+                                           projectEnvelope(project)),
                             Catch::Matchers::ContainsSubstring("overlap"));
         resolver.resetForTesting();
     }
@@ -370,7 +381,7 @@ TEST_CASE("PathResolver rejects invalid asset store declarations and overrides",
             {"name", "fixture-project"},
             {"asset_stores", {{"main", {{"mount", "assets"}}}}},
         };
-        resolver.setup(sandbox.root, false, project.dump());
+        resolver.setup(sandbox.root, false, projectEnvelope(project));
         REQUIRE_THROWS_WITH(resolver.resolveProjectRef("assets/../secret.txt"),
                             Catch::Matchers::ContainsSubstring("escapes mount root"));
         resolver.resetForTesting();
@@ -386,7 +397,8 @@ TEST_CASE("PathResolver rejects invalid asset store declarations and overrides",
         };
         writeText(sandbox.root / ".pelican" / "local.json",
                   nlohmann::json{{"asset_stores", {{"missing", sandbox.outside.generic_string()}}}}.dump());
-        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
+        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false,
+                                           projectEnvelope(project)),
                             Catch::Matchers::ContainsSubstring("undeclared asset store"));
         resolver.resetForTesting();
     }
@@ -403,7 +415,8 @@ TEST_CASE("PathResolver rejects invalid asset store declarations and overrides",
                   nlohmann::json{{"asset_stores", {{"main", sandbox.outside.generic_string()}}},
                                  {"rules", nlohmann::json::object()}}
                       .dump());
-        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
+        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false,
+                                           projectEnvelope(project)),
                             Catch::Matchers::ContainsSubstring("unsupported key"));
         resolver.resetForTesting();
     }
@@ -417,7 +430,7 @@ TEST_CASE("PathResolver rejects invalid asset store declarations and overrides",
             {"asset_stores", {{"main", {{"mount", "assets"},
                                          {"manifest", "../assets.manifest.json"}}}}},
         };
-        resolver.setup(sandbox.root, false, project.dump());
+        resolver.setup(sandbox.root, false, projectEnvelope(project));
         REQUIRE_FALSE(resolver.stores().front().manifest);
         REQUIRE(resolver.stores().front().manifest_error);
         REQUIRE(resolver.stores().front().manifest_error->find("manifest escapes project root") !=

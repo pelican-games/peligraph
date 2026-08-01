@@ -5,6 +5,7 @@
 #include "pathresolver.hpp"
 #include "projectsrc.hpp"
 #include "../../project/assetdataformat.hpp"
+#include "../../project/projectformat.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -17,7 +18,6 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
-#include <sstream>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -31,10 +31,6 @@
 namespace Pelican {
 
 namespace {
-
-constexpr std::string_view project_schema = "pelican.project";
-constexpr int supported_project_version = 1;
-constexpr std::string_view current_engine_version = "0.1.0";
 
 struct JsonHelper {
     const nlohmann::json _json;
@@ -289,83 +285,18 @@ CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
     return projection;
 }
 
-std::vector<int> parseVersion(std::string_view version) {
-    std::vector<int> parts;
-    std::string token;
-    std::istringstream stream{std::string{version}};
-    while (std::getline(stream, token, '.')) {
-        if (token.empty()) {
-            throw std::runtime_error("invalid version string: " + std::string{version});
-        }
-        size_t parsed_chars = 0;
-        const int value = std::stoi(token, &parsed_chars, 10);
-        if (parsed_chars != token.size() || value < 0) {
-            throw std::runtime_error("invalid version string: " + std::string{version});
-        }
-        parts.push_back(value);
-    }
-    return parts;
-}
-
-int compareVersions(std::string_view lhs, std::string_view rhs) {
-    auto lhs_parts = parseVersion(lhs);
-    auto rhs_parts = parseVersion(rhs);
-    const auto count = std::max(lhs_parts.size(), rhs_parts.size());
-    lhs_parts.resize(count, 0);
-    rhs_parts.resize(count, 0);
-    for (size_t i = 0; i < count; ++i) {
-        if (lhs_parts[i] < rhs_parts[i]) {
-            return -1;
-        }
-        if (lhs_parts[i] > rhs_parts[i]) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-void validateProjectJson(const nlohmann::json &project, bool ignore_engine_version) {
-    if (!project.is_object()) {
-        throw std::runtime_error("project.json must be an object");
-    }
-    if (project.value("schema", std::string{}) != project_schema) {
-        throw std::runtime_error("project.json schema is not supported");
-    }
-    if (!project.contains("version") || !project.at("version").is_number_integer()) {
-        throw std::runtime_error("project.json requires numeric version");
-    }
-    const auto version = project.at("version").get<int>();
-    if (version != supported_project_version) {
-        throw std::runtime_error("project.json version must be exactly 1");
-    }
-
-    if (!project.contains("engine_min_version")) {
-        return;
-    }
-    if (!project.at("engine_min_version").is_string()) {
-        throw std::runtime_error("project.json engine_min_version must be a string");
-    }
-    const auto min_version = project.at("engine_min_version").get<std::string>();
-    if (compareVersions(min_version, current_engine_version) <= 0) {
-        return;
-    }
-
-    const auto message = "project.json engine_min_version " + min_version +
-                         " is newer than this engine (" + std::string{current_engine_version} + ")";
-    if (!ignore_engine_version) {
-        throw std::runtime_error(message);
-    }
-    LOG_WARNING(logger, "{}; continuing because --ignore-engine-version was specified", message);
-}
-
 std::string projectBasicConfigSource(const ProjectSource &source) {
     if (!source.hasProjectSource()) {
         return "{}";
     }
 
-    auto project = nlohmann::json::parse(source.loadProjectSource());
-    validateProjectJson(project, source.ignoresEngineVersion());
-    return nlohmann::json{{"basic_config", project.value("basic_config", nlohmann::json::object())}}.dump();
+    const auto parsed = parseProjectEnvelopeText(
+        source.loadProjectSource(),
+        {.ignore_engine_version = source.ignoresEngineVersion()});
+    for (const auto &warning : parsed.warnings) {
+        LOG_WARNING(logger, "{}", warning);
+    }
+    return nlohmann::json{{"basic_config", parsed.envelope.basic_config}}.dump();
 }
 
 std::string resolveExistingModelReferenceString(PathResolver &resolver, const std::string &ref) {

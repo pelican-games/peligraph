@@ -82,7 +82,7 @@
 
 ### トップレベルフィールド
 
-検証の実装は [basicconfig.cpp](../../src/core/loader/basicconfig.cpp)(`validateProjectJson`)です。
+検証の正本は `pelican_project` の [projectformat.cpp](../../src/project/projectformat.cpp)(`parseProjectEnvelopeJson` / `parseProjectEnvelopeText`)です。player、engine の `basicconfig.cpp`、`pelican_cli dist-config` はこの同じ実装を呼び、schema/version/`engine_min_version` 規則を持ちません。
 
 | フィールド | 必須? | 検証・意味 |
 |---|---|---|
@@ -126,7 +126,11 @@
 
 ## 3.3 パス参照と PathResolver
 
-すべてのコンテンツ参照(JSON 内・CLI のコンテンツ引数)は **PathResolver** モジュール([pathresolver.cpp](../../src/core/loader/pathresolver.cpp))を通ります。
+すべてのコンテンツ参照(JSON 内・CLI のコンテンツ引数)は同じ解決規則を通ります。規則の正本は `pelican_project` の [ProjectPathResolver](../../src/project/projectpathresolver.hpp)(実装: [projectpathresolver.cpp](../../src/project/projectpathresolver.cpp))です。engine の **PathResolver** モジュール([pathresolver.cpp](../../src/core/loader/pathresolver.cpp))はこれへ委譲し、module寿命、quillログ、`engine://`埋め込みresource loaderだけを接続します。
+
+この分離によりdevstudioや外部ツールは`pelican_core`をリンクせず、engineと同じproject root、asset store、escape防止、fragment規則を使えます。絶対CLI pathを許可したwarningも純粋層の戻り値であり、純粋層自身はログを出しません。
+
+`ProjectPathResolver::setup()` はraw JSONではなく解析済み`ProjectEnvelope`を受けます。`name`と`asset_stores`の既定解釈をpath層で繰り返さないためです。
 
 ### 参照の分類
 
@@ -236,7 +240,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 > ```
 > 形式に機能を足すときは「解釈レイヤにパーサ+バインダに変換」を対で追加し、エンジン内部へ波及させない。パーサ登録は静的な表で行い、プラグイン機構は作らない(過剰抽象化の防止)。
 
-[src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44 で分離完了 ✅)、現在の住人は `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat` + `surfaceformat` + `materiallowering`(マテリアル)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)/ `assetsmanifest`(pelican.assets)/ `importrules`(pelican.import_rules)などです。vulkan・quill・モジュール機構・リソース埋め込みへの依存は禁止されています。この分離により、`pelican_cli` や将来のエディタは**エンジンをリンクせずに**プロジェクトを読めます。
+[src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44/WP248)です。現在の住人は `projectformat`(pelican.project封筒)/ `projectpathresolver`(path・asset store)/ `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat` + `surfaceformat` + `materiallowering`(マテリアル)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)/ `assetsmanifest`(pelican.assets)/ `importrules`(pelican.import_rules)などです。vulkan・quill・モジュール機構・リソース埋め込みへの依存は禁止されています。`project_library_boundary`テストは、製品ライブラリとして`pelican_project`だけをリンクした実行ファイルがexampleのproject.jsonを開き、scene一覧とasset一覧を取得できることを固定します。
 
 ## 3.6 バージョン管理(VCS)の方針
 

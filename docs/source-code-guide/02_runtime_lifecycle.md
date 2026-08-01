@@ -28,7 +28,7 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L437) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L226) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L438) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L227) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
@@ -43,9 +43,9 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L229)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L230)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
-`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L182)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L196)）。
+`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L183)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L197)）。
 
 ### 段階B: `run()` 前に共有moduleへ起動情報を注入
 

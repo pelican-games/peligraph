@@ -2,6 +2,7 @@
 
 #include "../project/assetdataformat.hpp"
 #include "../project/importmanifest.hpp"
+#include "../project/projectformat.hpp"
 #include "../core/model/vatformat.hpp"
 
 #include <argparse/argparse.hpp>
@@ -30,8 +31,6 @@ namespace Pelican::DevCli {
 namespace {
 
 constexpr std::string_view project_scheme = "project://";
-constexpr std::string_view project_schema = "pelican.project";
-constexpr int supported_project_version = 1;
 constexpr std::string_view import_schema = "pelican.import";
 constexpr uint32_t glb_magic = 0x46546c67;
 constexpr uint32_t glb_version = 2;
@@ -268,21 +267,6 @@ std::optional<std::string> optionalStringMember(const nlohmann::json &object, st
     return found->get<std::string>();
 }
 
-void validateProjectJson(const nlohmann::json &project) {
-    if (!project.is_object()) {
-        throw std::runtime_error("project.json must be an object");
-    }
-    if (project.value("schema", std::string{}) != project_schema) {
-        throw std::runtime_error("project.json schema is not supported");
-    }
-    if (!project.contains("version") || !project.at("version").is_number_integer()) {
-        throw std::runtime_error("project.json requires numeric version");
-    }
-    if (project.at("version").get<int>() != supported_project_version) {
-        throw std::runtime_error("project.json version must be exactly 1");
-    }
-}
-
 ProjectFiles loadProjectFiles(const std::filesystem::path &project_arg) {
     auto path = weaklyCanonicalOrThrow(absolutePath(project_arg), "project");
     std::filesystem::path project_file;
@@ -304,8 +288,8 @@ ProjectFiles loadProjectFiles(const std::filesystem::path &project_arg) {
     }
 
     const auto project = readJsonFile(project_file, "project.json");
-    validateProjectJson(project);
-    const auto &basic = requireObjectMember(project, "basic_config", "project.json");
+    const auto envelope = parseProjectEnvelopeJson(project);
+    const auto &basic = envelope.envelope.basic_config;
     if (!basic.is_object()) {
         throw std::runtime_error("project.json requires basic_config object");
     }

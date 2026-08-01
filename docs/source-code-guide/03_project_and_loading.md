@@ -18,6 +18,8 @@ Runtime object
 
 | データ | 純粋層 | runtime層 |
 |---|---|---|
+| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L460) |
+| path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L68) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L8)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L271) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L999) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
@@ -33,13 +35,15 @@ Runtime object
 - `raw_data`: `PelicanCore(settings)`へ直接渡した上書きJSON
 - `project_data`: playerが読んだ`project.json`全体
 
-[`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L529) は次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L62) へ渡します。
+`project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。
+
+[`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L460) は検証済み封筒の`basic_config`を含む次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L58) へ渡します。
 
 1. `raw_data` — API/起動時の上書き
 2. `project.json` の `basic_config`
 3. `engine://default_config.json`
 
-各fieldはこの順で最初に見つかった値が採用されます（[`JsonLoader::getVal()`](../../src/core/loader/basicconfig.cpp#L70)）。JSON object全体をdeep mergeするのではなく、必要fieldをpath単位で問い合わせる方式です。
+各fieldはこの順で最初に見つかった値が採用されます（[`JsonLoader::getVal()`](../../src/core/loader/basicconfig.cpp#L66)）。JSON object全体をdeep mergeするのではなく、必要fieldをpath単位で問い合わせる方式です。
 
 構築時にwindow、framerate、seed、camera、各データファイル参照を値として取り込みます。その後、assets/rendering/UI/input JSON本文はgetterの初回呼び出し時に読み、`mutable optional<string>`へcacheします（[basicconfig.hpp](../../src/core/loader/basicconfig.hpp#L92)）。
 
@@ -58,7 +62,7 @@ mutable std::uint64_t next_scene_revision = 1;
 mutable std::uint64_t next_authoring_object_id = 1;
 ```
 
-そのため `sceneDataJson()` は**生ファイル文字列を返しません**（[`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L741)）。
+そのため `sceneDataJson()` は**生ファイル文字列を返しません**（[`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L672)）。
 
 ```cpp
 std::string ProjectBasicConfig::sceneDataJson() const {
@@ -70,11 +74,11 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 | API | 宣言 | 役割 |
 |---|---|---|
-| `sceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L629) | 現在の改訂を取得（初回は遅延load） |
-| `updateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L609) | scene v1バイト列で差し替え |
-| `invalidateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L613) | 次回の再構築を強制 |
-| `importSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L648) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
-| `saveSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L662) | ディスクへ書き戻し、`SceneSaveResult`（revision / digest / byte数）を返す |
+| `sceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L560) | 現在の改訂を取得（初回は遅延load） |
+| `updateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L629) | scene v1バイト列で差し替え |
+| `invalidateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L593) | 次回の再構築を強制 |
+| `importSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L579) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
+| `saveSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L593) | ディスクへ書き戻し、`SceneSaveResult`（revision / digest / byte数）を返す |
 
 保存の失敗は型付きです。[`SceneSaveErrorCode`](../../src/core/loader/basicconfig.hpp#L19) は `ExternalModification` / `Unavailable` / `IoFailure` の三つで、[`SceneSaveError`](../../src/core/loader/basicconfig.hpp#L25) が保持します。`scene_baseline_digest` と保存直前のディスク内容を突き合わせるため、**エディタの外でファイルが書き換わっていれば `ExternalModification` で拒否**します。
 
@@ -82,11 +86,11 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 > **設計決定:** 保存経路の中断点を実装内部の分岐ではなくenumとして公開することで、「どの中断点でもディスク上のsceneが壊れない」という性質をテストから網羅的に叩けます。列挙名がそのまま保存手順の段階名になっています。
 
-> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L692))
+> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L623))
 >
 > **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。
 >
-> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([書く前の検査](../../src/core/loader/basicconfig.cpp#L684))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の検査](../../src/core/loader/basicconfig.cpp#L723))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
+> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([書く前の検査](../../src/core/loader/basicconfig.cpp#L615))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の検査](../../src/core/loader/basicconfig.cpp#L654))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
 >
 > **骨子**:
 > ```text
@@ -99,13 +103,15 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 > publishPreparedSceneDocument(next); baseline.swap(next_digest)   # 無throw / 比較ではなくbaseline更新
 > ```
 >
-> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L410) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L648) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L408)「SAVE0 is failure-atomic at every prepare point」。
+> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L341) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L579) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L408)「SAVE0 is failure-atomic at every prepare point」。
 >
 > **不変条件**: 直列化は1回だけ(以降の全段が同じバイト列を消費する)。ファイル置換より後にthrowしうる処理を置かない。baseline digestの更新はファイル置換と同一の無throw区間で行う。
 
 ## 3.3 PathResolver
 
-宣言は [`pathresolver.hpp`](../../src/core/loader/pathresolver.hpp#L58)、中心実装は [`resolveRef()`](../../src/core/loader/pathresolver.cpp#L514) です。
+解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L68)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L524) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
+
+engine側の [`PathResolver`](../../src/core/loader/pathresolver.hpp#L8) は薄いmodule adapterです。[`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) に残るのは、module寿命、返されたwarningのログ、`engine://` IDを埋め込みbytesへ変えるloader注入だけです。この境界によりdevstudioやCLIは`pelican_core`をリンクせず同じescape防止・asset store規則を使えます。
 
 ### 返り値がpathだけではない理由
 
@@ -120,7 +126,7 @@ std::variant<
 >
 ```
 
-`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また`#kind:name`や`#kind:/full/path`のfragmentを、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/core/loader/pathresolver.cpp#L268)）。
+`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また`#kind:name`や`#kind:/full/path`のfragmentを、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278)）。
 
 ### scheme別の処理
 
@@ -132,11 +138,11 @@ std::variant<
 | CLI由来の絶対path | そのpath | `--allow-absolute-paths`必須 |
 | project JSON内の絶対path | 不許可 | 常に拒否 |
 
-`std::filesystem::weakly_canonical`後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`resolveRef()`のproject処理](../../src/core/loader/pathresolver.cpp#L565)）。
+`std::filesystem::weakly_canonical`後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L629)）。
 
 ### asset store
 
-[`PathResolver::setup()`](../../src/core/loader/pathresolver.cpp#L310) は`project.json.asset_stores`を読みます。
+[`ProjectPathResolver::setup()`](../../src/project/projectpathresolver.cpp#L321) は`project.json.asset_stores`を読みます。
 
 - 各storeは論理`mount`と実rootを持つ。
 - mount同士の重なりを拒否。
@@ -145,7 +151,7 @@ std::variant<
 - 実root同士の包含/重なりも拒否。
 - optional manifestのpathはproject root内に制限。
 
-相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/core/loader/pathresolver.cpp#L594)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
+相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/project/projectpathresolver.cpp#L613)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
 
 ### engine resource
 

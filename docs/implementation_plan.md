@@ -169,6 +169,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP242b | point / spot の shadow view provider | **未着手**。provider は directional 1 種のみ。cube shadow は src/ に存在しない |
 | WP242c | 影のフィルタと bias の project 空間化 | **未着手**。単一タップ、bias と遮蔽値がハードコード |
 | WP243a | occlusion を metallicRoughness の R から読むのをやめる | ✅ 完了（2026-08-01）。set 2 binding 7 を独立 occlusion、custom texture を 8 以降へ移動。glTF 部分選択・project material・SPIR-V link ABI・画素閾値を固定。GPU 126/126、非GPU 945/945 |
+| WP248 | project 封筒 / path 解決の `pelican_project` 化 | ✅ 完了（2026-08-01）。封筒検証と path / asset-store 純ロジックを移し、engine は adapter 化。`pelican_project` 単独リンク境界を常設 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、

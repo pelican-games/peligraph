@@ -1149,10 +1149,25 @@ set_tests_properties(compute_buffer_headless_player PROPERTIES LABELS gpu)
 pelican_define_test(importmanifest_test pelican_project)
 pelican_define_test(importrules_test pelican_project)
 pelican_define_test(assetdataformat_test pelican_project)
+pelican_define_test(projectformat_test pelican_project)
 target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+# This executable deliberately links no product library other than
+# pelican_project. It is the build-level D0 proof that project.json, scene data,
+# and asset data can be opened without pulling in pelican_core.
+add_executable(pelican_test_project_library_boundary project_library_boundary.cpp)
+set_target_properties(pelican_test_project_library_boundary PROPERTIES
+    CXX_STANDARD 20
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+target_compile_definitions(pelican_test_project_library_boundary PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+target_link_libraries(pelican_test_project_library_boundary PRIVATE pelican_project)
+add_test(NAME project_library_boundary COMMAND pelican_test_project_library_boundary)
 
 pelican_define_test(materialformat_test pelican_project)
 target_compile_definitions(pelican_test_materialformat_test PRIVATE
