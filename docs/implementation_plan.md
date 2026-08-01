@@ -1023,30 +1023,53 @@ GPU へ運ぶ経路を作り、消費側の index 0 固定を解除する。
    成立する — glTF では `occlusionTexture` が `metallicRoughnessTexture` と
    同じ画像を指してよく、その場合に R を読むのが正しいからである。
    **ORM 用の分岐を別に設けないこと。**
-2. **テクスチャスロットに occlusion を追加する。** 4 枠固定の前提が
-   `materialcontainer.hpp` から descriptor 構築まで通っているので、
-   増やす場所を一箇所に閉じること。
-3. **occlusion テクスチャが無いときの既定は 1.0(遮蔽なし)。** `gltf.cpp` が
+2. **テクスチャスロットに occlusion を追加する。使う binding 番号を最初に決めること。**
+   MATERIAL set は 0=baseColor / 1=metallicRoughness / 2=normal / 3=emissive /
+   4=vatPosition / 5=vatNormal / 6=materialBuffer / 7 以降=カスタムテクスチャ
+   (`materiallowering.hpp` の `materialCustomTextureFirstBinding = 7`)で
+   **空き枠が無い**。カスタムテクスチャを 8 以降へ押すか、別の配置にするかを選ぶ。
+   同時に直す必要があるもの: `pelican_sets.glsl` と `pelican_sets.hpp`、
+   `materiallowering.hpp`、両方の frag シェーダ、
+   `shader_compiler_reflection_test.cpp` の `set2_bindings.size()` 期待値、
+   `test/fixtures/material_lowering/` の lowering dump。
+   **「一箇所に閉じる」では済まない。触る場所を漏らさず数えること。**
+3. **`texturesForMaterials()` も直すこと。** `gltf.cpp` にはテクスチャを 4 枠で
+   列挙する箇所がもう一つあり、どの画像を実際に読み込むかをここが決めている。
+   occlusion を足し忘れると、node / mesh / material の部分選択ロードで
+   `texture_map` が未設定のまま `.value()` に入り `std::bad_optional_access` で落ちる。
+4. **occlusion テクスチャが無いときの既定は 1.0(遮蔽なし)。** `gltf.cpp` が
    metallicRoughness に対して行っている白 (255,255,255) の捏造と同じ方式でよいが、
    **既定値の所在を一箇所にすること**(WP240b と同じ規律)。
-4. 上の 2 箇所(`default.frag` / `surface_v1.frag`)が**同じ意味論**になること。
+5. 上の 2 箇所(`default.frag` / `surface_v1.frag`)が**同じ意味論**になること。
    片方だけ直すと経路によって見た目が変わる。
-5. `materialformat.cpp` の死んでいる occlusion 記述を、この経路へ接続するか
+6. `materialformat.cpp` の死んでいる occlusion 記述を、この経路へ接続するか
    削除するかを決めること。**受理するが効かない状態を残さない。**
+
+**forward は範囲外**: forward の lighting は occlusion を読んでいない
+(`standard_lighting.glsl` は言及ゼロ、`openpbr_lighting.glsl` は
+`surface.occlusion = 1.0;` と書くだけ)。この WP は deferred の G-buffer 経路を直す。
+forward へ遮蔽を導入するかは別途決めること。**「forward と deferred で一致」を
+この WP の条件にしない** — 現状 forward には一致させる相手が無い。
 
 **受け入れ条件**:
 
-- `DamagedHelmet.glb` が既定構成でベースカラーどおりに描かれ、headless 描画の画素で
-  確認できる(非発光画素の中央値が 8bit で 2 以下、という現状から脱していること)
+- `DamagedHelmet.glb` が既定構成でベースカラーどおりに描かれる。
+  **判定は自動化された閾値で行うこと**: headless 描画の非発光・非背景画素の中央値が
+  現状の 8bit 2 以下から明確に外れること(目視の「明るくなった」で済ませない)。
+  この判定をテストとして残すか、残さないなら理由を PR 本文に書くこと
 - `occlusionTexture` と `metallicRoughnessTexture` が同一画像を指す ORM アセットでも
   正しく遮蔽が効く
 - occlusion テクスチャを持たないアセットの見た目が変わらない
-- forward と deferred で同じシーンの遮蔽が一致する
+- node / mesh / material の部分選択ロードが `occlusionTexture` を持つマテリアルで落ちない
 - `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
 
-**既存 golden への影響**: 描画結果が大きく変わるため、遮蔽を含む byte 固定
-baseline は更新が要る。**更新した golden の新旧を並べ、変化が意図どおりであることを
-PR 本文で示すこと。** 黙って焼き直さない。
+**既存 golden への影響**: **golden は動かないのが正しい。** golden の
+マテリアルは `standardmaterialresource.cpp` の既定 metallicRoughness テクスチャ
+(`texdata_metallic_roughness[i * 4 + 0] = 255; // occlusion`)を使っており、
+R が既に 255 すなわち ao = 1.0 だからである。
+**golden が赤くなったらそれは焼き直す対象ではなく回帰である。** 原因を潰すこと。
+これは上の受け入れ条件「occlusion テクスチャを持たないアセットの見た目が変わらない」
+と同じことを別の側から言っている。
 
 依存: なし。見積: 中。**最優先** — 仕様準拠の glTF アセットが全滅する欠陥である。
 
@@ -1059,15 +1082,26 @@ PR 本文で示すこと。** 黙って焼き直さない。
 
 1. `fullscreen.frag` の 4 箇所(clustered / directional / point / spot)で
    直接光の拡散項から AO を外す。
-2. 現状は `openPbrBase ? 1.0 : ao` になっており、**OpenPBR 経路は既に正しく、
-   glTF core 経路だけが間違っている**。分岐を消して両方が正しい側に揃うこと。
-3. forward 経路が同じ規律になっているかを確認し、ずれていれば揃えること。
+2. 現状は `directDiffuseOcclusion = openPbrBase ? 1.0 : ao` になっており、
+   **OpenPBR 経路は既に正しく、glTF core 経路だけが間違っている**。
+   この三項を消して両方が正しい側に揃うこと。
+3. **`openPbrBase` そのものは消さないこと。** `fullscreen.frag` の
+   `openPbrBase` 出現は 23 箇所あり、その大半は NDF / G / `brdfDenominator` /
+   距離減衰といった**シェーディングモデルの選択**である。
+   触ってよいのは `directDiffuseOcclusion` の三項だけである。
+4. forward は occlusion を読んでいないので範囲外(WP243a と同じ理由)。
 
 **受け入れ条件**:
 
 - 直接光の拡散項に occlusion が掛からない
-- `openPbrBase` による分岐が残っていない
+- `directDiffuseOcclusion` の `openPbrBase` 三項が残っていない。
+  **他の `openPbrBase` 分岐は残っていること**
 - `gpu` ラベル全数が緑
+
+**既存 golden への影響**: **WP243a と違い、これは画素を動かす。** hybrid_v1 preset を
+使う golden は実際に SSAO パスを通るため、ao < 1 の領域が変わる。
+更新した golden の新旧を並べ、変化が意図どおりであることを PR 本文で示すこと。
+黙って焼き直さない。
 
 依存: **WP243a**(先に直さないと AO が 0 に潰れていて差が見えない)。見積: 小。
 
@@ -1105,10 +1139,28 @@ PR 本文で示すこと。** 黙って焼き直さない。
 4. `load_scene` 後に `runtime_bindings` を再収集すること。
 5. `projects/example` の扱いを決めること — 1 を採れば修正不要になる。
 
+**名前必須は 1 箇所ではない。範囲を見誤らないこと**:
+実装範囲 1 を採っても、それだけで名前の要求が消えるのは**親を持たない
+standalone transform の経路だけ**である。少なくとも次の 2 つが独立に名前を要求する。
+
+- `editorruntimefactory.cpp` の `makeTransformBindings` は
+  `if (object == scene.objects.end() || !object->name) continue;` で無名を落とし、
+  結果に `*object->name` を詰めている。**階層(親付き)オブジェクトの経路**である。
+- `editorprojectionadapters.cpp` は
+  `"collider authoring object requires a name"` を投げる。**collider の経路**である。
+
+この 2 つを直すのか、明示的に範囲外とするのかを決め、**決めた方を PR 本文に書くこと**。
+
+**検証の落とし穴**: `projects/example` には親付きオブジェクトも collider も無いため、
+そこだけで確認すると上の 2 経路が壊れたままでも緑に見える。
+**親を持つオブジェクトを含むフィクスチャで検証すること。**
+
 **受け入れ条件**:
 
 - 無名オブジェクトの transform 編集がランタイムへ届く(1 を採る場合)か、
   名前付きハードエラーになる(2 を採る場合)。**黙って成功を返す経路が無いこと**
+- 親を持つ無名オブジェクトでも上と同じ結論になる(範囲外とするなら、
+  そこで名前付きハードエラーになること)
 - `load_scene` の後でも編集がランタイムへ届く
 - インスペクタ経由の編集で描画結果が変わることを、画素で確認するテストがあること
   (現状はライブ ECS のコンポーネントまでしか検証されていない)
@@ -1126,23 +1178,28 @@ PR 本文で示すこと。** 黙って焼き直さない。
 - `inspector.cpp` の `draw()` が `pollWatch()` を**毎フレーム無条件に**呼ぶ。
   ドラッグ中・プレビュー中のガードが無い。
 - `inspector.hpp` の `inspectorWatchPollFrameInterval = 30` により、30 フレームごと
-  (60fps で約 0.5 秒ごと)にシーンリビジョンを問い合わせ、前回観測したトークンと
+  (60fps で約 0.5 秒ごと)に **watch token** を問い合わせ、前回観測したものと
   違えば `refresh()` を呼ぶ。
 - `refresh()` は `selectObject()` を通じて選択オブジェクトのスナップショットを
   **丸ごと差し替える**。ところがドラッグ中の値はまさにそこ
   (`component.authored_json[...] = interaction.value`)に入っている。
-- 決め手は、コミット後の `refresh()` が `watch.observe()` を呼ばないことである。
-  ドラッグを離すとプレビューがコミットされリビジョンが上がるが、監視状態は古いまま
-  なので、**次のポーリングで必ず「変わった」と判定される**。
-  結果として 1 回いじるたびに、その直後の約 0.5 秒間だけ次の編集が消える窓が開く。
+- **決め手は watch token の中身である。** `EditorWatchToken` は
+  `{scene_revision, preview_epoch}` の複合であり、`preview_epoch` は
+  `advancePreviewEpoch()` によって open / **update** / commit / abort の
+  すべてで進む。つまりドラッグ中の `update_preview` ごとにトークンが変わるので、
+  **ドラッグしている最中のポーリングが毎回「変わった」と判定して `refresh()` を呼ぶ**。
+  コミット後の窓の話ではなく、ドラッグ中ずっと起きている。
 
 **実装範囲**:
 
-1. **自分のコミット後に新リビジョンを取り込む。** 自分の変更を外部変更と
-   誤認しないこと。これが根本原因である。
-2. `pollWatch()` を、プレビュー保持中および編集中のウィジェットがある間はスキップする。
-3. `refresh()` が編集途中のフィールド値を破壊しないこと(保存して復元するか、
+1. **`pollWatch()` を、プレビュー保持中および編集中のウィジェットがある間はスキップする。
+   これが効く修正である。** ドラッグ中に `preview_epoch` が進み続ける以上、
+   ここを塞がないと巻き戻りは止まらない。
+2. `refresh()` が編集途中のフィールド値を破壊しないこと(保存して復元するか、
    編集中は差し替えない)。
+3. 自分のコミット後に新しい watch token を取り込み、自分の変更を外部変更と
+   誤認しないこと。**1 の補強であって、単独では症状が止まらない**
+   — トークンには `preview_epoch` が含まれており、ドラッグ中に既に食い違っているためである。
 4. 本当に外部から変更されたときは今までどおり反映され、
    `stale_revision` の案内も出ること。**外部変更の検知そのものを殺さない。**
 
@@ -1160,17 +1217,28 @@ PR 本文で示すこと。** 黙って焼き直さない。
 **目的**: 埋め込みテクスチャにミップマップが無く、縮小時に強いモアレが出る。
 sponza の布と床で顕著。
 
-**現状**: `vkCmdBlitImage` は `src/` 全体に存在せず、ミップ鎖は生成されない。
-`imageloader.cpp` の PNG / JPEG / その他のデコーダは**常に 1 レベルだけ**を積み、
-複数レベルを持つのは KTX 経路のみである。サンプラは
-`mipmapMode = eLinear` / `maxLod = VK_LOD_CLAMP_NONE` を要求しているのに level 0 しか
-存在しない。加えて `materialcontainer.cpp` の標準サンプラは
+**現状**: `vkCmdBlitImage` は `src/` 全体に存在せず、ミップ鎖はどこでも生成されない。
+サンプラは `mipmapMode = eLinear` / `maxLod = VK_LOD_CLAMP_NONE` を要求しているのに
+level 0 しか存在しない。加えて `materialcontainer.cpp` の標準サンプラは
 `anisotropyEnable = false` である。
+
+**直す場所を間違えないこと**: glTF の埋め込み画像は `imageloader.cpp` を**通らない**。
+`src/core/model/` は `imageloader.hpp` を一切 include しておらず、
+`gltfimage.cpp` が `stbi_load_from_memory()` を直接呼び、`gltf.cpp` が
+生ポインタを取る `MaterialContainer::registerTexture(extent, data, format, bytes)`
+オーバーロードへ渡している。`LoadedImage` / `createTextureResource` には到達しない。
+**この WP の目的にとって `imageloader.cpp` を直しても効果はゼロである。**
+ミップ生成は生ポインタ側の `registerTexture` 経路に置くこと。
+`imageloader.cpp` 経由で読まれる画像(KTX 以外)にも同じ問題があるなら、
+そちらも直すのか範囲外とするのかを決めて PR 本文に書くこと。
 
 **実装範囲**:
 
 1. 単一レベルで読み込まれた画像に対してミップ鎖を生成する。GPU の blit 鎖と
    CPU 側生成のどちらを採るかを**最初に決めて理由を書くこと**。
+   **画像生成側も直す必要がある** — 現状の `mipLevels()` は
+   デコード結果のレベル数をそのまま返すので、鎖を足すには
+   image create info の `mipLevels` を先に増やさなければならない。
 2. sRGB フォーマットの扱いを明示すること(blit 鎖はフォーマットの転送関数の
    影響を受ける)。
 3. 異方性フィルタを有効にするかを決める。有効にする場合はデバイス機能の確認を伴うこと。
