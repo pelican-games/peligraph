@@ -10,7 +10,7 @@
 |-----|------|--------------|
 | 0 | `PELICAN_SET_FRAME` | 全 pipeline 共通の固定 layout。binding 0 `FrameUBO`、1 `ObjectBuffer` SSBO、2 `LightUBO`、3 `PreviousObjectBuffer` SSBO、4 `FrameResolutionUBO`。エンジン管理・読み取り専用。 |
 | 1 | `PELICAN_SET_PASS_INPUT` | fullscreen / UI / compute / material pass の入力。通常の fullscreen/compute/material resource は logical name から generated binding へ解決する。UI texture と raw escape hatch もこの set を使う。 |
-| 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
+| 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`、7 `occlusionSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
 | 3 | `PELICAN_SET_FREE` | variant ごとの補助枠。debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture、`PELICAN_SKINNED` は binding 2 の `SkinPalette` SSBO を使う。binding 2 はスキン variant だけエンジン所有。 |
 
 `LightUBO` の shadow 行列列の後ろには `environmentAmbientRadiance` と
@@ -20,7 +20,7 @@ feature が無いときは両方 zero である。非ゼロ既定値は feature 
 LightUBO の初期化や shader に別の fallback は置かない。
 
 機械可読な正本は [`material_resources_manifest.json`](material_resources_manifest.json) に置く。
-`.surface` の custom texture は宣言順に set 2 binding 7 から割り当て、`role: color`
+`.surface` の custom texture は宣言順に set 2 binding 8 から割り当て、`role: color`
 (または `color_space: srgb`) は SRGB view、`role: data` は UNORM view を使う。
 未指定 resource は white / flat-normal / black の semantic dummy に解決され、いずれも
 SRGB/UNORM の両 view を持つ。binding 6 の `MaterialBuffer` は既存 96 byte の標準 field に
@@ -481,9 +481,9 @@ linker、optimizer、validator、reflection/remap API だけで処理する。SP
 resource handle、Block/BufferBlock 型は hook 名を含むエラーで拒否する。
 
 experimental 経路の custom texture は split sampler を標準形とする。宣言順 `i` に対して
-sampled image は set 2 binding `7 + 2*i`、sampler は `8 + 2*i` であり、CPU binding 表は
+sampled image は set 2 binding `8 + 2*i`、sampler は `9 + 2*i` であり、CPU binding 表は
 logical name、descriptor type、remap 前後の set/binding を持つ。既定 source 経路の combined
-image sampler (`7 + i`) は fallback の互換契約として不変である。
+image sampler は `8 + i` である。
 
 キャッシュキーには固定3依存の revision/実行版、target env、template/user compiler generator、
 両入力 SHA-256、export/import symbol、material set/binding 規約、全 define/pass/stage/ABI salt を含める。

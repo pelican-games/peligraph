@@ -171,6 +171,7 @@ ModelTemplate createBuiltinSphereModel() {
         .metallic_roughness_texture = std_material.metallicRoughnessDefaultTexture(),
         .normal_texture = std_material.normalDefaultTexture(),
         .emissive_texture = std_material.emissiveDefaultTexture(),
+        .occlusion_texture = std_material.occlusionDefaultTexture(),
     });
 
     auto primitive = GET_MODULE(VertBufContainer).addPrimitiveEntry(makeSphereGeometry());

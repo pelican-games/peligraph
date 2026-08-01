@@ -12,6 +12,8 @@ layout(set = PELICAN_SET_MATERIAL, binding = 0) uniform sampler2D baseColorSampl
 layout(set = PELICAN_SET_MATERIAL, binding = 1) uniform sampler2D metallicRoughnessSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 2) uniform sampler2D normalSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 3) uniform sampler2D emissiveSampler;
+layout(set = PELICAN_SET_MATERIAL,
+       binding = PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING) uniform sampler2D occlusionSampler;
 
 layout(location = 0) in vec2 texUV;
 layout(location = 1) in vec4 inColor;
@@ -54,10 +56,10 @@ void main() {
     // Metallic-Roughness（glTF形式: G=roughness, B=metallic）
     vec3 mr = texture(metallicRoughnessSampler, materialUV).rgb;
     // G-bufferへの出力: R=roughness, G=metallic, B=AO（glTF標準に合わせる）
-    // glTF ORM texture: R=Occlusion, G=Roughness, B=Metallic
+    float occlusion = texture(occlusionSampler, materialUV).r;
     outMaterial = vec4(mr.g * material.surfaceFactors.y,
                        mr.b * material.surfaceFactors.x,
-                       mix(1.0, mr.r, material.surfaceFactors.w), 0.0);
+                       mix(1.0, occlusion, material.surfaceFactors.w), 0.0);
 
     // World Position
     outWorldPos = vec4(inWorldPos, 1.0);

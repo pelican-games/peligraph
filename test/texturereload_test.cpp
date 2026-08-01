@@ -87,6 +87,7 @@ GlobalMaterialId registerReferencingMaterial(MaterialContainer &materials,
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
     });
 }
 

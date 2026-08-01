@@ -38,6 +38,7 @@ struct MaterialInfo {
     GlobalTextureId metallic_roughness_texture;
     GlobalTextureId normal_texture;
     GlobalTextureId emissive_texture;
+    GlobalTextureId occlusion_texture;
     glm::vec4 base_color_factor{1.0f};
     glm::vec3 emissive_factor{1.0f};
     float metallic_factor = 1.0f;

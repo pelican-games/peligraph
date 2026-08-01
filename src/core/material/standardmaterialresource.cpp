@@ -106,10 +106,10 @@ void pelican_surface_v1(
     tex_gray = mat_con.registerTexture(
         vk::Extent3D(4, 4, 1), texdata_gray);
 
-    // Roughness=1.0 (G=255), Metallic=0.0 (B=0), AO=1.0 (R=255)
+    // Roughness=1.0 (G=255), Metallic=0.0 (B=0). glTF leaves R undefined.
     uint8_t texdata_metallic_roughness[4 * 16];
     for (int i = 0; i < 16; i++) {
-        texdata_metallic_roughness[i * 4 + 0] = 255; // occlusion
+        texdata_metallic_roughness[i * 4 + 0] = 255; // unused
         texdata_metallic_roughness[i * 4 + 1] = 255; // roughness
         texdata_metallic_roughness[i * 4 + 2] = 0;   // metallic
         texdata_metallic_roughness[i * 4 + 3] = 255;
@@ -135,6 +135,7 @@ void pelican_surface_v1(
         .metallic_roughness_texture = tex_metallic_roughness_default,
         .normal_texture = tex_normal_default,
         .emissive_texture = tex_emissive_default,
+        .occlusion_texture = tex_white,
     });
 }
 

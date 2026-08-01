@@ -351,6 +351,7 @@ TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
     };
     while (materials.materialCountForTesting() + 1 < materials.materialCapacityForTesting()) {
         (void)materials.registerMaterial(filler);

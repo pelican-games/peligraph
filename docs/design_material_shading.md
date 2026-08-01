@@ -759,5 +759,5 @@ project 空間で表現可能になる。§3-4 が「glTF 由来の alphaMode/do
 3. variant 列挙ダンプ(`dump-shader-variants`)を M1 に含めるか
 4. alphaMode blend の描画順(半透明ソート)は本設計のスコープ外 —
    必要になった時点で別文書(ソートはフレームグラフでなくパス内の問題)
-5. occlusion texture スロットは現行 MaterialInfo に無い — M2 で追加するか
-   IBL(ライティング設計)と同時か
+5. ~~occlusion texture スロットは現行 MaterialInfo に無い~~ — WP243a で
+   set 2 binding 7 の独立した data texture として解決済み。未指定時は白(遮蔽なし)

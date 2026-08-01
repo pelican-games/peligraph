@@ -151,6 +151,11 @@ MaterialInfo makeMaterialInfo(
                 textures, base.emissive_texture,
                 standard.whiteTexture(),
                 SurfaceTextureRole::color),
+        .occlusion_texture =
+            resolveOptionalTexture(
+                textures, base.occlusion_texture,
+                standard.occlusionDefaultTexture(),
+                SurfaceTextureRole::data),
         .base_color_factor =
             glm::vec4{
                 static_cast<float>(

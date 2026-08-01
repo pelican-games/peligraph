@@ -19,7 +19,7 @@ values: std140 size=16
   tint type=color offset=0 size=16
 bindings:
   set=2 binding=6 type=storage_buffer name=MaterialBuffer
-  set=2 binding=7 type=combined_image_sampler name=detail view=SRGB default=engine://textures/white
+  set=2 binding=8 type=combined_image_sampler name=detail view=SRGB default=engine://textures/white
 screen_inputs: []
 target_pass: deferred_geometry
 route: deferred_geometry reason=automatic_deferred_compatible

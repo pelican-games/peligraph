@@ -190,6 +190,7 @@ GlobalMaterialId registerValuesMaterial(MaterialContainer &materials,
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
     };
     applyLoweredMaterial(info, lowered);
     return materials.registerMaterial(std::move(info));
@@ -207,6 +208,7 @@ MaterialInfo makeValuesMaterialInfo(
             standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
     };
     applyLoweredMaterial(info, lowered);
     return info;
@@ -252,6 +254,8 @@ void writeIndexedLiveMaterial(const std::filesystem::path &path,
         {"materials", nlohmann::json::array({
             {{"name", "live"},
              {"surface", "project://shaders/live.surface"},
+             {"base",
+              {{"occlusionTexture", "project://color.png"}}},
              {"values", {{"scalar_first", scalar}}},
              {"textures",
               {{"albedo_detail", "project://color.png"}}}}
@@ -688,6 +692,17 @@ TEST_CASE("WP240c project material registry wires texture and values reload",
         readAt<float>(
             materials.materialValuesForTesting(material),
             0) == Catch::Approx(2.0f));
+    const auto occlusion =
+        materials.materialTextureForTesting(
+            material,
+            PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
+    const auto albedo_detail =
+        materials.materialTextureForTesting(
+            material,
+            materialCustomTextureFirstBinding);
+    REQUIRE(occlusion.has_value());
+    REQUIRE(albedo_detail.has_value());
+    REQUIRE(*occlusion == *albedo_detail);
 
     auto &reload = GET_MODULE(watch::ReloadService);
     const auto snapshot =

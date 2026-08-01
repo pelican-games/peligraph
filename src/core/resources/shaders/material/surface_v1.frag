@@ -21,6 +21,8 @@ layout(set = PELICAN_SET_MATERIAL, binding = 0) uniform sampler2D baseColorSampl
 layout(set = PELICAN_SET_MATERIAL, binding = 1) uniform sampler2D metallicRoughnessSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 2) uniform sampler2D normalSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 3) uniform sampler2D emissiveSampler;
+layout(set = PELICAN_SET_MATERIAL,
+       binding = PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING) uniform sampler2D occlusionSampler;
 
 #include "__pelican_user_surface.glsl"
 #if !defined(PELICAN_HAS_BRDF_V1) && !defined(PELICAN_HAS_LIGHTING_V1)
@@ -85,7 +87,8 @@ void main() {
     vec3 mr = texture(metallicRoughnessSampler, materialUV).rgb;
     surface.roughness = mr.g * material.surfaceFactors.y;
     surface.metallic = mr.b * material.surfaceFactors.x;
-    surface.occlusion = mix(1.0, mr.r, material.surfaceFactors.w);
+    surface.occlusion = mix(1.0, texture(occlusionSampler, materialUV).r,
+                            material.surfaceFactors.w);
     surface.emissive = texture(emissiveSampler, materialUV).rgb *
                        pelican_material_instance_emissive_source_factor(
                            material.emissiveFactor).rgb;

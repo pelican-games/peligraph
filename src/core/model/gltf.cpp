@@ -512,6 +512,14 @@ struct InternalGltfLoader {
             255, 255, 255);
     }
 
+    GlobalTextureId occlusionTextureForMaterial(
+        const tinygltf::Material &material) const {
+        const auto texture_index = material.occlusionTexture.index;
+        return texture_index >= 0
+                   ? texture_map.at(texture_index).value()
+                   : std_mat.occlusionDefaultTexture();
+    }
+
     GlobalTextureId emissiveTextureForMaterial(const tinygltf::Material &material) {
         const auto texture_index = material.emissiveTexture.index;
         if (texture_index >= 0) {
@@ -595,6 +603,7 @@ struct InternalGltfLoader {
             .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
             .normal_texture = std_mat.normalDefaultTexture(),
             .emissive_texture = std_mat.emissiveDefaultTexture(),
+            .occlusion_texture = std_mat.occlusionDefaultTexture(),
         };
     }
 
@@ -1611,6 +1620,7 @@ struct InternalGltfLoader {
                                         ? texture_map.at(normal_texture_index).value()
                                         : std_mat.normalDefaultTexture();
         const auto emissive_texture = emissiveTextureForMaterial(material);
+        const auto occlusion_texture = occlusionTextureForMaterial(material);
         const auto &base_factor = material.pbrMetallicRoughness.baseColorFactor;
         const bool has_metallic_roughness_texture =
             material.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0;
@@ -1692,6 +1702,7 @@ struct InternalGltfLoader {
             .metallic_roughness_texture = metallic_roughness_texture,
             .normal_texture = normal_texture,
             .emissive_texture = emissive_texture,
+            .occlusion_texture = occlusion_texture,
             .base_color_factor = glm::vec4{
                 static_cast<float>(vectorValueOr(base_factor, 0, 1.0)),
                 static_cast<float>(vectorValueOr(base_factor, 1, 1.0)),
@@ -1793,7 +1804,9 @@ struct InternalGltfLoader {
             .vert_shader = std_mat.standardVertShader(), .frag_shader = std_mat.standardFragShader(),
             .base_color_texture = std_mat.whiteTexture(),
             .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
-            .normal_texture = std_mat.normalDefaultTexture(), .emissive_texture = std_mat.emissiveDefaultTexture()};
+            .normal_texture = std_mat.normalDefaultTexture(),
+            .emissive_texture = std_mat.emissiveDefaultTexture(),
+            .occlusion_texture = std_mat.occlusionDefaultTexture()};
         info.vert_shader = std_mat.skinnedVertShader();
         info.skinned = true;
         const auto generated = next_generated_material--;
@@ -1818,6 +1831,7 @@ struct InternalGltfLoader {
             append(material.pbrMetallicRoughness.metallicRoughnessTexture.index);
             append(material.normalTexture.index);
             append(material.emissiveTexture.index);
+            append(material.occlusionTexture.index);
         }
         return textures;
     }

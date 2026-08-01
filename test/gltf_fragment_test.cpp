@@ -157,6 +157,20 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
             0.25f);
     REQUIRE(materials.textureCountForTesting() == texture_count + 2);
     REQUIRE(materials.materialCountForTesting() == material_count + 1);
+    REQUIRE(selected.named_materials.size() == 1);
+    const auto selected_material =
+        selected.named_materials.front().material;
+    const auto selected_metallic_roughness =
+        materials.materialTextureForTesting(
+            selected_material, 1);
+    const auto selected_occlusion =
+        materials.materialTextureForTesting(
+            selected_material,
+            PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
+    REQUIRE(selected_metallic_roughness.has_value());
+    REQUIRE(selected_occlusion.has_value());
+    REQUIRE(*selected_occlusion ==
+            *selected_metallic_roughness);
 
     const auto routed =
         loader.loadGltfBinary(
@@ -198,6 +212,15 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
         loader.loadGltfBinary(glb_path.string(), fragment("material", "MatB"));
     REQUIRE(material_only.material_primitives.size() == 1);
     REQUIRE(material_only.material_primitives.front().primitives.empty());
+    REQUIRE(material_only.named_materials.size() == 1);
+    const auto material_only_occlusion =
+        materials.materialTextureForTesting(
+            material_only.named_materials.front().material,
+            PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
+    REQUIRE(material_only_occlusion.has_value());
+    REQUIRE(*material_only_occlusion ==
+            GET_MODULE(StandardMaterialResource)
+                .occlusionDefaultTexture());
 
     const auto animation_only =
         loader.loadGltfBinary(glb_path.string(), fragment("animation", "Walk"));

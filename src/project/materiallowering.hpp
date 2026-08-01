@@ -13,7 +13,7 @@
 
 namespace Pelican {
 
-inline constexpr std::uint32_t materialCustomTextureFirstBinding = 7;
+inline constexpr std::uint32_t materialCustomTextureFirstBinding = 8;
 inline constexpr std::size_t materialCustomValueCapacity = 256;
 
 struct Std140MemberLayout {

@@ -114,6 +114,13 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(base_color->type == vk::DescriptorType::eCombinedImageSampler);
     REQUIRE(static_cast<bool>(base_color->stages & vk::ShaderStageFlagBits::eFragment));
 
+    const auto *occlusion = findBinding(
+        merged, PELICAN_SET_MATERIAL,
+        PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
+    REQUIRE(occlusion != nullptr);
+    REQUIRE(occlusion->type == vk::DescriptorType::eCombinedImageSampler);
+    REQUIRE(occlusion->stages == vk::ShaderStageFlagBits::eFragment);
+
     const auto *material_instance = findBinding(
         merged, PELICAN_SET_FREE, PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING);
     REQUIRE(material_instance != nullptr);
@@ -162,9 +169,15 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
         vk::DescriptorType::eUniformBuffer);
 
     const auto set2_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_MATERIAL);
-    REQUIRE(set2_bindings.size() == 5);
-    REQUIRE(set2_bindings.back().binding == PELICAN_MATERIAL_BUFFER_BINDING);
-    REQUIRE(set2_bindings.back().descriptorType == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(set2_bindings.size() == 6);
+    REQUIRE(set2_bindings[4].binding == PELICAN_MATERIAL_BUFFER_BINDING);
+    REQUIRE(set2_bindings[4].descriptorType == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(
+        set2_bindings.back().binding ==
+        PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
+    REQUIRE(
+        set2_bindings.back().descriptorType ==
+        vk::DescriptorType::eCombinedImageSampler);
 
     const auto push_ranges = makePushConstantRanges(merged);
     REQUIRE(push_ranges.size() == 1);

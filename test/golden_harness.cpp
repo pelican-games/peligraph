@@ -4543,6 +4543,7 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
     };
     applyLoweredMaterial(info, lowered);
     info.render_state.cull = SurfaceCullMode::none;
@@ -4926,6 +4927,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture =
             standard.emissiveDefaultTexture(),
+        .occlusion_texture =
+            standard.occlusionDefaultTexture(),
     };
     applyLoweredMaterialForRoute(material, lowered);
     const auto material_id =
@@ -4983,6 +4986,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                 standard.normalDefaultTexture(),
             .emissive_texture =
                 standard.emissiveDefaultTexture(),
+            .occlusion_texture =
+                standard.occlusionDefaultTexture(),
         };
         applyLoweredMaterialForRoute(
             forward_material,
@@ -5114,6 +5119,9 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                     .emissive_texture =
                         standard
                             .emissiveDefaultTexture(),
+                    .occlusion_texture =
+                        standard
+                            .occlusionDefaultTexture(),
                 };
                 applyLoweredMaterialForRoute(
                     info,

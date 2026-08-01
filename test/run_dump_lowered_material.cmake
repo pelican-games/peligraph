@@ -22,7 +22,7 @@ else()
     set(expectations
         "values: std140 size=64"
         "binding=6 type=storage_buffer name=MaterialBuffer"
-        "binding=7 type=combined_image_sampler name=albedo_detail view=SRGB"
+        "binding=8 type=combined_image_sampler name=albedo_detail view=SRGB"
         "render_state: blend=additive cull=none")
 endif()
 foreach(expected IN LISTS expectations)

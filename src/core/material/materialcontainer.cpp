@@ -35,11 +35,17 @@ constexpr uint32_t emissiveBinding = 3;
 constexpr uint32_t vatPositionBinding = 4;
 constexpr uint32_t vatNormalBinding = 5;
 constexpr uint32_t materialBufferBinding = PELICAN_MATERIAL_BUFFER_BINDING;
-constexpr uint32_t baseMaterialTextureBindingCount = 4;
-constexpr uint32_t vatMaterialTextureBindingCount = 6;
+constexpr uint32_t occlusionBinding =
+    PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING;
+constexpr uint32_t baseMaterialTextureBindingCount = 5;
+constexpr uint32_t vatMaterialTextureBindingCount = 7;
 constexpr size_t maxMaterials = 1024;
 constexpr uint32_t maxMaterialPassInputs = 8;
 constexpr uint32_t maxMaterialPassDescriptors = 32;
+
+static_assert(
+    materialCustomTextureFirstBinding ==
+    PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING);
 
 static bool supportsDepthComparisonSampling(
     vk::Format format) {
@@ -1861,6 +1867,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     setImageInfo(metallicRoughnessBinding, info.metallic_roughness_texture, linear_sampler.get(), false);
     setImageInfo(normalBinding, info.normal_texture, linear_sampler.get(), false);
     setImageInfo(emissiveBinding, info.emissive_texture, linear_sampler.get(), true);
+    setImageInfo(occlusionBinding, info.occlusion_texture, linear_sampler.get(), false);
     if (info.vat) {
         setImageInfo(vatPositionBinding, info.vat->position_texture, nearest_sampler.get(), false);
         setImageInfo(vatNormalBinding, info.vat->normal_texture, nearest_sampler.get(), false);
@@ -1959,6 +1966,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     addImageWrite(metallicRoughnessBinding, vk::DescriptorType::eCombinedImageSampler);
     addImageWrite(normalBinding, vk::DescriptorType::eCombinedImageSampler);
     addImageWrite(emissiveBinding, vk::DescriptorType::eCombinedImageSampler);
+    addImageWrite(occlusionBinding, vk::DescriptorType::eCombinedImageSampler);
     if (info.vat) {
         addImageWrite(vatPositionBinding, vk::DescriptorType::eCombinedImageSampler);
         addImageWrite(vatNormalBinding, vk::DescriptorType::eCombinedImageSampler);
@@ -2016,6 +2024,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
         .emissive_texture = info.emissive_texture,
+        .occlusion_texture = info.occlusion_texture,
         .base_color_factor = info.base_color_factor,
         .emissive_factor = info.emissive_factor,
         .metallic_factor = info.metallic_factor,
@@ -2106,6 +2115,8 @@ void MaterialContainer::registerMaterialVariants(
         registered_base.normal_texture;
     const auto emissive_texture =
         registered_base.emissive_texture;
+    const auto occlusion_texture =
+        registered_base.occlusion_texture;
     const auto base_color_factor =
         registered_base.base_color_factor;
     const auto emissive_factor =
@@ -2167,6 +2178,8 @@ void MaterialContainer::registerMaterialVariants(
                 normal_texture;
             registration.material.emissive_texture =
                 emissive_texture;
+            registration.material.occlusion_texture =
+                occlusion_texture;
             registration.material.base_color_factor =
                 base_color_factor;
             registration.material.emissive_factor =
@@ -2632,6 +2645,21 @@ MaterialContainer::RetiredTextureResources MaterialContainer::commitTextureRebin
 size_t MaterialContainer::referencingMaterialCountForTesting(GlobalTextureId texture) const {
     const auto found = texture_materials.find(texture);
     return found == texture_materials.end() ? 0 : found->second.size();
+}
+
+std::optional<GlobalTextureId>
+MaterialContainer::materialTextureForTesting(
+    GlobalMaterialId material, std::uint32_t binding) const {
+    const auto &registered = materials.get(material);
+    const auto found = std::find_if(
+        registered.texture_bindings.begin(),
+        registered.texture_bindings.end(),
+        [&](const auto &texture) {
+            return texture.binding == binding;
+        });
+    return found == registered.texture_bindings.end()
+               ? std::nullopt
+               : std::optional{found->texture};
 }
 
 size_t MaterialContainer::materialCapacityForTesting() const { return maxMaterials; }

@@ -77,7 +77,7 @@ TEST_CASE("SPIRV-Tools API linker remaps GLSL descriptors and validates warm/coo
         request.user_exports = {"pelican_surface"};
         auto linked = linkSpirvModules(request);
         REQUIRE_FALSE(linked.spirv.empty());
-        REQUIRE(hasBinding(linked, 7, "combined_image_sampler"));
+        REQUIRE(hasBinding(linked, 8, "combined_image_sampler"));
         REQUIRE(linked.cache_key.find("key-sha256=") != std::string::npos);
         if (!previous_key.empty()) REQUIRE(linked.cache_key != previous_key);
         previous_key = linked.cache_key;
@@ -178,8 +178,14 @@ TEST_CASE("SPV link accepts noinline Slang split texture sampler variant corpus"
         request.user_exports = {"pelican_surface"};
         const auto linked = linkSpirvModules(request);
         REQUIRE_FALSE(linked.spirv.empty());
-        REQUIRE(hasBinding(linked, 7, "sampled_image"));
-        REQUIRE(hasBinding(linked, 8, "sampler"));
+        REQUIRE(hasBinding(
+            linked,
+            PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING,
+            "sampled_image"));
+        REQUIRE(hasBinding(
+            linked,
+            PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING + 1,
+            "sampler"));
         if (!previous_key.empty()) REQUIRE(linked.cache_key != previous_key);
         previous_key = linked.cache_key;
     }

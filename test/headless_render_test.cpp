@@ -51,6 +51,7 @@
 #include <nlohmann/json.hpp>
 #include <span>
 #include <stdexcept>
+#include <vector>
 #include "ktx2_test_writer.hpp"
 #include "synthetic_stereo_target.hpp"
 
@@ -1698,6 +1699,8 @@ vec3 pelican_lighting_v1(
                     standard.normalDefaultTexture(),
                 .emissive_texture =
                     standard.emissiveDefaultTexture(),
+                .occlusion_texture =
+                    standard.occlusionDefaultTexture(),
             };
         };
 
@@ -2009,6 +2012,8 @@ TEST_CASE(
                 normal_texture,
             .emissive_texture =
                 black_texture,
+            .occlusion_texture =
+                white_texture,
         };
         applyLoweredMaterialForRoute(
             material, lowered);
@@ -3294,6 +3299,8 @@ vec3 pelican_lighting_v1(
                 normal_texture,
             .emissive_texture =
                 black_texture,
+            .occlusion_texture =
+                white_texture,
         };
         applyLoweredMaterialForRoute(
             material, lowered);
@@ -4279,6 +4286,8 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
                         standard.normalDefaultTexture(),
                     .emissive_texture =
                         standard.emissiveDefaultTexture(),
+                    .occlusion_texture =
+                        standard.occlusionDefaultTexture(),
                 };
                 applyLoweredMaterialForRoute(info, lowered);
                 return info;
@@ -5090,6 +5099,7 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
             .normal_texture = standard.normalDefaultTexture(),
             .emissive_texture = standard.emissiveDefaultTexture(),
+            .occlusion_texture = standard.occlusionDefaultTexture(),
         };
         applyLoweredMaterialForRoute(material, lowered);
         const auto material_id = GET_MODULE(MaterialContainer).registerMaterial(
@@ -5132,6 +5142,7 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 standard.metallicRoughnessDefaultTexture(),
             .normal_texture = standard.normalDefaultTexture(),
             .emissive_texture = standard.emissiveDefaultTexture(),
+            .occlusion_texture = standard.occlusionDefaultTexture(),
         };
         applyLoweredMaterialForRoute(refraction_material,
                                      refraction_lowered);
@@ -5603,7 +5614,6 @@ void pelican_surface_v1(
     surface.base_color = vec4(0.9, 0.9, 0.9, 1.0);
     surface.roughness = 0.6;
     surface.metallic = 1.0;
-    surface.occlusion = 1.0;
     surface.emissive = vec3(0.0);
 }
 )surface";
@@ -5685,6 +5695,17 @@ void pelican_surface_v1(
         const auto &standard =
             GET_MODULE(
                 StandardMaterialResource);
+        auto &materials =
+            GET_MODULE(MaterialContainer);
+        // glTF leaves metallicRoughness R undefined. R=0 reproduces the
+        // DamagedHelmet failure; absent occlusion must still resolve to white.
+        const std::array<std::uint8_t, 4>
+            zero_red_metallic_roughness{
+                0, 255, 255, 255};
+        const auto zero_red_metallic_roughness_texture =
+            materials.registerTexture(
+                vk::Extent3D{1, 1, 1},
+                zero_red_metallic_roughness.data());
         const auto make_material =
             [&](SurfaceShaderBundleIds shaders,
                 const LoweredMaterial &lowered) {
@@ -5702,18 +5723,24 @@ void pelican_surface_v1(
                         standard.normalDefaultTexture(),
                     .emissive_texture =
                         standard.emissiveDefaultTexture(),
+                    .occlusion_texture =
+                        standard.occlusionDefaultTexture(),
                 };
                 applyLoweredMaterialForRoute(
                     material, lowered);
                 return material;
             };
-        auto &materials =
-            GET_MODULE(MaterialContainer);
+        auto deferred_material_info =
+            make_material(
+                deferred_shaders,
+                deferred_lowered);
+        deferred_material_info
+            .metallic_roughness_texture =
+            zero_red_metallic_roughness_texture;
         const auto deferred_material =
             materials.registerMaterial(
-                make_material(
-                    deferred_shaders,
-                    deferred_lowered));
+                std::move(
+                    deferred_material_info));
         const auto forward_material =
             materials.registerMaterial(
                 make_material(
@@ -5874,6 +5901,8 @@ void pelican_surface_v1(
             std::size_t, 2>
             visible_pixels{
                 0u, 0u};
+        std::vector<std::uint8_t>
+            deferred_non_background;
         for (std::size_t y = 0;
              y < 32; ++y) {
             for (std::size_t x = 0;
@@ -5913,14 +5942,35 @@ void pelican_surface_v1(
                     distance > 20) {
                     ++visible_pixels[half];
                 }
+                if (half == 0 && distance > 20) {
+                    deferred_non_background.push_back(
+                        std::max({
+                            pixels[offset],
+                            pixels[offset + 1],
+                            pixels[offset + 2],
+                        }));
+                }
             }
         }
+        REQUIRE_FALSE(
+            deferred_non_background.empty());
+        std::ranges::sort(
+            deferred_non_background);
+        const auto deferred_median =
+            deferred_non_background[
+                deferred_non_background.size() /
+                2];
+        // The coupled MR.R path produces an 8-bit median at or below 2 here.
         INFO(
             "sky sum=" << corner_sum <<
             ", deferred max=" <<
             half_maximum[0] <<
             ", forward max=" <<
-            half_maximum[1]);
+            half_maximum[1] <<
+            ", deferred non-background median=" <<
+            static_cast<unsigned>(
+                deferred_median));
+        REQUIRE(deferred_median > 16);
         REQUIRE(
             half_maximum[0] >
             corner_sum + 20);
@@ -6278,6 +6328,8 @@ void pelican_material_outputs_v1(
                 standard.normalDefaultTexture(),
             .emissive_texture =
                 standard.emissiveDefaultTexture(),
+            .occlusion_texture =
+                standard.occlusionDefaultTexture(),
         };
         applyLoweredMaterialForRoute(
             material, lowered);

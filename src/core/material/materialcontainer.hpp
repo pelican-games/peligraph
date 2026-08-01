@@ -204,6 +204,7 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
         GlobalTextureId emissive_texture;
+        GlobalTextureId occlusion_texture;
         glm::vec4 base_color_factor{1.0f};
         glm::vec3 emissive_factor{1.0f};
         float metallic_factor = 1.0f;
@@ -338,6 +339,9 @@ DECLARE_MODULE(MaterialContainer) {
     size_t materialCountForTesting() const { return materials.size(); }
     size_t materialCapacityForTesting() const;
     size_t referencingMaterialCountForTesting(GlobalTextureId texture) const;
+    std::optional<GlobalTextureId>
+    materialTextureForTesting(GlobalMaterialId material,
+                              std::uint32_t binding) const;
     std::uint64_t materialDescriptorRevisionForTesting(GlobalMaterialId material) const {
         return materials.get(material).descriptor_revision;
     }

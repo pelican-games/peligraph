@@ -31,6 +31,7 @@ GlobalMaterialId registerTemplateMaterial() {
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
         .base_color_factor = {0.8f, 0.7f, 0.6f, 1.0f},
         .emissive_factor = {0.1f, 0.2f, 0.3f},
     };

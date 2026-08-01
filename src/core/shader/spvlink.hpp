@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pelican_sets.hpp"
+
 #include <cstdint>
 #include <span>
 #include <string>
@@ -31,8 +33,9 @@ struct SpvLinkRequest {
     // variant even when a particular source does not reference the define.
     std::vector<std::string> cache_salts;
     std::vector<std::string> preserved_descriptor_names;
-    std::uint32_t material_set = 2;
-    std::uint32_t first_free_material_binding = 7;
+    std::uint32_t material_set = PELICAN_SET_MATERIAL;
+    std::uint32_t first_free_material_binding =
+        PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING;
 };
 
 struct SpvLinkResult {

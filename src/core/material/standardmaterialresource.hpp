@@ -48,6 +48,7 @@ DECLARE_MODULE(StandardMaterialResource) {
     GlobalTextureId metallicRoughnessDefaultTexture() const { return tex_metallic_roughness_default; };
     GlobalTextureId normalDefaultTexture() const { return tex_normal_default; };
     GlobalTextureId emissiveDefaultTexture() const { return tex_emissive_default; };
+    GlobalTextureId occlusionDefaultTexture() const { return tex_white; };
     GlobalTextureId defaultTexture(MaterialDummyTexture fallback) const;
     ShaderBundleId gltfFragmentShader(
         const SurfaceFormatDocument &surface,

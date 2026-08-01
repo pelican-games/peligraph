@@ -118,8 +118,12 @@ TEST_CASE("experimental SPV link compiles B hooks with split descriptor types an
                                       item.descriptor_type == type;
                            });
     };
-    REQUIRE(has_binding(7, "sampled_image"));
-    REQUIRE(has_binding(8, "sampler"));
+    REQUIRE(has_binding(
+        PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING,
+        "sampled_image"));
+    REQUIRE(has_binding(
+        PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING + 1,
+        "sampler"));
 
     const auto variant = compileSurfaceShaders(compiler, surface, "wp78.surface",
                                                SurfacePass::main, {"PELICAN_VARIANT_WARM"});
@@ -409,14 +413,17 @@ void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
                     dimension);
         };
     require_image(
-        7, ReflectedImageViewDimension::two_d);
+        materialCustomTextureFirstBinding,
+        ReflectedImageViewDimension::two_d);
     require_image(
-        8, ReflectedImageViewDimension::cube);
+        materialCustomTextureFirstBinding + 1,
+        ReflectedImageViewDimension::cube);
     require_image(
-        9,
+        materialCustomTextureFirstBinding + 2,
         ReflectedImageViewDimension::two_d_array);
     require_image(
-        10, ReflectedImageViewDimension::three_d);
+        materialCustomTextureFirstBinding + 3,
+        ReflectedImageViewDimension::three_d);
 #if PELICAN_WITH_SPIRV_LINK
     {
         ScopedSpvLinkEnvironment linked_environment{

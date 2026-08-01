@@ -89,9 +89,9 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     REQUIRE(readAt<float>(lowered.values, 28) == Catch::Approx(42.0f));
     REQUIRE(readAt<float>(lowered.values, 0) == Catch::Approx(2.0f));
     REQUIRE(lowered.textures.size() == 3);
-    REQUIRE(lowered.textures[0].binding == 7);
+    REQUIRE(lowered.textures[0].binding == 8);
     REQUIRE(lowered.textures[0].view == LoweredTextureView::srgb);
-    REQUIRE(lowered.textures[1].binding == 8);
+    REQUIRE(lowered.textures[1].binding == 9);
     REQUIRE(lowered.textures[1].view == LoweredTextureView::unorm);
     REQUIRE(lowered.textures[1].reference ==
             "project://textures/custom_normal.png");
@@ -313,7 +313,7 @@ TEST_CASE("dump includes defines bindings values and render state", "[material-l
     const auto text = dumpLoweredMaterial(lowerSurfaceDefaults(surface, "wp76.surface"));
     REQUIRE(text.find("defines: []") != std::string::npos);
     REQUIRE(text.find("binding=6 type=storage_buffer name=MaterialBuffer") != std::string::npos);
-    REQUIRE(text.find("binding=7") != std::string::npos);
+    REQUIRE(text.find("binding=8") != std::string::npos);
     REQUIRE(text.find("tint type=color offset=48") != std::string::npos);
     REQUIRE(text.find("blend=additive cull=none") != std::string::npos);
 }

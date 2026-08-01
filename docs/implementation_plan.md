@@ -160,6 +160,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP242a | 影を落とせるライトを複数にする | ✅ 完了（2026-08-01）。inventory index 0 固定を解除し、forward/deferred を `pelican_lighting_v1.glsl` へ一本化。GPU gate 126/126 |
 | WP242b | point / spot の shadow view provider | **未着手**。provider は directional 1 種のみ。cube shadow は src/ に存在しない |
 | WP242c | 影のフィルタと bias の project 空間化 | **未着手**。単一タップ、bias と遮蔽値がハードコード |
+| WP243a | occlusion を metallicRoughness の R から読むのをやめる | ✅ 完了（2026-08-01）。set 2 binding 7 を独立 occlusion、custom texture を 8 以降へ移動。glTF 部分選択・project material・SPIR-V link ABI・画素閾値を固定。GPU 126/126、非GPU 945/945 |
 
 WP231〜237の受け入れ詳細:
 [`WP231`](design_reviews/2026-07-29_wp231_image_extent_compute_dispatch.md)、
@@ -1064,9 +1065,9 @@ forward へ遮蔽を導入するかは別途決めること。**「forward と d
 - `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
 
 **既存 golden への影響**: **golden は動かないのが正しい。** golden の
-マテリアルは `standardmaterialresource.cpp` の既定 metallicRoughness テクスチャ
-(`texdata_metallic_roughness[i * 4 + 0] = 255; // occlusion`)を使っており、
-R が既に 255 すなわち ao = 1.0 だからである。
+マテリアルは `standardmaterialresource.cpp` の独立した既定 occlusion テクスチャ(白)を
+使うため、ao = 1.0 である。既定 metallicRoughness の R も 255 のままだが、WP243a 後は
+occlusion として参照しない。
 **golden が赤くなったらそれは焼き直す対象ではなく回帰である。** 原因を潰すこと。
 これは上の受け入れ条件「occlusion テクスチャを持たないアセットの見た目が変わらない」
 と同じことを別の側から言っている。

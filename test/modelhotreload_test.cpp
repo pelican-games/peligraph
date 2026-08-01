@@ -175,6 +175,7 @@ TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]"
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
+        .occlusion_texture = standard.occlusionDefaultTexture(),
     };
     while (materials.materialCountForTesting() + 1 < materials.materialCapacityForTesting())
         (void)materials.registerMaterial(filler);

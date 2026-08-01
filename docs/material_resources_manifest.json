@@ -33,7 +33,8 @@
         {"binding": 4, "name": "vatPositionSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM", "optional": true},
         {"binding": 5, "name": "vatNormalSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM", "optional": true},
         {"binding": 6, "name": "MaterialBuffer", "type": "storage_buffer", "access": "read", "layout": "std430 array; custom value payload uses std140 member offsets"},
-        {"binding_range": [7, 31], "name": "surface textures", "type": "combined_image_sampler", "allocation": "declaration order", "view": "role color=SRGB, role data=UNORM"}
+        {"binding": 7, "name": "occlusionSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM"},
+        {"binding_range": [8, 32], "name": "surface textures", "type": "combined_image_sampler", "allocation": "declaration order", "view": "role color=SRGB, role data=UNORM"}
       ]
     },
     {

@@ -302,7 +302,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 
 ユーザーが気をつけること:
 
-1. **色テクスチャは sRGB で作る**(baseColor / emissive → SRGB view で自動デコード)。normal / metallicRoughness / データテクスチャはリニア(UNORM view)。`.surface` の custom texture は `color_space: srgb` 宣言で SRGB になります(§6.7)。
+1. **色テクスチャは sRGB で作る**(baseColor / emissive → SRGB view で自動デコード)。normal / metallicRoughness / occlusion / データテクスチャはリニア(UNORM view)。`.surface` の custom texture は `color_space: srgb` 宣言で SRGB になります(§6.7)。
 2. **シェーダに gamma 補正を書かない**。書くと二重変換になります。
 3. glTF の `baseColorFactor` / `emissiveFactor` / `COLOR_0` は**リニア値のままエンジンに入ります**(仕様どおり)。C++ 側でデバッグ色などを直書きするときは `Pelican::srgb(r,g,b)` ヘルパ([color.hpp](../../src/core/userpublic/color.hpp))。
 4. RT の `format_class` を使うと実 format はリゾルバが決めます: `scene` → HDR 時 `R16G16B16A16_SFLOAT` / SDR 時 `B8G8R8A8_SRGB`、`display` → `B8G8R8A8_SRGB`、`data` / `explicit(...)` → 宣言した `format` をそのまま使う(リゾルバは触りません — depth や float16 の data RT も普通にあります)。
@@ -338,7 +338,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 |---|---|---|
 | 0 | `PELICAN_SET_FRAME` | **全パイプライン共通の固定 layout**: binding 0 `FrameUBO` / 1 `ObjectBuffer` SSBO / 2 `LightUBO` / 3 `PreviousObjectBuffer`(velocity 用) / 4 `FrameResolutionUBO`。graphics/computeの両方でbindされ、シェーダが宣言する場合は一致必須 |
 | 1 | `PELICAN_SET_PASS_INPUT` | パス入力。fullscreen/compute/materialの通常経路はlogical nameからgenerated bindingへ解決。raw set 1は低レベルescape hatch |
-| 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 以降 = `.surface` の custom texture(宣言順) |
+| 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 = occlusion、8 以降 = `.surface` の custom texture(宣言順) |
 | 3 | `PELICAN_SET_FREE` | 名前に反して**大半はエンジンが所有**します: binding 0/1 = debug_draw / debug_text、2/3 = スキンパレット(現 / 前フレーム)、4-8 = morph(instance / weight / previous weight / metadata / delta)、9-11 = per-instance マテリアルオーバーライド(§6.8) |
 
 `FrameUBO`(全シェーダから読める・368B): `time` / `dt` / 64bit `frame_index` / 64bit `view_family_token` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection` / `jitter_ndc` / `previous_jitter_ndc` / `temporal_reset_epoch` / `previous_temporal_reset_epoch` / `view_index` / `view_count` / `clip_plane`。GLSL上は`frame_index.xy`が論理frame番号、`.zw`がstable family tokenで、`pelican_view_family_token()`から読めます。projection jitter が無効な既定構成では jitter は `(0, 0)` です。
