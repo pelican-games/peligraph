@@ -191,7 +191,7 @@ Inspector / Output の4パネルを stable object name を持つ dock として�
 タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を追加する
 場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
-中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L15) は
+中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L16) は
 `pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L16) で別 process
 として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
 [`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L24) が Windows style、parent、

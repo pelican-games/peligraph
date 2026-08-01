@@ -1,7 +1,5 @@
 #include "embeddedviewport.hpp"
 
-#include "viewportgeometry.hpp"
-
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -40,6 +38,7 @@ class NativeViewportSurface final : public QWidget {
     }
 
     std::function<void()> extent_changed;
+    std::function<void()> device_pixel_ratio_changed;
     std::function<void()> focus_requested;
 
   protected:
@@ -66,8 +65,8 @@ class NativeViewportSurface final : public QWidget {
 
     bool event(QEvent *event) override {
         const bool handled = QWidget::event(event);
-        if (event->type() == QEvent::DevicePixelRatioChange && extent_changed) {
-            extent_changed();
+        if (event->type() == QEvent::DevicePixelRatioChange && device_pixel_ratio_changed) {
+            device_pixel_ratio_changed();
         }
         return handled;
     }
@@ -131,7 +130,12 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
 
     auto *surface = new NativeViewportSurface(this);
     native_host_ = surface;
-    surface->extent_changed = [this]() { resizeEmbeddedWindow(); };
+    surface->extent_changed = [this]() {
+        requestEmbeddedWindowResize(ViewportExtentChangeKind::resize);
+    };
+    surface->device_pixel_ratio_changed = [this]() {
+        requestEmbeddedWindowResize(ViewportExtentChangeKind::device_pixel_ratio);
+    };
     surface->focus_requested = [this]() { focusEmbeddedWindow(); };
     layout->addWidget(native_host_, 1);
 
@@ -159,12 +163,19 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     pointer_focus_timer_ = new QTimer(this);
     pointer_focus_timer_->setInterval(5);
     pointer_focus_timer_->setTimerType(Qt::PreciseTimer);
+    resize_timer_ = new QTimer(this);
+    resize_timer_->setSingleShot(true);
+    resize_timer_->setTimerType(Qt::PreciseTimer);
+    resize_elapsed_.start();
 
     connect(restart_button_, &QPushButton::clicked, this, [this]() { startEngine(); });
     connect(stop_button_, &QPushButton::clicked, this, [this]() { stopEngine(); });
     connect(window_discovery_timer_, &QTimer::timeout, this, [this]() { discoverEngineWindow(); });
     connect(diagnostics_timer_, &QTimer::timeout, this, [this]() { updateDiagnostics(); });
     connect(pointer_focus_timer_, &QTimer::timeout, this, [this]() { pollPointerFocus(); });
+    connect(resize_timer_, &QTimer::timeout, this, [this]() {
+        applyEmbeddedWindowResizeDecision(resize_coalescer_.timerExpired(resize_elapsed_.elapsed()));
+    });
     connect(&process_, &EngineProcess::processStarted, this, [this](qint64 process_id) {
         restart_button_->setEnabled(false);
         stop_button_->setEnabled(true);
@@ -178,6 +189,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 window_discovery_timer_->stop();
                 diagnostics_timer_->stop();
                 pointer_focus_timer_->stop();
+                resize_timer_->stop();
+                resize_coalescer_.reset();
                 pointer_button_was_down_ = false;
                 child_window_ = 0;
                 last_requested_extent_ = {};
@@ -199,6 +212,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         window_discovery_timer_->stop();
         diagnostics_timer_->stop();
         pointer_focus_timer_->stop();
+        resize_timer_->stop();
+        resize_coalescer_.reset();
         pointer_button_was_down_ = false;
         restart_button_->setText(tr("Retry Engine"));
         restart_button_->setEnabled(true);
@@ -217,6 +232,7 @@ EmbeddedViewport::~EmbeddedViewport() {
     window_discovery_timer_->stop();
     diagnostics_timer_->stop();
     pointer_focus_timer_->stop();
+    resize_timer_->stop();
     if (!process_.isRunning()) {
         return;
     }
@@ -253,6 +269,8 @@ void EmbeddedViewport::startEngine() {
 
     child_window_ = 0;
     last_requested_extent_ = {};
+    resize_timer_->stop();
+    resize_coalescer_.reset();
     recent_output_.clear();
     restart_button_->setEnabled(false);
     stop_button_->setEnabled(true);
@@ -316,6 +334,7 @@ void EmbeddedViewport::discoverEngineWindow() {
 
     child_window_ = window;
     last_requested_extent_ = pixel_extent;
+    resize_coalescer_.reset(pixel_extent, resize_elapsed_.elapsed());
     window_discovery_timer_->stop();
     diagnostics_timer_->start();
     pointer_button_was_down_ = false;
@@ -323,13 +342,39 @@ void EmbeddedViewport::discoverEngineWindow() {
     updateDiagnostics();
 }
 
-void EmbeddedViewport::resizeEmbeddedWindow() {
+void EmbeddedViewport::requestEmbeddedWindowResize(ViewportExtentChangeKind kind) {
     if (child_window_ == 0 || !NativeWindowHost::isWindow(child_window_)) {
+        if (resize_timer_ != nullptr) {
+            resize_timer_->stop();
+        }
+        resize_coalescer_.reset();
         return;
     }
 
     const QSize pixel_extent =
         embeddedViewportPixelExtent(native_host_->size(), native_host_->devicePixelRatioF());
+    applyEmbeddedWindowResizeDecision(
+        resize_coalescer_.request(pixel_extent, resize_elapsed_.elapsed(), kind));
+}
+
+void EmbeddedViewport::applyEmbeddedWindowResizeDecision(
+    const ViewportResizeDecision &decision) {
+    if (decision.extent_to_apply) {
+        resizeEmbeddedWindow(*decision.extent_to_apply);
+    }
+
+    if (decision.next_wakeup_ms) {
+        resize_timer_->start(*decision.next_wakeup_ms);
+    } else {
+        resize_timer_->stop();
+    }
+}
+
+void EmbeddedViewport::resizeEmbeddedWindow(const QSize &pixel_extent) {
+    if (child_window_ == 0 || !NativeWindowHost::isWindow(child_window_)) {
+        return;
+    }
+
     if (pixel_extent == last_requested_extent_) {
         return;
     }
