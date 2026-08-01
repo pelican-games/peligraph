@@ -1276,6 +1276,180 @@ level 0 しか存在しない。加えて `materialcontainer.cpp` の標準サ�
 遮蔽を直した後も平坦に見える。**WP243a を直してから見た目を再評価し、
 そのうえで WP 化すること** — 遮蔽が 0 に潰れている間は必要量の判断ができない。
 
+### WP248〜251: devstudio D1(Qt エディタの立ち上げ)
+
+**方針**: [`design_devstudio_direction.md`](design_devstudio_direction.md) の D1
+「プロジェクトを開く + 埋め込みビューポートで実エンジン表示 + アウトライナ(読み取り専用)」。
+プロセス境界は同文書 §0.6 の決定(**別プロセス + ウィンドウ再親付け**)に従う。
+
+**依存の実状(2026-08-01 調査)**: 「D1 の依存 = 解釈レイヤのターゲット分離(WP44)」は
+完了しているが、**それだけでは D1 の看板機能が成立しない**。`project.json` を読むローダは
+`src/project/` に 1 件も無く `basicconfig.cpp` にあり、PathResolver も engine 側モジュールである。
+「エンジンを起動せずにシーンを表示する」には WP248 が要る。
+
+### WP248: プロジェクト封筒とパス解決を pelican_project へ
+
+**目的**: devstudio が**エンジンを起動せずに**プロジェクトを開けるようにする。D1 の前提。
+
+**現状**:
+
+- `basicconfig.cpp` が `pelican.project` の schema 定数と検証を持つ。`src/project/` 側には無い。
+- PathResolver は `pathresolver.hpp` の `DECLARE_MODULE(PathResolver)` で engine モジュール。
+  ただし同ヘッダの `parsePathReference()` は既にモジュール外の自由関数で、**純ロジックの
+  継ぎ目は既にある**。
+- [`implementation_archive.md`](implementation_archive.md) は WP18 の時点で
+  「PathResolver(モジュール)は**移動しない**(純ロジック分離は将来の別 WP)」と記録している。
+  **本 WP がその「将来の別 WP」である。**
+
+**実装範囲**:
+
+1. `pelican.project` 封筒の解析と検証を `pelican_project` へ移す。**engine 側は移した実装を
+   呼ぶだけにする** — 既定値と検証規則の所在を二重化しない(WP240b と同じ規律)。
+2. パス参照の解決のうち**純ロジック部分**を `pelican_project` へ分離する。
+   モジュールとしての PathResolver は engine 側に残してよいが、その中身は分離した
+   純ロジックを呼ぶ形にすること。
+3. **`pelican_project` のリンク面を増やさないこと。** 現在は
+   `PUBLIC nlohmann_json PRIVATE picosha2` だけで、Vulkan も quill も engine も引いていない。
+   ここに何かを足したらこの WP は失敗である。ログが要るなら戻り値で返す。
+
+**受け入れ条件**:
+
+- `pelican_project` だけをリンクした実行ファイルから、project.json を開いて
+  シーン一覧とアセット一覧が取れる(既存の `devcli` が先例。engine を引いていない)
+- `pelican_project` の `target_link_libraries` が増えていない
+- 封筒の検証規則が 1 箇所にしか無い(engine 側に写しが残っていない)
+- `ctest` 全数が緑、`git diff --check` クリーン
+
+依存: なし。見積: 中。**WP250 の前提**。
+
+### WP249: devstudio シェル — Widgets 化・D0 リンク境界・ドッキング・レイアウトプリセット
+
+**目的**: 休眠中の Qt 骨組みを、ドッキング可能なシェルとして起こす。
+**利用者の要望「GUI のドッキングとかレイアウトプリセットとかほしい」に直接応えるのはこの WP**で、
+**ビューポート(WP251)より先に入れられる**。
+
+**現状(調査済み)**:
+
+- 骨組みは 168 行。`uimain.cpp` が `QApplication`(`QGuiApplication` ではない)、
+  `mainwindow.hpp` が `QMainWindow` を継承しており、**既に Widgets 主体**である。
+  `mainwindow.cpp` の本体は `setCentralWidget(centralQml)` 一行に等しい。
+- Qt は `find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick QuickWidgets QuickControls2)` /
+  `qt_standard_project_setup(REQUIRES 6.10)`。**Widgets は既に要求済み**。
+- `src/devstudio/CMakeLists.txt` が `pelican_core` をリンクしており、**D0 に違反している**。
+  ただし devstudio のどの翻訳単位も Pelican のヘッダを include していない(Qt と argparse と
+  自前ヘッダのみ)ので、**ソース変更ゼロで外せる**。
+- CI は `docs/ci.md` の 2 箇所で `-DSKIP_DEVSTUDIO=ON` を指定している。
+
+**実装範囲**:
+
+1. **シェルは Qt Widgets、QML は葉のパネル内部に限る**、という規則を決めて文書に書くこと。
+   ドッキング(`QDockWidget`)とレイアウト保存(`QMainWindow::saveState`/`restoreState`)は
+   Widgets の機能で、QML には標準の対応物が無い。現在のファイル配置は逆を示唆しているので、
+   **明示的に書かないと後任が迷う**。
+2. `pelican_core` へのリンクを外し、`pelican_project` を明示的にリンクする。
+   **core の `pelican_project` は PRIVATE リンクなので `$<LINK_ONLY:>` として伝播し、
+   include ディレクトリは devstudio へ届かない。** 明示的に足すこと。
+3. **D0 のビルドレベル検査を成立させる。** devstudio が engine のシンボルに触れていないことを
+   機械的に確かめる形にすること。「触らないよう気をつける」では検査にならない。
+4. ドッキングとレイアウトプリセット。**プリセットの置き場は `user://` にしないこと** —
+   `user://` はプロジェクト単位(`%APPDATA%/pelican/<project_name>`)で、project.json に
+   `name` が無いと名指しのエラーになり、しかもその解決器は engine モジュールで D0 に反する。
+   全体プリセットは devstudio 自身のディレクトリ、プロジェクトごとの最後の配置は
+   `<project>/.pelican/`(既に `.gitignore` 済みのツール出力先)を推奨する。
+   `saveState`/`restoreState` の版管理を必ず入れること(版無しで復元すると壊れる)。
+5. `view/CMakeLists.txt` の `set(CMAKE_AUTOMOC ON)` は**死んでいる** — ターゲットは
+   `devstudio/CMakeLists.txt` で先に作られており、この変数は届かない。moc が動いているのは
+   `qt_standard_project_setup` の副作用である。ターゲット属性として設定し直すこと。
+6. CI の扱いを決めること。既定ビルドを Qt 無しに保つのか、devstudio のコンパイル確認を
+   別ジョブで入れるのか。**決めた方を `docs/ci.md` に書くこと。**
+
+**受け入れ条件**:
+
+- devstudio が `pelican_core` をリンクしていない。かつそれが**機械的に検査される**
+- パネルがドッキング・タブ化でき、レイアウトを名前を付けて保存・復元できる
+- レイアウトファイルに版が入っており、版違いを読んだときに壊れず既定へ落ちる
+- `-DSKIP_DEVSTUDIO=ON` の既定ビルドが従来どおり通る
+- `ctest` 全数が緑、`git diff --check` クリーン
+
+**テストできることの限界**: Qt の GUI そのものは自動検証しない。**リンク境界の検査と、
+レイアウトの保存・復元・版違いの取り扱いは view から切り離せばテストできる**。
+受け入れ条件に「ビューポートに絵が出る」のような検証不能な項目を書かないこと。
+
+依存: なし。見積: 中。**利用者の要望に最短で応える WP**。
+
+### WP250: 読み取り専用アウトライナ(pelican_project 直リンク)
+
+**目的**: プロジェクトを開いてシーンとオブジェクトの木を表示する。エンジン起動を要さない。
+
+**特に外しやすい点 — オブジェクトの同一性を名前で引かないこと**:
+
+`sceneformat.cpp` のとおり `name` は**任意**であり、一意性は名前を持つものの間でしか
+強制されない。実測では `projects/example/scenes/main.scene.json` の `default_scene` は
+**46 オブジェクト中 14 個しか名前を持たない**(親を持つものは 0)。名前をキーにすると
+残り 32 個が空キーに潰れる。engine 側には既に代替規則があり、
+`authoringscenedocument.cpp` の `runtimeObjectIdentityName` が
+`pelican://scene/<id>/authoring-object/<n>` を組む。**アウトライナも
+(scene_id, 宣言順の索引) を同一性の基礎にすること。**
+
+**rpc 側との突き合わせは今日できない(D2 への申し送り)**: `editorcommandservice.cpp` の
+オブジェクト出力は `name` が無ければ省略し、宣言順の索引を一度も出さない。
+`authoring_object_id` はセッション内で単調増加する採番で、文書から再現できない。
+直リンクで見た木と rpc で見た木を対応付けるには、**rpc 側に宣言順の索引を出す変更**が要る。
+D0 の 2「編集系 rpc を先に定義する」に従い、**その rpc 変更をこの WP で行うか、
+D2 の先頭で行うかを決めて書くこと**。
+
+**実装範囲**:
+
+1. WP248 で移した封筒解析を使ってプロジェクトを開き、シーン一覧を出す。
+2. シーンごとのオブジェクト木を出す。同一性は上記のとおり。表示名が無いものには
+   engine と**同じ規則**の代替名を使うこと(規則を二重に実装しない)。
+3. 読み取り専用。この WP では編集しない。
+
+**受け入れ条件**:
+
+- 名前を持たないオブジェクトが 1 つずつ別行として並ぶ(潰れない)
+- `projects/example` を開いて 2 シーン・46 と 2 オブジェクトが出る
+- モデル層が view から分離されており、上記が headless にテストされている
+- devstudio が `pelican_core` をリンクしていない(WP249 の検査が生きている)
+- `ctest` 全数が緑
+
+依存: **WP248**(封筒とパス解決)、**WP249**(シェル)。見積: 中。
+
+### WP251: 埋め込みビューポート(別プロセス + ウィンドウ再親付け)
+
+**目的**: エディタ内に本物のエンジンのピクセルを出す。D1 の最後の一片。
+
+**方式**: [`design_devstudio_direction.md`](design_devstudio_direction.md) §0.6 の決定に従い、
+devstudio が `pelican_player` を**子プロセス**として起動し、そのウィンドウを Qt のコンテナへ
+再親付けする。子プロセスが自分のスワップチェーンへ描き OS が合成するので、
+**読み戻しもコピーもプロセス間転送も無い**。
+
+**実装範囲**:
+
+1. 子プロセスの起動・監視・終了。**エンジンが落ちてもエディタが生き残ること**
+   (この方式を選んだ利点の 1 つであり、実際にそう振る舞うことを確かめる)。
+2. ウィンドウの再親付けと寸法追従。
+3. **既存の窓まわりの契約を尊重すること。** WP215(トランザクショナルな window output root /
+   frame token)、WP216(nonblocking SwapchainEpoch)、WP217(SurfaceEpoch の再生成と
+   support 再検証)が確立した規約の**中で**生きること。親が寸法を変える経路は、
+   これらにとって新しい入力である。**独自の再生成経路を作らない。**
+4. §4-1 の未決事項に決着をつける。**実測すること** — 入力フォーカス、キーボードの経路、
+   DPI、z 順が実用に耐えるか。耐えなければそう報告し、同一プロセス案の再検討材料にすること
+   (§0.6 のとおり、その場合に作り直しになるのはビューポート結線だけである)。
+
+**受け入れ条件**:
+
+- Qt のパネル内にエンジンの描画が出て、パネルの寸法変更に追従する
+- 子プロセスを強制終了してもエディタが落ちない
+- headless / rpc 経路が従来どおり動く(§1-3「headless/rpc 経路には影響を与えない」)
+- 既存の window / swapchain のテストが緑のまま
+- `ctest` 全数が緑
+
+**テストできることの限界**: 「絵が出る」ことは自動検証しない。**子プロセスの生死、
+寸法追従の計算、headless 経路の非回帰**は検証できる。実測結果は PR 本文に数値で書くこと。
+
+依存: **WP249**(シェル)。WP250 とは独立で並行可。見積: 大。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
