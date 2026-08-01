@@ -17,7 +17,9 @@
 
 > **設計決定(D0 の具体化 — 編集 API は RPC ひとつだけ):** 編集操作は**まず RPC メソッドとして定義**され、エンジン内の ImGui インスペクタも、外部の Python クライアントも、将来の Qt エディタも、**同じ関数を呼ぶ**。エディタ専用の裏口 API は作らない。結果として「人間の GUI 操作」と「エージェントの自動操作」が同じ意味論・同じテストになる。
 
-⚠ 用語の注意: この章でいう「エディタ」は次の 2 つを指します。**Qt 版の Pelican Studio(`pelican_studio`)は今も骨組みのままで、これらをまだ呼んでいません**([第10章](10_tools.md) §10.7)。
+⚠ 用語の注意: この章でいう「エディタ」は次の 2 つを指します。Qt 版の Pelican
+Studio(`pelican_studio`)には Widgets shell と別 process player の native viewport が入りましたが、
+**この章の編集 RPC はまだ呼んでいません**([第10章](10_tools.md) §10.7)。
 
 1. **編集 RPC**(この章の §13.3〜§13.8)
 2. **エンジン内蔵の ImGui パネル**(§13.9 — Object Tree / Inspector / Asset Browser)
@@ -303,7 +305,8 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | 隔離プレビュー(描画) | 🚧WP172(契約は完成・**絵は模式図**) |
 | チケットプレビューの対象拡大 | 🚧(transform / light のみ) |
 | GUI と RPC の同居 | 📐未実装 |
-| Qt Studio からの利用(D1〜D3) | 📐未着手 |
+| Qt Studio shell / native engine viewport | ✅WP249/251 |
+| Qt Studio からの編集 RPC 利用(D2〜D3) | 📐未着手 |
 | ピッキング・ギズモ | 📐未実装 |
 
 ## 関連文書

@@ -178,15 +178,26 @@ flowchart LR
     Main["devstudio main"] --> UI["uimain / QApplication"]
     UI --> Window["MainWindow / QMainWindow"]
     Window --> Workspace["central workspace"]
+    Workspace --> Viewport["EmbeddedViewport / native host"]
+    Viewport --> Process["EngineProcess / QProcess"]
+    Process --> Player["pelican_player / foreign child HWND"]
     Window --> Docks["QDockWidget panels"]
     Window --> Layout["LayoutPresetManager"]
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L68) は Project / Outliner /
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L69) は Project / Outliner /
 Inspector / Output の4パネルを stable object name を持つ dock として作ります。パネルは移動、float、
 タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を追加する
 場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
+
+中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L15) は
+`pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L16) で別 process
+として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
+[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L24) が Windows style、parent、
+focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。したがって
+resize は player の通常の GLFW framebuffer callback から既存の Surface/Swapchain epoch 経路へ
+入ります。player が終了しても Studio は残り、viewport から再起動できます。
 
 [`LayoutPresetManager`](../../src/devstudio/layoutpreset.hpp#L26) は view から独立した Qt Core の
 ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
@@ -207,12 +218,16 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L178) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L184) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L56) が
 GUI なしで検査します。RPC の object query はまだ declaration index を返さないため直リンク木との
 対応付けは行いません。D2 は選択・編集 UI より先に、その index を RPC 契約へ追加する変更から
 始めます。
+
+中央 viewport の process/window 結線も実装済みです(WP251)。ただし viewport と
+Project / Outliner / Inspector の間の project 選択連携、scene 編集、engine RPC は未接続です。
+**子 process 管理を編集 IPC の実装済みと解釈してはいけません。**
 
 > **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
 
@@ -479,7 +494,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1477) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1489) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

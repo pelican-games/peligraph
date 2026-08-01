@@ -18,7 +18,7 @@
 | `pelican_player` | exe | build ツリー内(`build/src/player/<Config>/`) | ゲームランタイム。ウィンドウ / ヘッドレス / RPC の 3 モード |
 | `pelican_game_logic` | **DLL**(`PELICAN_PROJECT` 指定時) | player と同ディレクトリ | プロジェクトの `code/` のビルド産物(✅WP90 で静的リンクから移行) |
 | `pelican_cli` | exe | `dist/`(Debug は `dist_debug/`) | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
-| `pelican_studio` | exe(Qt6) | `dist/`(同上) | エディタ。現状はダミー画面のみ(§10.8) |
+| `pelican_studio` | exe(Qt6) | `dist/`(同上) | Widgets エディタ shell + 別 process engine viewport(§10.7) |
 | `pelican-spv-link` | exe | build 内 | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
 | `pelican_project` | 静的 lib | build 内 | 解釈レイヤ(JSON パース/検証の純ロジック) |
 | `pelican_core` | 静的 lib | build 内+`dist/lib` | エンジン本体。公開ヘッダは `dist/lib/include` へコピー |
@@ -333,15 +333,28 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 
 ## 10.7 Pelican Studio(devstudio)
 
-**現状 🚧: Qt + QML の骨組みのみ**(ダミー画面)。起動は `cmake --build ./build --target run_studio`。
+**現状 🚧: Qt Widgets の editor shell と別 process engine viewport まで実装済み。**
+起動は `cmake --build ./build --target run_studio`。
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
 
-共通editor基盤はWP149〜172で実装済みです: authoring document、typed
-query/edit、CAS/journal、undo/redo、atomic save、snapshot import、watch、
-isolated preview。未着手なのはQt client側のD1 embedded viewportとD2
-picking/gizmo、複数client WebSocketです。ツール自作の入口は
-`pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGuiの三つです。
+中央 viewport は `pelican_player` を子 process として起動し、Windows の native HWND を
+Qt host へ再親付けします。player が自分の swapchain へ描いて OS が合成するため、pixel readback、
+copy、process 間 frame 転送はありません。player が終了しても Studio は残り、`Restart Engine`
+から再起動できます。既定では Studio と同じ directory、次に
+`../build/src/player/Debug/pelican_player.exe` を探します。開発時の明示 override は次です:
+
+```powershell
+$env:PELICAN_STUDIO_PLAYER = "C:/path/to/pelican_player.exe"
+$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--project C:/path/to/project"
+dist_debug/pelican_studio.exe
+```
+
+共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
+CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
+process/window 結線は WP251 で入りましたが、project 選択と player 引数の UI 連携、編集 RPC、
+D2 picking/gizmo、複数 client WebSocket は未接続です。ツール自作の入口は
+`pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤
 

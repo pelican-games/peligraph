@@ -111,8 +111,33 @@ window shell、dock、レイアウトメニュー、プリセット永続化を�
 
 ## 4. 未決事項
 
-1. Qt バージョンと Vulkan 埋め込み方式(QVulkanWindow vs ネイティブ HWND 埋め込み)
-   — D1 設計時に実測で決める
+1. **解決済み(WP251、2026-08-01)**: Qt 6.10.3 と、§0.6 の別プロセス
+   `pelican_player` のネイティブ HWND 再親付けを採用する。QVulkanWindow による
+   同一プロセス化は D0 のリンク境界を壊すため採らない。実測結果と制約は §4.1。
 2. エディタ内ビルド連携(G1b の PELICAN_PROJECT ビルドをエディタから叩くか)
 3. web デザインシステムとのトークン対応表の管理場所
 4. 複数プロジェクト同時編集(v1 はしない)
+
+### 4.1 WP251 ネイティブ HWND 埋め込み実測(2026-08-01)
+
+実測環境は Windows NT 10.0.26200.0、Qt 6.10.3、2560x1440 の 96 DPI モニターである。
+`dist_debug/pelican_studio.exe` から `build/src/player/Debug/pelican_player.exe` を起動し、
+`projects/sprite_demo` を表示した。モックウィンドウではなく実際の Studio / GLFW HWND に
+クリック・キーの Windows メッセージを通し、focus HWND/PID、player の入力収録、
+`GetDpiForWindow`、`WindowFromPoint`、client rect を記録した。クリックは物理 HID ではなく
+実 HWND の WndProc と GLFW の mouse capture を通す自動操作である。強制終了は別の実 player
+プロセスに `TerminateProcess` を行った。
+
+| 項目 | 実測値と観察 | 判定 |
+|------|--------------|------|
+| 入力フォーカス | Studio PID 46484 から player PID 55364 の描画面をクリックすると focus PID は 55364、Qt の Output をクリックすると 46484、player を再クリックすると 55364 へ移った。GLFW の外部子 HWND は Qt の mouse event を覆うため、埋め込み中だけ 5 ms 間隔で child thread の mouse capture を検出して focus を渡す。 | 実用可。player と Qt の双方向移動を確認。 |
+| キーボード経路 | player focus 中に player HWND へ送った入力の収録は `F1` down/up、`D` down/文字 `d`/up、`LeftControl` down・`S` down/文字 `s`・up・Control up を各 1 系列記録した。Qt focus へ戻して Studio HWND へ送った `Ctrl+S` では player event は 0 件増加だった。現時点の Studio shell には `Ctrl+S` QAction 自体がなく、保存 shortcut との機能競合はまだ発生しない。 | **条件付き**。実 HWND 間の target 分離は確認したが、物理 HID と将来の global shortcut の arbitration は未実測。global shortcut 追加時に engine focus 中の扱いを明示する。 |
+| DPI | 通常時は host/player とも 96 DPI、per-monitor aware、775x482 px で矩形一致。`QT_SCALE_FACTOR=1.5` の Qt 150% 経路では host/player とも 1193x722 px で矩形一致した。通常時比は幅 1.539、高さ 1.498(文字・dock の再レイアウトを含む)。ただし OS が返す DPI は両 process とも 96 のままである。 | **条件付き**。DPR による再親付け寸法は通ったが、実 144-DPI モニターおよび monitor 間移動はこの機材では未実測。player 内容の実 DPI scale の合否にはしない。 |
+| z 順 | player は host の直接の `WS_CHILD` で top child かつ host と矩形一致し、隣接する Project / Inspector / Output dock へはみ出さなかった。Layout の実サブメニューを player と画面座標 `280,143-383,157` で重ねた点の `WindowFromPoint` は Studio PID 46484 を返し、画面上もメニューが前面だった。 | 実用可。dock の overdraw と menu が native child の後ろへ沈む症状なし。 |
+| リサイズ追従 | Studio を 1296x839 から 1016x659 へ変更し、viewport は 775x482 から 770x302 px へ追従した。最終 build の 2 ms polling では host 変化開始 19 ms、最後の不一致 22 ms、20 ms 連続一致を 45 ms で確認。不一致は 2 sample、最大差 5x180 px。同手順の直前 run は 20/29/52 ms、4 sample だった。さらに 300 ms 後には host/player の矩形が完全一致した。scene 背景も host 背景も黒いため、色だけによる黒帯の識別はできない。 | **条件付きで実用可**。反復実測で最大 29 ms の過渡的な寸法差は存在し、過渡的な黒帯なしとは断定しない。独自 swapchain 再生成はなく、`SetWindowPos` が既存 GLFW framebuffer callback と WP215〜217 の epoch 経路へ入力される。 |
+| 子プロセス強制終了 | player を exit code 251 で強制終了し、終了検知後 2 秒でも Studio の process と window は生存。viewport は黒背景と `Restart Engine` を表示した。 | 実用可。engine crash は editor crash に波及しない。 |
+
+以上から Windows ネイティブ HWND 方式は D1 のビューポート結線として採用を維持する。
+実 144-DPI monitor の未実測は方式決定を覆す failure とは扱わないが、対応機材での
+per-monitor DPI 移動試験を将来の platform matrix に残す。再親付け後も Studio と player の
+DPI awareness が揃わない構成は許容しない。

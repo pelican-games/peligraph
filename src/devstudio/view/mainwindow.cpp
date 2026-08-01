@@ -1,4 +1,5 @@
 #include "mainwindow.hpp"
+#include "../viewport/embeddedviewport.hpp"
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -97,6 +98,11 @@ void MainWindow::createWorkspace() {
     workspace_layout->addWidget(workspace_hint);
     workspace_layout->addStretch();
     setCentralWidget(workspace);
+
+    workspace_hint->hide();
+    workspace_layout->setStretch(0, 0);
+    workspace_layout->setStretch(3, 0);
+    workspace_layout->addWidget(new EmbeddedViewport(workspace), 1);
 
     project_list_ = new QListWidget(this);
     project_list_->addItem(tr("No project open"));
