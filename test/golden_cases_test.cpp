@@ -14,6 +14,12 @@ TEST_CASE("B-layer directional shadow is visible and copied features are equival
 }
 
 TEST_CASE(
+    "multiple directional lights cast matching forward and deferred shadows",
+    "[golden][headless][shadow][wp242a]") {
+    GoldenHarness::runMultiLightDirectionalShadows();
+}
+
+TEST_CASE(
     "planar reflection executes a clipped secondary view family on the GPU",
     "[golden][headless][reflection][view-family]") {
     GoldenHarness::runPlanarReflection();

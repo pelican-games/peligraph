@@ -6,6 +6,7 @@
 #include "../src/project/renderpipeline.hpp"
 
 #include <bit>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -196,6 +197,66 @@ TEST_CASE(
             packed.elements[
                 last_record + 1]
                 .x) == 30.0f);
+}
+
+TEST_CASE(
+    "directional shadow data packs a compact light-major cascade table",
+    "[light][shadow][multi-light][wp242a]") {
+    const std::array<std::uint32_t, 2>
+        inventory_indices{2, 11};
+    std::array<glm::mat4, 6> matrices{};
+    for (std::size_t matrix = 0;
+         matrix < matrices.size(); ++matrix) {
+        matrices[matrix] = glm::mat4{1.0f};
+        matrices[matrix][3] =
+            glm::vec4{
+                static_cast<float>(matrix + 1),
+                static_cast<float>(matrix + 2),
+                static_cast<float>(matrix + 3),
+                1.0f};
+    }
+
+    const auto packed =
+        packDirectionalShadowDataV1(
+            inventory_indices, 3, matrices);
+
+    REQUIRE(packed.shadow_light_count == 2);
+    REQUIRE(packed.cascade_count == 3);
+    REQUIRE(packed.elements.size() == 27);
+    REQUIRE((
+        packed.elements[0] ==
+        glm::uvec4{
+            directionalShadowDataV1Magic,
+            directionalShadowDataV1Version,
+            2, 3}));
+    REQUIRE((
+        packed.elements[1] ==
+        glm::uvec4{2, 3, 0, 3}));
+    REQUIRE((
+        packed.elements[2] ==
+        glm::uvec4{11, 15, 3, 3}));
+    for (std::size_t matrix = 0;
+         matrix < matrices.size(); ++matrix) {
+        for (glm::length_t column = 0;
+             column < 4; ++column) {
+            REQUIRE(
+                packed.elements[
+                    3 + matrix * 4 +
+                    static_cast<std::size_t>(
+                        column)] ==
+                std::bit_cast<glm::uvec4>(
+                    matrices[matrix][column]));
+        }
+    }
+
+    const std::array<std::uint32_t, 2>
+        duplicate_indices{2, 2};
+    REQUIRE_THROWS(
+        packDirectionalShadowDataV1(
+            duplicate_indices, 3, matrices));
+    REQUIRE_THROWS(
+        packDirectionalShadowDataV1(
+            inventory_indices, 2, matrices));
 }
 
 TEST_CASE(
