@@ -47,6 +47,13 @@ DECLARE_MODULE(VulkanUtils) {
                                          vk::DeviceSize bytes_num,
                                          std::span<const vk::BufferImageCopy> regions,
                                          const ImageTransferInfo &info);
+    static void requireLinearBlitSupport(
+        vk::Format format,
+        vk::FormatFeatureFlags optimal_tiling_features);
+    void safeTransferMemoryToImageAndGenerateMipmaps(
+        const ImageWrapper &image, const void *src,
+        vk::DeviceSize bytes_num,
+        const ImageTransferInfo &info);
 
     void bufferCopy(const BufferWrapper &src, const BufferWrapper &dst, vk::DeviceSize src_offset,
                     vk::DeviceSize dst_offset, vk::DeviceSize bytes_num);

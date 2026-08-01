@@ -1396,6 +1396,24 @@ gpuArenaRegistryDependencies() {
 
 } // namespace
 
+TEST_CASE("GPU mip generation rejects missing linear-blit features with a named format",
+          "[headless][render][mipmap]") {
+    const auto required =
+        vk::FormatFeatureFlagBits::eBlitSrc |
+        vk::FormatFeatureFlagBits::eBlitDst |
+        vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+    REQUIRE_NOTHROW(VulkanUtils::requireLinearBlitSupport(
+        vk::Format::eR8G8B8A8Unorm, required));
+    REQUIRE_THROWS_WITH(
+        VulkanUtils::requireLinearBlitSupport(
+            vk::Format::eR8G8B8A8Unorm, {}),
+        Catch::Matchers::ContainsSubstring("R8G8B8A8Unorm") &&
+            Catch::Matchers::ContainsSubstring("BLIT_SRC") &&
+            Catch::Matchers::ContainsSubstring("BLIT_DST") &&
+            Catch::Matchers::ContainsSubstring(
+                "SAMPLED_IMAGE_FILTER_LINEAR"));
+}
+
 TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headless][render]") {
     setupLogger();
     std::filesystem::path temp_dir;
@@ -1443,17 +1461,33 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
                 vk::Extent3D{4, 4, 1}, checker_pixels.data());
         REQUIRE(GET_MODULE(MaterialContainer)
                     .textureMipLevelsForTesting(mipmapped_texture) == 3);
-        const std::vector<uint8_t> expected_filtered_mip{
-            128, 128, 128, 255,
-            128, 128, 128, 255,
-            128, 128, 128, 255,
-            128, 128, 128, 255,
+        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                    mipmapped_texture, 0) ==
+                std::vector<uint8_t>(checker_pixels.begin(),
+                                     checker_pixels.end()));
+        const auto require_neutral_filtered_mip = [](
+            const std::vector<uint8_t> &pixels,
+            std::size_t expected_pixel_count) {
+            REQUIRE(pixels.size() == expected_pixel_count * 4);
+            for (std::size_t pixel = 0;
+                 pixel < expected_pixel_count; ++pixel) {
+                INFO("filtered mip pixel " << pixel);
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const auto value = pixels[pixel * 4 + channel];
+                    REQUIRE(value >= 126);
+                    REQUIRE(value <= 129);
+                }
+                REQUIRE(pixels[pixel * 4 + 3] == 255);
+            }
         };
-        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
-                    mipmapped_texture, 1) == expected_filtered_mip);
-        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
-                    mipmapped_texture, 2) ==
-                std::vector<uint8_t>{128, 128, 128, 255});
+        require_neutral_filtered_mip(
+            GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                mipmapped_texture, 1),
+            4);
+        require_neutral_filtered_mip(
+            GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                mipmapped_texture, 2),
+            1);
         const auto ktx_bytes = TestKtx2::makeRgba8Srgb188();
         const auto ktx_loaded = loadImageMemory(ktx_bytes, "headless-known-188.ktx2");
         REQUIRE(static_cast<unsigned>(ktx_loaded.pixels.front()) == 188);
@@ -1465,6 +1499,12 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         REQUIRE(ktx_color_view);
         REQUIRE(ktx_data_view != ktx_color_view);
         REQUIRE(GET_MODULE(MaterialContainer).textureMipLevelsForTesting(ktx_texture) == 2);
+        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                    ktx_texture, 0) ==
+                std::vector<uint8_t>(16, 188));
+        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                    ktx_texture, 1) ==
+                std::vector<uint8_t>(4, 188));
         const std::array clears{
             vk::ClearColorValue{std::array{1.0f, 0.0f, 0.0f, 1.0f}},
             vk::ClearColorValue{std::array{0.0f, 0.0f, 1.0f, 1.0f}},

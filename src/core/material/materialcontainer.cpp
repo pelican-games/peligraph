@@ -1442,11 +1442,6 @@ vk::Sampler MaterialContainer::materialTextureSampler(
 
 namespace {
 
-struct Rgba8MipChain {
-    std::vector<std::uint8_t> pixels;
-    std::vector<vk::BufferImageCopy> regions;
-};
-
 std::uint32_t fullMipLevelCount(vk::Extent3D extent) {
     auto longest_side = std::max(extent.width, extent.height);
     std::uint32_t levels = 1;
@@ -1457,8 +1452,9 @@ std::uint32_t fullMipLevelCount(vk::Extent3D extent) {
     return levels;
 }
 
-Rgba8MipChain makeRgba8MipChain(vk::Extent3D extent, const void *data,
-                                vk::DeviceSize bytes_num) {
+std::uint32_t validateRgba8MipInput(
+    vk::Extent3D extent, const void *data,
+    vk::DeviceSize bytes_num) {
     if (extent.width == 0 || extent.height == 0 || extent.depth != 1) {
         throw std::runtime_error(
             "RGBA8 material textures require a non-zero 2D extent");
@@ -1485,90 +1481,7 @@ Rgba8MipChain makeRgba8MipChain(vk::Extent3D extent, const void *data,
         throw std::runtime_error(
             "RGBA8 material texture exceeds host address space");
     }
-
-    Rgba8MipChain chain;
-    chain.pixels.resize(static_cast<std::size_t>(base_bytes));
-    std::memcpy(chain.pixels.data(), data, chain.pixels.size());
-    chain.regions.reserve(fullMipLevelCount(extent));
-
-    auto add_region = [&](std::uint32_t mip, vk::DeviceSize offset,
-                          std::uint32_t width, std::uint32_t height) {
-        vk::BufferImageCopy copy;
-        copy.bufferOffset = offset;
-        copy.imageSubresource = {
-            vk::ImageAspectFlagBits::eColor, mip, 0, 1};
-        copy.imageExtent = vk::Extent3D{width, height, 1};
-        chain.regions.push_back(copy);
-    };
-    add_region(0, 0, extent.width, extent.height);
-
-    std::uint32_t source_width = extent.width;
-    std::uint32_t source_height = extent.height;
-    std::size_t source_offset = 0;
-    for (std::uint32_t mip = 1;
-         source_width > 1 || source_height > 1; ++mip) {
-        const auto destination_width =
-            std::max<std::uint32_t>(1, source_width / 2);
-        const auto destination_height =
-            std::max<std::uint32_t>(1, source_height / 2);
-        const auto destination_offset = chain.pixels.size();
-        const auto destination_bytes =
-            static_cast<std::size_t>(destination_width) *
-            destination_height * bytes_per_pixel;
-        if (destination_bytes >
-            chain.pixels.max_size() - chain.pixels.size()) {
-            throw std::runtime_error(
-                "RGBA8 material mip chain exceeds host address space");
-        }
-        chain.pixels.resize(chain.pixels.size() + destination_bytes);
-
-        for (std::uint32_t y = 0; y < destination_height; ++y) {
-            const auto source_y_begin = y * source_height /
-                                        destination_height;
-            const auto source_y_end = (y + 1) * source_height /
-                                      destination_height;
-            for (std::uint32_t x = 0; x < destination_width; ++x) {
-                const auto source_x_begin = x * source_width /
-                                            destination_width;
-                const auto source_x_end = (x + 1) * source_width /
-                                          destination_width;
-                const auto sample_count =
-                    (source_x_end - source_x_begin) *
-                    (source_y_end - source_y_begin);
-                const auto destination_pixel =
-                    destination_offset +
-                    (static_cast<std::size_t>(y) * destination_width + x) *
-                        bytes_per_pixel;
-                for (std::size_t channel = 0; channel < bytes_per_pixel;
-                     ++channel) {
-                    std::uint32_t sum = 0;
-                    for (auto source_y = source_y_begin;
-                         source_y < source_y_end; ++source_y) {
-                        for (auto source_x = source_x_begin;
-                             source_x < source_x_end; ++source_x) {
-                            const auto source_pixel =
-                                source_offset +
-                                (static_cast<std::size_t>(source_y) *
-                                     source_width +
-                                 source_x) *
-                                    bytes_per_pixel;
-                            sum += chain.pixels[source_pixel + channel];
-                        }
-                    }
-                    chain.pixels[destination_pixel + channel] =
-                        static_cast<std::uint8_t>(
-                            (sum + sample_count / 2) / sample_count);
-                }
-            }
-        }
-
-        add_region(mip, destination_offset, destination_width,
-                   destination_height);
-        source_width = destination_width;
-        source_height = destination_height;
-        source_offset = destination_offset;
-    }
-    return chain;
+    return fullMipLevelCount(extent);
 }
 
 } // namespace
@@ -1583,15 +1496,13 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const bool rgba8 = format == vk::Format::eR8G8B8A8Unorm;
     // A raw glTF image can feed both data (UNORM) and color (SRGB) material
-    // bindings, so registration has no single color-space role to target.
-    // Generate deterministic box-filtered stored values. The paired SRGB view
-    // continues to apply its transfer function only when the mip is sampled.
-    const auto mip_chain = rgba8
-                               ? makeRgba8MipChain(extent, data, bytes_num)
-                               : Rgba8MipChain{};
+    // bindings. Vulkan decodes an SRGB image before a linear blit, but this
+    // backing image is created as UNORM; SRGB is only a mutable sampling view.
+    // The GPU therefore filters stored values, matching WP246's encoded-value
+    // averaging rather than applying a color-only transfer function.
     const auto mip_levels = rgba8
-                                ? static_cast<std::uint32_t>(
-                                      mip_chain.regions.size())
+                                ? validateRgba8MipInput(
+                                      extent, data, bytes_num)
                                 : 1u;
     const std::array mutable_formats{vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb};
     auto image = vkcore.allocImage(extent, format,
@@ -1611,9 +1522,8 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
         .dst_access = vk::AccessFlagBits::eShaderRead,
     };
     if (rgba8) {
-        vkutil.safeTransferMemoryToImageLevels(
-            image, mip_chain.pixels.data(), mip_chain.pixels.size(),
-            mip_chain.regions, transfer_info);
+        vkutil.safeTransferMemoryToImageAndGenerateMipmaps(
+            image, data, bytes_num, transfer_info);
     } else {
         vkutil.safeTransferMemoryToImage(image, data, bytes_num,
                                          transfer_info);
