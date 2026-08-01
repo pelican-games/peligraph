@@ -80,7 +80,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `ProjectPathResolver` | pure resolver | [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L68) | [`resolveRef()`](../../src/project/projectpathresolver.cpp#L524) | `project://`、`user://`、asset store、fragment、escape防止。診断は戻り値 |
 | `PathResolver` | engine module adapter | [`pathresolver.hpp`](../../src/core/loader/pathresolver.hpp#L8) | [`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) | `ProjectPathResolver`へ委譲し、quillログと`engine://`埋め込みloaderだけを接続 |
 | `ResolvedRef` | variant value | [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L46) | [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L524) | filesystem path、engine resource、project/engine fragment の和型 |
-| `SceneFormatDocument` | pure document | [`sceneformat.hpp`](../../src/project/sceneformat.hpp#L11) | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L1) | scene v1 schema の validate/normalize 結果 |
+| `SceneFormatDocument` | pure document | [`sceneformat.hpp`](../../src/project/sceneformat.hpp#L12) | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L1) | scene v1 schema の validate/normalize 結果 |
 | `SceneLoader` | module/runtime binder | [`scene.hpp`](../../src/core/loader/scene.hpp#L32) | [`load()`](../../src/core/loader/scene.cpp#L271) | scene clear/load、object name↔Entity、camera/light/model/collider/behavior binding、transient glTF |
 | `AuthoringSceneDocument` | 版付きドキュメント | [`authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L88) | [`authoringscenedocument.cpp`](../../src/core/loader/authoringscenedocument.cpp) | scene v1 の権威表現。`SceneRevision` とセッション安定な `AuthoringObjectId` を発行 |
 | `AuthoringSceneDocumentStage` | 未公開の構造編集 | [`AuthoringSceneDocumentStage`](../../src/core/loader/authoringscenedocument.hpp#L137) | 同左 | insert / remove / restore / rename / reorder のみ。`finish(revision) &&` で確定 |
@@ -302,9 +302,9 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | devcli 追加コマンド | free command functions | [`bakecameracommand.cpp`](../../src/devcli/bakecameracommand.cpp) / [`materialcommand.cpp`](../../src/devcli/materialcommand.cpp) / [`vrmcommand.cpp`](../../src/devcli/vrmcommand.cpp) / [`rulesimport.cpp`](../../src/devcli/rulesimport.cpp) | 同左 | camera bake、lowered material dump、VRM dump、ルールベース import |
 | `DevCli::runProcess()` | free function | [`processrunner.hpp`](../../src/devcli/processrunner.hpp#L37) | [`processrunner.cpp`](../../src/devcli/processrunner.cpp) | プロセスグループ単位の外部ツール実行(timeout / cancel で group kill) |
 | `DistConfigResult` | pure-ish result value | [`distconfig.hpp`](../../src/devcli/distconfig.hpp#L14) | [`deriveDistConfig()`](../../src/devcli/distconfig.cpp#L833) | project scan から build option と理由を保持 |
-| `MainWindow` | Qt Widgets shell | [`mainwindow.hpp`](../../src/devstudio/view/mainwindow.hpp#L14) | [`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L45) | central workspace、4 dock、panel/layout menu を所有 |
+| `MainWindow` | Qt Widgets shell | [`mainwindow.hpp`](../../src/devstudio/view/mainwindow.hpp#L19) | [`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L68) | central workspace、4 dock、panel/layout menu を所有 |
 | `LayoutPresetManager` | versioned layout store | [`layoutpreset.hpp`](../../src/devstudio/layoutpreset.hpp#L26) | [`layoutpreset.cpp`](../../src/devstudio/layoutpreset.cpp#L128) | 名前付き state の atomic 保存、現行版だけの復元、既定配置 fallback |
-| `ProjectInfo` |未接続 model skeleton | [`project.hpp`](../../src/devstudio/model/project.hpp#L15) | header only | project name property。現 window flow では未使用 |
+| `ProjectOutlinerModel` | 読み取り専用 project/scene model | [`ProjectOutlinerModel`](../../src/devstudio/model/project.hpp#L34) | [`project.cpp`](../../src/devstudio/model/project.cpp) | `pelican_project` だけで project を開き、`(scene_id, declaration_index)` identity の scene/object 木を構築 |
 
 ## 8.11 依存方向を一枚で見る
 

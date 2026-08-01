@@ -216,4 +216,18 @@ SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data) {
     return document;
 }
 
+std::string runtimeObjectIdentityName(std::string_view scene_id,
+                                      std::uint64_t object_number,
+                                      std::string_view authored_name) {
+    if (!authored_name.empty()) {
+        return std::string{authored_name};
+    }
+    if (scene_id.empty() || object_number == 0) {
+        throw std::invalid_argument(
+            "runtime object identity requires a scene and non-zero object number");
+    }
+    return "pelican://scene/" + std::string{scene_id} +
+           "/authoring-object/" + std::to_string(object_number);
+}
+
 } // namespace Pelican

@@ -1,9 +1,11 @@
 #include "mainwindow.hpp"
 
 #include <QAction>
+#include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDockWidget>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
 #include <QFont>
@@ -20,6 +22,11 @@
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QVariant>
+
+#include <exception>
+#include <filesystem>
+#include <vector>
 
 namespace PelicanStudio {
 namespace {
@@ -38,6 +45,22 @@ QDockWidget *makeDock(
         QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     dock->setWidget(contents);
     return dock;
+}
+
+std::filesystem::path filesystemPath(const QString &path) {
+#ifdef _WIN32
+    return std::filesystem::path{path.toStdWString()};
+#else
+    return std::filesystem::path{path.toStdString()};
+#endif
+}
+
+QString displayPath(const std::filesystem::path &path) {
+#ifdef _WIN32
+    return QString::fromStdWString(path.wstring());
+#else
+    return QString::fromStdString(path.string());
+#endif
 }
 
 } // namespace
@@ -75,14 +98,19 @@ void MainWindow::createWorkspace() {
     workspace_layout->addStretch();
     setCentralWidget(workspace);
 
-    auto *project_list = new QListWidget(this);
-    project_list->addItem(tr("No project open"));
-    project_list->setEnabled(false);
-    docks_[ProjectDock] = makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list);
+    project_list_ = new QListWidget(this);
+    project_list_->addItem(tr("No project open"));
+    project_list_->setEnabled(false);
+    project_list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    docks_[ProjectDock] =
+        makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list_);
 
-    auto *outliner = new QTreeWidget(this);
-    outliner->setHeaderLabel(tr("Scene"));
-    docks_[OutlinerDock] = makeDock(this, tr("Outliner"), QStringLiteral("pelican.outlinerDock"), outliner);
+    outliner_ = new QTreeWidget(this);
+    outliner_->setHeaderLabel(tr("Scene / Object"));
+    outliner_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    outliner_->setDragDropMode(QAbstractItemView::NoDragDrop);
+    docks_[OutlinerDock] =
+        makeDock(this, tr("Outliner"), QStringLiteral("pelican.outlinerDock"), outliner_);
 
     auto *inspector = new QWidget(this);
     auto *inspector_layout = new QFormLayout(inspector);
@@ -100,6 +128,9 @@ void MainWindow::createMenus() {
     QMenu *file_menu = menuBar()->addMenu(tr("&File"));
     QAction *exit_action = file_menu->addAction(tr("E&xit"));
     connect(exit_action, &QAction::triggered, this, &QWidget::close);
+    QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
+    connect(open_project_action, &QAction::triggered, this,
+            [this]() { chooseProject(); });
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     QMenu *panels_menu = view_menu->addMenu(tr("&Panels"));
@@ -121,6 +152,70 @@ void MainWindow::createMenus() {
         applyDefaultLayout();
         statusBar()->showMessage(tr("Default layout restored"), 3000);
     });
+}
+
+void MainWindow::chooseProject() {
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, tr("Open Pelican Project"), {}, QFileDialog::ShowDirsOnly);
+    if (!directory.isEmpty()) {
+        openProject(directory);
+    }
+}
+
+void MainWindow::openProject(const QString &path) {
+    try {
+        project_model_ = ProjectOutlinerModel::open(filesystemPath(path));
+        populateOutliner();
+        statusBar()->showMessage(
+            tr("Opened %1").arg(displayPath(project_model_->projectRoot())),
+            5000);
+    } catch (const std::exception &error) {
+        QMessageBox::warning(this, tr("Could Not Open Project"),
+                             QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::populateOutliner() {
+    project_list_->clear();
+    const auto &model = *project_model_;
+    if (model.projectName()) {
+        project_list_->addItem(QString::fromStdString(*model.projectName()));
+    }
+    project_list_->addItem(displayPath(model.projectRoot()));
+    project_list_->setEnabled(true);
+
+    outliner_->clear();
+    constexpr int scene_id_role = Qt::UserRole;
+    constexpr int declaration_index_role = Qt::UserRole + 1;
+    for (const auto &scene : model.scenes()) {
+        auto *scene_item = new QTreeWidgetItem(
+            outliner_, QStringList{QString::fromStdString(scene.scene_id)});
+        scene_item->setData(0, scene_id_role,
+                            QString::fromStdString(scene.scene_id));
+
+        std::vector<QTreeWidgetItem *> object_items;
+        object_items.reserve(scene.objects.size());
+        for (const auto &object : scene.objects) {
+            auto *item = new QTreeWidgetItem(
+                QStringList{QString::fromStdString(object.display_name)});
+            item->setData(0, scene_id_role,
+                          QString::fromStdString(object.key.scene_id));
+            item->setData(
+                0, declaration_index_role,
+                QVariant::fromValue<qulonglong>(object.key.declaration_index));
+            object_items.push_back(item);
+        }
+
+        for (std::size_t index = 0; index < scene.objects.size(); ++index) {
+            const auto parent = scene.objects[index].parent_declaration_index;
+            if (parent) {
+                object_items[*parent]->addChild(object_items[index]);
+            } else {
+                scene_item->addChild(object_items[index]);
+            }
+        }
+    }
+    outliner_->expandToDepth(0);
 }
 
 void MainWindow::refreshLayoutMenus() {

@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L14) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L19) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -183,7 +183,7 @@ flowchart LR
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L45) は Project / Outliner /
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L68) は Project / Outliner /
 Inspector / Output の4パネルを stable object name を持つ dock として作ります。パネルは移動、float、
 タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を追加する
 場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
@@ -201,9 +201,18 @@ Inspector / Output の4パネルを stable object name を持つ dock として�
 は wrapper target 経由の `pelican_core` も拒否されることを固定します。これは「Studio だけが使える
 engine 内部面」を偶然持ち込めないようにする D0 の build-level gate です。
 
-[`ProjectInfo`](../../src/devstudio/model/project.hpp#L15) という model skeleton はまだ window 経路に
-接続されていません。Project / Outliner / Inspector と中央 viewport は shell の置き場だけであり、
-project load、scene 表示、engine IPC が実装済みだと解釈してはいけません。
+[`ProjectOutlinerModel`](../../src/devstudio/model/project.hpp#L34) は view と Qt から独立した読み取り専用
+model です。`pelican_project` の project envelope、純粋 path resolver、sceneformat 検証を使って
+project と scene 文書を開き、scene と object の木を作ります。object の同一性は名前ではなく
+`(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
+`pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
+
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L178) は model の索引を Qt item の
+data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
+object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L56) が
+GUI なしで検査します。RPC の object query はまだ declaration index を返さないため直リンク木との
+対応付けは行いません。D2 は選択・編集 UI より先に、その index を RPC 契約へ追加する変更から
+始めます。
 
 > **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
 
@@ -470,7 +479,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1470) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1477) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
