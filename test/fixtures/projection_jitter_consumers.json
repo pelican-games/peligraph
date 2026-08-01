@@ -276,10 +276,10 @@
       "needles": ["gl_Position = pelicanPush.engineMvp * world_pos;"]
     },
     {
-      "source": "src/core/resources/fullscreen.frag",
+      "source": "src/core/resources/shaders/include/pelican_lighting_v1.glsl",
       "consumer": "shadow",
-      "role": "light-space shadow projection consumer",
-      "needles": ["float directionalShadowVisibility(", "pelican_directional_shadow_cascade(", "float(cascade)"]
+      "role": "shared forward/deferred light-space shadow projection consumer",
+      "needles": ["bool pelican_directional_shadow_projection(", "pelican_directional_shadow_cascade(", "pelican_directional_shadow_matrix("]
     },
     {
       "source": "src/core/resources/fullscreen.vert",

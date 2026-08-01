@@ -21,8 +21,8 @@ PELICAN_DECLARE_INPUT_6(shadowMapSampler);
 
 #ifdef PELICAN_FEATURE_CLUSTERED_LIGHTING
 #include "pelican_resource_ports.glsl"
-#include "pelican_lighting_v1.glsl"
 #endif
+#include "pelican_lighting_v1.glsl"
 
 const float PI = 3.14159265359;
 
@@ -90,27 +90,18 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 #ifdef PELICAN_FEATURE_SHADOW
-float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
-    uint cascade =
-        pelican_directional_shadow_cascade(
-            worldPos);
-    if (cascade >=
-        pelicanLights
-            .directionalShadowCascadeCount) {
-        return 1.0;
-    }
-    vec4 shadowClip =
-        pelicanLights
-            .shadowViewProjections[cascade] *
-        vec4(worldPos, 1.0);
-    if (shadowClip.w <= 0.0) {
-        return 1.0;
-    }
-
-    vec3 shadowNdc = shadowClip.xyz / shadowClip.w;
-    vec2 shadowUv = shadowNdc.xy * 0.5 + 0.5;
-    if (shadowUv.x < 0.0 || shadowUv.x > 1.0 || shadowUv.y < 0.0 || shadowUv.y > 1.0 ||
-        shadowNdc.z < 0.0 || shadowNdc.z > 1.0) {
+float directionalShadowVisibility(
+    uint lightIndex,
+    vec3 worldPos,
+    vec3 normal,
+    vec3 lightDir) {
+    vec3 shadowNdc;
+    vec2 shadowUv;
+    uint shadowLayer;
+    if (!pelican_directional_shadow_projection(
+            lightIndex, worldPos,
+            shadowNdc, shadowUv,
+            shadowLayer)) {
         return 1.0;
     }
 
@@ -119,7 +110,7 @@ float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
             shadowMapSampler,
             vec3(
                 shadowUv,
-                float(cascade)))
+                float(shadowLayer)))
             .r;
     float bias = max(0.0025 * (1.0 - dot(normal, lightDir)), 0.0008);
     return shadowNdc.z - bias <= storedDepth ? 1.0 : 0.35;
@@ -170,11 +161,8 @@ void main() {
         vec3 radiance =
             light.radiance * light.attenuation;
 #ifdef PELICAN_FEATURE_SHADOW
-        if (pelican_directional_light_count() > 0u &&
-            pelican_light_inventory_index(i) == 0u) {
-            radiance *= directionalShadowVisibility(
-                worldPos, normal, L);
-        }
+        radiance *= directionalShadowVisibility(
+            i, worldPos, normal, L);
 #endif
 
         float NDF = openPbrBase
@@ -217,9 +205,8 @@ void main() {
         vec3 H = normalize(V + L);
         vec3 radiance = pelicanLights.directionalLights[i].color * pelicanLights.directionalLights[i].intensity;
 #ifdef PELICAN_FEATURE_SHADOW
-        if (i == 0) {
-            radiance *= directionalShadowVisibility(worldPos, normal, L);
-        }
+        radiance *= directionalShadowVisibility(
+            uint(i), worldPos, normal, L);
 #endif
         
         // Cook-Torrance BRDF

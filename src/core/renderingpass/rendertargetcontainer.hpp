@@ -141,6 +141,12 @@ DECLARE_MODULE(RenderTargetContainer) {
         vk::Extent2D base_extent) const;
     void publishPreparedExtent(
         PreparedRenderTargetExtent &&prepared);
+    // Rebuilds one non-history 2D target with an exact runtime array-layer
+    // count. Used by provider-owned secondary families whose cardinality is
+    // scene data rather than a fixed render-config constant.
+    bool setRuntimeArrayLayers(
+        GlobalRenderTargetId id,
+        std::uint32_t array_layers);
     void resetHistory();
     void advanceHistoryFrame();
     uint32_t historyFrameIndex() const { return history_frame_index; }

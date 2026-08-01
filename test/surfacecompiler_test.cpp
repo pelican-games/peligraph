@@ -1,5 +1,6 @@
 #include "../src/core/shader/surfacecompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/materialformat.hpp"
 #include "../src/project/materiallowering.hpp"
@@ -655,7 +656,18 @@ TEST_CASE(
             return binding.set == 1 &&
                    binding.binding == 0 &&
                    binding.name ==
-                       directionalShadowSamplerName;
+                   directionalShadowSamplerName;
+        }));
+    REQUIRE(std::any_of(
+        combined_reflection.bindings.begin(),
+        combined_reflection.bindings.end(),
+        [](const auto &binding) {
+            return binding.set ==
+                       PELICAN_SET_FRAME &&
+                   binding.binding ==
+                       PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING &&
+                   binding.type ==
+                       vk::DescriptorType::eStorageBuffer;
         }));
 #endif
 }

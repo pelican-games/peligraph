@@ -3405,9 +3405,79 @@ void main() {
 )glsl");
 }
 
+bool isMultiLightShadowGoldenMode(
+    std::string_view mode) {
+    return mode == "shadow_multi_forward_off" ||
+           mode == "shadow_multi_forward_on" ||
+           mode == "shadow_multi_deferred_off" ||
+           mode == "shadow_multi_deferred_on";
+}
+
+bool multiLightShadowEnabled(
+    std::string_view mode) {
+    return mode == "shadow_multi_forward_on" ||
+           mode == "shadow_multi_deferred_on";
+}
+
+bool multiLightShadowDeferred(
+    std::string_view mode) {
+    return mode == "shadow_multi_deferred_off" ||
+           mode == "shadow_multi_deferred_on";
+}
+
 void writeBLayerShadowProject(const std::filesystem::path &root,
                               std::string_view mode) {
     writeShadowProject(root, false);
+
+    const bool multi_light =
+        isMultiLightShadowGoldenMode(mode);
+    if (multi_light) {
+        auto scene = nlohmann::json::parse(
+            readTextFile(root / "scene.json"));
+        auto &objects =
+            scene["scenes"]["default_scene"]
+                 ["objects"];
+        const auto sun = std::find_if(
+            objects.begin(), objects.end(),
+            [](const auto &object) {
+                return object.value(
+                           "name", std::string{}) ==
+                       "Sun";
+            });
+        if (sun == objects.end()) {
+            throw std::runtime_error(
+                "multi-light shadow fixture requires Sun");
+        }
+        auto &sun_light =
+            (*sun)["components"][0];
+        sun_light["direction"] =
+            nlohmann::json::array(
+                {0.65, -1.0, -0.15});
+        sun_light["intensity"] = 5.0;
+        sun_light["color"] =
+            nlohmann::json::array(
+                {1.0, 0.0, 0.0});
+        objects.push_back({
+            {"name", "Fill"},
+            {"components",
+             nlohmann::json::array({
+                 {
+                     {"name", "light"},
+                     {"type", "directional"},
+                     {"direction",
+                      nlohmann::json::array(
+                          {-0.55, -1.0, 0.45})},
+                     {"intensity", 5.0},
+                     {"color",
+                      nlohmann::json::array(
+                          {0.0, 0.0, 1.0})},
+                 },
+             })},
+        });
+        writeTextFile(
+            root / "scene.json",
+            scene.dump(2));
+    }
 
     std::string feature_reference;
     if (mode == "shadow_b_layer_engine" ||
@@ -3421,6 +3491,11 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
             root / "features" / "shadow_directional.json",
             engineResourceOrThrow(
                 "features/shadow_directional.json"));
+    } else if (multi_light) {
+        if (multiLightShadowEnabled(mode)) {
+            feature_reference =
+                "engine://features/shadow_directional.json";
+        }
     } else if (mode != "shadow_b_layer_off") {
         throw std::runtime_error(
             "unknown B-layer shadow golden mode: " +
@@ -3430,6 +3505,31 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
     auto config =
         makeBLayerShadowRenderingConfig(
             feature_reference);
+    if (multi_light &&
+        multiLightShadowEnabled(mode)) {
+        writeTextFile(
+            root / "features" /
+                "shadow_multi_probe.json",
+            R"json({
+              "schema":"pelican.render_feature",
+              "version":1,
+              "name":"shadow_multi_probe",
+              "render_target_overrides":{
+                "shadow_map":{
+                  "usage":["TRANSFER_SRC"]
+                }
+              }
+            })json");
+        config["features"] =
+            nlohmann::json::array({
+                {
+                    {"ref", feature_reference},
+                    {"parameters",
+                     {{"resolution", 64}}},
+                },
+                "project://features/shadow_multi_probe.json",
+            });
+    }
     if (mode ==
         "shadow_b_layer_cascaded") {
         auto scene = nlohmann::json::parse(
@@ -4568,8 +4668,16 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                              bool mixed_transparent_material = false,
                              bool planar_reflection_runtime = false) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
+    const bool multi_light =
+        isMultiLightShadowGoldenMode(mode);
+    if (multi_light) {
+        deferred_material =
+            multiLightShadowDeferred(mode);
+    }
     const bool shadow_enabled =
-        mode != "shadow_b_layer_off";
+        mode != "shadow_b_layer_off" &&
+        (!multi_light ||
+         multiLightShadowEnabled(mode));
     const auto expected_provider =
         mode == "shadow_b_layer_project"
             ? std::string{
@@ -4729,6 +4837,21 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
     forward_values["emission_color"] =
         nlohmann::json::array(
             {1.0, 0.04, 0.01, 1.0});
+    if (multi_light) {
+        auto &values =
+            material_json["materials"][0]
+                         ["values"];
+        values.erase("coat_weight");
+        values.erase(
+            "base_diffuse_roughness");
+        values["specular_roughness"] =
+            0.72;
+        material_json["materials"][0]
+                     ["render_path"] =
+            deferred_material
+                ? "deferred"
+                : "forward";
+    }
     if (deferred_material) {
         auto &values =
             material_json["materials"][0]
@@ -5277,6 +5400,124 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             REQUIRE(has_written_depth);
         }
     }
+    if (multi_light && shadow_enabled) {
+        const auto shadow =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "shadow_map");
+        const auto metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(shadow);
+        REQUIRE(
+            metadata.array_layers == 2);
+        REQUIRE(
+            metadata.extent ==
+            vk::Extent2D{64, 64});
+
+        std::array<std::size_t, 2>
+            invocations{};
+        for (const auto &node :
+             GET_MODULE(Renderer)
+                 .lastExecutionTraceForTesting()
+                 .at("nodes")) {
+            if (node.at("name") !=
+                "shadow_depth") {
+                continue;
+            }
+            REQUIRE(
+                node.at("view_family") ==
+                std::string{
+                    directionalShadowRenderViewFamilyId});
+            REQUIRE(
+                node.at("view_execution") ==
+                "sequential");
+            const auto view_index =
+                node.at("view_index")
+                    .get<std::uint32_t>();
+            REQUIRE(view_index < 2);
+            ++invocations[view_index];
+        }
+        REQUIRE(
+            invocations ==
+            std::array<std::size_t, 2>{1, 1});
+
+        const auto &lights =
+            GET_MODULE(LightContainer);
+        REQUIRE(
+            lights.directionalShadowDataElementCount() ==
+            11);
+        const auto shadow_bytes =
+            GET_MODULE(VulkanManageCore)
+                .readBuf(
+                    lights.directionalShadowBuffer(),
+                    lights.directionalShadowDataElementCount() *
+                        sizeof(glm::uvec4));
+        std::array<glm::uvec4, 11>
+            shadow_data{};
+        std::memcpy(
+            shadow_data.data(),
+            shadow_bytes.data(),
+            sizeof(shadow_data));
+        REQUIRE((
+            shadow_data[0] ==
+            glm::uvec4{
+                directionalShadowDataV1Magic,
+                directionalShadowDataV1Version,
+                2, 1}));
+        REQUIRE((
+            shadow_data[1] ==
+            glm::uvec4{0, 3, 0, 1}));
+        REQUIRE((
+            shadow_data[2] ==
+            glm::uvec4{1, 7, 1, 1}));
+        REQUIRE(
+            !std::equal(
+                shadow_data.begin() + 3,
+                shadow_data.begin() + 7,
+                shadow_data.begin() + 7));
+
+        const auto light_bytes =
+            GET_MODULE(VulkanManageCore)
+                .readBuf(
+                    lights.lightBuffer(),
+                    sizeof(LightUBO));
+        LightUBO light_data{};
+        std::memcpy(
+            &light_data,
+            light_bytes.data(),
+            sizeof(light_data));
+        REQUIRE(
+            std::memcmp(
+                &light_data.shadowViewProjections[0],
+                shadow_data.data() + 3,
+                sizeof(glm::mat4)) == 0);
+
+        for (std::uint32_t layer = 0;
+             layer < 2; ++layer) {
+            const auto bytes =
+                readDepthTargetBytes(
+                    shadow, layer);
+            REQUIRE(
+                bytes.size() ==
+                64u * 64u *
+                    sizeof(float));
+            bool has_written_depth = false;
+            for (std::size_t offset = 0;
+                 offset < bytes.size();
+                 offset += sizeof(float)) {
+                float depth = 1.0f;
+                std::memcpy(
+                    &depth,
+                    bytes.data() + offset,
+                    sizeof(depth));
+                has_written_depth =
+                    has_written_depth ||
+                    depth < 0.9999f;
+            }
+            INFO("directional light layer " << layer);
+            REQUIRE(has_written_depth);
+        }
+    }
 #else
     (void)render_target;
     (void)mode;
@@ -5658,7 +5899,8 @@ bool isBLayerShadowGoldenMode(
     return mode == "shadow_b_layer_off" ||
            mode == "shadow_b_layer_engine" ||
            mode == "shadow_b_layer_project" ||
-           mode == "shadow_b_layer_cascaded";
+           mode == "shadow_b_layer_cascaded" ||
+           isMultiLightShadowGoldenMode(mode);
 }
 
 bool isTaaGoldenMode(const std::string &mode) {
@@ -7938,6 +8180,171 @@ void GoldenHarness::runBLayerShadowEquivalence() {
     REQUIRE(changed_bytes > 0);
 #else
     SKIP("B-layer directional-shadow golden requires "
+         "the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runMultiLightDirectionalShadows() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto golden_root =
+        sourceRoot() / "test/golden/shadow_b_layer_engine";
+    constexpr std::uint32_t extent = 64;
+    const auto forward_off =
+        renderCase(
+            GoldenCase{
+                "shadow_multi_forward_off_runtime",
+                "shadow_multi_forward_off",
+                golden_root, extent, extent},
+            true);
+    const auto forward_on =
+        renderCase(
+            GoldenCase{
+                "shadow_multi_forward_on_runtime",
+                "shadow_multi_forward_on",
+                golden_root, extent, extent},
+            true);
+    const auto deferred_off =
+        renderCase(
+            GoldenCase{
+                "shadow_multi_deferred_off_runtime",
+                "shadow_multi_deferred_off",
+                golden_root, extent, extent},
+            true);
+    const auto deferred_on =
+        renderCase(
+            GoldenCase{
+                "shadow_multi_deferred_on_runtime",
+                "shadow_multi_deferred_on",
+                golden_root, extent, extent},
+            true);
+
+    struct ShadowMask {
+        std::vector<std::uint8_t> pixels;
+        std::size_t changed = 0;
+        std::uint64_t positive_delta = 0;
+    };
+    const auto make_mask =
+        [](const RgbaImage &shadow_on,
+           const RgbaImage &shadow_off,
+           std::size_t channel) {
+            REQUIRE(
+                shadow_on.width ==
+                shadow_off.width);
+            REQUIRE(
+                shadow_on.height ==
+                shadow_off.height);
+            REQUIRE(
+                shadow_on.pixels.size() ==
+                shadow_off.pixels.size());
+            REQUIRE(channel < 3);
+            ShadowMask result;
+            result.pixels.resize(
+                shadow_on.pixels.size() / 4);
+            for (std::size_t offset = 0,
+                             pixel = 0;
+                 offset < shadow_on.pixels.size();
+                 offset += 4, ++pixel) {
+                const auto delta =
+                    static_cast<int>(
+                        shadow_off.pixels[
+                            offset + channel]) -
+                    static_cast<int>(
+                        shadow_on.pixels[
+                            offset + channel]);
+                if (delta > 0) {
+                    result.positive_delta +=
+                        static_cast<std::uint64_t>(
+                            delta);
+                }
+                if (delta >= 3) {
+                    result.pixels[pixel] = 1;
+                    ++result.changed;
+                }
+            }
+            return result;
+        };
+    const auto overlap =
+        [](const ShadowMask &left,
+           const ShadowMask &right) {
+            REQUIRE(
+                left.pixels.size() ==
+                right.pixels.size());
+            std::size_t intersection = 0;
+            for (std::size_t index = 0;
+                 index < left.pixels.size();
+                 ++index) {
+                intersection +=
+                    left.pixels[index] != 0 &&
+                    right.pixels[index] != 0;
+            }
+            const auto denominator =
+                std::min(
+                    left.changed,
+                    right.changed);
+            return denominator == 0
+                       ? 0.0
+                       : static_cast<double>(
+                             intersection) /
+                             static_cast<double>(
+                                 denominator);
+        };
+
+    const auto forward_red =
+        make_mask(
+            forward_on.image,
+            forward_off.image, 0);
+    const auto forward_blue =
+        make_mask(
+            forward_on.image,
+            forward_off.image, 2);
+    const auto deferred_red =
+        make_mask(
+            deferred_on.image,
+            deferred_off.image, 0);
+    const auto deferred_blue =
+        make_mask(
+            deferred_on.image,
+            deferred_off.image, 2);
+
+    INFO("forward red shadow pixels: "
+         << forward_red.changed
+         << ", delta: "
+         << forward_red.positive_delta);
+    INFO("forward blue shadow pixels: "
+         << forward_blue.changed
+         << ", delta: "
+         << forward_blue.positive_delta);
+    INFO("deferred red shadow pixels: "
+         << deferred_red.changed
+         << ", delta: "
+         << deferred_red.positive_delta);
+    INFO("deferred blue shadow pixels: "
+         << deferred_blue.changed
+         << ", delta: "
+         << deferred_blue.positive_delta);
+    REQUIRE(forward_red.changed >= 8);
+    REQUIRE(forward_blue.changed >= 8);
+    REQUIRE(deferred_red.changed >= 8);
+    REQUIRE(deferred_blue.changed >= 8);
+    REQUIRE(forward_red.positive_delta >= 64);
+    REQUIRE(forward_blue.positive_delta >= 64);
+    REQUIRE(deferred_red.positive_delta >= 64);
+    REQUIRE(deferred_blue.positive_delta >= 64);
+
+    const auto red_overlap =
+        overlap(forward_red, deferred_red);
+    const auto blue_overlap =
+        overlap(forward_blue, deferred_blue);
+    INFO("forward/deferred red shadow overlap: "
+         << red_overlap);
+    INFO("forward/deferred blue shadow overlap: "
+         << blue_overlap);
+    REQUIRE(red_overlap >= 0.75);
+    REQUIRE(blue_overlap >= 0.75);
+#else
+    SKIP("multi-light directional-shadow golden requires "
          "the runtime shader compiler");
 #endif
 }

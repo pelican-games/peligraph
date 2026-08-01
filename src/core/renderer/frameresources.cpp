@@ -17,7 +17,7 @@ namespace {
 vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, std::uint32_t slot_count) {
     const std::array pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 3 * slot_count},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 2 * slot_count},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 * slot_count},
     };
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -268,7 +268,8 @@ void FrameResources::configureViewCount(
 }
 
 void FrameResources::updateSceneDescriptors() {
-    if (!object_buffer || !previous_object_buffer || !light_buffer) {
+    if (!object_buffer || !previous_object_buffer || !light_buffer ||
+        !directional_shadow_buffer) {
         return;
     }
 
@@ -276,9 +277,10 @@ void FrameResources::updateSceneDescriptors() {
         vk::DescriptorBufferInfo{object_buffer, 0, vk::WholeSize},
         vk::DescriptorBufferInfo{light_buffer, 0, vk::WholeSize},
         vk::DescriptorBufferInfo{previous_object_buffer, 0, vk::WholeSize},
+        vk::DescriptorBufferInfo{directional_shadow_buffer, 0, vk::WholeSize},
     };
     const auto update = [&](vk::DescriptorSet descriptor_set) {
-        std::array<vk::WriteDescriptorSet, 3> writes{};
+        std::array<vk::WriteDescriptorSet, 4> writes{};
         writes[0].dstSet = descriptor_set;
         writes[0].dstBinding = PELICAN_OBJECT_BUFFER_BINDING;
         writes[0].descriptorType = vk::DescriptorType::eStorageBuffer;
@@ -291,6 +293,10 @@ void FrameResources::updateSceneDescriptors() {
         writes[2].dstBinding = PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING;
         writes[2].descriptorType = vk::DescriptorType::eStorageBuffer;
         writes[2].setBufferInfo(buffer_infos[2]);
+        writes[3].dstSet = descriptor_set;
+        writes[3].dstBinding = PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING;
+        writes[3].descriptorType = vk::DescriptorType::eStorageBuffer;
+        writes[3].setBufferInfo(buffer_infos[3]);
         device.updateDescriptorSets(writes, {});
     };
     for (const auto &slot : frame_slots) {
@@ -303,15 +309,18 @@ void FrameResources::updateSceneDescriptors() {
 
 void FrameResources::setSceneBuffers(const BufferWrapper &objects,
                                      const BufferWrapper &previous_objects,
-                                     const BufferWrapper &lights) {
+                                     const BufferWrapper &lights,
+                                     const BufferWrapper &directional_shadows) {
     if (object_buffer == objects.buffer.get() &&
         previous_object_buffer == previous_objects.buffer.get() &&
-        light_buffer == lights.buffer.get()) {
+        light_buffer == lights.buffer.get() &&
+        directional_shadow_buffer == directional_shadows.buffer.get()) {
         return;
     }
     object_buffer = objects.buffer.get();
     previous_object_buffer = previous_objects.buffer.get();
     light_buffer = lights.buffer.get();
+    directional_shadow_buffer = directional_shadows.buffer.get();
     updateSceneDescriptors();
 }
 

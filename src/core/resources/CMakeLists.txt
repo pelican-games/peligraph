@@ -14,6 +14,9 @@ function(embed_shader file_name)
                 shaders/include/pelican_material.glsl
                 shaders/include/pelican_material_instance.glsl
                 shaders/include/pelican_features.glsl
+                shaders/include/pelican_surface_v1.glsl
+                shaders/include/pelican_lighting_v1.glsl
+                shaders/include/pelican_lighting_v2.glsl
                 shaders/include/pelican_shadow_cascade.glsl
                 shaders/include/pelican_skinning.glsl
                 shaders/include/pelican_morph.glsl
