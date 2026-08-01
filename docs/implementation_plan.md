@@ -1459,6 +1459,57 @@ devstudio が `pelican_player` を**子プロセス**として起動し、その
 
 依存: **WP249**(シェル)。WP250 とは独立で並行可。見積: 大。
 
+### WP252: 埋め込みビューポートのリサイズを間引く
+
+**目的**: devstudio の分割バーをドラッグすると重い。**マウス移動ごとに swapchain が
+作り直されている**ためである。
+
+**発見の経緯**: WP251 完了後、利用者が実際に操作して「ウィンドウの変形が重い」と報告した。
+WP251 の実測は「リサイズ**後**に何 ms で寸法が一致するか」を測って 45ms / 最悪 52ms と
+報告しており、数値としては嘘ではない。**測っていなかったのは、ドラッグ**中**に何回
+再生成が走るか**である。受け入れ条件が「パネルの寸法変更に追従する」止まりで、
+連続操作のコストを問うていなかった。**数値が緑でも体感が重い、という乖離はここから来た。**
+
+**現状の経路**:
+
+- `embeddedviewport.cpp` の `resizeEvent()` が Qt のリサイズイベントごとに
+  `extent_changed()` を**即座に無条件で**呼ぶ。間引きも遅延も無い。
+- `extent_changed` は `resizeEmbeddedWindow()` に繋がっており、
+  `nativewindowhost.cpp` の `SetWindowPos` を `SWP_FRAMECHANGED` 付きで呼ぶ。
+  これが GLFW の framebuffer callback を発火させ、player 側で swapchain が再生成される。
+- 既存の `QTimer` は window discovery / diagnostics / pointer focus 用で、
+  リサイズの間引きには使われていない。
+- `DevicePixelRatioChange` も同じ `extent_changed()` を呼ぶ。
+
+**実装範囲**:
+
+1. **連続リサイズ中の適用回数に上限を設ける。** 一定間隔に絞る形でよい。
+2. **ドラッグ停止後に必ず最終寸法を適用すること。** 間引きの副作用で最後の寸法が
+   落ちるのは論外である。静止状態での正しさは今までどおり厳密であること。
+3. **`DevicePixelRatioChange` は間引きの対象外としてよい**(頻度が低く、
+   取りこぼすと表示が壊れる)。判断して理由を書くこと。
+4. **swapchain 再生成を devstudio が持たないこと**(WP251 の契約、WP215〜217)。
+   間引くのは「いつ `SetWindowPos` を呼ぶか」だけである。**再生成そのものに手を入れない。**
+5. 間引きの判定を**純ロジックとして分離すること**。`viewportgeometry.{hpp,cpp}` が
+   既に純ロジックの置き場になっているので、そこが自然である。
+
+**受け入れ条件**:
+
+- **連続リサイズ中の適用回数に上限があり、それがテストで検証されている。**
+  一連の寸法変化を与えて、適用回数が入力イベント数より十分少ないことを assert すること
+- **最後に与えた寸法が必ず適用される**(静止時の寸法が厳密に一致する)
+- `DevicePixelRatioChange` の扱いが決まっていて、理由が書かれている
+- devstudio 側に swapchain / surface の再生成が無いまま
+- WP251 が追加した既存テストが緑のまま
+- `ctest` 全数が緑(`-DSKIP_DEVSTUDIO=ON` の構成でも通ること)、`git diff --check` クリーン
+
+**範囲外**: player の Debug/Release 選択には触れない。`PELICAN_STUDIO_PLAYER` と
+`PELICAN_STUDIO_PLAYER_ARGUMENTS` で既に上書きでき、`devstudio` は開発者向けツールなので
+Debug の player を起動するのはむしろ正しい。**Debug がこの重さにどれだけ寄与しているかは
+未実測であり、この WP では原因として扱わない。**
+
+依存: なし(WP251 はマージ済み)。見積: 小。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
