@@ -993,7 +993,9 @@ GPU へ運ぶ経路を作り、消費側の index 0 固定を解除する。
   `mix(1.0, mr.r, material.surfaceFactors.w)` を occlusion として書き出している。
   `default.frag` にはその前提が
   `// glTF ORM texture: R=Occlusion, G=Roughness, B=Metallic` とコメントで明記されている。
-  `surfacecompiler.cpp` の生成経路も同じ式を吐く。**3 箇所が同じ誤りを共有している**。
+  **この 2 箇所が同じ誤りを共有している**。`surfacecompiler.cpp` は
+  `vec4(surface.roughness, surface.metallic, surface.occlusion, shading_model)` を吐く
+  消費側なので、`surface_v1.frag` を直せば自動的に追従する。
 - `fullscreen.frag` は G-buffer の B を `materialAO` として読み、
   `min(materialAO, pow(ssao, 3.0))` で SSAO と合成する。`min` なので、ほぼ 0 の
   materialAO が SSAO を無条件に押し切る。これが `albedo * ao * ambientRadiance` を
@@ -1027,8 +1029,8 @@ GPU へ運ぶ経路を作り、消費側の index 0 固定を解除する。
 3. **occlusion テクスチャが無いときの既定は 1.0(遮蔽なし)。** `gltf.cpp` が
    metallicRoughness に対して行っている白 (255,255,255) の捏造と同じ方式でよいが、
    **既定値の所在を一箇所にすること**(WP240b と同じ規律)。
-4. 上の 3 箇所(`default.frag` / `surface_v1.frag` / `surfacecompiler.cpp`)が
-   **同じ意味論**になること。片方だけ直すと経路によって見た目が変わる。
+4. 上の 2 箇所(`default.frag` / `surface_v1.frag`)が**同じ意味論**になること。
+   片方だけ直すと経路によって見た目が変わる。
 5. `materialformat.cpp` の死んでいる occlusion 記述を、この経路へ接続するか
    削除するかを決めること。**受理するが効かない状態を残さない。**
 
