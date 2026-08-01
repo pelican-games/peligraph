@@ -192,7 +192,7 @@ void main() {
         float NdotL =
             max(dot(normal, L), 0.0);
         float directDiffuseOcclusion =
-            openPbrBase ? 1.0 : ao;
+            1.0;
         Lo +=
             (kD * albedo / PI *
                  directDiffuseOcclusion +
@@ -225,7 +225,7 @@ void main() {
         vec3 specular = numerator / denominator;
         
         float NdotL = max(dot(normal, L), 0.0);
-        float directDiffuseOcclusion = openPbrBase ? 1.0 : ao;
+        float directDiffuseOcclusion = 1.0;
         Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
     }
 
@@ -252,7 +252,7 @@ void main() {
         vec3 specular = numerator / denominator;
         
         float NdotL = max(dot(normal, L), 0.0);
-        float directDiffuseOcclusion = openPbrBase ? 1.0 : ao;
+        float directDiffuseOcclusion = 1.0;
         Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
     }
 
@@ -287,7 +287,7 @@ void main() {
             vec3 specular = numerator / denominator;
             
             float NdotL = max(dot(normal, L), 0.0);
-            float directDiffuseOcclusion = openPbrBase ? 1.0 : ao;
+            float directDiffuseOcclusion = 1.0;
             Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
         }
     }
