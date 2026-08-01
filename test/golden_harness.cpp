@@ -2,11 +2,16 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
+#include "../src/core/appflow/framephase.hpp"
 #include "../src/core/asset/model.hpp"
+#include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/communication/editorruntimefactory.hpp"
+#include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/imgui/inspector.hpp"
 #include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -18,6 +23,7 @@
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/openxr/openxrmirrorsink.hpp"
+#include "../src/core/phys/physworld.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
@@ -4196,6 +4202,18 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
         objects.push_back({{"name", "parent"}, {"components", {transform({0, 0, 0}, {0, 0, 0.38268343f, 0.92387953f})}}});
         objects.push_back({{"name", "child"}, {"parent", "parent"},
                            {"components", {transform({0.55f, 0, 0}), sprite("atlas#sprite/page1", {1.0f, 0.65f})}}});
+    } else if (mode == "editor_runtime_binding") {
+        objects.push_back({{"name", "parent"},
+                           {"components", {transform({0, 0, 0})}}});
+        objects.push_back({
+            {"parent", "parent"},
+            {"components",
+             {transform({0.25f, 0, 0}),
+              sprite("atlas#sprite/page1", {1.0f, 1.0f}),
+              nlohmann::json{{"name", "collider"},
+                             {"shape", "sphere"},
+                             {"radius", 0.25f}}}},
+        });
     } else if (mode == "sprite_depth") {
         objects.push_back({{"name", "occluder"}, {"components", {transform({0, 0, 0.7f}, {0, 0, 0, 1}, {0.65f, 0.65f, 0.65f}),
                                                                             nlohmann::json{{"name", "simplemodelview"}, {"model", "ground"}}}}});
@@ -4231,8 +4249,21 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
     } else {
         objects.push_back({{"name", "owned"}, {"components", {transform({0, 0, 0}), sprite("atlas#sprite/page1", {1.35f, 1.35f})}}});
     }
-    writeTextFile(root / "scene.json", nlohmann::json{{"schema", "pelican.scene"}, {"version", 1},
-        {"scenes", {{"default_scene", {{"objects", objects}}}}}}.dump(2));
+    auto scenes = nlohmann::json{
+        {"default_scene", {{"objects", objects}}}};
+    if (mode == "editor_runtime_binding") {
+        scenes["secondary_scene"] = {
+            {"objects",
+             nlohmann::json::array({nlohmann::json{
+                 {"components",
+                  {transform({-0.25f, 0, 0}),
+                   sprite("atlas#sprite/page0", {0.75f, 0.75f})}}}})}};
+    }
+    writeTextFile(root / "scene.json",
+                  nlohmann::json{{"schema", "pelican.scene"},
+                                 {"version", 1},
+                                 {"scenes", std::move(scenes)}}
+                      .dump(2));
 
     const bool with_ui = mode == "sprite_ownership";
     writeTextFile(root / "ui/ui.json", with_ui
@@ -5744,6 +5775,216 @@ void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     (void)render_target;
 }
 
+void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene_loader = GET_MODULE(SceneLoader);
+    scene_loader.load("default_scene");
+
+    // Exercise the production load_scene handler with an editor service that
+    // was constructed against a different runtime scene. The subsequent query
+    // and edit must observe bindings from the newly loaded unnamed object.
+    {
+        std::istringstream input;
+        std::ostringstream output;
+        EngineRpcEndpoint endpoint{input, output};
+        std::uint64_t request_id = 1;
+        const auto rpc = [&](std::string_view method,
+                             nlohmann::json params) {
+            const auto response = nlohmann::json::parse(endpoint.processLine(
+                nlohmann::json{{"jsonrpc", "2.0"},
+                               {"id", request_id++},
+                               {"method", method},
+                               {"params", std::move(params)}}
+                    .dump()));
+            INFO("WP244 RPC response: " << response.dump());
+            REQUIRE(response.contains("result"));
+            return response.at("result");
+        };
+
+        (void)rpc("load_scene", {{"name", "secondary_scene"}});
+        const auto secondary_tree =
+            rpc("scene_tree", nlohmann::json::object());
+        REQUIRE(secondary_tree.at("scene_id") == "secondary_scene");
+        REQUIRE(secondary_tree.at("objects").size() == 1);
+        const auto secondary_id = secondary_tree.at("objects")
+                                      .at(0)
+                                      .at("authoring_object_id")
+                                      .get<std::uint64_t>();
+        const auto secondary_components = rpc(
+            "get_components",
+            {{"scene_id", "secondary_scene"},
+             {"authoring_object_id", secondary_id}});
+        const auto secondary_transform = std::find_if(
+            secondary_components.at("components").begin(),
+            secondary_components.at("components").end(),
+            [](const auto &component) {
+                return component.at("name") == "transform";
+            });
+        REQUIRE(secondary_transform !=
+                secondary_components.at("components").end());
+        REQUIRE(secondary_transform->contains("runtime_json"));
+        REQUIRE(secondary_components.at("entity_id").is_object());
+
+        const auto secondary_session = rpc(
+            "open_editor_session",
+            {{"display_name", "WP244 load_scene RPC fixture"}});
+        const auto secondary_edit = rpc(
+            "edit",
+            {{"actor_id", secondary_session.at("actor_id")},
+             {"base_revision", secondary_tree.at("scene_revision")},
+             {"operations",
+              nlohmann::json::array(
+                  {{{"op", "set_component_value"},
+                    {"object_id", secondary_id},
+                    {"component_slot", "transform"},
+                    {"field_path", "/pos"},
+                    {"value", {-1.0f, 0.0f, 0.0f}}}})},
+             {"coalesce_key", "wp244-load-scene"}});
+        REQUIRE(secondary_edit.at("status") == "accepted");
+        invokeEditorCommitQueueHook();
+        const auto secondary_edit_result = rpc(
+            "get_edit_result", {{"ticket", secondary_edit.at("ticket")}});
+        REQUIRE(secondary_edit_result.at("status") == "committed");
+        const auto secondary_updated = rpc(
+            "get_components",
+            {{"scene_id", "secondary_scene"},
+             {"authoring_object_id", secondary_id}});
+        const auto secondary_updated_transform = std::find_if(
+            secondary_updated.at("components").begin(),
+            secondary_updated.at("components").end(),
+            [](const auto &component) {
+                return component.at("name") == "transform";
+            });
+        REQUIRE(secondary_updated_transform !=
+                secondary_updated.at("components").end());
+        REQUIRE(secondary_updated_transform->at("runtime_json")
+                    .at("world_trs")
+                    .at("pos")
+                    .at(0)
+                    .get<float>() == Catch::Approx(-1.0f));
+        (void)rpc("load_scene", {{"name", "default_scene"}});
+    }
+
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 4.0f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    const auto before_pixels = render_target.readbackLastFrameRGBA8();
+
+    auto service = makeEditorRuntimeService();
+    InspectorPanelTrace trace;
+    InspectorServiceAdapter inspector{*service, trace};
+    const auto tree = inspector.sceneTree();
+    const auto child = std::find_if(
+        tree.objects.begin(), tree.objects.end(), [](const auto &object) {
+            return !object.name &&
+                   object.parent == std::optional<std::string>{"parent"};
+        });
+    REQUIRE(child != tree.objects.end());
+
+    const auto child_id = child->authoring_object_id;
+    const auto initial = inspector.getComponents(
+        {.authoring_object_id = child_id});
+    REQUIRE(initial.entity_id.has_value());
+    const auto component = [](const EditorObjectQueryResult &object,
+                              std::string_view name)
+        -> const EditorComponentQueryResult & {
+        const auto found = std::find_if(
+            object.components.begin(), object.components.end(),
+            [&](const auto &candidate) { return candidate.name == name; });
+        if (found == object.components.end()) {
+            throw std::runtime_error("WP244 fixture component is absent: " +
+                                     std::string{name});
+        }
+        return *found;
+    };
+    const auto &initial_transform = component(initial, "transform");
+    REQUIRE(initial_transform.runtime_json.has_value());
+    REQUIRE(initial_transform.runtime_json->at("world_trs")
+                .at("pos")
+                .at(0)
+                .get<float>() == Catch::Approx(0.25f));
+
+    const auto session = inspector.openEditorSession(
+        {{"display_name", "WP244 inspector pixel fixture"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    const auto commit = [&](SceneRevision base_revision,
+                            nlohmann::json operation) {
+        const auto accepted = inspector.edit(
+            {{"actor_id", actor},
+             {"base_revision", base_revision.value},
+             {"operations",
+              nlohmann::json::array({std::move(operation)})},
+             {"coalesce_key", "wp244-runtime-binding"}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        const auto result = inspector.getEditResult(
+            {{"ticket", accepted.at("ticket")}});
+        INFO("WP244 inspector result: " << result.dump());
+        REQUIRE(result.at("status") == "committed");
+    };
+
+    commit(tree.scene_revision,
+           {{"op", "set_component_value"},
+            {"object_id", child_id.value},
+            {"component_slot", "collider"},
+            {"field_path", "/radius"},
+            {"value", 0.75f}});
+    const auto collider_identity = runtimeObjectIdentityName(
+        "default_scene", child_id, {});
+    const auto physics = GET_MODULE(PhysWorld).snapshotPrepared();
+    const auto collider = std::find_if(
+        physics.bindings.begin(), physics.bindings.end(),
+        [&](const auto &binding) {
+            return binding.identity.name == collider_identity;
+        });
+    REQUIRE(collider != physics.bindings.end());
+    REQUIRE(collider->collider.radius == Catch::Approx(0.75f));
+
+    const auto after_collider = inspector.sceneTree();
+    commit(after_collider.scene_revision,
+           {{"op", "set_component_value"},
+            {"object_id", child_id.value},
+            {"component_slot", "transform"},
+            {"field_path", "/pos"},
+            {"value", {3.0f, 0.0f, 0.0f}}});
+    const auto updated = inspector.getComponents(
+        {.authoring_object_id = child_id});
+    const auto &updated_transform = component(updated, "transform");
+    REQUIRE(updated_transform.runtime_json.has_value());
+    REQUIRE(updated_transform.runtime_json->at("world_trs")
+                .at("pos")
+                .at(0)
+                .get<float>() == Catch::Approx(3.0f));
+
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    const auto after_pixels = render_target.readbackLastFrameRGBA8();
+    REQUIRE(after_pixels.size() == before_pixels.size());
+    std::size_t changed_pixels = 0;
+    for (std::size_t pixel = 0; pixel < after_pixels.size() / 4;
+         ++pixel) {
+        const auto offset = pixel * 4;
+        if (!std::equal(before_pixels.begin() +
+                            static_cast<std::ptrdiff_t>(offset),
+                        before_pixels.begin() +
+                            static_cast<std::ptrdiff_t>(offset + 3),
+                        after_pixels.begin() +
+                            static_cast<std::ptrdiff_t>(offset))) {
+            ++changed_pixels;
+        }
+    }
+    INFO("WP244 transform edit changed " << changed_pixels << " pixels");
+    REQUIRE(changed_pixels >= 4);
+    REQUIRE(trace.edit_enqueue_calls == 2);
+}
+
 void renderComputeFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -6163,6 +6404,10 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         auto project = makeFeatureProjectJson();
         project["name"] = "ui u2 golden";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
+    } else if (golden_case.mode == "editor_runtime_binding") {
+        const auto project = writeSpriteProject(temp_dir, golden_case);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (isSpriteGoldenMode(golden_case.mode)) {
         const auto project = writeSpriteProject(temp_dir, golden_case);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -6337,6 +6582,8 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         renderTemporalAccumulationFrames(render_target);
     } else if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
         renderFeatureFrame(render_target);
+    } else if (golden_case.mode == "editor_runtime_binding") {
+        renderEditorRuntimeBindingFrame(render_target);
     } else if (isSpriteGoldenMode(golden_case.mode)) {
         renderSpriteFrame(render_target, golden_case.mode);
     } else if (golden_case.mode == "debug_draw_feature") {
@@ -9347,6 +9594,13 @@ void GoldenHarness::runGoldenImages() {
             REQUIRE(comparison.max <= tolerance.max);
         }
     }
+}
+
+void GoldenHarness::runEditorRuntimeBinding() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    (void)renderCase(GoldenCase{
+        "wp244_editor_runtime_binding", "editor_runtime_binding", {}, 32, 32});
 }
 
 void GoldenHarness::runLogicalFrameStereo() {

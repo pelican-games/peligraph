@@ -266,6 +266,19 @@ TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
     }
 }
 
+TEST_CASE("Unnamed runtime identities are stable and cannot collide with authored names",
+          "[scene-format][authoring][identity][wp244]") {
+    REQUIRE(runtimeObjectIdentityName("main", AuthoringObjectId{7},
+                                      "Player") == "Player");
+    REQUIRE(runtimeObjectIdentityName("main", AuthoringObjectId{7}, {}) ==
+            "pelican://scene/main/authoring-object/7");
+    REQUIRE(runtimeObjectIdentityName("main", AuthoringObjectId{7}, {}) !=
+            runtimeObjectIdentityName("main", AuthoringObjectId{8}, {}));
+    REQUIRE_THROWS_AS(
+        runtimeObjectIdentityName("main", AuthoringObjectId{}, {}),
+        std::invalid_argument);
+}
+
 TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component", "[scene-format][authoring]") {
     const auto source = readJson(authoringFixturePath());
     const auto document = AuthoringSceneDocument::load(source.dump(2), SceneRevision{41});

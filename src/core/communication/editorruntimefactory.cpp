@@ -37,6 +37,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -111,17 +112,16 @@ EditorRuntimeModules resolveEditorRuntimeModules() {
 std::vector<EditorProjectionRuntimeObjectBinding>
 collectEditorRuntimeBindings(const EditorRuntimeModules &modules) {
     std::vector<EditorProjectionRuntimeObjectBinding> result;
-    const auto scenes = modules.project_config.sceneDocument().query();
-    const auto scene = std::find_if(scenes.begin(), scenes.end(),
-                                    [&](const auto &candidate) {
-                                        return candidate.scene_id ==
-                                               modules.scene_loader.currentScene();
-                                    });
-    if (scene == scenes.end()) return result;
-    for (const auto &object : scene->objects) {
-        if (!object.name) continue;
-        const auto entity = modules.scene_loader.objectId(*object.name);
-        if (entity) result.push_back({object.authoring_object_id, *entity});
+    const auto loaded = modules.scene_loader.runtimeObjectBindings();
+    result.reserve(loaded.size());
+    for (const auto &binding : loaded) {
+        if (binding.authoring_object_id.value == 0 ||
+            binding.object_id == invalidGameObjectId) {
+            throw std::logic_error(
+                "scene loader exposed an incomplete editor runtime binding");
+        }
+        result.push_back(
+            {binding.authoring_object_id, binding.object_id});
     }
     return result;
 }
@@ -333,69 +333,80 @@ class StandaloneTransformProjectionAdapter final
         const auto &codec = requireComponentCodec("transform");
 
         for (const auto &scene : next_scenes) {
-            if (!scenes_.contains(scene.scene_id)) continue;
-
-            std::unordered_map<std::string, const AuthoringObjectView *> by_name;
-            for (const auto &object : scene.objects) {
-                if (object.name) by_name.emplace(*object.name, &object);
-            }
-            std::unordered_map<std::uint64_t, TransformComponent> worlds;
-            std::unordered_set<std::uint64_t> visiting;
-            const auto compute_world = [&](auto &&self,
-                                           const AuthoringObjectView &object)
-                -> const TransformComponent & {
-                if (const auto found = worlds.find(object.authoring_object_id.value);
-                    found != worlds.end()) {
-                    return found->second;
+            if (scenes_.contains(scene.scene_id)) {
+                std::unordered_map<std::string, const AuthoringObjectView *>
+                    by_name;
+                for (const auto &object : scene.objects) {
+                    if (object.name) by_name.emplace(*object.name, &object);
                 }
-                if (!visiting.insert(object.authoring_object_id.value).second) {
-                    throw std::runtime_error(
-                        "validated transform hierarchy became cyclic");
-                }
-                const auto component = std::find_if(
-                    object.components.begin(), object.components.end(),
-                    [](const auto &candidate) {
-                        return candidate.authoredJson().at("name") ==
-                               "transform";
-                    });
-                if (component == object.components.end()) {
-                    throw std::runtime_error(
-                        "transform hierarchy object has no authored transform");
-                }
-                const TransformComponent *parent_world = nullptr;
-                if (object.parent) {
-                    const auto parent = by_name.find(*object.parent);
-                    if (parent == by_name.end()) {
-                        throw std::runtime_error(
-                            "transform hierarchy parent is absent");
+                std::unordered_map<std::uint64_t, TransformComponent> worlds;
+                std::unordered_set<std::uint64_t> visiting;
+                const auto compute_world = [&](auto &&self,
+                                               const AuthoringObjectView &object)
+                    -> const TransformComponent & {
+                    if (const auto found =
+                            worlds.find(object.authoring_object_id.value);
+                        found != worlds.end()) {
+                        return found->second;
                     }
-                    parent_world = &self(self, *parent->second);
-                }
-                TransformComponent next{};
-                TransformCodecTarget target{.world = &next,
-                                            .parent_world = parent_world};
-                codec.applyRuntime(
-                    codec.decodeAuthored(component->authoredJson()), &target);
-                visiting.erase(object.authoring_object_id.value);
-                return worlds.emplace(object.authoring_object_id.value, next)
-                    .first->second;
-            };
+                    if (!visiting.insert(object.authoring_object_id.value)
+                             .second) {
+                        throw std::runtime_error(
+                            "validated transform hierarchy became cyclic");
+                    }
+                    const auto component = std::find_if(
+                        object.components.begin(), object.components.end(),
+                        [](const auto &candidate) {
+                            return candidate.authoredJson().at("name") ==
+                                   "transform";
+                        });
+                    if (component == object.components.end()) {
+                        throw std::runtime_error(
+                            "transform hierarchy object has no authored transform");
+                    }
+                    const TransformComponent *parent_world = nullptr;
+                    if (object.parent) {
+                        const auto parent = by_name.find(*object.parent);
+                        if (parent == by_name.end()) {
+                            throw std::runtime_error(
+                                "transform hierarchy parent is absent");
+                        }
+                        parent_world = &self(self, *parent->second);
+                    }
+                    TransformComponent next{};
+                    TransformCodecTarget target{.world = &next,
+                                                .parent_world = parent_world};
+                    codec.applyRuntime(
+                        codec.decodeAuthored(component->authoredJson()),
+                        &target);
+                    visiting.erase(object.authoring_object_id.value);
+                    return worlds
+                        .emplace(object.authoring_object_id.value, next)
+                        .first->second;
+                };
 
-            for (const auto &binding : bindings_) {
-                auto *world =
-                    ecs_.tryComponent<TransformComponent>(binding.entity);
-                const auto *local =
-                    ecs_.tryComponent<LocalTransformComponent>(binding.entity);
-                if (world == nullptr || local != nullptr) continue;
-                const auto object = std::find_if(
-                    scene.objects.begin(), scene.objects.end(),
-                    [&](const auto &candidate) {
-                        return candidate.authoring_object_id ==
-                               binding.authoring_object_id;
-                    });
-                if (object == scene.objects.end()) continue;
-                prepared_.push_back(ecs_.prepareComponentSwap(
-                    binding.entity, compute_world(compute_world, *object)));
+                for (const auto &binding : bindings_) {
+                    auto *world = ecs_.tryComponent<TransformComponent>(
+                        binding.entity);
+                    const auto *local =
+                        ecs_.tryComponent<LocalTransformComponent>(
+                            binding.entity);
+                    if (world != nullptr && local == nullptr) {
+                        const auto object = std::find_if(
+                            scene.objects.begin(), scene.objects.end(),
+                            [&](const auto &candidate) {
+                                return candidate.authoring_object_id ==
+                                       binding.authoring_object_id;
+                            });
+                        if (object == scene.objects.end()) {
+                            throw std::runtime_error(
+                                "standalone transform runtime binding has no authoring object");
+                        }
+                        prepared_.push_back(ecs_.prepareComponentSwap(
+                            binding.entity,
+                            compute_world(compute_world, *object)));
+                    }
+                }
             }
         }
     }
@@ -524,18 +535,30 @@ std::vector<TransformProjectionBinding> makeTransformBindings(
     auto &ecs = modules.ecs_core.getTemplatePublicModule();
     const auto scenes = modules.project_config.sceneDocument().query();
     for (const auto &binding : runtime_bindings) {
+        const AuthoringSceneView *bound_scene = nullptr;
+        const AuthoringObjectView *bound_object = nullptr;
         for (const auto &scene : scenes) {
             const auto object = std::find_if(scene.objects.begin(), scene.objects.end(),
                                              [&](const auto &candidate) {
                                                  return candidate.authoring_object_id ==
                                                         binding.authoring_object_id;
                                              });
-            if (object == scene.objects.end() || !object->name) continue;
-            auto *world = ecs.tryComponent<TransformComponent>(binding.entity);
-            auto *local = ecs.tryComponent<LocalTransformComponent>(binding.entity);
-            if (world == nullptr || local == nullptr) continue;
-            result.push_back({scene.scene_id, *object->name, binding.entity,
-                              world, local});
+            if (object != scene.objects.end()) {
+                bound_scene = &scene;
+                bound_object = &*object;
+                break;
+            }
+        }
+        if (bound_scene == nullptr || bound_object == nullptr) {
+            throw std::runtime_error(
+                "runtime binding has no authoring object");
+        }
+        auto *world = ecs.tryComponent<TransformComponent>(binding.entity);
+        auto *local = ecs.tryComponent<LocalTransformComponent>(binding.entity);
+        if (world != nullptr && local != nullptr) {
+            result.push_back({bound_scene->scene_id,
+                              bound_object->authoring_object_id,
+                              binding.entity, world, local});
         }
     }
     return result;
@@ -552,6 +575,29 @@ std::string operationSceneId(const nlohmann::ordered_json &operation,
         return closures->front().at("scene_id").get<std::string>();
     }
     return std::string{fallback};
+}
+
+void requireEditorRuntimeBinding(
+    const EditorRuntimeModules &modules,
+    std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
+    const nlohmann::ordered_json &operation, std::string_view scene_id,
+    std::string_view component_name) {
+    if (scene_id != modules.scene_loader.currentScene()) return;
+    const auto *codec = findComponentCodec(component_name);
+    const auto entity_backed =
+        component_name == "behavior" ||
+        (codec != nullptr &&
+         (codec->runtime_kind == ComponentCodecRuntimeKind::Ecs ||
+          codec->runtime_kind == ComponentCodecRuntimeKind::Camera));
+    if (!entity_backed) return;
+    const auto object_id = AuthoringObjectId{
+        operation.at("object_id").get<std::uint64_t>()};
+    if (!boundEditorEntity(runtime_bindings, object_id)) {
+        throw std::runtime_error(
+            std::string{component_name} +
+            " edit target has no runtime binding: authoring_object_id=" +
+            std::to_string(object_id.value));
+    }
 }
 
 std::size_t operationComponentIndex(
@@ -659,6 +705,8 @@ EditorProjectionResult executeEditorPreview(
     for (const auto &operation : request.operations) {
         const auto scene_id = operationSceneId(operation, fallback_scene);
         const auto component = operation.at("component_slot").get<std::string>();
+        requireEditorRuntimeBinding(modules, runtime_bindings, operation,
+                                    scene_id, component);
         if (component == "transform") transform_scenes.insert(scene_id);
         if (component == "light") light_scenes.insert(scene_id);
     }
@@ -744,6 +792,8 @@ EditorProjectionResult executeEditorProjection(
                     index));
         } else if (op == "set_component_value") {
             const auto component = operation.at("component_slot").get<std::string>();
+            requireEditorRuntimeBinding(modules, runtime_bindings, operation,
+                                        scene_id, component);
             if (component == "behavior") {
                 const auto object_id = AuthoringObjectId{
                     operation.at("object_id").get<std::uint64_t>()};
@@ -777,6 +827,8 @@ EditorProjectionResult executeEditorProjection(
             else if (component == "collider") collider_scenes.insert(scene_id);
         } else if (op == "add_component" || op == "remove_component") {
             const auto component = operation.at("component_slot").get<std::string>();
+            requireEditorRuntimeBinding(modules, runtime_bindings, operation,
+                                        scene_id, component);
             const auto object_id = AuthoringObjectId{
                 operation.at("object_id").get<std::uint64_t>()};
             const auto entity = boundEditorEntity(runtime_bindings, object_id);
@@ -1088,10 +1140,20 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(const EditorRuntimeModul
 struct EditorRuntimeState {
     EditorRuntimeModules modules;
     std::vector<EditorProjectionRuntimeObjectBinding> runtime_bindings;
+    std::uint64_t runtime_bindings_epoch = 0;
 
     EditorRuntimeState()
         : modules{resolveEditorRuntimeModules()},
-          runtime_bindings{collectEditorRuntimeBindings(modules)} {}
+          runtime_bindings{collectEditorRuntimeBindings(modules)},
+          runtime_bindings_epoch{modules.scene_loader.runtimeSceneEpoch()} {}
+
+    void refreshRuntimeBindings() {
+        const auto scene_epoch = modules.scene_loader.runtimeSceneEpoch();
+        if (scene_epoch == runtime_bindings_epoch) return;
+        auto next = collectEditorRuntimeBindings(modules);
+        runtime_bindings.swap(next);
+        runtime_bindings_epoch = scene_epoch;
+    }
 
     nlohmann::ordered_json previewSharedState() const {
         using Json = nlohmann::ordered_json;
@@ -1312,6 +1374,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
         .runtime_query =
             [runtime](const AuthoringSceneView &scene,
                       const AuthoringObjectView &object) {
+                runtime->refreshRuntimeBindings();
                 return queryEditorRuntime(runtime->modules,
                                           runtime->runtime_bindings,
                                           scene, object);
@@ -1326,12 +1389,14 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                 return runtime->modules.scene_loader.currentScene();
             },
             .execute = [runtime](const EditorEditExecutionRequest &request) {
+                runtime->refreshRuntimeBindings();
                 return executeEditorProjection(runtime->modules,
                                                runtime->runtime_bindings,
                                                request);
             },
             .execute_preview =
                 [runtime](const EditorPreviewExecutionRequest &request) {
+                    runtime->refreshRuntimeBindings();
                     return executeEditorPreview(runtime->modules,
                                                 runtime->runtime_bindings,
                                                 request);
@@ -1358,6 +1423,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                 [runtime](AuthoringObjectId object_id,
                           std::size_t attachment_index)
                     -> std::optional<EditorBehaviorAttachmentIdentity> {
+                    runtime->refreshRuntimeBindings();
                     const auto entity = boundEditorEntity(
                         runtime->runtime_bindings, object_id);
                     if (!entity) return std::nullopt;
@@ -1388,6 +1454,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                 };
             },
             .shared_state_snapshot = [runtime] {
+                runtime->refreshRuntimeBindings();
                 return runtime->previewSharedState();
             },
         },
@@ -1405,6 +1472,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                                 collectEditorRuntimeBindings(runtime->modules);
                         });
                 runtime->runtime_bindings.swap(next_runtime_bindings);
+                runtime->runtime_bindings_epoch =
+                    runtime->modules.scene_loader.runtimeSceneEpoch();
                 return revision;
             },
         .save_scene = [runtime] {

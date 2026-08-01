@@ -346,8 +346,9 @@ OrderedJson evaluatedScene(const AuthoringSceneDocument &document) {
                 codec.applyRuntime(codec.decodeAuthored(*authored_collider), &collider);
                 const auto stable_collider_id =
                     (node.view->authoring_object_id.value << 8U) | UINT64_C(1);
-                const std::string name = node.view->name.value_or(
-                    "object-" + std::to_string(node.view->authoring_object_id.value));
+                const auto name = runtimeObjectIdentityName(
+                    scene.scene_id, node.view->authoring_object_id,
+                    node.view->name.value_or(std::string{}));
                 const auto built = buildPhysColliders(std::array{PhysWorldColliderInput{
                     .name = name,
                     .collider = collider,

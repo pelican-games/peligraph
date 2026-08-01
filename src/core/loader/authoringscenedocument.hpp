@@ -23,6 +23,13 @@ class ProjectBasicConfigProjectionTarget;
 PELICAN_DEFINE_HANDLE(SceneRevision, std::uint64_t)
 PELICAN_DEFINE_HANDLE(AuthoringObjectId, std::uint64_t)
 
+// Runtime subsystems such as physics still expose a string label. Preserve an
+// authored name when one exists; otherwise derive a collision-free internal
+// identity from the session-stable authoring object id.
+std::string runtimeObjectIdentityName(std::string_view scene_id,
+                                      AuthoringObjectId object_id,
+                                      std::string_view authored_name);
+
 struct AuthoringComponentView {
     std::size_t declaration_index = 0;
     const nlohmann::json *authored_json = nullptr;

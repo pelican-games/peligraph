@@ -9,6 +9,18 @@
 
 namespace Pelican {
 
+std::string runtimeObjectIdentityName(std::string_view scene_id,
+                                      AuthoringObjectId object_id,
+                                      std::string_view authored_name) {
+    if (!authored_name.empty()) return std::string{authored_name};
+    if (scene_id.empty() || object_id.value == 0) {
+        throw std::invalid_argument(
+            "runtime object identity requires a scene and authoring object id");
+    }
+    return "pelican://scene/" + std::string{scene_id} +
+           "/authoring-object/" + std::to_string(object_id.value);
+}
+
 AuthoringSceneDocument AuthoringSceneDocument::load(std::string_view scene_v1_bytes, SceneRevision revision,
                                                     std::uint64_t first_authoring_object_id) {
     if (revision.value == 0) {

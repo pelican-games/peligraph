@@ -462,10 +462,14 @@ TEST_CASE("Transform projection recomputes descendants and reparent policies",
     TransformComponent root_world{}, middle_world{}, leaf_world{}, zero_world{};
     LocalTransformComponent root_local{}, middle_local{}, leaf_local{}, zero_local{};
     TransformProjectionAdapter transform{{
-        {"main", "Root", EntityId{1, 1}, &root_world, &root_local},
-        {"main", "Middle", EntityId{2, 1}, &middle_world, &middle_local},
-        {"main", "Leaf", EntityId{3, 1}, &leaf_world, &leaf_local},
-        {"main", "Zero", EntityId{4, 1}, &zero_world, &zero_local},
+        {"main", AuthoringObjectId{1}, EntityId{1, 1}, &root_world,
+         &root_local},
+        {"main", AuthoringObjectId{2}, EntityId{2, 1}, &middle_world,
+         &middle_local},
+        {"main", AuthoringObjectId{3}, EntityId{3, 1}, &leaf_world,
+         &leaf_local},
+        {"main", AuthoringObjectId{4}, EntityId{4, 1}, &zero_world,
+         &zero_local},
     }};
     std::array<EditorProjectionAdapter *, 1> adapters{&transform};
 
@@ -540,6 +544,44 @@ TEST_CASE("Transform projection recomputes descendants and reparent policies",
         TransformCodecTarget{&leaf_world, &leaf_local, nullptr});
     REQUIRE(runtime_json.contains("local_trs"));
     REQUIRE(runtime_json.contains("world_trs"));
+}
+
+TEST_CASE("Transform projection binds an unnamed child by authoring id",
+          "[editor-projection][transform][hierarchy][unnamed][wp244]") {
+    const auto fixture = nlohmann::json::parse(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"main":{"objects":[
+        {"name":"Root","components":[
+          {"name":"transform","pos":[2,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}
+        ]},
+        {"parent":"Root","components":[
+          {"name":"transform","pos":[1,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}
+        ]}
+      ]}}
+    })json");
+    DocumentTarget target{AuthoringSceneDocument::load(
+        fixture.dump(), SceneRevision{1})};
+    TransformComponent root_world{}, child_world{};
+    LocalTransformComponent root_local{}, child_local{};
+    TransformProjectionAdapter transform{{
+        {"main", AuthoringObjectId{1}, EntityId{1, 1}, &root_world,
+         &root_local},
+        {"main", AuthoringObjectId{2}, EntityId{2, 1}, &child_world,
+         &child_local},
+    }};
+    std::array<EditorProjectionAdapter *, 1> adapters{&transform};
+    const std::array edit_root{makeSetComponentValueCommand(
+        "main", "Root", "transform",
+        nlohmann::json{{"name", "transform"},
+                       {"pos", {4, 0, 0}},
+                       {"rotation", {0, 0, 0, 1}},
+                       {"scale", {1, 1, 1}}})};
+
+    EditorProjectionTransaction transaction{target, SceneRevision{1}};
+    REQUIRE(transaction.commit(edit_root, adapters).committed());
+    requireVec3(root_world.pos, {4, 0, 0});
+    requireVec3(child_world.pos, {5, 0, 0});
+    REQUIRE((child_local.parent == EntityId{1, 1}));
 }
 
 TEST_CASE("Light and Phys prepared publication is failure atomic",

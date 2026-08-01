@@ -545,7 +545,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### collider
 
-[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L151)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L398)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L81)）。
+[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L161)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L423)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L83)）。
 
 ### behavior arena ✅実装済み
 

@@ -457,18 +457,18 @@ non-force system は matching chunk の component version と `last_run_tick` �
 
 ## 9.8 Camera、light、collider はすべて同じ ECS component ではない
 
-scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L91) が分岐します。系統は **4 つ**になりました。
+scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L93) が分岐します。系統は **4 つ**になりました。
 
 | scene name | runtime 経路 |
 |---|---|
 | `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
 | `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::load()` |
-| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::bindCollider()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`scene.cpp` 内](../../src/core/loader/scene.cpp#L294)) |
-| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L70) 経由で `BehaviorAttachmentArena` へ([`scene.cpp` 内](../../src/core/loader/scene.cpp#L155))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
+| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::bindCollider()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L323)) |
+| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L70) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L165))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
 
-behavior の公開は [`arena.publishSceneAttachments()`](../../src/core/loader/scene.cpp#L451) の 1 点で、失敗すると [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L454) してから rethrow します。「behavior 型名を間違えると scene が半分だけロードされる」ということはありません。
+behavior の公開は [`arena.publishSceneAttachments()`](../../src/core/loader/scene.cpp#L483) の 1 点で、失敗すると [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L519) してから rethrow します。「behavior 型名を間違えると scene が半分だけロードされる」ということはありません。
 
 ### ライトのマジックネームは撤去された(WP142 / LIGHT0)
 
@@ -655,7 +655,7 @@ teardown の最終段は phase で分岐します。
 | RenderDoc capture | 🚧受動のみ(WP140)。**エンジンは RenderDoc をロードしない** | [`renderdoccapture.hpp`](../../src/core/renderdoc/renderdoccapture.hpp#L66) |
 | VRMA decode / retarget / AnimationSource | ✅実装済み(WP176 / 177 / 178) | [`vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp) / [`vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp) |
 | `.vrma` の root motion 抽出 | 📐設計スロットのみ。`VrmaRootMotionPolicy` は `preserve_hips_translation` の 1 値だけ | [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) |
-| authoring 側のオブジェクト宣言 identity | 🚧部分。`stage()` は「object declaration identity を後続 WP まで意図的に固定」 | [`authoringscenedocument.hpp` 内](../../src/core/loader/authoringscenedocument.hpp#L110) |
+| authoring 側のオブジェクト宣言 identity | 🚧部分。`stage()` は「object declaration identity を後続 WP まで意図的に固定」 | [`authoringscenedocument.hpp` 内](../../src/core/loader/authoringscenedocument.hpp#L117) |
 
 optional build feature には stub 実装もあります。たとえば SeqPlayer/VAT/RPC/audio/physics/renderdoc は build option により実装または disabled behavior が選ばれます。header が同じでも build artifact の能力は [`build_features.hpp`](../../src/core/build_features.hpp#L1) と各 `*_stub.cpp` を確認してください。
 
@@ -760,7 +760,7 @@ headless / RPC / golden / replay では XR は決定的に off です([`xrForced
 
 WP144〜WP172 で、変更のプロトコルがコードベース全体で統一されました。この節が第9章で最も重要な追加です。
 
-以下は 3 層に分かれています。**(a) 1 回の編集をどう原子的に適用するか**(1〜2)、**(b) その編集をいつ受理してよいか**(3 の CAS / 4 の lease / 5 の gate)、**(c) どこで確定し、何を拒否・出力するか**(6〜8)です。(a) を束ねているのは [`EditorProjectionTransaction::commit(commands, adapters)`](../../src/core/loader/editorprojectiontransaction.hpp#L276) の 1 関数で、`base_revision` の照合 → command を staged document へ適用 → **全 adapter の `prepare()`** → **全 adapter の `publish()`** → document 公開 → 逆順に `finish()`、という並びです。どこかで例外が出れば、そこまでに `prepare()` した adapter を**逆順に `rollback()`** して `Rejected` / `Failed` を返します([`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L714))。
+以下は 3 層に分かれています。**(a) 1 回の編集をどう原子的に適用するか**(1〜2)、**(b) その編集をいつ受理してよいか**(3 の CAS / 4 の lease / 5 の gate)、**(c) どこで確定し、何を拒否・出力するか**(6〜8)です。(a) を束ねているのは [`EditorProjectionTransaction::commit(commands, adapters)`](../../src/core/loader/editorprojectiontransaction.hpp#L276) の 1 関数で、`base_revision` の照合 → command を staged document へ適用 → **全 adapter の `prepare()`** → **全 adapter の `publish()`** → document 公開 → 逆順に `finish()`、という並びです。どこかで例外が出れば、そこまでに `prepare()` した adapter を**逆順に `rollback()`** して `Rejected` / `Failed` を返します([`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L785))。
 
 ### 1. prepare は throw してよいが、publish は絶対に失敗できない
 
@@ -785,7 +785,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 > **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
-`load_gltf` の単一公開点がわかりやすい実例です([`scene.cpp` 内](../../src/core/loader/scene.cpp#L652))。
+`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L705))。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -829,7 +829,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 [`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L24) は 13 種です。特に注意すべきものを挙げます。
 
-- **`RuntimeOnlyData`**: [`SceneLoader::hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L54) が真のとき、つまり `load_gltf` で持ち込んだ transient モデルがあるときに出ます。「RPC で読み込んだモデルは保存できない」という意味です。
+- **`RuntimeOnlyData`**: [`SceneLoader::hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L71) が真のとき、つまり `load_gltf` で持ち込んだ transient モデルがあるときに出ます。「RPC で読み込んだモデルは保存できない」という意味です。
 - `ExternalModification`: ディスク上の scene が外部で書き換わっていた。
 - 上限は [`maxSceneSnapshotBytes = 64 MiB`](../../src/core/communication/editorcommandservice.hpp#L22)、JSON 整数の安全上限は [`maxExactEditorJsonInteger = 9007199254740991`](../../src/core/communication/editorcommandservice.hpp#L21)。
 
@@ -911,7 +911,7 @@ TEST_CASE("...") {
 > SKIP(...)                     → TestSkipException                    → 素通り → skip
 > ```
 >
-> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L8935) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L2910) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L9182) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L2910) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
 >
 > **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
 

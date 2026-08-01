@@ -381,19 +381,18 @@ struct SceneObjectProjectionAdapter::Impl {
             for (const auto &object : next_scene->objects) {
                 const auto *authored = findComponent(&object, "collider");
                 if (authored == nullptr) continue;
-                if (!object.name || object.name->empty()) {
-                    throw std::runtime_error(
-                        "collider authoring object requires a name");
-                }
+                const auto identity_name = runtimeObjectIdentityName(
+                    scene_id, object.authoring_object_id,
+                    object.name.value_or(std::string{}));
                 ColliderComponent collider;
                 const auto &codec = requireComponentCodec("collider");
                 codec.applyRuntime(codec.decodeAuthored(*authored), &collider);
                 PhysWorld::Binding binding{
-                    .identity = {.name = *object.name},
+                    .identity = {.name = identity_name},
                     .collider = collider,
                     .transform_source = authoredPhysTransform(object),
                 };
-                if (const auto old = old_by_name.find(*object.name);
+                if (const auto old = old_by_name.find(identity_name);
                     old != old_by_name.end()) {
                     binding.identity = old->second->identity;
                     binding.metadata = old->second->metadata;
@@ -987,19 +986,19 @@ void ColliderProjectionAdapter::prepare(
         for (const auto &object : scene->objects) {
             const auto *authored = findComponent(&object, "collider");
             if (authored == nullptr) continue;
-            if (!object.name || object.name->empty()) {
-                throw std::runtime_error("collider authoring object requires a name");
-            }
+            const auto identity_name = runtimeObjectIdentityName(
+                impl_->scene_id, object.authoring_object_id,
+                object.name.value_or(std::string{}));
             ColliderComponent collider;
             const auto &codec = requireComponentCodec("collider");
             codec.applyRuntime(codec.decodeAuthored(*authored), &collider);
 
             PhysWorld::Binding binding{
-                .identity = {.name = *object.name},
+                .identity = {.name = identity_name},
                 .collider = collider,
                 .transform_source = PhysWorldTransform{},
             };
-            if (const auto old = old_by_name.find(*object.name);
+            if (const auto old = old_by_name.find(identity_name);
                 old != old_by_name.end()) {
                 binding.identity = old->second->identity;
                 binding.metadata = old->second->metadata;

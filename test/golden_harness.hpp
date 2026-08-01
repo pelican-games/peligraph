@@ -14,6 +14,7 @@ void runGpuSegmentedOcclusionCulling();
 void runGpuSegmentedOcclusionXr();
 void runGpuSegmentedOcclusionHotReload();
 void runGoldenImages();
+void runEditorRuntimeBinding();
 void runLogicalFrameStereo();
 void runOpenXrTaaTransition();
 void runVelocityFeature();

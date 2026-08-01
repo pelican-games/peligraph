@@ -220,7 +220,7 @@ class EditorProjectionCallbackAdapter final : public EditorProjectionAdapter {
 
 struct TransformProjectionBinding {
     std::string scene_id;
-    std::string object_name;
+    AuthoringObjectId authoring_object_id{};
     EntityId entity = invalidEntityId;
     TransformComponent *world = nullptr;
     LocalTransformComponent *local = nullptr;

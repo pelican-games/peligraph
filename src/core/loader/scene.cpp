@@ -32,6 +32,7 @@
 #include <components/localtransform.hpp>
 #include <components/predefined.hpp>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -67,6 +68,7 @@ struct EcsObjectLoad {
         ComponentCodecValue decoded;
     };
 
+    AuthoringObjectId authoring_object_id{};
     std::string name;
     std::string parent;
     bool hierarchy_participant = false;
@@ -88,9 +90,15 @@ ColliderComponent loadColliderComponent(const nlohmann::json &component, const s
     }
 }
 
-std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, ComponentInfoManager &component_info_manager,
+std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects,
+                                                std::span<const AuthoringObjectView> authoring_objects,
+                                                ComponentInfoManager &component_info_manager,
                                                 std::vector<LightLoadEntry> &light_entries,
                                                 std::vector<PreparedSceneBehaviorAttachment> behavior_entries) {
+    if (objects.size() != authoring_objects.size()) {
+        throw std::logic_error(
+            "authoring scene view drifted from the runtime scene document");
+    }
     std::vector<EcsObjectLoad> ecs_objects;
     ecs_objects.reserve(objects.size());
 
@@ -118,6 +126,8 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
         const auto &components_json = object.at("components");
 
         EcsObjectLoad ecs_object;
+        ecs_object.authoring_object_id =
+            authoring_objects[object_index].authoring_object_id;
         ecs_object.name = object_name;
         ecs_object.parent = parent_name;
         ecs_object.hierarchy_participant = !parent_name.empty() || parent_names.contains(object_name);
@@ -273,6 +283,18 @@ void SceneLoader::load(SceneId scene_id) {
     if (scene_it == scenes.end()) {
         throw std::runtime_error("scene not found: " + scene_id);
     }
+    if (runtime_scene_epoch == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("runtime scene epoch space exhausted");
+    }
+
+    const auto authoring_scenes = scene_document.query();
+    const auto authoring_scene = std::find_if(
+        authoring_scenes.begin(), authoring_scenes.end(),
+        [&](const auto &candidate) { return candidate.scene_id == scene_id; });
+    if (authoring_scene == authoring_scenes.end()) {
+        throw std::logic_error(
+            "runtime scene is absent from the authoring scene view");
+    }
 
     std::vector<LightLoadEntry> light_entries;
     const auto &objects = scene_it.value().at("objects");
@@ -282,7 +304,8 @@ void SceneLoader::load(SceneId scene_id) {
                                            ? BehaviorRegistryAvailability::active
                                            : BehaviorRegistryAvailability::dll_unavailable;
     auto behavior_entries = prepareSceneBehaviorAttachments(objects, behavior_availability);
-    auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_entries,
+    auto ecs_objects = prepareSceneBindings(objects, authoring_scene->objects,
+                                            component_info_manager, light_entries,
                                             std::move(behavior_entries));
 
     const auto transform_id = component_info_manager.getComponentIdByName("transform");
@@ -317,6 +340,8 @@ void SceneLoader::load(SceneId scene_id) {
                             applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
                         }
                     });
+                bindRuntimeObject(object.authoring_object_id,
+                                  object_ids[object_index]);
             }
             if (!object.name.empty() && object_ids[object_index] != invalidGameObjectId) {
                 object_ids_by_name.emplace(object.name, object_ids[object_index]);
@@ -396,10 +421,13 @@ void SceneLoader::load(SceneId scene_id) {
                                        ecs.tryComponent<TransformComponent>(object_id) != nullptr;
 #if PELICAN_WITH_PHYSICS
             for (const auto &collider : object.colliders) {
+                const auto identity_name = runtimeObjectIdentityName(
+                    scene_id, object.authoring_object_id, object.name);
                 if (has_transform) {
-                    phys_world.bindCollider(object.name, collider, object_id);
+                    phys_world.bindCollider(identity_name, collider, object_id);
                 } else {
-                    phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
+                    phys_world.bindCollider(identity_name, collider,
+                                            identityPhysWorldTransform());
                 }
             }
 #endif
@@ -414,6 +442,7 @@ void SceneLoader::load(SceneId scene_id) {
                         applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
                     }
                 });
+                bindRuntimeObject(object.authoring_object_id, object_id);
             }
             const auto object_id = object_ids[object_index];
             const bool has_transform =
@@ -425,10 +454,13 @@ void SceneLoader::load(SceneId scene_id) {
             }
 #if PELICAN_WITH_PHYSICS
             for (const auto &collider : object.colliders) {
+                const auto identity_name = runtimeObjectIdentityName(
+                    scene_id, object.authoring_object_id, object.name);
                 if (has_transform) {
-                    phys_world.bindCollider(object.name, collider, object_id);
+                    phys_world.bindCollider(identity_name, collider, object_id);
                 } else {
-                    phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
+                    phys_world.bindCollider(identity_name, collider,
+                                            identityPhysWorldTransform());
                 }
             }
 #endif
@@ -457,6 +489,7 @@ void SceneLoader::load(SceneId scene_id) {
     }
     current_scene_id = std::move(scene_id);
     runtime_only_changes = false;
+    ++runtime_scene_epoch;
     internal::getEventRegisterer().emit(SceneLoaded{current_scene_id});
 }
 
@@ -488,6 +521,7 @@ void SceneLoader::clearRuntimeScene() {
     // renderer instances, and named transform bindings are still resolvable.
     internal::preDestroyAllBehaviorObjects();
     object_bindings.clear();
+    runtime_object_bindings.clear();
     if (auto *seq_player = FastModuleContainer::tryGet<SeqPlayer>()) {
         seq_player->releaseInstancesForSceneLoad();
     }
@@ -525,6 +559,23 @@ void SceneLoader::bindObjectTransform(const std::string &name, GameObjectId obje
     object_bindings.emplace(name, ObjectBinding{
                                       .object_id = object_id,
                                   });
+}
+
+void SceneLoader::bindRuntimeObject(AuthoringObjectId authoring_object_id,
+                                    GameObjectId object_id) {
+    if (authoring_object_id.value == 0 || object_id == invalidGameObjectId) {
+        throw std::logic_error("runtime object binding is incomplete");
+    }
+    const auto duplicate = std::find_if(
+        runtime_object_bindings.begin(), runtime_object_bindings.end(),
+        [&](const auto &binding) {
+            return binding.authoring_object_id == authoring_object_id;
+        });
+    if (duplicate != runtime_object_bindings.end()) {
+        throw std::logic_error("duplicate authoring object runtime binding");
+    }
+    runtime_object_bindings.push_back(
+        SceneRuntimeObjectBinding{authoring_object_id, object_id});
 }
 
 std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {

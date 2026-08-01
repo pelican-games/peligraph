@@ -8,6 +8,12 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     GoldenHarness::runGoldenImages();
 }
 
+TEST_CASE(
+    "inspector edits unnamed parented runtime objects and changes rendered pixels",
+    "[golden][headless][editor][transform][collider][load-scene][wp244]") {
+    GoldenHarness::runEditorRuntimeBinding();
+}
+
 TEST_CASE("B-layer directional shadow is visible and copied features are equivalent",
           "[golden][headless][wp205]") {
     GoldenHarness::runBLayerShadowEquivalence();

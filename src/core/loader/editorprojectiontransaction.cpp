@@ -24,6 +24,13 @@ std::string objectPath(std::string_view scene_id, std::string_view object_name) 
            std::string{object_name};
 }
 
+std::string objectPath(std::string_view scene_id,
+                       const AuthoringObjectView &object) {
+    if (object.name) return objectPath(scene_id, *object.name);
+    return "/scenes/" + std::string{scene_id} + "/authoring_objects/" +
+           std::to_string(object.authoring_object_id.value);
+}
+
 [[noreturn]] void projectionError(EditorProjectionErrorCode code,
                                   std::string path,
                                   std::string message) {
@@ -151,6 +158,7 @@ TransformComponent composeWorld(const TransformComponent *parent,
 }
 
 struct DocumentTransformNode {
+    AuthoringObjectId authoring_object_id{};
     std::string name;
     std::string parent;
     std::string path;
@@ -212,6 +220,50 @@ buildTransformNodes(const Json &scene, std::string_view scene_id) {
         projectNode(index, nodes, indices);
     }
     return {std::move(nodes), std::move(indices)};
+}
+
+struct AuthoringTransformNodes {
+    std::vector<DocumentTransformNode> nodes;
+    NodeIndex by_name;
+    std::unordered_map<std::uint64_t, std::size_t> by_id;
+};
+
+AuthoringTransformNodes buildAuthoringTransformNodes(
+    const AuthoringSceneView &scene) {
+    AuthoringTransformNodes result;
+    result.nodes.reserve(scene.objects.size());
+    result.by_name.reserve(scene.objects.size());
+    result.by_id.reserve(scene.objects.size());
+    for (const auto &object : scene.objects) {
+        if (findComponent(object.authoredJson(), "transform") != nullptr) {
+            const auto path = objectPath(scene.scene_id, object);
+            const auto index = result.nodes.size();
+            if (!result.by_id
+                     .emplace(object.authoring_object_id.value, index)
+                     .second) {
+                projectionError(EditorProjectionErrorCode::CommandInvalid,
+                                path,
+                                "duplicate authoring object identity");
+            }
+            const auto name = object.name.value_or(std::string{});
+            if (!name.empty() && !result.by_name.emplace(name, index).second) {
+                projectionError(EditorProjectionErrorCode::CommandInvalid,
+                                path,
+                                "duplicate authoring object name");
+            }
+            result.nodes.push_back(DocumentTransformNode{
+                .authoring_object_id = object.authoring_object_id,
+                .name = name,
+                .parent = object.parent.value_or(std::string{}),
+                .path = path,
+                .local = decodeTransformObject(object.authoredJson(), path),
+            });
+        }
+    }
+    for (std::size_t index = 0; index < result.nodes.size(); ++index) {
+        projectNode(index, result.nodes, result.by_name);
+    }
+    return result;
 }
 
 TransformCodecData inverseLocal(const TransformComponent &world,
@@ -600,8 +652,10 @@ TransformProjectionAdapter::TransformProjectionAdapter(
     std::unordered_set<std::string> keys;
     keys.reserve(bindings_.size());
     for (const auto &binding : bindings_) {
-        const auto key = binding.scene_id + "\n" + binding.object_name;
-        if (binding.scene_id.empty() || binding.object_name.empty() ||
+        const auto key = binding.scene_id + "\n" +
+                         std::to_string(binding.authoring_object_id.value);
+        if (binding.scene_id.empty() ||
+            binding.authoring_object_id.value == 0 ||
             binding.world == nullptr || binding.local == nullptr) {
             throw std::invalid_argument(
                 "transform projection binding is incomplete");
@@ -619,44 +673,61 @@ void TransformProjectionAdapter::prepare(
     prepared_.clear();
     published_ = false;
 
-    std::unordered_map<std::string, std::pair<std::vector<DocumentTransformNode>,
-                                              NodeIndex>>
-        scenes;
+    const auto document_scenes = context.next_document.query();
+    std::unordered_map<std::string, AuthoringTransformNodes> scenes;
     scenes.reserve(bindings_.size());
     for (const auto &binding : bindings_) {
         if (scenes.contains(binding.scene_id)) continue;
-        const auto &scene = requireScene(context.next_document.rawJson(),
-                                         binding.scene_id,
-                                         objectPath(binding.scene_id,
-                                                    binding.object_name));
+        const auto scene = std::find_if(
+            document_scenes.begin(), document_scenes.end(),
+            [&](const auto &candidate) {
+                return candidate.scene_id == binding.scene_id;
+            });
+        if (scene == document_scenes.end()) {
+            projectionError(EditorProjectionErrorCode::ObjectNotFound,
+                            "/scenes/" + binding.scene_id,
+                            "authoring scene does not exist: " +
+                                binding.scene_id);
+        }
         scenes.emplace(binding.scene_id,
-                       buildTransformNodes(scene, binding.scene_id));
+                       buildAuthoringTransformNodes(*scene));
     }
 
-    std::unordered_map<std::string, EntityId> entities;
-    entities.reserve(bindings_.size());
+    std::unordered_map<std::string,
+                       std::unordered_map<std::uint64_t, EntityId>>
+        entities;
     for (const auto &binding : bindings_) {
-        entities.emplace(binding.scene_id + "\n" + binding.object_name,
-                         binding.entity);
+        entities[binding.scene_id].emplace(
+            binding.authoring_object_id.value, binding.entity);
     }
 
     for (auto &binding : bindings_) {
         auto &scene = scenes.at(binding.scene_id);
-        auto &nodes = scene.first;
-        const auto found = scene.second.find(binding.object_name);
-        if (found == scene.second.end()) {
+        const auto found =
+            scene.by_id.find(binding.authoring_object_id.value);
+        if (found == scene.by_id.end()) {
             projectionError(EditorProjectionErrorCode::ComponentNotFound,
-                            objectPath(binding.scene_id,
-                                       binding.object_name) +
+                            "/scenes/" + binding.scene_id +
+                                "/authoring_objects/" +
+                                std::to_string(
+                                    binding.authoring_object_id.value) +
                                 "/components/transform",
                             "bound runtime object has no authored transform");
         }
-        const auto &node = nodes[found->second];
+        const auto &node = scene.nodes[found->second];
         EntityId parent = invalidEntityId;
         if (!node.parent.empty()) {
-            const auto parent_entity = entities.find(
-                binding.scene_id + "\n" + node.parent);
-            if (parent_entity == entities.end()) {
+            const auto parent_node = scene.by_name.find(node.parent);
+            if (parent_node == scene.by_name.end()) {
+                projectionError(EditorProjectionErrorCode::ObjectNotFound,
+                                node.path,
+                                "transform parent does not exist: " +
+                                    node.parent);
+            }
+            const auto parent_entity = entities.at(binding.scene_id).find(
+                scene.nodes[parent_node->second]
+                    .authoring_object_id.value);
+            if (parent_entity == entities.at(binding.scene_id).end()) {
                 projectionError(EditorProjectionErrorCode::ObjectNotFound,
                                 node.path,
                                 "runtime transform parent is not bound: " +
