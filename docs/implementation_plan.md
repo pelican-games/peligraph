@@ -28,10 +28,18 @@ v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP1
 ### ビルド・テスト
 
 ```sh
-cmake . -B build -DCMAKE_PREFIX_PATH=<Qt install path>   # 初回のみ。Qt 不要の作業は -DSKIP_DEVSTUDIO
+cmake . -B build -DCMAKE_PREFIX_PATH=<Qt install path> -DPELICAN_WITH_SPIRV_LINK=ON
 cmake --build ./build --config Debug
 ctest --test-dir ./build -C Debug --output-on-failure
 ```
+
+- Qt 不要の作業は `-DSKIP_DEVSTUDIO=ON`。ただし `src/devstudio/` を触る WP では OFF にして両方確かめること
+- **`-DPELICAN_WITH_SPIRV_LINK=ON` を省かないこと。** この option の既定は OFF で
+  ([`ci.md`](ci.md) §「experimental SPIR-V linker」)、省くと SPIR-V リンカのテスト 5 件が
+  **そもそも登録されない**。CI は ON で回すので、省いたまま「全数緑」と報告すると
+  CI で初めて割れる。実例として WP249 はこの指定が無い手順で検証され、
+  ctest 総数が統合ブランチより 5 件少ない構成のまま緑と報告された(実害は無かったが、
+  それは偶然である)
 
 - 完了条件は常に「ビルド成功 + 全テストグリーン + `git diff --check` クリーン + **文書参照が緑**」
 - 描画挙動に触れる WP は `pelican_player.exe` の短時間起動確認も行う(`docs/rendering_phase1_review.md` の Validation Run と同じ流儀)
