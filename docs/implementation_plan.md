@@ -973,6 +973,228 @@ GPU へ運ぶ経路を作り、消費側の index 0 固定を解除する。
 
 依存: WP242a。見積: 中。
 
+### WP243: glTF マテリアルの遮蔽経路の是正(243a / 243b)
+
+**発見の経緯**: 既定構成(hybrid_v1 + sky_ambient + shadow_directional)で
+`DamagedHelmet.glb` を描いたところ、ベースカラーが白基調のアセットが**ほぼ真っ黒**に
+描かれた。エンジンを一切変更せず、アセット側の metallicRoughness テクスチャの
+**R チャンネルだけ**を 0 から 255 に差し替えたところ正常な絵になり、原因が確定した。
+
+### WP243a: occlusion を metallicRoughness の R から読むのをやめる
+
+**目的**: エンジンが glTF の `metallicRoughnessTexture` を必ず ORM パック済み
+(R = occlusion)と決め打ちしている。glTF 2.0 ではこのテクスチャの **R チャンネルは
+未定義**であり、occlusion は独立した `occlusionTexture` である。仕様準拠のアセットが
+軒並み壊れる。
+
+**現状の経路**:
+
+- `default.frag` と `shaders/material/surface_v1.frag` がともに
+  `mix(1.0, mr.r, material.surfaceFactors.w)` を occlusion として書き出している。
+  `default.frag` にはその前提が
+  `// glTF ORM texture: R=Occlusion, G=Roughness, B=Metallic` とコメントで明記されている。
+  `surfacecompiler.cpp` の生成経路も同じ式を吐く。**3 箇所が同じ誤りを共有している**。
+- `fullscreen.frag` は G-buffer の B を `materialAO` として読み、
+  `min(materialAO, pow(ssao, 3.0))` で SSAO と合成する。`min` なので、ほぼ 0 の
+  materialAO が SSAO を無条件に押し切る。これが `albedo * ao * ambientRadiance` を
+  厳密に 0 にする。
+- `occlusion_strength` は glTF 既定の 1.0 なので `mix(1.0, mr.r, 1.0)` は `mr.r` そのもの。
+  **強度を仕様どおり尊重するほど悪化する**。
+- `gltf.cpp` で `occlusionTexture` に触れる行は `.strength` を読む 1 箇所だけで、
+  画像インデックスは一度も読まれない。`materialcontainer.hpp` の
+  テクスチャスロットは base_color / metallic_roughness / normal / emissive の 4 枠で、
+  **occlusion 枠が存在しない**。
+- `materialformat.cpp` は project 空間 material の occlusion テクスチャを構文としては
+  受理するが、消費先はホットリロード用の署名文字列だけで**死んでいる**。
+
+**実測**(この WP を書いた根拠。再現手順として使えること):
+
+| 対象 | R 平均 | R が厳密に 0 の割合 |
+| --- | --- | --- |
+| DamagedHelmet `metallicRoughnessTexture` | 0.91 / 255 | 62.5% |
+| DamagedHelmet `occlusionTexture`(未読込) | 224.86 / 255 | 0.0% |
+| sponza の metallicRoughness 20 枚 平均 | 0.62 / 255 | 56〜100% |
+
+**実装範囲**:
+
+1. **occlusion を `occlusionTexture` から読む。** ORM パックはこの修正で自動的に
+   成立する — glTF では `occlusionTexture` が `metallicRoughnessTexture` と
+   同じ画像を指してよく、その場合に R を読むのが正しいからである。
+   **ORM 用の分岐を別に設けないこと。**
+2. **テクスチャスロットに occlusion を追加する。** 4 枠固定の前提が
+   `materialcontainer.hpp` から descriptor 構築まで通っているので、
+   増やす場所を一箇所に閉じること。
+3. **occlusion テクスチャが無いときの既定は 1.0(遮蔽なし)。** `gltf.cpp` が
+   metallicRoughness に対して行っている白 (255,255,255) の捏造と同じ方式でよいが、
+   **既定値の所在を一箇所にすること**(WP240b と同じ規律)。
+4. 上の 3 箇所(`default.frag` / `surface_v1.frag` / `surfacecompiler.cpp`)が
+   **同じ意味論**になること。片方だけ直すと経路によって見た目が変わる。
+5. `materialformat.cpp` の死んでいる occlusion 記述を、この経路へ接続するか
+   削除するかを決めること。**受理するが効かない状態を残さない。**
+
+**受け入れ条件**:
+
+- `DamagedHelmet.glb` が既定構成でベースカラーどおりに描かれ、headless 描画の画素で
+  確認できる(非発光画素の中央値が 8bit で 2 以下、という現状から脱していること)
+- `occlusionTexture` と `metallicRoughnessTexture` が同一画像を指す ORM アセットでも
+  正しく遮蔽が効く
+- occlusion テクスチャを持たないアセットの見た目が変わらない
+- forward と deferred で同じシーンの遮蔽が一致する
+- `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
+
+**既存 golden への影響**: 描画結果が大きく変わるため、遮蔽を含む byte 固定
+baseline は更新が要る。**更新した golden の新旧を並べ、変化が意図どおりであることを
+PR 本文で示すこと。** 黙って焼き直さない。
+
+依存: なし。見積: 中。**最優先** — 仕様準拠の glTF アセットが全滅する欠陥である。
+
+### WP243b: 直接光の拡散項に AO を掛けるのをやめる
+
+**目的**: glTF は `occlusionTexture` を**間接光限定**と定めている。`fullscreen.frag` は
+`directDiffuseOcclusion` として直接光の拡散項にも AO を掛けており、仕様違反である。
+
+**実装範囲**:
+
+1. `fullscreen.frag` の 4 箇所(clustered / directional / point / spot)で
+   直接光の拡散項から AO を外す。
+2. 現状は `openPbrBase ? 1.0 : ao` になっており、**OpenPBR 経路は既に正しく、
+   glTF core 経路だけが間違っている**。分岐を消して両方が正しい側に揃うこと。
+3. forward 経路が同じ規律になっているかを確認し、ずれていれば揃えること。
+
+**受け入れ条件**:
+
+- 直接光の拡散項に occlusion が掛からない
+- `openPbrBase` による分岐が残っていない
+- `gpu` ラベル全数が緑
+
+依存: **WP243a**(先に直さないと AO が 0 に潰れていて差が見えない)。見積: 小。
+
+### WP244: 無名オブジェクトがランタイムに束縛されない fail-silent
+
+**目的**: シーン JSON でオブジェクトに最上位の `"name"` が無いと、エディタの編集が
+ランタイムへ一切届かない。しかも**編集は「成功」を返す**。fail-fast の原則に反する。
+
+**現状の経路**:
+
+- `editorruntimefactory.cpp` の `if (!object.name) continue;` が authoring-id → EntityId の
+  対応表を作る**唯一の場所**で、無名オブジェクトを黙って飛ばす。
+  同ファイルにログを伴わない `continue` が他に 4 箇所ぶら下がっている。
+- `scene.cpp` の `if (!object.name.empty() && has_transform)` により、無名オブジェクトは
+  そもそもランタイムの名前索引に載らない。`SceneLoader::objectId` は
+  `std::string` キーの map 引きである。
+- 書き込み先が空でも `editorprojectiontransaction.cpp` の commit は新しい文書を発行して
+  `committed` を返すため、インスペクタは「revision N でコミットしました」と表示する。
+- `runtime_bindings` は `EditorRuntimeState` のコンストラクタで一度スナップショットされ、
+  再収集は `import_scene_snapshot` ハンドラだけである。**`load_scene` では再収集されない**ため、
+  シーンロード後はプロセスが終わるまで名前付きオブジェクトの編集も文書限りになる。
+
+**影響範囲**: `projects/example/scenes/main.scene.json` は transform を持つ 32 個の
+オブジェクトが**全て無名**である(名前が付いているのは transform を持たない light 14 個だけ)。
+手書きシーンはこれを雛形にするため、実質的に既定で踏む。
+
+**実装範囲**:
+
+1. **束縛キーを名前から authoring object id へ移すことを第一候補とする。**
+   `authoring_object_id` は既に存在し安定している。名前必須は名前引き索引に
+   由来する偶発的な制約であって、設計上の要求ではない。
+2. それを採らない場合でも、**束縛できなかった編集が `committed` を返してはならない**。
+   名前付きハードエラーにすること。「成功と表示されるが何も起きない」を残さない。
+3. `continue` で握り潰している 5 箇所を、ログか例外のどちらかへ寄せること。
+4. `load_scene` 後に `runtime_bindings` を再収集すること。
+5. `projects/example` の扱いを決めること — 1 を採れば修正不要になる。
+
+**受け入れ条件**:
+
+- 無名オブジェクトの transform 編集がランタイムへ届く(1 を採る場合)か、
+  名前付きハードエラーになる(2 を採る場合)。**黙って成功を返す経路が無いこと**
+- `load_scene` の後でも編集がランタイムへ届く
+- インスペクタ経由の編集で描画結果が変わることを、画素で確認するテストがあること
+  (現状はライブ ECS のコンポーネントまでしか検証されていない)
+- `ctest` 全数が緑、`git diff --check` クリーン
+
+依存: なし。見積: 中。**WP243 とは独立**、並行可。
+
+### WP245: インスペクタのドラッグ中に値が巻き戻る
+
+**目的**: 値をドラッグすると直前の値へ戻ることがある。自分自身のコミットを
+「外部からの変更」と誤認して、編集途中のスナップショットを上書きしている。
+
+**現状の経路**:
+
+- `inspector.cpp` の `draw()` が `pollWatch()` を**毎フレーム無条件に**呼ぶ。
+  ドラッグ中・プレビュー中のガードが無い。
+- `inspector.hpp` の `inspectorWatchPollFrameInterval = 30` により、30 フレームごと
+  (60fps で約 0.5 秒ごと)にシーンリビジョンを問い合わせ、前回観測したトークンと
+  違えば `refresh()` を呼ぶ。
+- `refresh()` は `selectObject()` を通じて選択オブジェクトのスナップショットを
+  **丸ごと差し替える**。ところがドラッグ中の値はまさにそこ
+  (`component.authored_json[...] = interaction.value`)に入っている。
+- 決め手は、コミット後の `refresh()` が `watch.observe()` を呼ばないことである。
+  ドラッグを離すとプレビューがコミットされリビジョンが上がるが、監視状態は古いまま
+  なので、**次のポーリングで必ず「変わった」と判定される**。
+  結果として 1 回いじるたびに、その直後の約 0.5 秒間だけ次の編集が消える窓が開く。
+
+**実装範囲**:
+
+1. **自分のコミット後に新リビジョンを取り込む。** 自分の変更を外部変更と
+   誤認しないこと。これが根本原因である。
+2. `pollWatch()` を、プレビュー保持中および編集中のウィジェットがある間はスキップする。
+3. `refresh()` が編集途中のフィールド値を破壊しないこと(保存して復元するか、
+   編集中は差し替えない)。
+4. 本当に外部から変更されたときは今までどおり反映され、
+   `stale_revision` の案内も出ること。**外部変更の検知そのものを殺さない。**
+
+**受け入れ条件**:
+
+- 連続してドラッグしても値が巻き戻らない
+- 外部からシーンが変更された場合は従来どおり反映される
+- 上の 2 つを分けて検証するテストがあること
+- `ctest` 全数が緑
+
+依存: なし。**WP244 とは別の層**(244 はランタイム束縛、245 は UI の状態管理)。見積: 小。
+
+### WP246: glTF テクスチャの mipmap 生成
+
+**目的**: 埋め込みテクスチャにミップマップが無く、縮小時に強いモアレが出る。
+sponza の布と床で顕著。
+
+**現状**: `vkCmdBlitImage` は `src/` 全体に存在せず、ミップ鎖は生成されない。
+`imageloader.cpp` の PNG / JPEG / その他のデコーダは**常に 1 レベルだけ**を積み、
+複数レベルを持つのは KTX 経路のみである。サンプラは
+`mipmapMode = eLinear` / `maxLod = VK_LOD_CLAMP_NONE` を要求しているのに level 0 しか
+存在しない。加えて `materialcontainer.cpp` の標準サンプラは
+`anisotropyEnable = false` である。
+
+**実装範囲**:
+
+1. 単一レベルで読み込まれた画像に対してミップ鎖を生成する。GPU の blit 鎖と
+   CPU 側生成のどちらを採るかを**最初に決めて理由を書くこと**。
+2. sRGB フォーマットの扱いを明示すること(blit 鎖はフォーマットの転送関数の
+   影響を受ける)。
+3. 異方性フィルタを有効にするかを決める。有効にする場合はデバイス機能の確認を伴うこと。
+   **機能が無い環境で黙って落ちないこと。**
+4. KTX のように既にミップを持つ画像を二重に生成しないこと。
+
+**受け入れ条件**:
+
+- sponza の縮小領域でモアレが解消し、headless 描画の画素で確認できる
+- 既にミップを持つ画像の経路が変わらない
+- 異方性が使えないデバイスでも起動する
+- `gpu` ラベル全数と `ctest -LE gpu` が緑
+
+**既存 golden への影響**: 縮小を含む baseline は更新が要る。WP243a と同じく
+新旧を並べて示すこと。
+
+依存: なし。見積: 中。
+
+### WP247 候補(未 WP 化): IBL / 環境スペキュラ
+
+`src/` 内に `samplerCube` / `textureCube` の宣言が**ゼロ**であり、
+`pelican_env_ambient()` は法線引数を受け取りながら一度も使わず定数を返す。
+金属は直接光の鋭いハイライト以外を受け取れないため、glTF PBR アセットは
+遮蔽を直した後も平坦に見える。**WP243a を直してから見た目を再評価し、
+そのうえで WP 化すること** — 遮蔽が 0 に潰れている間は必要量の判断ができない。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
