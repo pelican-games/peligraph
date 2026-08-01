@@ -3,8 +3,8 @@
 対象読者: エンジン担当、WP の受け入れ判定をする人、そして「この機構は実装済みか」を
 他の文書から引く人。
 
-ステータス: **v1.3(2026-07-31)**。判定は branch
-`agent/wp240c-project-material` の WP240c 実装に対して行いました。本書は
+ステータス: **v1.4(2026-08-01)**。判定は commit `3ec9bdd`(WP241 と WP242a を統合した後)に
+対して行いました。本書は
 [`render_mechanism_coverage.md`](render_mechanism_coverage.md) を置き換えるものではなく、
 その ○ / △ / ✕ 判定の**根拠表**です。
 
@@ -110,6 +110,7 @@ player を起動する process integration が `LABELS gpu` で登録されて�
 |---|---|---|---|
 | ViewFamily 基盤(stable ID / token / temporal history) | **E3† +E5** | CPU: `test/viewfamily_test.cpp` 11 TEST_CASE(token 安定性、cardinality、main/secondary 分離、実行順変更に耐える history、membership 変化)。GPU: golden `shadow_on` / `morph_skinned_shadow` が `$shadow/directional` を実行し `expected.png` で byte 固定。trace は `test/fixtures/renderer_execution_traces.json` | secondary family を含む byte 固定ケース。現状 trace fixture 664 node は全て `single_view` |
 | directional CSM(cascade) | **E3 +E5** | CPU: `viewfamily_test` "directional cascade provider creates stable camera-relative family views"、`featurecompose_test` の cascade count / layer、`multiview_execution_test` の LightUBO pack/unpack。GPU: `golden_harness` の `shadow_b_layer_cascaded` mode が `shadow_map` の `array_layers == 3`、LightUBO の split 単調増加と最終 20.0、`shadow_depth` の 3 回 sequential 実行、**layer ごとの depth readback**、cascade 別 draw compaction を検証。E5 の根拠は cascade 設定が project 空間の `parameters`(`cascade_count` 等)と project-owned な `shadow_probe` feature だけで書かれていること、および同じ feature の project 複製が `shadow_b_layer_project` で画素一致すること | `test/golden/shadow_b_layer_cascaded/` を作って inventory へ登録し byte 固定する(現在このディレクトリは存在せず、画像への主張は「サイズが engine と同じ」「off と異なる」だけ) |
+| 複数 directional light の影(WP242a) | **E3 +E5** | GPU: `golden_cases_test` "multiple directional lights cast matching forward and deferred shadows"(`[wp242a]`)が `shadow_multi_*_on` / `_off` を回し、**画素を readback してチャンネル単位で比較**する。forward と deferred の両経路で同じ結果になることを同一テストが固定している(`fullscreen.frag` が `pelican_lighting_v1.glsl` を include するようになり、実装自体が 1 本化された)。CPU: `lightpolicy_test` の追加ケース。E5 の根拠は 2 灯目が `writeBLayerShadowProject()` の書く project 空間 `scene.json` の宣言だけで足りていること | golden ディレクトリを作って byte 固定する(†)。影を落とせるライト数の上限がどこにあるかは未検証 |
 | planar reflection | **E3 +E5** | CPU: `viewfamily_test` の identity/clip plane/winding と oblique 正射影 fallback、`featurecompose_test` "planar reflection feature builds a clipped secondary-family render slice"。GPU: `golden_cases_test` "planar reflection executes a clipped secondary view family on the GPU" が 3 variant を回し、64x64 / 2 layer / 7 mip / storage usage、clustered selection buffer の word 単位検証、mip 連鎖の dispatch group 列、`$reflection/planar` の 15 node、forward/deferred の byte 差分を検証 | `test/golden/planar_reflection*/` を作って byte 固定する。現在は `test/golden/shadow_off` のディレクトリを借りているだけで画像比較は一切走らない |
 | 交換可能な reflection prefilter package | **E3 +E5** | 同 harness が `#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` の両側で解決先を検証(`engine://render_algorithms/planar_reflection/standard_prefilter` と `project://shaders/custom_planar_prefilter`)。build purge は CI1 の `test/run_build_units_smoke.cmake` の `verify_standard_render_algorithms_absent()` | 差し替え後の**出力画素**を固定する証拠。現在は「解決先が変わったこと」までしか見ていない |
 | runtime cube render target(資源形状 / face attachment / sampled cube view) | **E3** | CPU: `targetrenderplanning_test` / `renderingsamplecount_test` の `[wp236]`、`surfacecompiler_test`。GPU: `multiview_execution_test` が実 device 上で `wp236_cube_target` を確保し `eCubeCompatible`・6 layer・3 mip を確認、face attachment の rendering info と 6 面の layer 分離、cube view の descriptor 解決までを検証。さらに 6 枚の face attachment view へ実際に draw を発行し、image → host buffer コピーで face 別の byte 列を読み戻して、各 face が隣の face と一致しないことを検証 | golden 化(†)と、face 画素を特定の期待値へ固定すること。実デバイス gate も未実施 |
