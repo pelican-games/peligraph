@@ -14,6 +14,7 @@ inline constexpr uint32_t PELICAN_OBJECT_BUFFER_BINDING = 1;
 inline constexpr uint32_t PELICAN_LIGHT_UBO_BINDING = 2;
 inline constexpr uint32_t PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING = 3;
 inline constexpr uint32_t PELICAN_FRAME_RESOLUTION_UBO_BINDING = 4;
+inline constexpr uint32_t PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING = 5;
 inline constexpr uint32_t PELICAN_MATERIAL_BUFFER_BINDING = 6;
 inline constexpr uint32_t PELICAN_SKIN_PALETTE_BINDING = 2;
 inline constexpr uint32_t PELICAN_PREVIOUS_SKIN_PALETTE_BINDING = 3;

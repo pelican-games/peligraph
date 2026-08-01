@@ -2,10 +2,12 @@
 #include "../log.hpp"
 #include "../userpublic/color.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
@@ -58,13 +60,26 @@ namespace Pelican
 				display_name + "' will not be rendered (cap " + std::to_string(cap) + ")";
 		}
 
-		glm::vec3 safeLightDirection(const std::vector<DirectionalLight>& lights)
+		glm::vec3 fallbackLightDirection()
 		{
-			if (lights.empty() || glm::length(lights.front().direction) < 0.0001f)
+			return glm::normalize(
+				glm::vec3{-0.5f, -1.0f, -0.5f});
+		}
+
+		glm::vec3 safeLightDirection(
+			const std::vector<DirectionalLight>& lights,
+			std::size_t index)
+		{
+			if (index >= lights.size())
 			{
-				return glm::normalize(glm::vec3{-0.5f, -1.0f, -0.5f});
+				throw std::out_of_range(
+					"directional shadow light index is out of range");
 			}
-			return glm::normalize(lights.front().direction);
+			if (glm::length(lights[index].direction) < 0.0001f)
+			{
+				return fallbackLightDirection();
+			}
+			return glm::normalize(lights[index].direction);
 		}
 
 		glm::mat4 vulkanOrtho(float left, float right, float bottom, float top, float z_near, float z_far)
@@ -136,9 +151,41 @@ namespace Pelican
 		};
 	}
 
+	DirectionalShadowView LightContainer::directionalShadowView(
+		std::uint32_t directional_light_index) const
+	{
+		const auto direction =
+			directionalShadowDirection(
+				directional_light_index);
+		const glm::vec3 center{0.0f, 0.0f, 0.0f};
+		const glm::vec3 eye = center - direction * 10.0f;
+		const glm::vec3 world_up =
+			std::abs(glm::dot(direction, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
+				? glm::vec3{0.0f, 0.0f, 1.0f}
+				: glm::vec3{0.0f, 1.0f, 0.0f};
+		const auto view = glm::lookAt(eye, center, world_up);
+		const auto projection = vulkanOrtho(-6.0f, 6.0f, -6.0f, 6.0f, 0.1f, 30.0f);
+		return DirectionalShadowView{
+			.view = view,
+			.projection = projection,
+			.camera_position = eye,
+		};
+	}
+
 	glm::vec3 LightContainer::directionalShadowDirection() const
 	{
-		return safeLightDirection(m_DirectionalLights);
+		return m_DirectionalLights.empty()
+			? fallbackLightDirection()
+			: safeLightDirection(
+				m_DirectionalLights, 0);
+	}
+
+	glm::vec3 LightContainer::directionalShadowDirection(
+		std::uint32_t directional_light_index) const
+	{
+		return safeLightDirection(
+			m_DirectionalLights,
+			directional_light_index);
 	}
 
 	glm::mat4 LightContainer::shadowViewProjection() const
@@ -169,6 +216,25 @@ namespace Pelican
 			vma::MemoryUsage::eAuto,
 			vma::AllocationCreateFlagBits::eHostAccessSequentialWrite
 		);
+		const auto empty_shadow_data =
+			packDirectionalShadowDataV1(
+				std::span<const std::uint32_t>{},
+				1,
+				std::span<const glm::mat4>{});
+		m_DirectionalShadowBufferCapacity =
+			empty_shadow_data.elements.size() *
+			sizeof(glm::uvec4);
+		m_DirectionalShadowBuffer = vkcore.allocBuf(
+			m_DirectionalShadowBufferCapacity,
+			vk::BufferUsageFlagBits::eStorageBuffer,
+			vma::MemoryUsage::eAuto,
+			vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+		m_DirectionalShadowDataElementCount =
+			empty_shadow_data.elements.size();
+		vkcore.writeBuf(
+			m_DirectionalShadowBuffer,
+			empty_shadow_data.elements.data(), 0,
+			m_DirectionalShadowBufferCapacity);
 	}
 
 	LightContainer::PreparedLoad LightContainer::prepareLoad(const std::vector<LightLoadEntry>& lights)
@@ -344,8 +410,9 @@ namespace Pelican
 	{
 		const std::array projections{
 			shadowViewProjection()};
-		update(
-			projections, {}, sky_ambient);
+		updateImpl(
+			projections, {}, 1, 0,
+			sky_ambient);
 	}
 
 	void LightContainer::update(
@@ -353,8 +420,9 @@ namespace Pelican
 	{
 		const std::array projections{
 			shadow_view_projection};
-		update(
-			projections, {},
+		updateImpl(
+			projections, {}, 1,
+			m_DirectionalLights.empty() ? 0u : 1u,
 			SkyAmbientLighting{});
 	}
 
@@ -364,9 +432,12 @@ namespace Pelican
 		std::span<const float>
 			cascade_far_distances)
 	{
-		update(
+		updateImpl(
 			shadow_view_projections,
 			cascade_far_distances,
+			static_cast<std::uint32_t>(
+				shadow_view_projections.size()),
+			m_DirectionalLights.empty() ? 0u : 1u,
 			SkyAmbientLighting{});
 	}
 
@@ -378,16 +449,116 @@ namespace Pelican
 		const SkyAmbientLighting&
 			sky_ambient)
 	{
-		if (shadow_view_projections.empty() ||
-			shadow_view_projections.size() >
+		updateImpl(
+			shadow_view_projections,
+			cascade_far_distances,
+			static_cast<std::uint32_t>(
+				shadow_view_projections.size()),
+			m_DirectionalLights.empty() ? 0u : 1u,
+			sky_ambient);
+	}
+
+	void LightContainer::updateDirectionalShadows(
+		std::span<const glm::mat4>
+			shadow_view_projections,
+		std::span<const float>
+			cascade_far_distances,
+		std::uint32_t cascade_count,
+		std::uint32_t shadow_light_count,
+		const SkyAmbientLighting&
+			sky_ambient)
+	{
+		updateImpl(
+			shadow_view_projections,
+			cascade_far_distances,
+			cascade_count,
+			shadow_light_count,
+			sky_ambient);
+	}
+
+	void LightContainer::ensureDirectionalShadowBufferCapacity(
+		vk::DeviceSize required_bytes)
+	{
+		if (required_bytes <=
+			m_DirectionalShadowBufferCapacity)
+		{
+			return;
+		}
+		auto replacement_capacity =
+			m_DirectionalShadowBufferCapacity;
+		while (replacement_capacity < required_bytes)
+		{
+			if (replacement_capacity >
+				std::numeric_limits<vk::DeviceSize>::max() / 2)
+			{
+				throw std::overflow_error(
+					"directional shadow buffer capacity overflow");
+			}
+			replacement_capacity *= 2;
+		}
+		auto replacement =
+			GET_MODULE(VulkanManageCore).allocBuf(
+				replacement_capacity,
+				vk::BufferUsageFlagBits::eStorageBuffer,
+				vma::MemoryUsage::eAuto,
+				vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+		auto retired =
+			std::move(m_DirectionalShadowBuffer);
+		m_DirectionalShadowBuffer =
+			std::move(replacement);
+		m_DirectionalShadowBufferCapacity =
+			replacement_capacity;
+		if (auto* queue =
+			FastModuleContainer::tryGet<DeletionQueue>();
+			queue != nullptr &&
+			queue->acceptingResources())
+		{
+			queue->defer(std::move(retired));
+		}
+		else
+		{
+			GET_MODULE(VulkanManageCore).waitIdle();
+		}
+	}
+
+	void LightContainer::updateImpl(
+		std::span<const glm::mat4>
+			shadow_view_projections,
+		std::span<const float>
+			cascade_far_distances,
+		std::uint32_t cascade_count,
+		std::uint32_t shadow_light_count,
+		const SkyAmbientLighting&
+			sky_ambient)
+	{
+		if (cascade_count == 0 ||
+			cascade_count >
 				maximumDirectionalShadowCascades)
 		{
 			throw std::runtime_error(
-				"directional shadow projection count is outside the LightUBO ABI");
+				"directional shadow cascade count is outside the LightUBO ABI");
+		}
+		if (shadow_light_count >
+			m_DirectionalLights.size())
+		{
+			throw std::runtime_error(
+				"directional shadow light count exceeds the loaded directional inventory");
+		}
+		const auto rendered_light_slots =
+			std::max(1u, shadow_light_count);
+		const auto projection_count =
+			static_cast<std::uint64_t>(
+				rendered_light_slots) *
+			cascade_count;
+		if (projection_count !=
+			shadow_view_projections.size())
+		{
+			throw std::runtime_error(
+				"directional shadow projection count does not match light and cascade counts");
 		}
 		if (!cascade_far_distances.empty() &&
 			cascade_far_distances.size() !=
-				shadow_view_projections.size())
+				cascade_count)
 		{
 			throw std::runtime_error(
 				"directional shadow split count does not match the projection count");
@@ -434,8 +605,7 @@ namespace Pelican
 		    			ubo.spotLights[i].outerConeAngle = cos(glm::radians(m_SpotLights[i].outerConeAngle));
 		    		}
 		ubo.directionalShadowCascadeCount =
-			static_cast<uint32_t>(
-				shadow_view_projections.size());
+			cascade_count;
 		for (auto &split :
 			ubo.directionalShadowCascadeSplits)
 		{
@@ -449,7 +619,7 @@ namespace Pelican
 			projection = glm::mat4{1.0f};
 		}
 		for (std::size_t index = 0;
-			index < shadow_view_projections.size();
+			index < cascade_count;
 			++index)
 		{
 			ubo.shadowViewProjections[index] =
@@ -472,7 +642,37 @@ namespace Pelican
 					sky_ambient.sky_intensity,
 				0.0f};
 
-		GET_MODULE(VulkanManageCore).writeBuf(
+		auto shadow_inventory_indices =
+			std::vector<std::uint32_t>(
+				shadow_light_count);
+		std::iota(
+			shadow_inventory_indices.begin(),
+			shadow_inventory_indices.end(), 0u);
+		const auto shadow_matrix_count =
+			static_cast<std::size_t>(
+				shadow_light_count) *
+			cascade_count;
+		const auto packed_shadow_data =
+			packDirectionalShadowDataV1(
+				shadow_inventory_indices,
+				cascade_count,
+				shadow_view_projections.first(
+					shadow_matrix_count));
+		const auto shadow_bytes =
+			static_cast<vk::DeviceSize>(
+				packed_shadow_data.elements.size() *
+				sizeof(glm::uvec4));
+		ensureDirectionalShadowBufferCapacity(
+			shadow_bytes);
+		m_DirectionalShadowDataElementCount =
+			packed_shadow_data.elements.size();
+
+		auto& vkcore = GET_MODULE(VulkanManageCore);
+		vkcore.writeBuf(
 			m_LightUBO, &ubo, 0, sizeof(ubo));
+		vkcore.writeBuf(
+			m_DirectionalShadowBuffer,
+			packed_shadow_data.elements.data(),
+			0, shadow_bytes);
 	}
 }

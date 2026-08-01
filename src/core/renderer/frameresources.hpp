@@ -95,6 +95,7 @@ DECLARE_MODULE(FrameResources) {
     vk::Buffer object_buffer;
     vk::Buffer previous_object_buffer;
     vk::Buffer light_buffer;
+    vk::Buffer directional_shadow_buffer;
     std::uint32_t view_count = 0;
     std::uint32_t sequential_view_count = 0;
     std::size_t active_slot = 0;
@@ -110,7 +111,8 @@ DECLARE_MODULE(FrameResources) {
     ~FrameResources();
 
     void setSceneBuffers(const BufferWrapper &objects, const BufferWrapper &previous_objects,
-                         const BufferWrapper &lights);
+                         const BufferWrapper &lights,
+                         const BufferWrapper &directional_shadows);
     void beginLogicalFrame(std::uint32_t count);
     void beginLogicalFrame(
         std::uint32_t main_view_count,

@@ -115,6 +115,9 @@ std::vector<vk::DescriptorSetLayoutBinding> frameDescriptorSetLayoutBindings() {
         vk::DescriptorSetLayoutBinding{
             PELICAN_FRAME_RESOLUTION_UBO_BINDING,
             vk::DescriptorType::eUniformBuffer, 1, all_stages},
+        vk::DescriptorSetLayoutBinding{
+            PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING,
+            vk::DescriptorType::eStorageBuffer, 1, all_stages},
     };
 }
 
@@ -135,11 +138,16 @@ void validateFrameBindings(const ShaderReflection &reflection) {
             (binding.binding ==
                  PELICAN_FRAME_RESOLUTION_UBO_BINDING &&
              binding.type ==
-                 vk::DescriptorType::eUniformBuffer);
+                 vk::DescriptorType::eUniformBuffer) ||
+            (binding.binding ==
+                 PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING &&
+             binding.type ==
+                 vk::DescriptorType::eStorageBuffer);
         if (!valid || binding.count != 1) {
             throw std::runtime_error(
                 "Shader set 0 must use FrameUBO binding 0, ObjectBuffer binding 1, LightUBO binding 2, "
-                "PreviousObjectBuffer binding 3, or FrameResolutionUBO binding 4");
+                "PreviousObjectBuffer binding 3, FrameResolutionUBO binding 4, or "
+                "DirectionalShadowData binding 5");
         }
     }
 }

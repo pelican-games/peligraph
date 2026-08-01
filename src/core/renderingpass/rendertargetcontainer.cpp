@@ -866,6 +866,118 @@ RenderTargetContainer::prepareForExtent(
         std::move(prepared)};
 }
 
+bool RenderTargetContainer::setRuntimeArrayLayers(
+    GlobalRenderTargetId id,
+    std::uint32_t array_layers) {
+    if (array_layers == 0) {
+        throw std::runtime_error(
+            "runtime render-target array layer count must be positive");
+    }
+    auto &target = render_targets.get(id);
+    if (target.array_layers == array_layers) {
+        return false;
+    }
+    if (target.history || target.alias_group ||
+        target.alias_group_token ||
+        target.dimension !=
+            ImageResourceDimension::two_d) {
+        throw std::runtime_error(
+            "runtime array-layer resizing requires a non-history, "
+            "non-aliased 2D render target: " +
+            target.name);
+    }
+    const auto maximum_layers =
+        GET_MODULE(VulkanManageCore)
+            .getPhysDevice()
+            .getProperties()
+            .limits.maxImageArrayLayers;
+    if (array_layers > maximum_layers) {
+        throw std::runtime_error(
+            "runtime render-target array layer count exceeds the "
+            "physical device limit for '" +
+            target.name + "' (requested=" +
+            std::to_string(array_layers) +
+            ", max=" +
+            std::to_string(maximum_layers) + ")");
+    }
+    if (resource_revision ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "render target resource revision space exhausted");
+    }
+
+    const auto current_extent = vk::Extent2D{
+        target.resources->images[0].extent.width,
+        target.resources->images[0].extent.height,
+    };
+    auto next =
+        std::make_unique<RenderTargetResourceSet>();
+    next->images[0] = createRenderTargetImage(
+        target.name, current_extent, 1.0f,
+        current_extent, target.format,
+        target.usage, target.memory_usage,
+        target.mip_levels,
+        vk::SampleCountFlagBits::e1,
+        array_layers, target.storage_mode,
+        false, target.dimension);
+    next->image_layer_views[0] =
+        createSequentialImageViews(
+            device, next->images[0]);
+    next->layered_image_views[0] =
+        createLayeredImageView(
+            device, next->images[0]);
+    if (target.samples > 1) {
+        const auto attachment_usage =
+            target.usage &
+            (vk::ImageUsageFlagBits::eColorAttachment |
+             vk::ImageUsageFlagBits::eDepthStencilAttachment);
+        next->attachment_images[0] =
+            createRenderTargetImage(
+                target.name, current_extent, 1.0f,
+                current_extent, target.format,
+                attachment_usage,
+                target.memory_usage,
+                ImageMipLevelCount{},
+                toSampleCount(target.samples),
+                array_layers, target.storage_mode,
+                false, target.dimension);
+        next->attachment_image_layer_views[0] =
+            createSequentialImageViews(
+                device,
+                next->attachment_images[0]);
+        next->layered_attachment_image_views[0] =
+            createLayeredImageView(
+                device,
+                next->attachment_images[0]);
+    }
+    nameRenderTargetSurfaces(
+        target.name, next->images,
+        next->image_layer_views,
+        next->layered_image_views, 1);
+    if (target.samples > 1) {
+        nameAttachmentSurfaces(
+            target.name,
+            next->attachment_images,
+            next->attachment_image_layer_views,
+            next->layered_attachment_image_views,
+            1);
+    }
+
+    auto retired = std::move(target.resources);
+    if (auto *queue =
+            FastModuleContainer::tryGet<DeletionQueue>();
+        queue != nullptr &&
+        queue->acceptingResources()) {
+        queue->defer(std::move(retired));
+    } else {
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    target.resources = std::move(next);
+    target.array_layers = array_layers;
+    ++resource_revision;
+    return true;
+}
+
 void RenderTargetContainer::publishPreparedExtent(
     PreparedRenderTargetExtent &&prepared) {
     if (!prepared.valid()) {

@@ -25,6 +25,7 @@
 #include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/directionalshadowviewprovider.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/computetask.hpp"
@@ -307,15 +308,45 @@ void updateFrameLights(
             view_projections;
         std::vector<float>
             cascade_far_distances;
+        const auto directional_light_count =
+            light_container.directionalLightCount();
+        const auto light_slots =
+            std::max<std::size_t>(
+                1, directional_light_count);
+        if (shadow_family->views.empty() ||
+            shadow_family->views.size() % light_slots != 0) {
+            throw std::runtime_error(
+                "directional shadow view family cardinality does not divide by the light count");
+        }
+        const auto cascade_count_size =
+            shadow_family->views.size() / light_slots;
+        if (cascade_count_size >
+                std::numeric_limits<std::uint32_t>::max() ||
+            directional_light_count >
+                std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error(
+                "directional shadow family exceeds the runtime index range");
+        }
+        const auto cascade_count =
+            static_cast<std::uint32_t>(
+                cascade_count_size);
+        const auto shadow_light_count =
+            static_cast<std::uint32_t>(
+                directional_light_count);
         view_projections.reserve(
             shadow_family->views.size());
         cascade_far_distances.reserve(
-            shadow_family->views.size());
+            cascade_count);
         for (const auto &shadow_view :
              shadow_family->views) {
             view_projections.push_back(
                 shadow_view.projection *
                 shadow_view.view);
+        }
+        for (std::uint32_t cascade = 0;
+             cascade < cascade_count; ++cascade) {
+            const auto &shadow_view =
+                shadow_family->views[cascade];
             cascade_far_distances.push_back(
                 shadow_view.depth_range
                     ? shadow_view
@@ -324,9 +355,11 @@ void updateFrameLights(
                     : std::numeric_limits<
                           float>::max());
         }
-        light_container.update(
+        light_container.updateDirectionalShadows(
             view_projections,
             cascade_far_distances,
+            cascade_count,
+            shadow_light_count,
             sky_ambient);
     } else {
         light_container.update(
@@ -642,8 +675,9 @@ FrameUniformData updateFrameResources(
     }
 
     modules.frame_resources.setSceneBuffers(modules.instance_container.getObjectBuf(),
-                                            modules.instance_container.getPreviousObjectBuf(),
-                                            modules.light_container.lightBuffer());
+                                             modules.instance_container.getPreviousObjectBuf(),
+                                             modules.light_container.lightBuffer(),
+                                             modules.light_container.directionalShadowBuffer());
     modules.frame_resources.update(data);
     modules.frame_resources.updateResolution(
         frameResolutionData(
@@ -3782,6 +3816,13 @@ void Renderer::renderLogicalFrame(
     validateRenderViewFamilies(
         view_families,
         graph_variant_policy);
+    if (prepareDirectionalShadowRenderTarget(
+            frame_graph,
+            modules.light_container,
+            modules.render_target_container)) {
+        rebindFullscreenInputs(modules);
+        render_target_layout_tracker.reset();
+    }
     const RenderViewFamilyProviderContext
         view_family_provider_context{
             .frame_graph = frame_graph,

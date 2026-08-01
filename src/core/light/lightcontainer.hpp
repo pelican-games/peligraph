@@ -1,5 +1,6 @@
 #pragma once
 
+#include "directionalshadowdata.hpp"
 #include "light.hpp"
 #include "lightinventory.hpp"
 #include "../container.hpp"
@@ -60,6 +61,15 @@ namespace Pelican
 				cascade_far_distances,
 			const SkyAmbientLighting&
 				sky_ambient);
+		void updateDirectionalShadows(
+			std::span<const glm::mat4>
+				shadow_view_projections,
+			std::span<const float>
+				cascade_far_distances,
+			std::uint32_t cascade_count,
+			std::uint32_t shadow_light_count,
+			const SkyAmbientLighting&
+				sky_ambient);
 
 		bool setDirectionalLightDirection(const std::string& name, glm::vec3 direction);
 		bool setDirectionalLightIntensity(const std::string& name, float intensity);
@@ -67,9 +77,22 @@ namespace Pelican
 		bool setSpotLightDirection(const std::string& name, glm::vec3 direction);
 
 		DirectionalShadowView directionalShadowView() const;
+		DirectionalShadowView directionalShadowView(
+			std::uint32_t directional_light_index) const;
 		glm::vec3 directionalShadowDirection() const;
+		glm::vec3 directionalShadowDirection(
+			std::uint32_t directional_light_index) const;
 		glm::mat4 shadowViewProjection() const;
+		std::size_t directionalLightCount() const noexcept {
+			return m_DirectionalLights.size();
+		}
 		const BufferWrapper& lightBuffer() const { return m_LightUBO; }
+		const BufferWrapper& directionalShadowBuffer() const {
+			return m_DirectionalShadowBuffer;
+		}
+		std::size_t directionalShadowDataElementCount() const noexcept {
+			return m_DirectionalShadowDataElementCount;
+		}
 		PackedLightInventoryV2 lightInventoryV2(
 			vk::DeviceSize byte_capacity) const;
 
@@ -77,6 +100,17 @@ namespace Pelican
 		DirectionalLight* getLight(const std::string& name);
 		PointLight* getPointLight(const std::string& name);
 		SpotLight* getSpotLight(const std::string& name);
+		void updateImpl(
+			std::span<const glm::mat4>
+				shadow_view_projections,
+			std::span<const float>
+				cascade_far_distances,
+			std::uint32_t cascade_count,
+			std::uint32_t shadow_light_count,
+			const SkyAmbientLighting&
+				sky_ambient);
+		void ensureDirectionalShadowBufferCapacity(
+			vk::DeviceSize required_bytes);
 
 		std::vector<DirectionalLight> m_DirectionalLights;
 		std::unordered_map<std::string, uint32_t> m_LightNameMap;
@@ -88,5 +122,8 @@ namespace Pelican
 		std::unordered_map<std::string, uint32_t> m_SpotLightNameMap;
 
 		BufferWrapper m_LightUBO;
+		BufferWrapper m_DirectionalShadowBuffer;
+		vk::DeviceSize m_DirectionalShadowBufferCapacity = 0;
+		std::size_t m_DirectionalShadowDataElementCount = 0;
 	};
 }

@@ -31,6 +31,20 @@ directionalShadowCascadeRenderViewId(
            std::to_string(cascade_index);
 }
 
+inline std::string
+directionalShadowLightCascadeRenderViewId(
+    std::uint32_t light_inventory_index,
+    std::uint32_t cascade_index) {
+    if (light_inventory_index == 0) {
+        return directionalShadowCascadeRenderViewId(
+            cascade_index);
+    }
+    return "$light/" +
+           std::to_string(light_inventory_index) +
+           "/cascade/" +
+           std::to_string(cascade_index);
+}
+
 inline void validateRenderViewFamilyId(
     std::string_view family_id,
     std::string_view context) {
