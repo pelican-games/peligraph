@@ -169,22 +169,41 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L916
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L10) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L8) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L14) を表示します。
 
-現実装は full editor ではなく prototype です。
+現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
 ```mermaid
 flowchart LR
     Main["devstudio main"] --> UI["uimain / QApplication"]
     UI --> Window["MainWindow / QMainWindow"]
-    Window --> Quick["QQuickWidget"]
-    Quick --> QML["ProjectEdit.qml"]
-    Backend["TestBackend.name"] -->|"QQmlContext: backend"| QML
+    Window --> Workspace["central workspace"]
+    Window --> Docks["QDockWidget panels"]
+    Window --> Layout["LayoutPresetManager"]
+    Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L10) は `QQmlEngine` を作り、`TestBackend` を context property `backend` として渡し、[`ProjectEdit.qml`](../../src/devstudio/view/ProjectEdit.qml#L1) を中央 widget にします。QML は project name と title の2 field だけです。
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L45) は Project / Outliner /
+Inspector / Output の4パネルを stable object name を持つ dock として作ります。パネルは移動、float、
+タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を追加する
+場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
-[`ProjectInfo`](../../src/devstudio/model/project.hpp#L15) という model skeleton もありますが、現在の window/backend 経路には接続されていません。したがって `src/devstudio` を読んで asset browser、scene editor、engine IPC が既にあると解釈してはいけません。拡張するなら、まず `TestBackend` を実 model/view-model に置き換え、project load/save の ownership と error surface を定義する段階です。
+[`LayoutPresetManager`](../../src/devstudio/layoutpreset.hpp#L26) は view から独立した Qt Core の
+ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
+よる state 拒否のどれでも saved state を適用せず既定配置 callback へ落とします。全体 preset は
+`QStandardPaths::AppConfigLocation/layouts` に置き、project 単位の `user://` resolver には触れません。
+保存・復元・fallback は [`devstudio_layoutpreset_test.cpp`](../../test/devstudio_layoutpreset_test.cpp#L41)
+が GUI なしで検査します。
+
+リンク面では [`pelican_assert_link_boundary()`](../../cmake/devstudio_link_boundary.cmake#L72) が
+`pelican_project` の直接リンクを必須にし、`src/core` 配下 target への推移 link path を configure
+時に拒否します。[`devstudio_d0_boundary_negative`](../../test/run_devstudio_boundary_negative.cmake#L1)
+は wrapper target 経由の `pelican_core` も拒否されることを固定します。これは「Studio だけが使える
+engine 内部面」を偶然持ち込めないようにする D0 の build-level gate です。
+
+[`ProjectInfo`](../../src/devstudio/model/project.hpp#L15) という model skeleton はまだ window 経路に
+接続されていません。Project / Outliner / Inspector と中央 viewport は shell の置き場だけであり、
+project load、scene 表示、engine IPC が実装済みだと解釈してはいけません。
 
 > **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
 
@@ -441,7 +460,7 @@ signature にフラグが入りました([test/CMakeLists.txt](../../test/CMakeL
 cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 ```
 
-`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L42))。コメントが理由です。
+`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L47))。コメントが理由です。
 
 > Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
 
@@ -451,7 +470,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1433) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1455) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

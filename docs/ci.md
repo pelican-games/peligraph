@@ -43,6 +43,23 @@ ctest --test-dir build -C Debug -LE gpu --output-on-failure
 
 GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu -N` を使う。
 
+## devstudio の Qt gate
+
+常設 CI0 と CI1 は **Qt を導入せず `-DSKIP_DEVSTUDIO=ON` を維持する**。devstudio のために
+既定の engine build と clean-clone gate へ GUI toolchain を持ち込まない方針である。一方、
+D0 リンク境界の負例テストは Qt 非依存なので、この既定構成でも CTest に登録する。
+
+devstudio のコンパイルとレイアウト永続化テストは、Qt 6.10 を用意した開発環境で次の明示構成を
+使う。`devstudio_layoutpreset_test` はこの構成でだけ登録され、GUI を操作せず、名前付き保存・復元、
+版違い、破損 state の既定配置 fallback を検査する。
+
+```powershell
+cmake -S . -B build-studio -DSKIP_DEVSTUDIO=OFF `
+  -DCMAKE_PREFIX_PATH=<Qt-install-path>
+cmake --build build-studio --config Debug
+ctest --test-dir build-studio -C Debug --output-on-failure
+```
+
 ### GPU gate(`run_gpu_gate.py`)
 
 CI2 は存在しないが、**gate 自体は名前の付いたコマンドとして用意してある**。Vulkan device の

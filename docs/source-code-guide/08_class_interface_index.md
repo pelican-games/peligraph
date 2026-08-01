@@ -301,8 +301,8 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | devcli 追加コマンド | free command functions | [`bakecameracommand.cpp`](../../src/devcli/bakecameracommand.cpp) / [`materialcommand.cpp`](../../src/devcli/materialcommand.cpp) / [`vrmcommand.cpp`](../../src/devcli/vrmcommand.cpp) / [`rulesimport.cpp`](../../src/devcli/rulesimport.cpp) | 同左 | camera bake、lowered material dump、VRM dump、ルールベース import |
 | `DevCli::runProcess()` | free function | [`processrunner.hpp`](../../src/devcli/processrunner.hpp#L37) | [`processrunner.cpp`](../../src/devcli/processrunner.cpp) | プロセスグループ単位の外部ツール実行(timeout / cancel で group kill) |
 | `DistConfigResult` | pure-ish result value | [`distconfig.hpp`](../../src/devcli/distconfig.hpp#L14) | [`deriveDistConfig()`](../../src/devcli/distconfig.cpp#L849) | project scan から build option と理由を保持 |
-| `MainWindow` | Qt widget | [`mainwindow.hpp`](../../src/devstudio/view/mainwindow.hpp#L8) | [`mainwindow.cpp`](../../src/devstudio/view/mainwindow.cpp#L10) | `QQuickWidget` と QML engine を所有 |
-| `TestBackend` | QObject prototype | [`testbackend.hpp`](../../src/devstudio/view/viewmodel/testbackend.hpp#L8) | [`testbackend.cpp`](../../src/devstudio/view/viewmodel/testbackend.cpp#L5) | QML へ仮の `name` property を公開 |
+| `MainWindow` | Qt Widgets shell | [`mainwindow.hpp`](../../src/devstudio/view/mainwindow.hpp#L14) | [`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L45) | central workspace、4 dock、panel/layout menu を所有 |
+| `LayoutPresetManager` | versioned layout store | [`layoutpreset.hpp`](../../src/devstudio/layoutpreset.hpp#L26) | [`layoutpreset.cpp`](../../src/devstudio/layoutpreset.cpp#L128) | 名前付き state の atomic 保存、現行版だけの復元、既定配置 fallback |
 | `ProjectInfo` |未接続 model skeleton | [`project.hpp`](../../src/devstudio/model/project.hpp#L15) | header only | project name property。現 window flow では未使用 |
 
 ## 8.11 依存方向を一枚で見る

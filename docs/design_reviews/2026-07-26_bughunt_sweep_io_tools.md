@@ -177,7 +177,10 @@ POSIX `waitpid(..., WNOHANG)` は signal interruption で `-1` / `EINTR` を返�
 
 #### M-9 [T16] QML 起動失敗 handler が未使用 engine にだけ接続され、実ロード経路の失敗を検知しない
 
-- 場所: `src/devstudio/view/uimain.cpp:10-27`, `src/devstudio/view/mainwindow.cpp:10-18`
+**解消済み(WP249)**: QML prototype、二重 engine、`ProjectEdit.qml` は削除され、Studio shell は
+Qt Widgets に一本化された。したがってこの旧 failure path 自体が存在しない。
+
+- 調査時点の場所: `src/devstudio/view/uimain.cpp:10-27`, `src/devstudio/view/mainwindow.cpp:10-18`
 - 確信度: HIGH
 - 種別判定: 実害のある穴
 
@@ -210,7 +213,11 @@ shared queue state は `std::istream&` と `std::ostream&` を借用する。des
 
 #### L-3 [T20] devstudio の project name property は QML→backend と backend→QML の両方向が途切れている
 
-- 場所: `src/devstudio/view/ProjectEdit.qml:11-14`, `src/devstudio/view/viewmodel/testbackend.hpp:8-18`, `src/devstudio/view/viewmodel/testbackend.cpp:5-12`
+**解消済み(WP249)**: 未接続だった QML prototype と test backend を削除した。project 読み込みは
+後続の公開 `pelican_project` 経路で実装し、この仮 property は引き継がない。
+
+- 調査時点の場所（WP249で削除）: `src/devstudio/view/ProjectEdit.qml:11-14`,
+  `src/devstudio/view/viewmodel/testbackend.hpp:8-18`, `src/devstudio/view/viewmodel/testbackend.cpp:5-12`
 - 確信度: HIGH
 - 種別判定: 現行 prototype UI に限定された実害のある穴
 

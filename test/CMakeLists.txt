@@ -25,7 +25,7 @@ if(MSVC AND PELICAN_LEAN_TEST_ARTIFACTS)
 endif()
 
 function(pelican_define_test source_name)
-cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
+cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU;QT" "" "" ${ARGN})
 set(target_name pelican_test_${source_name})
 add_executable(${target_name} ${source_name}.cpp)
 set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
@@ -36,6 +36,11 @@ target_compile_definitions(${target_name} PRIVATE
 target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
 set(discovery_properties)
+set(discovery_arguments)
+if(PELICAN_TEST_QT)
+  list(APPEND discovery_arguments
+    DL_PATHS "$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
 if(PELICAN_TEST_GOLDEN OR
    source_name STREQUAL "debugtext_ui_compat_test")
   # Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
@@ -45,11 +50,28 @@ if(PELICAN_TEST_GPU)
   list(APPEND discovery_properties LABELS gpu)
 endif()
 if(discovery_properties)
-  catch_discover_tests(${target_name} PROPERTIES ${discovery_properties})
+  catch_discover_tests(${target_name}
+    ${discovery_arguments}
+    PROPERTIES ${discovery_properties})
 else()
-  catch_discover_tests(${target_name})
+  catch_discover_tests(${target_name} ${discovery_arguments})
 endif()
 endfunction()
+
+add_test(
+  NAME devstudio_d0_boundary_negative
+  COMMAND ${CMAKE_COMMAND}
+    -DPELICAN_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/devstudio_boundary_negative
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devstudio_boundary_negative.cmake
+)
+
+if(TARGET pelican_studio_layout)
+  # Qt imported targets are directory-scoped; make Core visible in this
+  # sibling directory before consuming pelican_studio_layout's interface.
+  find_package(Qt6 REQUIRED COMPONENTS Core)
+  pelican_define_test(devstudio_layoutpreset_test QT pelican_studio_layout Qt6::Core)
+endif()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   add_library(pelican_public_api_link_fixture SHARED

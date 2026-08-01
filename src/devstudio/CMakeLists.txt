@@ -1,13 +1,40 @@
 include(view/ui_depended_setup.cmake)
 
+add_library(pelican_studio_layout STATIC
+    layoutpreset.cpp
+)
+set_target_properties(pelican_studio_layout PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 20
+)
+target_include_directories(pelican_studio_layout PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pelican_studio_layout PUBLIC Qt6::Core)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_studio main.cpp)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 
-# external libs
-target_link_libraries(pelican_studio PRIVATE pelican_core)
-target_link_libraries(pelican_studio PRIVATE argparse)
+set_target_properties(pelican_studio PROPERTIES
+    AUTOMOC ON
+    AUTORCC ON
+    CXX_STANDARD 20
+)
+
+# D0: Studio is a public-client application, never an engine-internal client.
+target_link_libraries(pelican_studio PRIVATE
+    argparse
+    pelican_project
+    pelican_studio_layout
+)
 
 # subdirs
 add_subdirectory(model)
 add_subdirectory(view)
+
+include(${CMAKE_SOURCE_DIR}/cmake/devstudio_link_boundary.cmake)
+pelican_collect_directory_targets(${CMAKE_SOURCE_DIR}/src/core pelican_engine_targets)
+pelican_assert_link_boundary(
+    TARGET pelican_studio
+    REQUIRED_DIRECT_TARGETS pelican_project
+    FORBIDDEN_TARGETS ${pelican_engine_targets}
+)

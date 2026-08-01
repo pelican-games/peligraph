@@ -92,7 +92,11 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 ### `pelican_studio`
 
-[`src/devstudio/CMakeLists.txt`](../../src/devstudio/CMakeLists.txt#L1) が作るQtアプリです。現状は最小のQML画面とテスト用ViewModelが中心です。エンジン本体の完成度と同じ前提で読まないようにします（[第7章](07_tools_rpc_tests.md)）。
+[`src/devstudio/CMakeLists.txt`](../../src/devstudio/CMakeLists.txt#L1) が作る Qt Widgets アプリです。
+`QMainWindow`、dock、名前付きレイアウトプリセットをシェルに置き、QML は将来追加する場合も葉の
+パネル内部だけに限定します。D0 のため `pelican_project` は直接リンクしますが `pelican_core` と
+core 配下の target はリンクせず、CMake が推移リンクを含めて configure 時に拒否します
+（[第7章](07_tools_rpc_tests.md)）。
 
 ### CMakeポリシーのpin（CMP0118 / CMP0169）
 
