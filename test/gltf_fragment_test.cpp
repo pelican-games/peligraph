@@ -160,6 +160,9 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     REQUIRE(selected.named_materials.size() == 1);
     const auto selected_material =
         selected.named_materials.front().material;
+    const auto selected_base_color =
+        materials.materialTextureForTesting(
+            selected_material, 0);
     const auto selected_metallic_roughness =
         materials.materialTextureForTesting(
             selected_material, 1);
@@ -167,7 +170,12 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
         materials.materialTextureForTesting(
             selected_material,
             PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
+    REQUIRE(selected_base_color.has_value());
+    REQUIRE(materials.textureMipLevelsForTesting(
+                *selected_base_color) == 3);
     REQUIRE(selected_metallic_roughness.has_value());
+    REQUIRE(materials.textureMipLevelsForTesting(
+                *selected_metallic_roughness) == 3);
     REQUIRE(selected_occlusion.has_value());
     REQUIRE(*selected_occlusion ==
             *selected_metallic_roughness);

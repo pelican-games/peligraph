@@ -333,7 +333,8 @@ DECLARE_MODULE(MaterialContainer) {
     materialSamplerResolutionForTesting(
         GlobalMaterialId material,
         std::string_view texture_name) const;
-    std::vector<uint8_t> texturePixelsForTesting(GlobalTextureId texture) const;
+    std::vector<uint8_t> texturePixelsForTesting(
+        GlobalTextureId texture, uint32_t mip_level = 0) const;
     uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const { return textures.get(texture).image.mip_levels; }
     size_t textureCountForTesting() const { return textures.size(); }
     size_t materialCountForTesting() const { return materials.size(); }

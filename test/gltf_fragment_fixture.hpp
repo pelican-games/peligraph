@@ -47,8 +47,9 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
     const std::string second_root = duplicate_root_names ? "RootA" : "RootB";
     const std::string pixel_png =
         "data:image/png;base64,"
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFgAI/"
-        "ScLx2QAAAABJRU5ErkJggg==";
+        "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAAXNSR0IArs4c6QAAAARn"
+        "QU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAbSURBVBhXY2BgYPj/////"
+        "/3AahcPA8J+BoAoAP0sn2dw5JWEAAAAASUVORK5CYII=";
     nlohmann::json json{
         {"asset", {{"version", "2.0"}, {"generator", "pelican WP77 fixture"}}},
         {"scene", 0},

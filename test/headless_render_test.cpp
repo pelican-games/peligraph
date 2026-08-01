@@ -1427,6 +1427,33 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         REQUIRE(data_view);
         REQUIRE(color_view);
         REQUIRE(data_view != color_view);
+        std::array<uint8_t, 4 * 4 * 4> checker_pixels{};
+        for (std::size_t pixel = 0; pixel < 16; ++pixel) {
+            const auto x = pixel % 4;
+            const auto y = pixel / 4;
+            const auto value = static_cast<uint8_t>(
+                (x + y) % 2 == 0 ? 0 : 255);
+            checker_pixels[pixel * 4 + 0] = value;
+            checker_pixels[pixel * 4 + 1] = value;
+            checker_pixels[pixel * 4 + 2] = value;
+            checker_pixels[pixel * 4 + 3] = 255;
+        }
+        const auto mipmapped_texture =
+            GET_MODULE(MaterialContainer).registerTexture(
+                vk::Extent3D{4, 4, 1}, checker_pixels.data());
+        REQUIRE(GET_MODULE(MaterialContainer)
+                    .textureMipLevelsForTesting(mipmapped_texture) == 3);
+        const std::vector<uint8_t> expected_filtered_mip{
+            128, 128, 128, 255,
+            128, 128, 128, 255,
+            128, 128, 128, 255,
+            128, 128, 128, 255,
+        };
+        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                    mipmapped_texture, 1) == expected_filtered_mip);
+        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+                    mipmapped_texture, 2) ==
+                std::vector<uint8_t>{128, 128, 128, 255});
         const auto ktx_bytes = TestKtx2::makeRgba8Srgb188();
         const auto ktx_loaded = loadImageMemory(ktx_bytes, "headless-known-188.ktx2");
         REQUIRE(static_cast<unsigned>(ktx_loaded.pixels.front()) == 188);
