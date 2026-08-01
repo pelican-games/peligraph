@@ -539,7 +539,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 | scene component名 | 実際の所有者 |
 |---|---|
-| `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L25) |
+| `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L26) |
 | `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L38) |
 | `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L111) |
 
