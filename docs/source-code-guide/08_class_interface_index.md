@@ -265,7 +265,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `RenderTiming` | optional module | [`rendertiming.hpp`](../../src/core/vkcore/rendertiming.hpp#L81) | [`rendertiming.cpp`](../../src/core/vkcore/rendertiming.cpp#L1) | timestamp query と node/view ごとの GPU timing |
 | `ui::UiModule` | module | [`ui/module.hpp`](../../src/core/ui/module.hpp#L30) | [`ui/module.cpp`](../../src/core/ui/module.cpp) | 2D UI(document/layout/atlas/bitmapfont/input routing)の入口 |
 | `ImGuiSystem` | optional module | [`imguisystem.hpp`](../../src/core/imgui/imguisystem.hpp#L13) | [`imguisystem.cpp`](../../src/core/imgui/imguisystem.cpp) | 開発者 UI(ImGui runtime、frame plan viewer は [`planviewer.hpp`](../../src/core/imgui/planviewer.hpp))。`PELICAN_WITH_IMGUI` |
-| `InspectorPanel` / `AssetBrowserPanel` | ImGui panel | [`inspector.hpp`](../../src/core/imgui/inspector.hpp#L105) / [`assetbrowser.hpp`](../../src/core/imgui/assetbrowser.hpp#L36) | 同名 .cpp | schema 駆動 inspector と読み取り専用 asset browser。どちらも `EditorCommandService` 経由 |
+| `InspectorPanel` / `AssetBrowserPanel` | ImGui panel | [`inspector.hpp`](../../src/core/imgui/inspector.hpp#L111) / [`assetbrowser.hpp`](../../src/core/imgui/assetbrowser.hpp#L36) | 同名 .cpp | schema 駆動 inspector と読み取り専用 asset browser。どちらも `EditorCommandService` 経由 |
 
 ### OpenXR(`src/core/openxr/`、独立 static lib `pelican_openxr`)
 

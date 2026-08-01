@@ -24,6 +24,11 @@ struct InspectorPanelTrace {
 
 inline constexpr std::uint64_t inspectorWatchPollFrameInterval = 30;
 
+constexpr bool inspectorRefreshBlocked(bool preview_held,
+                                       bool widget_editing) noexcept {
+    return preview_held || widget_editing;
+}
+
 struct InspectorWatchState {
     std::optional<EditorWatchToken> observed;
     std::uint64_t frames_since_poll = 0;
@@ -34,8 +39,9 @@ struct InspectorWatchState {
 };
 
 template <class Query, class Refresh>
-bool pollInspectorWatch(InspectorWatchState &state, Query &&query,
-                        Refresh &&refresh) {
+bool pollInspectorWatch(InspectorWatchState &state, bool refresh_blocked,
+                        Query &&query, Refresh &&refresh) {
+    if (refresh_blocked) return false;
     if (!state.advanceFrame()) return false;
     const auto current = std::forward<Query>(query)();
     const bool changed = state.differs(current);

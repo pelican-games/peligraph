@@ -679,7 +679,7 @@ TEST_CASE("WP170 repeated watch queries are byte-identical and drive periodic re
     auto current = harness.service->getSceneRevision();
     const auto poll = [&] {
         return pollInspectorWatch(
-            state,
+            state, false,
             [&] {
                 ++query_calls;
                 return current;
@@ -706,6 +706,97 @@ TEST_CASE("WP170 repeated watch queries are byte-identical and drive periodic re
     REQUIRE(poll());
     REQUIRE(query_calls == 2);
     REQUIRE(displayed_object_queries == 1);
+}
+
+TEST_CASE("WP245 active inspector edits suppress watch refresh and retain the dragged value",
+          "[imgui][inspector][watch][drag][wp245]") {
+    InspectorWatchState state;
+    EditorSceneRevisionResult current{
+        .token = {.scene_revision = SceneRevision{1}, .preview_epoch = 0},
+    };
+    state.observe(current);
+
+    double displayed_value = 1.0;
+    const double committed_value = displayed_value;
+    std::uint64_t query_calls = 0;
+    std::uint64_t refresh_calls = 0;
+    const auto poll = [&](bool preview_held, bool widget_editing) {
+        return pollInspectorWatch(
+            state, inspectorRefreshBlocked(preview_held, widget_editing),
+            [&] {
+                ++query_calls;
+                return current;
+            },
+            [&] {
+                ++refresh_calls;
+                displayed_value = committed_value;
+            });
+    };
+    const auto poll_for_interval = [&](bool preview_held, bool widget_editing) {
+        for (std::uint64_t frame = 0;
+             frame < inspectorWatchPollFrameInterval; ++frame) {
+            REQUIRE_FALSE(poll(preview_held, widget_editing));
+        }
+    };
+
+    displayed_value = 2.0;
+    ++current.token.preview_epoch;
+    poll_for_interval(false, true);
+    displayed_value = 3.0;
+    ++current.token.preview_epoch;
+    poll_for_interval(true, true);
+    displayed_value = 4.0;
+    ++current.token.preview_epoch;
+    poll_for_interval(true, false);
+
+    REQUIRE(displayed_value == 4.0);
+    REQUIRE(query_calls == 0);
+    REQUIRE(refresh_calls == 0);
+
+    current.token.scene_revision = SceneRevision{2};
+    ++current.token.preview_epoch;
+    state.observe(current);
+    poll_for_interval(false, false);
+    REQUIRE(query_calls == 1);
+    REQUIRE(refresh_calls == 0);
+    REQUIRE(displayed_value == 4.0);
+}
+
+TEST_CASE("WP245 idle inspector watch still refreshes external scene changes",
+          "[imgui][inspector][watch][external][wp245]") {
+    InspectorWatchState state;
+    EditorSceneRevisionResult current{
+        .token = {.scene_revision = SceneRevision{1}, .preview_epoch = 0},
+    };
+    state.observe(current);
+
+    double displayed_value = 1.0;
+    double authored_value = displayed_value;
+    std::uint64_t query_calls = 0;
+    std::uint64_t refresh_calls = 0;
+    const auto poll = [&] {
+        return pollInspectorWatch(
+            state, false,
+            [&] {
+                ++query_calls;
+                return current;
+            },
+            [&] {
+                ++refresh_calls;
+                displayed_value = authored_value;
+            });
+    };
+
+    authored_value = 9.0;
+    current.token.scene_revision = SceneRevision{2};
+    for (std::uint64_t frame = 1; frame < inspectorWatchPollFrameInterval;
+         ++frame) {
+        REQUIRE_FALSE(poll());
+    }
+    REQUIRE(poll());
+    REQUIRE(query_calls == 1);
+    REQUIRE(refresh_calls == 1);
+    REQUIRE(displayed_value == 9.0);
 }
 
 TEST_CASE("WP170 stale commit is rejected even when the client never reads watch",

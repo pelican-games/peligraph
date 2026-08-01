@@ -80,6 +80,7 @@ struct WidgetInteraction {
     bool changed = false;
     bool committed = false;
     bool drag = false;
+    bool editing = false;
     Json value;
 };
 
@@ -103,6 +104,7 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
             widget.range_min ? &minimum : nullptr,
             widget.range_max ? &maximum : nullptr, "%lld",
             widget.range_min ? ImGuiSliderFlags_AlwaysClamp : 0);
+        result.editing = ImGui::IsItemActive();
         result.committed = ImGui::IsItemDeactivatedAfterEdit();
         result.value = value;
         break;
@@ -122,6 +124,7 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
             widget.range_min ? &minimum : nullptr,
             widget.range_max ? &maximum : nullptr, "%llu",
             widget.range_min ? ImGuiSliderFlags_AlwaysClamp : 0);
+        result.editing = ImGui::IsItemActive();
         result.committed = ImGui::IsItemDeactivatedAfterEdit();
         result.value = value;
         break;
@@ -142,6 +145,7 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
             widget.range_min ? &minimum : nullptr,
             widget.range_max ? &maximum : nullptr, "%.5f",
             widget.range_min ? ImGuiSliderFlags_AlwaysClamp : 0);
+        result.editing = ImGui::IsItemActive();
         result.committed = ImGui::IsItemDeactivatedAfterEdit();
         result.value = value;
         break;
@@ -171,6 +175,7 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
             widget.range_min ? &minimum : nullptr,
             widget.range_max ? &maximum : nullptr, "%.4f",
             widget.range_min ? ImGuiSliderFlags_AlwaysClamp : 0);
+        result.editing = ImGui::IsItemActive();
         result.committed = ImGui::IsItemDeactivatedAfterEdit();
         result.value = Json::array();
         for (std::size_t index = 0; index < widget.columns; ++index) {
@@ -183,6 +188,7 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
         auto value = current.get<bool>();
         result.valid = true;
         result.changed = ImGui::Checkbox(label, &value);
+        result.editing = ImGui::IsItemActive();
         result.committed = result.changed;
         result.value = value;
         break;
@@ -191,7 +197,9 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
         if (!current.is_string()) break;
         const auto selected = current.get<std::string>();
         result.valid = true;
-        if (ImGui::BeginCombo(label, selected.c_str())) {
+        const bool combo_open = ImGui::BeginCombo(label, selected.c_str());
+        result.editing = combo_open || ImGui::IsItemActive();
+        if (combo_open) {
             for (const auto &candidate : widget.enum_values) {
                 const bool is_selected = candidate == selected;
                 if (ImGui::Selectable(candidate.c_str(), is_selected)) {
@@ -213,6 +221,7 @@ WidgetInteraction drawSchemaWidget(const InspectorWidgetDescriptor &widget,
         std::memcpy(buffer.data(), text.data(), count);
         result.valid = true;
         result.changed = ImGui::InputText(label, buffer.data(), buffer.size());
+        result.editing = ImGui::IsItemActive();
         result.committed = ImGui::IsItemDeactivatedAfterEdit();
         result.value = std::string{buffer.data()};
         break;
@@ -490,6 +499,10 @@ struct InspectorPanel::Impl {
     std::string message;
     bool message_is_error = false;
     bool initialized = false;
+    bool widget_editing = false;
+    bool widget_editing_next = false;
+    bool refresh_pending = false;
+    bool sync_watch_after_refresh = false;
 
     Impl(EditorCommandService &service, InspectorPanelTrace &trace)
         : commands{service, trace} {}
@@ -515,7 +528,20 @@ struct InspectorPanel::Impl {
         }
     }
 
-    void refresh() {
+    bool refreshBlocked() const noexcept {
+        return inspectorRefreshBlocked(preview.has_value(), widget_editing);
+    }
+
+    void refresh(bool synchronize_watch = false) {
+        if (refreshBlocked()) {
+            refresh_pending = true;
+            sync_watch_after_refresh =
+                sync_watch_after_refresh || synchronize_watch;
+            return;
+        }
+        const bool observe_watch =
+            std::exchange(sync_watch_after_refresh, false) || synchronize_watch;
+        refresh_pending = false;
         try {
             tree = commands.sceneTree();
             auto next = selected_id;
@@ -533,9 +559,14 @@ struct InspectorPanel::Impl {
                 selected.reset();
                 selected_id.reset();
             }
+            if (observe_watch) watch.observe(commands.getSceneRevision());
         } catch (const std::exception &error) {
             setMessage(error.what(), true);
         }
+    }
+
+    void flushRefresh() {
+        if (refresh_pending && !refreshBlocked()) refresh();
     }
 
     void initialize() {
@@ -545,8 +576,7 @@ struct InspectorPanel::Impl {
             const auto session = commands.openEditorSession(
                 {{"display_name", "ImGui Inspector"}});
             actor_id = session.at("actor_id").get<std::uint64_t>();
-            refresh();
-            watch.observe(commands.getSceneRevision());
+            refresh(true);
         } catch (const std::exception &error) {
             setMessage(error.what(), true);
         }
@@ -555,7 +585,8 @@ struct InspectorPanel::Impl {
     void pollWatch() {
         try {
             (void)pollInspectorWatch(
-                watch, [&] { return commands.getSceneRevision(); },
+                watch, refreshBlocked(),
+                [&] { return commands.getSceneRevision(); },
                 [&] { refresh(); });
         } catch (const std::exception &error) {
             setMessage(error.what(), true);
@@ -601,7 +632,7 @@ struct InspectorPanel::Impl {
             setMessage(pending.description + " committed at revision " +
                        std::to_string(result.value("committed_revision", std::uint64_t{})) +
                        ".");
-            refresh();
+            refresh(true);
         } else {
             reportFailure(result, pending.description, pending.component_slot);
         }
@@ -672,7 +703,7 @@ struct InspectorPanel::Impl {
             const auto saved = commands.saveScene();
             setMessage("Scene saved at revision " +
                        std::to_string(saved.scene_revision.value) + ".");
-            refresh();
+            refresh(true);
         } catch (const EditorCommandError &error) {
             setMessage(std::string{editorCommandErrorCodeName(error.code())} +
                            " - " + error.what(),
@@ -775,13 +806,13 @@ struct InspectorPanel::Impl {
                                                        std::uint64_t{})) +
                            ".");
                 preview.reset();
-                refresh();
+                refresh(true);
                 return;
             }
             if (status == "succeeded" && kind == PreviewRequestKind::Abort) {
                 setMessage("Live preview aborted; committed value restored.");
                 preview.reset();
-                refresh();
+                refresh(true);
                 return;
             }
             const auto field_key = preview->field_key;
@@ -989,6 +1020,10 @@ struct InspectorPanel::Impl {
                                            widget.field_name.c_str());
                         continue;
                     }
+                    if (interaction.editing) {
+                        widget_editing = true;
+                        widget_editing_next = true;
+                    }
                     handleWidgetInteraction(component, widget, interaction);
                 } catch (const std::exception &) {
                     ImGui::TextDisabled("%s: not authored",
@@ -1062,12 +1097,16 @@ struct InspectorPanel::Impl {
 
     void draw(bool *tree_open, bool *inspector_open) {
         initialize();
+        flushRefresh();
         pollWatch();
         pollEdits();
         pollPreview();
+        widget_editing_next = false;
         if (tree_open && *tree_open) drawTree(tree_open);
         if (inspector_open && *inspector_open) drawInspector(inspector_open);
         drivePreview();
+        widget_editing = widget_editing_next;
+        flushRefresh();
     }
 };
 
