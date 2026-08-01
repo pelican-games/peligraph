@@ -3,6 +3,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../startup.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -53,6 +54,7 @@ std::filesystem::path normalizedPath(const std::filesystem::path &path) {
 constexpr std::string_view shaderCacheFormat = "pelican-shader-cache-v1";
 constexpr std::string_view shaderContractSalt = "pelican-shader-contract-v1-wp82-20260712";
 constexpr std::string_view shaderTargetEnvironment = "vulkan-1.2";
+std::atomic_bool shaderCacheWarningEmitted = false;
 
 shaderc_shader_kind toShadercKind(vk::ShaderStageFlagBits stage) {
     switch (stage) {
@@ -395,7 +397,11 @@ std::optional<std::string> writeCache(const std::filesystem::path &directory,
     }
     const auto nonce = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                        std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    const auto temporary = path.string() + ".tmp-" + nonce;
+    // Keep the temporary entry beside the destination so rename remains atomic,
+    // but do not append to its already-long SHA-256 filename. The shortened
+    // sibling name is portable and remains shorter than the final cache entry,
+    // avoiding the Windows MAX_PATH failure without platform-specific paths.
+    const auto temporary = directory / (".tmp-" + std::string{key.substr(0, 8)} + "-" + nonce);
     {
         std::ofstream file{temporary, std::ios::binary | std::ios::trunc};
         if (!file) {
@@ -425,14 +431,14 @@ std::optional<std::string> writeCache(const std::filesystem::path &directory,
     return std::nullopt;
 }
 
-void warnCacheOnce(bool &warned, const std::filesystem::path &path, std::string_view reason) {
-    if (warned) {
+void warnCacheOnce(const std::filesystem::path &path, std::string_view reason) {
+    if (logger == nullptr || shaderCacheWarningEmitted.exchange(true, std::memory_order_relaxed)) {
         return;
     }
-    warned = true;
-    if (logger != nullptr) {
-        LOG_WARNING(logger, "shader cache {}: {}; recompiling", path.string(), reason);
-    }
+    LOG_WARNING(logger,
+                "shader disk cache is unavailable; recompiling without it (path: {}, reason: {}). "
+                "Further cache failures will not be reported in this process",
+                path.string(), reason);
 }
 
 ShaderCompileResult compileGlslUncached(std::string_view source, vk::ShaderStageFlagBits stage,
@@ -477,7 +483,6 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                                 std::unordered_map<std::string, ShaderCompileResult> &memory_cache,
                                 std::unordered_map<std::string, std::string> &source_graph_memory) {
     const auto start = std::chrono::steady_clock::now();
-    bool warned = false;
     std::string key;
     std::filesystem::path cache_path;
     std::vector<std::filesystem::path> dependencies;
@@ -513,10 +518,10 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                 return output;
             }
             if (cached.error) {
-                warnCacheOnce(warned, cache_path, *cached.error);
+                warnCacheOnce(cache_path, *cached.error);
             }
         } catch (const std::exception &ex) {
-            warnCacheOnce(warned, *cache_directory, ex.what());
+            warnCacheOnce(*cache_directory, ex.what());
             key.clear();
         }
     } else {
@@ -529,7 +534,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
     output.dependencies = std::move(dependencies);
     if (output.ok && cache_directory && !key.empty()) {
         if (const auto error = writeCache(*cache_directory, cache_path, key, output.spirv)) {
-            warnCacheOnce(warned, cache_path, *error);
+            warnCacheOnce(cache_path, *error);
         }
         memory_cache.insert_or_assign(key, output);
     }

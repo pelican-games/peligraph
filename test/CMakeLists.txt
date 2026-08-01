@@ -816,6 +816,16 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_shader_cache_test)
     endif()
 endif()
+pelican_define_test(shader_cache_wp254_test pelican_core spirv-reflect-static glm)
+target_compile_definitions(pelican_test_shader_cache_wp254_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_shader_cache_wp254_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_shader_cache_wp254_test)
+    endif()
+endif()
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
