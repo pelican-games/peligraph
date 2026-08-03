@@ -2,6 +2,15 @@
 
 #include <QFileInfo>
 
+#include <cstddef>
+#include <vector>
+
+#ifdef Q_OS_WIN
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace PelicanStudio {
 namespace {
 
@@ -13,8 +22,106 @@ void setError(QString *error, const QString &message) {
 
 } // namespace
 
-EngineProcess::EngineProcess(QObject *parent) : QObject(parent) {
+class EngineProcessLifetime {
+  public:
+    EngineProcessLifetime() {
+#ifdef Q_OS_WIN
+        job_ = CreateJobObjectW(nullptr, nullptr);
+        if (job_ == nullptr) {
+            setWindowsFailure(QStringLiteral("create the engine process job"), GetLastError());
+            return;
+        }
+
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits,
+                                     sizeof(limits))) {
+            setWindowsFailure(QStringLiteral("configure the engine process job"), GetLastError());
+            return;
+        }
+
+        SIZE_T attribute_bytes = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
+        if (attribute_bytes == 0) {
+            setWindowsFailure(QStringLiteral("size the engine process job attribute"),
+                              GetLastError());
+            return;
+        }
+
+        attribute_storage_.resize(attribute_bytes);
+        attribute_list_ = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+            attribute_storage_.data());
+        if (!InitializeProcThreadAttributeList(attribute_list_, 1, 0, &attribute_bytes)) {
+            attribute_list_ = nullptr;
+            setWindowsFailure(QStringLiteral("initialize the engine process job attribute"),
+                              GetLastError());
+            return;
+        }
+        if (!UpdateProcThreadAttribute(attribute_list_, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                                       &job_, sizeof(job_), nullptr, nullptr)) {
+            setWindowsFailure(QStringLiteral("bind the engine process job attribute"),
+                              GetLastError());
+        }
+#endif
+    }
+
+    ~EngineProcessLifetime() {
+#ifdef Q_OS_WIN
+        if (attribute_list_ != nullptr) {
+            DeleteProcThreadAttributeList(attribute_list_);
+        }
+        if (job_ != nullptr) {
+            CloseHandle(job_);
+        }
+#endif
+    }
+
+    EngineProcessLifetime(const EngineProcessLifetime &) = delete;
+    EngineProcessLifetime &operator=(const EngineProcessLifetime &) = delete;
+
+    void configure(QProcess &process) {
+#ifdef Q_OS_WIN
+        if (!failure_.isEmpty()) {
+            return;
+        }
+
+        process.setCreateProcessArgumentsModifier(
+            [this](QProcess::CreateProcessArguments *arguments) {
+                // Put the child in the kill-on-close job as part of CreateProcess.
+                // Assigning it after QProcess::started would leave a crash race.
+                startup_info_ = {};
+                startup_info_.StartupInfo = *arguments->startupInfo;
+                startup_info_.StartupInfo.cb = sizeof(startup_info_);
+                startup_info_.lpAttributeList = attribute_list_;
+                arguments->startupInfo = &startup_info_.StartupInfo;
+                arguments->flags |= EXTENDED_STARTUPINFO_PRESENT;
+            });
+#else
+        Q_UNUSED(process);
+#endif
+    }
+
+    QString failure() const { return failure_; }
+
+  private:
+    QString failure_;
+
+#ifdef Q_OS_WIN
+    HANDLE job_ = nullptr;
+    std::vector<std::byte> attribute_storage_;
+    LPPROC_THREAD_ATTRIBUTE_LIST attribute_list_ = nullptr;
+    STARTUPINFOEXW startup_info_{};
+
+    void setWindowsFailure(const QString &operation, DWORD error) {
+        failure_ = QStringLiteral("Could not %1 (Windows error %2).").arg(operation).arg(error);
+    }
+#endif
+};
+
+EngineProcess::EngineProcess(QObject *parent)
+    : QObject(parent), process_lifetime_(std::make_unique<EngineProcessLifetime>()) {
     process_.setProcessChannelMode(QProcess::MergedChannels);
+    process_lifetime_->configure(process_);
 
     connect(&process_, &QProcess::started, this, [this]() {
         state_ = State::running;
@@ -51,6 +158,12 @@ EngineProcess::~EngineProcess() {
 bool EngineProcess::start(const EngineProcessLaunch &launch, QString *error) {
     if (isRunning()) {
         const QString message = tr("The engine process is already running.");
+        setError(error, message);
+        return false;
+    }
+    if (!process_lifetime_->failure().isEmpty()) {
+        const QString message = process_lifetime_->failure();
+        setFailure(message);
         setError(error, message);
         return false;
     }

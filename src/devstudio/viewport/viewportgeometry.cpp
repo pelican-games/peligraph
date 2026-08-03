@@ -28,8 +28,8 @@ QSize embeddedViewportPixelExtent(const QSize &logical_extent, qreal device_pixe
     };
 }
 
-ViewportResizeCoalescer::ViewportResizeCoalescer(int minimum_interval_ms) noexcept
-    : minimum_interval_ms_(std::max(minimum_interval_ms, 1)) {}
+ViewportResizeCoalescer::ViewportResizeCoalescer(int debounce_ms) noexcept
+    : debounce_ms_(std::max(debounce_ms, 1)) {}
 
 ViewportResizeDecision ViewportResizeCoalescer::request(const QSize &extent, qint64 now_ms,
                                                         ViewportExtentChangeKind kind) noexcept {
@@ -40,7 +40,7 @@ ViewportResizeDecision ViewportResizeCoalescer::request(const QSize &extent, qin
         if (last_released_extent_ == extent) {
             return {};
         }
-        return release(extent, now_ms);
+        return release(extent);
     }
 
     if (last_released_extent_ == extent) {
@@ -49,47 +49,45 @@ ViewportResizeDecision ViewportResizeCoalescer::request(const QSize &extent, qin
     }
 
     pending_extent_ = extent;
-    return releasePendingIfDue(now_ms);
+    last_request_ms_ = now_ms;
+    return {.next_wakeup_ms = debounce_ms_};
 }
 
 ViewportResizeDecision ViewportResizeCoalescer::timerExpired(qint64 now_ms) noexcept {
-    return releasePendingIfDue(now_ms);
+    return releasePendingIfSettled(now_ms);
 }
 
 void ViewportResizeCoalescer::reset() noexcept {
     pending_extent_.reset();
     last_released_extent_.reset();
-    last_release_ms_ = 0;
+    last_request_ms_ = 0;
 }
 
-void ViewportResizeCoalescer::reset(const QSize &applied_extent, qint64 now_ms) noexcept {
+void ViewportResizeCoalescer::reset(const QSize &applied_extent) noexcept {
     pending_extent_.reset();
     last_released_extent_ = applied_extent;
-    last_release_ms_ = now_ms;
+    last_request_ms_ = 0;
 }
 
-ViewportResizeDecision ViewportResizeCoalescer::releasePendingIfDue(qint64 now_ms) noexcept {
+ViewportResizeDecision ViewportResizeCoalescer::releasePendingIfSettled(qint64 now_ms) noexcept {
     if (!pending_extent_) {
         return {};
     }
 
-    const qint64 elapsed_ms =
-        now_ms >= last_release_ms_ ? now_ms - last_release_ms_ : 0;
-    if (last_released_extent_ && elapsed_ms < minimum_interval_ms_) {
+    const qint64 elapsed_ms = now_ms >= last_request_ms_ ? now_ms - last_request_ms_ : 0;
+    if (elapsed_ms < debounce_ms_) {
         return {
-            .next_wakeup_ms = minimum_interval_ms_ - static_cast<int>(elapsed_ms),
+            .next_wakeup_ms = debounce_ms_ - static_cast<int>(elapsed_ms),
         };
     }
 
     const QSize extent = *pending_extent_;
     pending_extent_.reset();
-    return release(extent, now_ms);
+    return release(extent);
 }
 
-ViewportResizeDecision ViewportResizeCoalescer::release(const QSize &extent,
-                                                        qint64 now_ms) noexcept {
+ViewportResizeDecision ViewportResizeCoalescer::release(const QSize &extent) noexcept {
     last_released_extent_ = extent;
-    last_release_ms_ = now_ms;
     return {.extent_to_apply = extent};
 }
 

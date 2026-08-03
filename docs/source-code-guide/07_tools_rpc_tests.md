@@ -192,12 +192,18 @@ Inspector / Output の4パネルを stable object name を持つ dock として�
 場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
 中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L16) は
-`pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L16) で別 process
+`pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L20) で別 process
 として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
 [`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L24) が Windows style、parent、
 focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。したがって
 resize は player の通常の GLFW framebuffer callback から既存の Surface/Swapchain epoch 経路へ
-入ります。player が終了しても Studio は残り、viewport から再起動できます。
+入ります。通常の resize は最後の寸法イベントから 50 ms 静止するまで native child を凍結し、
+最終 physical extent だけを 1 回適用します。DPR 変更だけは物理画素寸法を壊さないよう即時適用です。
+凍結中に child が覆わない部分は native host が黒で自動消去するため、過去の画素は残りません。
+
+player が終了しても Studio は残り、viewport から再起動できます。逆方向は Windows の
+kill-on-close Job Object で固定し、player を process 作成時点から所属させます。そのため Studio の
+通常終了だけでなく強制終了でも player は残りません。
 
 [`LayoutPresetManager`](../../src/devstudio/layoutpreset.hpp#L26) は view から独立した Qt Core の
 ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
@@ -494,7 +500,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1499) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1508) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

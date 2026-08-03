@@ -28,7 +28,6 @@ class NativeViewportSurface final : public QWidget {
     explicit NativeViewportSurface(QWidget *parent) : QWidget(parent) {
         setObjectName(QStringLiteral("pelican.viewportHost"));
         setAttribute(Qt::WA_NativeWindow);
-        setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
         setMinimumSize(160, 90);
         setAutoFillBackground(true);
@@ -334,7 +333,7 @@ void EmbeddedViewport::discoverEngineWindow() {
 
     child_window_ = window;
     last_requested_extent_ = pixel_extent;
-    resize_coalescer_.reset(pixel_extent, resize_elapsed_.elapsed());
+    resize_coalescer_.reset(pixel_extent);
     window_discovery_timer_->stop();
     diagnostics_timer_->start();
     pointer_button_was_down_ = false;

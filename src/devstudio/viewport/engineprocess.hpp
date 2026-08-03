@@ -5,7 +5,11 @@
 #include <QString>
 #include <QStringList>
 
+#include <memory>
+
 namespace PelicanStudio {
+
+class EngineProcessLifetime;
 
 struct EngineProcessLaunch {
     QString program;
@@ -45,6 +49,7 @@ class EngineProcess final : public QObject {
     void outputReceived(const QString &output);
 
   private:
+    std::unique_ptr<EngineProcessLifetime> process_lifetime_;
     QProcess process_;
     State state_ = State::stopped;
     qint64 last_process_id_ = 0;

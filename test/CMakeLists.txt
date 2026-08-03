@@ -953,11 +953,20 @@ if(TARGET pelican_studio_viewport)
   # Qt imported targets are directory-scoped; make the public viewport
   # interface visible in this sibling test directory.
   find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  add_executable(pelican_test_devstudio_engine_owner_fixture
+    devstudio_engine_owner_fixture.cpp)
+  set_target_properties(pelican_test_devstudio_engine_owner_fixture PROPERTIES
+    CXX_STANDARD 20)
+  target_link_libraries(pelican_test_devstudio_engine_owner_fixture PRIVATE
+    pelican_studio_viewport Qt6::Core)
   pelican_define_test(devstudio_viewport_test QT pelican_studio_viewport Qt6::Core Qt6::Widgets)
   target_compile_definitions(pelican_test_devstudio_viewport_test PRIVATE
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+    PELICAN_ENGINE_OWNER_FIXTURE_PATH="$<TARGET_FILE:pelican_test_devstudio_engine_owner_fixture>"
   )
-  add_dependencies(pelican_test_devstudio_viewport_test pelican_test_process_fixture_child)
+  add_dependencies(pelican_test_devstudio_viewport_test
+    pelican_test_process_fixture_child
+    pelican_test_devstudio_engine_owner_fixture)
 endif()
 
 pelican_define_test(processrunner_test)
