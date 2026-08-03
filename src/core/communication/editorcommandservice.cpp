@@ -324,6 +324,7 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
 
     EditorObjectQueryResult result{.scene_revision = source.revision(),
                                    .authoring_object_id = object.authoring_object_id,
+                                   .declaration_index = object.declaration_index,
                                    .name = object.name,
                                    .parent = object.parent,
                                    .entity_id = runtime.entity_id};
@@ -903,7 +904,8 @@ OrderedJson editorQueryJson(const EditorSceneRevisionResult &revision) {
 
 OrderedJson editorQueryJson(const EditorObjectQueryResult &object) {
     OrderedJson result{{"scene_revision", object.scene_revision.value},
-                       {"authoring_object_id", object.authoring_object_id.value}};
+                       {"authoring_object_id", object.authoring_object_id.value},
+                       {"declaration_index", object.declaration_index}};
     if (object.name) result["name"] = *object.name;
     if (object.parent) result["parent"] = *object.parent;
     if (object.entity_id) {

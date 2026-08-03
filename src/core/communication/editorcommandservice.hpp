@@ -75,6 +75,7 @@ struct EditorComponentQueryResult {
 struct EditorObjectQueryResult {
     SceneRevision scene_revision{};
     AuthoringObjectId authoring_object_id{};
+    std::size_t declaration_index = 0;
     std::optional<std::string> name;
     std::optional<std::string> parent;
     std::optional<GameObjectId> entity_id;

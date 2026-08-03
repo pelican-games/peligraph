@@ -127,12 +127,14 @@ RPC は全 43 メソッドで、そのうち **23 個がエディタトラック
 
 | メソッド | params | 返すもの |
 |---|---|---|
-| `scene_tree` | `{scene_id?}` | シーンのオブジェクト一覧(親子・コンポーネント込み) |
-| `get_components` | `{authoring_object_id}` または `{name}` | オブジェクト 1 件の詳細(**両方指定・両方省略はエラー**) |
+| `scene_tree` | `{scene_id?}` | シーンのオブジェクト一覧(`authoring_object_id` / `declaration_index` / 親子 / コンポーネント込み) |
+| `get_components` | `{authoring_object_id}` または `{name}` | オブジェクト 1 件の詳細(`declaration_index` 込み。**両方指定・両方省略はエラー**) |
 | `get_scene_revision` | `{}` | `{scene_revision, preview_epoch, last_transaction, preview_lease}` |
 | `list_assets` | `{store?}` | アセット一覧(id / 種別 / パス / 状態) |
 | `query_journal` | `{after_transaction_id?}` | 編集履歴(undo の種) |
 | `can_edit` / `can_preview` | `{}` | 編集・プレビューの可否と理由 |
+
+`declaration_index` は scene の `objects` 配列における 0 始まりの宣言位置です。直リンクで読んだ木との対応には `(scene_id, declaration_index)` を使います。`authoring_object_id` はセッション内で安定した別の参照なので、挿入・並べ替え後は両者が一致するとは限らず、どちらも応答に残ります。
 
 `get_components` が返すコンポーネントには、**`schema`(フィールド名・型・範囲・単位)と `editable` フラグ**が含まれます。インスペクタのウィジェットはこれだけで組み立てられます(§13.9)。
 

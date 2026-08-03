@@ -1,5 +1,6 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/loader/basicconfig.hpp"
+#include "../src/project/sceneformat.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -35,6 +36,11 @@ std::filesystem::path fixturePath(std::string_view name) {
 std::filesystem::path authoringFixturePath() {
     return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" /
            "authoring_scene" / "multi_scene_roundtrip.json";
+}
+
+std::filesystem::path exampleScenePath() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example" /
+           "scenes" / "main.scene.json";
 }
 
 EditorRuntimeObjectState fakeRuntime(const AuthoringSceneView &scene,
@@ -133,8 +139,10 @@ TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equ
     REQUIRE(first_rpc.at("scene_id") == "main");
     REQUIRE(first_rpc.at("objects").size() == 2);
     REQUIRE(first_rpc.at("objects").at(0).at("name") == "ColliderOnly");
+    REQUIRE(first_rpc.at("objects").at(0).at("declaration_index") == 0);
     const auto &mixed = first_rpc.at("objects").at(1);
     REQUIRE(mixed.at("name") == "MixedObject");
+    REQUIRE(mixed.at("declaration_index") == 1);
     REQUIRE(mixed.at("entity_id") == nlohmann::ordered_json{{"index", 17}, {"gen", 4}});
     REQUIRE(mixed.at("components").at(0).at("name") == "transform");
     REQUIRE(mixed.at("components").at(1).at("name") == "unknown_read_only");
@@ -158,6 +166,7 @@ TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equ
     const auto by_name = rpc.getComponents({{"name", "MixedObject"}});
     const auto by_id = rpc.getComponents({{"authoring_object_id", mixed.at("authoring_object_id")}});
     REQUIRE(by_name.dump() == by_id.dump());
+    REQUIRE(by_id.at("declaration_index") == 1);
     REQUIRE(by_name.dump() == editorQueryJson(imgui.getComponents(
                                   EditorGetComponentsRequest{.name = "MixedObject"}))
                                   .dump());
@@ -172,6 +181,63 @@ TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equ
     const auto assets = rpc.listAssets({{"store", "assets"}});
     REQUIRE(assets.dump() == editorQueryJson(imgui.listAssets({.store = "assets"})).dump());
     REQUIRE(assets.at("assets").size() == 2);
+}
+
+TEST_CASE("RPC declaration indices match the direct project view for unnamed example objects",
+          "[editor-command][query][wp258]") {
+    const auto source = readJson(exampleScenePath());
+    const auto direct = normalizeSceneDataJson(source);
+    const auto &direct_objects =
+        direct.scenes.at("default_scene").at("objects");
+    const auto document =
+        AuthoringSceneDocument::load(source.dump(), SceneRevision{258});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+
+    const auto tree = rpc.sceneTree({{"scene_id", "default_scene"}});
+    REQUIRE(direct_objects.size() == 46);
+    REQUIRE(tree.at("objects").size() == direct_objects.size());
+
+    std::size_t unnamed_count = 0;
+    for (std::size_t index = 0; index < direct_objects.size(); ++index) {
+        const auto &direct_object = direct_objects.at(index);
+        const auto &rpc_object = tree.at("objects").at(index);
+        REQUIRE(rpc_object.at("declaration_index") == index);
+        if (!direct_object.contains("name")) {
+            ++unnamed_count;
+            REQUIRE_FALSE(rpc_object.contains("name"));
+        }
+    }
+    REQUIRE(unnamed_count == 32);
+}
+
+TEST_CASE("RPC declaration indices follow order after authoring id diverges on insertion",
+          "[editor-command][query][wp258]") {
+    auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{40});
+    auto stage = document.structuralStage();
+    const auto inserted_id = stage.insertObject(
+        "main", 1,
+        nlohmann::json{{"components", nlohmann::json::array()}});
+    document = std::move(stage).finish(SceneRevision{41});
+
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    const auto tree = rpc.sceneTree(nlohmann::json::object());
+    const auto &objects = tree.at("objects");
+
+    REQUIRE(objects.size() == 3);
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        REQUIRE(objects.at(index).at("declaration_index") == index);
+    }
+    REQUIRE(objects.at(1).at("authoring_object_id") == inserted_id.value);
+    REQUIRE(objects.at(1).at("authoring_object_id") !=
+            objects.at(1).at("declaration_index"));
+
+    const auto components = rpc.getComponents(
+        {{"authoring_object_id", inserted_id.value}});
+    REQUIRE(components.at("authoring_object_id") == inserted_id.value);
+    REQUIRE(components.at("declaration_index") == 1);
 }
 
 TEST_CASE("ExportSceneSnapshot V1 fixture uses semantic bytes and their real sha256",

@@ -227,15 +227,15 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 [`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L184) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L56) が
-GUI なしで検査します。RPC の object query はまだ declaration index を返さないため直リンク木との
-対応付けは行いません。D2 は選択・編集 UI より先に、その index を RPC 契約へ追加する変更から
-始めます。
+GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
+`declaration_index` を返すため、直リンク木と RPC 木は `(scene_id, declaration_index)` で
+対応付けられます。選択・編集 UI との実際の結線は D2 の範囲です。
 
 中央 viewport の process/window 結線も実装済みです(WP251)。ただし viewport と
 Project / Outliner / Inspector の間の project 選択連携、scene 編集、engine RPC は未接続です。
 **子 process 管理を編集 IPC の実装済みと解釈してはいけません。**
 
-> **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
+> **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L222) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
 
 ## 7.7 JSON-RPC を2層に分けて読む
 
@@ -316,13 +316,13 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 
 #### 編集系(23) ✅実装済み(WP153〜WP172)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L290) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L291) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L222) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
-| `scene_tree` | [木の取得](../../src/core/communication/rpcserver.cpp#L908) | オブジェクト木と component メタデータ |
+| `scene_tree` | [木の取得](../../src/core/communication/rpcserver.cpp#L908) | オブジェクト木(`authoring_object_id` + 0 始まりの `declaration_index`)と component メタデータ |
 | `get_scene_revision` | [revision 取得](../../src/core/communication/rpcserver.cpp#L911) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
-| `get_components` | [component 取得](../../src/core/communication/rpcserver.cpp#L914) | 1 オブジェクトの authored / runtime JSON + schema |
+| `get_components` | [component 取得](../../src/core/communication/rpcserver.cpp#L914) | 1 オブジェクトの `declaration_index` + authored / runtime JSON + schema |
 | `list_assets` | [asset 一覧](../../src/core/communication/rpcserver.cpp#L917) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
 | `export_scene_snapshot` | [書き出し](../../src/core/communication/rpcserver.cpp#L920) | semantic scene bytes + sha256 digest |
 | `import_scene_snapshot` | [取り込み](../../src/core/communication/rpcserver.cpp#L923) | digest 検証つき置換 |
@@ -767,7 +767,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L111) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L328) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L329) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.

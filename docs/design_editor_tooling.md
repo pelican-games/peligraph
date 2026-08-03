@@ -139,7 +139,7 @@ coverage 表(レビュー E-1 の実情を出発点に):
 
 ### 1-1. query(E-RPC0 改訂条件 — レビュー逐語)
 
-> query は `{scene_revision, authoring_object_id, name?, parent?,
+> query は `{scene_revision, authoring_object_id, declaration_index, name?, parent?,
 > entity_id?, components[]}` を返す。component ごとに `authored_json`,
 > optional `runtime_json`, `editable`, `codec/schema state`, `pending` を
 > 区別する。JSON key/order、object/component declaration order、
@@ -147,6 +147,10 @@ coverage 表(レビュー E-1 の実情を出発点に):
 > EditorCommandService を置き、RPC/ImGui fake adapter が同じ query
 > 結果/error code を返すことを検査する。依存は ED-AUTH0/ED-CODEC0。
 
+- `scene_tree` / `get_components` の result 自体には `schema_version` がなく、
+  版付き保存形式ではない。節名の E-RPC v1 は設計段階名であり、JSON-RPC の
+  `"2.0"` は transport envelope の版である。このため `declaration_index` の
+  追加では版を上げず、版付きの snapshot schema v1 にも変更を加えない。
 - `list_assets` は v1 のまま(store/kind/status — HR status 連動)
 
 ### 1-2. edit(E-RPC1 改訂条件 — レビュー逐語)
