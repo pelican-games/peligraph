@@ -147,8 +147,8 @@ TEST_CASE("Device-pixel-ratio changes bypass viewport resize coalescing",
     REQUIRE_FALSE(coalescer.timerExpired(50).extent_to_apply);
 }
 
-TEST_CASE("Native viewport surface automatically clears exposed pixels to black",
-          "[devstudio][viewport][paint]") {
+TEST_CASE("Native viewport surface uses the smallest live extent and clears exposed pixels",
+          "[devstudio][viewport][minimum][paint]") {
     int argument_count = 1;
     char application_name[] = "pelican_viewport_surface_test";
     char *arguments[] = {application_name};
@@ -157,6 +157,8 @@ TEST_CASE("Native viewport surface automatically clears exposed pixels to black"
 
     QWidget *surface = viewport.findChild<QWidget *>(QStringLiteral("pelican.viewportHost"));
     REQUIRE(surface != nullptr);
+    REQUIRE(surface->minimumSize() == QSize{1, 1});
+    REQUIRE(viewport.minimumSizeHint().width() == 1);
     REQUIRE(surface->autoFillBackground());
     REQUIRE_FALSE(surface->testAttribute(Qt::WA_OpaquePaintEvent));
     REQUIRE_FALSE(surface->testAttribute(Qt::WA_NoSystemBackground));

@@ -10,6 +10,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -29,7 +30,13 @@ class NativeViewportSurface final : public QWidget {
         setObjectName(QStringLiteral("pelican.viewportHost"));
         setAttribute(Qt::WA_NativeWindow);
         setFocusPolicy(Qt::StrongFocus);
-        setMinimumSize(160, 90);
+        // Positive framebuffer sizes are clamped against Vulkan's
+        // capabilities.minImageExtent by the player, and Win32 validation
+        // reaches a live 1x1 swapchain. Zero remains the existing
+        // minimized/suspended path, not a useful visible panel size. Keep the
+        // Qt layout at its smallest positive extent instead of imposing an
+        // unrelated 160x90 boundary on dock resizing.
+        setMinimumSize(1, 1);
         setAutoFillBackground(true);
         QPalette viewport_palette = palette();
         viewport_palette.setColor(QPalette::Window, Qt::black);
@@ -139,6 +146,12 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     layout->addWidget(native_host_, 1);
 
     auto *footer = new QWidget(this);
+    // Keep the footer's normal size hint, but do not let its status text and
+    // buttons become the composite viewport's horizontal layout minimum. At
+    // extreme widths the row may clip; ordinary widths retain the same layout.
+    auto footer_size_policy = footer->sizePolicy();
+    footer_size_policy.setHorizontalPolicy(QSizePolicy::Ignored);
+    footer->setSizePolicy(footer_size_policy);
     auto *footer_layout = new QHBoxLayout(footer);
     footer_layout->setContentsMargins(4, 0, 4, 0);
     status_ = new QLabel(tr("Engine viewport is stopped."), footer);
