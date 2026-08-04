@@ -1769,6 +1769,112 @@ devstudio はそれを呼ぶだけにする」に従い、**先に rpc を定義
 
 依存: なし(WP250 はマージ済み)。見積: 小。**D2 全体の前提**。
 
+### WP259: 実行中のフレームが参照しうる descriptor set を解放している
+
+**目的**: リサイズ時に、**まだ GPU が読んでいるかもしれない descriptor set を解放**している。
+正しさの問題であり、性能の話より優先する。
+
+**現状**:
+
+- `fullscreenpasscontainer.cpp` の descriptor pool は
+  `ci.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;` で作られる。
+  つまりセットは破棄時に実際に解放される。
+- 同ファイルの `input_textures.insert_or_assign(pass_id.value, std::move(info));` が
+  **直前のエントリを即座に破棄**する。`rendertarget.hpp` の
+  `constexpr size_t in_flight_frames_num = 2;` により、**最大 2 フレームが実行中**でありうる。
+- `materialcontainer.cpp` の `screen_input_descriptors` にも同型の差し替えがある。
+
+**正しい形はこのリポジトリの中にある**: `computetask.cpp` は新しいプールを確保し、
+古いプールとセットを `RetiredComputeDescriptorResources` へ移して
+`GET_MODULE(DeletionQueue).defer(std::move(retired));` する。この engine の DeletionQueue は
+**リース方式**(`leaseForNextSubmission` / `confirmSubmission`、最後のリースが落ちたら解放)であり、
+まさにこのためにある。`fullscreenpasscontainer.cpp` にはこの退避が無い。
+
+**実装範囲**:
+
+1. fullscreen と material の両方で、差し替え時に古い descriptor 資源を**即座に破棄せず退避**すること。
+2. **`computetask.cpp` の既存の形を踏襲すること。** 新しい退避機構を発明しないこと。
+   可能なら共通化すること(規則を三重に持たない)。
+3. `eFreeDescriptorSet` を残すか、プールごと退避する方式に寄せるかを決め、**理由を書くこと**。
+
+**受け入れ条件**:
+
+- 実行中のフレームが参照しうる descriptor set が解放されないこと
+- 退避が `DeletionQueue` のリースに載っていること(フレーム数の決め打ちで待たないこと)
+- リサイズを繰り返しても descriptor 資源が際限なく積み上がらないこと
+- `gpu` ラベル全数と `ctest -LE gpu` が緑、`git diff --check` クリーン
+
+**検証の限界**: use-after-free は再現しないことが多い。**Vulkan validation layer を有効にして
+リサイズを繰り返す**確認を行い、結果を PR 本文に書くこと。「落ちなかった」だけでは不十分である。
+
+依存: なし。見積: 中。**最優先** — 正しさの問題である。
+
+### WP260: 発火しえない指紋の自己再検証を外す
+
+**目的**: 再 lower の **24%** が、**構造上絶対に発火しない検査**に使われている。
+
+**現状(実測)**: `vulkanrendercompilerprogram.cpp` が
+
+```
+if (context.automatic_plan->logical_graph_fingerprint !=
+    vulkanTargetPlanLogicalGraphFingerprint(*context.logical_graph)) {
+```
+
+を実行する。この `verification_contexts` は `renderingsamplecount.cpp` により、
+**指紋を埋めたのと同じ `compileRenderingTargetPlansForVulkanDevice` 呼び出しの中で**積まれる。
+つまり**数マイクロ秒前に自分が作った値を再計算して比較**している。
+デバッグ用のガードもフラグも無い。**指紋関数が非決定的でない限り発火しえない。**
+
+**実装範囲**:
+
+1. この自己再検証を外すか、デバッグ構成限定にすること。**どちらを採ったか理由を書くこと。**
+2. 指紋関数の決定性そのものを確かめたいなら、**それは単体テストの仕事**である。
+   毎フレーム経路で払うコストではない。テストが無いなら足すこと。
+
+**受け入れ条件**:
+
+- 再 lower の実測時間が短くなること。**同一条件で計測して数値を PR 本文に書くこと**
+  (単体 `pelican_player` のウィンドウリサイズ、3 回以上)
+- 指紋の決定性がテストで担保されていること
+- `ctest` 全数が緑
+
+依存: なし。見積: 小。
+
+### WP261: 指紋を JSON dump 経由で作るのをやめる
+
+**目的**: 再 lower の **23.7%** が、nlohmann の文書を構築して `.dump()` し、
+その文字列をハッシュする処理に使われている。
+
+**現状**: `targetrenderplanning.cpp` が
+`fingerprint.appendString(compiledLogicalRenderGraphToJson(graph).dump());`、
+`vulkanphysicalfragment.cpp` にも同型がある。文書構築と文字列化が本体コストで、
+ハッシュそのものではない。
+
+**実装範囲**:
+
+1. 構造から直接ハッシュを取る形にすること。JSON の中間表現を作らないこと。
+2. **指紋の意味論を変えないこと。** 同じ入力が同じ値になり、異なる入力が異なる値になること。
+   既存の指紋値が変わるのは構わないが、**変わったことを明示すること**(永続化されている場合は
+   互換性の判断が要る)。
+3. WP260 が自己再検証を外した後なら、指紋は「異なるものを異なると判定する」ためだけに使われる。
+   その用途に足りる形にすること。
+
+**受け入れ条件**:
+
+- 再 lower の実測時間が短くなること。**数値を PR 本文に書くこと**
+- 同一入力で同一値、異なる入力で異なる値になることがテストで担保されていること
+- 指紋が永続化される経路があるなら、その互換性の扱いが決まっていること
+- `ctest` 全数が緑
+
+依存: **WP260**(先に自己再検証を外さないと、指紋を変えた影響が二重に出る)。見積: 中。
+
+**WP256(`extent` を compile-facts の指紋から外す)は取り下げ**: 実測により、再 lower の
+**約 97% は extent に依存しない処理**であることが分かった。決定的な証拠は
+**640×360 と 3840×2160 で処理時間が 9ms しか変わらない**(画素数 36 倍)ことである。
+レンダーターゲット画像の再作成は全体の **1.3%** にすぎない。
+extent を指紋から外しても、外した先の処理がそのまま走る。WP259〜261 を先に済ませ、
+そのうえで残りが問題なら改めて検討する。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
