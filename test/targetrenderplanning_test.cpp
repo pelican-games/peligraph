@@ -1125,6 +1125,97 @@ TEST_CASE("Vulkan target plan pins round-trip and bind a logical graph",
         "unknown key 'representation'");
 }
 
+TEST_CASE(
+    "target plan fingerprints are deterministic and distinguish structural inputs",
+    "[target-render-planning][fingerprint]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 4, false, true);
+    const auto logical_fingerprint =
+        vulkanTargetPlanLogicalGraphFingerprint(graph);
+    REQUIRE(
+        vulkanTargetPlanLogicalGraphFingerprint(graph) ==
+        logical_fingerprint);
+
+    auto reordered_imports = graph;
+    reordered_imports.imports = {
+        LogicalValueImport{
+            LogicalValueId{"external_b", 2},
+            LogicalValueImportKind::external},
+        LogicalValueImport{
+            LogicalValueId{"external_a", 1},
+            LogicalValueImportKind::graph_input},
+    };
+    const auto ordered_import_fingerprint =
+        vulkanTargetPlanLogicalGraphFingerprint(
+            reordered_imports);
+    std::reverse(
+        reordered_imports.imports.begin(),
+        reordered_imports.imports.end());
+    REQUIRE(
+        vulkanTargetPlanLogicalGraphFingerprint(
+            reordered_imports) ==
+        ordered_import_fingerprint);
+
+    auto different_graph = graph;
+    different_graph.nodes.front().uses.front().port +=
+        "_changed";
+    REQUIRE(
+        vulkanTargetPlanLogicalGraphFingerprint(
+            different_graph) != logical_fingerprint);
+
+    const auto target = topology(true);
+    const auto automatic = compile(
+        types, graph, target,
+        bindingsFor(types, graph));
+    const auto automatic_fingerprint =
+        vulkanAutomaticTargetPlanFingerprint(
+            target, automatic);
+    REQUIRE(
+        vulkanAutomaticTargetPlanFingerprint(
+            target, automatic) ==
+        automatic_fingerprint);
+
+    auto reordered_topology = target;
+    std::reverse(
+        reordered_topology.endpoints.front()
+            .capabilities.begin(),
+        reordered_topology.endpoints.front()
+            .capabilities.end());
+    std::reverse(
+        reordered_topology.endpoints.front().facts.begin(),
+        reordered_topology.endpoints.front().facts.end());
+    REQUIRE(
+        vulkanAutomaticTargetPlanFingerprint(
+            reordered_topology, automatic) ==
+        automatic_fingerprint);
+
+    auto explanatory_change = automatic;
+    explanatory_change.backend_selection.decisions.push_back(
+        PlanningDecision{
+            "pelican.test.explanation@1", "candidate",
+            "unchanged", "diagnostic-only decision"});
+    REQUIRE(
+        vulkanAutomaticTargetPlanFingerprint(
+            target, explanatory_change) ==
+        automatic_fingerprint);
+
+    auto different_plan = automatic;
+    different_plan.resources.front().reason +=
+        " (changed)";
+    REQUIRE(
+        vulkanAutomaticTargetPlanFingerprint(
+            target, different_plan) !=
+        automatic_fingerprint);
+
+    auto different_topology = target;
+    different_topology.endpoints.front().facts.front().value +=
+        "_changed";
+    REQUIRE(
+        vulkanAutomaticTargetPlanFingerprint(
+            different_topology, automatic) !=
+        automatic_fingerprint);
+}
+
 TEST_CASE("Vulkan physical fragments round-trip against an automatic target environment",
           "[target-render-planning][physical-fragment][eject]") {
     const auto types = makeBuiltinLogicalTypeRegistry();

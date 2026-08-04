@@ -4,12 +4,14 @@
 #include "stablefingerprint.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -380,212 +382,602 @@ VulkanPhysicalFragmentPackage canonicalizePackage(
     return package;
 }
 
-nlohmann::ordered_json extentToJson(
-    const std::optional<ResourceExtentPlan> &extent) {
-    if (!extent) return nullptr;
-    return {
-        {"kind", resourceExtentKindName(extent->kind)},
-        {"scale_x", extent->scale_x},
-        {"scale_y", extent->scale_y},
-        {"width", extent->width},
-        {"height", extent->height},
-    };
+void appendFingerprintBoolean(
+    StableFingerprint64 &fingerprint, bool value) {
+    fingerprint.appendUnsigned(value ? 1u : 0u);
 }
 
-nlohmann::ordered_json physicalResourceToJson(
+void appendFingerprintSigned(
+    StableFingerprint64 &fingerprint, std::int64_t value) {
+    fingerprint.appendUnsigned(
+        static_cast<std::uint64_t>(value));
+}
+
+void appendFingerprintFloat(
+    StableFingerprint64 &fingerprint, float value) {
+    fingerprint.appendUnsigned(
+        std::bit_cast<std::uint32_t>(value));
+}
+
+void appendFingerprintDouble(
+    StableFingerprint64 &fingerprint, double value) {
+    fingerprint.appendUnsigned(
+        std::bit_cast<std::uint64_t>(value));
+}
+
+template <typename Range, typename Append>
+void appendFingerprintRange(
+    StableFingerprint64 &fingerprint,
+    const Range &values, Append append) {
+    fingerprint.appendUnsigned(values.size());
+    for (const auto &value : values) {
+        append(fingerprint, value);
+    }
+}
+
+template <typename Range>
+void appendFingerprintStrings(
+    StableFingerprint64 &fingerprint,
+    const Range &values) {
+    appendFingerprintRange(
+        fingerprint, values,
+        [](StableFingerprint64 &target,
+           const auto &value) {
+            target.appendString(value);
+        });
+}
+
+template <typename Value, typename Append>
+void appendFingerprintOptional(
+    StableFingerprint64 &fingerprint,
+    const std::optional<Value> &value,
+    Append append) {
+    appendFingerprintBoolean(
+        fingerprint, value.has_value());
+    if (value) append(fingerprint, *value);
+}
+
+void appendSemanticTypeIdFingerprint(
+    StableFingerprint64 &fingerprint,
+    const SemanticTypeId &id) {
+    fingerprint.appendString(id.name_space);
+    fingerprint.appendString(id.name);
+    fingerprint.appendUnsigned(id.major_version);
+}
+
+void appendRationalFingerprint(
+    StableFingerprint64 &fingerprint,
+    const Rational &value) {
+    appendFingerprintSigned(
+        fingerprint, value.numerator);
+    fingerprint.appendUnsigned(value.denominator);
+}
+
+template <typename>
+inline constexpr bool unsupportedFingerprintValue = false;
+
+void appendTypeArgumentValueFingerprint(
+    StableFingerprint64 &fingerprint,
+    const TypeArgumentValue &value) {
+    fingerprint.appendString(
+        typeArgumentValueKindName(
+            typeArgumentValueKind(value)));
+    std::visit(
+        [&](const auto &entry) {
+            using Entry =
+                std::decay_t<decltype(entry)>;
+            if constexpr (std::is_same_v<Entry, bool>) {
+                appendFingerprintBoolean(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, std::int64_t>) {
+                appendFingerprintSigned(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, std::uint64_t>) {
+                fingerprint.appendUnsigned(entry);
+            } else if constexpr (
+                std::is_same_v<Entry, Rational>) {
+                appendRationalFingerprint(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, EnumValueId> ||
+                std::is_same_v<Entry, SymbolId>) {
+                fingerprint.appendString(entry.value);
+            } else if constexpr (
+                std::is_same_v<Entry, SemanticTypeId>) {
+                appendSemanticTypeIdFingerprint(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, IntegerInterval>) {
+                appendFingerprintSigned(
+                    fingerprint, entry.minimum);
+                appendFingerprintSigned(
+                    fingerprint, entry.maximum);
+            } else if constexpr (
+                std::is_same_v<Entry, EnumValueSet>) {
+                appendFingerprintRange(
+                    fingerprint, entry.values,
+                    [](StableFingerprint64 &target,
+                       const EnumValueId &item) {
+                        target.appendString(item.value);
+                    });
+            } else {
+                static_assert(
+                    unsupportedFingerprintValue<Entry>);
+            }
+        },
+        value);
+}
+
+void appendLogicalTypeFingerprint(
+    StableFingerprint64 &fingerprint,
+    const LogicalType &type) {
+    fingerprint.appendString(
+        logicalTypeConstructorName(type.constructor));
+    appendSemanticTypeIdFingerprint(
+        fingerprint, type.semantic);
+    appendFingerprintRange(
+        fingerprint, type.arguments,
+        [](StableFingerprint64 &target,
+           const LogicalTypeArgument &argument) {
+            target.appendString(argument.name);
+            target.appendString(
+                typeArgumentRoleName(argument.role));
+            appendTypeArgumentValueFingerprint(
+                target, argument.value);
+        });
+}
+
+void appendTargetTopologyFingerprint(
+    StableFingerprint64 &fingerprint,
+    const TargetTopologySnapshot &topology) {
+    fingerprint.appendString(topology.name);
+    appendFingerprintRange(
+        fingerprint, topology.endpoints,
+        [](StableFingerprint64 &target,
+           const TargetEndpoint &endpoint) {
+            target.appendString(endpoint.id);
+            target.appendString(
+                targetEndpointKindName(endpoint.kind));
+            appendFingerprintStrings(
+                target, endpoint.capabilities);
+            appendFingerprintRange(
+                target, endpoint.facts,
+                [](StableFingerprint64 &fact_hash,
+                   const TargetFact &fact) {
+                    fact_hash.appendString(fact.name);
+                    fact_hash.appendString(fact.value);
+                });
+        });
+    appendFingerprintRange(
+        fingerprint, topology.links,
+        [](StableFingerprint64 &target,
+           const TargetEndpointLink &link) {
+            target.appendString(link.id);
+            target.appendString(link.source_endpoint);
+            target.appendString(
+                link.destination_endpoint);
+            appendFingerprintStrings(
+                target, link.capabilities);
+            appendFingerprintStrings(
+                target, link.bridge_offers);
+        });
+}
+
+void appendProviderFingerprint(
+    StableFingerprint64 &fingerprint,
+    const CompilerProviderDescriptor &provider) {
+    fingerprint.appendString(provider.id);
+    fingerprint.appendString(
+        compilerProviderKindName(provider.kind));
+    fingerprint.appendUnsigned(provider.owner_identity);
+    fingerprint.appendUnsigned(provider.owner_generation);
+    fingerprint.appendString(provider.content_hash);
+    // This is also part of backendSelectionToJson and validates the provider.
+    fingerprint.appendString(
+        compilerProviderFingerprint(provider));
+}
+
+void appendCostFingerprint(
+    StableFingerprint64 &fingerprint,
+    const BackendCostEstimate &cost) {
+    fingerprint.appendUnsigned(cost.rendering_scopes);
+    fingerprint.appendUnsigned(
+        cost.materialized_resources);
+    fingerprint.appendUnsigned(cost.external_stores);
+    fingerprint.appendUnsigned(cost.transient_bytes);
+    fingerprint.appendUnsigned(cost.bandwidth_class);
+}
+
+void appendDiagnosticFingerprint(
+    StableFingerprint64 &fingerprint,
+    const PlanningDiagnostic &diagnostic) {
+    fingerprint.appendString(diagnostic.id);
+    fingerprint.appendString(
+        planningDiagnosticSeverityName(
+            diagnostic.severity));
+    fingerprint.appendString(diagnostic.subject);
+    fingerprint.appendString(diagnostic.detail);
+}
+
+void appendBackendSelectionFingerprint(
+    StableFingerprint64 &fingerprint,
+    const BackendSelection &selection) {
+    requireNonEmpty(
+        selection.selected_candidate,
+        "selected backend candidate");
+    fingerprint.appendString(
+        selection.selected_candidate);
+    appendFingerprintRange(
+        fingerprint, selection.candidates,
+        [](StableFingerprint64 &target,
+           const BackendProbeResult &candidate) {
+            target.appendString(candidate.candidate);
+            appendProviderFingerprint(
+                target, candidate.provider);
+            target.appendString(candidate.endpoint);
+            appendFingerprintBoolean(
+                target, candidate.feasible);
+            appendFingerprintStrings(
+                target,
+                candidate.required_physical_features);
+            appendCostFingerprint(target, candidate.cost);
+            appendFingerprintOptional(
+                target, candidate.selected_link,
+                [](StableFingerprint64 &nested,
+                   const std::string &link) {
+                    nested.appendString(link);
+                });
+            appendFingerprintStrings(
+                target, candidate.bridge_offers);
+            appendFingerprintRange(
+                target, candidate.failures,
+                [](StableFingerprint64 &nested,
+                   const BackendConstraintFailure &failure) {
+                    nested.appendString(failure.id);
+                    nested.appendString(failure.subject);
+                    nested.appendString(failure.detail);
+                });
+            appendFingerprintRange(
+                target, candidate.diagnostics,
+                appendDiagnosticFingerprint);
+        });
+    appendFingerprintRange(
+        fingerprint, selection.diagnostics,
+        appendDiagnosticFingerprint);
+    // Backend decisions are explanatory output and were explicitly removed
+    // from the former canonical JSON fingerprint payload.
+}
+
+void appendLifetimeFingerprint(
+    StableFingerprint64 &fingerprint,
+    const TargetResourceLifetime &lifetime) {
+    appendFingerprintBoolean(
+        fingerprint, lifetime.used);
+    if (lifetime.used) {
+        fingerprint.appendUnsigned(lifetime.first_use);
+        fingerprint.appendUnsigned(lifetime.last_use);
+    }
+}
+
+void appendExtentFingerprint(
+    StableFingerprint64 &fingerprint,
+    const ResourceExtentPlan &extent) {
+    fingerprint.appendString(
+        resourceExtentKindName(extent.kind));
+    appendFingerprintFloat(fingerprint, extent.scale_x);
+    appendFingerprintFloat(fingerprint, extent.scale_y);
+    fingerprint.appendUnsigned(extent.width);
+    fingerprint.appendUnsigned(extent.height);
+}
+
+void appendMipLevelsFingerprint(
+    StableFingerprint64 &fingerprint,
+    const ImageMipLevelCount &mip_levels) {
+    fingerprint.appendString(
+        imageMipLevelModeName(mip_levels.mode));
+    fingerprint.appendUnsigned(mip_levels.count);
+}
+
+void appendTargetLoweringGraphFingerprint(
+    StableFingerprint64 &fingerprint,
+    const TargetLoweringGraph &graph) {
+    validateTargetLoweringGraphDialect(
+        graph, graph.stage);
+    fingerprint.appendString(graph.name);
+    fingerprint.appendString(
+        targetLoweringStageName(graph.stage));
+    appendFingerprintRange(
+        fingerprint, graph.nodes,
+        [](StableFingerprint64 &target,
+           const TargetLoweringNode &node) {
+            target.appendString(node.logical.name);
+            target.appendString(
+                logicalGraphNodeKindName(
+                    node.logical.kind));
+            target.appendString(
+                targetIrDialectName(node.dialect));
+            appendFingerprintStrings(
+                target, node.source_nodes);
+            appendFingerprintStrings(
+                target, node.logical.region_tags);
+            appendFingerprintStrings(
+                target,
+                node.required_physical_features);
+        });
+    appendFingerprintRange(
+        fingerprint, graph.resources,
+        [](StableFingerprint64 &target,
+           const TargetLoweringResource &resource) {
+            target.appendString(resource.logical.name);
+            target.appendString(
+                targetIrDialectName(resource.dialect));
+            appendLogicalTypeFingerprint(
+                target, resource.logical.type);
+            target.appendString(
+                logicalMaterializationRequirementName(
+                    resource.logical.materialization));
+            target.appendString(resource.pattern.id);
+            appendFingerprintRange(
+                target,
+                resource.pattern.format_candidates,
+                [](StableFingerprint64 &nested,
+                   const ResourceFormatCandidate &candidate) {
+                    nested.appendString(candidate.format);
+                    appendFingerprintStrings(
+                        nested,
+                        candidate.required_capabilities);
+                });
+            appendFingerprintBoolean(
+                target,
+                resource.pattern.prefer_transient);
+            appendFingerprintBoolean(
+                target,
+                resource.pattern.allow_tile_local);
+            appendFingerprintBoolean(
+                target, resource.pattern.allow_alias);
+            appendFingerprintBoolean(
+                target, resource.pattern.require_store);
+            target.appendString(
+                resourcePatternFallbackName(
+                    resource.pattern
+                        .local_read_fallback));
+            target.appendUnsigned(
+                resource.pattern.estimated_bytes);
+            target.appendString(
+                resource.pattern.provenance);
+            appendFingerprintOptional(
+                target, resource.extent,
+                appendExtentFingerprint);
+            appendMipLevelsFingerprint(
+                target, resource.mip_levels);
+            target.appendUnsigned(resource.array_layers);
+            target.appendString(
+                imageResourceDimensionName(
+                    resource.dimension));
+            appendFingerprintBoolean(
+                target, resource.uses.read);
+            appendFingerprintBoolean(
+                target, resource.uses.written);
+            appendFingerprintBoolean(
+                target,
+                resource.uses.attachment_access);
+            appendFingerprintBoolean(
+                target, resource.uses.sampled_access);
+            appendFingerprintBoolean(
+                target, resource.uses.storage_access);
+            appendFingerprintBoolean(
+                target, resource.uses.transfer_access);
+            appendFingerprintBoolean(
+                target, resource.uses.host_access);
+            appendFingerprintBoolean(
+                target,
+                resource.uses.non_render_access);
+            appendFingerprintBoolean(
+                target,
+                resource.uses.produced_by_snapshot);
+            target.appendString(
+                logicalReadFootprintKindName(
+                    resource.uses.widest_read));
+            appendLifetimeFingerprint(
+                target, resource.lifetime);
+            appendFingerprintStrings(
+                target,
+                resource.required_physical_features);
+        });
+    appendFingerprintRange(
+        fingerprint, graph.decisions,
+        [](StableFingerprint64 &target,
+           const PlanningDecision &decision) {
+            target.appendString(decision.id);
+            target.appendString(decision.subject);
+            target.appendString(decision.selected);
+            target.appendString(decision.detail);
+        });
+}
+
+void appendPhysicalResourceFingerprint(
+    StableFingerprint64 &fingerprint,
     const VulkanPhysicalResourcePlan &resource) {
-    nlohmann::ordered_json lifetime{
-        {"used", resource.lifetime.used},
-    };
-    if (resource.lifetime.used) {
-        lifetime["first_use"] =
-            resource.lifetime.first_use;
-        lifetime["last_use"] =
-            resource.lifetime.last_use;
-    }
-    return {
-        {"logical_resource", resource.logical_resource},
-        {"pattern", resource.pattern},
-        {"format", resource.format},
-        {"representation",
-         vulkanResourceRepresentationName(
-             resource.representation)},
-        {"widest_read",
-         logicalReadFootprintKindName(
-             resource.widest_read)},
-        {"lifetime", std::move(lifetime)},
-        {"stored", resource.stored},
-        {"aliasable", resource.aliasable},
-        {"required_physical_features",
-         resource.required_physical_features},
-        {"reason", resource.reason},
-        {"rasterization_samples",
-         resource.rasterization_samples},
-        {"resolve_required",
-         resource.resolve_required},
-        {"view_layout",
-         vulkanResourceViewLayoutName(
-             resource.view_layout)},
-        {"mip_levels",
-         nlohmann::ordered_json{
-             {"mode",
-              imageMipLevelModeName(
-                  resource.mip_levels.mode)},
-             {"count",
-              resource.mip_levels.count},
-         }},
-        {"array_layers", resource.array_layers},
-        {"dimension",
-         imageResourceDimensionName(
-             resource.dimension)},
-        {"extent", extentToJson(resource.extent)},
-    };
+    fingerprint.appendString(resource.logical_resource);
+    fingerprint.appendString(resource.pattern);
+    fingerprint.appendString(resource.format);
+    fingerprint.appendString(
+        vulkanResourceRepresentationName(
+            resource.representation));
+    fingerprint.appendString(
+        logicalReadFootprintKindName(
+            resource.widest_read));
+    appendLifetimeFingerprint(
+        fingerprint, resource.lifetime);
+    appendFingerprintBoolean(
+        fingerprint, resource.stored);
+    appendFingerprintBoolean(
+        fingerprint, resource.aliasable);
+    appendFingerprintStrings(
+        fingerprint,
+        resource.required_physical_features);
+    fingerprint.appendString(resource.reason);
+    fingerprint.appendUnsigned(
+        resource.rasterization_samples);
+    appendFingerprintBoolean(
+        fingerprint, resource.resolve_required);
+    fingerprint.appendString(
+        vulkanResourceViewLayoutName(
+            resource.view_layout));
+    appendMipLevelsFingerprint(
+        fingerprint, resource.mip_levels);
+    fingerprint.appendUnsigned(resource.array_layers);
+    fingerprint.appendString(
+        imageResourceDimensionName(resource.dimension));
+    appendFingerprintOptional(
+        fingerprint, resource.extent,
+        appendExtentFingerprint);
 }
 
-nlohmann::ordered_json physicalScopeToJson(
+void appendPhysicalScopeFingerprint(
+    StableFingerprint64 &fingerprint,
     const VulkanPhysicalScopePlan &scope) {
-    return {
-        {"id", scope.id},
-        {"kind", vulkanPhysicalScopeKindName(scope.kind)},
-        {"nodes", scope.nodes},
-        {"single_rendering_instance",
-         scope.single_rendering_instance},
-        {"local_reads", scope.local_reads},
-        {"region_tags", scope.region_tags},
-        {"rasterization_samples",
-         scope.rasterization_samples},
-        {"view_execution",
-         vulkanScopeViewExecutionName(
-             scope.view_execution)},
-        {"view_count", scope.view_count},
-        {"execution_count", scope.execution_count},
-        {"view_mask", scope.view_mask},
-    };
+    fingerprint.appendString(scope.id);
+    fingerprint.appendString(
+        vulkanPhysicalScopeKindName(scope.kind));
+    appendFingerprintStrings(fingerprint, scope.nodes);
+    appendFingerprintBoolean(
+        fingerprint,
+        scope.single_rendering_instance);
+    appendFingerprintStrings(
+        fingerprint, scope.local_reads);
+    appendFingerprintStrings(
+        fingerprint, scope.region_tags);
+    fingerprint.appendUnsigned(
+        scope.rasterization_samples);
+    fingerprint.appendString(
+        vulkanScopeViewExecutionName(
+            scope.view_execution));
+    fingerprint.appendUnsigned(scope.view_count);
+    fingerprint.appendUnsigned(scope.execution_count);
+    fingerprint.appendUnsigned(scope.view_mask);
 }
 
-nlohmann::ordered_json physicalAttachmentToJson(
+void appendImageSubresourceFingerprint(
+    StableFingerprint64 &fingerprint,
+    const ImageSubresourceRange &range) {
+    fingerprint.appendUnsigned(range.base_mip_level);
+    fingerprint.appendUnsigned(range.base_array_layer);
+    fingerprint.appendUnsigned(range.layer_count);
+    const auto remaining =
+        range.mip_count_mode ==
+        ImageSubresourceMipCountMode::remaining;
+    appendFingerprintBoolean(fingerprint, remaining);
+    if (!remaining) {
+        fingerprint.appendUnsigned(range.level_count);
+    }
+}
+
+void appendPhysicalAttachmentFingerprint(
+    StableFingerprint64 &fingerprint,
     const VulkanPhysicalAttachmentPlan &attachment) {
-    nlohmann::ordered_json result{
-        {"node", attachment.node},
-        {"logical_resource",
-         attachment.logical_resource},
-        {"aspect",
-         vulkanPhysicalAttachmentAspectName(
-             attachment.aspect)},
-        {"load_op",
-         vulkanPhysicalAttachmentLoadOpName(
-             attachment.load_op)},
-        {"store_op",
-         vulkanPhysicalAttachmentStoreOpName(
-             attachment.store_op)},
-    };
-    if (attachment.subresource) {
-        result["subresource"] =
-            imageSubresourceToJson(
-                *attachment.subresource);
-    }
-    return result;
+    fingerprint.appendString(attachment.node);
+    fingerprint.appendString(
+        attachment.logical_resource);
+    fingerprint.appendString(
+        vulkanPhysicalAttachmentAspectName(
+            attachment.aspect));
+    fingerprint.appendString(
+        vulkanPhysicalAttachmentLoadOpName(
+            attachment.load_op));
+    fingerprint.appendString(
+        vulkanPhysicalAttachmentStoreOpName(
+            attachment.store_op));
+    appendFingerprintOptional(
+        fingerprint, attachment.subresource,
+        appendImageSubresourceFingerprint);
 }
 
-nlohmann::ordered_json automaticPlanPayload(
-    const TargetTopologySnapshot &topology,
-    const VulkanTargetPlan &plan) {
-    auto selection =
-        backendSelectionToJson(plan.backend_selection);
-    selection.erase("decisions");
+void appendGpuMeasurementFingerprint(
+    StableFingerprint64 &fingerprint,
+    const XrMultiviewGpuMeasurement &measurement) {
+    appendFingerprintDouble(
+        fingerprint, measurement.sequential_gpu_ms);
+    appendFingerprintDouble(
+        fingerprint, measurement.multiview_gpu_ms);
+    fingerprint.appendUnsigned(measurement.sample_count);
+    fingerprint.appendString(measurement.source);
+}
 
-    nlohmann::ordered_json payload{
-        {"schema",
-         "pelican.vulkan_automatic_target_plan_fingerprint"},
-        {"version", 1},
-        {"topology",
-         targetTopologySnapshotToJson(
-             canonicalizeTargetTopology(topology))},
-        {"graph", plan.graph},
-        {"logical_graph_fingerprint",
-         stableFingerprint64String(
-             plan.logical_graph_fingerprint)},
-        {"backend_selection", std::move(selection)},
-        {"lowering_graph",
-         targetLoweringGraphToJson(plan.lowering_graph)},
-        {"required_physical_features",
-         plan.required_physical_features},
-        {"resources", nlohmann::ordered_json::array()},
-        {"scopes", nlohmann::ordered_json::array()},
-        {"alias_groups", nlohmann::ordered_json::array()},
-        {"view_execution",
-         nlohmann::ordered_json{
-             {"view_count",
-              plan.view_execution_plan.view_count},
-             {"requested",
-              xrViewExecutionPreferenceName(
-                  plan.view_execution_plan.requested)},
-             {"endpoint_supports_multiview",
-              plan.view_execution_plan
-                  .endpoint_supports_multiview},
-             {"max_multiview_view_count",
-              plan.view_execution_plan
-                  .max_multiview_view_count},
-             {"uses_multiview",
-              plan.view_execution_plan.uses_multiview},
-             {"mixed_execution",
-              plan.view_execution_plan.mixed_execution},
-             {"automatic_policy",
-              resolvedXrMultiviewAutoPolicyToJson(
-                  plan.view_execution_plan
-                      .automatic_policy)},
-             {"reason",
-              plan.view_execution_plan.reason},
-         }},
-    };
-    for (const auto &resource : plan.resources) {
-        payload["resources"].push_back(
-            physicalResourceToJson(resource));
-    }
-    for (const auto &scope : plan.scopes) {
-        payload["scopes"].push_back(
-            physicalScopeToJson(scope));
-    }
-    if (!plan.attachments.empty()) {
-        payload["attachments"] =
-            nlohmann::ordered_json::array();
-        for (const auto &attachment :
-             plan.attachments) {
-            payload["attachments"].push_back(
-                physicalAttachmentToJson(
-                    attachment));
-        }
-    }
-    for (const auto &group : plan.alias_groups) {
-        payload["alias_groups"].push_back(
-            nlohmann::ordered_json{
-                {"id", group.id},
-                {"resources", group.resources},
-            });
-    }
-    if (plan.sample_count_plan) {
-        payload["sample_count_plan"] =
-            resolvedSampleCountPlanToJson(
-                *plan.sample_count_plan);
-    }
-    if (plan.external_depth_export) {
-        payload["external_depth_export"] =
-            nlohmann::ordered_json{
-                {"source_resource",
-                 plan.external_depth_export
-                     ->source_resource},
-                {"format",
-                 plan.external_depth_export->format},
-                {"view_layout",
-                 vulkanResourceViewLayoutName(
-                     plan.external_depth_export
-                         ->view_layout)},
-                {"array_layers",
-                 plan.external_depth_export
-                     ->array_layers},
-            };
-    }
-    return payload;
+void appendResolvedAutoPolicyFingerprint(
+    StableFingerprint64 &fingerprint,
+    const ResolvedXrMultiviewAutoPolicy &policy) {
+    fingerprint.appendString(
+        xrMultiviewAutoSelectionName(
+            policy.selection));
+    fingerprint.appendString(policy.profile_id);
+    appendFingerprintBoolean(
+        fingerprint, policy.matched_profile);
+    fingerprint.appendUnsigned(policy.device.vendor_id);
+    fingerprint.appendUnsigned(policy.device.device_id);
+    fingerprint.appendUnsigned(
+        policy.device.driver_version);
+    fingerprint.appendString(policy.device.device_name);
+    fingerprint.appendString(policy.graph);
+    appendFingerprintDouble(
+        fingerprint, policy.measured_gain_percent);
+    fingerprint.appendString(policy.reason);
+    appendFingerprintOptional(
+        fingerprint, policy.measurement,
+        appendGpuMeasurementFingerprint);
+}
+
+void appendViewExecutionFingerprint(
+    StableFingerprint64 &fingerprint,
+    const VulkanViewExecutionPlan &plan) {
+    fingerprint.appendUnsigned(plan.view_count);
+    fingerprint.appendString(
+        xrViewExecutionPreferenceName(plan.requested));
+    appendFingerprintBoolean(
+        fingerprint,
+        plan.endpoint_supports_multiview);
+    fingerprint.appendUnsigned(
+        plan.max_multiview_view_count);
+    appendFingerprintBoolean(
+        fingerprint, plan.uses_multiview);
+    appendFingerprintBoolean(
+        fingerprint, plan.mixed_execution);
+    appendResolvedAutoPolicyFingerprint(
+        fingerprint, plan.automatic_policy);
+    fingerprint.appendString(plan.reason);
+}
+
+void appendSampleCountPlanFingerprint(
+    StableFingerprint64 &fingerprint,
+    const ResolvedSampleCountPlan &plan) {
+    fingerprint.appendString(
+        sampleCountRequestModeName(plan.request.mode));
+    fingerprint.appendUnsigned(plan.request.samples);
+    appendFingerprintRange(
+        fingerprint, plan.groups,
+        [](StableFingerprint64 &target,
+           const ResolvedSampleCountGroup &group) {
+            target.appendString(group.id);
+            target.appendUnsigned(
+                group.requested_samples);
+            target.appendUnsigned(
+                group.selected_samples);
+            appendFingerprintBoolean(
+                target, group.fallback);
+            appendFingerprintStrings(
+                target, group.limiting_resources);
+            target.appendString(group.reason);
+        });
+    appendFingerprintRange(
+        fingerprint, plan.resources,
+        [](StableFingerprint64 &target,
+           const ResolvedSampleCountResource &resource) {
+            target.appendString(resource.resource);
+            target.appendString(resource.format);
+            target.appendUnsigned(resource.samples);
+        });
 }
 
 const BackendProbeResult &selectedProbe(
@@ -1819,11 +2211,57 @@ std::uint64_t vulkanAutomaticTargetPlanFingerprint(
     const VulkanTargetPlan &automatic_plan) {
     StableFingerprint64 fingerprint;
     fingerprint.appendString(
-        "pelican.vulkan_automatic_target_plan@1");
-    fingerprint.appendString(
-        automaticPlanPayload(
-            topology, automatic_plan)
-            .dump());
+        "pelican.vulkan_automatic_target_plan@2");
+    const auto canonical_topology =
+        canonicalizeTargetTopology(topology);
+    appendTargetTopologyFingerprint(
+        fingerprint, canonical_topology);
+    fingerprint.appendString(automatic_plan.graph);
+    fingerprint.appendUnsigned(
+        automatic_plan.logical_graph_fingerprint);
+    appendBackendSelectionFingerprint(
+        fingerprint,
+        automatic_plan.backend_selection);
+    appendTargetLoweringGraphFingerprint(
+        fingerprint, automatic_plan.lowering_graph);
+    appendFingerprintStrings(
+        fingerprint,
+        automatic_plan.required_physical_features);
+    appendFingerprintRange(
+        fingerprint, automatic_plan.resources,
+        appendPhysicalResourceFingerprint);
+    appendFingerprintRange(
+        fingerprint, automatic_plan.scopes,
+        appendPhysicalScopeFingerprint);
+    appendFingerprintRange(
+        fingerprint, automatic_plan.attachments,
+        appendPhysicalAttachmentFingerprint);
+    appendFingerprintRange(
+        fingerprint, automatic_plan.alias_groups,
+        [](StableFingerprint64 &target,
+           const VulkanAliasGroupPlan &group) {
+            target.appendString(group.id);
+            appendFingerprintStrings(
+                target, group.resources);
+        });
+    appendViewExecutionFingerprint(
+        fingerprint,
+        automatic_plan.view_execution_plan);
+    appendFingerprintOptional(
+        fingerprint, automatic_plan.sample_count_plan,
+        appendSampleCountPlanFingerprint);
+    appendFingerprintOptional(
+        fingerprint,
+        automatic_plan.external_depth_export,
+        [](StableFingerprint64 &target,
+           const VulkanExternalDepthExportPlan &depth) {
+            target.appendString(depth.source_resource);
+            target.appendString(depth.format);
+            target.appendString(
+                vulkanResourceViewLayoutName(
+                    depth.view_layout));
+            target.appendUnsigned(depth.array_layers);
+        });
     return fingerprint.value();
 }
 

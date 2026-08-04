@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -45,6 +46,426 @@ constexpr std::string_view kTileLocalCandidate =
 constexpr std::string_view kPinPackageSchema =
     "pelican.vulkan_target_plan_pins";
 constexpr std::uint32_t kPinPackageVersion = 1;
+
+void appendFingerprintBoolean(
+    StableFingerprint64 &fingerprint, bool value) {
+    fingerprint.appendUnsigned(value ? 1u : 0u);
+}
+
+void appendFingerprintSigned(
+    StableFingerprint64 &fingerprint, std::int64_t value) {
+    fingerprint.appendUnsigned(
+        static_cast<std::uint64_t>(value));
+}
+
+template <typename Range, typename Append>
+void appendFingerprintRange(
+    StableFingerprint64 &fingerprint,
+    const Range &values, Append append) {
+    fingerprint.appendUnsigned(values.size());
+    for (const auto &value : values) {
+        append(fingerprint, value);
+    }
+}
+
+template <typename Range>
+void appendFingerprintStrings(
+    StableFingerprint64 &fingerprint,
+    const Range &values) {
+    appendFingerprintRange(
+        fingerprint, values,
+        [](StableFingerprint64 &target,
+           const auto &value) {
+            target.appendString(value);
+        });
+}
+
+template <typename Value, typename Append>
+void appendFingerprintOptional(
+    StableFingerprint64 &fingerprint,
+    const std::optional<Value> &value,
+    Append append) {
+    appendFingerprintBoolean(
+        fingerprint, value.has_value());
+    if (value) append(fingerprint, *value);
+}
+
+void appendSemanticTypeIdFingerprint(
+    StableFingerprint64 &fingerprint,
+    const SemanticTypeId &id) {
+    fingerprint.appendString(id.name_space);
+    fingerprint.appendString(id.name);
+    fingerprint.appendUnsigned(id.major_version);
+}
+
+void appendRationalFingerprint(
+    StableFingerprint64 &fingerprint,
+    const Rational &value) {
+    appendFingerprintSigned(
+        fingerprint, value.numerator);
+    fingerprint.appendUnsigned(value.denominator);
+}
+
+template <typename>
+inline constexpr bool unsupportedFingerprintValue = false;
+
+void appendTypeArgumentValueFingerprint(
+    StableFingerprint64 &fingerprint,
+    const TypeArgumentValue &value) {
+    fingerprint.appendString(
+        typeArgumentValueKindName(
+            typeArgumentValueKind(value)));
+    std::visit(
+        [&](const auto &entry) {
+            using Entry =
+                std::decay_t<decltype(entry)>;
+            if constexpr (std::is_same_v<Entry, bool>) {
+                appendFingerprintBoolean(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, std::int64_t>) {
+                appendFingerprintSigned(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, std::uint64_t>) {
+                fingerprint.appendUnsigned(entry);
+            } else if constexpr (
+                std::is_same_v<Entry, Rational>) {
+                appendRationalFingerprint(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, EnumValueId> ||
+                std::is_same_v<Entry, SymbolId>) {
+                fingerprint.appendString(entry.value);
+            } else if constexpr (
+                std::is_same_v<Entry, SemanticTypeId>) {
+                appendSemanticTypeIdFingerprint(
+                    fingerprint, entry);
+            } else if constexpr (
+                std::is_same_v<Entry, IntegerInterval>) {
+                appendFingerprintSigned(
+                    fingerprint, entry.minimum);
+                appendFingerprintSigned(
+                    fingerprint, entry.maximum);
+            } else if constexpr (
+                std::is_same_v<Entry, EnumValueSet>) {
+                appendFingerprintRange(
+                    fingerprint, entry.values,
+                    [](StableFingerprint64 &target,
+                       const EnumValueId &item) {
+                        target.appendString(item.value);
+                    });
+            } else {
+                static_assert(
+                    unsupportedFingerprintValue<Entry>);
+            }
+        },
+        value);
+}
+
+void appendLogicalTypeFingerprint(
+    StableFingerprint64 &fingerprint,
+    const LogicalType &type) {
+    fingerprint.appendString(
+        logicalTypeConstructorName(type.constructor));
+    appendSemanticTypeIdFingerprint(
+        fingerprint, type.semantic);
+    appendFingerprintRange(
+        fingerprint, type.arguments,
+        [](StableFingerprint64 &target,
+           const LogicalTypeArgument &argument) {
+            target.appendString(argument.name);
+            target.appendString(
+                typeArgumentRoleName(argument.role));
+            appendTypeArgumentValueFingerprint(
+                target, argument.value);
+        });
+}
+
+void appendLogicalTypePatternFingerprint(
+    StableFingerprint64 &fingerprint,
+    const LogicalTypePattern &pattern) {
+    appendFingerprintOptional(
+        fingerprint, pattern.constructor,
+        [](StableFingerprint64 &target,
+           LogicalTypeConstructor constructor) {
+            target.appendString(
+                logicalTypeConstructorName(constructor));
+        });
+    appendFingerprintOptional(
+        fingerprint, pattern.semantic,
+        appendSemanticTypeIdFingerprint);
+    appendFingerprintStrings(
+        fingerprint, pattern.required_traits);
+    appendFingerprintRange(
+        fingerprint, pattern.predicates,
+        [](StableFingerprint64 &target,
+           const TypeArgumentPredicate &predicate) {
+            std::visit(
+                [&](const auto &entry) {
+                    using Entry = std::decay_t<
+                        decltype(entry)>;
+                    target.appendString(entry.name);
+                    if constexpr (std::is_same_v<
+                                      Entry,
+                                      TypeArgumentEquals>) {
+                        target.appendString("equals");
+                        appendTypeArgumentValueFingerprint(
+                            target, entry.expected);
+                    } else if constexpr (std::is_same_v<
+                                             Entry,
+                                             TypeArgumentOneOf>) {
+                        target.appendString("one_of");
+                        appendFingerprintRange(
+                            target, entry.allowed,
+                            appendTypeArgumentValueFingerprint);
+                    } else if constexpr (std::is_same_v<
+                                             Entry,
+                                             TypeArgumentSignedRange>) {
+                        target.appendString("signed_range");
+                        appendFingerprintSigned(
+                            target, entry.minimum);
+                        appendFingerprintSigned(
+                            target, entry.maximum);
+                    } else if constexpr (std::is_same_v<
+                                             Entry,
+                                             TypeArgumentUnsignedRange>) {
+                        target.appendString("unsigned_range");
+                        target.appendUnsigned(entry.minimum);
+                        target.appendUnsigned(entry.maximum);
+                    } else if constexpr (std::is_same_v<
+                                             Entry,
+                                             TypeArgumentRationalRange>) {
+                        target.appendString("rational_range");
+                        appendRationalFingerprint(
+                            target, entry.minimum);
+                        appendRationalFingerprint(
+                            target, entry.maximum);
+                    } else if constexpr (std::is_same_v<
+                                             Entry,
+                                             TypeArgumentSetContains>) {
+                        target.appendString("set_contains");
+                        appendFingerprintRange(
+                            target,
+                            entry.required.values,
+                            [](StableFingerprint64 &nested,
+                               const EnumValueId &required) {
+                                nested.appendString(
+                                    required.value);
+                            });
+                    } else {
+                        static_assert(
+                            unsupportedFingerprintValue<Entry>);
+                    }
+                },
+                predicate);
+        });
+}
+
+void appendLogicalValueIdFingerprint(
+    StableFingerprint64 &fingerprint,
+    const LogicalValueId &value) {
+    fingerprint.appendString(value.resource);
+    fingerprint.appendUnsigned(value.version);
+}
+
+void appendLogicalGraphFingerprintPayload(
+    StableFingerprint64 &fingerprint,
+    const CompiledLogicalRenderGraph &graph) {
+    fingerprint.appendString(graph.name);
+    appendFingerprintRange(
+        fingerprint, graph.resources,
+        [](StableFingerprint64 &target,
+           const LogicalResourceDesc &resource) {
+            target.appendString(resource.name);
+            appendLogicalTypeFingerprint(
+                target, resource.type);
+            target.appendString(
+                logicalMaterializationRequirementName(
+                    resource.materialization));
+        });
+
+    std::vector<const LogicalValueImport *> imports;
+    imports.reserve(graph.imports.size());
+    for (const auto &imported : graph.imports) {
+        imports.push_back(&imported);
+    }
+    std::sort(
+        imports.begin(), imports.end(),
+        [](const auto *left, const auto *right) {
+            if (left->value != right->value) {
+                return left->value < right->value;
+            }
+            return logicalValueImportKindName(left->kind) <
+                   logicalValueImportKindName(right->kind);
+        });
+    appendFingerprintRange(
+        fingerprint, imports,
+        [](StableFingerprint64 &target,
+           const LogicalValueImport *imported) {
+            appendLogicalValueIdFingerprint(
+                target, imported->value);
+            target.appendString(
+                logicalValueImportKindName(
+                    imported->kind));
+        });
+
+    appendFingerprintRange(
+        fingerprint, graph.nodes,
+        [](StableFingerprint64 &target,
+           const LogicalGraphNode &node) {
+            target.appendString(node.name);
+            target.appendString(
+                logicalGraphNodeKindName(node.kind));
+            target.appendUnsigned(node.declaration_index);
+            appendFingerprintRange(
+                target, node.ports,
+                [](StableFingerprint64 &nested,
+                   const LogicalPortContract &port) {
+                    nested.appendString(port.name);
+                    nested.appendString(
+                        logicalPortDirectionName(
+                            port.direction));
+                    appendLogicalTypePatternFingerprint(
+                        nested, port.accepted_type);
+                    appendFingerprintRange(
+                        nested, port.relations,
+                        [](StableFingerprint64 &relation_hash,
+                           const LogicalPortRelation &relation) {
+                            relation_hash.appendString(
+                                logicalPortRelationKindName(
+                                    relation.kind));
+                            relation_hash.appendString(
+                                relation.other_port);
+                            appendRationalFingerprint(
+                                relation_hash,
+                                relation.scale_x);
+                            appendRationalFingerprint(
+                                relation_hash,
+                                relation.scale_y);
+                        });
+                });
+            appendFingerprintRange(
+                target, node.uses,
+                [](StableFingerprint64 &nested,
+                   const LogicalResourceUse &use) {
+                    nested.appendString(use.port);
+                    nested.appendString(
+                        logicalAccessModeName(use.access));
+                    nested.appendString(
+                        logicalAccessIntentName(use.intent));
+                    nested.appendString(
+                        logicalReadFootprintKindName(
+                            use.footprint.kind));
+                    appendFingerprintOptional(
+                        nested, use.footprint.radius,
+                        [](StableFingerprint64 &value_hash,
+                           std::uint32_t radius) {
+                            value_hash.appendUnsigned(radius);
+                        });
+                    appendFingerprintOptional(
+                        nested, use.input_value,
+                        appendLogicalValueIdFingerprint);
+                    appendFingerprintOptional(
+                        nested, use.output_value,
+                        appendLogicalValueIdFingerprint);
+                });
+            appendFingerprintStrings(target, node.after);
+            appendFingerprintStrings(target, node.before);
+            appendFingerprintStrings(
+                target, node.region_tags);
+            const auto has_non_default_view_family =
+                node.view_family != mainRenderViewFamilyId;
+            appendFingerprintBoolean(
+                target, has_non_default_view_family);
+            if (has_non_default_view_family) {
+                target.appendString(node.view_family);
+            }
+        });
+
+    // data_edges are derived entirely from the node uses above and add no
+    // independent identity. Avoid deriving and allocating them here.
+    appendFingerprintOptional(
+        fingerprint, graph.render_strategy,
+        [](StableFingerprint64 &target,
+           const RenderStrategySelection &selection) {
+            target.appendString(selection.name);
+            target.appendString(selection.provider);
+            target.appendString(selection.implementation);
+            target.appendString(selection.contract);
+            target.appendString(selection.output_contract);
+            target.appendString(selection.graph_variant);
+            target.appendUnsigned(
+                selection.facade_capability_bits);
+            target.appendUnsigned(
+                selection.input_config_fingerprint);
+            target.appendUnsigned(
+                selection.output_config_fingerprint);
+            target.appendUnsigned(selection.provider_owner);
+            target.appendUnsigned(selection.provider_identity);
+            target.appendUnsigned(selection.provider_generation);
+            target.appendUnsigned(selection.provider_version);
+            target.appendUnsigned(
+                selection.provider_capability_bits);
+            appendFingerprintBoolean(
+                target, selection.explicitly_selected);
+        });
+    appendFingerprintRange(
+        fingerprint, graph.graph_transforms,
+        [](StableFingerprint64 &target,
+           const LogicalGraphTransformSelection &selection) {
+            target.appendString(selection.name);
+            target.appendString(selection.provider);
+            target.appendString(selection.implementation);
+            target.appendString(selection.contract);
+            target.appendUnsigned(
+                selection.boundary_fingerprint);
+            target.appendUnsigned(
+                selection.input_graph_fingerprint);
+            target.appendUnsigned(
+                selection.output_graph_fingerprint);
+            target.appendUnsigned(selection.provider_owner);
+            target.appendUnsigned(selection.provider_identity);
+            target.appendUnsigned(selection.provider_generation);
+            target.appendUnsigned(selection.provider_version);
+            target.appendUnsigned(
+                selection.provider_capability_bits);
+            target.appendUnsigned(selection.transform_index);
+            appendFingerprintBoolean(
+                target, selection.explicitly_selected);
+        });
+    appendFingerprintRange(
+        fingerprint, graph.subgraph_replacements,
+        [](StableFingerprint64 &target,
+           const LogicalSubgraphReplacementSelection &selection) {
+            target.appendString(selection.region);
+            target.appendString(selection.provider);
+            target.appendString(selection.implementation);
+            target.appendString(selection.contract);
+            target.appendUnsigned(
+                selection.contract_fingerprint);
+            target.appendUnsigned(selection.provider_owner);
+            target.appendUnsigned(selection.provider_identity);
+            target.appendUnsigned(selection.provider_generation);
+            target.appendUnsigned(selection.provider_version);
+            target.appendUnsigned(
+                selection.provider_capability_bits);
+            appendFingerprintBoolean(
+                target, selection.explicitly_selected);
+            appendFingerprintStrings(
+                target, selection.source_nodes);
+            appendFingerprintStrings(
+                target, selection.replacement_nodes);
+        });
+    appendFingerprintRange(
+        fingerprint, graph.decisions,
+        [](StableFingerprint64 &target,
+           const LogicalCompileDecision &decision) {
+            target.appendString(decision.code);
+            target.appendString(decision.subject);
+            target.appendString(decision.detail);
+        });
+}
 
 std::uint64_t parseFingerprint(
     const nlohmann::json &value,
@@ -2882,9 +3303,9 @@ std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
     const CompiledLogicalRenderGraph &graph) {
     StableFingerprint64 fingerprint;
     fingerprint.appendString(
-        "pelican.vulkan_target_plan.logical_graph@1");
-    fingerprint.appendString(
-        compiledLogicalRenderGraphToJson(graph).dump());
+        "pelican.vulkan_target_plan.logical_graph@2");
+    appendLogicalGraphFingerprintPayload(
+        fingerprint, graph);
     return fingerprint.value();
 }
 

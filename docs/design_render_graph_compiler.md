@@ -1657,7 +1657,7 @@ flat/preview/XR や複数 entrypoint 間で同名でない node/resource へ制�
 
 - package schema/version
 - compiled logical graph名
-- canonical logical JSONから得た `fnv1a64` fingerprint
+- canonical compiled logical graph構造から直接得た `fnv1a64` fingerprint
 - versioned backend candidate pin
 
 自動 plan dump は同じ層へ戻せる `ejectable_pin_package` を常に出す。config の
@@ -1722,6 +1722,13 @@ provider generation、lowering graph、required feature、resource/scope/alias�
 sample/view execution、external depth contractを束縛する。logical graphが同じでも
 device factsやprovider generationが変わったpackageはstaleとしてrejectし、別planへ
 黙ってfallbackしない。
+
+WP261以降、logical graphとautomatic planのfingerprint domainは`@2`であり、構造から
+直接hashしてJSON文書や`.dump()`を中間生成しない。fingerprint値はpin、physical fragment、
+complete physical plan packageへ保存されるがdurable IDではない。旧`@1`計算値を持つpackageは
+既存のstale gateで意図的にrejectし、現在のgraph/environmentから再ejectする。envelopeの
+field/schemaは変わらないためpackage versionは上げず、旧hash algorithmの受理分岐やmigrationも
+追加しない。
 
 全versionが共通して受理するresource / alias編集は意図的に狭い。
 
