@@ -149,6 +149,9 @@ PassInfo makePassInfo(const std::string &type_str) {
     if (type_str == "velocity") {
         return VelocityPassInfo{};
     }
+    if (type_str == "picking") {
+        return PickingPassInfo{};
+    }
     if (type_str == "ui") {
         return UiPassInfo{};
     }
@@ -190,7 +193,8 @@ std::string_view renderResolutionDomainName(
 
 RenderResolutionDomain defaultRenderResolutionDomain(
     std::string_view pass_type) {
-    if (pass_type == "material" || pass_type == "velocity") {
+    if (pass_type == "material" || pass_type == "velocity" ||
+        pass_type == "picking") {
         return RenderResolutionDomain::scene;
     }
     if (pass_type == "output_transform" || pass_type == "ui" ||

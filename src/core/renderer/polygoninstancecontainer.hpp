@@ -358,6 +358,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
                 glm::vec3 scale);
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
     bool isModelInstanceAlive(ModelInstanceId id) const noexcept { return isLive(id); }
+    std::size_t modelInstanceSlotCount() const noexcept {
+        return instance_slots.slotCount();
+    }
+    std::optional<ModelInstanceId>
+    modelInstanceIdAt(std::uint32_t index) const;
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
     Animation::Status publishAnimationFrame(ModelInstanceId id,
                                              const Animation::PublishAnimationFrameDescV1 &frame);

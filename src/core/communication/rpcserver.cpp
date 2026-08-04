@@ -54,6 +54,7 @@
 #include <iomanip>
 #include <istream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <random>
@@ -359,6 +360,81 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(Renderer),
         GET_MODULE(SeqPlayer),
         GET_MODULE(VulkanManageCore),
+    };
+}
+
+nlohmann::json pickingReadbackJson(const PickingReadbackResult &readback,
+                                   EngineRpcModules &modules) {
+    nlohmann::json hit = nullptr;
+    if (readback.model_instance) {
+        const auto token = *readback.model_instance;
+        nlohmann::json scene_id = nullptr;
+        nlohmann::json declaration_index = nullptr;
+        nlohmann::json authoring_object_id = nullptr;
+
+        std::optional<AuthoringObjectId> bound_authoring_id;
+        for (const auto &binding :
+             modules.scene_loader.runtimeObjectBindings()) {
+            const auto *model_view =
+                modules.ecs_core.getTemplatePublicModule()
+                    .tryComponent<SimpleModelViewComponent>(
+                        binding.object_id);
+            if (model_view == nullptr ||
+                !model_view->model_instance_id) {
+                continue;
+            }
+            const auto model_instance =
+                *model_view->model_instance_id;
+            if (model_instance.index == token.index &&
+                model_instance.generation == token.generation &&
+                model_instance.scene_epoch == token.scene_epoch) {
+                bound_authoring_id = binding.authoring_object_id;
+                break;
+            }
+        }
+
+        if (bound_authoring_id) {
+            for (const auto &scene :
+                 modules.project_config.sceneDocument().query()) {
+                if (scene.scene_id !=
+                    modules.scene_loader.currentScene()) {
+                    continue;
+                }
+                const auto object = std::find_if(
+                    scene.objects.begin(), scene.objects.end(),
+                    [&](const auto &candidate) {
+                        return candidate.authoring_object_id ==
+                               *bound_authoring_id;
+                    });
+                if (object != scene.objects.end()) {
+                    scene_id = scene.scene_id;
+                    declaration_index = object->declaration_index;
+                    authoring_object_id =
+                        object->authoring_object_id.value;
+                }
+                break;
+            }
+        }
+
+        hit = {
+            {"scene_id", std::move(scene_id)},
+            {"declaration_index", std::move(declaration_index)},
+            {"authoring_object_id", std::move(authoring_object_id)},
+            {"model_instance",
+             {{"index", token.index},
+              {"generation", token.generation},
+              {"scene_epoch", token.scene_epoch}}},
+        };
+    }
+
+    return {
+        {"contract", 1},
+        {"coordinate", {{"x", readback.x}, {"y", readback.y}}},
+        {"extent",
+         {{"width", readback.extent.width},
+          {"height", readback.extent.height}}},
+        {"frame_index", readback.frame_index},
+        {"hit", std::move(hit)},
     };
 }
 
@@ -1155,6 +1231,36 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("get_frame_plan", [&modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_frame_plan");
         return modules.renderer.currentFramePlanJson();
+    });
+
+    server.setHandler("pick_object", [&modules](const nlohmann::json &params) {
+        constexpr auto method = "pick_object";
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 2 || !object.contains("x") ||
+            !object.contains("y")) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "pick_object params must contain exactly unsigned integer fields 'x' and 'y'");
+        }
+        const auto x = requireUnsignedIntegerParam(object, "x", method);
+        const auto y = requireUnsignedIntegerParam(object, "y", method);
+        if (x > std::numeric_limits<std::uint32_t>::max() ||
+            y > std::numeric_limits<std::uint32_t>::max()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "pick_object coordinates exceed the uint32 range");
+        }
+        try {
+            return pickingReadbackJson(
+                modules.renderer.readPickingPixel(
+                    static_cast<std::uint32_t>(x),
+                    static_cast<std::uint32_t>(y)),
+                modules);
+        } catch (const std::out_of_range &error) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "pick_object: " + std::string{error.what()});
+        }
     });
 
     server.setHandler("capture", [&modules](const nlohmann::json &params) {

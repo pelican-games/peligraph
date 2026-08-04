@@ -12,8 +12,8 @@ Pelican の「interface」は pure virtual class だけではありません。�
 |---|---|---|
 | process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 |
 | public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) | game code に内部 module を直接見せない、状態を持たない/薄い value façade |
-| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L40) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
-| tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L291) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch |
+| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L56) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
+| tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L297) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch |
 | type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L21) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 |
 | resolver/adaptor | [`RenderTargetNameResolver`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | parser に巨大 container を渡さず、必要な名前解決だけを公開 |
 
@@ -200,7 +200,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L47) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3710) / [`render()`](../../src/core/vkcore/renderer.cpp#L4522) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
+| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L63) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3827) / [`render()`](../../src/core/vkcore/renderer.cpp#L4708) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
 | `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替 |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |
@@ -213,10 +213,10 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `SpriteRenderer` / `SpriteScene` | module | [`spriterenderer.hpp`](../../src/core/renderer/spriterenderer.hpp#L38) / [`spritescene.hpp`](../../src/core/renderer/spritescene.hpp#L20) | [`spriterenderer.cpp`](../../src/core/renderer/spriterenderer.cpp) | 2D sprite の batch/描画と scene 状態 |
 | `AtlasAssetResource` | module/GPU owner | [`atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp#L33) | [`atlasassetresource.cpp`](../../src/core/renderer/atlasassetresource.cpp) | atlas asset の GPU texture 化 |
 | `PassDefinition` | pure definition | [`renderingpass.hpp`](../../src/core/renderingpass/renderingpass.hpp#L105) | JSON parser 群 | target、input、load/store、clear、`PassInfo` variant |
-| `CompiledRenderingPass` | bound value | [`renderingpass.hpp`](../../src/core/renderingpass/renderingpass.hpp#L183) | [`compileRenderingPassRuntime()`](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2308) | pass/task definition と登録済み runtime ID の集合 |
+| `CompiledRenderingPass` | bound value | [`renderingpass.hpp`](../../src/core/renderingpass/renderingpass.hpp#L183) | [`compileRenderingPassRuntime()`](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2347) | pass/task definition と登録済み runtime ID の集合 |
 | `RenderingPassContainer` | module/registry | [`renderingpasscontainer.hpp`](../../src/core/renderingpass/renderingpasscontainer.hpp#L13) | [`registerCompiledRenderingPass()`](../../src/core/renderingpass/renderingpasscontainer.cpp#L34) | rendering pass name/ID、enabled feature を保持 |
-| `FrameGraphDefinition` | pure graph | [`frameplanner.hpp`](../../src/core/renderingpass/frameplanner.hpp#L116) | [`parseFrameGraphDefinitionsFromConfigJson()`](../../src/core/renderingpass/frameplanner.cpp#L1608) | node declarations と既知 resource |
-| `FramePlan` | planner output | [`frameplanner.hpp`](../../src/core/renderingpass/frameplanner.hpp#L59) | [`planFrameGraph()`](../../src/core/renderingpass/frameplanner.cpp#L1654) | stable order、levels、RAW barriers |
+| `FrameGraphDefinition` | pure graph | [`frameplanner.hpp`](../../src/core/renderingpass/frameplanner.hpp#L116) | [`parseFrameGraphDefinitionsFromConfigJson()`](../../src/core/renderingpass/frameplanner.cpp#L1609) | node declarations と既知 resource |
+| `FramePlan` | planner output | [`frameplanner.hpp`](../../src/core/renderingpass/frameplanner.hpp#L59) | [`planFrameGraph()`](../../src/core/renderingpass/frameplanner.cpp#L1655) | stable order、levels、RAW barriers |
 | `FrameGraphRuntimeContainer` | module/binder | [`framegraphruntime.hpp`](../../src/core/renderingpass/framegraphruntime.hpp#L172) | [`registerExecutionPlan()`](../../src/core/renderingpass/framegraphruntime.cpp#L577) | plan の node 名を compiled pass/task index へ bind |
 | `RenderTargetContainer` | module/GPU owner | [`rendertargetcontainer.hpp`](../../src/core/renderingpass/rendertargetcontainer.hpp#L14) | [`registerRenderTarget()`](../../src/core/renderingpass/rendertargetcontainer.cpp#L395) | named offscreen image/view、extent metadata、resize recreate |
 | `RenderTargetNameResolver` | adaptor | [`rendertargetnameresolver.hpp`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | [`rendertargetnameresolver.cpp`](../../src/core/renderingpass/rendertargetnameresolver.cpp#L1) | JSON target 名→typed ID |
@@ -286,11 +286,11 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `JsonRpcRequest/Error/ParseResult` | pure protocol values | [`jsonrpc.hpp`](../../src/project/jsonrpc.hpp#L22) | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | engine 非依存の JSON-RPC parse/serialize |
-| `RpcServer` | stream dispatcher | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L39) | [`handleLine()`](../../src/core/communication/rpcserver.cpp#L761) | 1行1 request、method handler map、error normalization |
+| `RpcServer` | stream dispatcher | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L39) | [`handleLine()`](../../src/core/communication/rpcserver.cpp#L795) | 1行1 request、method handler map、error normalization |
 | `EngineRpcEndpoint` | 状態付きディスパッチャ | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L60) | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp) | headless は `run()`、windowed は frame 境界で `processLine()` |
 | `WindowedRpcHost` | frame-boundary transport | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L78) | [`windowedrpchost.cpp`](../../src/core/communication/windowedrpchost.cpp) | reader スレッドは enqueue のみ。dispatch は engine スレッド。容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L99) |
 | `JsonRpcHandlerError` | 構造化エラー | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L28) | 同左 | code に加えて任意の `data` JSON を運ぶ |
-| engine RPC handlers | free registration function | [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1203) | 同左 | 43 の protocol method を module/GameContext/編集サービスへ bind |
+| engine RPC handlers | free registration function | [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1309) | 同左 | 43 の protocol method を module/GameContext/編集サービスへ bind |
 | `EditorCommandService` | typed 編集サービス | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L222) | [`editorcommandservice.cpp`](../../src/core/communication/editorcommandservice.cpp) | 全編集 RPC の実体 |
 | `EditorCommandRpcAdapter` / `EditorCommandImGuiFakeAdapter` | adapter | [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L291) / [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L329) | 同左 | RPC と ImGui が **同じサービス**を呼ぶことの担保 |
 | `EditorCommandErrorCode` | 正準エラーカタログ | [`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L24) | 同左 | 13 種(`RuntimeOnlyData` / `ExternalModification` など) |

@@ -5,7 +5,7 @@
 ## この章で学ぶこと
 
 - レンダリングパイプラインを **JSON だけ**で定義する方法(rendering config)
-- パス種別(`material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`)と compute タスク
+- パス種別(`material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `debug_draw` / `debug_text`)と compute タスク
 - カラーパイプライン(SRGB スワップチェーン + リニアワークフロー)で気をつけること
 - feature(1 行で有効化できるパージ可能な GPU 機能)— canonical anchor・パラメータ・named binding
 - フレームグラフ(依存宣言 → 機械最適化 → 手詰め)とプランダンプ
@@ -99,12 +99,12 @@ cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2D�
 | フィールド | 必須 | 既定 | 内容 |
 |---|---|---|---|
 | `name` | ✔ | — | パス列内で一意 |
-| `type` | ✔ | — | `material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
+| `type` | ✔ | — | `material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / attachment / attachment配列)と `depth`(null / attachment)の**両キー必須**。attachmentは従来の名前または`{target, subresource}`。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` / `raster` / `material` 限定**(ほかの type に書くと `Only fullscreen, raster, and material passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
 | `resource_ports` | 任意 | — | **`fullscreen` / `raster` 限定**(ほかは `Only fullscreen and raster passes support resource_ports`)。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
 | `view_family` | 任意 | `$main` | このパスを実行する ViewFamily の ID(§6.12)。compute タスクにも同じキーがある |
-| `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` = `scene`、`output_transform` / `ui` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
+| `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` / `picking` = `scene`、`output_transform` / `ui` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
 | `regions` | 任意 | — | subgraph replacement 用の region タグ(string 配列)。重複は `has duplicate region tag`(後述「差し替えプロバイダの入口」)|
 | `implementation` | 任意 | — | **`fullscreen` 限定**。`{"provider": "<名前>"}` **ちょうど 1 キー**。ほかの type に書くと `Pass implementation providers currently support fullscreen passes only`(同上)|
 | `draw` / `raster_state` | `raster` では `draw` のみ必須 | — | **`raster` 限定**(ほかの type に書くと `Only raster passes support draw` / `Only raster passes support raster_state`)。後述「type: raster」|
@@ -163,6 +163,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 - **`raster`** — 汎用ラスタパス(✅WP238b)。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
+- **`picking`** — モデル面へ整数 ID を書く視覚ピッキングパス。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://picking` / `engine://picking_skinned`)。通常は `engine://features/picking.json` 経由(本節後半)。
 - **`ui`** — UI オーバーレイ([第7章](07_input_ui.md))。WP87 以降は `engine://features/ui.json` 経由の挿入が標準です。
 - **`shadow_depth`** — depth 専用パス。`shader` 省略時は `engine://shadow_depth`。
 - **`debug_draw` / `debug_text` / `imgui`** — 通常は feature 経由で挿入されます(§6.5)。
@@ -361,7 +362,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(13 個・✅すべて実装済み):
+エンジン同梱 feature(14 個・✅すべて実装済み):
 
 | feature | 内容 |
 |---|---|
@@ -373,6 +374,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `cube_capture.json` | stable `$capture/cube` family の 6 面 sequential capture。`cube_capture_color`(現在 1 mip)を作る。cube 専用のパス種別は増やさない(本節後半)✅WP237 |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
 | `velocity.json` | モーションベクタ RT(`R16G16_SFLOAT`)+ `velocity` パスを `before:post_main` に挿入(✅WP88) |
+| `picking.json` | 視覚ピッキング用 `R32_UINT` ID RT + depth + `picking` パスを `before:post_main` に挿入。既定無効で、座標読み出しは §6.5「ID バッファ picking」(✅WP262) |
 | `taa.json` | **標準 TAA**(resolve + composite の二パス + halton23/8 の jitter provider + スカラーパラメータ。§6.8)✅WP113 |
 | `sprite.json` | **純ゲート**(RT もパスも足さない)。参照すると `__anchor_sprite` でスプライトが描かれる(§6.9) |
 | `debug_draw.json` | ワイヤフレームオーバーレイ(collider 可視化など) |
@@ -664,6 +666,35 @@ sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → 
 アンカーの全順序はエンジンの契約で、並べ替えはできません(挿すのは自由)。かつての「同梱 hdr が `before:present` を参照していて example で起動エラーになる」問題は、この標準化で解消済みです。
 
 シェーダ側の合流は従来どおり `#ifdef` バリアント方式(`PELICAN_FEATURE_SHADOW` 等)。feature を差し替えたいときは fragment をプロジェクト内にコピーして参照を書き換えます。
+
+### ID バッファ picking(✅WP262)
+
+視覚ピッキングはエディタ専用機能ではなく、通常の project 空間から選べる render feature です。
+
+```json
+{
+  "pipeline": {"preset": "engine://render_pipelines/hybrid_v1.json"},
+  "features": ["engine://features/picking.json"]
+}
+```
+
+参照すると `picking_id`(`R32_UINT` / `COLOR_ATTACHMENT` + `TRANSFER_SRC`)、
+`picking_depth`(`D32_SFLOAT`)と `picking_pass` が追加されます。参照を外すと三つとも
+合成結果に存在せず、画像、パス、描画の GPU コストも発生しません。既定は無効です。
+
+ID バッファの値は `0 = 背景`、`N + 1 = model instance slot N` です。slot 単独は再利用されるため、
+読み出し側は描画を完了した同じフレームに保存した `{index, generation, scene_epoch}` と照合します。
+その token から現在の authoring binding を引き、WP258 と同じ
+`(scene_id, declaration_index)` と `authoring_object_id` へ解決します。`load_gltf` 由来など
+authoring 宣言を持たない一時オブジェクトでは、runtime の `model_instance` token は返りますが、
+三つの authoring field は `null` です。古い slot を別オブジェクトへ誤対応させることはありません。
+
+座標は `picking_id` の左上を `(0, 0)` とする整数ピクセル座標です。読み出しは最後に完了した
+フレームから 1 ピクセルだけ staging buffer へコピーし、同期して返します。クリックやデバッグ問い合わせの
+ような低頻度操作で、要求した応答と同じフレームの ID を決定的に対応付けることを優先したためです。
+高頻度 hover 用の非同期キューは v1 にはありません。汎用入口は
+[`Renderer::readPickingPixel()`](../../src/core/vkcore/renderer.hpp)、外部ツール入口は
+[`pick_object`](10_tools.md#基盤メソッド一覧) で、いずれも feature が無効なら明示エラーになります。
 
 ## 6.6 フレームグラフ(✅F0〜F2 = WP33〜35 + WP64)
 

@@ -77,6 +77,13 @@ void renderVelocityPass(vk::CommandBuffer cmd_buf, PassId pass_id,
         dependencies.material_renderer_dependencies);
 }
 
+void renderPickingPass(vk::CommandBuffer cmd_buf, PassId pass_id,
+                       const RenderPassDispatchDependencies &dependencies) {
+    dependencies.material_renderer.renderVelocity(
+        cmd_buf, pass_id, dependencies.velocity_pass_container,
+        dependencies.material_renderer_dependencies);
+}
+
 } // namespace
 
 void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, const PassDefinition &pass_def,
@@ -168,6 +175,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderShadowDepthPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isVelocity()) {
         renderVelocityPass(cmd_buf, pass_id, dependencies);
+    } else if (pass_def.isPicking()) {
+        renderPickingPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugDraw()) {
         renderDebugDrawPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugText()) {

@@ -90,6 +90,7 @@ pelican_player --headless --project mygame --replay s.jsonl \
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけRenderDoc captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}` | フレームプラン JSON |
+| `pick_object` | `{x, y}` | 最後に完了した ID バッファの 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
 | `load_scene` | `{name}` | シーン切替 |
 | `set_camera` | `{name}` | シーン内カメラへ切替 |
@@ -105,9 +106,33 @@ pelican_player --headless --project mygame --replay s.jsonl \
 | `export_scene_snapshot` | `{schema_version:1, allow_pending?:false}` | current scene を含む全 authoring document の deterministic semantic bytes、SHA-256、revision を返す |
 | `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
 
+`pick_object` の座標は `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
+両方とも符号なし整数だけを受理し、範囲外は `-32602`、feature 無効または完了済みの
+picking frame が無い場合は `-32000` です。背景は `hit: null`、モデル面は次の形です。
+
+```json
+{
+  "contract": 1,
+  "coordinate": {"x": 320, "y": 180},
+  "extent": {"width": 1280, "height": 720},
+  "frame_index": 42,
+  "hit": {
+    "scene_id": "default_scene",
+    "declaration_index": 3,
+    "authoring_object_id": "...",
+    "model_instance": {"index": 7, "generation": 2, "scene_epoch": 4}
+  }
+}
+```
+
+`scene_id` と 0 始まりの `declaration_index` は `scene_tree` / `get_components` と同じ
+WP258 契約です。authoring 宣言を持たない一時モデルでは三つの authoring field が
+`null` でも、世代付き `model_instance` は残ります。読み出しを同期にした理由と ID の
+GPU 表現は[第6章](06_rendering.md#id-バッファ-pickingwp262)を参照してください。
+
 ### エディタ拡張メソッド(詳細は[第13章](13_editor.md))
 
-上の表の `export_scene_snapshot` / `import_scene_snapshot` と合わせて、エディタトラックで増えたのは **23 メソッド**です(RPC は全部で 43 メソッド)。
+上の表の `export_scene_snapshot` / `import_scene_snapshot` と合わせて、エディタトラックで増えたのは **23 メソッド**です(RPC は全部で 44 メソッド)。
 
 シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。
 
@@ -352,8 +377,9 @@ dist_debug/pelican_studio.exe
 
 共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
-process/window 結線は WP251 で入りましたが、project 選択と player 引数の UI 連携、編集 RPC、
-D2 picking/gizmo、複数 client WebSocket は未接続です。ツール自作の入口は
+process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262 で入りましたが、
+project 選択と player 引数の UI 連携、Studio からの編集/picking 接続、gizmo、
+複数 client WebSocket は未接続です。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤

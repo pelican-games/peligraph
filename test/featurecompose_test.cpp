@@ -1962,6 +1962,75 @@ TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary
     REQUIRE(pass < post_main);
 }
 
+TEST_CASE("picking feature owns a purgeable integer target and geometry pass",
+          "[render-feature][picking][wp262]") {
+    const auto enabled = composeRenderFeatureConfig(
+        baseConfigWithFeature("engine://features/picking.json"),
+        RenderFeatureComposeDependencies{loadEngineFeature, true});
+    REQUIRE(enabled.feature_names ==
+            std::vector<std::string>{"picking"});
+
+    const auto &id_target =
+        renderTargetByName(enabled.config, "picking_id");
+    REQUIRE(id_target.at("format") == "R32_UINT");
+    REQUIRE(id_target.at("format_class") == "data");
+    REQUIRE(id_target.at("usage") ==
+            nlohmann::json::array(
+                {"COLOR_ATTACHMENT", "TRANSFER_SRC"}));
+    const auto &depth_target =
+        renderTargetByName(enabled.config, "picking_depth");
+    REQUIRE(depth_target.at("format") == "D32_SFLOAT");
+
+    const auto &passes =
+        enabled.config.at("rendering_passes").at(0).at("passes");
+    const auto picking = std::find_if(
+        passes.begin(), passes.end(), [](const auto &entry) {
+            return entry.value("name", std::string{}) ==
+                   "picking_pass";
+        });
+    const auto post_main = std::find_if(
+        passes.begin(), passes.end(), [](const auto &entry) {
+            return entry.value("name", std::string{}) ==
+                   "__anchor_post_main";
+        });
+    REQUIRE(picking != passes.end());
+    REQUIRE(picking->at("type") == "picking");
+    REQUIRE(post_main != passes.end());
+    REQUIRE(picking < post_main);
+
+    auto disabled_config =
+        baseConfigWithFeature("engine://features/picking.json");
+    disabled_config["features"] = nlohmann::json::array();
+    bool loader_called = false;
+    const auto disabled = composeRenderFeatureConfig(
+        disabled_config,
+        RenderFeatureComposeDependencies{
+            [&loader_called](std::string_view) {
+                loader_called = true;
+                return std::string{};
+            },
+            true,
+        });
+    REQUIRE_FALSE(loader_called);
+    REQUIRE(disabled.feature_names.empty());
+    REQUIRE(std::none_of(
+        disabled.config.at("render_targets").begin(),
+        disabled.config.at("render_targets").end(),
+        [](const auto &target) {
+            return target.value("name", std::string{}) ==
+                       "picking_id" ||
+                   target.value("name", std::string{}) ==
+                       "picking_depth";
+        }));
+    REQUIRE(std::none_of(
+        disabled.config.at("rendering_passes").at(0).at("passes").begin(),
+        disabled.config.at("rendering_passes").at(0).at("passes").end(),
+        [](const auto &entry) {
+            return entry.value("name", std::string{}) ==
+                   "picking_pass";
+        }));
+}
+
 TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history graph",
           "[render-feature][temporal][taa]") {
     auto config = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /

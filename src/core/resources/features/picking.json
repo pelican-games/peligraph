@@ -1,0 +1,41 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "picking",
+  "render_targets": [
+    {
+      "name": "picking_id",
+      "extent_scale": 1.0,
+      "format": "R32_UINT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["COLOR_ATTACHMENT", "TRANSFER_SRC"]
+    },
+    {
+      "name": "picking_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "before:post_main",
+      "pass": {
+        "name": "picking_pass",
+        "type": "picking",
+        "output": {"color": "picking_id", "depth": "picking_depth"},
+        "shader": {
+          "vertex": "engine://picking",
+          "skinned_vertex": "engine://picking_skinned",
+          "fragment": "engine://picking"
+        },
+        "clear_color": [0, 0, 0, 0],
+        "color_store_op": "store",
+        "depth_store_op": "dont_care"
+      }
+    }
+  ]
+}

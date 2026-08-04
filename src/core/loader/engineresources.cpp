@@ -42,6 +42,7 @@ constexpr auto registered_ids =
     "features/cube_capture.json",
     "features/hdr.json",
     "features/planar_reflection.json",
+    "features/picking.json",
     "features/shadow_directional.json",
     "features/sky_ambient.json",
     "features/taa.json",
@@ -56,6 +57,9 @@ constexpr auto registered_ids =
     "sky_ambient.frag.spv",
     "output_transform.frag",
     "output_transform.frag.spv",
+    "picking.frag",
+    "picking.vert",
+    "picking_skinned.vert",
     "shaders/include/pelican_features.glsl",
     "shaders/include/pelican_frame.glsl",
     "shaders/include/pelican_view.glsl",
@@ -177,6 +181,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("features/cube_capture.json")
     PELICAN_ENGINE_RESOURCE("features/hdr.json")
     PELICAN_ENGINE_RESOURCE("features/planar_reflection.json")
+    PELICAN_ENGINE_RESOURCE("features/picking.json")
     PELICAN_ENGINE_RESOURCE("features/shadow_directional.json")
     PELICAN_ENGINE_RESOURCE("features/sky_ambient.json")
     PELICAN_ENGINE_RESOURCE("features/taa.json")
@@ -191,6 +196,9 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag.spv")
     PELICAN_ENGINE_RESOURCE("output_transform.frag")
     PELICAN_ENGINE_RESOURCE("output_transform.frag.spv")
+    PELICAN_ENGINE_RESOURCE("picking.frag")
+    PELICAN_ENGINE_RESOURCE("picking.vert")
+    PELICAN_ENGINE_RESOURCE("picking_skinned.vert")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_features.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_frame.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_view.glsl")

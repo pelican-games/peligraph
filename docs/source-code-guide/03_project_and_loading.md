@@ -155,7 +155,7 @@ std::variant<
 
 ### engine resource
 
-shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L121) がIDを実データへ変換します。
+shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L125) がIDを実データへ変換します。
 
 resource追加には次の三箇所が必要です。
 

@@ -1484,6 +1484,12 @@ PolygonInstanceContainer::modelInstanceIdForTesting(std::uint32_t index) const {
     return instance_slots.idAt(index);
 }
 
+std::optional<ModelInstanceId>
+PolygonInstanceContainer::modelInstanceIdAt(std::uint32_t index) const {
+    if (!instance_slots.alive(index)) return std::nullopt;
+    return instance_slots.idAt(index);
+}
+
 ModelInstanceId PolygonInstanceContainer::forceGenerationForTesting(
     ModelInstanceId id, std::uint32_t generation) {
     return instance_slots.forceGeneration(id, generation);

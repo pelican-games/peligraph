@@ -282,6 +282,12 @@ struct VelocityPassInfo {
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
 };
 
+struct PickingPassInfo {
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference skinned_vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
+};
+
 struct UiPassInfo {};
 
 #if PELICAN_WITH_IMGUI
@@ -290,7 +296,8 @@ struct ImGuiPassInfo {};
 
 using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, GenericRasterPassInfo,
                               DebugDrawPassInfo, DebugTextPassInfo,
-                              ShadowDepthPassInfo, VelocityPassInfo, UiPassInfo
+                              ShadowDepthPassInfo, VelocityPassInfo, PickingPassInfo,
+                              UiPassInfo
 #if PELICAN_WITH_IMGUI
                               , ImGuiPassInfo
 #endif
@@ -433,6 +440,7 @@ struct PassDefinition {
     bool isDebugText() const { return std::holds_alternative<DebugTextPassInfo>(pass_info); }
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
     bool isVelocity() const { return std::holds_alternative<VelocityPassInfo>(pass_info); }
+    bool isPicking() const { return std::holds_alternative<PickingPassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
 #if PELICAN_WITH_IMGUI
     bool isImGui() const { return std::holds_alternative<ImGuiPassInfo>(pass_info); }
@@ -567,6 +575,8 @@ struct PassDefinition {
     const ShadowDepthPassInfo &shadowDepthInfo() const { return std::get<ShadowDepthPassInfo>(pass_info); }
     VelocityPassInfo &velocityInfo() { return std::get<VelocityPassInfo>(pass_info); }
     const VelocityPassInfo &velocityInfo() const { return std::get<VelocityPassInfo>(pass_info); }
+    PickingPassInfo &pickingInfo() { return std::get<PickingPassInfo>(pass_info); }
+    const PickingPassInfo &pickingInfo() const { return std::get<PickingPassInfo>(pass_info); }
 };
 
 struct ComputeIndirectDispatchDefinition {

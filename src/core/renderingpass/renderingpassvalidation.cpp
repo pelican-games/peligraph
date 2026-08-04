@@ -445,6 +445,15 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
+    if (pass_def.isPicking()) {
+        if (pass_def.output_color.size() != 1 ||
+            !isConcreteRenderTarget(pass_def.output_depth)) {
+            throw std::runtime_error(
+                "Picking pass requires one color and one depth output: " +
+                pass_def.name);
+        }
+    }
+
     if (pass_def.isDebugDraw() || pass_def.isDebugText() || pass_def.isUi()
 #if PELICAN_WITH_IMGUI
         || pass_def.isImGui()
@@ -539,8 +548,9 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         !pass_def.isGenericRaster() &&
         !pass_def.isDebugDraw() && !pass_def.isDebugText() &&
         !pass_def.isShadowDepth() && !pass_def.isVelocity() &&
+        !pass_def.isPicking() &&
         pass_json.contains("shader")) {
-        throw std::runtime_error("Only fullscreen, raster, debug_draw, debug_text, shadow_depth, and velocity passes support shader: " +
+        throw std::runtime_error("Only fullscreen, raster, debug_draw, debug_text, shadow_depth, velocity, and picking passes support shader: " +
                                  pass_def.name);
     }
 

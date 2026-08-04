@@ -121,7 +121,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 ## 13.5 編集 RPC リファレンス(23 メソッド)
 
-RPC は全 43 メソッドで、そのうち **23 個がエディタトラックで増えた分**です(残り 20 個の基盤メソッドは [第10章](10_tools.md) §10.3)。
+RPC は全 44 メソッドで、そのうち **23 個がエディタトラックで増えた分**です(残り 21 個の基盤メソッドは [第10章](10_tools.md) §10.3)。
 
 ### 読み取り
 
@@ -309,7 +309,7 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | GUI と RPC の同居 | 📐未実装 |
 | Qt Studio shell / native engine viewport | ✅WP249/251 |
 | Qt Studio からの編集 RPC 利用(D2〜D3) | 📐未着手 |
-| ピッキング・ギズモ | 📐未実装 |
+| ID バッファピッキングの engine/RPC 基盤 | ✅WP262。Studio からの接続とギズモは未実装 |
 
 ## 関連文書
 

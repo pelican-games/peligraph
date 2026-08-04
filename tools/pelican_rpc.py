@@ -166,6 +166,9 @@ class PelicanRpc:
     def get_components(self, params: dict[str, Any] | None = None) -> Any:
         return self.call("get_components", params)
 
+    def pick_object(self, params: dict[str, Any] | None = None) -> Any:
+        return self.call("pick_object", params)
+
     def list_assets(self, params: dict[str, Any] | None = None) -> Any:
         return self.call("list_assets", params)
 

@@ -31,6 +31,22 @@ enum class RenderGraphVariant {
     xr,
 };
 
+struct PickingModelInstanceToken {
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+    std::uint64_t scene_epoch = 0;
+
+    bool operator==(const PickingModelInstanceToken &) const = default;
+};
+
+struct PickingReadbackResult {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    vk::Extent2D extent{};
+    std::uint64_t frame_index = 0;
+    std::optional<PickingModelInstanceToken> model_instance;
+};
+
 struct LogicalFrameRuntime {
     std::shared_ptr<const RendererRuntimeGeneration>
         renderer_generation;
@@ -104,6 +120,14 @@ DECLARE_MODULE(Renderer) {
     PreviewGraphProgram preview_graph_program;
     std::unique_ptr<RenderPipelineReloadState>
         render_pipeline_reload_state;
+    GlobalRenderTargetId last_picking_target = noRenderTargetId();
+    RenderingPassId last_picking_rendering_pass_id =
+        invalidRenderingPassId();
+    std::uint64_t last_picking_runtime_generation = 0;
+    std::optional<vk::Extent2D> last_picking_extent;
+    std::uint64_t last_picking_frame_index = 0;
+    std::vector<std::optional<PickingModelInstanceToken>>
+        last_picking_model_instances;
 
     TemporalViewFamilyHistory &activeTemporalHistory();
     const TemporalViewFamilyHistory &activeTemporalHistory() const;
@@ -118,6 +142,8 @@ DECLARE_MODULE(Renderer) {
     Renderer();
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    PickingReadbackResult readPickingPixel(std::uint32_t x,
+                                           std::uint32_t y);
     std::optional<vk::Format>
     xrCompositionDepthFormat() const;
     std::vector<std::string> currentFramePlanOrderForTesting() const;

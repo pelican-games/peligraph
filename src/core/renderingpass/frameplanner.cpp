@@ -790,7 +790,8 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     node.raster_geometry =
         type == "material" || type == "shadow_depth" ||
-        type == "velocity" || type == "raster";
+        type == "velocity" || type == "picking" ||
+        type == "raster";
     if (type == "fullscreen" || type == "raster") {
         for (const auto &resource : node.reads) {
             appendUnique(
@@ -1129,7 +1130,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.region_tags = pass.region_tags;
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
-        pass.isVelocity() ||
+        pass.isVelocity() || pass.isPicking() ||
         pass.isGenericRaster();
     if (pass.isFullscreen() ||
         pass.isGenericRaster()) {

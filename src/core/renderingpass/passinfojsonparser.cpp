@@ -112,4 +112,37 @@ void parseVelocityPassInfoIntoDefinition(PassDefinition &pass_def,
     info.frag_shader = makeShaderReference(shader.at("fragment").get<std::string>(), ShaderStage::fragment);
 }
 
+void parsePickingPassInfoIntoDefinition(PassDefinition &pass_def,
+                                        const nlohmann::json &pass_json) {
+    if (!pass_def.isPicking()) return;
+    auto &info = pass_def.pickingInfo();
+    info.vert_shader = makeShaderReference("engine://picking", ShaderStage::vertex);
+    info.skinned_vert_shader =
+        makeShaderReference("engine://picking_skinned", ShaderStage::vertex);
+    info.frag_shader = makeShaderReference("engine://picking", ShaderStage::fragment);
+    if (!pass_json.contains("shader")) return;
+    const auto &shader = pass_json.at("shader");
+    if (!shader.is_object() || !shader.contains("vertex") ||
+        !shader.at("vertex").is_string() || !shader.contains("fragment") ||
+        !shader.at("fragment").is_string()) {
+        throw std::runtime_error(
+            "Picking pass shader requires vertex and fragment strings: " +
+            pass_def.name);
+    }
+    info.vert_shader = makeShaderReference(
+        shader.at("vertex").get<std::string>(), ShaderStage::vertex);
+    if (shader.contains("skinned_vertex")) {
+        if (!shader.at("skinned_vertex").is_string()) {
+            throw std::runtime_error(
+                "Picking pass skinned_vertex shader must be a string: " +
+                pass_def.name);
+        }
+        info.skinned_vert_shader = makeShaderReference(
+            shader.at("skinned_vertex").get<std::string>(),
+            ShaderStage::vertex);
+    }
+    info.frag_shader = makeShaderReference(
+        shader.at("fragment").get<std::string>(), ShaderStage::fragment);
+}
+
 } // namespace Pelican

@@ -54,6 +54,16 @@ nlohmann::json runRpcRequest(std::uint64_t id, std::string_view method,
     return nlohmann::json::parse(output.str());
 }
 
+std::vector<nlohmann::json> parseRpcResponses(std::string_view bytes) {
+    std::vector<nlohmann::json> responses;
+    std::istringstream lines{std::string{bytes}};
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty()) responses.push_back(nlohmann::json::parse(line));
+    }
+    return responses;
+}
+
 struct RenderCommandIdentity {
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 0;
@@ -266,6 +276,132 @@ void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
     REQUIRE(pixels[center + 3] == 64);
     stbi_image_free(pixels);
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE("picking feature readback maps a pixel to the WP258 declaration identity",
+          "[wp262][rpc][picking][gpu]") {
+    setupLogger(true);
+    FastModuleContainer modules;
+    const auto suffix =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const TempProject project_dir{
+        std::filesystem::temp_directory_path() /
+        ("pelican_wp262_picking_" + std::to_string(suffix))};
+
+    std::filesystem::create_directories(project_dir.root);
+    TestGltfFragmentFixture::writeGlb(
+        project_dir.root / "asset.glb", false, true);
+    writeFile(project_dir.root / "scene.json", R"json({
+  "schema":"pelican.scene","version":1,
+  "scenes":{"default_scene":{"objects":[
+    {"name":"PickCamera","components":[
+      {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
+      {"name":"camera"}
+    ]},
+    {"components":[
+      {"name":"transform","pos":[0,0,0],"rotation":[0,1,0,0],"scale":[1,1,1]},
+      {"name":"simplemodelview","model":"triangle"}
+    ]}
+  ]}}
+})json");
+    writeFile(
+        project_dir.root / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"triangle","path":"asset.glb"}]})json");
+    writeFile(
+        project_dir.root / "ui/ui.json",
+        R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeFile(project_dir.root / "passes/main.json", R"json({
+  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+  "features":["engine://features/picking.json"]
+})json");
+
+    const nlohmann::json project{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "WP262 picking"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"window_size", {{"width", 64}, {"height", 64}}},
+          {"framerate", 60},
+          {"camera",
+           {{"yfov", 0.7853981633974483},
+            {"znear", 0.1},
+            {"zfar", 100.0},
+            {"up", {0, 1, 0}}}},
+          {"default_scene_id", "default_scene"},
+          {"scene_data_json", "scene.json"},
+          {"asset_data_json", "assets.json"},
+          {"rendering_config_json", "passes/main.json"},
+          {"ui_config_json", "ui/ui.json"},
+          {"default_rendering_pass", "main_render"}}},
+    };
+    GET_MODULE(PathResolver).setup(project_dir.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{64, 64};
+    launch.shader_hot_reload = false;
+    GET_MODULE(EngineTime).setup(
+        EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless picking unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+
+    const auto request = [](std::uint64_t id, std::string_view method,
+                            nlohmann::json params) {
+        return nlohmann::json{
+                   {"jsonrpc", "2.0"},
+                   {"id", id},
+                   {"method", method},
+                   {"params", std::move(params)}}
+                   .dump() +
+               "\n";
+    };
+    std::istringstream input{
+        request(1, "load_scene", {{"name", "default_scene"}}) +
+        request(2, "set_camera", {{"name", "PickCamera"}}) +
+        request(3, "step_frame", nlohmann::json::object()) +
+        request(4, "pick_object", {{"x", 32}, {"y", 32}}) +
+        request(5, "pick_object", {{"x", 0}, {"y", 0}}) +
+        request(6, "scene_tree", nlohmann::json::object()) +
+        request(7, "get_frame_plan", nlohmann::json::object())};
+    std::ostringstream output;
+    runEngineRpcServer(input, output);
+    GET_MODULE(VulkanManageCore).waitIdle();
+
+    const auto responses = parseRpcResponses(output.str());
+    REQUIRE(responses.size() == 7);
+    for (const auto &response : responses) {
+        INFO(response.dump(2));
+        REQUIRE(response.contains("result"));
+    }
+
+    const auto &pick = responses.at(3).at("result");
+    REQUIRE(pick.at("contract") == 1);
+    REQUIRE(pick.at("coordinate") ==
+            nlohmann::json{{"x", 32}, {"y", 32}});
+    REQUIRE(pick.at("extent") ==
+            nlohmann::json{{"width", 64}, {"height", 64}});
+    REQUIRE_FALSE(pick.at("hit").is_null());
+    REQUIRE(pick.at("hit").at("scene_id") == "default_scene");
+    REQUIRE(pick.at("hit").at("declaration_index") == 1);
+    REQUIRE(pick.at("hit").at("model_instance").at("index") == 0);
+
+    const auto &tree = responses.at(5).at("result");
+    REQUIRE(tree.at("objects").size() == 2);
+    const auto &model_object = tree.at("objects").at(1);
+    REQUIRE(model_object.at("declaration_index") == 1);
+    REQUIRE_FALSE(model_object.contains("name"));
+    REQUIRE(pick.at("hit").at("authoring_object_id") ==
+            model_object.at("authoring_object_id"));
+
+    REQUIRE(responses.at(4).at("result").at("hit").is_null());
+    const auto &nodes = responses.at(6).at("result").at("nodes");
+    REQUIRE(std::any_of(nodes.begin(), nodes.end(), [](const auto &node) {
+        return node.value("name", std::string{}) == "picking_pass";
+    }));
 }
 
 TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and GPU failure",

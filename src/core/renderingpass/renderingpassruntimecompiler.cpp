@@ -67,7 +67,7 @@ struct ShadowDepthRuntimeDependencies {
     bool warn_backend_specific_shader_refs = false;
 };
 
-struct VelocityRuntimeDependencies {
+struct GeometryPassRuntimeDependencies {
     const RenderTargetMetadataResolver &render_target_metadata;
     ShaderLibrary &shader_library;
     VelocityPassContainer &velocity_pass_container;
@@ -1445,13 +1445,16 @@ ShadowDepthRuntimeDependencies requireShadowDepthDependencies(
     };
 }
 
-VelocityRuntimeDependencies requireVelocityDependencies(
+GeometryPassRuntimeDependencies requireGeometryPassDependencies(
     const PassDefinition &pass_def,
-    const RenderingPassRuntimeDependencies &dependencies) {
+    const RenderingPassRuntimeDependencies &dependencies,
+    std::string_view pass_kind) {
     if (dependencies.render_target_metadata == nullptr || dependencies.shader_library == nullptr ||
         dependencies.velocity_pass_container == nullptr || dependencies.path_resolver == nullptr) {
-        throw std::runtime_error("Velocity pass runtime compile dependencies are unavailable: " +
-                                 pass_def.name);
+        throw std::runtime_error(
+            std::string{pass_kind} +
+            " pass runtime compile dependencies are unavailable: " +
+            pass_def.name);
     }
     return {*dependencies.render_target_metadata, *dependencies.shader_library,
             *dependencies.velocity_pass_container, *dependencies.path_resolver,
@@ -2279,7 +2282,7 @@ PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntime
 }
 
 PassId compileVelocityPass(const PassDefinition &pass_def,
-                           VelocityRuntimeDependencies dependencies) {
+                           GeometryPassRuntimeDependencies dependencies) {
     const auto color = dependencies.render_target_metadata.get(pass_def.output_color.front());
     const auto depth = dependencies.render_target_metadata.get(pass_def.output_depth);
     if (color.format != vk::Format::eR16G16Sfloat) {
@@ -2298,6 +2301,42 @@ PassId compileVelocityPass(const PassDefinition &pass_def,
     const auto frag = registerShaderReference(
         dependencies.shader_library, dependencies.path_resolver, info.frag_shader,
         dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
+    return dependencies.velocity_pass_container.registerVelocityPass(
+        color.format, depth.format, regular_vert, skinned_vert, frag,
+        dependencies.shader_defines, pass_def.rasterization_samples);
+}
+
+PassId compilePickingPass(const PassDefinition &pass_def,
+                          GeometryPassRuntimeDependencies dependencies) {
+    const auto color =
+        dependencies.render_target_metadata.get(pass_def.output_color.front());
+    const auto depth =
+        dependencies.render_target_metadata.get(pass_def.output_depth);
+    if (color.format != vk::Format::eR32Uint) {
+        throw std::runtime_error(
+            "Picking pass color output must be R32_UINT: " + color.name);
+    }
+    if (depth.format != vk::Format::eD32Sfloat) {
+        throw std::runtime_error(
+            "Picking pass depth output must be D32_SFLOAT: " + depth.name);
+    }
+    const auto &info = pass_def.pickingInfo();
+    const auto regular_vert = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver,
+        info.vert_shader, dependencies.warn_backend_specific_shader_refs,
+        dependencies.shader_defines);
+    const auto skinned_vert = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver,
+        info.skinned_vert_shader,
+        dependencies.warn_backend_specific_shader_refs,
+        dependencies.shader_defines);
+    const auto frag = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver,
+        info.frag_shader, dependencies.warn_backend_specific_shader_refs,
+        dependencies.shader_defines);
+    // Picking and velocity are both geometry-only passes with the same
+    // regular/skinned pipeline shape. Keeping them in one registry also gives
+    // picking the render-generation rollback/retirement contract.
     return dependencies.velocity_pass_container.registerVelocityPass(
         color.format, depth.format, regular_vert, skinned_vert, frag,
         dependencies.shader_defines, pass_def.rasterization_samples);
@@ -2379,9 +2418,18 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies), view, rendering});
         } else if (pass_def.isVelocity()) {
-            const auto velocity_dependencies = requireVelocityDependencies(pass_def, dependencies);
+            const auto velocity_dependencies = requireGeometryPassDependencies(
+                pass_def, dependencies, "Velocity");
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileVelocityPass(pass_def, velocity_dependencies), view, rendering});
+        } else if (pass_def.isPicking()) {
+            const auto picking_dependencies =
+                requireGeometryPassDependencies(
+                    pass_def, dependencies, "Picking");
+            compiled_pass.passes.push_back(
+                CompiledPass{pass_def,
+                             compilePickingPass(pass_def, picking_dependencies),
+                             view, rendering});
         } else {
             compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i), view, rendering});
         }

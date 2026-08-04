@@ -59,6 +59,7 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <limits>
 #include <map>
@@ -3564,6 +3565,122 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     return result;
 }
 
+PickingReadbackResult Renderer::readPickingPixel(std::uint32_t x,
+                                                 std::uint32_t y) {
+    auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+    const auto generation = runtime.snapshot();
+    const auto *program = generation != nullptr
+                              ? generation->find(current_rendering_pass_id)
+                              : nullptr;
+    if (program == nullptr) {
+        throw std::runtime_error(
+            "picking readback requires a compiled render pipeline");
+    }
+
+    const auto target_id =
+        boundRenderTarget(program->frame_graph, "picking_id");
+    const bool has_picking_pass =
+        isConcreteRenderTarget(target_id) &&
+        std::any_of(
+            program->rendering_pass.passes.begin(),
+            program->rendering_pass.passes.end(),
+            [target_id](const auto &pass) {
+                return pass.definition.isPicking() &&
+                       std::find(pass.definition.output_color.begin(),
+                                 pass.definition.output_color.end(),
+                                 target_id) !=
+                           pass.definition.output_color.end();
+            });
+    if (!has_picking_pass) {
+        throw std::runtime_error(
+            "picking readback requires engine://features/picking.json in the active render graph");
+    }
+    if (target_id != last_picking_target ||
+        current_rendering_pass_id !=
+            last_picking_rendering_pass_id ||
+        generation->generation !=
+            last_picking_runtime_generation ||
+        !last_picking_extent) {
+        throw std::runtime_error(
+            "picking readback requires a completed frame from the active picking render graph");
+    }
+
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto metadata = targets.getMetadata(target_id);
+    if (metadata.format != vk::Format::eR32Uint || metadata.samples != 1 ||
+        metadata.dimension != ImageResourceDimension::two_d ||
+        metadata.array_layers != 1 ||
+        (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
+            vk::ImageUsageFlagBits::eTransferSrc) {
+        throw std::runtime_error(
+            "picking_id must be a single-sample R32_UINT 2D transfer source");
+    }
+    if (metadata.extent != *last_picking_extent) {
+        throw std::runtime_error(
+            "picking render target changed after the last completed picking frame");
+    }
+    if (x >= metadata.extent.width || y >= metadata.extent.height) {
+        throw std::out_of_range(
+            "picking coordinate is outside the picking_id extent");
+    }
+
+    const auto previous_layout = render_target_layout_tracker.currentLayout(
+        target_id, false, &targets);
+    if (previous_layout == vk::ImageLayout::eUndefined) {
+        throw std::runtime_error(
+            "picking_id has no completed image contents to read");
+    }
+
+    auto &vulkan = GET_MODULE(VulkanManageCore);
+    auto staging = vulkan.allocBuf(
+        sizeof(std::uint32_t), vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::eHostAccessRandom);
+    auto &utils = GET_MODULE(VulkanUtils);
+    utils.executeOneTimeCmd(
+        [&](vk::CommandBuffer command) {
+            render_target_layout_tracker.transition(
+                command, targets, utils, target_id,
+                vk::ImageLayout::eTransferSrcOptimal);
+            vk::BufferImageCopy copy;
+            copy.imageSubresource = {
+                vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            copy.imageOffset = vk::Offset3D{
+                static_cast<std::int32_t>(x),
+                static_cast<std::int32_t>(y), 0};
+            copy.imageExtent = vk::Extent3D{1, 1, 1};
+            command.copyImageToBuffer(
+                targets.getImage(target_id).image.get(),
+                vk::ImageLayout::eTransferSrcOptimal,
+                staging.buffer.get(), copy);
+            render_target_layout_tracker.transition(
+                command, targets, utils, target_id,
+                previous_layout);
+        },
+        true);
+
+    const auto bytes = vulkan.readBuf(staging, sizeof(std::uint32_t));
+    std::uint32_t encoded_id = 0;
+    std::memcpy(&encoded_id, bytes.data(), sizeof(encoded_id));
+
+    PickingReadbackResult result{
+        .x = x,
+        .y = y,
+        .extent = metadata.extent,
+        .frame_index = last_picking_frame_index,
+    };
+    if (encoded_id == 0) return result;
+
+    const auto slot = encoded_id - 1;
+    if (slot >= last_picking_model_instances.size() ||
+        !last_picking_model_instances[slot]) {
+        throw std::runtime_error(
+            "picking_id references no live model instance in its rendered frame");
+    }
+    result.model_instance = last_picking_model_instances[slot];
+    return result;
+}
+
 std::optional<vk::Format>
 Renderer::xrCompositionDepthFormat() const {
     if (!xr_rendering_pass_id) {
@@ -3748,6 +3865,48 @@ void Renderer::renderLogicalFrame(
         program->rendering_pass;
     const auto &frame_graph =
         program->frame_graph;
+    const auto picking_target =
+        boundRenderTarget(frame_graph, "picking_id");
+    const bool picking_pass_active =
+        isConcreteRenderTarget(picking_target) &&
+        std::any_of(
+            rendering_pass.passes.begin(), rendering_pass.passes.end(),
+            [picking_target](const auto &pass) {
+                return pass.definition.isPicking() &&
+                       std::find(pass.definition.output_color.begin(),
+                                 pass.definition.output_color.end(),
+                                 picking_target) !=
+                           pass.definition.output_color.end();
+            });
+    std::vector<std::optional<PickingModelInstanceToken>>
+        picking_model_instances;
+    bool picking_model_instances_captured = false;
+    const auto capture_picking_model_instances = [&] {
+        if (!picking_pass_active ||
+            picking_model_instances_captured) {
+            return;
+        }
+        const auto count =
+            modules.instance_container.modelInstanceSlotCount();
+        if (count >
+            static_cast<std::size_t>(
+                std::numeric_limits<std::uint32_t>::max())) {
+            throw std::runtime_error(
+                "picking model-instance slot table exceeds R32_UINT encoding");
+        }
+        picking_model_instances.resize(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto id = modules.instance_container.modelInstanceIdAt(
+                static_cast<std::uint32_t>(index));
+            if (!id) continue;
+            picking_model_instances[index] = PickingModelInstanceToken{
+                .index = id->index,
+                .generation = id->generation,
+                .scene_epoch = id->scene_epoch,
+            };
+        }
+        picking_model_instances_captured = true;
+    };
     const auto submission_lease =
         deletion_queue.leaseForNextSubmission(
             runtime_generation);
@@ -4227,6 +4386,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+        capture_picking_model_instances();
         prepareSecondaryViewFamilyDraws(
             modules.instance_container,
             resolved_view_families,
@@ -4367,6 +4527,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+            capture_picking_model_instances();
             prepareSecondaryViewFamilyDraws(
                 modules.instance_container,
                 resolved_view_families,
@@ -4466,6 +4627,31 @@ void Renderer::renderLogicalFrame(
     target.endLogicalFrame(submission_lease);
     frame_abort_guard.complete();
     deletion_queue.confirmSubmission();
+    if (picking_pass_active &&
+        picking_model_instances_captured) {
+        last_picking_target = picking_target;
+        last_picking_rendering_pass_id =
+            current_rendering_pass_id;
+        last_picking_runtime_generation =
+            runtime_generation->generation;
+        last_picking_extent =
+            modules.render_target_container
+                .getMetadata(picking_target)
+                .extent;
+        last_picking_frame_index =
+            engine_time.frameIndex();
+        last_picking_model_instances =
+            std::move(picking_model_instances);
+    } else {
+        last_picking_target = noRenderTargetId();
+        last_picking_rendering_pass_id =
+            invalidRenderingPassId();
+        last_picking_runtime_generation = 0;
+        last_picking_extent.reset();
+        last_picking_frame_index = 0;
+        std::vector<std::optional<PickingModelInstanceToken>>{}
+            .swap(last_picking_model_instances);
+    }
     if (execution_tracing_for_testing) {
         if (use_view_family_execution) {
             last_execution_trace =
