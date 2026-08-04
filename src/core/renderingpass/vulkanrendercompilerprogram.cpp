@@ -689,25 +689,6 @@ void validateVulkanPhysicalPackage(
                 "indexed target plan for graph '" +
                 graph + "'");
         }
-        if (context.automatic_plan->logical_graph_fingerprint !=
-            vulkanTargetPlanLogicalGraphFingerprint(
-                *context.logical_graph)) {
-            throw std::runtime_error(
-                "Render compiler Vulkan package complete-plan "
-                "verification context logical graph fingerprint does "
-                "not match for graph '" +
-                graph + "'");
-        }
-        if (context.automatic_plan->automatic_plan_fingerprint !=
-            vulkanAutomaticTargetPlanFingerprint(
-                context.topology,
-                *context.automatic_plan)) {
-            throw std::runtime_error(
-                "Render compiler Vulkan package complete-plan "
-                "verification context automatic plan fingerprint does "
-                "not match for graph '" +
-                graph + "'");
-        }
     }
     for (const auto &[name, verified] :
          physical.verified_complete_physical_plans) {
