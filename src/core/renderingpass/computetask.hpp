@@ -16,8 +16,10 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -30,6 +32,38 @@ class RenderTargetContainer;
 class RenderTargetLayoutTracker;
 class ShaderLibrary;
 class VulkanUtils;
+
+// Descriptor caches backed by shared pools and whole-pool generations both
+// retire through DeletionQueue submission leases. The pool is declared before
+// the descriptor owner so reverse member destruction releases descriptor sets
+// before destroying a moved pool.
+template <typename DescriptorOwner>
+struct RetiredDescriptorResources {
+    vk::UniqueDescriptorPool pool;
+    DescriptorOwner descriptors;
+};
+
+template <typename Queue, typename DescriptorOwner>
+void deferRetiredDescriptorResources(
+    Queue &queue,
+    vk::UniqueDescriptorPool pool,
+    DescriptorOwner &&descriptors) {
+    queue.defer(
+        RetiredDescriptorResources<
+            std::decay_t<DescriptorOwner>>{
+            std::move(pool),
+            std::forward<DescriptorOwner>(descriptors),
+        });
+}
+
+template <typename Queue, typename DescriptorOwner>
+void deferRetiredDescriptorResources(
+    Queue &queue,
+    DescriptorOwner &&descriptors) {
+    deferRetiredDescriptorResources(
+        queue, vk::UniqueDescriptorPool{},
+        std::forward<DescriptorOwner>(descriptors));
+}
 
 struct ComputeTaskRuntimeDependencies {
     ShaderLibrary &shader_library;

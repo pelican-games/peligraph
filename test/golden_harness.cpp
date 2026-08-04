@@ -39,6 +39,7 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/core/renderingpass/rendertargetimageviewresolver.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -10845,6 +10846,24 @@ void GoldenHarness::runFullscreenRebind() {
     REQUIRE(initial_views.size() == 1);
     REQUIRE(initial_revision > 0);
 
+    auto &deletion_queue = GET_MODULE(DeletionQueue);
+    const auto pending_before_direct_rebind =
+        deletion_queue.pendingCountForTesting();
+    fullscreen_passes.rebindInputResources(
+        *input_pass,
+        RenderTargetImageViewResolver{render_targets},
+        GET_MODULE(FrameGraphResourceContainer));
+    REQUIRE(
+        deletion_queue.pendingCountForTesting() ==
+        pending_before_direct_rebind + 1);
+    const auto direct_rebind_revision =
+        fullscreen_passes.inputBindingRevisionForTesting(
+            *input_pass);
+    REQUIRE(direct_rebind_revision > initial_revision);
+    REQUIRE(
+        fullscreen_passes.boundInputImageViewsForTesting(
+            *input_pass) == initial_views);
+
     const auto shader_path = temp_dir / "shaders" / "copy_input.frag";
     writeTextFile(shader_path, std::string{copyInputFragmentShader()} + "\n// hot reload rebind probe\n");
     const auto shader_key = watch::makeAssetKey("shaders/copy_input.frag");
@@ -10854,9 +10873,10 @@ void GoldenHarness::runFullscreenRebind() {
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(deletion_queue.pendingCountForTesting() == 0);
     REQUIRE(renderer.imageMemoryDependencyCountForTesting() > 0);
     const auto hot_reload_revision = fullscreen_passes.inputBindingRevisionForTesting(*input_pass);
-    REQUIRE(hot_reload_revision > initial_revision);
+    REQUIRE(hot_reload_revision > direct_rebind_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
     const auto hot_reload_compute_revision =
         compute_tasks.bindingRevisionForTesting(compute_task_id);
@@ -10873,6 +10893,7 @@ void GoldenHarness::runFullscreenRebind() {
         {shader_key, watch::ReloadKind::modified, {}, 1}));
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(deletion_queue.pendingCountForTesting() == 0);
     REQUIRE(fullscreen_passes.inputBindingRevisionForTesting(*input_pass) ==
             hot_reload_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
@@ -10899,6 +10920,23 @@ void GoldenHarness::runFullscreenRebind() {
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(deletion_queue.pendingCountForTesting() == 0);
+
+    for (const auto extent :
+         std::array{
+             vk::Extent2D{goldenWidth + 8, goldenHeight},
+             vk::Extent2D{goldenWidth, goldenHeight + 8},
+             vk::Extent2D{goldenWidth + 16, goldenHeight + 8},
+             vk::Extent2D{goldenWidth, goldenHeight}}) {
+        renderer.recreateRenderTargetsAndRebindForTesting(
+            extent);
+        REQUIRE(
+            deletion_queue.pendingCountForTesting() > 0);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        REQUIRE(
+            deletion_queue.pendingCountForTesting() == 0);
+    }
     std::filesystem::remove_all(temp_dir);
 }
 

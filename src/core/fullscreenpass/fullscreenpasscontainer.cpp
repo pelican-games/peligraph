@@ -100,6 +100,9 @@ vk::UniqueDescriptorPool createDescPool(vk::Device device,
     };
 
     vk::DescriptorPoolCreateInfo ci{};
+    // Passes are rebound independently while sharing this pool. Keep
+    // individual-set freeing so lease-retired sets return capacity without
+    // invalidating descriptor sets owned by unrelated live passes.
     ci.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     ci.maxSets = maxSets;
     ci.setPoolSizes(pool_sizes);
@@ -402,7 +405,14 @@ void FullscreenPassContainer::setInputResourcesById(
 
     const auto input_count = input_rts.size() + input_buffers.size();
     if (input_count == 0) {
-        input_textures.erase(pass_id.value);
+        const auto existing =
+            input_textures.find(pass_id.value);
+        if (existing != input_textures.end()) {
+            deferRetiredDescriptorResources(
+                GET_MODULE(DeletionQueue),
+                std::move(existing->second));
+            input_textures.erase(existing);
+        }
         return;
     }
 
@@ -804,7 +814,18 @@ void FullscreenPassContainer::setInputResourcesById(
             device.updateDescriptorSets(writes, {});
         }
     }
-    input_textures.insert_or_assign(pass_id.value, std::move(info));
+    const auto existing =
+        input_textures.find(pass_id.value);
+    if (existing == input_textures.end()) {
+        input_textures.emplace(
+            pass_id.value, std::move(info));
+        return;
+    }
+
+    deferRetiredDescriptorResources(
+        GET_MODULE(DeletionQueue),
+        std::move(existing->second));
+    existing->second = std::move(info);
 }
 
 void FullscreenPassContainer::rebindInputResources(
@@ -933,7 +954,8 @@ void FullscreenPassContainer::retireRegistrations(
                     FastModuleContainer::tryGet<DeletionQueue>();
                 if (queue != nullptr &&
                     queue->acceptingResources()) {
-                    queue->defer(std::move(retired));
+                    deferRetiredDescriptorResources(
+                        *queue, std::move(retired));
                 }
             } catch (...) {
             }

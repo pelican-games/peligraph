@@ -1134,6 +1134,9 @@ static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
             max_sets * maxMaterialPassInputs},
     };
     vk::DescriptorPoolCreateInfo create_info;
+    // Material/pass pairs are rebound independently while sharing this pool.
+    // Free lease-retired sets individually instead of retiring a pool that
+    // still backs unrelated live descriptors.
     create_info.flags =
         vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     create_info.maxSets = max_sets;
@@ -4809,16 +4812,24 @@ void MaterialContainer::rebindScreenInputs(
                                         resource.buffer);
                     });
             if (stale_buffer) {
+                deferRetiredDescriptorResources(
+                    GET_MODULE(DeletionQueue),
+                    std::move(descriptor->second));
                 descriptor =
                     material.screen_input_descriptors.erase(
                         descriptor);
                 continue;
             }
-            descriptor->second =
+            auto replacement =
                 buildScreenInputDescriptor(
                     material.pipeline,
                     descriptor->second.resources,
                     rt_views);
+            deferRetiredDescriptorResources(
+                GET_MODULE(DeletionQueue),
+                std::move(descriptor->second));
+            descriptor->second =
+                std::move(replacement);
             ++descriptor;
         }
     }

@@ -28,11 +28,13 @@
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/rendertargetconfigregistration.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/core/renderingpass/rendertargetimageviewresolver.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
@@ -2150,6 +2152,32 @@ TEST_CASE(
             (std::array<std::uint32_t, 3>{
                 2, 2, 1}));
 
+        auto &deletion_queue =
+            GET_MODULE(DeletionQueue);
+        const auto pending_before_material_rebind =
+            deletion_queue.pendingCountForTesting();
+        materials.rebindScreenInputs(
+            RenderTargetImageViewResolver{
+                GET_MODULE(RenderTargetContainer)});
+        REQUIRE(
+            deletion_queue.pendingCountForTesting() ==
+            pending_before_material_rebind + 1);
+        const auto direct_material_rebind_revision =
+            materials
+                .screenInputBindingRevisionForTesting(
+                    material_id,
+                    geometry_pass->definition);
+        REQUIRE(
+            direct_material_rebind_revision >
+            initial_binding_revision);
+        REQUIRE(
+            materials
+                .boundScreenInputImageViewsForTesting(
+                    material_id,
+                    geometry_pass->definition) ==
+            std::vector<vk::ImageView>{
+                initial_tint_mip_view});
+
         auto mismatched_view_pass =
             geometry_pass->definition;
         const auto mismatched_view_binding =
@@ -2200,7 +2228,7 @@ TEST_CASE(
                 .screenInputBindingRevisionForTesting(
                     material_id,
                     geometry_pass->definition) >
-            initial_binding_revision);
+            direct_material_rebind_revision);
         const auto recreated_tint =
             GET_MODULE(RenderTargetContainer)
                 .getRenderTargetIdByName(
@@ -2248,6 +2276,8 @@ TEST_CASE(
         engine_time.advance();
         renderer.render();
         GET_MODULE(VulkanManageCore).waitIdle();
+        REQUIRE(
+            deletion_queue.pendingCountForTesting() == 0);
         const auto pixels =
             GET_MODULE(RenderTarget)
                 .readbackLastFrameRGBA8();

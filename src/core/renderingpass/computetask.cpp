@@ -36,15 +36,6 @@ static_assert(frameGraphDrawCountBytes == 4);
 static_assert(frameGraphSceneDrawBoundsV1Bytes == 32);
 static_assert(frameGraphSceneDrawSegmentV1Bytes == 32);
 
-struct RetiredComputeDescriptorResources {
-    vk::UniqueDescriptorPool pool;
-    std::vector<
-        std::vector<
-            std::array<
-                vk::UniqueDescriptorSet, 2>>>
-        descriptor_sets;
-};
-
 std::string requireString(const nlohmann::json &json, std::string_view field, std::string_view context) {
     if (!json.contains(field) || !json.at(field).is_string()) {
         throw std::runtime_error(std::string{context} + " requires string field: " + std::string{field});
@@ -2493,12 +2484,17 @@ void ComputeTaskContainer::rebindRenderTargets(
         rebound.push_back(std::move(next));
     }
 
-    RetiredComputeDescriptorResources retired;
-    retired.pool = std::move(descriptor_pool);
-    retired.descriptor_sets.reserve(tasks.size());
+    auto retired_pool = std::move(descriptor_pool);
+    std::vector<
+        std::vector<
+            std::array<
+                vk::UniqueDescriptorSet, 2>>>
+        retired_descriptor_sets;
+    retired_descriptor_sets.reserve(tasks.size());
     for (auto &[id, task] : tasks) {
         (void)id;
-        retired.descriptor_sets.push_back(std::move(task.descriptor_sets));
+        retired_descriptor_sets.push_back(
+            std::move(task.descriptor_sets));
     }
     descriptor_pool = std::move(next_pool);
     for (auto &next : rebound) {
@@ -2515,7 +2511,10 @@ void ComputeTaskContainer::rebindRenderTargets(
         }
         task.binding_revision = next_binding_revision++;
     }
-    GET_MODULE(DeletionQueue).defer(std::move(retired));
+    deferRetiredDescriptorResources(
+        GET_MODULE(DeletionQueue),
+        std::move(retired_pool),
+        std::move(retired_descriptor_sets));
 }
 
 const ComputeTaskDefinition &ComputeTaskContainer::definition(ComputeTaskId task_id) const {
