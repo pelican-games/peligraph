@@ -18,13 +18,16 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QScrollBar>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTextCursor>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QVariant>
 
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <vector>
@@ -102,7 +105,8 @@ void MainWindow::createWorkspace() {
     workspace_hint->hide();
     workspace_layout->setStretch(0, 0);
     workspace_layout->setStretch(3, 0);
-    workspace_layout->addWidget(new EmbeddedViewport(workspace), 1);
+    auto *viewport = new EmbeddedViewport(workspace);
+    workspace_layout->addWidget(viewport, 1);
 
     project_list_ = new QListWidget(this);
     project_list_->addItem(tr("No project open"));
@@ -128,6 +132,17 @@ void MainWindow::createWorkspace() {
     output->setReadOnly(true);
     output->setPlainText(tr("Pelican Studio ready."));
     docks_[OutputDock] = makeDock(this, tr("Output"), QStringLiteral("pelican.outputDock"), output);
+
+    engine_log_ = new QPlainTextEdit(this);
+    engine_log_->setObjectName(QStringLiteral("pelican.engineLog"));
+    engine_log_->setReadOnly(true);
+    engine_log_->setUndoRedoEnabled(false);
+    engine_log_->setLineWrapMode(QPlainTextEdit::NoWrap);
+    engine_log_->setPlaceholderText(tr("Engine output will appear here."));
+    docks_[EngineLogDock] = makeDock(
+        this, tr("Engine Log"), QStringLiteral("pelican.engineLogDock"), engine_log_);
+    connect(viewport, &EmbeddedViewport::engineOutputReceived, this,
+            [this](const QString &output) { appendEngineOutput(output); });
 }
 
 void MainWindow::createMenus() {
@@ -222,6 +237,33 @@ void MainWindow::populateOutliner() {
         }
     }
     outliner_->expandToDepth(0);
+}
+
+void MainWindow::appendEngineOutput(const QString &output) {
+    if (output.isEmpty()) {
+        return;
+    }
+
+    QScrollBar *scroll_bar = engine_log_->verticalScrollBar();
+    const bool following_tail = scroll_bar->value() >= scroll_bar->maximum();
+    const int previous_scroll_position = scroll_bar->value();
+
+    if (engine_log_buffer_.append(output)) {
+        engine_log_->setPlainText(engine_log_buffer_.text());
+    } else {
+        QTextCursor tail(engine_log_->document());
+        tail.movePosition(QTextCursor::End);
+        tail.insertText(output);
+    }
+
+    if (following_tail) {
+        QTextCursor tail(engine_log_->document());
+        tail.movePosition(QTextCursor::End);
+        engine_log_->setTextCursor(tail);
+        engine_log_->ensureCursorVisible();
+    } else {
+        scroll_bar->setValue(std::min(previous_scroll_position, scroll_bar->maximum()));
+    }
 }
 
 void MainWindow::refreshLayoutMenus() {
@@ -326,8 +368,11 @@ void MainWindow::applyDefaultLayout() {
 
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[OutputDock]);
+    addDockWidget(Qt::BottomDockWidgetArea, docks_[EngineLogDock]);
+    tabifyDockWidget(docks_[OutputDock], docks_[EngineLogDock]);
+    docks_[EngineLogDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);
-    resizeDocks({docks_[OutputDock]}, {180}, Qt::Vertical);
+    resizeDocks({docks_[EngineLogDock]}, {180}, Qt::Vertical);
     resize(1280, 800);
 }
 

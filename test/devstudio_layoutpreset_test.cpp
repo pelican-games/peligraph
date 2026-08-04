@@ -2,11 +2,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QApplication>
 #include <QDir>
+#include <QDockWidget>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMainWindow>
 #include <QTemporaryDir>
+#include <QWidget>
 
 namespace {
 
@@ -34,6 +38,15 @@ void writePreset(const QString &path, const QJsonObject &root) {
     REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
     const QByteArray contents = QJsonDocument(root).toJson(QJsonDocument::Indented);
     REQUIRE(file.write(contents) == contents.size());
+}
+
+QDockWidget *addDock(
+    QMainWindow &window, const QString &object_name, Qt::DockWidgetArea area) {
+    auto *dock = new QDockWidget(&window);
+    dock->setObjectName(object_name);
+    dock->setWidget(new QWidget(dock));
+    window.addDockWidget(area, dock);
+    return dock;
 }
 
 } // namespace
@@ -70,6 +83,61 @@ TEST_CASE("Devstudio layout presets round-trip named versioned state", "[devstud
     REQUIRE(restored == expected);
     REQUIRE_FALSE(default_applied);
     REQUIRE(error.isEmpty());
+}
+
+TEST_CASE("WP249 four-dock presets remain restorable after adding the engine log dock",
+          "[devstudio][layout][compatibility]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_layout_compatibility_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    QMainWindow wp249_window;
+    QDockWidget *legacy_project = addDock(
+        wp249_window, QStringLiteral("pelican.projectDock"), Qt::LeftDockWidgetArea);
+    QDockWidget *legacy_outliner = addDock(
+        wp249_window, QStringLiteral("pelican.outlinerDock"), Qt::LeftDockWidgetArea);
+    wp249_window.tabifyDockWidget(legacy_project, legacy_outliner);
+    addDock(wp249_window, QStringLiteral("pelican.inspectorDock"), Qt::RightDockWidgetArea);
+    addDock(wp249_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
+    const QByteArray wp249_state =
+        wp249_window.saveState(LayoutPresetManager::WindowStateVersion);
+    REQUIRE_FALSE(wp249_state.isEmpty());
+
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    LayoutPresetManager manager(directory.path());
+    REQUIRE(manager.savePreset(
+        QStringLiteral("WP249"), {QByteArrayLiteral("geometry"), wp249_state}));
+
+    QMainWindow current_window;
+    QDockWidget *project = addDock(
+        current_window, QStringLiteral("pelican.projectDock"), Qt::LeftDockWidgetArea);
+    QDockWidget *outliner = addDock(
+        current_window, QStringLiteral("pelican.outlinerDock"), Qt::LeftDockWidgetArea);
+    current_window.tabifyDockWidget(project, outliner);
+    addDock(current_window, QStringLiteral("pelican.inspectorDock"), Qt::RightDockWidgetArea);
+    QDockWidget *output = addDock(
+        current_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
+    QDockWidget *engine_log = addDock(
+        current_window, QStringLiteral("pelican.engineLogDock"), Qt::BottomDockWidgetArea);
+    current_window.tabifyDockWidget(output, engine_log);
+
+    bool default_applied = false;
+    QString error;
+    const LayoutRestoreResult result = manager.restorePreset(
+        QStringLiteral("WP249"),
+        [&current_window](const LayoutSnapshot &snapshot) {
+            return current_window.restoreState(
+                snapshot.window_state, LayoutPresetManager::WindowStateVersion);
+        },
+        [&default_applied]() { default_applied = true; }, &error);
+
+    REQUIRE(result == LayoutRestoreResult::Restored);
+    REQUIRE_FALSE(default_applied);
+    REQUIRE(error.isEmpty());
+    REQUIRE(current_window.dockWidgetArea(engine_log) != Qt::NoDockWidgetArea);
+    REQUIRE_FALSE(engine_log->isHidden());
 }
 
 TEST_CASE("Devstudio layout version mismatch selects the default without applying saved state",

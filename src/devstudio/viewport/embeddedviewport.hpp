@@ -20,6 +20,9 @@ class EmbeddedViewport final : public QWidget {
     explicit EmbeddedViewport(QWidget *parent = nullptr);
     ~EmbeddedViewport() override;
 
+  signals:
+    void engineOutputReceived(const QString &output);
+
   private:
     EngineProcess process_;
     QWidget *native_host_ = nullptr;
@@ -36,7 +39,6 @@ class EmbeddedViewport final : public QWidget {
     NativeWindowHandle child_window_ = 0;
     bool pointer_button_was_down_ = false;
     QSize last_requested_extent_;
-    QString recent_output_;
 
     EngineProcessLaunch launchCommand() const;
     void startEngine();

@@ -2,6 +2,7 @@
 
 #include "layoutpreset.hpp"
 #include "../model/project.hpp"
+#include "../viewport/enginelogbuffer.hpp"
 
 #include <QMainWindow>
 
@@ -11,6 +12,7 @@
 class QDockWidget;
 class QListWidget;
 class QMenu;
+class QPlainTextEdit;
 class QString;
 class QTreeWidget;
 
@@ -26,6 +28,7 @@ class MainWindow : public QMainWindow {
         OutlinerDock,
         InspectorDock,
         OutputDock,
+        EngineLogDock,
         DockCount,
     };
 
@@ -35,6 +38,8 @@ class MainWindow : public QMainWindow {
     QTreeWidget *outliner_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;
+    QPlainTextEdit *engine_log_ = nullptr;
+    EngineLogBuffer engine_log_buffer_;
     std::optional<ProjectOutlinerModel> project_model_;
 
     void createWorkspace();
@@ -42,6 +47,7 @@ class MainWindow : public QMainWindow {
     void chooseProject();
     void openProject(const QString &path);
     void populateOutliner();
+    void appendEngineOutput(const QString &output);
     void refreshLayoutMenus();
     void saveLayoutPreset();
     void restoreLayoutPreset(const QString &name);

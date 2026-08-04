@@ -120,6 +120,9 @@ class EngineProcessLifetime {
 
 EngineProcess::EngineProcess(QObject *parent)
     : QObject(parent), process_lifetime_(std::make_unique<EngineProcessLifetime>()) {
+    // QProcess redirects the child's stderr into the standard-output channel
+    // in this mode, so drainOutput() emits both streams through one Studio log
+    // path.
     process_.setProcessChannelMode(QProcess::MergedChannels);
     process_lifetime_->configure(process_);
 

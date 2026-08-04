@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L19) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L21) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -181,15 +181,17 @@ flowchart LR
     Workspace --> Viewport["EmbeddedViewport / native host"]
     Viewport --> Process["EngineProcess / QProcess"]
     Process --> Player["pelican_player / foreign child HWND"]
+    Process --> LogBuffer["EngineLogBuffer / bounded history"]
+    LogBuffer --> LogDock["Engine Log dock"]
     Window --> Docks["QDockWidget panels"]
     Window --> Layout["LayoutPresetManager"]
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L69) は Project / Outliner /
-Inspector / Output の4パネルを stable object name を持つ dock として作ります。パネルは移動、float、
-タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を追加する
-場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L72) は Project / Outliner /
+Inspector / Output / Engine Log の5パネルを stable object name を持つ dock として作ります。パネルは
+移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
+追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
 中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L16) は
 `pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L20) で別 process
@@ -205,12 +207,21 @@ player が終了しても Studio は残り、viewport から再起動できま�
 kill-on-close Job Object で固定し、player を process 作成時点から所属させます。そのため Studio の
 通常終了だけでなく強制終了でも player は残りません。
 
+child の stdout と stderr は `QProcess::MergedChannels` で一つの未切り詰め出力 signal にまとめ、
+viewport を経由して Engine Log dock へ送ります。
+[`EngineLogBuffer`](../../src/devstudio/viewport/enginelogbuffer.hpp#L7)
+は UTF-8 換算 1 MiB の末尾だけを保持し、通常は最古の途中行も捨てます。この大きさは診断用の長い
+履歴を残しながら、model と `QPlainTextEdit` に複製される text の常駐量を長時間起動でも制限するため
+です。単一の巨大行だけでも末尾を残し、UTF-8 の途中 byte から復号しません。上限規則と両 stream の
+到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L93) が view 表示なしで検査します。
+
 [`LayoutPresetManager`](../../src/devstudio/layoutpreset.hpp#L26) は view から独立した Qt Core の
 ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
 よる state 拒否のどれでも saved state を適用せず既定配置 callback へ落とします。全体 preset は
 `QStandardPaths::AppConfigLocation/layouts` に置き、project 単位の `user://` resolver には触れません。
-保存・復元・fallback は [`devstudio_layoutpreset_test.cpp`](../../test/devstudio_layoutpreset_test.cpp#L41)
-が GUI なしで検査します。
+保存・復元・fallback と WP249 の4 dock state を5 dock 構成で読めることは
+[`WP249 four-dock presets remain restorable after adding the engine log dock`](../../test/devstudio_layoutpreset_test.cpp#L88)
+が画面表示なしで検査します。
 
 リンク面では [`pelican_assert_link_boundary()`](../../cmake/devstudio_link_boundary.cmake#L72) が
 `pelican_project` の直接リンクを必須にし、`src/core` 配下 target への推移 link path を configure
@@ -224,7 +235,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L184) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L199) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L56) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの

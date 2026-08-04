@@ -1,4 +1,5 @@
 #include "embeddedviewport.hpp"
+#include "enginelogbuffer.hpp"
 #include "engineprocess.hpp"
 #include "viewportgeometry.hpp"
 
@@ -87,6 +88,28 @@ TEST_CASE("Embedded viewport extent follows Qt device-pixel scaling", "[devstudi
     REQUIRE(embeddedViewportPixelExtent(QSize{0, 451}, 1.25) == QSize{0, 564});
     REQUIRE(embeddedViewportPixelExtent(QSize{-1, 451}, 1.25) == QSize{0, 564});
     REQUIRE(embeddedViewportPixelExtent(QSize{640, 360}, 0.0).isEmpty());
+}
+
+TEST_CASE("Engine log keeps a bounded UTF-8 tail on line boundaries",
+          "[devstudio][log]") {
+    EngineLogBuffer log{12};
+
+    REQUIRE_FALSE(log.append(QStringLiteral("alpha\n")));
+    REQUIRE_FALSE(log.append(QStringLiteral("beta\n")));
+    REQUIRE(log.append(QStringLiteral("gamma\n")));
+    REQUIRE(log.text() == QStringLiteral("beta\ngamma\n"));
+    REQUIRE(log.text().toUtf8().size() <= log.maximumBytes());
+
+    EngineLogBuffer multibyte_log{5};
+    REQUIRE(multibyte_log.append(QString::fromUtf8("A\xc3\xa9\xe6\xbc\xa2")));
+    REQUIRE(multibyte_log.text() == QString::fromUtf8("\xc3\xa9\xe6\xbc\xa2"));
+    REQUIRE(multibyte_log.append(QStringLiteral("Z")));
+    REQUIRE(multibyte_log.text() == QString::fromUtf8("\xe6\xbc\xa2Z"));
+    REQUIRE(multibyte_log.text().toUtf8().size() <= multibyte_log.maximumBytes());
+
+    EngineLogBuffer single_line_log{8};
+    REQUIRE(single_line_log.append(QStringLiteral("1234567890")));
+    REQUIRE(single_line_log.text() == QStringLiteral("34567890"));
 }
 
 TEST_CASE("Continuous embedded viewport resizes stay frozen and apply only the trailing extent",
@@ -213,6 +236,24 @@ TEST_CASE("Engine process launch rejects a missing executable without starting",
     REQUIRE_FALSE(error.isEmpty());
     REQUIRE(process.state() == EngineProcess::State::failed);
     REQUIRE_FALSE(process.isRunning());
+}
+
+TEST_CASE("Engine process forwards child stdout and stderr through its output signal",
+          "[devstudio][viewport][process][log]") {
+    EngineProcess process;
+    QString output;
+    QObject::connect(&process, &EngineProcess::outputReceived,
+                     [&](const QString &text) { output += text; });
+
+    QString error;
+    REQUIRE(process.start(
+        {fixtureExecutable(), {QStringLiteral("emit"), QStringLiteral("both-streams")}, {}},
+        &error));
+    REQUIRE(error.isEmpty());
+    REQUIRE(process.waitForStarted(5000));
+    REQUIRE(process.waitForFinished(5000));
+    REQUIRE(output.contains(QStringLiteral("stdout-capture:both-streams")));
+    REQUIRE(output.contains(QStringLiteral("stderr-capture:both-streams")));
 }
 
 #ifdef Q_OS_WIN

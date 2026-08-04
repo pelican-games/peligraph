@@ -116,15 +116,6 @@ QString awarenessName(int awareness) {
     }
 }
 
-QString clippedOutput(QString output) {
-    output = output.trimmed();
-    constexpr qsizetype MaximumOutputCharacters = 4000;
-    if (output.size() > MaximumOutputCharacters) {
-        output = output.right(MaximumOutputCharacters);
-    }
-    return output;
-}
-
 } // namespace
 
 EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(this) {
@@ -216,9 +207,6 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                         .arg(process_id)
                         .arg(exit_kind)
                         .arg(exit_code));
-                if (!recent_output_.isEmpty()) {
-                    status_->setToolTip(recent_output_);
-                }
             });
     connect(&process_, &EngineProcess::processFailed, this, [this](const QString &message) {
         window_discovery_timer_->stop();
@@ -232,10 +220,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         stop_button_->setEnabled(false);
         status_->setText(message);
     });
-    connect(&process_, &EngineProcess::outputReceived, this, [this](const QString &output) {
-        recent_output_ = clippedOutput(recent_output_ + output);
-        status_->setToolTip(recent_output_);
-    });
+    connect(&process_, &EngineProcess::outputReceived,
+            this, &EmbeddedViewport::engineOutputReceived);
 
     QTimer::singleShot(0, this, [this]() { startEngine(); });
 }
@@ -283,7 +269,6 @@ void EmbeddedViewport::startEngine() {
     last_requested_extent_ = {};
     resize_timer_->stop();
     resize_coalescer_.reset();
-    recent_output_.clear();
     restart_button_->setEnabled(false);
     stop_button_->setEnabled(true);
     status_->setText(tr("Starting pelican_player..."));

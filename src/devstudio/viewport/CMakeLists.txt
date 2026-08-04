@@ -1,6 +1,8 @@
 add_library(pelican_studio_viewport STATIC
     embeddedviewport.cpp
     embeddedviewport.hpp
+    enginelogbuffer.cpp
+    enginelogbuffer.hpp
     engineprocess.cpp
     engineprocess.hpp
     nativewindowhost.cpp
