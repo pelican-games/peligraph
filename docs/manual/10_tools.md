@@ -397,7 +397,6 @@ Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_proj
 `picking` feature が無い、RPC が失敗した、または応答を Outliner と対応付けられない場合は現在選択を
 維持し、viewport の警告行、status bar、Engine Log の三つへ理由を出します。feature は自動で有効化せず、
 project の purgeability を保ちます。
->>>>>>> agent/wp264
 
 共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
