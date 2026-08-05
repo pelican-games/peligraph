@@ -1,4 +1,5 @@
 #include "mainwindow.hpp"
+#include "frameplanwidget.hpp"
 #include "inspectorwidget.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
@@ -172,6 +173,10 @@ void MainWindow::createWorkspace() {
     engine_log_->setPlaceholderText(tr("Engine output will appear here."));
     docks_[EngineLogDock] = makeDock(
         this, tr("Engine Log"), QStringLiteral("pelican.engineLogDock"), engine_log_);
+    frame_plan_ = new FramePlanWidget(viewport_, this);
+    docks_[FramePlanDock] = makeDock(
+        this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
+        frame_plan_);
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
     connect(viewport_, &EmbeddedViewport::viewportPickRequested, this,
@@ -531,10 +536,12 @@ void MainWindow::applyDefaultLayout() {
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[OutputDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[EngineLogDock]);
+    addDockWidget(Qt::BottomDockWidgetArea, docks_[FramePlanDock]);
     tabifyDockWidget(docks_[OutputDock], docks_[EngineLogDock]);
-    docks_[EngineLogDock]->raise();
+    tabifyDockWidget(docks_[EngineLogDock], docks_[FramePlanDock]);
+    docks_[FramePlanDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);
-    resizeDocks({docks_[EngineLogDock]}, {180}, Qt::Vertical);
+    resizeDocks({docks_[FramePlanDock]}, {240}, Qt::Vertical);
     resize(1280, 800);
 }
 

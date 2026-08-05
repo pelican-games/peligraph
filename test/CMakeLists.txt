@@ -84,6 +84,10 @@ if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_inspector_test pelican_studio_inspector_model)
 endif()
 
+if(TARGET pelican_studio_frame_plan)
+  pelican_define_test(devstudio_frameplan_test pelican_studio_frame_plan)
+endif()
+
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   add_library(pelican_public_api_link_fixture SHARED
     fixtures/public_api_link/flipbook_client.cpp

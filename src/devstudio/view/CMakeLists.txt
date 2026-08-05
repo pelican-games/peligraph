@@ -1,6 +1,8 @@
 target_sources(pelican_studio PRIVATE
     uimain.cpp
     mainwindow.cpp
+    frameplanwidget.cpp
+    frameplanwidget.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
 )

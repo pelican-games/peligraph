@@ -360,7 +360,7 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 ## 10.7 Pelican Studio(devstudio)
 
 **現状 🚧: Qt Widgets の editor shell、別 process engine viewport、Outliner と viewport の
-選択同期まで実装済み。**
+選択同期、読み取り専用 Frame Plan パネルまで実装済み。**
 起動は `cmake --build ./build --target run_studio`。
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
@@ -398,10 +398,23 @@ Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_proj
 維持し、viewport の警告行、status bar、Engine Log の三つへ理由を出します。feature は自動で有効化せず、
 project の purgeability を保ちます。
 
+`View > Panels > Frame Plan` は、実行中 player の公開 `get_frame_plan` を読むレンダーパス調査用の
+読み取り専用 dock です。Passes タブの先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、
+種別(render / compute / anchor / snapshot copy / output transform)が出ます。行を開くと履歴入力、
+color/depth attachment の load/store、前後 barrier、material filter、execution resource use が見えます。
+Resources、Barriers、Materials タブでは writer/reader、hazard edge、公開された material route を逆引きでき、
+上部 filter は折りたたみ配下も検索します。native scope や alias decision など Compiled Plan Viewer 相当の
+低レベル物理情報と編集操作はこのパネルの対象外です。
+
+plan は player の RPC 接続直後に1回取得し、それ以後は `Refresh` を押した時だけ更新します。実測で
+6,000 行を超える応答を毎 frame 転送・parse・tree 再構築すると editor 自身が診断対象を重くするためです。
+render graph の hot reload 後など、変化を確認したい時に明示更新してください。player が未起動または
+停止中なら空の tree にはせず、パネル上部に理由と start/restart の案内を表示します。
+
 共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
 process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262、Studio の選択同期は
-WP264 で入りました。プロパティ編集、gizmo、複数 client WebSocket は未接続です。ツール自作の入口は
+WP264、Frame Plan パネルは WP269 で入りました。gizmo、複数 client WebSocket は未接続です。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤

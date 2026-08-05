@@ -25,6 +25,7 @@ class QTreeWidgetItem;
 namespace PelicanStudio {
 
 class EmbeddedViewport;
+class FramePlanWidget;
 class InspectorWidget;
 
 class MainWindow : public QMainWindow {
@@ -38,6 +39,7 @@ class MainWindow : public QMainWindow {
         InspectorDock,
         OutputDock,
         EngineLogDock,
+        FramePlanDock,
         DockCount,
     };
 
@@ -47,6 +49,7 @@ class MainWindow : public QMainWindow {
     QTreeWidget *outliner_ = nullptr;
     EmbeddedViewport *viewport_ = nullptr;
     InspectorWidget *inspector_ = nullptr;
+    FramePlanWidget *frame_plan_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;
     QPlainTextEdit *engine_log_ = nullptr;

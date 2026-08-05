@@ -1613,6 +1613,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/ci/skip_policy.py|`run_gate()`|#2": "def run_gate(",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/ci/skip_policy.py|`validate_skip_policy()`": "def validate_skip_policy(",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/deletionqueue_test.cpp|`deletionqueue_test.cpp`": "++(*destroyed);",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../test/devstudio_layoutpreset_test.cpp|`Saved devstudio layouts remain restorable as later docks are added`": "TEST_CASE(\"Saved devstudio layouts remain restorable as later docks are added\",",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/devstudio_layoutpreset_test.cpp|`WP249 four-dock presets remain restorable after adding the engine log dock`": "TEST_CASE(\"WP249 four-dock presets remain restorable after adding the engine log dock\",",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/devstudio_layoutpreset_test.cpp|`devstudio_layoutpreset_test.cpp`": "TEST_CASE(\"Devstudio layout presets round-trip named versioned state\", \"[devstudio][layout]\") {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/devstudio_outliner_test.cpp|`devstudio_outliner_test.cpp`": "TEST_CASE(\"Devstudio outliner opens the example without collapsing unnamed objects\",",

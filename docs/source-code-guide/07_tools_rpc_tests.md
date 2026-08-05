@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L30) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L31) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -181,7 +181,7 @@ flowchart LR
     Workspace --> Viewport["EmbeddedViewport / native host"]
     Viewport --> Process["EngineProcess / QProcess"]
     Process --> Player["pelican_player / foreign child HWND"]
-    Viewport --> Rpc["pick / query / edit / watch JSON-RPC"]
+    Viewport --> Rpc["pick / query / edit / watch / frame-plan JSON-RPC"]
     Rpc --> Selection["SelectionModel / public identity"]
     Docks --> Selection
     Selection --> Inspector["InspectorWidget"]
@@ -189,13 +189,15 @@ flowchart LR
     InspectorModel --> Rpc
     Process --> LogBuffer["EngineLogBuffer / bounded history"]
     LogBuffer --> LogDock["Engine Log dock"]
+    Rpc --> PlanModel["FramePlanModel / compact projection"]
+    PlanModel --> PlanDock["Frame Plan dock"]
     Window --> Docks["QDockWidget panels"]
     Window --> Layout["LayoutPresetManager"]
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L99) は Project / Outliner /
-Inspector / Output / Engine Log の5パネルを stable object name を持つ dock として作ります。パネルは
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L100) は Project / Outliner /
+Inspector / Output / Engine Log / Frame Plan の6パネルを stable object name を持つ dock として作ります。パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
@@ -223,13 +225,32 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 です。単一の巨大行だけでも末尾を残し、UTF-8 の途中 byte から復号しません。上限規則と両 stream の
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L97) が view 表示なしで検査します。
 
+[`FramePlanModel`](../../src/devstudio/model/frameplanmodel.hpp) は `get_frame_plan` の
+`pelican.frame_plan` v1 応答を、順序付き pass / compute task、入出力と履歴入力、resource、barrier、
+attachment load/store、material route、backend 非依存 execution facts へ縮約する Qt 非依存 model です。
+6,000 行級になる raw 応答や `physical_target_plan` 全体は保持せず、ImGui Plan Viewer と同じ調査の
+入口になる項目だけを値型へ写します。attachment ops と resource format は公開応答内の
+`physical_target_plan.attachments/resources` から昇格しますが、native scope、alias、physical decision
+など Compiled Plan Viewer 相当の低レベル情報は UI へ出しません。
+
+[`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp) はその model を Passes / Resources /
+Barriers / Materials の tree に投影します。初期状態は順序、名前、種別、入力、出力の pass 行だけで、
+attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
+要約と子項目に掛かるため、raw JSON を全部展開しなくても流れを追えます。取得契機は **player の RPC が
+利用可能になった直後の1回と Refresh ボタンだけ**です。毎 frame の取得は大きな JSON の pipe 転送、
+二度の parse、tree 再構築を描画周期ごとに行うため採りません。hot reload 後など変化を確認したい時は
+明示 refresh します。player 未起動・停止・RPC 失敗は空表示にせず、理由と再開方法を status 行へ出し、
+停止時には古い snapshot も消します。応答からの構造化と current-version-only 検証は
+[`devstudio_frameplan_test.cpp`](../../test/devstudio_frameplan_test.cpp) が GUI なしで固定します。
+
 [`LayoutPresetManager`](../../src/devstudio/layoutpreset.hpp#L26) は view から独立した Qt Core の
 ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
 よる state 拒否のどれでも saved state を適用せず既定配置 callback へ落とします。全体 preset は
 `QStandardPaths::AppConfigLocation/layouts` に置き、project 単位の `user://` resolver には触れません。
-保存・復元・fallback と WP249 の4 dock state を5 dock 構成で読めることは
-[`WP249 four-dock presets remain restorable after adding the engine log dock`](../../test/devstudio_layoutpreset_test.cpp#L88)
-が画面表示なしで検査します。
+保存・復元・fallback と WP249 の4 dock state、WP263 の5 dock state を6 dock 構成で読めることは
+[`Saved devstudio layouts remain restorable as later docks are added`](../../test/devstudio_layoutpreset_test.cpp#L88)
+が画面表示なしで検査します。新 dock 追加のたびに state 版を上げないため、保存時に存在しなかった
+stable object name は Qt が既存 dock の復元とは独立に扱い、既定配置に残ります。
 
 リンク面では [`pelican_assert_link_boundary()`](../../cmake/devstudio_link_boundary.cmake#L72) が
 `pelican_project` の直接リンクを必須にし、`src/core` 配下 target への推移 link path を configure
@@ -243,7 +264,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L245) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L250) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L62) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -552,7 +573,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1526) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1530) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

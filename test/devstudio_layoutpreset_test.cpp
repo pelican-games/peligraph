@@ -85,8 +85,8 @@ TEST_CASE("Devstudio layout presets round-trip named versioned state", "[devstud
     REQUIRE(error.isEmpty());
 }
 
-TEST_CASE("WP249 four-dock presets remain restorable after adding the engine log dock",
-          "[devstudio][layout][compatibility]") {
+TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
+           "[devstudio][layout][compatibility]") {
     int argument_count = 1;
     char application_name[] = "pelican_layout_compatibility_test";
     char *arguments[] = {application_name};
@@ -104,11 +104,30 @@ TEST_CASE("WP249 four-dock presets remain restorable after adding the engine log
         wp249_window.saveState(LayoutPresetManager::WindowStateVersion);
     REQUIRE_FALSE(wp249_state.isEmpty());
 
+    QMainWindow wp263_window;
+    QDockWidget *wp263_project = addDock(
+        wp263_window, QStringLiteral("pelican.projectDock"), Qt::LeftDockWidgetArea);
+    QDockWidget *wp263_outliner = addDock(
+        wp263_window, QStringLiteral("pelican.outlinerDock"), Qt::LeftDockWidgetArea);
+    wp263_window.tabifyDockWidget(wp263_project, wp263_outliner);
+    addDock(wp263_window, QStringLiteral("pelican.inspectorDock"),
+            Qt::RightDockWidgetArea);
+    QDockWidget *wp263_output = addDock(
+        wp263_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
+    QDockWidget *wp263_engine_log = addDock(
+        wp263_window, QStringLiteral("pelican.engineLogDock"), Qt::BottomDockWidgetArea);
+    wp263_window.tabifyDockWidget(wp263_output, wp263_engine_log);
+    const QByteArray wp263_state =
+        wp263_window.saveState(LayoutPresetManager::WindowStateVersion);
+    REQUIRE_FALSE(wp263_state.isEmpty());
+
     QTemporaryDir directory;
     REQUIRE(directory.isValid());
     LayoutPresetManager manager(directory.path());
     REQUIRE(manager.savePreset(
         QStringLiteral("WP249"), {QByteArrayLiteral("geometry"), wp249_state}));
+    REQUIRE(manager.savePreset(
+        QStringLiteral("WP263"), {QByteArrayLiteral("geometry"), wp263_state}));
 
     QMainWindow current_window;
     QDockWidget *project = addDock(
@@ -121,11 +140,14 @@ TEST_CASE("WP249 four-dock presets remain restorable after adding the engine log
         current_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
     QDockWidget *engine_log = addDock(
         current_window, QStringLiteral("pelican.engineLogDock"), Qt::BottomDockWidgetArea);
+    QDockWidget *frame_plan = addDock(
+        current_window, QStringLiteral("pelican.framePlanDock"), Qt::BottomDockWidgetArea);
     current_window.tabifyDockWidget(output, engine_log);
+    current_window.tabifyDockWidget(engine_log, frame_plan);
 
     bool default_applied = false;
     QString error;
-    const LayoutRestoreResult result = manager.restorePreset(
+    LayoutRestoreResult result = manager.restorePreset(
         QStringLiteral("WP249"),
         [&current_window](const LayoutSnapshot &snapshot) {
             return current_window.restoreState(
@@ -138,6 +160,24 @@ TEST_CASE("WP249 four-dock presets remain restorable after adding the engine log
     REQUIRE(error.isEmpty());
     REQUIRE(current_window.dockWidgetArea(engine_log) != Qt::NoDockWidgetArea);
     REQUIRE_FALSE(engine_log->isHidden());
+    REQUIRE(current_window.dockWidgetArea(frame_plan) != Qt::NoDockWidgetArea);
+    REQUIRE_FALSE(frame_plan->isHidden());
+
+    default_applied = false;
+    error.clear();
+    result = manager.restorePreset(
+        QStringLiteral("WP263"),
+        [&current_window](const LayoutSnapshot &snapshot) {
+            return current_window.restoreState(
+                snapshot.window_state, LayoutPresetManager::WindowStateVersion);
+        },
+        [&default_applied]() { default_applied = true; }, &error);
+
+    REQUIRE(result == LayoutRestoreResult::Restored);
+    REQUIRE_FALSE(default_applied);
+    REQUIRE(error.isEmpty());
+    REQUIRE(current_window.dockWidgetArea(frame_plan) != Qt::NoDockWidgetArea);
+    REQUIRE_FALSE(frame_plan->isHidden());
 }
 
 TEST_CASE("Devstudio layout version mismatch selects the default without applying saved state",

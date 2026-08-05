@@ -49,9 +49,10 @@ GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu
 既定の engine build と clean-clone gate へ GUI toolchain を持ち込まない方針である。一方、
 D0 リンク境界の負例テストは Qt 非依存なので、この既定構成でも CTest に登録する。
 
-devstudio のコンパイルとレイアウト永続化テストは、Qt 6.10 を用意した開発環境で次の明示構成を
-使う。`devstudio_layoutpreset_test` はこの構成でだけ登録され、GUI を操作せず、名前付き保存・復元、
-版違い、破損 state の既定配置 fallback を検査する。
+devstudio のコンパイル、レイアウト永続化、frame plan 表示 model のテストは、Qt 6.10 を用意した
+開発環境で次の明示構成を使う。`devstudio_layoutpreset_test` は GUI を操作せず、名前付き保存・復元、
+版違い、破損 state の既定配置 fallback と後から追加された dock の互換を検査する。
+`devstudio_frameplan_test` は `get_frame_plan` 応答の構造化を view と live player から切り離して検査する。
 
 ```powershell
 cmake -S . -B build-studio -DSKIP_DEVSTUDIO=OFF `
