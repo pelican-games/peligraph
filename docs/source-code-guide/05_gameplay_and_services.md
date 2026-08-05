@@ -65,7 +65,7 @@ registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/detai
 
 [`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L53) は関数ローカルstaticのSystem instanceを返します。System objectは毎フレーム作り直されず、メンバ状態を保持できます。
 
-これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L171)）。
+これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L211)）。
 
 ### 実行順
 
@@ -74,7 +74,7 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 1. `order`昇順
 2. 同じorderなら登録時の型名文字列昇順
 
-従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L279) はorder 10000なので、通常のゲームSystemの後に動きます。
+従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L319) はorder 10000なので、通常のゲームSystemの後に動きます。
 
 ## 5.3 event handlerを持つSystem
 
@@ -259,7 +259,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### controller
 
-[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L279) がゲームSystemとして毎フレーム処理します。
+[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L319) がゲームSystemとして毎フレーム処理します。
 
 - orbit: target周りのyaw/pitch/distance
 - follow: target + offsetからlook-at
@@ -268,24 +268,28 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 controllerは名前bindingからtarget transformを毎回resolveし、scene遷移・entity削除を検知できます。
 
-> 🧩 **難所 — 基底は +Z を向く**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L136))
+> 🧩 **難所 — +Z 前方と project up から基底を作る**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L174))
 >
 > **何をする所か**: controller が作った `CameraPose`(pos / dir / up)を、scene object の transform へ書き戻すための四元数へ変換します。直交化してから `glm::quat_cast`(回転行列から四元数を復元する glm の関数)へ渡す 4 行です。
 >
-> **素朴に読むと**: `right = cross(pose.up, dir)` の順が `glm::lookAt` の慣習と逆で、しかも `up` を `cross(dir, right)` で作り直しています。前提は **このエンジンのカメラは +Z が前**であること — [`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L88) は yaw=pitch=0 で `(0,0,1)` を返し、`yawFromDirection()` は `atan2(x, z)`、`pitchFromDirection()` は `asin(y)`、ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) も `rotation * vec3{0,0,1}` を dir にしています。この規約では基底の巡回順が X×Y=Z、すなわち Y×Z=X(= `cross(up, dir)` が right)、Z×X=Y(= `cross(dir, right)` が up)になります。`glm::lookAt` 系は view 空間の前方が -Z なので `cross(dir, up)` の順で、そこから写すと外積が逆向きになります。厄介なのは**どちらも例外にならず画が出る**ことです。2 本とも反転すれば行列式は +1 のままなので、前方軸まわりに 180° 回った上下逆の回転が返ります。片方だけ直すと行列式 -1 の鏡像行列になり、`quat_cast` は入力が正規直交(各列が長さ 1 で互いに直交)な回転行列である前提で符号を復元するため、返る四元数に意味がなくなります。`up` を作り直すのも同じ系統で、ユーザが与えた `pose.up` が `dir` と直交している保証はなく、そのまま列に置くと非直交な行列を `quat_cast` へ渡して回転が歪みます。
+> **素朴に読むと**: `right = cross(pose.up, dir)` の順が `glm::lookAt` の慣習と逆で、しかも `up` を `cross(dir, right)` で作り直しています。前提は **このエンジンのカメラは local +Z が前**であること — ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) も `rotation * vec3{0,0,1}` を dir にしています。一方、world の上方向は固定 +Y ではなく `basic_config.camera.up` です。[`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L126) は、宣言 up に直交する面へ canonical +Z を射影して forward を作り、`right = cross(up, forward)` と合わせて yaw/pitch 基底にします。逆変換も固定の `atan2(x,z)` / `asin(y)` ではなく、この基底との内積から求めます。宣言 up が +Y なら従来の +Z forward / +X right と同じ式になります。
+>
+> 正規直交基底の巡回順は `up × dir = right`、`dir × right = up` です。`glm::lookAt` 系は view 空間の前方が -Z なので `cross(dir, up)` の順で、そこから写すと外積が逆向きになります。厄介なのは**どちらも例外にならず画が出る**ことです。2 本とも反転すれば行列式は +1 のままなので、前方軸まわりに 180° 回った上下逆の回転が返ります。片方だけ直すと行列式 -1 の鏡像行列になり、`quat_cast` は入力が正規直交(各列が長さ 1 で互いに直交)な回転行列である前提で符号を復元するため、返る四元数に意味がなくなります。`up` を作り直すのも同じ系統で、ユーザが与えた `pose.up` が `dir` と直交している保証はなく、そのまま列に置くと非直交な行列を `quat_cast` へ渡して回転が歪みます。
 >
 > **骨子**:
 > ```text
 > glm::mat3{right, up, dir} は列ベクトル 3 本 = 第1列 X基底 / 第2列 Y基底 / 第3列 Z基底
->   dir   = normalizeOr(pose.dir, +Z)             ← 第 3 列が前方
->   right = normalizeOr(cross(up, dir), +X)
->   up    = normalizeOr(cross(dir, right), +Y)    ← 与えられた up ではなく作り直した up
+>   dir        = normalizeOr(pose.dir, +Z)             ← 第 3 列が前方
+>   up_hint    = worldUpFor(dir)                       ← project up または極点退避軸
+>   right_hint = normalizeOr(cross(up_hint, dir), +X)
+>   right      = normalizeOr(cross(pose.up, dir), right_hint)
+>   up         = normalizeOr(cross(dir, right), up_hint) ← 与えられた up を直交化
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `normalizeOr()` の fallback は順に +X / +Y / +Z で、3 本揃うと単位行列 = 恒等回転です。長さ 0 のベクトルが来ても `NaN` を四元数へ流さないための受け皿なので、`glm::normalize` を直接使う形へ戻さないこと。同じ直交化は [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L74) と `updateFly()` にもあり、そちらは `worldUpFor()` が world up と dir のほぼ平行(内積の絶対値が 0.98 超)を検知して up hint を +Z へ切り替え、縮退を避けます。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L786) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L112) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L786) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
-> **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。fallback は縮退時の受け皿であって直交性までは保証しないので、`dir` と `up` をほぼ平行にしない責務は呼び出し側(`worldUpFor()`)に残る。
+> **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
 ## 5.7 Physics
 

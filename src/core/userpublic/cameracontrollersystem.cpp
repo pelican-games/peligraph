@@ -1,5 +1,6 @@
 #include "gamesystem.hpp"
 
+#include "../loader/basicconfig.hpp"
 #include "../loader/scene.hpp"
 #include "../renderer/camera.hpp"
 
@@ -63,12 +64,49 @@ glm::vec3 normalizeOr(glm::vec3 value, glm::vec3 fallback) {
     return value * glm::inversesqrt(len2);
 }
 
-glm::vec3 worldUpFor(glm::vec3 dir) {
-    constexpr glm::vec3 world_up{0.0f, 1.0f, 0.0f};
-    if (std::abs(glm::dot(glm::normalize(dir), world_up)) > 0.98f) {
+glm::vec3 projectWorldUp() {
+    return normalizeOr(GET_MODULE(ProjectBasicConfig).initailCameraProperty().up,
+                       glm::vec3{0.0f, 1.0f, 0.0f});
+}
+
+glm::vec3 leastAlignedCanonicalAxis(glm::vec3 axis) {
+    const auto x_alignment = std::abs(axis.x);
+    const auto y_alignment = std::abs(axis.y);
+    const auto z_alignment = std::abs(axis.z);
+    // Prefer Z on ties so the existing +Y convention keeps its pole fallback.
+    if (z_alignment <= x_alignment && z_alignment <= y_alignment) {
         return glm::vec3{0.0f, 0.0f, 1.0f};
     }
+    if (x_alignment <= y_alignment) {
+        return glm::vec3{1.0f, 0.0f, 0.0f};
+    }
+    return glm::vec3{0.0f, 1.0f, 0.0f};
+}
+
+glm::vec3 worldUpFor(glm::vec3 dir) {
+    const auto world_up = projectWorldUp();
+    if (std::abs(glm::dot(glm::normalize(dir), world_up)) > 0.98f) {
+        return leastAlignedCanonicalAxis(world_up);
+    }
     return world_up;
+}
+
+struct YawPitchBasis {
+    glm::vec3 up;
+    glm::vec3 forward;
+    glm::vec3 right;
+};
+
+YawPitchBasis yawPitchBasis() {
+    const auto up = projectWorldUp();
+    constexpr glm::vec3 canonical_forward{0.0f, 0.0f, 1.0f};
+    const auto forward = normalizeOr(canonical_forward - up * glm::dot(canonical_forward, up),
+                                     leastAlignedCanonicalAxis(up));
+    return YawPitchBasis{
+        .up = up,
+        .forward = forward,
+        .right = normalizeOr(glm::cross(up, forward), glm::vec3{1.0f, 0.0f, 0.0f}),
+    };
 }
 
 CameraPose makePose(glm::vec3 pos, glm::vec3 dir_hint) {
@@ -77,7 +115,7 @@ CameraPose makePose(glm::vec3 pos, glm::vec3 dir_hint) {
     pose.dir = normalizeOr(dir_hint, glm::vec3{0.0f, 0.0f, 1.0f});
     const auto up_hint = worldUpFor(pose.dir);
     const auto right = normalizeOr(glm::cross(up_hint, pose.dir), glm::vec3{1.0f, 0.0f, 0.0f});
-    pose.up = normalizeOr(glm::cross(pose.dir, right), glm::vec3{0.0f, 1.0f, 0.0f});
+    pose.up = normalizeOr(glm::cross(pose.dir, right), up_hint);
     return pose;
 }
 
@@ -86,23 +124,23 @@ CameraPose lookAtPose(glm::vec3 pos, glm::vec3 target) {
 }
 
 glm::vec3 directionFromYawPitch(float yaw, float pitch) {
+    const auto basis = yawPitchBasis();
     const auto cos_pitch = std::cos(pitch);
-    return normalizeOr(glm::vec3{
-                           std::sin(yaw) * cos_pitch,
-                           std::sin(pitch),
-                           std::cos(yaw) * cos_pitch,
-                       },
-                       glm::vec3{0.0f, 0.0f, 1.0f});
+    return normalizeOr((basis.forward * std::cos(yaw) + basis.right * std::sin(yaw)) * cos_pitch +
+                           basis.up * std::sin(pitch),
+                       basis.forward);
 }
 
 float yawFromDirection(glm::vec3 dir) {
+    const auto basis = yawPitchBasis();
     const auto normalized = normalizeOr(dir, glm::vec3{0.0f, 0.0f, 1.0f});
-    return std::atan2(normalized.x, normalized.z);
+    return std::atan2(glm::dot(normalized, basis.right), glm::dot(normalized, basis.forward));
 }
 
 float pitchFromDirection(glm::vec3 dir) {
+    const auto basis = yawPitchBasis();
     const auto normalized = normalizeOr(dir, glm::vec3{0.0f, 0.0f, 1.0f});
-    return std::asin(std::clamp(normalized.y, -1.0f, 1.0f));
+    return std::asin(std::clamp(glm::dot(normalized, basis.up), -1.0f, 1.0f));
 }
 
 float clampPitch(float pitch) {
@@ -135,8 +173,10 @@ CameraPose blendPose(CameraPose current, CameraPose desired, float weight) {
 
 glm::quat rotationFromPose(const CameraPose &pose) {
     const auto dir = normalizeOr(pose.dir, glm::vec3{0.0f, 0.0f, 1.0f});
-    const auto right = normalizeOr(glm::cross(pose.up, dir), glm::vec3{1.0f, 0.0f, 0.0f});
-    const auto up = normalizeOr(glm::cross(dir, right), glm::vec3{0.0f, 1.0f, 0.0f});
+    const auto up_hint = worldUpFor(dir);
+    const auto right_hint = normalizeOr(glm::cross(up_hint, dir), glm::vec3{1.0f, 0.0f, 0.0f});
+    const auto right = normalizeOr(glm::cross(pose.up, dir), right_hint);
+    const auto up = normalizeOr(glm::cross(dir, right), up_hint);
     return glm::quat_cast(glm::mat3{right, up, dir});
 }
 
@@ -238,7 +278,7 @@ CameraPose initialFlyPose(std::string_view camera_name) {
             .dir = normalizeOr(transform.rotation * glm::vec3{0.0f, 0.0f, 1.0f},
                                glm::vec3{0.0f, 0.0f, 1.0f}),
             .up = normalizeOr(transform.rotation * glm::vec3{0.0f, 1.0f, 0.0f},
-                              glm::vec3{0.0f, 1.0f, 0.0f}),
+                              projectWorldUp()),
         };
     }
 
@@ -269,7 +309,7 @@ CameraPose updateFly(GameContext &ctx, std::string_view camera_name, const Contr
     const auto dir = directionFromYawPitch(state.yaw, state.pitch);
     const auto up_hint = worldUpFor(dir);
     const auto right = normalizeOr(glm::cross(up_hint, dir), glm::vec3{1.0f, 0.0f, 0.0f});
-    const auto up = normalizeOr(glm::cross(dir, right), glm::vec3{0.0f, 1.0f, 0.0f});
+    const auto up = normalizeOr(glm::cross(dir, right), up_hint);
     state.pose.pos += (right * move.x + dir * move.y) * controller.speed * dt;
     state.pose.dir = dir;
     state.pose.up = up;
