@@ -37,6 +37,8 @@
     "features/sky_ambient.json",
     "features/taa.json",
     "features/velocity.json",
+    "input/free_camera_actions.json",
+    "input/profiles/free_camera.json",
     "fullscreen.frag",
     "fullscreen.frag.spv",
     "fullscreen.vert",

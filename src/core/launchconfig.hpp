@@ -19,6 +19,11 @@ struct EngineLaunchCameraOverride {
     float fov_y = 45.0f;
 };
 
+struct EngineLaunchFreeCamera {
+    float speed = 5.0f;
+    float sensitivity = 1.5f;
+};
+
 DECLARE_MODULE(EngineLaunchConfig) {
   public:
     bool headless = false;
@@ -47,6 +52,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;
     std::optional<std::string> input_profile;
+    std::optional<EngineLaunchFreeCamera> free_camera;
     std::optional<std::filesystem::path> camera_bake_output;
     std::optional<std::filesystem::path> play_seq;
     std::optional<std::filesystem::path> play_vat;

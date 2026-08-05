@@ -276,6 +276,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("name")
         .help("override the project's active input binding profile");
+    program.add_argument("--free-camera")
+        .flag()
+        .help("enable a runtime-only fly camera (WASD move, arrows look; project files stay unchanged)");
     program.add_argument("--bake-camera-output")
         .default_value(std::string{})
         .metavar("path.jsonl")
@@ -374,6 +377,12 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         const auto input_profile = program.get<std::string>("--input-profile");
         if (!input_profile.empty()) {
             config.input_profile = input_profile;
+        }
+        if (program.get<bool>("--free-camera")) {
+            if (config.input_profile) {
+                throw std::runtime_error("--free-camera cannot be combined with --input-profile");
+            }
+            config.free_camera = Pelican::EngineLaunchFreeCamera{};
         }
         const auto camera_bake_output = program.get<std::string>("--bake-camera-output");
         if (!camera_bake_output.empty()) {

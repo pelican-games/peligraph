@@ -1,5 +1,6 @@
 #include "userinput.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../launchconfig.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
@@ -14,6 +15,12 @@
 namespace Pelican {
 
 namespace {
+
+constexpr std::string_view freeCameraActionsResource =
+    "engine://input/free_camera_actions.json";
+constexpr std::string_view freeCameraProfileResource =
+    "engine://input/profiles/free_camera.json";
+constexpr std::string_view freeCameraProfileName = "pelican_free_camera";
 
 class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::optional<InputActionMap> action_definitions;
@@ -86,14 +93,37 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
 
   public:
     InputActionsRuntime() {
-        const auto input_actions_json = GET_MODULE(ProjectBasicConfig).inputActionsJson();
+        const auto &launch = GET_MODULE(EngineLaunchConfig);
+        std::optional<std::string> input_actions_json;
+        std::unordered_map<std::string, std::string> profile_jsons;
+        std::optional<std::string> selected;
+
+        if (launch.free_camera) {
+            if (launch.input_profile) {
+                throw std::runtime_error(
+                    "runtime free camera cannot be combined with an input profile override");
+            }
+            auto &resolver = GET_MODULE(PathResolver);
+            input_actions_json = resolver.loadText(freeCameraActionsResource);
+            profile_jsons.emplace(
+                freeCameraProfileName,
+                resolver.loadText(freeCameraProfileResource));
+            selected = std::string{freeCameraProfileName};
+        } else {
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            input_actions_json = config.inputActionsJson();
+            profile_jsons = config.inputProfileJsons();
+            selected = launch.input_profile ? launch.input_profile
+                                            : config.defaultInputProfile();
+        }
+
         if (!input_actions_json) {
             return;
         }
 
         action_definitions = parseInputActionsString(*input_actions_json);
         action_map = action_definitions;
-        for (const auto &[name, profile_json] : GET_MODULE(ProjectBasicConfig).inputProfileJsons()) {
+        for (const auto &[name, profile_json] : profile_jsons) {
             auto profile = parseInputProfileString(profile_json, *action_definitions);
             if (profile.name != name) {
                 throw std::runtime_error("input profile key '" + name + "' does not match document name '" +
@@ -101,9 +131,6 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
             }
             profiles.emplace(name, std::move(profile));
         }
-        const auto &launch = GET_MODULE(EngineLaunchConfig);
-        const auto selected = launch.input_profile ? launch.input_profile
-                                                   : GET_MODULE(ProjectBasicConfig).defaultInputProfile();
         if (selected) {
             selectProfile(*selected);
         }

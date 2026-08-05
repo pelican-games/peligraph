@@ -939,7 +939,7 @@
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.cpp|`Camera::setPos()` / `setDir()`": "void Camera::setPos(glm::vec3 new_pos) {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.cpp|`applyControllerPose()`": "void Camera::applyControllerPose(std::string_view name, glm::vec3 new_pos, glm::vec3 new_dir, glm::vec3 new_up) {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.cpp|`applyControllerPose()`|#1": "void Camera::applyControllerPose(std::string_view name, glm::vec3 new_pos, glm::vec3 new_dir, glm::vec3 new_up) {",
-    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.cpp|`prepareSceneCameras()`": "Camera::PreparedSceneState Camera::prepareSceneCameras(",
+    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.cpp|`prepareSceneCameras()`": "Camera::prepareSceneCameras(std::string_view scene_id) const {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.hpp|`Camera`": "DECLARE_MODULE(Camera) {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.hpp|`camera.hpp` 内": "bool active_scene_camera_locked = false;",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/renderer/camera.hpp|`discontinuityRevision()`": "std::uint64_t discontinuityRevision() const { return discontinuity_revision; }",

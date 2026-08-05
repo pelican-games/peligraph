@@ -28,7 +28,7 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L438) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L227) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L447) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L227) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
@@ -36,7 +36,7 @@ sequenceDiagram
 - project rootと`project.json`
 - asset検証をstrictにするか
 - render出力、frame plan dump（`--dump-frame-plan`）
-- Vulkanのdebugオブジェクト名とコマンドラベル（`--gpu-labels` → [`EngineLaunchConfig::gpu_labels`](../../src/core/launchconfig.hpp#L45)）
+- Vulkanのdebugオブジェクト名とコマンドラベル（`--gpu-labels` → [`EngineLaunchConfig::gpu_labels`](../../src/core/launchconfig.hpp#L50)）
 - sequence/VAT再生とcamera override
 - XRモード（`--xr off|auto|on`）
 - game logic DLL（`--game-logic`）
@@ -432,7 +432,7 @@ ECSCore::update()
 
 ### inputの1フレーム固定
 
-[`InputStateCore::beginFrame()`](../../src/core/os/inputstate.cpp#L373) がpending eventをframe eventへswapし、down/pushed/released/mouse deltaを作ります。Action層は [`freezeInputActionsFrame()`](../../src/core/userpublic/userinput.cpp#L294) で消費maskを適用したsnapshotを評価します。以後の`Actions::*`は再計算せず同じ`InputActionFrame`を返します。
+[`InputStateCore::beginFrame()`](../../src/core/os/inputstate.cpp#L373) がpending eventをframe eventへswapし、down/pushed/released/mouse deltaを作ります。Action層は [`freezeInputActionsFrame()`](../../src/core/userpublic/userinput.cpp#L321) で消費maskを適用したsnapshotを評価します。以後の`Actions::*`は再計算せず同じ`InputActionFrame`を返します。
 
 ## 2.6 EngineTime
 

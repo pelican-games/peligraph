@@ -1014,6 +1014,20 @@ if(PELICAN_WITH_VAT)
     set_tests_properties(vatplayer_headless_player PROPERTIES LABELS gpu)
 endif()
 
+add_test(
+    NAME free_camera_runtime_overlay_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/free_camera_runtime_overlay
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_free_camera_runtime_overlay.cmake
+)
+set_tests_properties(free_camera_runtime_overlay_player PROPERTIES
+    LABELS gpu
+    RESOURCE_LOCK pelican_gpu
+)
+
 if(PELICAN_WITH_RPC)
     add_executable(
         pelican_test_vrm_xr_demo_player

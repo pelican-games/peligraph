@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -44,6 +46,12 @@ void writeText(const std::filesystem::path &path, std::string_view text) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream file{path, std::ios::binary};
     file << text;
+}
+
+std::string readText(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    return std::string{std::istreambuf_iterator<char>{file},
+                       std::istreambuf_iterator<char>{}};
 }
 
 void ensureLogger() {
@@ -207,6 +215,7 @@ TEST_CASE("Camera parses v1 perspective and orthographic projection parameters",
     REQUIRE(camera.hasSceneCamera("CanonicalCam"));
     REQUIRE(camera.hasSceneCamera("GltfCam"));
     REQUIRE(camera.hasSceneCamera("OrthoCam"));
+    REQUIRE(camera.activeCameraName().empty());
 
     camera.setActiveCamera("CanonicalCam");
     auto spec = camera.getProjectionSpec();
@@ -512,6 +521,42 @@ TEST_CASE("Camera controller parse errors include camera name and unknown type",
         REQUIRE(message.find("BadCam") != std::string::npos);
         REQUIRE(message.find("rail") != std::string::npos);
     }
+}
+
+TEST_CASE("Runtime free camera overlays the resolved scene without changing authored bytes",
+          "[camera][free-camera][wp265]") {
+    ensureLogger();
+    Sandbox sandbox;
+    const std::string authored = cameraControllerSceneJson();
+    const auto scene_path = sandbox.root / "scene.json";
+    writeText(scene_path, authored);
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
+    GET_MODULE(EngineLaunchConfig).free_camera = EngineLaunchFreeCamera{
+        .speed = 7.0f,
+        .sensitivity = 2.0f,
+    };
+
+    auto &camera = GET_MODULE(Camera);
+    const auto runtime_name = camera.activeCameraName();
+    REQUIRE(runtime_name.starts_with("__pelican_runtime_free_camera"));
+    const auto *runtime = camera.sceneCameraController(runtime_name);
+    REQUIRE(runtime != nullptr);
+    REQUIRE(runtime->type == Camera::SceneCameraControllerType::Fly);
+    REQUIRE(runtime->speed == Catch::Approx(7.0f));
+    REQUIRE(runtime->sensitivity == Catch::Approx(2.0f));
+
+    const auto *authored_fly = camera.sceneCameraController("FlyCam");
+    REQUIRE(authored_fly != nullptr);
+    REQUIRE(authored_fly->type == Camera::SceneCameraControllerType::Fly);
+    REQUIRE(authored_fly->speed == Catch::Approx(6.5f));
+    REQUIRE(authored_fly->sensitivity == Catch::Approx(1.25f));
+
+    REQUIRE(GET_MODULE(ProjectBasicConfig).sceneDataJson().find(runtime_name) ==
+            std::string::npos);
+    REQUIRE(readText(scene_path) == authored);
 }
 
 } // namespace Pelican

@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
@@ -266,6 +267,33 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     REQUIRE_FALSE(Actions::isHeld("move"));
     REQUIRE(input.currentSnapshot().getKey(KeyCode::D));
     REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 3);
+}
+
+TEST_CASE("Runtime free camera supplies an embedded input profile without project declarations",
+          "[input-actions][free-camera][wp265]") {
+    ensureLogger();
+    Sandbox sandbox;
+    std::filesystem::create_directories(sandbox.root);
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(EngineLaunchConfig).free_camera = EngineLaunchFreeCamera{};
+
+    REQUIRE(Actions::isConfigured());
+    REQUIRE(Actions::actionSetStack() ==
+            std::vector<std::string>{"free_camera"});
+    REQUIRE(internal::activeInputProfile() ==
+            std::optional<std::string>{"pelican_free_camera"});
+    REQUIRE(internal::availableInputProfiles() ==
+            std::vector<std::string>{"pelican_free_camera"});
+    REQUIRE(internal::gamepadPollingEnabled());
+
+    auto &input = GET_MODULE(InputState);
+    input.queueEvent(InputEvent::button(KeyCode::W, true));
+    input.queueEvent(InputEvent::button(KeyCode::ArrowRight, true));
+    input.beginFrame();
+    REQUIRE(Actions::axis2("move").y == 1.0f);
+    REQUIRE(Actions::axis2("look").x == 1.0f);
 }
 
 TEST_CASE("Input profiles switch gamepad buttons and process axes", "[input-actions][gamepad]") {

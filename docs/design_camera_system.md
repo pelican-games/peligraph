@@ -1,7 +1,7 @@
 # カメラシステム: glTF 同等以上(v1)
 
 対象読者: エンジン担当。
-ステータス: v1 ドラフト(2026-07-07。方向決定済み・詳細レビュー前)。
+ステータス: v1.1 ドラフト(2026-08-05。WP265 の runtime free camera を追記)。
 前提: `design_scene_format.md`(camera コンポーネント)、R6(glTF 規約)、
 `design_game_logic_native.md`(コントローラの置き場所)、
 transform_seq v2 予約(カメラトラック)。
@@ -49,8 +49,33 @@ transform_seq v2 予約(カメラトラック)。
   上げず追加キーのみで済む想定。ずれる場合は v1.2 として追記)
 - project.json の `basic_config.camera` は「カメラ未定義シーンの既定」として
   存続(意味論変更なし)
-- 入力とカメラ: orbit/fly コントローラは Actions(move/look)を消費する —
-  look 用の axis2(マウスデルタ)binding を actions.json 側に追加するだけ
+- 入力とカメラ: orbit/fly コントローラは Actions(`move` / `look`)を消費する。
+  binding は入力 profile 側で与える
+
+### 2.1 runtime free camera(WP265)
+
+`pelican_player --free-camera` は、プロジェクトを変更しないデバッグ用の自由飛行
+カメラを明示的に有効化する公開起動面である。Studio も同じ player 引数を使うだけで、
+エディタ専用 API は持たない。
+
+実装前に rendering config の `featurecompose` を調べた。そこには
+`transform_resolved_config` があり、保存対象ではない解決済み rendering config を
+起動時に変換できる。一方、scene/input には同種の汎用 hook がない。scene の
+`AuthoringSceneDocument` は `save_scene` の保存正本なので、そこへ controller を注入すると
+後の保存で利用者ファイルへ混入し得る。このため authored JSON の変換は採らない。
+
+代わりに、次の二つをそれぞれの runtime 投影境界で合成する。
+
+- camera: 解決済み scene camera 群とは別に synthetic な `fly` camera を加え、最初の
+  scene camera があればその pose/projection を開始値にする。既存 camera の controller と
+  authored transform は変更しない
+- input: `engine://input/free_camera_actions.json` と
+  `engine://input/profiles/free_camera.json` を入力 runtime が選ぶ。project の
+  `input/actions.json`、`input/profiles/*.json`、`project.json` は読替えも書込みもしない
+
+この overlay は `EngineLaunchConfig::free_camera` がある起動だけに存在し、省略時は camera と
+input の従来経路だけを通る。操作は WASD=移動、矢印=視線、gamepad は左 stick=移動・右
+stick=視線。既存の `Fly` とその `speed` / `sensitivity` を使い、新 controller 型は加えない。
 
 ## 3. 検証
 
@@ -69,5 +94,3 @@ C3: glb round-trip + transform_seq v2 カメラトラック(v2 改訂と同時)�
 
 1. aspect の扱い(glTF は省略可 = ビューポート追従。エンジンも同義に)
 2. ブレンド(v2)の補間仕様
-3. エディタカメラ(D1 のビューポート操作用)を同じコントローラ実装で
-   賄うか(推奨: fly コントローラを共用)

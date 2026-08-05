@@ -50,6 +50,7 @@
 | `--record-input <path.jsonl>` | なし | 順序付き入力を `pelican.input_seq` v1 で収録(✅WP89) |
 | `--replay <path.jsonl>` | なし | input_seq のリプレイ。`--record-input` と排他、ホットリロード自動無効(✅WP89) |
 | `--input-profile <name>` | project.json の既定 | アクティブ入力プロファイルの上書き(✅WP91) |
+| `--free-camera` | off | project を変更せず runtime-only の `fly` camera と埋め込み入力 profile を有効化。WASD=移動、矢印=視線、左右 stick にも対応(✅WP265) |
 | `--xr off\|auto\|on` | off | OpenXR(PCVR)起動(✅WP125。`auto` = 不在なら flat 続行 / `on` = 不在・headless・rpc・リプレイでは名指しエラー — [第2章](02_getting_started.md)) |
 | `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須(✅WP89) |
 
@@ -371,9 +372,13 @@ copy、process 間 frame 転送はありません。player が終了しても St
 
 ```powershell
 $env:PELICAN_STUDIO_PLAYER = "C:/path/to/pelican_player.exe"
-$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--project C:/path/to/project"
+$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--project C:/path/to/project --free-camera"
 dist_debug/pelican_studio.exe
 ```
+
+`--free-camera` は Studio 固有機能ではなく同じ `pelican_player` の公開引数です。したがって
+上の環境変数を使わず、素の player へ直接指定しても同じ自由飛行カメラになります。overlay は
+メモリ上だけにあり、scene JSON や入力 profile を保存しません。
 
 共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の

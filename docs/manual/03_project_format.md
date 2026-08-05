@@ -157,7 +157,7 @@
 
 ### engine:// と EngineResourceRegistry
 
-`engine://<id>` はエンジンバイナリに埋め込まれたリソース(既定設定・標準シェーダ・feature 定義・フォント等)を指します。id は埋め込み元 `src/core/resources/` からの相対パスで、現在 **84 エントリ**が [engineresources.cpp](../../src/core/loader/engineresources.cpp) に登録されています(実数はフィクスチャ `test/fixtures/project_format/engine_resources.json` の `ids` 配列が正)。
+`engine://<id>` はエンジンバイナリに埋め込まれたリソース(既定設定・標準シェーダ・feature 定義・フォント等)を指します。id は埋め込み元 `src/core/resources/` からの相対パスで、現在 **104 エントリ**が [engineresources.cpp](../../src/core/loader/engineresources.cpp) に登録されています(実数はフィクスチャ `test/fixtures/project_format/engine_resources.json` の `ids` 配列が正)。
 
 - 未知の id を参照すると、**登録済み id の全一覧付き**でエラーになります(タイポの即時発見)。
 - id 一覧はテストフィクスチャ `test/fixtures/project_format/engine_resources.json` と単体テストで同期が強制されます。web ビューアのレジストリはこの**鏡像サブセット**です([第9章](09_web.md))。

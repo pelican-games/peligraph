@@ -1,10 +1,12 @@
 #include "camera.hpp"
+#include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -460,6 +462,78 @@ Camera::SceneCamera parseSceneCamera(const nlohmann::json &object, const nlohman
     return camera;
 }
 
+void rebuildPreparedProjection(Camera::PreparedSceneState &prepared) {
+    if (prepared.projection.kind == CameraProjectionKind::Orthographic) {
+        prepared.projection_matrix = glm::orthoRH_ZO(
+            -prepared.projection.xmag, prepared.projection.xmag,
+            -prepared.projection.ymag, prepared.projection.ymag,
+            prepared.projection.znear, prepared.projection.zfar);
+        return;
+    }
+
+    const auto aspect = prepared.projection.aspect.value_or(prepared.viewport_aspect);
+    prepared.projection_matrix = glm::perspectiveRH_ZO(
+        prepared.projection.yfov, aspect, prepared.projection.znear,
+        prepared.projection.zfar);
+}
+
+std::string runtimeFreeCameraName(
+    const std::unordered_map<std::string, Camera::SceneCamera> &scene_cameras) {
+    constexpr std::string_view base_name = "__pelican_runtime_free_camera";
+    std::string name{base_name};
+    for (std::uint64_t suffix = 2; scene_cameras.contains(name); ++suffix) {
+        name = std::string{base_name} + '_' + std::to_string(suffix);
+    }
+    return name;
+}
+
+void applyRuntimeFreeCameraOverlay(
+    Camera::PreparedSceneState &prepared,
+    const std::optional<Camera::SceneCamera> &scene_camera_basis) {
+    const auto &launch = GET_MODULE(EngineLaunchConfig);
+    if (!launch.free_camera) {
+        return;
+    }
+    if (!std::isfinite(launch.free_camera->speed) || launch.free_camera->speed <= 0.0f) {
+        throw std::runtime_error("runtime free camera speed must be positive and finite");
+    }
+    if (!std::isfinite(launch.free_camera->sensitivity) ||
+        launch.free_camera->sensitivity <= 0.0f) {
+        throw std::runtime_error("runtime free camera sensitivity must be positive and finite");
+    }
+
+    Camera::SceneCamera free_camera;
+    free_camera.name = runtimeFreeCameraName(prepared.scene_cameras);
+    free_camera.projection = prepared.projection;
+    free_camera.sprite = prepared.sprite_policy;
+    free_camera.pos = prepared.pos;
+    free_camera.dir = prepared.dir;
+    free_camera.up = prepared.up;
+    if (scene_camera_basis) {
+        free_camera.projection = scene_camera_basis->projection;
+        free_camera.sprite = scene_camera_basis->sprite;
+        free_camera.pos = scene_camera_basis->pos;
+        free_camera.dir = scene_camera_basis->dir;
+        free_camera.up = scene_camera_basis->up;
+    }
+    free_camera.controller = Camera::SceneCameraController{
+        .type = Camera::SceneCameraControllerType::Fly,
+        .speed = launch.free_camera->speed,
+        .sensitivity = launch.free_camera->sensitivity,
+    };
+
+    prepared.pos = free_camera.pos;
+    prepared.dir = free_camera.dir;
+    prepared.up = free_camera.up;
+    prepared.projection = free_camera.projection;
+    prepared.sprite_policy = free_camera.sprite;
+    rebuildPreparedProjection(prepared);
+    prepared.active_camera_name = free_camera.name;
+    prepared.active_scene_camera_locked = true;
+    prepared.controlled_scene_camera_order.push_back(free_camera.name);
+    prepared.scene_cameras.emplace(free_camera.name, std::move(free_camera));
+}
+
 } // namespace
 
 Camera::Camera() {
@@ -552,6 +626,7 @@ Camera::prepareSceneCameras(std::string_view scene_id) const {
     };
     rebuild();
     if (!GET_MODULE(PathResolver).isSetup()) {
+        applyRuntimeFreeCameraOverlay(prepared, std::nullopt);
         return prepared;
     }
 
@@ -592,10 +667,12 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
     rebuild();
     const auto scene_it = scenes.find(std::string{scene_id});
     if (scene_it == scenes.end()) {
+        applyRuntimeFreeCameraOverlay(prepared, std::nullopt);
         return prepared;
     }
 
     bool first_camera = true;
+    std::optional<SceneCamera> first_scene_camera;
     for (const auto &object : scene_it.value().at("objects")) {
         const auto *camera_component = findComponent(object, "camera");
         if (camera_component == nullptr) {
@@ -606,6 +683,7 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
             object, *camera_component, prepared.projection,
             prepared.sprite_policy, prepared.up);
         if (first_camera) {
+            first_scene_camera = scene_camera;
             prepared.projection = scene_camera.projection;
             prepared.sprite_policy = scene_camera.sprite;
             rebuild();
@@ -621,6 +699,7 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
                                                      std::move(scene_camera));
         }
     }
+    applyRuntimeFreeCameraOverlay(prepared, first_scene_camera);
     return prepared;
 }
 

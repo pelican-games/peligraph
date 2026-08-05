@@ -207,7 +207,7 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 [`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L695) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key、mouse delta axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L24)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L193)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L220)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L683) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
@@ -229,13 +229,13 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 >   consumed.merge(consumed_by_set)               ← set を抜けてから
 > ```
 >
-> **手がかり**: fixture では `jump`(gameplay)と `confirm`(menu)が両方 `kbd:space` です([gameplay_menu.json](../../test/fixtures/input_actions/valid/gameplay_menu.json) / [keyboard.json](../../test/fixtures/input_actions/valid/keyboard.json))。stack が `{"gameplay","menu"}` のとき menu が先に評価されて Space を消費するので、`confirm.held` が真・`jump.held` が偽になります([`inputactions_test.cpp` 内](../../test/inputactions_test.cpp#L161))。`pose` 型 action はループ先頭で `continue` するため一切消費しません(pose は別経路の `frame_input.pose_samples` から入ります)。`ConsumedControls::merge()` は全フィールドの論理和なので、記録は増える一方で消えません。
+> **手がかり**: fixture では `jump`(gameplay)と `confirm`(menu)が両方 `kbd:space` です([gameplay_menu.json](../../test/fixtures/input_actions/valid/gameplay_menu.json) / [keyboard.json](../../test/fixtures/input_actions/valid/keyboard.json))。stack が `{"gameplay","menu"}` のとき menu が先に評価されて Space を消費するので、`confirm.held` が真・`jump.held` が偽になります([`inputactions_test.cpp` 内](../../test/inputactions_test.cpp#L162))。`pose` 型 action はループ先頭で `continue` するため一切消費しません(pose は別経路の `frame_input.pose_samples` から入ります)。`ConsumedControls::merge()` は全フィールドの論理和なので、記録は増える一方で消えません。
 >
 > **不変条件**: 2 つの `merge` の位置を内側へ動かさない(同一 set 内は互いに非干渉 = 宣言順非依存)。`readBinding()` へ渡すのは `consumed` だけに保つ。同一 action の複数 binding は加算 + clamp であり、先勝ちにしない。`released` は全 binding を見終わってから決める。
 
 ### raw inputとAction消費は別
 
-`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L228) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L255) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
 
 ## 5.6 Camera
 
@@ -251,11 +251,11 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L645) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L724) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L716) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L795) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L659) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L562)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L707) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L738) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L598)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L786) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -283,7 +283,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `normalizeOr()` の fallback は順に +X / +Y / +Z で、3 本揃うと単位行列 = 恒等回転です。長さ 0 のベクトルが来ても `NaN` を四元数へ流さないための受け皿なので、`glm::normalize` を直接使う形へ戻さないこと。同じ直交化は [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L74) と `updateFly()` にもあり、そちらは `worldUpFor()` が world up と dir のほぼ平行(内積の絶対値が 0.98 超)を検知して up hint を +Z へ切り替え、縮退を避けます。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L707) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `normalizeOr()` の fallback は順に +X / +Y / +Z で、3 本揃うと単位行列 = 恒等回転です。長さ 0 のベクトルが来ても `NaN` を四元数へ流さないための受け皿なので、`glm::normalize` を直接使う形へ戻さないこと。同じ直交化は [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L74) と `updateFly()` にもあり、そちらは `worldUpFor()` が world up と dir のほぼ平行(内積の絶対値が 0.98 超)を検知して up hint を +Z へ切り替え、縮退を避けます。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L786) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。fallback は縮退時の受け皿であって直交性までは保証しないので、`dir` と `up` をほぼ平行にしない責務は呼び出し側(`worldUpFor()`)に残る。
 

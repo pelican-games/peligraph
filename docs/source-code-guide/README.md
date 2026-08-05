@@ -60,7 +60,7 @@
 
 エンジン全体を最短で追うなら、次のリンクを順に開いてください。
 
-1. [`main()`](../../src/player/main.cpp#L438) — CLIで起動条件を確定する。
+1. [`main()`](../../src/player/main.cpp#L447) — CLIで起動条件を確定する。
 2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L46) — 設定、ECS、scene、loopを組み立てる。
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L128) — 1フレームのゲーム状態更新を5フェーズで実行する。
