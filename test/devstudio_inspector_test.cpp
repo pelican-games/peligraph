@@ -1,0 +1,460 @@
+#include "inspectormodel.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace {
+
+using Json = nlohmann::json;
+using PelicanStudio::InspectorModel;
+using PelicanStudio::InspectorNoticeKind;
+using PelicanStudio::InspectorRpcRequest;
+using PelicanStudio::InspectorWidgetDescriptor;
+using PelicanStudio::InspectorWidgetKind;
+using PelicanStudio::OutlinerObjectKey;
+
+Json componentResult(double position_x = 1.0,
+                     std::uint64_t scene_revision = 1) {
+    return Json{
+        {"scene_revision", scene_revision},
+        {"authoring_object_id", 41},
+        {"declaration_index", 2},
+        {"components",
+         Json::array(
+             {{{"name", "transform"},
+               {"component_index", 0},
+               {"authored_json",
+                {{"pos", Json::array({position_x, 2.0, 3.0})},
+                 {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
+                 {"scale", Json::array({1.0, 1.0, 1.0})}}},
+               {"runtime_json",
+                {{"pos", Json::array({position_x, 2.0, 3.0})},
+                 {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
+                 {"scale", Json::array({1.0, 1.0, 1.0})}}},
+               {"editable", true},
+               {"codec", {{"state", "registered"}, {"name", "transform"}}},
+               {"schema",
+                {{"state", "available"},
+                 {"fields",
+                  Json::array(
+                      {{{"name", "pos"}, {"type", "vec3"}},
+                       {{"name", "rotation"}, {"type", "quat"}},
+                       {{"name", "scale"}, {"type", "vec3"}}})}}},
+               {"pending", false}},
+              {{"name", "fixture_flags"},
+               {"component_index", 1},
+               {"authored_json", {{"enabled", true}}},
+               {"editable", true},
+               {"codec", {{"state", "registered"}}},
+               {"schema",
+                {{"state", "available"},
+                 {"fields",
+                  Json::array(
+                      {{{"name", "enabled"}, {"type", "bool"}}})}}},
+               {"pending", false}}})},
+    };
+}
+
+Json sceneTreeResult(std::uint64_t scene_revision = 1) {
+    return Json{
+        {"scene_revision", scene_revision},
+        {"scene_id", "main"},
+        {"objects",
+         Json::array({{{"authoring_object_id", 7},
+                       {"declaration_index", 0}},
+                      {{"authoring_object_id", 41},
+                       {"declaration_index", 2}}})},
+    };
+}
+
+struct InspectorHarness {
+    InspectorModel model;
+
+    InspectorRpcRequest take(std::string_view method) {
+        auto requests = model.takeRpcRequests();
+        REQUIRE(requests.size() == 1);
+        REQUIRE(requests.front().method == std::string{method});
+        return std::move(requests.front());
+    }
+
+    void reply(const InspectorRpcRequest &request, const Json &result) {
+        model.receiveRpcResult(request.request_id, result.dump());
+    }
+
+    void open(double position_x = 1.0) {
+        model.selectObject(OutlinerObjectKey{
+            .scene_id = "main",
+            .declaration_index = 2,
+        });
+        REQUIRE(model.takeRpcRequests().empty());
+
+        model.startSession();
+        const auto session = take("open_editor_session");
+        REQUIRE(session.params.at("display_name") ==
+                "Pelican Studio Inspector");
+        reply(session, {{"actor_id", 9},
+                        {"display_name", "Pelican Studio Inspector"}});
+
+        const auto tree = take("scene_tree");
+        REQUIRE(tree.params == Json{{"scene_id", "main"}});
+        reply(tree, sceneTreeResult());
+
+        const auto components = take("get_components");
+        REQUIRE(components.params.at("scene_id") == "main");
+        REQUIRE(components.params.at("authoring_object_id") == 41);
+        reply(components, componentResult(position_x));
+
+        const auto watch = take("get_scene_revision");
+        reply(watch, {{"scene_revision", 1}, {"preview_epoch", 0}});
+        REQUIRE(model.takeRpcRequests().empty());
+        REQUIRE(model.snapshot());
+    }
+
+    const InspectorWidgetDescriptor &field(std::string_view component,
+                                           std::string_view name) const {
+        REQUIRE(model.snapshot());
+        for (const auto &candidate : model.snapshot()->components) {
+            if (candidate.name != component) {
+                continue;
+            }
+            const auto found = std::find_if(
+                candidate.widgets.begin(), candidate.widgets.end(),
+                [name](const InspectorWidgetDescriptor &widget) {
+                    return widget.field_name == name;
+                });
+            REQUIRE(found != candidate.widgets.end());
+            return *found;
+        }
+        FAIL("missing component " << std::string{component});
+    }
+};
+
+} // namespace
+
+TEST_CASE("Devstudio inspector derives every widget kind from RPC schema",
+          "[devstudio][inspector][schema][wp266]") {
+    const Json component{
+        {"name", "schema_fixture"},
+        {"component_index", 3},
+        {"authored_json",
+         {{"i8", -1},
+          {"i16", -2},
+          {"i32", -3},
+          {"i64", -4},
+          {"u8", 1},
+          {"u16", 2},
+          {"u32", 3},
+          {"u64", 4},
+          {"f32", 1.25},
+          {"f64", 2.5},
+          {"flag", true},
+          {"choice", "b"},
+          {"text", "hello"},
+          {"v2", Json::array({1.0, 2.0})},
+          {"v3", Json::array({1.0, 2.0, 3.0})},
+          {"v4", Json::array({1.0, 2.0, 3.0, 4.0})},
+          {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})}}},
+        {"schema",
+         {{"state", "available"},
+          {"fields",
+           Json::array(
+               {{{"name", "i8"}, {"type", "i8"}},
+                {{"name", "i16"}, {"type", "i16"}},
+                {{"name", "i32"}, {"type", "i32"}},
+                {{"name", "i64"}, {"type", "i64"}},
+                {{"name", "u8"}, {"type", "u8"}},
+                {{"name", "u16"}, {"type", "u16"}},
+                {{"name", "u32"}, {"type", "u32"}},
+                {{"name", "u64"}, {"type", "u64"}},
+                {{"name", "f32"}, {"type", "f32"}},
+                {{"name", "f64"}, {"type", "f64"}},
+                {{"name", "flag"}, {"type", "bool"}},
+                {{"name", "choice"},
+                 {"type", "enum"},
+                 {"enum", Json::array({"a", "b"})}},
+                {{"name", "text"}, {"type", "string"}},
+                {{"name", "v2"}, {"type", "vec2"}},
+                {{"name", "v3"}, {"type", "vec3"}},
+                {{"name", "v4"}, {"type", "vec4"}},
+                {{"name", "rotation"}, {"type", "quat"}}})}}},
+    };
+
+    const auto plan = PelicanStudio::makeInspectorWidgetPlan(component, 99);
+    REQUIRE(plan.size() == 17);
+    const std::vector expected{
+        InspectorWidgetKind::SignedIntegerDrag,
+        InspectorWidgetKind::SignedIntegerDrag,
+        InspectorWidgetKind::SignedIntegerDrag,
+        InspectorWidgetKind::SignedIntegerDrag,
+        InspectorWidgetKind::UnsignedIntegerDrag,
+        InspectorWidgetKind::UnsignedIntegerDrag,
+        InspectorWidgetKind::UnsignedIntegerDrag,
+        InspectorWidgetKind::UnsignedIntegerDrag,
+        InspectorWidgetKind::FloatingPointDrag,
+        InspectorWidgetKind::FloatingPointDrag,
+        InspectorWidgetKind::BooleanCheckbox,
+        InspectorWidgetKind::EnumCombo,
+        InspectorWidgetKind::StringInput,
+        InspectorWidgetKind::VectorDrag,
+        InspectorWidgetKind::VectorDrag,
+        InspectorWidgetKind::VectorDrag,
+        InspectorWidgetKind::QuaternionDrag,
+    };
+    for (std::size_t index = 0; index < plan.size(); ++index) {
+        REQUIRE(plan[index].kind == expected[index]);
+        REQUIRE(plan[index].authored);
+        REQUIRE(plan[index].value_matches_schema);
+        REQUIRE(plan[index].field_key.starts_with("99:schema_fixture:3:"));
+    }
+    REQUIRE(plan[13].columns == 2);
+    REQUIRE(plan[14].columns == 3);
+    REQUIRE(plan[15].columns == 4);
+    REQUIRE(plan[16].columns == 4);
+    REQUIRE(plan[11].enum_values == std::vector<std::string>{"a", "b"});
+    REQUIRE(PelicanStudio::inspectorJsonPointer(
+                "params.weights[2].a/b~c") ==
+            "/params/weights/2/a~1b~0c");
+}
+
+TEST_CASE("Devstudio inspector resolves declaration identity before querying components",
+          "[devstudio][inspector][selection][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+
+    REQUIRE(harness.model.snapshot()->scene_id == "main");
+    REQUIRE(harness.model.snapshot()->declaration_index == 2);
+    REQUIRE(harness.model.snapshot()->authoring_object_id == 41);
+    const auto &position = harness.field("transform", "pos");
+    REQUIRE(position.kind == InspectorWidgetKind::VectorDrag);
+    REQUIRE(position.value == Json::array({1.0, 2.0, 3.0}));
+}
+
+TEST_CASE("Devstudio inspector does not apply an in-flight refresh while a widget is editing",
+          "[devstudio][inspector][refresh][preview][wp245][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key = harness.field("transform", "pos").field_key;
+
+    harness.model.requestRefresh();
+    const auto tree = harness.take("scene_tree");
+    harness.reply(tree, sceneTreeResult());
+    const auto old_components = harness.take("get_components");
+
+    REQUIRE(harness.model.previewWidgetValue(
+        field_key, Json::array({9.0, 2.0, 3.0})));
+    const auto open = harness.take("open_preview");
+    REQUIRE(harness.model.refreshBlocked());
+
+    // This response was already in flight before editing started. It must be
+    // discarded rather than replacing the locally staged value.
+    harness.reply(old_components, componentResult(1.0));
+    REQUIRE(harness.field("transform", "pos").value ==
+            Json::array({9.0, 2.0, 3.0}));
+    REQUIRE(harness.model.takeRpcRequests().empty());
+
+    harness.model.pollExternalChanges();
+    REQUIRE(harness.model.takeRpcRequests().empty());
+
+    harness.reply(open, {{"status", "accepted"},
+                         {"ticket", "preview:1"},
+                         {"request_id", "preview-request:open"}});
+    harness.model.pollPendingOperations();
+    const auto open_result = harness.take("get_preview_result");
+    harness.reply(open_result, {{"status", "open"}});
+
+    REQUIRE(harness.model.finishWidgetEdit(field_key, false));
+    const auto abort = harness.take("abort_preview");
+    harness.reply(abort, {{"status", "accepted"},
+                          {"request_id", "preview-request:abort"}});
+    harness.model.pollPendingOperations();
+    const auto abort_result = harness.take("get_preview_result");
+    harness.reply(abort_result, {{"status", "succeeded"}});
+
+    REQUIRE_FALSE(harness.model.refreshBlocked());
+    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}
+
+TEST_CASE("Devstudio inspector still reflects an external watch change when idle",
+          "[devstudio][inspector][refresh][external][wp245][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+
+    harness.model.pollExternalChanges();
+    const auto watch = harness.take("get_scene_revision");
+    harness.reply(watch, {{"scene_revision", 2}, {"preview_epoch", 0}});
+
+    const auto tree = harness.take("scene_tree");
+    harness.reply(tree, sceneTreeResult(2));
+    const auto components = harness.take("get_components");
+    harness.reply(components, componentResult(7.0, 2));
+
+    REQUIRE(harness.field("transform", "pos").value ==
+            Json::array({7.0, 2.0, 3.0}));
+    REQUIRE(harness.model.snapshot()->scene_revision == 2);
+}
+
+TEST_CASE("Devstudio direct edit keeps an in-flight refresh from restoring the old value",
+          "[devstudio][inspector][refresh][edit][wp245][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key =
+        harness.field("fixture_flags", "enabled").field_key;
+
+    harness.model.requestRefresh();
+    const auto tree = harness.take("scene_tree");
+    harness.reply(tree, sceneTreeResult());
+    const auto old_components = harness.take("get_components");
+
+    REQUIRE(harness.model.commitWidgetValue(field_key, false));
+    const auto edit = harness.take("edit");
+    REQUIRE(harness.model.busy());
+
+    harness.reply(old_components, componentResult());
+    REQUIRE(harness.field("fixture_flags", "enabled").value == false);
+    REQUIRE(harness.model.takeRpcRequests().empty());
+
+    harness.reply(edit, {{"status", "accepted"}, {"ticket", "edit:1"}});
+    harness.model.pollPendingOperations();
+    const auto result = harness.take("get_edit_result");
+    harness.reply(result,
+                  {{"status", "committed"}, {"committed_revision", 2}});
+
+    REQUIRE_FALSE(harness.model.busy());
+    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}
+
+TEST_CASE("Devstudio watch sync retries when an external revision lands during refresh",
+          "[devstudio][inspector][refresh][external][wp245][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+
+    harness.model.requestRefresh();
+    const auto tree = harness.take("scene_tree");
+    harness.reply(tree, sceneTreeResult(2));
+    const auto components = harness.take("get_components");
+    harness.reply(components, componentResult(2.0, 2));
+
+    const auto watch = harness.take("get_scene_revision");
+    harness.reply(watch, {{"scene_revision", 3}, {"preview_epoch", 0}});
+
+    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}
+
+TEST_CASE("Devstudio inspector reports a terminal edit failure instead of accepted as success",
+          "[devstudio][inspector][failure][wp244][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key =
+        harness.field("fixture_flags", "enabled").field_key;
+
+    REQUIRE(harness.model.commitWidgetValue(field_key, false));
+    const auto edit = harness.take("edit");
+    REQUIRE(edit.params.at("operations").at(0).at("object_id") == 41);
+    harness.reply(edit, {{"status", "accepted"}, {"ticket", "edit:1"}});
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Information);
+    REQUIRE(harness.model.notice().kind != InspectorNoticeKind::Success);
+
+    harness.model.pollPendingOperations();
+    const auto result = harness.take("get_edit_result");
+    harness.reply(result,
+                  {{"status", "failed"},
+                   {"error",
+                    {{"code", "runtime_binding_missing"},
+                     {"message", "the edit did not reach the runtime"}}}});
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Error);
+    REQUIRE(harness.model.notice().message.find("runtime_binding_missing") !=
+            std::string::npos);
+}
+
+TEST_CASE("Devstudio numeric editing drives preview update then commit",
+          "[devstudio][inspector][preview][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key = harness.field("transform", "pos").field_key;
+
+    REQUIRE(harness.model.previewWidgetValue(
+        field_key, Json::array({2.0, 2.0, 3.0})));
+    const auto open = harness.take("open_preview");
+    harness.reply(open, {{"status", "accepted"},
+                         {"ticket", "preview:1"},
+                         {"request_id", "preview-request:open"}});
+    harness.model.pollPendingOperations();
+    const auto open_result = harness.take("get_preview_result");
+    harness.reply(open_result, {{"status", "open"}});
+
+    REQUIRE(harness.model.previewWidgetValue(
+        field_key, Json::array({3.0, 2.0, 3.0})));
+    const auto update = harness.take("update_preview");
+    REQUIRE(update.params.at("operations").at(0).at("value") ==
+            Json::array({3.0, 2.0, 3.0}));
+    REQUIRE(harness.model.finishWidgetEdit(field_key, true));
+    harness.reply(update, {{"status", "accepted"},
+                           {"request_id", "preview-request:update"}});
+    harness.model.pollPendingOperations();
+    const auto update_result = harness.take("get_preview_result");
+    harness.reply(update_result, {{"status", "updated"}});
+
+    const auto commit = harness.take("commit_preview");
+    harness.reply(commit, {{"status", "accepted"},
+                           {"request_id", "preview-request:commit"}});
+    harness.model.pollPendingOperations();
+    const auto commit_result = harness.take("get_preview_result");
+    harness.reply(commit_result,
+                  {{"status", "committed"}, {"committed_revision", 2}});
+
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
+    REQUIRE_FALSE(harness.model.refreshBlocked());
+    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}
+
+TEST_CASE("Devstudio aborts the live lease after a terminal preview failure",
+          "[devstudio][inspector][preview][failure][wp244][wp266]") {
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key = harness.field("transform", "pos").field_key;
+
+    REQUIRE(harness.model.previewWidgetValue(
+        field_key, Json::array({2.0, 2.0, 3.0})));
+    const auto open = harness.take("open_preview");
+    harness.reply(open, {{"status", "accepted"},
+                         {"ticket", "preview:1"},
+                         {"request_id", "preview-request:open"}});
+    harness.model.pollPendingOperations();
+    const auto open_result = harness.take("get_preview_result");
+    harness.reply(open_result, {{"status", "open"}});
+
+    REQUIRE(harness.model.previewWidgetValue(
+        field_key, Json::array({3.0, 2.0, 3.0})));
+    const auto update = harness.take("update_preview");
+    REQUIRE(harness.model.finishWidgetEdit(field_key, true));
+    harness.reply(update, {{"status", "accepted"},
+                           {"request_id", "preview-request:update"}});
+    harness.model.pollPendingOperations();
+    const auto update_result = harness.take("get_preview_result");
+    harness.reply(update_result,
+                  {{"status", "failed"},
+                   {"error",
+                    {{"code", "runtime_binding_missing"},
+                     {"message", "preview did not reach the runtime"}}}});
+
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Error);
+    const auto abort = harness.take("abort_preview");
+    harness.reply(abort, {{"status", "accepted"},
+                          {"request_id", "preview-request:abort"}});
+    harness.model.pollPendingOperations();
+    const auto abort_result = harness.take("get_preview_result");
+    harness.reply(abort_result, {{"status", "succeeded"}});
+
+    REQUIRE_FALSE(harness.model.busy());
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Error);
+    REQUIRE(harness.model.notice().message.find("runtime_binding_missing") !=
+            std::string::npos);
+    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}

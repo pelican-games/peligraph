@@ -25,6 +25,7 @@ class QTreeWidgetItem;
 namespace PelicanStudio {
 
 class EmbeddedViewport;
+class InspectorWidget;
 
 class MainWindow : public QMainWindow {
   public:
@@ -45,7 +46,7 @@ class MainWindow : public QMainWindow {
     QListWidget *project_list_ = nullptr;
     QTreeWidget *outliner_ = nullptr;
     EmbeddedViewport *viewport_ = nullptr;
-    QLabel *selection_label_ = nullptr;
+    InspectorWidget *inspector_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;
     QPlainTextEdit *engine_log_ = nullptr;

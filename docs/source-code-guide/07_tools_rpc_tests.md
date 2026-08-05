@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L29) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L30) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -181,9 +181,12 @@ flowchart LR
     Workspace --> Viewport["EmbeddedViewport / native host"]
     Viewport --> Process["EngineProcess / QProcess"]
     Process --> Player["pelican_player / foreign child HWND"]
-    Viewport --> Rpc["pick_object / stdio JSON-RPC"]
+    Viewport --> Rpc["pick / query / edit / watch JSON-RPC"]
     Rpc --> Selection["SelectionModel / public identity"]
     Docks --> Selection
+    Selection --> Inspector["InspectorWidget"]
+    Inspector --> InspectorModel["InspectorModel / schema + edit state"]
+    InspectorModel --> Rpc
     Process --> LogBuffer["EngineLogBuffer / bounded history"]
     LogBuffer --> LogDock["Engine Log dock"]
     Window --> Docks["QDockWidget panels"]
@@ -240,7 +243,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L250) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L245) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L62) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -254,15 +257,36 @@ revision、背景での解除、feature/RPC 失敗時の選択維持を純粋 mo
 共有 game state ではなく client-session の focus なので、Studio 専用 API は作りません。別ツールも
 `pick_object` と同じ identity だけで同じ意味論を実装できます。
 
+[`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) も view/Qt から独立した公開 RPC client
+です。選択の `(scene_id, declaration_index)` を `scene_tree` の `authoring_object_id` へ解決してから
+`get_components` を読み、component 応答の `schema.fields` だけから整数、浮動小数、真偽、列挙、文字列、
+vector、quaternion の [`InspectorWidgetDescriptor`](../../src/devstudio/model/inspectormodel.hpp) を作ります。
+component 名や transform の field 名を view 側で型判定しません。
+
+数値操作は `open_preview` / `update_preview` / `commit_preview`、通常の確定操作は `edit` を使い、
+`get_preview_result` / `get_edit_result` が terminal success を返すまで accepted を成功表示しません。
+`undo` / `redo` も同じ actor と scene revision で送ります。watch token は idle 時だけ 500 ms ごとに
+問い合わせ、preview 保持中、widget 編集中、または直接編集の terminal result 待ちでは refresh を保留します。既に飛んでいた
+`get_components` 応答が編集中に戻った場合も捨て、解除後に取り直します。一方、idle 時の token 変更は
+通常どおり再取得するため、巻き戻り防止と外部変更反映を分けています。これらの状態遷移は
+[`devstudio_inspector_test.cpp`](../../test/devstudio_inspector_test.cpp) が GUI なしで検査します。
+
+[`InspectorWidget`](../../src/devstudio/view/inspectorwidget.hpp) は descriptor の `kind` を Qt control へ
+投影するだけで、engine 内部 symbol を使いません。同じ child process の RPC transport を
+`EmbeddedViewport` から借りるため、別 editor runtime は作られません。windowed player は通常 loop で
+毎 frame `updateFrameState()` を通るので、RPC queue に accepted された編集は次の player frame で適用され、
+viewport の描画へ到達します。
+
 project を開くと viewport は同じ root を `--rpc --project` で再起動します。native child 上の
 左クリックを物理 client 座標へ変換し、`EngineProcess` の stdio JSON-RPC から `pick_object` を
 呼びます。成功は Outliner と Inspector に反映し、背景なら解除します。picking feature が無い場合は
-選択を維持し、viewport/status/log に有効化方法を明示します。枠線と gizmo、scene 編集は後続です。
+選択を維持し、viewport/status/log に有効化方法を明示します。property 編集は Inspector から同じ
+child の編集 RPC へ接続済みで、枠線と gizmo は後続です。
 同期、無名 object、stale 応答、背景、feature 無効の意味論は
 [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp) が headless に固定し、stdio の
 応答/通常 log 分離は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp) が検査します。
 
-> **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L222) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
+> **設計決定:** **エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L222) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
 
 ## 7.7 JSON-RPC を2層に分けて読む
 
@@ -528,7 +552,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1522) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1526) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

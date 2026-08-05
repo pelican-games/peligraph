@@ -1,4 +1,5 @@
 #include "mainwindow.hpp"
+#include "inspectorwidget.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAction>
@@ -7,7 +8,6 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
-#include <QFormLayout>
 #include <QFrame>
 #include <QFont>
 #include <QInputDialog>
@@ -154,15 +154,10 @@ void MainWindow::createWorkspace() {
     docks_[OutlinerDock] =
         makeDock(this, tr("Outliner"), QStringLiteral("pelican.outlinerDock"), outliner_);
 
-    auto *inspector = new QWidget(this);
-    auto *inspector_layout = new QFormLayout(inspector);
-    selection_label_ = new QLabel(tr("None"), inspector);
-    selection_label_->setObjectName(QStringLiteral("pelican.inspectorSelection"));
-    selection_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    selection_label_->setWordWrap(true);
-    inspector_layout->addRow(tr("Selection"), selection_label_);
-    inspector_layout->addRow(tr("Properties"), new QLabel(tr("No editable properties"), inspector));
-    docks_[InspectorDock] = makeDock(this, tr("Inspector"), QStringLiteral("pelican.inspectorDock"), inspector);
+    inspector_ = new InspectorWidget(viewport_, this);
+    docks_[InspectorDock] = makeDock(this, tr("Inspector"),
+                                     QStringLiteral("pelican.inspectorDock"),
+                                     inspector_);
 
     auto *output = new QPlainTextEdit(this);
     output->setReadOnly(true);
@@ -361,7 +356,7 @@ void MainWindow::refreshSelectionViews() {
     if (!selection) {
         outliner_->setCurrentItem(nullptr);
         outliner_->clearSelection();
-        selection_label_->setText(tr("None"));
+        inspector_->setSelection(std::nullopt, tr("None"));
         return;
     }
 
@@ -383,7 +378,8 @@ void MainWindow::refreshSelectionViews() {
     const QString display_name =
         object != nullptr ? QString::fromStdString(object->display_name)
                           : tr("Unknown object");
-    selection_label_->setText(
+    inspector_->setSelection(
+        selection,
         tr("%1\n%2 / declaration %3")
             .arg(display_name)
             .arg(QString::fromStdString(selection->scene_id))

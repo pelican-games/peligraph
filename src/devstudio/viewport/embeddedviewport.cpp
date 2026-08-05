@@ -231,6 +231,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         applyEmbeddedWindowResizeDecision(resize_coalescer_.timerExpired(resize_elapsed_.elapsed()));
     });
     connect(&process_, &EngineProcess::processStarted, this, [this](qint64 process_id) {
+        rpc_ready_ = false;
         restart_button_->setEnabled(false);
         stop_button_->setEnabled(true);
         status_->setText(tr("Engine PID %1 started; waiting for its window...").arg(process_id));
@@ -247,6 +248,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 resize_coalescer_.reset();
                 pointer_button_was_down_ = false;
                 primary_pointer_was_down_ = false;
+                rpc_ready_ = false;
                 child_window_ = 0;
                 last_requested_extent_ = {};
                 native_host_->update();
@@ -259,6 +261,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                         .arg(process_id)
                         .arg(exit_kind)
                         .arg(exit_code));
+                emit engineRpcBecameUnavailable(
+                    tr("The engine viewport process stopped."));
                 if (restart_after_stop_ && !shutting_down_) {
                     restart_after_stop_ = false;
                     QTimer::singleShot(0, this,
@@ -273,16 +277,20 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         resize_coalescer_.reset();
         pointer_button_was_down_ = false;
         primary_pointer_was_down_ = false;
+        rpc_ready_ = false;
         restart_button_->setText(tr("Retry Engine"));
         restart_button_->setEnabled(true);
         stop_button_->setEnabled(false);
         status_->setText(message);
+        emit engineRpcBecameUnavailable(message);
     });
     connect(&process_, &EngineProcess::outputReceived,
             this, &EmbeddedViewport::engineOutputReceived);
     connect(&process_, &EngineProcess::rpcResultReceived, this,
             [this](qint64 request_id, const QJsonValue &result) {
                 if (!pending_pick_requests_.remove(request_id)) {
+                    emit inspectorRpcSucceeded(request_id,
+                                               serializeJsonValue(result));
                     return;
                 }
                 emit pickObjectSucceeded(request_id,
@@ -292,6 +300,9 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
             [this](qint64 request_id, int code, const QString &message,
                    const QJsonValue &) {
                 if (!pending_pick_requests_.remove(request_id)) {
+                    emit inspectorRpcFailed(
+                        request_id,
+                        tr("RPC %1: %2").arg(code).arg(message));
                     return;
                 }
                 emit pickObjectFailed(
@@ -303,6 +314,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     connect(&process_, &EngineProcess::rpcTransportFailed, this,
             [this](qint64 request_id, const QString &message) {
                 if (!pending_pick_requests_.remove(request_id)) {
+                    emit inspectorRpcFailed(request_id, message);
                     return;
                 }
                 emit pickObjectFailed(request_id, message);
@@ -334,6 +346,10 @@ EmbeddedViewport::~EmbeddedViewport() {
 EngineProcessLaunch EmbeddedViewport::launchCommand() const {
     const QString program = defaultPlayerPath();
     const QString configured_arguments = qEnvironmentVariable("PELICAN_STUDIO_PLAYER_ARGUMENTS");
+    // The Studio deliberately launches the interactive windowed loop. That
+    // loop calls updateFrameState() every frame, so an edit accepted while RPC
+    // requests are serviced is applied by the next player frame. Adding a
+    // headless/render-only driver here would strand the editor commit queue.
     return {
         .program = program,
         .arguments = studioPlayerArguments(
@@ -402,6 +418,18 @@ qint64 EmbeddedViewport::pickObject(const QPoint &pixel_position,
     return request_id;
 }
 
+qint64 EmbeddedViewport::requestRpc(const QString &method,
+                                    const QJsonObject &params,
+                                    QString *error) {
+    if (!rpc_ready_) {
+        if (error != nullptr) {
+            *error = tr("The engine viewport is not ready for editor RPC requests.");
+        }
+        return 0;
+    }
+    return process_.requestRpc(method, params, error);
+}
+
 void EmbeddedViewport::setPickingNotice(const QString &message) {
     picking_notice_->setText(message);
     picking_notice_->setVisible(!message.isEmpty());
@@ -425,6 +453,7 @@ void EmbeddedViewport::startEngine() {
     }
 
     child_window_ = 0;
+    rpc_ready_ = false;
     last_requested_extent_ = {};
     resize_timer_->stop();
     resize_coalescer_.reset();
@@ -497,6 +526,8 @@ void EmbeddedViewport::discoverEngineWindow() {
     diagnostics_timer_->start();
     pointer_button_was_down_ = false;
     pointer_focus_timer_->start();
+    rpc_ready_ = true;
+    emit engineRpcBecameAvailable();
     updateDiagnostics();
 }
 

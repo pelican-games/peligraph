@@ -32,6 +32,9 @@ class EmbeddedViewport final : public QWidget {
     const OutlinerObjectKey *selectedObject() const noexcept;
     qint64 pickObject(const QPoint &pixel_position,
                       QString *error = nullptr);
+    qint64 requestRpc(const QString &method, const QJsonObject &params,
+                      QString *error = nullptr);
+    bool rpcReady() const noexcept { return rpc_ready_; }
     void setPickingNotice(const QString &message);
 
   signals:
@@ -40,6 +43,11 @@ class EmbeddedViewport final : public QWidget {
     void pickObjectSucceeded(qint64 request_id,
                              const QByteArray &result_json);
     void pickObjectFailed(qint64 request_id, const QString &message);
+    void engineRpcBecameAvailable();
+    void engineRpcBecameUnavailable(const QString &message);
+    void inspectorRpcSucceeded(qint64 request_id,
+                               const QByteArray &result_json);
+    void inspectorRpcFailed(qint64 request_id, const QString &message);
 
   private:
     EngineProcess process_;
@@ -60,6 +68,7 @@ class EmbeddedViewport final : public QWidget {
     bool primary_pointer_was_down_ = false;
     bool restart_after_stop_ = false;
     bool shutting_down_ = false;
+    bool rpc_ready_ = false;
     QSize last_requested_extent_;
     QString project_root_;
     QSet<qint64> pending_pick_requests_;

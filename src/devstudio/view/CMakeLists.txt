@@ -1,6 +1,8 @@
 target_sources(pelican_studio PRIVATE
     uimain.cpp
     mainwindow.cpp
+    inspectorwidget.cpp
+    inspectorwidget.hpp
 )
 
 target_link_libraries(pelican_studio PRIVATE Qt6::Core Qt6::Widgets)
