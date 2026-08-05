@@ -2038,6 +2038,55 @@ D2 で選択・ギズモ・編集を積む前に、**詰まったときに追え
 
 依存: なし。WP264 とは独立で並行可。見積: 中。
 
+### WP266: D2 のプロパティ編集 — devstudio の Inspector
+
+**目的**: 選択したオブジェクトのコンポーネント値を devstudio で見て編集できるようにする。
+**D2 の残り半分**(もう半分はギズモ)。
+
+**現状**: Inspector パネルには `Selection` ラベルと `No editable properties` の固定文字しかない。
+WP264 で選択は同期するようになったが、**値が出ない**。
+
+**公開面は既に揃っている**(2026-08-05 調査): `editorrpchandlers.cpp` が編集系 rpc を
+**22 メソッド**登録済みである。`scene_tree` / `get_components` / `edit` /
+`open_preview` / `update_preview` / `commit_preview` / `abort_preview` /
+`get_edit_result` / `get_preview_result` / `undo` / `redo` / `save_scene` ほか。
+**D0 の「編集系 rpc が本当の API」は満たされている。足りないのは devstudio 側だけである。**
+
+**手本が engine 内にある**: ImGui 側のインスペクタ(`inspector.hpp` / `inspector.cpp`)は
+**スキーマ駆動**でウィジェットを組み立てる。`InspectorWidgetKind`
+(整数 / 浮動小数 / 真偽 / 列挙 / 文字列 / ベクトル / クォータニオン)と
+`json_pointer` を持つ `InspectorWidgetDescriptor` の列を、コンポーネントのスキーマから作る。
+**同じ考え方を Qt 側で実装すること。ウィジェットの種類を手で列挙しない。**
+
+**実装範囲**:
+
+1. 選択されたオブジェクトのコンポーネントを `get_components` で取り、
+   **スキーマからウィジェットを組み立てて**値を表示する。
+2. 編集を `edit` へ送る。ドラッグ操作はライブプレビュー
+   (`open_preview` / `update_preview` / `commit_preview` / `abort_preview`)を使うこと。
+3. **本日直した 2 つの欠陥を再発させないこと**:
+   - **WP245**: プレビュー保持中・ウィジェット編集中は再取得で値を上書きしないこと。
+     ImGui 側は `inspectorRefreshBlocked()` で解決している。**同じ罠が Qt 側にもある。**
+   - **WP244**: 届かなかった編集が成功を返さないこと。
+4. `undo` / `redo` を配線するかを判断すること。しないなら理由を書くこと。
+5. **編集の適用は `step_frame` の中でしか起きない**(`invokeEditorCommitQueueHook` が
+   `updateFrameState()` にあり、`render_frame` は呼ばない)。ビューポートの player を
+   どう進めるかを確かめること。**ここを外すと「コミット済みなのに絵が変わらない」になる。**
+
+**受け入れ条件**:
+
+- 選択したオブジェクトの transform の値が表示され、編集すると**ビューポートに反映される**こと
+- ドラッグ中に値が巻き戻らないこと。**外部変更の反映は殺さないこと**(WP245 と同じ二本立て)
+- 届かなかった編集が成功として表示されないこと
+- ウィジェットの種類がスキーマから決まること(手書きの分岐で型を判定しないこと)
+- モデル層が view から分離され、headless にテストされていること
+- `ctest` 全数が緑(`-DSKIP_DEVSTUDIO=ON` の構成でも通ること)、`git diff --check` クリーン
+
+**範囲外**: ギズモ。回転をクォータニオンのまま出すか操作しやすい表現を足すかも、
+**この WP では扱わない**(利用者の要望は記録済み。ギズモと併せて判断する)。
+
+依存: WP264(マージ済み)。見積: 中。**D2 の残り半分**。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
