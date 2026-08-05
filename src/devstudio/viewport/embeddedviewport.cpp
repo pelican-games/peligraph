@@ -14,7 +14,6 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QResizeEvent>
-#include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -27,6 +26,22 @@ constexpr int WindowDiscoveryIntervalMs = 25;
 constexpr int WindowDiscoveryTimeoutMs = 15000;
 constexpr int DiagnosticsIntervalMs = 200;
 constexpr int GracefulShutdownTimeoutMs = 2000;
+constexpr int MinimumLiveViewportExtent = 1;
+
+class HorizontallyCollapsibleViewportLayout final : public QVBoxLayout {
+  public:
+    explicit HorizontallyCollapsibleViewportLayout(QWidget *parent)
+        : QVBoxLayout(parent) {}
+
+    QSize minimumSize() const override {
+        QSize minimum = QVBoxLayout::minimumSize();
+        // Ancillary rows may clip at extreme widths, but they must never move
+        // the dock's opposite edge. Enforce that rule at the layout boundary
+        // so present and future rows cannot restore a horizontal width floor.
+        minimum.setWidth(MinimumLiveViewportExtent);
+        return minimum;
+    }
+};
 
 class NativeViewportSurface final : public QWidget {
   public:
@@ -40,7 +55,7 @@ class NativeViewportSurface final : public QWidget {
         // minimized/suspended path, not a useful visible panel size. Keep the
         // Qt layout at its smallest positive extent instead of imposing an
         // unrelated 160x90 boundary on dock resizing.
-        setMinimumSize(1, 1);
+        setMinimumSize(MinimumLiveViewportExtent, MinimumLiveViewportExtent);
         setAutoFillBackground(true);
         QPalette viewport_palette = palette();
         viewport_palette.setColor(QPalette::Window, Qt::black);
@@ -165,7 +180,7 @@ QStringList studioPlayerArguments(QStringList configured,
 EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(this) {
     setObjectName(QStringLiteral("pelican.viewportPanel"));
 
-    auto *layout = new QVBoxLayout(this);
+    auto *layout = new HorizontallyCollapsibleViewportLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(4);
 
@@ -181,12 +196,6 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     layout->addWidget(native_host_, 1);
 
     auto *footer = new QWidget(this);
-    // Keep the footer's normal size hint, but do not let its status text and
-    // buttons become the composite viewport's horizontal layout minimum. At
-    // extreme widths the row may clip; ordinary widths retain the same layout.
-    auto footer_size_policy = footer->sizePolicy();
-    footer_size_policy.setHorizontalPolicy(QSizePolicy::Ignored);
-    footer->setSizePolicy(footer_size_policy);
     auto *footer_layout = new QHBoxLayout(footer);
     footer_layout->setContentsMargins(4, 0, 4, 0);
     status_ = new QLabel(tr("Engine viewport is stopped."), footer);

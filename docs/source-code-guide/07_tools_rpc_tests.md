@@ -223,7 +223,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 は UTF-8 換算 1 MiB の末尾だけを保持し、通常は最古の途中行も捨てます。この大きさは診断用の長い
 履歴を残しながら、model と `QPlainTextEdit` に複製される text の常駐量を長時間起動でも制限するため
 です。単一の巨大行だけでも末尾を残し、UTF-8 の途中 byte から復号しません。上限規則と両 stream の
-到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L97) が view 表示なしで検査します。
+到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L99) が view 表示なしで検査します。
 
 [`FramePlanModel`](../../src/devstudio/model/frameplanmodel.hpp) は `get_frame_plan` の
 `pelican.frame_plan` v1 応答を、順序付き pass / compute task、入出力と履歴入力、resource、barrier、

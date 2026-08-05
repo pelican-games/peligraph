@@ -10,6 +10,8 @@
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLayout>
 #include <QPalette>
 #include <QProcess>
 #include <QTimer>
@@ -174,7 +176,7 @@ TEST_CASE("Device-pixel-ratio changes bypass viewport resize coalescing",
     REQUIRE_FALSE(coalescer.timerExpired(50).extent_to_apply);
 }
 
-TEST_CASE("Native viewport surface uses the smallest live extent and clears exposed pixels",
+TEST_CASE("Embedded viewport stays horizontally collapsible with visible layout rows",
           "[devstudio][viewport][minimum][paint]") {
     int argument_count = 1;
     char application_name[] = "pelican_viewport_surface_test";
@@ -190,6 +192,29 @@ TEST_CASE("Native viewport surface uses the smallest live extent and clears expo
     REQUIRE_FALSE(surface->testAttribute(Qt::WA_OpaquePaintEvent));
     REQUIRE_FALSE(surface->testAttribute(Qt::WA_NoSystemBackground));
     REQUIRE(surface->palette().color(QPalette::Window) == QColor{Qt::black});
+
+    SECTION("the picking notice is visible") {
+        viewport.setPickingNotice(
+            QStringLiteral("Object picking is unavailable for this project."));
+        QApplication::processEvents();
+
+        QWidget *notice = viewport.findChild<QWidget *>(
+            QStringLiteral("pelican.pickingNotice"));
+        REQUIRE(notice != nullptr);
+        REQUIRE_FALSE(notice->isHidden());
+        REQUIRE(viewport.minimumSizeHint().width() == 1);
+    }
+
+    SECTION("a future text row is added") {
+        auto *future_row = new QLabel(
+            QStringLiteral("A future viewport message must not restore a width floor."),
+            &viewport);
+        viewport.layout()->addWidget(future_row);
+        future_row->show();
+        QApplication::processEvents();
+
+        REQUIRE(viewport.minimumSizeHint().width() == 1);
+    }
 }
 
 TEST_CASE("Forced engine child exit leaves the viewport process owner reusable",
