@@ -1,7 +1,11 @@
 #pragma once
 
+#include <QByteArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QObject>
 #include <QProcess>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -36,6 +40,8 @@ class EngineProcess final : public QObject {
     void kill();
     bool waitForStarted(int timeout_ms);
     bool waitForFinished(int timeout_ms);
+    qint64 requestRpc(const QString &method, const QJsonObject &params,
+                      QString *error = nullptr);
 
     State state() const noexcept { return state_; }
     bool isRunning() const noexcept;
@@ -47,6 +53,10 @@ class EngineProcess final : public QObject {
     void processStopped(qint64 process_id, int exit_code, QProcess::ExitStatus exit_status);
     void processFailed(const QString &message);
     void outputReceived(const QString &output);
+    void rpcResultReceived(qint64 request_id, const QJsonValue &result);
+    void rpcErrorReceived(qint64 request_id, int code,
+                          const QString &message, const QJsonValue &data);
+    void rpcTransportFailed(qint64 request_id, const QString &message);
 
   private:
     std::unique_ptr<EngineProcessLifetime> process_lifetime_;
@@ -54,9 +64,15 @@ class EngineProcess final : public QObject {
     State state_ = State::stopped;
     qint64 last_process_id_ = 0;
     QString failure_;
+    QByteArray standard_output_buffer_;
+    QSet<qint64> pending_rpc_requests_;
+    qint64 next_rpc_request_id_ = 1;
 
     void setFailure(const QString &message);
-    void drainOutput();
+    void drainStandardOutput(bool flush_partial_line = false);
+    void drainStandardError();
+    bool routeRpcResponse(const QByteArray &line);
+    void failPendingRpcRequests(const QString &message);
 };
 
 } // namespace PelicanStudio

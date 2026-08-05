@@ -52,6 +52,8 @@ class ProjectOutlinerModel {
     const std::vector<std::string> &warnings() const noexcept {
         return warnings_;
     }
+
+    const OutlinerObject *findObject(const OutlinerObjectKey &key) const noexcept;
 };
 
 } // namespace PelicanStudio

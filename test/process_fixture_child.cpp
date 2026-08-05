@@ -42,5 +42,19 @@ int main(int argc, char *argv[]) {
         std::cout << "hang-ready\n" << std::flush;
         for (;;) std::this_thread::sleep_for(std::chrono::seconds{1});
     }
+    if (argc >= 2 && std::string_view{argv[1]} == "rpc") {
+        std::cout << "ordinary-stdout-before-rpc\n" << std::flush;
+        std::cerr << "ordinary-stderr-before-rpc\n" << std::flush;
+        std::string request;
+        if (!std::getline(std::cin, request)) {
+            return 4;
+        }
+        std::cerr << "rpc-request:" << request << '\n' << std::flush;
+        std::cout
+            << R"json({"jsonrpc":"2.0","id":1,"result":{"contract":1,"hit":null}})json"
+            << '\n'
+            << std::flush;
+        return 0;
+    }
     return 2;
 }

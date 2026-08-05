@@ -19,21 +19,27 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 #include <QVariant>
 
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <vector>
 
 namespace PelicanStudio {
 namespace {
+
+constexpr int SceneIdRole = Qt::UserRole;
+constexpr int DeclarationIndexRole = Qt::UserRole + 1;
 
 QString layoutPresetDirectory() {
     const QString application_config = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
@@ -65,6 +71,27 @@ QString displayPath(const std::filesystem::path &path) {
 #else
     return QString::fromStdString(path.string());
 #endif
+}
+
+std::optional<OutlinerObjectKey> objectKey(QTreeWidgetItem *item) {
+    if (item == nullptr) {
+        return std::nullopt;
+    }
+    const QVariant scene_id = item->data(0, SceneIdRole);
+    const QVariant declaration_index =
+        item->data(0, DeclarationIndexRole);
+    if (!scene_id.isValid() || !declaration_index.isValid()) {
+        return std::nullopt;
+    }
+    bool valid_index = false;
+    const qulonglong index = declaration_index.toULongLong(&valid_index);
+    if (!valid_index || index > std::numeric_limits<std::size_t>::max()) {
+        return std::nullopt;
+    }
+    return OutlinerObjectKey{
+        .scene_id = scene_id.toString().toStdString(),
+        .declaration_index = static_cast<std::size_t>(index),
+    };
 }
 
 } // namespace
@@ -105,8 +132,9 @@ void MainWindow::createWorkspace() {
     workspace_hint->hide();
     workspace_layout->setStretch(0, 0);
     workspace_layout->setStretch(3, 0);
-    auto *viewport = new EmbeddedViewport(workspace);
-    workspace_layout->addWidget(viewport, 1);
+    viewport_ = new EmbeddedViewport(workspace);
+    viewport_->bindSelectionModel(&selection_model_);
+    workspace_layout->addWidget(viewport_, 1);
 
     project_list_ = new QListWidget(this);
     project_list_->addItem(tr("No project open"));
@@ -119,12 +147,20 @@ void MainWindow::createWorkspace() {
     outliner_->setHeaderLabel(tr("Scene / Object"));
     outliner_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     outliner_->setDragDropMode(QAbstractItemView::NoDragDrop);
+    connect(outliner_, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem *current, QTreeWidgetItem *) {
+                selectOutlinerItem(current);
+            });
     docks_[OutlinerDock] =
         makeDock(this, tr("Outliner"), QStringLiteral("pelican.outlinerDock"), outliner_);
 
     auto *inspector = new QWidget(this);
     auto *inspector_layout = new QFormLayout(inspector);
-    inspector_layout->addRow(tr("Selection"), new QLabel(tr("None"), inspector));
+    selection_label_ = new QLabel(tr("None"), inspector);
+    selection_label_->setObjectName(QStringLiteral("pelican.inspectorSelection"));
+    selection_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    selection_label_->setWordWrap(true);
+    inspector_layout->addRow(tr("Selection"), selection_label_);
     inspector_layout->addRow(tr("Properties"), new QLabel(tr("No editable properties"), inspector));
     docks_[InspectorDock] = makeDock(this, tr("Inspector"), QStringLiteral("pelican.inspectorDock"), inspector);
 
@@ -141,8 +177,20 @@ void MainWindow::createWorkspace() {
     engine_log_->setPlaceholderText(tr("Engine output will appear here."));
     docks_[EngineLogDock] = makeDock(
         this, tr("Engine Log"), QStringLiteral("pelican.engineLogDock"), engine_log_);
-    connect(viewport, &EmbeddedViewport::engineOutputReceived, this,
+    connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
+    connect(viewport_, &EmbeddedViewport::viewportPickRequested, this,
+            [this](const QPoint &pixel_position) {
+                beginViewportPick(pixel_position);
+            });
+    connect(viewport_, &EmbeddedViewport::pickObjectSucceeded, this,
+            [this](qint64 request_id, const QByteArray &result_json) {
+                completeViewportPick(request_id, result_json);
+            });
+    connect(viewport_, &EmbeddedViewport::pickObjectFailed, this,
+            [this](qint64 request_id, const QString &message) {
+                failViewportPick(request_id, message);
+            });
 }
 
 void MainWindow::createMenus() {
@@ -186,7 +234,10 @@ void MainWindow::chooseProject() {
 void MainWindow::openProject(const QString &path) {
     try {
         project_model_ = ProjectOutlinerModel::open(filesystemPath(path));
+        selection_model_.bindProject(&*project_model_);
         populateOutliner();
+        refreshSelectionViews();
+        viewport_->openProject(displayPath(project_model_->projectRoot()));
         statusBar()->showMessage(
             tr("Opened %1").arg(displayPath(project_model_->projectRoot())),
             5000);
@@ -197,6 +248,7 @@ void MainWindow::openProject(const QString &path) {
 }
 
 void MainWindow::populateOutliner() {
+    const QSignalBlocker block_outliner{outliner_};
     project_list_->clear();
     const auto &model = *project_model_;
     if (model.projectName()) {
@@ -206,12 +258,10 @@ void MainWindow::populateOutliner() {
     project_list_->setEnabled(true);
 
     outliner_->clear();
-    constexpr int scene_id_role = Qt::UserRole;
-    constexpr int declaration_index_role = Qt::UserRole + 1;
     for (const auto &scene : model.scenes()) {
         auto *scene_item = new QTreeWidgetItem(
             outliner_, QStringList{QString::fromStdString(scene.scene_id)});
-        scene_item->setData(0, scene_id_role,
+        scene_item->setData(0, SceneIdRole,
                             QString::fromStdString(scene.scene_id));
 
         std::vector<QTreeWidgetItem *> object_items;
@@ -219,10 +269,10 @@ void MainWindow::populateOutliner() {
         for (const auto &object : scene.objects) {
             auto *item = new QTreeWidgetItem(
                 QStringList{QString::fromStdString(object.display_name)});
-            item->setData(0, scene_id_role,
+            item->setData(0, SceneIdRole,
                           QString::fromStdString(object.key.scene_id));
             item->setData(
-                0, declaration_index_role,
+                0, DeclarationIndexRole,
                 QVariant::fromValue<qulonglong>(object.key.declaration_index));
             object_items.push_back(item);
         }
@@ -237,6 +287,122 @@ void MainWindow::populateOutliner() {
         }
     }
     outliner_->expandToDepth(0);
+}
+
+void MainWindow::selectOutlinerItem(QTreeWidgetItem *item) {
+    const SelectionUpdate update =
+        selection_model_.selectFromOutliner(objectKey(item));
+    if (update.kind == SelectionUpdateKind::failed) {
+        statusBar()->showMessage(QString::fromStdString(update.message), 5000);
+        return;
+    }
+    viewport_->setPickingNotice({});
+    refreshSelectionViews();
+}
+
+void MainWindow::beginViewportPick(const QPoint &pixel_position) {
+    const ViewportPickToken token = selection_model_.beginViewportPick();
+    QString error;
+    const qint64 request_id = viewport_->pickObject(pixel_position, &error);
+    if (request_id == 0) {
+        const SelectionUpdate update = selection_model_.failViewportPick(
+            token, error.toStdString());
+        if (update.kind == SelectionUpdateKind::failed) {
+            presentPickingFailure(QString::fromStdString(update.message));
+        }
+        return;
+    }
+    pending_pick_tokens_.insert(request_id, token);
+}
+
+void MainWindow::completeViewportPick(qint64 request_id,
+                                      const QByteArray &result_json) {
+    const auto pending = pending_pick_tokens_.find(request_id);
+    if (pending == pending_pick_tokens_.end()) {
+        return;
+    }
+    const ViewportPickToken token = pending.value();
+    pending_pick_tokens_.erase(pending);
+
+    const SelectionUpdate update = selection_model_.completeViewportPick(
+        token,
+        std::string_view{result_json.constData(),
+                         static_cast<std::size_t>(result_json.size())});
+    if (update.kind == SelectionUpdateKind::stale) {
+        return;
+    }
+    if (update.kind == SelectionUpdateKind::failed) {
+        presentPickingFailure(QString::fromStdString(update.message));
+        return;
+    }
+    viewport_->setPickingNotice({});
+    refreshSelectionViews();
+}
+
+void MainWindow::failViewportPick(qint64 request_id,
+                                  const QString &message) {
+    const auto pending = pending_pick_tokens_.find(request_id);
+    if (pending == pending_pick_tokens_.end()) {
+        return;
+    }
+    const ViewportPickToken token = pending.value();
+    pending_pick_tokens_.erase(pending);
+
+    const SelectionUpdate update =
+        selection_model_.failViewportPick(token, message.toStdString());
+    if (update.kind == SelectionUpdateKind::failed) {
+        presentPickingFailure(QString::fromStdString(update.message));
+    }
+}
+
+void MainWindow::refreshSelectionViews() {
+    const QSignalBlocker block_outliner{outliner_};
+    const auto &selection = selection_model_.selected();
+    if (!selection) {
+        outliner_->setCurrentItem(nullptr);
+        outliner_->clearSelection();
+        selection_label_->setText(tr("None"));
+        return;
+    }
+
+    QTreeWidgetItem *selected_item = nullptr;
+    for (QTreeWidgetItemIterator iterator{outliner_}; *iterator != nullptr;
+         ++iterator) {
+        if (objectKey(*iterator) == selection) {
+            selected_item = *iterator;
+            break;
+        }
+    }
+    if (selected_item != nullptr) {
+        outliner_->setCurrentItem(selected_item);
+        outliner_->scrollToItem(selected_item);
+    }
+
+    const OutlinerObject *object =
+        project_model_ ? project_model_->findObject(*selection) : nullptr;
+    const QString display_name =
+        object != nullptr ? QString::fromStdString(object->display_name)
+                          : tr("Unknown object");
+    selection_label_->setText(
+        tr("%1\n%2 / declaration %3")
+            .arg(display_name)
+            .arg(QString::fromStdString(selection->scene_id))
+            .arg(static_cast<qulonglong>(selection->declaration_index)));
+}
+
+void MainWindow::presentPickingFailure(const QString &message) {
+    QString notice = message;
+    if (message.contains(QStringLiteral("engine://features/picking.json"))) {
+        notice = tr("Picking is unavailable: the active project render graph "
+                    "does not include engine://features/picking.json. The "
+                    "current selection was preserved.");
+    } else {
+        notice = tr("Picking failed: %1 The current selection was preserved.")
+                     .arg(message);
+    }
+    viewport_->setPickingNotice(notice);
+    statusBar()->showMessage(notice, 8000);
+    appendEngineOutput(tr("[Studio selection] %1\n").arg(notice));
 }
 
 void MainWindow::appendEngineOutput(const QString &output) {

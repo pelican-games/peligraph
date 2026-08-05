@@ -1,8 +1,12 @@
 #include "project.hpp"
+#include "selection.hpp"
 #include "sceneformat.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +20,8 @@ namespace {
 
 using PelicanStudio::OutlinerScene;
 using PelicanStudio::ProjectOutlinerModel;
+using PelicanStudio::SelectionModel;
+using PelicanStudio::SelectionUpdateKind;
 
 const OutlinerScene &requireScene(const ProjectOutlinerModel &model,
                                   std::string_view scene_id) {
@@ -122,4 +128,96 @@ TEST_CASE("Devstudio outliner projects parent references onto declaration identi
     REQUIRE(scene.objects[2].child_declaration_indices ==
             std::vector<std::size_t>{3});
     REQUIRE(scene.objects[3].parent_declaration_index == 2);
+}
+
+TEST_CASE("Viewport picks and outliner rows share declaration identity headlessly",
+          "[devstudio][selection][wp264]") {
+    const auto project_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example";
+    const auto project = ProjectOutlinerModel::open(project_root);
+    const auto &scene = requireScene(project, "default_scene");
+
+    const auto unnamed = std::find_if(
+        scene.objects.begin(), scene.objects.end(), [](const auto &object) {
+            return object.display_name.starts_with("pelican://");
+        });
+    REQUIRE(unnamed != scene.objects.end());
+
+    SelectionModel selection;
+    selection.bindProject(&project);
+    const auto pick_token = selection.beginViewportPick();
+    const nlohmann::json pick_result{
+        {"contract", 1},
+        {"coordinate", {{"x", 12}, {"y", 34}}},
+        {"extent", {{"width", 640}, {"height", 360}}},
+        {"frame_index", 9},
+        {"hit",
+         {{"scene_id", unnamed->key.scene_id},
+          {"declaration_index", unnamed->key.declaration_index},
+          {"authoring_object_id", "session-only"}}},
+    };
+
+    const auto picked =
+        selection.completeViewportPick(pick_token, pick_result.dump());
+    REQUIRE(picked.kind == SelectionUpdateKind::changed);
+    REQUIRE(selection.selected() == unnamed->key);
+    REQUIRE(project.findObject(*selection.selected()) == &*unnamed);
+
+    const auto outliner_selected =
+        selection.selectFromOutliner(scene.objects.front().key);
+    REQUIRE(outliner_selected.applied());
+    REQUIRE(selection.selected() == scene.objects.front().key);
+}
+
+TEST_CASE("Newer outliner selection wins over an older viewport response",
+          "[devstudio][selection][wp264]") {
+    const auto project = ProjectOutlinerModel::open(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example");
+    const auto &scene = requireScene(project, "default_scene");
+
+    SelectionModel selection;
+    selection.bindProject(&project);
+    const auto old_pick = selection.beginViewportPick();
+    REQUIRE(selection.selectFromOutliner(scene.objects.at(1).key).applied());
+
+    const nlohmann::json late_result{
+        {"contract", 1},
+        {"hit",
+         {{"scene_id", scene.objects.at(2).key.scene_id},
+          {"declaration_index",
+           scene.objects.at(2).key.declaration_index}}},
+    };
+    REQUIRE(selection.completeViewportPick(old_pick, late_result.dump()).kind ==
+            SelectionUpdateKind::stale);
+    REQUIRE(selection.selected() == scene.objects.at(1).key);
+}
+
+TEST_CASE("Background clears selection while unavailable picking is explicit and preserves it",
+          "[devstudio][selection][wp264]") {
+    const auto project = ProjectOutlinerModel::open(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example");
+    const auto &scene = requireScene(project, "default_scene");
+
+    SelectionModel selection;
+    selection.bindProject(&project);
+    REQUIRE(selection.selectFromOutliner(scene.objects.at(1).key).applied());
+
+    const auto background_pick = selection.beginViewportPick();
+    const auto cleared = selection.completeViewportPick(
+        background_pick, R"json({"contract":1,"hit":null})json");
+    REQUIRE(cleared.kind == SelectionUpdateKind::changed);
+    REQUIRE_FALSE(selection.selected());
+
+    REQUIRE(selection.selectFromOutliner(scene.objects.at(1).key).applied());
+    const auto unavailable_pick = selection.beginViewportPick();
+    const auto unavailable = selection.failViewportPick(
+        unavailable_pick,
+        "pick_object failed (RPC -32000): picking readback requires "
+        "engine://features/picking.json in the active render graph");
+    REQUIRE(unavailable.kind == SelectionUpdateKind::failed);
+    REQUIRE(unavailable.message.find("engine://features/picking.json") !=
+            std::string::npos);
+    REQUIRE(selection.selected() == scene.objects.at(1).key);
 }

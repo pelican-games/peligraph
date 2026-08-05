@@ -309,7 +309,8 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | GUI と RPC の同居 | 📐未実装 |
 | Qt Studio shell / native engine viewport | ✅WP249/251 |
 | Qt Studio からの編集 RPC 利用(D2〜D3) | 📐未着手 |
-| ID バッファピッキングの engine/RPC 基盤 | ✅WP262。Studio からの接続とギズモは未実装 |
+| ID バッファピッキングの engine/RPC 基盤 | ✅WP262 |
+| Qt Studio の viewport / Outliner 選択同期 | ✅WP264。枠線・ギズモは後続 |
 
 ## 関連文書
 

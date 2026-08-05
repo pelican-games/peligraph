@@ -1,9 +1,13 @@
 #include "embeddedviewport.hpp"
+#include "../model/selection.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPalette>
@@ -116,6 +120,46 @@ QString awarenessName(int awareness) {
     }
 }
 
+QByteArray serializeJsonValue(const QJsonValue &value) {
+    QByteArray wrapper =
+        QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
+    if (wrapper.size() >= 2 && wrapper.front() == '[' &&
+        wrapper.back() == ']') {
+        return wrapper.sliced(1, wrapper.size() - 2);
+    }
+    return {};
+}
+
+QStringList studioPlayerArguments(QStringList configured,
+                                  const QString &project_root) {
+    QStringList additional;
+    additional.reserve(configured.size());
+    for (qsizetype index = 0; index < configured.size(); ++index) {
+        const QString argument = configured.at(index);
+        if (argument == QStringLiteral("--rpc")) {
+            continue;
+        }
+        if (argument == QStringLiteral("--project")) {
+            if (index + 1 < configured.size()) {
+                ++index;
+            }
+            continue;
+        }
+        if (argument.startsWith(QStringLiteral("--project="))) {
+            continue;
+        }
+        additional.push_back(argument);
+    }
+
+    QStringList arguments{
+        QStringLiteral("--rpc"),
+        QStringLiteral("--project"),
+        project_root,
+    };
+    arguments.append(additional);
+    return arguments;
+}
+
 } // namespace
 
 EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(this) {
@@ -150,6 +194,12 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     footer_layout->addWidget(status_, 1);
 
+    picking_notice_ = new QLabel(this);
+    picking_notice_->setObjectName(QStringLiteral("pelican.pickingNotice"));
+    picking_notice_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    picking_notice_->setStyleSheet(QStringLiteral("color: #d98c00;"));
+    picking_notice_->hide();
+
     restart_button_ = new QPushButton(tr("Start Engine"), footer);
     restart_button_->setObjectName(QStringLiteral("pelican.viewportRestart"));
     stop_button_ = new QPushButton(tr("Stop Engine"), footer);
@@ -158,6 +208,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     footer_layout->addWidget(restart_button_);
     footer_layout->addWidget(stop_button_);
     layout->addWidget(footer);
+    layout->addWidget(picking_notice_);
 
     window_discovery_timer_ = new QTimer(this);
     window_discovery_timer_->setInterval(WindowDiscoveryIntervalMs);
@@ -195,6 +246,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 resize_timer_->stop();
                 resize_coalescer_.reset();
                 pointer_button_was_down_ = false;
+                primary_pointer_was_down_ = false;
                 child_window_ = 0;
                 last_requested_extent_ = {};
                 native_host_->update();
@@ -207,6 +259,11 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                         .arg(process_id)
                         .arg(exit_kind)
                         .arg(exit_code));
+                if (restart_after_stop_ && !shutting_down_) {
+                    restart_after_stop_ = false;
+                    QTimer::singleShot(0, this,
+                                       [this]() { startEngine(); });
+                }
             });
     connect(&process_, &EngineProcess::processFailed, this, [this](const QString &message) {
         window_discovery_timer_->stop();
@@ -215,6 +272,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         resize_timer_->stop();
         resize_coalescer_.reset();
         pointer_button_was_down_ = false;
+        primary_pointer_was_down_ = false;
         restart_button_->setText(tr("Retry Engine"));
         restart_button_->setEnabled(true);
         stop_button_->setEnabled(false);
@@ -222,11 +280,40 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     });
     connect(&process_, &EngineProcess::outputReceived,
             this, &EmbeddedViewport::engineOutputReceived);
+    connect(&process_, &EngineProcess::rpcResultReceived, this,
+            [this](qint64 request_id, const QJsonValue &result) {
+                if (!pending_pick_requests_.remove(request_id)) {
+                    return;
+                }
+                emit pickObjectSucceeded(request_id,
+                                         serializeJsonValue(result));
+            });
+    connect(&process_, &EngineProcess::rpcErrorReceived, this,
+            [this](qint64 request_id, int code, const QString &message,
+                   const QJsonValue &) {
+                if (!pending_pick_requests_.remove(request_id)) {
+                    return;
+                }
+                emit pickObjectFailed(
+                    request_id,
+                    tr("pick_object failed (RPC %1): %2")
+                        .arg(code)
+                        .arg(message));
+            });
+    connect(&process_, &EngineProcess::rpcTransportFailed, this,
+            [this](qint64 request_id, const QString &message) {
+                if (!pending_pick_requests_.remove(request_id)) {
+                    return;
+                }
+                emit pickObjectFailed(request_id, message);
+            });
 
-    QTimer::singleShot(0, this, [this]() { startEngine(); });
+    restart_button_->setEnabled(false);
 }
 
 EmbeddedViewport::~EmbeddedViewport() {
+    shutting_down_ = true;
+    restart_after_stop_ = false;
     window_discovery_timer_->stop();
     diagnostics_timer_->stop();
     pointer_focus_timer_->stop();
@@ -249,9 +336,75 @@ EngineProcessLaunch EmbeddedViewport::launchCommand() const {
     const QString configured_arguments = qEnvironmentVariable("PELICAN_STUDIO_PLAYER_ARGUMENTS");
     return {
         .program = program,
-        .arguments = configured_arguments.isEmpty() ? QStringList{} : QProcess::splitCommand(configured_arguments),
+        .arguments = studioPlayerArguments(
+            configured_arguments.isEmpty()
+                ? QStringList{}
+                : QProcess::splitCommand(configured_arguments),
+            project_root_),
         .working_directory = QFileInfo(program).absolutePath(),
     };
+}
+
+void EmbeddedViewport::openProject(const QString &project_root) {
+    if (project_root.trimmed().isEmpty()) {
+        setPickingNotice(tr("Picking is unavailable: no project is open."));
+        return;
+    }
+    const QString normalized_root = QDir(project_root).absolutePath();
+    if (project_root_ == normalized_root && process_.isRunning()) {
+        return;
+    }
+
+    project_root_ = normalized_root;
+    setPickingNotice({});
+    if (process_.isRunning()) {
+        restart_after_stop_ = true;
+        status_->setText(tr("Switching the engine to %1...").arg(project_root_));
+        stopEngine();
+        return;
+    }
+    restart_after_stop_ = false;
+    startEngine();
+}
+
+const OutlinerObjectKey *EmbeddedViewport::selectedObject() const noexcept {
+    if (selection_model_ == nullptr || !selection_model_->selected()) {
+        return nullptr;
+    }
+    return &*selection_model_->selected();
+}
+
+qint64 EmbeddedViewport::pickObject(const QPoint &pixel_position,
+                                    QString *error) {
+    if (pixel_position.x() < 0 || pixel_position.y() < 0) {
+        if (error != nullptr) {
+            *error = tr("Picking coordinates must be non-negative.");
+        }
+        return 0;
+    }
+    if (child_window_ == 0 || !NativeWindowHost::isWindow(child_window_)) {
+        if (error != nullptr) {
+            *error = tr("The engine viewport is not ready for picking.");
+        }
+        return 0;
+    }
+
+    const qint64 request_id = process_.requestRpc(
+        QStringLiteral("pick_object"),
+        QJsonObject{
+            {QStringLiteral("x"), pixel_position.x()},
+            {QStringLiteral("y"), pixel_position.y()},
+        },
+        error);
+    if (request_id != 0) {
+        pending_pick_requests_.insert(request_id);
+    }
+    return request_id;
+}
+
+void EmbeddedViewport::setPickingNotice(const QString &message) {
+    picking_notice_->setText(message);
+    picking_notice_->setVisible(!message.isEmpty());
 }
 
 void EmbeddedViewport::startEngine() {
@@ -264,11 +417,19 @@ void EmbeddedViewport::startEngine() {
     if (process_.isRunning()) {
         return;
     }
+    if (project_root_.isEmpty()) {
+        status_->setText(tr("Open a project to start the engine viewport."));
+        restart_button_->setEnabled(false);
+        stop_button_->setEnabled(false);
+        return;
+    }
 
     child_window_ = 0;
     last_requested_extent_ = {};
     resize_timer_->stop();
     resize_coalescer_.reset();
+    primary_pointer_was_down_ = false;
+    setPickingNotice({});
     restart_button_->setEnabled(false);
     stop_button_->setEnabled(true);
     status_->setText(tr("Starting pelican_player..."));
@@ -397,6 +558,14 @@ void EmbeddedViewport::pollPointerFocus() {
         focusEmbeddedWindow();
     }
     pointer_button_was_down_ = pointer_button_down;
+
+    const NativePrimaryPointerState primary_pointer =
+        NativeWindowHost::primaryPointerState(child_window_);
+    if (primary_pointer.button_down && !primary_pointer_was_down_ &&
+        primary_pointer.child_client_position) {
+        emit viewportPickRequested(*primary_pointer.child_client_position);
+    }
+    primary_pointer_was_down_ = primary_pointer.button_down;
 }
 
 void EmbeddedViewport::updateDiagnostics() {

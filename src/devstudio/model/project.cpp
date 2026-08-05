@@ -169,4 +169,19 @@ ProjectOutlinerModel::open(const std::filesystem::path &project_path) {
     return model;
 }
 
+const OutlinerObject *
+ProjectOutlinerModel::findObject(const OutlinerObjectKey &key) const noexcept {
+    for (const auto &scene : scenes_) {
+        if (scene.scene_id != key.scene_id ||
+            key.declaration_index >= scene.objects.size()) {
+            continue;
+        }
+        const auto &object = scene.objects[key.declaration_index];
+        if (object.key == key) {
+            return &object;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace PelicanStudio

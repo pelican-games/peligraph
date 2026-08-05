@@ -230,6 +230,38 @@ bool NativeWindowHost::pointerButtonDownOver(NativeWindowHandle child_handle) no
     return pointed_window == child || IsChild(child, pointed_window);
 }
 
+NativePrimaryPointerState
+NativeWindowHost::primaryPointerState(NativeWindowHandle child_handle) noexcept {
+    NativePrimaryPointerState result;
+    result.button_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (!result.button_down) {
+        return result;
+    }
+
+    HWND child = asHwnd(child_handle);
+    POINT cursor{};
+    if (!IsWindow(child) || !GetCursorPos(&cursor)) {
+        return result;
+    }
+    const HWND pointed_window = WindowFromPoint(cursor);
+    if (pointed_window != child && !IsChild(child, pointed_window)) {
+        return result;
+    }
+    if (!ScreenToClient(child, &cursor)) {
+        return result;
+    }
+
+    RECT client{};
+    if (!GetClientRect(child, &client) || cursor.x < client.left ||
+        cursor.y < client.top || cursor.x >= client.right ||
+        cursor.y >= client.bottom) {
+        return result;
+    }
+    result.child_client_position =
+        QPoint{static_cast<int>(cursor.x), static_cast<int>(cursor.y)};
+    return result;
+}
+
 bool NativeWindowHost::requestClose(NativeWindowHandle child_handle) noexcept {
     HWND child = asHwnd(child_handle);
     return IsWindow(child) && PostMessageW(child, WM_CLOSE, 0, 0);
@@ -294,6 +326,10 @@ bool NativeWindowHost::resize(NativeWindowHandle, const QSize &, QString *error)
 }
 bool NativeWindowHost::focus(NativeWindowHandle) noexcept { return false; }
 bool NativeWindowHost::pointerButtonDownOver(NativeWindowHandle) noexcept { return false; }
+NativePrimaryPointerState
+NativeWindowHost::primaryPointerState(NativeWindowHandle) noexcept {
+    return {};
+}
 bool NativeWindowHost::requestClose(NativeWindowHandle) noexcept { return false; }
 bool NativeWindowHost::isWindow(NativeWindowHandle) noexcept { return false; }
 NativeViewportDiagnostics NativeWindowHost::diagnostics(NativeWindowHandle, NativeWindowHandle) noexcept {

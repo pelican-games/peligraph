@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L21) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L29) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -181,6 +181,9 @@ flowchart LR
     Workspace --> Viewport["EmbeddedViewport / native host"]
     Viewport --> Process["EngineProcess / QProcess"]
     Process --> Player["pelican_player / foreign child HWND"]
+    Viewport --> Rpc["pick_object / stdio JSON-RPC"]
+    Rpc --> Selection["SelectionModel / public identity"]
+    Docks --> Selection
     Process --> LogBuffer["EngineLogBuffer / bounded history"]
     LogBuffer --> LogDock["Engine Log dock"]
     Window --> Docks["QDockWidget panels"]
@@ -188,15 +191,15 @@ flowchart LR
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L72) は Project / Outliner /
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L99) は Project / Outliner /
 Inspector / Output / Engine Log の5パネルを stable object name を持つ dock として作ります。パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
-中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L16) は
-`pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L20) で別 process
+中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L21) は
+`pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L24) で別 process
 として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
-[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L24) が Windows style、parent、
+[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L32) が Windows style、parent、
 focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。したがって
 resize は player の通常の GLFW framebuffer callback から既存の Surface/Swapchain epoch 経路へ
 入ります。通常の resize は最後の寸法イベントから 50 ms 静止するまで native child を凍結し、
@@ -207,13 +210,15 @@ player が終了しても Studio は残り、viewport から再起動できま�
 kill-on-close Job Object で固定し、player を process 作成時点から所属させます。そのため Studio の
 通常終了だけでなく強制終了でも player は残りません。
 
-child の stdout と stderr は `QProcess::MergedChannels` で一つの未切り詰め出力 signal にまとめ、
-viewport を経由して Engine Log dock へ送ります。
+child の stdout は行単位で JSON-RPC 応答と通常出力に分け、stderr は別 channel のまま読みます。
+対応する request id の応答だけを RPC signal へ送り、通常 stdout と stderr は一つの未切り詰め
+output signal として viewport 経由で Engine Log dock へ送ります。RPC は 5 秒で明示 timeout し、
+process 終了時も pending request を失敗にするため、入力 pipe や feature の問題を黙殺しません。
 [`EngineLogBuffer`](../../src/devstudio/viewport/enginelogbuffer.hpp#L7)
 は UTF-8 換算 1 MiB の末尾だけを保持し、通常は最古の途中行も捨てます。この大きさは診断用の長い
 履歴を残しながら、model と `QPlainTextEdit` に複製される text の常駐量を長時間起動でも制限するため
 です。単一の巨大行だけでも末尾を残し、UTF-8 の途中 byte から復号しません。上限規則と両 stream の
-到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L93) が view 表示なしで検査します。
+到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L97) が view 表示なしで検査します。
 
 [`LayoutPresetManager`](../../src/devstudio/layoutpreset.hpp#L26) は view から独立した Qt Core の
 ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
@@ -235,16 +240,27 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L199) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L250) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
-object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L56) が
+object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L62) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
 `declaration_index` を返すため、直リンク木と RPC 木は `(scene_id, declaration_index)` で
-対応付けられます。選択・編集 UI との実際の結線は D2 の範囲です。
+対応付けられます。
 
-中央 viewport の process/window 結線も実装済みです(WP251)。ただし viewport と
-Project / Outliner / Inspector の間の project 選択連携、scene 編集、engine RPC は未接続です。
-**子 process 管理を編集 IPC の実装済みと解釈してはいけません。**
+[`SelectionModel`](../../src/devstudio/model/selection.hpp) は view/Qt から独立し、選択をこの公開
+identity 1 個だけで保持します。viewport pick と Outliner のどちらも同じ instance を更新し、
+`EmbeddedViewport` もコピーせず非所有参照します。遅い pick が新しい Outliner 選択を巻き戻さない
+revision、背景での解除、feature/RPC 失敗時の選択維持を純粋 model で決めています。選択は engine の
+共有 game state ではなく client-session の focus なので、Studio 専用 API は作りません。別ツールも
+`pick_object` と同じ identity だけで同じ意味論を実装できます。
+
+project を開くと viewport は同じ root を `--rpc --project` で再起動します。native child 上の
+左クリックを物理 client 座標へ変換し、`EngineProcess` の stdio JSON-RPC から `pick_object` を
+呼びます。成功は Outliner と Inspector に反映し、背景なら解除します。picking feature が無い場合は
+選択を維持し、viewport/status/log に有効化方法を明示します。枠線と gizmo、scene 編集は後続です。
+同期、無名 object、stale 応答、背景、feature 無効の意味論は
+[`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp) が headless に固定し、stdio の
+応答/通常 log 分離は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp) が検査します。
 
 > **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L222) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
 

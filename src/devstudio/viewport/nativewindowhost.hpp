@@ -1,8 +1,11 @@
 #pragma once
 
+#include <QPoint>
 #include <QSize>
 #include <QString>
 #include <QtTypes>
+
+#include <optional>
 
 namespace PelicanStudio {
 
@@ -21,6 +24,11 @@ struct NativeViewportDiagnostics {
     int child_dpi_awareness = -1;
 };
 
+struct NativePrimaryPointerState {
+    bool button_down = false;
+    std::optional<QPoint> child_client_position;
+};
+
 class NativeWindowHost {
   public:
     static bool isSupported() noexcept;
@@ -31,6 +39,8 @@ class NativeWindowHost {
                        QString *error = nullptr);
     static bool focus(NativeWindowHandle child) noexcept;
     static bool pointerButtonDownOver(NativeWindowHandle child) noexcept;
+    static NativePrimaryPointerState
+    primaryPointerState(NativeWindowHandle child) noexcept;
     static bool requestClose(NativeWindowHandle child) noexcept;
     static bool isWindow(NativeWindowHandle window) noexcept;
     static NativeViewportDiagnostics diagnostics(NativeWindowHandle child,

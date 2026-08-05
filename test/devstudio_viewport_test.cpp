@@ -7,8 +7,12 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QJsonObject>
 #include <QPalette>
 #include <QProcess>
+#include <QTimer>
 #include <QWidget>
 
 #include <limits>
@@ -254,6 +258,56 @@ TEST_CASE("Engine process forwards child stdout and stderr through its output si
     REQUIRE(process.waitForFinished(5000));
     REQUIRE(output.contains(QStringLiteral("stdout-capture:both-streams")));
     REQUIRE(output.contains(QStringLiteral("stderr-capture:both-streams")));
+}
+
+TEST_CASE("Engine process multiplexes JSON-RPC replies without swallowing ordinary output",
+          "[devstudio][viewport][rpc][wp264]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_engine_process_rpc_test";
+    char *arguments[] = {application_name};
+    QCoreApplication application{argument_count, arguments};
+
+    EngineProcess process;
+    QString output;
+    QJsonValue rpc_result;
+    bool response_received = false;
+    QEventLoop response_loop;
+    QObject::connect(&process, &EngineProcess::outputReceived,
+                     [&](const QString &text) { output += text; });
+    QObject::connect(
+        &process, &EngineProcess::rpcResultReceived,
+        [&](qint64 request_id, const QJsonValue &result) {
+            REQUIRE(request_id == 1);
+            rpc_result = result;
+            response_received = true;
+            response_loop.quit();
+        });
+
+    QString error;
+    REQUIRE(process.start(
+        {fixtureExecutable(), {QStringLiteral("rpc")}, {}}, &error));
+    REQUIRE(error.isEmpty());
+    REQUIRE(process.waitForStarted(5000));
+    REQUIRE(process.requestRpc(
+                QStringLiteral("pick_object"),
+                QJsonObject{{QStringLiteral("x"), 12},
+                            {QStringLiteral("y"), 34}},
+                &error) == 1);
+    REQUIRE(error.isEmpty());
+
+    QTimer::singleShot(5000, &response_loop, &QEventLoop::quit);
+    response_loop.exec();
+    REQUIRE(response_received);
+    REQUIRE(rpc_result.isObject());
+    REQUIRE(rpc_result.toObject().value(QStringLiteral("contract")).toInt() ==
+            1);
+    REQUIRE(rpc_result.toObject().value(QStringLiteral("hit")).isNull());
+    REQUIRE(process.waitForFinished(5000));
+    REQUIRE(output.contains(QStringLiteral("ordinary-stdout-before-rpc")));
+    REQUIRE(output.contains(QStringLiteral("ordinary-stderr-before-rpc")));
+    REQUIRE(output.contains(QStringLiteral("\"method\":\"pick_object\"")));
+    REQUIRE(output.contains(QStringLiteral("\"x\":12")));
+    REQUIRE_FALSE(output.contains(QStringLiteral("\"jsonrpc\":\"2.0\",\"id\":1,\"result\"")));
 }
 
 #ifdef Q_OS_WIN

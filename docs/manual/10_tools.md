@@ -359,32 +359,50 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 
 ## 10.7 Pelican Studio(devstudio)
 
-**現状 🚧: Qt Widgets の editor shell と別 process engine viewport まで実装済み。**
+**現状 🚧: Qt Widgets の editor shell、別 process engine viewport、Outliner と viewport の
+選択同期まで実装済み。**
 起動は `cmake --build ./build --target run_studio`。
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
 
-中央 viewport は `pelican_player` を子 process として起動し、Windows の native HWND を
+project を開くと、中央 viewport は同じ project を `--rpc --project <root>` 付きの
+`pelican_player` 子 process として起動し、Windows の native HWND を
 Qt host へ再親付けします。player が自分の swapchain へ描いて OS が合成するため、pixel readback、
 copy、process 間 frame 転送はありません。player が終了しても Studio は残り、`Restart Engine`
 から再起動できます。既定では Studio と同じ directory、次に
-`../build/src/player/Debug/pelican_player.exe` を探します。開発時の明示 override は次です:
+`../build/src/player/Debug/pelican_player.exe` を探します。project と `--rpc` は Studio が所有し、
+`PELICAN_STUDIO_PLAYER_ARGUMENTS` 内の同名指定は除去します。開発時の executable と追加引数の
+override は次です:
 
 ```powershell
 $env:PELICAN_STUDIO_PLAYER = "C:/path/to/pelican_player.exe"
-$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--project C:/path/to/project --free-camera"
+$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--gpu-labels --free-camera"
 dist_debug/pelican_studio.exe
 ```
+
+`--project` はここに書きません。Studio が開いた project から自分で渡すため、同名指定は除去されます。
 
 `--free-camera` は Studio 固有機能ではなく同じ `pelican_player` の公開引数です。したがって
 上の環境変数を使わず、素の player へ直接指定しても同じ自由飛行カメラになります。overlay は
 メモリ上だけにあり、scene JSON や入力 profile を保存しません。
 
+viewport の左クリックは child client の物理 pixel 座標を `pick_object` へ送り、応答の
+`(scene_id, declaration_index)` を Outliner と Inspector に反映します。Outliner を選んだ方向も
+同じ `SelectionModel` を更新し、viewport はその 1 個の状態を非所有参照します。名前は表示にしか
+使わないため、無名 object も別々に選択できます。この WP では枠線や gizmo は描きません。
+
+選択は engine/game の共有状態ではなく、各ツールが持つ client-session の注視対象です。engine に
+Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_project` の identity だけから
+任意の client が同じ状態を作れる形にしたのが D0 上の理由です。背景への成功 pick は選択を解除します。
+`picking` feature が無い、RPC が失敗した、または応答を Outliner と対応付けられない場合は現在選択を
+維持し、viewport の警告行、status bar、Engine Log の三つへ理由を出します。feature は自動で有効化せず、
+project の purgeability を保ちます。
+>>>>>>> agent/wp264
+
 共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
-process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262 で入りましたが、
-project 選択と player 引数の UI 連携、Studio からの編集/picking 接続、gizmo、
-複数 client WebSocket は未接続です。ツール自作の入口は
+process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262、Studio の選択同期は
+WP264 で入りました。プロパティ編集、gizmo、複数 client WebSocket は未接続です。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤
