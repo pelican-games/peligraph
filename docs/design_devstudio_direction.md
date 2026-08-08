@@ -97,9 +97,42 @@ window shell、dock、レイアウトメニュー、プリセット永続化を�
 |------|--------|------|
 | ピッキング(視覚) | **ID バッファパス = render feature**(`engine://features/picking.json`)+ 読み出し | パージ可能・エディタ以外(デバッグ)にも使える |
 | ピッキング(論理) | 物理クエリ(raycast)— 別途必須決定済み | 視覚と論理の両方を持つ |
-| ギズモ | debug_draw(実装済み)の上にハンドル描画 + ドラッグ → update_transforms | |
+| ギズモ | **ギズモ自体を render feature にする**(`engine://features/gizmo.json`)+ 状態を持たない当たり判定クエリ + ドラッグは編集 rpc(preview lease) | パージ可能。picking と同じ形(2026-08-09 改訂。旧案は下記) |
 | アセットホットリロード拡張 | シェーダ以外(テクスチャ・モデル・シーン)の監視再読込 | 編集ループの核 |
 | シーン保存 round-trip | rpc 変更の蓄積 → pelican.scene v1 へ書き戻し | レガシー形式受理の削除条件(scene 文書 未決 4)がここで満ちる |
+
+### 2.1 ギズモの旧案を差し替えた理由(2026-08-09)
+
+旧案は「**debug_draw(実装済み)の上にハンドル描画 + ドラッグ → `update_transforms`**」だった。
+**この機構は両端とも成立しない。** §0 が同一プロセスを前提としていた時期の記述である。
+
+**描く側**: `debug_draw` の producer は `render_pass_dispatch.cpp` の
+`#if PELICAN_WITH_PHYSICS` に囲まれた物理だけで、**物理を切ると producer がゼロ**になる。
+API は `line(glm::vec3 from_ndc, ...)` で **NDC 座標**を取り、無効時は
+`if (!enabled) return;` で**黙って捨てる**。rpc もゲーム API も無い。
+一方 devstudio は §0.5 D0 により `pelican_core` をリンクできない(WP249 で configure 時検査)。
+**つまり devstudio には 3D ビューに何かを描く手段が無い。**
+
+**適用側**: `update_transforms` は `pending_transforms` に積んで `{"queued": N}` を返すだけである。
+実際に適用する `flushPendingTransforms()` の呼び出し元は `step_frame` / `render_frame` /
+`capture_gpu` の 3 つだけで、**studio はどれも呼ばない**。さらに `load_scene` /
+`reload_game_logic` / `import_scene_snapshot` はこのキューを**破棄する**。
+この経路でギズモを作ると「成功」が返って何も動かず、次のシーンロードで黙って捨てられる。
+**WP244 で潰したのと同じ fail-silent である。**
+
+**新案の理由**: 当たり判定は**押下時に 1 回**行うもので、ドラッグ中は不要である
+(掴んだ後は既知の軸に沿った拘束運動)。つまり頻度は選択クリックと同じで、
+`pick_object` が許容されているのと同じ条件になる。したがって engine 側に置いても
+レイテンシの問題は生じない。
+
+そして picking は「**パージ可能で、エディタ以外(デバッグ)にも使える**」という理由で
+engine の feature として受け入れた。**ギズモも同じ性格**である。判定を devstudio に置くと、
+ギズモが欲しい別のツールが同じ計算を書き直すことになり、
+「標準 UI ができることは公開面経由でできる」という D0 の趣旨に逆らう。
+
+**UI の対話状態は engine に入れない。** engine が答えるのは
+「選択 S・モード M のとき座標 (x,y) にあるハンドルはどれか」という**状態を持たない問い合わせ**に
+限る。掴んでいる最中の状態はエディタ側に残す。
 
 ## 3. 段階(D 系)
 
