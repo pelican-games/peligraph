@@ -5,8 +5,12 @@
     {
       "name": "free_camera",
       "actions": [
-        {"name": "move", "type": "axis2"},
-        {"name": "look", "type": "axis2"}
+        {"name": "pelican_view_orbit", "type": "button"},
+        {"name": "pelican_view_pan", "type": "button"},
+        {"name": "pelican_view_zoom_drag", "type": "button"},
+        {"name": "pelican_view_pointer_x", "type": "axis1"},
+        {"name": "pelican_view_pointer_y", "type": "axis1"},
+        {"name": "pelican_view_wheel", "type": "axis1"}
       ]
     }
   ]

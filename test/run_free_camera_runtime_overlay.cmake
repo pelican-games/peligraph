@@ -66,16 +66,62 @@ file(WRITE "${project_dir}/scenes/main.scene.json" [=[
 }
 ]=])
 
-set(replay "${OUT_DIR}/free_camera.input_seq.jsonl")
-file(WRITE "${replay}"
+set(blender_replay "${OUT_DIR}/blender.input_seq.jsonl")
+file(WRITE "${blender_replay}"
     "{\"schema\":\"pelican.input_seq\",\"version\":1,\"fps\":30}\n"
     "{\"frame\":0}\n"
-    "{\"event_seq\":0,\"type\":\"button\",\"code\":\"W\",\"pressed\":true}\n"
-    "{\"event_seq\":1,\"type\":\"button\",\"code\":\"ArrowRight\",\"pressed\":true}\n"
+    "{\"event_seq\":0,\"type\":\"cursor_move\",\"x\":0,\"y\":0}\n"
     "{\"frame\":1}\n"
+    "{\"event_seq\":1,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":true}\n"
+    "{\"event_seq\":2,\"type\":\"cursor_move\",\"x\":10,\"y\":0}\n"
     "{\"frame\":2}\n"
-    "{\"event_seq\":2,\"type\":\"button\",\"code\":\"W\",\"pressed\":false}\n"
-    "{\"event_seq\":3,\"type\":\"button\",\"code\":\"ArrowRight\",\"pressed\":false}\n"
+    "{\"event_seq\":3,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":false}\n"
+    "{\"frame\":3}\n"
+    "{\"event_seq\":4,\"type\":\"button\",\"code\":\"LeftShift\",\"pressed\":true}\n"
+    "{\"event_seq\":5,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":true}\n"
+    "{\"event_seq\":6,\"type\":\"cursor_move\",\"x\":20,\"y\":0}\n"
+    "{\"frame\":4}\n"
+    "{\"event_seq\":7,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":false}\n"
+    "{\"event_seq\":8,\"type\":\"button\",\"code\":\"LeftShift\",\"pressed\":false}\n"
+    "{\"frame\":5}\n"
+    "{\"event_seq\":9,\"type\":\"button\",\"code\":\"LeftControl\",\"pressed\":true}\n"
+    "{\"event_seq\":10,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":true}\n"
+    "{\"event_seq\":11,\"type\":\"cursor_move\",\"x\":20,\"y\":-10}\n"
+    "{\"frame\":6}\n"
+    "{\"event_seq\":12,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":false}\n"
+    "{\"event_seq\":13,\"type\":\"button\",\"code\":\"LeftControl\",\"pressed\":false}\n"
+    "{\"frame\":7}\n"
+    "{\"event_seq\":14,\"type\":\"scroll\",\"x\":0,\"y\":1}\n"
+    "{\"frame\":8}\n"
+)
+
+set(unity_replay "${OUT_DIR}/unity.input_seq.jsonl")
+file(WRITE "${unity_replay}"
+    "{\"schema\":\"pelican.input_seq\",\"version\":1,\"fps\":30}\n"
+    "{\"frame\":0}\n"
+    "{\"event_seq\":0,\"type\":\"cursor_move\",\"x\":0,\"y\":0}\n"
+    "{\"frame\":1}\n"
+    "{\"event_seq\":1,\"type\":\"button\",\"code\":\"LeftAlt\",\"pressed\":true}\n"
+    "{\"event_seq\":2,\"type\":\"button\",\"code\":\"MouseLeft\",\"pressed\":true}\n"
+    "{\"event_seq\":3,\"type\":\"cursor_move\",\"x\":10,\"y\":0}\n"
+    "{\"frame\":2}\n"
+    "{\"event_seq\":4,\"type\":\"button\",\"code\":\"MouseLeft\",\"pressed\":false}\n"
+    "{\"event_seq\":5,\"type\":\"button\",\"code\":\"LeftAlt\",\"pressed\":false}\n"
+    "{\"frame\":3}\n"
+    "{\"event_seq\":6,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":true}\n"
+    "{\"event_seq\":7,\"type\":\"cursor_move\",\"x\":20,\"y\":0}\n"
+    "{\"frame\":4}\n"
+    "{\"event_seq\":8,\"type\":\"button\",\"code\":\"MouseMiddle\",\"pressed\":false}\n"
+    "{\"frame\":5}\n"
+    "{\"event_seq\":9,\"type\":\"button\",\"code\":\"LeftAlt\",\"pressed\":true}\n"
+    "{\"event_seq\":10,\"type\":\"button\",\"code\":\"MouseRight\",\"pressed\":true}\n"
+    "{\"event_seq\":11,\"type\":\"cursor_move\",\"x\":20,\"y\":-10}\n"
+    "{\"frame\":6}\n"
+    "{\"event_seq\":12,\"type\":\"button\",\"code\":\"MouseRight\",\"pressed\":false}\n"
+    "{\"event_seq\":13,\"type\":\"button\",\"code\":\"LeftAlt\",\"pressed\":false}\n"
+    "{\"frame\":7}\n"
+    "{\"event_seq\":14,\"type\":\"scroll\",\"x\":0,\"y\":1}\n"
+    "{\"frame\":8}\n"
 )
 
 function(project_digest output)
@@ -107,7 +153,7 @@ function(authored_digest output)
     set(${output} "${digest}" PARENT_SCOPE)
 endfunction()
 
-function(run_bake output)
+function(run_bake output replay)
     execute_process(
         COMMAND "${PLAYER}"
             --headless
@@ -130,14 +176,46 @@ function(run_bake output)
     endif()
 endfunction()
 
+function(assert_navigation output preset)
+    file(STRINGS "${output}" lines)
+    list(GET lines 0 header)
+    string(JSON camera_name GET "${header}" objects 0)
+    if(NOT camera_name MATCHES "^__pelican_runtime_free_camera")
+        message(FATAL_ERROR "${preset} did not select the runtime camera: ${header}")
+    endif()
+
+    foreach(frame RANGE 0 7)
+        math(EXPR line_index "${frame} + 1")
+        list(GET lines ${line_index} sample)
+        string(JSON frame_${frame}_pos GET "${sample}" transforms 0 pos)
+        string(JSON frame_${frame}_pos_y GET "${sample}" transforms 0 pos 1)
+        string(JSON frame_${frame}_rot GET "${sample}" transforms 0 rot)
+    endforeach()
+
+    if(frame_0_pos STREQUAL frame_1_pos OR frame_0_rot STREQUAL frame_1_rot)
+        message(FATAL_ERROR "${preset} orbit binding did not change position and rotation:\n${lines}")
+    endif()
+    if(frame_2_pos STREQUAL frame_3_pos OR NOT frame_2_rot STREQUAL frame_3_rot)
+        message(FATAL_ERROR "${preset} pan binding did not translate without rotating:\n${lines}")
+    endif()
+    if(frame_4_pos STREQUAL frame_5_pos OR
+       NOT frame_4_pos_y STREQUAL frame_5_pos_y)
+        message(FATAL_ERROR "${preset} drag zoom binding did not move without rotating:\n${lines}")
+    endif()
+    if(frame_6_pos STREQUAL frame_7_pos OR
+       NOT frame_6_pos_y STREQUAL frame_7_pos_y)
+        message(FATAL_ERROR "${preset} wheel binding did not zoom without rotating:\n${lines}")
+    endif()
+endfunction()
+
 authored_digest(authored_before_digest)
 
 set(authored_bake "${OUT_DIR}/authored.transform_seq.jsonl")
-run_bake("${authored_bake}")
+run_bake("${authored_bake}" "${blender_replay}")
 file(STRINGS "${authored_bake}" authored_lines)
 list(GET authored_lines 0 authored_header)
 list(GET authored_lines 1 authored_first)
-list(GET authored_lines 3 authored_last)
+list(GET authored_lines 9 authored_last)
 string(JSON authored_name GET "${authored_header}" objects 0)
 string(JSON authored_first_pos GET "${authored_first}" transforms 0 pos)
 string(JSON authored_last_pos GET "${authored_last}" transforms 0 pos)
@@ -155,22 +233,35 @@ endif()
 # project so the free-camera operation itself must be completely read-only.
 project_digest(before_digest)
 
-set(free_bake "${OUT_DIR}/free.transform_seq.jsonl")
-run_bake("${free_bake}" --free-camera)
-file(STRINGS "${free_bake}" free_lines)
-list(GET free_lines 0 free_header)
-list(GET free_lines 1 free_first)
-list(GET free_lines 3 free_last)
-string(JSON free_name GET "${free_header}" objects 0)
-string(JSON free_first_pos GET "${free_first}" transforms 0 pos)
-string(JSON free_last_pos GET "${free_last}" transforms 0 pos)
-string(JSON free_first_rot GET "${free_first}" transforms 0 rot)
-string(JSON free_last_rot GET "${free_last}" transforms 0 rot)
-if(NOT free_name MATCHES "^__pelican_runtime_free_camera" OR
-   free_first_pos STREQUAL free_last_pos OR
-   free_first_rot STREQUAL free_last_rot)
+set(default_bake "${OUT_DIR}/default.transform_seq.jsonl")
+run_bake("${default_bake}" "${blender_replay}" --free-camera)
+assert_navigation("${default_bake}" "default Blender")
+
+set(blender_bake "${OUT_DIR}/blender.transform_seq.jsonl")
+run_bake("${blender_bake}" "${blender_replay}" --free-camera blender)
+assert_navigation("${blender_bake}" "Blender")
+
+file(SHA256 "${default_bake}" default_bake_digest)
+file(SHA256 "${blender_bake}" blender_bake_digest)
+if(NOT default_bake_digest STREQUAL blender_bake_digest)
+    message(FATAL_ERROR "--free-camera did not default to the Blender preset")
+endif()
+
+set(unity_bake "${OUT_DIR}/unity.transform_seq.jsonl")
+run_bake("${unity_bake}" "${unity_replay}" --free-camera unity)
+assert_navigation("${unity_bake}" "Unity")
+
+execute_process(
+    COMMAND "${PLAYER}" --headless --project "${project_dir}" --free-camera unknown
+    WORKING_DIRECTORY "${PLAYER_DIR}"
+    RESULT_VARIABLE invalid_result
+    OUTPUT_VARIABLE invalid_stdout
+    ERROR_VARIABLE invalid_stderr
+)
+if(invalid_result EQUAL 0 OR
+   NOT invalid_stderr MATCHES "--free-camera must be one of: blender, unity")
     message(FATAL_ERROR
-        "runtime free camera did not move and look from embedded input:\n${free_lines}")
+        "unknown free-camera preset was not rejected clearly:\n${invalid_stdout}\n${invalid_stderr}")
 endif()
 
 project_digest(after_digest)

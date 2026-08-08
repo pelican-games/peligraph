@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "unity",
+  "bindings": [
+    {"action": "pelican_view_orbit", "binding": "mouse:alt+left"},
+    {"action": "pelican_view_pan", "binding": "mouse:middle"},
+    {"action": "pelican_view_zoom_drag", "binding": "mouse:alt+right"},
+    {"action": "pelican_view_pointer_x", "binding": "mouse:delta_x"},
+    {"action": "pelican_view_pointer_y", "binding": "mouse:delta_y"},
+    {"action": "pelican_view_wheel", "binding": "mouse:wheel_y"}
+  ]
+}

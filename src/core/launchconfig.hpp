@@ -19,8 +19,14 @@ struct EngineLaunchCameraOverride {
     float fov_y = 45.0f;
 };
 
+enum class EngineLaunchFreeCameraPreset {
+    Blender,
+    Unity,
+};
+
 struct EngineLaunchFreeCamera {
-    float speed = 5.0f;
+    EngineLaunchFreeCameraPreset preset = EngineLaunchFreeCameraPreset::Blender;
+    float orbit_distance = 5.0f;
     float sensitivity = 1.5f;
 };
 

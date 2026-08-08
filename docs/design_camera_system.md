@@ -1,7 +1,7 @@
 # カメラシステム: glTF 同等以上(v1)
 
 対象読者: エンジン担当。
-ステータス: v1.1 ドラフト(2026-08-05。WP265 の runtime free camera を追記)。
+ステータス: v1.2 ドラフト(2026-08-08。WP273 の視点移動 preset を追記)。
 前提: `design_scene_format.md`(camera コンポーネント)、R6(glTF 規約)、
 `design_game_logic_native.md`(コントローラの置き場所)、
 transform_seq v2 予約(カメラトラック)。
@@ -49,14 +49,14 @@ transform_seq v2 予約(カメラトラック)。
   上げず追加キーのみで済む想定。ずれる場合は v1.2 として追記)
 - project.json の `basic_config.camera` は「カメラ未定義シーンの既定」として
   存続(意味論変更なし)
-- 入力とカメラ: orbit/fly コントローラは Actions(`move` / `look`)を消費する。
-  binding は入力 profile 側で与える
+- 入力とカメラ: orbit/fly コントローラは Actions(`move` / `look`、orbit はさらに
+  `pan` / `zoom`)を消費する。binding は入力 profile 側で与える
 
 ### 2.1 runtime free camera(WP265)
 
-`pelican_player --free-camera` は、プロジェクトを変更しないデバッグ用の自由飛行
-カメラを明示的に有効化する公開起動面である。Studio も同じ player 引数を使うだけで、
-エディタ専用 API は持たない。
+`pelican_player --free-camera [blender|unity]` は、プロジェクトを変更しないデバッグ用の
+視点移動カメラを明示的に有効化する公開起動面である。Studio も同じ player 引数を使う
+だけで、エディタ専用 API は持たない。
 
 実装前に rendering config の `featurecompose` を調べた。そこには
 `transform_resolved_config` があり、保存対象ではない解決済み rendering config を
@@ -66,16 +66,40 @@ transform_seq v2 予約(カメラトラック)。
 
 代わりに、次の二つをそれぞれの runtime 投影境界で合成する。
 
-- camera: 解決済み scene camera 群とは別に synthetic な `fly` camera を加え、最初の
+- camera: 解決済み scene camera 群とは別に synthetic な `orbit` camera を加え、最初の
   scene camera があればその pose/projection を開始値にする。既存 camera の controller と
   authored transform は変更しない
 - input: `engine://input/free_camera_actions.json` と
-  `engine://input/profiles/free_camera.json` を入力 runtime が選ぶ。project の
+  `engine://input/profiles/free_camera_blender.json` / `free_camera_unity.json` を入力 runtime が
+  選ぶ。project の
   `input/actions.json`、`input/profiles/*.json`、`project.json` は読替えも書込みもしない
 
 この overlay は `EngineLaunchConfig::free_camera` がある起動だけに存在し、省略時は camera と
-input の従来経路だけを通る。操作は WASD=移動、矢印=視線、gamepad は左 stick=移動・右
-stick=視線。既存の `Fly` とその `speed` / `sensitivity` を使い、新 controller 型は加えない。
+input の従来経路だけを通る。既存の `Orbit` とその runtime 注視点・パン・ズームを使い、
+新 controller 型は加えない。
+
+### 2.2 視点移動 preset(WP273)
+
+公開名と操作は次のとおり。表のボタンを押したままマウスを動かす操作を「ドラッグ」と書く。
+
+| preset | orbit | pan | zoom |
+|---|---|---|---|
+| `blender` | MMB ドラッグ | Shift+MMB ドラッグ | Ctrl+MMB の上下ドラッグ / ホイール |
+| `unity` | Alt+LMB ドラッグ | MMB ドラッグ | Alt+RMB の上下ドラッグ / ホイール |
+
+`--free-camera` だけを指定したときの既定は `blender` とする。利用者の要望が Blender の
+視点移動を起点としており、Blender の通常の視点移動が自由飛行ではなく orbit だからである。
+`unity` は `--free-camera unity` で明示する。未知の名前は起動時に候補を示して拒否する。
+
+修飾なしの MMB binding は Shift/Ctrl を押していても成立する入力 v1 の規約なので、同時に
+成立した操作は zoom → pan → orbit の順で選ぶ。これにより Blender の Shift+MMB と
+Ctrl+MMB が MMB orbit に横取りされない。ホイールはボタンに関係なく距離を変える。
+
+初期注視点は、overlay が引き継いだ開始位置から開始視線の正規化方向へ **5 world units**
+進んだ点とする。開始時の camera pose を変えず、名前付き scene object も authored JSON の
+追記も必要としないためである。最初の scene camera が無い場合は renderer の既定 pose を同じ
+規則で使う。scene 全体の bounds や選択物は参照しない。選択物へのフォーカスはこの preset
+選択の範囲外である。
 
 ## 3. 検証
 

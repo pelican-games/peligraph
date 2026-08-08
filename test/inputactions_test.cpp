@@ -382,31 +382,77 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 3);
 }
 
-TEST_CASE("Runtime free camera supplies an embedded input profile without project declarations",
-          "[input-actions][free-camera][wp265]") {
+TEST_CASE("Runtime free camera supplies embedded Blender and Unity profiles without project declarations",
+          "[input-actions][free-camera][wp273]") {
+    struct PresetCase {
+        EngineLaunchFreeCameraPreset preset;
+        std::string_view name;
+        std::string_view orbit;
+        std::string_view pan;
+        std::string_view zoom_drag;
+        std::optional<KeyCode> modifier;
+        KeyCode orbit_button;
+    };
+    const PresetCase cases[] = {
+        {EngineLaunchFreeCameraPreset::Blender, "blender", "mouse:middle",
+         "mouse:shift+middle", "mouse:ctrl+middle", std::nullopt,
+         KeyCode::MouseMiddle},
+        {EngineLaunchFreeCameraPreset::Unity, "unity", "mouse:alt+left",
+         "mouse:middle", "mouse:alt+right", KeyCode::LeftAlt,
+         KeyCode::MouseLeft},
+    };
+
     ensureLogger();
-    Sandbox sandbox;
-    std::filesystem::create_directories(sandbox.root);
+    for (const auto &preset : cases) {
+        DYNAMIC_SECTION(std::string{preset.name}) {
+            Sandbox sandbox;
+            std::filesystem::create_directories(sandbox.root);
 
-    FastModuleContainer modules;
-    GET_MODULE(PathResolver).setup(sandbox.root, false);
-    GET_MODULE(EngineLaunchConfig).free_camera = EngineLaunchFreeCamera{};
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(sandbox.root, false);
+            GET_MODULE(EngineLaunchConfig).free_camera = EngineLaunchFreeCamera{
+                .preset = preset.preset,
+            };
 
-    REQUIRE(Actions::isConfigured());
-    REQUIRE(Actions::actionSetStack() ==
-            std::vector<std::string>{"free_camera"});
-    REQUIRE(internal::activeInputProfile() ==
-            std::optional<std::string>{"pelican_free_camera"});
-    REQUIRE(internal::availableInputProfiles() ==
-            std::vector<std::string>{"pelican_free_camera"});
-    REQUIRE(internal::gamepadPollingEnabled());
+            REQUIRE(Actions::isConfigured());
+            REQUIRE(Actions::actionSetStack() ==
+                    std::vector<std::string>{"free_camera"});
+            REQUIRE(internal::activeInputProfile() ==
+                    std::optional<std::string>{std::string{preset.name}});
+            REQUIRE(internal::availableInputProfiles() ==
+                    std::vector<std::string>{"blender", "unity"});
+            REQUIRE_FALSE(internal::gamepadPollingEnabled());
 
-    auto &input = GET_MODULE(InputState);
-    input.queueEvent(InputEvent::button(KeyCode::W, true));
-    input.queueEvent(InputEvent::button(KeyCode::ArrowRight, true));
-    input.beginFrame();
-    REQUIRE(Actions::axis2("move").y == 1.0f);
-    REQUIRE(Actions::axis2("look").x == 1.0f);
+            const auto *map = internal::inputActionMap();
+            REQUIRE(map != nullptr);
+            const auto require_binding = [map](std::string_view action,
+                                               std::string_view binding) {
+                const auto *definition = map->findAction(action);
+                REQUIRE(definition != nullptr);
+                REQUIRE(definition->bindings.size() == 1);
+                REQUIRE(definition->bindings.front().text == std::string{binding});
+            };
+            require_binding("pelican_view_orbit", preset.orbit);
+            require_binding("pelican_view_pan", preset.pan);
+            require_binding("pelican_view_zoom_drag", preset.zoom_drag);
+            require_binding("pelican_view_pointer_x", "mouse:delta_x");
+            require_binding("pelican_view_pointer_y", "mouse:delta_y");
+            require_binding("pelican_view_wheel", "mouse:wheel_y");
+
+            auto &input = GET_MODULE(InputState);
+            if (preset.modifier) {
+                input.queueEvent(InputEvent::button(*preset.modifier, true));
+            }
+            input.queueEvent(InputEvent::button(preset.orbit_button, true));
+            input.queueEvent(InputEvent::axis(0.25f, -0.5f));
+            input.queueEvent(InputEvent::scroll(0.0f, 0.75f));
+            input.beginFrame();
+            REQUIRE(Actions::isHeld("pelican_view_orbit"));
+            REQUIRE(Actions::axis1("pelican_view_pointer_x") == 0.25f);
+            REQUIRE(Actions::axis1("pelican_view_pointer_y") == -0.5f);
+            REQUIRE(Actions::axis1("pelican_view_wheel") == 0.75f);
+        }
+    }
 }
 
 TEST_CASE("Input profiles switch gamepad buttons and process axes", "[input-actions][gamepad]") {

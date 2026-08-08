@@ -494,8 +494,9 @@ void applyRuntimeFreeCameraOverlay(
     if (!launch.free_camera) {
         return;
     }
-    if (!std::isfinite(launch.free_camera->speed) || launch.free_camera->speed <= 0.0f) {
-        throw std::runtime_error("runtime free camera speed must be positive and finite");
+    if (!std::isfinite(launch.free_camera->orbit_distance) ||
+        launch.free_camera->orbit_distance <= 0.0f) {
+        throw std::runtime_error("runtime free camera orbit distance must be positive and finite");
     }
     if (!std::isfinite(launch.free_camera->sensitivity) ||
         launch.free_camera->sensitivity <= 0.0f) {
@@ -517,8 +518,8 @@ void applyRuntimeFreeCameraOverlay(
         free_camera.up = scene_camera_basis->up;
     }
     free_camera.controller = Camera::SceneCameraController{
-        .type = Camera::SceneCameraControllerType::Fly,
-        .speed = launch.free_camera->speed,
+        .type = Camera::SceneCameraControllerType::Orbit,
+        .distance = launch.free_camera->orbit_distance,
         .sensitivity = launch.free_camera->sensitivity,
     };
 

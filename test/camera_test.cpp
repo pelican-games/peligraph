@@ -523,8 +523,8 @@ TEST_CASE("Camera controller parse errors include camera name and unknown type",
     }
 }
 
-TEST_CASE("Runtime free camera overlays the resolved scene without changing authored bytes",
-          "[camera][free-camera][wp265]") {
+TEST_CASE("Runtime navigation camera overlays the resolved scene without changing authored bytes",
+          "[camera][free-camera][wp273]") {
     ensureLogger();
     Sandbox sandbox;
     const std::string authored = cameraControllerSceneJson();
@@ -535,7 +535,8 @@ TEST_CASE("Runtime free camera overlays the resolved scene without changing auth
     GET_MODULE(PathResolver).setup(sandbox.root, false);
     GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
     GET_MODULE(EngineLaunchConfig).free_camera = EngineLaunchFreeCamera{
-        .speed = 7.0f,
+        .preset = EngineLaunchFreeCameraPreset::Blender,
+        .orbit_distance = 7.0f,
         .sensitivity = 2.0f,
     };
 
@@ -544,8 +545,9 @@ TEST_CASE("Runtime free camera overlays the resolved scene without changing auth
     REQUIRE(runtime_name.starts_with("__pelican_runtime_free_camera"));
     const auto *runtime = camera.sceneCameraController(runtime_name);
     REQUIRE(runtime != nullptr);
-    REQUIRE(runtime->type == Camera::SceneCameraControllerType::Fly);
-    REQUIRE(runtime->speed == Catch::Approx(7.0f));
+    REQUIRE(runtime->type == Camera::SceneCameraControllerType::Orbit);
+    REQUIRE(runtime->target.empty());
+    REQUIRE(runtime->distance == Catch::Approx(7.0f));
     REQUIRE(runtime->sensitivity == Catch::Approx(2.0f));
 
     const auto *authored_fly = camera.sceneCameraController("FlyCam");

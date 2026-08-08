@@ -97,6 +97,16 @@ Pelican::XrMode parseXrMode(const std::string &value) {
     throw std::runtime_error("--xr must be one of: off, auto, on");
 }
 
+Pelican::EngineLaunchFreeCameraPreset parseFreeCameraPreset(const std::string &value) {
+    if (value == "blender") {
+        return Pelican::EngineLaunchFreeCameraPreset::Blender;
+    }
+    if (value == "unity") {
+        return Pelican::EngineLaunchFreeCameraPreset::Unity;
+    }
+    throw std::runtime_error("--free-camera must be one of: blender, unity");
+}
+
 std::filesystem::path resolveExistingCliFile(const std::string &value, const std::string &name) {
     if (value.empty()) {
         throw std::runtime_error(name + " must not be empty");
@@ -277,8 +287,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .metavar("name")
         .help("override the project's active input binding profile");
     program.add_argument("--free-camera")
-        .flag()
-        .help("enable a runtime-only fly camera (WASD move, arrows look; project files stay unchanged)");
+        .nargs(argparse::nargs_pattern::optional)
+        .default_value(std::string{"blender"})
+        .metavar("blender|unity")
+        .help("enable a runtime-only orbit camera with Blender (default) or Unity controls");
     program.add_argument("--bake-camera-output")
         .default_value(std::string{})
         .metavar("path.jsonl")
@@ -378,11 +390,13 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (!input_profile.empty()) {
             config.input_profile = input_profile;
         }
-        if (program.get<bool>("--free-camera")) {
+        if (program.is_used("--free-camera")) {
             if (config.input_profile) {
                 throw std::runtime_error("--free-camera cannot be combined with --input-profile");
             }
-            config.free_camera = Pelican::EngineLaunchFreeCamera{};
+            config.free_camera = Pelican::EngineLaunchFreeCamera{
+                .preset = parseFreeCameraPreset(program.get<std::string>("--free-camera")),
+            };
         }
         const auto camera_bake_output = program.get<std::string>("--bake-camera-output");
         if (!camera_bake_output.empty()) {

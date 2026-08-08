@@ -65,7 +65,7 @@ registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/detai
 
 [`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L53) は関数ローカルstaticのSystem instanceを返します。System objectは毎フレーム作り直されず、メンバ状態を保持できます。
 
-これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L211)）。
+これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L273)）。
 
 ### 実行順
 
@@ -74,7 +74,7 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 1. `order`昇順
 2. 同じorderなら登録時の型名文字列昇順
 
-従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L319) はorder 10000なので、通常のゲームSystemの後に動きます。
+従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L382) はorder 10000なので、通常のゲームSystemの後に動きます。
 
 ## 5.3 event handlerを持つSystem
 
@@ -207,7 +207,7 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 [`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L877) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L220)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1086) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L236)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1086) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L865) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
@@ -235,7 +235,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### raw inputとAction消費は別
 
-`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L255) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L271) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
 
 ## 5.6 Camera
 
@@ -251,15 +251,15 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L724) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L725) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L795) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L796) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L738) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L598)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L786) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L739) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L599)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L787) を通るため、このフラグの影響を受けません。
 
 ### controller
 
-[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L319) がゲームSystemとして毎フレーム処理します。
+[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L382) がゲームSystemとして毎フレーム処理します。
 
 - orbit: target周りのyaw/pitch/distance
 - follow: target + offsetからlook-at
@@ -287,7 +287,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L112) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L786) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L112) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L787) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 

@@ -18,9 +18,22 @@ namespace {
 
 constexpr std::string_view freeCameraActionsResource =
     "engine://input/free_camera_actions.json";
-constexpr std::string_view freeCameraProfileResource =
-    "engine://input/profiles/free_camera.json";
-constexpr std::string_view freeCameraProfileName = "pelican_free_camera";
+constexpr std::string_view freeCameraBlenderProfileResource =
+    "engine://input/profiles/free_camera_blender.json";
+constexpr std::string_view freeCameraUnityProfileResource =
+    "engine://input/profiles/free_camera_unity.json";
+constexpr std::string_view freeCameraBlenderProfileName = "blender";
+constexpr std::string_view freeCameraUnityProfileName = "unity";
+
+std::string_view freeCameraProfileName(EngineLaunchFreeCameraPreset preset) {
+    switch (preset) {
+    case EngineLaunchFreeCameraPreset::Blender:
+        return freeCameraBlenderProfileName;
+    case EngineLaunchFreeCameraPreset::Unity:
+        return freeCameraUnityProfileName;
+    }
+    throw std::runtime_error("unknown runtime free camera preset");
+}
 
 class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::optional<InputActionMap> action_definitions;
@@ -106,9 +119,12 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
             auto &resolver = GET_MODULE(PathResolver);
             input_actions_json = resolver.loadText(freeCameraActionsResource);
             profile_jsons.emplace(
-                freeCameraProfileName,
-                resolver.loadText(freeCameraProfileResource));
-            selected = std::string{freeCameraProfileName};
+                freeCameraBlenderProfileName,
+                resolver.loadText(freeCameraBlenderProfileResource));
+            profile_jsons.emplace(
+                freeCameraUnityProfileName,
+                resolver.loadText(freeCameraUnityProfileResource));
+            selected = std::string{freeCameraProfileName(launch.free_camera->preset)};
         } else {
             auto &config = GET_MODULE(ProjectBasicConfig);
             input_actions_json = config.inputActionsJson();

@@ -199,6 +199,68 @@ ActionAxis2 optionalAxis2(GameContext &ctx, std::string_view action_name) {
     }
 }
 
+float optionalAxis1(GameContext &ctx, std::string_view action_name) {
+    if (!ctx.actionsConfigured()) {
+        return 0.0f;
+    }
+    try {
+        return ctx.actionAxis1(action_name);
+    } catch (const std::runtime_error &error) {
+        if (isUnknownActionError(error)) {
+            return 0.0f;
+        }
+        throw;
+    }
+}
+
+bool optionalActionHeld(GameContext &ctx, std::string_view action_name) {
+    if (!ctx.actionsConfigured()) {
+        return false;
+    }
+    try {
+        return ctx.actionHeld(action_name);
+    } catch (const std::runtime_error &error) {
+        if (isUnknownActionError(error)) {
+            return false;
+        }
+        throw;
+    }
+}
+
+struct OrbitInput {
+    ActionAxis2 look;
+    ActionAxis2 pan;
+    float zoom = 0.0f;
+};
+
+OrbitInput readOrbitInput(GameContext &ctx) {
+    auto result = OrbitInput{
+        .look = optionalAxis2(ctx, "look"),
+        .pan = optionalAxis2(ctx, "pan"),
+        .zoom = optionalAxis1(ctx, "zoom"),
+    };
+    const auto move = optionalAxis2(ctx, "move");
+    result.look.x += move.x;
+    result.zoom += move.y;
+
+    const auto pointer_x = optionalAxis1(ctx, "pelican_view_pointer_x");
+    const auto pointer_y = optionalAxis1(ctx, "pelican_view_pointer_y");
+    result.zoom += optionalAxis1(ctx, "pelican_view_wheel");
+
+    // A chord such as Shift+MMB also satisfies the unmodified MMB binding.
+    // Resolve that deliberate input-profile overlap by operation priority.
+    if (optionalActionHeld(ctx, "pelican_view_zoom_drag")) {
+        result.zoom -= pointer_y;
+    } else if (optionalActionHeld(ctx, "pelican_view_pan")) {
+        result.pan.x -= pointer_x;
+        result.pan.y += pointer_y;
+    } else if (optionalActionHeld(ctx, "pelican_view_orbit")) {
+        result.look.x += pointer_x;
+        result.look.y += pointer_y;
+    }
+    return result;
+}
+
 SceneObjectTransform requireTargetTransform(std::string_view camera_name, const ControllerSpec &controller) {
     auto &scene = GET_MODULE(SceneLoader);
     if (!scene.hasObjectTransform(controller.target)) {
@@ -228,7 +290,6 @@ void applyPoseToSceneCamera(std::string_view camera_name, const CameraPose &pose
     }
     GET_MODULE(Camera).applyControllerPose(camera_name, pose.pos, pose.dir, pose.up);
 }
-float optionalAxis1(GameContext &ctx, std::string_view action_name);
 glm::vec3 resolveOrbitTarget(std::string_view, const ControllerSpec &, ControllerState &, bool);
 glm::vec3 panOrbitTarget(glm::vec3, glm::vec3, ActionAxis2, float, ControllerState &);
 CameraPose updateOrbit(GameContext &ctx, std::string_view camera_name, const ControllerSpec &controller,
@@ -238,21 +299,23 @@ CameraPose updateOrbit(GameContext &ctx, std::string_view camera_name, const Con
     const auto dt = std::max(ctx.deltaTime(), 0.0);
     if (first_update) {
         if (!controller.target.empty()) {
-            state.yaw = controller.yaw; state.pitch = clampPitch(controller.pitch);
+            state.yaw = controller.yaw;
+            state.pitch = clampPitch(controller.pitch);
         }
-        state.distance = controller.distance; state.initialized = true;
+        state.distance = controller.distance;
+        state.initialized = true;
     }
-    const auto look = optionalAxis2(ctx, "look");
-    const auto move = optionalAxis2(ctx, "move");
-    const auto pan = optionalAxis2(ctx, "pan");
-    const auto zoom_input = move.y + optionalAxis1(ctx, "zoom");
-    state.yaw += (look.x + move.x) * controller.sensitivity * static_cast<float>(dt);
-    state.pitch = clampPitch(state.pitch + look.y * controller.sensitivity * static_cast<float>(dt));
-    state.distance = std::max(0.001f, state.distance - zoom_input * controller.sensitivity *
-                                         std::max(1.0f, state.distance) * static_cast<float>(dt));
+    const auto input = readOrbitInput(ctx);
+    state.yaw += input.look.x * controller.sensitivity * static_cast<float>(dt);
+    state.pitch = clampPitch(state.pitch + input.look.y * controller.sensitivity * static_cast<float>(dt));
+    state.distance =
+        std::max(0.001f, state.distance - input.zoom * controller.sensitivity *
+                              std::max(1.0f, state.distance) * static_cast<float>(dt));
     const auto offset = directionFromYawPitch(state.yaw, state.pitch) * state.distance;
-    target = panOrbitTarget(target, offset, pan, controller.sensitivity *
-                                 std::max(1.0f, state.distance) * static_cast<float>(dt), state);
+    target = panOrbitTarget(target, offset, input.pan,
+                            controller.sensitivity * std::max(1.0f, state.distance) *
+                                static_cast<float>(dt),
+                            state);
     const auto desired = lookAtPose(target + offset, target);
     state.pose = first_update ? desired : blendPose(state.pose, desired, blendWeight(controller.damping, dt));
     return state.pose;
@@ -358,20 +421,6 @@ class BuiltinCameraControllerSystem {
         }
     }
 };
-
-float optionalAxis1(GameContext &ctx, std::string_view action_name) {
-    if (!ctx.actionsConfigured()) {
-        return 0.0f;
-    }
-    try {
-        return ctx.actionAxis1(action_name);
-    } catch (const std::runtime_error &error) {
-        if (isUnknownActionError(error)) {
-            return 0.0f;
-        }
-        throw;
-    }
-}
 
 glm::vec3 resolveOrbitTarget(std::string_view camera_name, const ControllerSpec &controller,
                              ControllerState &state, bool first_update) {

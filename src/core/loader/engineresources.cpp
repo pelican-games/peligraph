@@ -48,7 +48,8 @@ constexpr auto registered_ids =
     "features/taa.json",
     "features/velocity.json",
     "input/free_camera_actions.json",
-    "input/profiles/free_camera.json",
+    "input/profiles/free_camera_blender.json",
+    "input/profiles/free_camera_unity.json",
     "fullscreen.frag",
     "fullscreen.frag.spv",
     "fullscreen.vert",
@@ -189,7 +190,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("features/taa.json")
     PELICAN_ENGINE_RESOURCE("features/velocity.json")
     PELICAN_ENGINE_RESOURCE("input/free_camera_actions.json")
-    PELICAN_ENGINE_RESOURCE("input/profiles/free_camera.json")
+    PELICAN_ENGINE_RESOURCE("input/profiles/free_camera_blender.json")
+    PELICAN_ENGINE_RESOURCE("input/profiles/free_camera_unity.json")
     PELICAN_ENGINE_RESOURCE("fullscreen.frag")
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert")

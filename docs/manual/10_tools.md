@@ -50,7 +50,7 @@
 | `--record-input <path.jsonl>` | なし | 順序付き入力を `pelican.input_seq` v1 で収録(✅WP89) |
 | `--replay <path.jsonl>` | なし | input_seq のリプレイ。`--record-input` と排他、ホットリロード自動無効(✅WP89) |
 | `--input-profile <name>` | project.json の既定 | アクティブ入力プロファイルの上書き(✅WP91) |
-| `--free-camera` | off | project を変更せず runtime-only の `fly` camera と埋め込み入力 profile を有効化。WASD=移動、矢印=視線、左右 stick にも対応(✅WP265) |
+| `--free-camera [blender\|unity]` | off (`blender` が省略時 preset) | project を変更せず runtime-only の `orbit` camera と埋め込み入力 profile を有効化(✅WP273) |
 | `--xr off\|auto\|on` | off | OpenXR(PCVR)起動(✅WP125。`auto` = 不在なら flat 続行 / `on` = 不在・headless・rpc・リプレイでは名指しエラー — [第2章](02_getting_started.md)) |
 | `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須(✅WP89) |
 
@@ -63,7 +63,20 @@ pelican_player --rpc --headless --project mygame                            # �
 pelican_player --project mygame --record-input s.jsonl                      # プレイ収録
 pelican_player --headless --project mygame --replay s.jsonl \
   --bake-camera-output cam.jsonl                                            # カメラ焼き出し
+pelican_player --project mygame --free-camera                               # Blender 操作(既定)
+pelican_player --project mygame --free-camera unity                         # Unity 操作
 ```
+
+視点移動 preset の操作は次のとおりです。
+
+| preset | orbit | pan | zoom |
+|---|---|---|---|
+| `blender`(既定) | MMB ドラッグ | Shift+MMB ドラッグ | Ctrl+MMB の上下ドラッグ / ホイール |
+| `unity` | Alt+LMB ドラッグ | MMB ドラッグ | Alt+RMB の上下ドラッグ / ホイール |
+
+既定を Blender にしたのは、要望が Blender の操作を起点としており、通常の視点移動も orbit
+だからです。初期注視点は開始 camera の視線上 5 world units 先です。scene object を追加せず、
+選択物へのフォーカスも行いません。`--input-profile` との同時指定と未知の preset 名はエラーです。
 
 ※ `--play-seq` / `--seq-mesh` の相対パスは現状 cwd 基準で解決されます(既知の食い違い。[第11章](11_status.md))。
 
@@ -382,9 +395,10 @@ dist_debug/pelican_studio.exe
 
 `--project` はここに書きません。Studio が開いた project から自分で渡すため、同名指定は除去されます。
 
-`--free-camera` は Studio 固有機能ではなく同じ `pelican_player` の公開引数です。したがって
-上の環境変数を使わず、素の player へ直接指定しても同じ自由飛行カメラになります。overlay は
-メモリ上だけにあり、scene JSON や入力 profile を保存しません。
+`--free-camera [blender|unity]` は Studio 固有機能ではなく同じ `pelican_player` の公開引数です。
+したがって上の環境変数を使わず、素の player へ直接指定しても同じ orbit camera になります。
+overlay はメモリ上だけにあり、scene JSON や入力 profile を保存しません。この WP では Studio
+内の選択 UI は持たず、必要なら上の追加引数で player の公開面を使います。
 
 viewport の左クリックは child client の物理 pixel 座標を `pick_object` へ送り、応答の
 `(scene_id, declaration_index)` を Outliner と Inspector に反映します。Outliner を選んだ方向も
