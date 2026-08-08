@@ -36,9 +36,9 @@ struct ControllerState {
     float yaw = 0.0f;
     float pitch = 0.0f;
     float distance = 0.0f;
+    glm::vec3 orbit_target{0.0f, 0.0f, 0.0f}, pan_offset{0.0f, 0.0f, 0.0f};
     CameraPose pose;
 };
-
 constexpr float maxPitchRadians = 1.55334306f;
 
 std::string controllerSignature(const ControllerSpec &controller) {
@@ -228,30 +228,32 @@ void applyPoseToSceneCamera(std::string_view camera_name, const CameraPose &pose
     }
     GET_MODULE(Camera).applyControllerPose(camera_name, pose.pos, pose.dir, pose.up);
 }
-
+float optionalAxis1(GameContext &ctx, std::string_view action_name);
+glm::vec3 resolveOrbitTarget(std::string_view, const ControllerSpec &, ControllerState &, bool);
+glm::vec3 panOrbitTarget(glm::vec3, glm::vec3, ActionAxis2, float, ControllerState &);
 CameraPose updateOrbit(GameContext &ctx, std::string_view camera_name, const ControllerSpec &controller,
                        ControllerState &state) {
-    const auto target = requireTargetTransform(camera_name, controller);
-    const auto dt = std::max(ctx.deltaTime(), 0.0);
-
     const bool first_update = !state.initialized;
+    auto target = resolveOrbitTarget(camera_name, controller, state, first_update);
+    const auto dt = std::max(ctx.deltaTime(), 0.0);
     if (first_update) {
-        state.yaw = controller.yaw;
-        state.pitch = clampPitch(controller.pitch);
-        state.distance = controller.distance;
-        state.initialized = true;
+        if (!controller.target.empty()) {
+            state.yaw = controller.yaw; state.pitch = clampPitch(controller.pitch);
+        }
+        state.distance = controller.distance; state.initialized = true;
     }
-
     const auto look = optionalAxis2(ctx, "look");
     const auto move = optionalAxis2(ctx, "move");
+    const auto pan = optionalAxis2(ctx, "pan");
+    const auto zoom_input = move.y + optionalAxis1(ctx, "zoom");
     state.yaw += (look.x + move.x) * controller.sensitivity * static_cast<float>(dt);
     state.pitch = clampPitch(state.pitch + look.y * controller.sensitivity * static_cast<float>(dt));
-    state.distance = std::max(0.001f,
-                              state.distance - move.y * controller.sensitivity *
-                                                   std::max(1.0f, state.distance) * static_cast<float>(dt));
-
+    state.distance = std::max(0.001f, state.distance - zoom_input * controller.sensitivity *
+                                         std::max(1.0f, state.distance) * static_cast<float>(dt));
     const auto offset = directionFromYawPitch(state.yaw, state.pitch) * state.distance;
-    const auto desired = lookAtPose(target.pos + offset, target.pos);
+    target = panOrbitTarget(target, offset, pan, controller.sensitivity *
+                                 std::max(1.0f, state.distance) * static_cast<float>(dt), state);
+    const auto desired = lookAtPose(target + offset, target);
     state.pose = first_update ? desired : blendPose(state.pose, desired, blendWeight(controller.damping, dt));
     return state.pose;
 }
@@ -298,11 +300,9 @@ CameraPose updateFly(GameContext &ctx, std::string_view camera_name, const Contr
         state.pitch = pitchFromDirection(state.pose.dir);
         state.initialized = true;
     }
-
     const auto dt = static_cast<float>(std::max(ctx.deltaTime(), 0.0));
     const auto look = optionalAxis2(ctx, "look");
     const auto move = optionalAxis2(ctx, "move");
-
     state.yaw += look.x * controller.sensitivity * dt;
     state.pitch = clampPitch(state.pitch + look.y * controller.sensitivity * dt);
 
@@ -358,6 +358,52 @@ class BuiltinCameraControllerSystem {
         }
     }
 };
+
+float optionalAxis1(GameContext &ctx, std::string_view action_name) {
+    if (!ctx.actionsConfigured()) {
+        return 0.0f;
+    }
+    try {
+        return ctx.actionAxis1(action_name);
+    } catch (const std::runtime_error &error) {
+        if (isUnknownActionError(error)) {
+            return 0.0f;
+        }
+        throw;
+    }
+}
+
+glm::vec3 resolveOrbitTarget(std::string_view camera_name, const ControllerSpec &controller,
+                             ControllerState &state, bool first_update) {
+    if (!controller.target.empty()) {
+        return requireTargetTransform(camera_name, controller).pos;
+    }
+    if (!first_update) {
+        return state.orbit_target;
+    }
+
+    const auto initial_pose = initialFlyPose(camera_name);
+    const auto initial_dir = normalizeOr(initial_pose.dir, yawPitchBasis().forward);
+    state.orbit_target = initial_pose.pos + initial_dir * controller.distance;
+    const auto camera_offset = initial_pose.pos - state.orbit_target;
+    state.yaw = yawFromDirection(camera_offset);
+    state.pitch = clampPitch(pitchFromDirection(camera_offset));
+    return state.orbit_target;
+}
+
+glm::vec3 panOrbitTarget(glm::vec3 target, glm::vec3 camera_offset, ActionAxis2 pan,
+                         float scale, ControllerState &state) {
+    target += state.pan_offset;
+    if (pan.x == 0.0f && pan.y == 0.0f) {
+        return target;
+    }
+
+    const auto pose = lookAtPose(target + camera_offset, target);
+    const auto right = normalizeOr(glm::cross(pose.up, pose.dir), yawPitchBasis().right);
+    const auto delta = (right * pan.x + pose.up * pan.y) * scale;
+    state.pan_offset += delta;
+    return target + delta;
+}
 
 } // namespace
 

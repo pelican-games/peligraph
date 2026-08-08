@@ -24,7 +24,7 @@ DECLARE_MODULE(Camera) {
 
     struct SceneCameraController {
         SceneCameraControllerType type = SceneCameraControllerType::Orbit;
-        std::string target;
+        std::string target; // Empty selects a runtime-only Orbit pivot; Follow still requires a name.
         glm::vec3 offset{0.0f, 0.0f, 0.0f};
         float distance = 0.0f;
         float yaw = 0.0f;

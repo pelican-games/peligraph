@@ -365,14 +365,14 @@ Camera::SceneCameraController parseSceneCameraController(const nlohmann::json &c
 
     if (type == "orbit") {
         parsed.type = Camera::SceneCameraControllerType::Orbit;
-        parsed.target = requireControllerNonEmptyString(controller, "target", camera_name);
+        if (controller.contains("target"))
+            parsed.target = requireControllerNonEmptyString(controller, "target", camera_name);
         parsed.distance = requireControllerPositive(controller, "distance", camera_name);
         parsed.yaw = optionalControllerAngle(controller, "yaw", "yaw_degrees", camera_name, 0.0f);
         parsed.pitch = optionalControllerAngle(controller, "pitch", "pitch_degrees", camera_name, 0.0f);
         parsed.sensitivity = optionalControllerNonNegative(controller, "sensitivity", camera_name, 1.0f);
         return parsed;
     }
-
     if (type == "follow") {
         parsed.type = Camera::SceneCameraControllerType::Follow;
         parsed.target = requireControllerNonEmptyString(controller, "target", camera_name);
