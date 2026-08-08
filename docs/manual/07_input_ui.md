@@ -104,12 +104,16 @@ L1 の要点(✅WP69 で改訂):
 | `kbd:wasd`, `kbd:arrows` | axis2 専用 | 組み込み合成([-1,1]) |
 | `mouse:left` / `right` / `middle` / `button4`-`button8` | button / axis1 | マウスボタン |
 | `mouse:delta_x` / `delta_y` | axis1 専用 | フレーム内マウス移動量 |
+| `mouse:wheel_x` / `wheel_y` | axis1 専用 | 符号と小数の量を保ち、[-1,1] に clamp するフレーム内ホイール移動量。event のない次フレームは 0 |
+| `mouse:shift+middle`, `kbd:ctrl+shift+k` | button 専用 | 修飾 chord。`shift` / `ctrl`(`control`) / `alt` / `super` を `+` で並べ、最後にボタンを書く。左右どちらの修飾キーでも成立 |
 | `pad:a, b, x, y, left_bumper, right_bumper, back, start, guide, left_thumb, right_thumb, dpad_up/right/down/left` | button / axis1 | ✅ ゲームパッドボタン 15 種 |
 | `pad:left_x, left_y, right_x, right_y, left_trigger, right_trigger` | axis1 | ✅ パッド軸 6 種 |
 | `pad:left_stick` / `pad:right_stick` | axis2 専用 | ✅ スティック合成(radial deadzone) |
 | `xr:/user/hand/<left\|right>/input/...` | 全 type | ✅WP130。OpenXR 実パス形式(v1 は Touch コントローラのみ)。`xr:/user/hand/` 以外は名指しエラー。flat 起動では未解決として無視されるので、**同じ actions.json / profile が flat でも XR でも通る** |
 
 - アクティブな profile に `pad:` binding が 1 つも無ければゲームパッドは**一切ポーリングされません**(パージ可能原則)。切断時は保持ボタンの release + 軸ゼロが発行されます。マッピングは GLFW 内蔵の SDL_GameControllerDB。
+- 修飾 chord は列挙した修飾キーがすべて押されている間だけ成立し、列挙していない修飾キーは無視します。修飾なし binding の従来の意味は変わらないため、同じ set に `mouse:middle` と `mouse:shift+middle` を別 action として置けば Shift+MMB では両方が成立します。pan / orbit 等の意味上の優先順位は利用側で決めます。
+- profile の版は v1 のままです。field や既存 control の意味を変えず、従来は不正だった control 語彙を加えたためです。parser は引き続き version 1 だけを受理します。詳しい判断理由は[入力アーキテクチャ §2](../design_input_actions.md#wheel--修飾-chord-と-profile-の版wp271)を参照してください。
 - `pose` type は ✅WP132 で実動作になりました(XR 起動時のみ供給 — [第8章](08_gameplay.md) の `actionPose`)。**pose を含む actions.json は `--record-input` / リプレイが名指しで拒否されます**(input_seq v1 の仕様)。カーソルロックは 📐未実装です。
 
 ### アクションセットのスタックと消費

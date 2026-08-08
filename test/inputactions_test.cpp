@@ -218,6 +218,119 @@ TEST_CASE("Input actions evaluate keyboard composites, edges, and set stack cons
     REQUIRE(frame.get("jump").held);
 }
 
+TEST_CASE("Input profile v1 evaluates wheel axes and modifier button chords",
+          "[input-actions][wp271]") {
+    const auto definitions = parseInputActionsString(R"json({
+      "schema": "pelican.input_actions",
+      "version": 1,
+      "action_sets": [{
+        "name": "viewport",
+        "actions": [
+          {"name": "orbit", "type": "button"},
+          {"name": "pan", "type": "button"},
+          {"name": "shortcut", "type": "button"},
+          {"name": "zoom_x", "type": "axis1"},
+          {"name": "zoom_y", "type": "axis1"}
+        ]
+      }]
+    })json");
+    const auto profile_document = nlohmann::json::parse(R"json({
+      "schema": "pelican.input_profile",
+      "version": 1,
+      "name": "viewport",
+      "bindings": [
+        {"action": "orbit", "binding": "mouse:middle"},
+        {"action": "pan", "binding": "mouse:shift+middle"},
+        {"action": "shortcut", "binding": "kbd:ctrl+shift+k"},
+        {"action": "zoom_x", "binding": "mouse:wheel_x"},
+        {"action": "zoom_y", "binding": "mouse:wheel_y"}
+      ]
+    })json");
+    const auto profile = parseInputProfileJson(profile_document, definitions);
+    const auto map = applyInputProfile(definitions, profile);
+
+    InputStateCore input;
+    input.queueEvent(InputEvent::button(KeyCode::LeftShift, true));
+    input.queueEvent(InputEvent::button(KeyCode::MouseMiddle, true));
+    input.queueEvent(InputEvent::scroll(0.25F, -0.5F));
+    input.queueEvent(InputEvent::scroll(0.25F, -0.75F));
+    input.beginFrame();
+    {
+        const auto frame = evaluateInputActions(map, input.currentFrameInput(), {"viewport"});
+        CHECK(frame.get("pan").pressed);
+        CHECK(frame.get("pan").held);
+        CHECK(frame.get("orbit").held);
+        CHECK(frame.get("zoom_x").axis1 == 0.5F);
+        CHECK(frame.get("zoom_y").axis1 == -1.0F);
+    }
+
+    input.beginFrame();
+    {
+        const auto frame = evaluateInputActions(map, input.currentFrameInput(), {"viewport"});
+        CHECK(frame.get("pan").held);
+        CHECK(frame.get("zoom_x").axis1 == 0.0F);
+        CHECK(frame.get("zoom_y").axis1 == 0.0F);
+        CHECK_FALSE(frame.get("zoom_y").held);
+    }
+
+    input.queueEvent(InputEvent::button(KeyCode::LeftShift, false));
+    input.beginFrame();
+    {
+        const auto frame = evaluateInputActions(map, input.currentFrameInput(), {"viewport"});
+        CHECK(frame.get("pan").released);
+        CHECK_FALSE(frame.get("pan").held);
+        CHECK(frame.get("orbit").held);
+    }
+
+    input.queueEvent(InputEvent::button(KeyCode::RightControl, true));
+    input.queueEvent(InputEvent::button(KeyCode::RightShift, true));
+    input.queueEvent(InputEvent::button(KeyCode::K, true));
+    input.beginFrame();
+    {
+        const auto frame = evaluateInputActions(map, input.currentFrameInput(), {"viewport"});
+        CHECK(frame.get("pan").pressed);
+        CHECK(frame.get("pan").held);
+        CHECK(frame.get("shortcut").pressed);
+        CHECK(frame.get("shortcut").held);
+    }
+
+    auto unsupported_version = profile_document;
+    unsupported_version["version"] = 2;
+    CHECK_THROWS(parseInputProfileJson(unsupported_version, definitions));
+}
+
+TEST_CASE("Repository input profiles remain readable as v1", "[input-actions][wp271]") {
+    const auto projects_root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects";
+    std::size_t profile_count = 0;
+    for (const auto &project_entry : std::filesystem::directory_iterator{projects_root}) {
+        const auto project_path = project_entry.path() / "project.json";
+        if (!project_entry.is_directory() || !std::filesystem::is_regular_file(project_path)) {
+            continue;
+        }
+
+        const auto project = readJson(project_path);
+        if (!project.contains("basic_config")) {
+            continue;
+        }
+        const auto &basic_config = project.at("basic_config");
+        if (!basic_config.contains("input_actions_json") || !basic_config.contains("input_profiles")) {
+            continue;
+        }
+
+        const auto definitions = parseInputActionsJson(
+            readJson(project_entry.path() / basic_config.at("input_actions_json").get<std::string>()));
+        for (const auto &[profile_name, relative_path] : basic_config.at("input_profiles").items()) {
+            CAPTURE(project_path, profile_name);
+            const auto profile = parseInputProfileJson(
+                readJson(project_entry.path() / relative_path.get<std::string>()), definitions);
+            CHECK(profile.name == profile_name);
+            CHECK(applyInputProfile(definitions, profile).actionCount() == definitions.actionCount());
+            ++profile_count;
+        }
+    }
+    REQUIRE(profile_count > 0);
+}
+
 TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicConfig", "[input-actions]") {
     ensureLogger();
     Sandbox sandbox;

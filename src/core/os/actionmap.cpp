@@ -16,6 +16,8 @@ namespace {
 
 constexpr std::string_view input_actions_schema = "pelican.input_actions";
 constexpr int supported_input_actions_version = 1;
+constexpr std::string_view input_profile_schema = "pelican.input_profile";
+constexpr int supported_input_profile_version = 1;
 
 enum class BindingKind {
     key,
@@ -35,6 +37,19 @@ enum class CompositeKind {
 enum class MouseAxis {
     delta_x,
     delta_y,
+    wheel_x,
+    wheel_y,
+    count,
+};
+
+inline constexpr std::size_t mouse_axis_count = static_cast<std::size_t>(MouseAxis::count);
+
+enum ModifierMask : std::uint8_t {
+    modifier_none = 0,
+    modifier_shift = 1 << 0,
+    modifier_control = 1 << 1,
+    modifier_alt = 1 << 2,
+    modifier_super = 1 << 3,
 };
 
 struct ResolvedBinding {
@@ -49,12 +64,12 @@ struct ResolvedBinding {
     float deadzone = 0.0f;
     bool invert_x = false;
     bool invert_y = false;
+    std::uint8_t modifiers = modifier_none;
 };
 
 struct ConsumedControls {
     std::array<std::uint8_t, key_code_count> keys{};
-    bool mouse_delta_x = false;
-    bool mouse_delta_y = false;
+    std::array<std::uint8_t, mouse_axis_count> mouse_axes{};
     std::array<std::uint8_t, gamepad_button_count> gamepad_buttons{};
     std::array<std::uint8_t, gamepad_axis_count> gamepad_axes{};
 
@@ -69,23 +84,24 @@ struct ConsumedControls {
     }
 
     void markMouseAxis(MouseAxis axis) noexcept {
-        if (axis == MouseAxis::delta_x) {
-            mouse_delta_x = true;
-        } else {
-            mouse_delta_y = true;
+        const auto index = static_cast<std::size_t>(axis);
+        if (index < mouse_axes.size()) {
+            mouse_axes[index] = 1;
         }
     }
 
     bool containsMouseAxis(MouseAxis axis) const noexcept {
-        return axis == MouseAxis::delta_x ? mouse_delta_x : mouse_delta_y;
+        const auto index = static_cast<std::size_t>(axis);
+        return index < mouse_axes.size() && mouse_axes[index] != 0;
     }
 
     void merge(const ConsumedControls &other) noexcept {
         for (std::size_t i = 0; i < keys.size(); ++i) {
             keys[i] = static_cast<std::uint8_t>(keys[i] || other.keys[i]);
         }
-        mouse_delta_x = mouse_delta_x || other.mouse_delta_x;
-        mouse_delta_y = mouse_delta_y || other.mouse_delta_y;
+        for (std::size_t i = 0; i < mouse_axes.size(); ++i) {
+            mouse_axes[i] = static_cast<std::uint8_t>(mouse_axes[i] || other.mouse_axes[i]);
+        }
         for (std::size_t i = 0; i < gamepad_buttons.size(); ++i) {
             gamepad_buttons[i] = static_cast<std::uint8_t>(gamepad_buttons[i] || other.gamepad_buttons[i]);
         }
@@ -99,6 +115,16 @@ struct BindingSample {
     InputActionState state;
     ConsumedControls consumed;
     bool any_release = false;
+};
+
+struct ParsedChordControl {
+    std::string_view primary;
+    std::uint8_t modifiers = modifier_none;
+};
+
+struct MouseWheelDelta {
+    float x = 0.0f;
+    float y = 0.0f;
 };
 
 bool isIdentifier(std::string_view value) {
@@ -264,6 +290,63 @@ std::optional<KeyCode> mouseControlToKey(std::string_view control) {
     return std::nullopt;
 }
 
+std::optional<std::uint8_t> modifierMaskFromName(std::string_view name) noexcept {
+    if (name == "shift") {
+        return modifier_shift;
+    }
+    if (name == "ctrl" || name == "control") {
+        return modifier_control;
+    }
+    if (name == "alt") {
+        return modifier_alt;
+    }
+    if (name == "super") {
+        return modifier_super;
+    }
+    return std::nullopt;
+}
+
+ParsedChordControl parseChordControl(std::string_view control, InputActionType action_type,
+                                     std::string_view binding_text, std::string_view action_name) {
+    if (control.find('+') == std::string_view::npos) {
+        return {.primary = control};
+    }
+    if (action_type != InputActionType::button) {
+        throw std::runtime_error("input chord binding '" + std::string{binding_text} +
+                                 "' requires a button action" + actionContext(action_name));
+    }
+
+    ParsedChordControl parsed;
+    std::size_t begin = 0;
+    while (true) {
+        const auto separator = control.find('+', begin);
+        const auto part = control.substr(begin, separator == std::string_view::npos
+                                                    ? std::string_view::npos
+                                                    : separator - begin);
+        if (part.empty()) {
+            throw std::runtime_error("invalid input chord binding '" + std::string{binding_text} + "'" +
+                                     actionContext(action_name));
+        }
+        if (separator == std::string_view::npos) {
+            parsed.primary = part;
+            break;
+        }
+
+        const auto modifier = modifierMaskFromName(part);
+        if (!modifier) {
+            throw std::runtime_error("unknown input chord modifier '" + std::string{part} + "'" +
+                                     actionContext(action_name));
+        }
+        if ((parsed.modifiers & *modifier) != 0) {
+            throw std::runtime_error("duplicate input chord modifier '" + std::string{part} + "'" +
+                                     actionContext(action_name));
+        }
+        parsed.modifiers = static_cast<std::uint8_t>(parsed.modifiers | *modifier);
+        begin = separator + 1;
+    }
+    return parsed;
+}
+
 void requireNotPoseBinding(InputActionType type, std::string_view binding_text) {
     if (type == InputActionType::pose) {
         throw std::runtime_error("pose action binding '" + std::string{binding_text} +
@@ -330,13 +413,14 @@ ResolvedBinding parseBinding(std::string_view binding_text, InputActionType acti
 
     if (device == "kbd") {
         requireNotPoseBinding(action_type, binding_text);
-        if (control == "wasd" || control == "arrows") {
+        const auto chord = parseChordControl(control, action_type, binding_text, action_name);
+        if (chord.primary == "wasd" || chord.primary == "arrows") {
             if (action_type != InputActionType::axis2) {
                 throw std::runtime_error("composite binding '" + std::string{binding_text} +
                                          "' requires an axis2 action" + actionContext(action_name));
             }
             binding.kind = BindingKind::composite_axis2;
-            binding.composite = control == "wasd" ? CompositeKind::wasd : CompositeKind::arrows;
+            binding.composite = chord.primary == "wasd" ? CompositeKind::wasd : CompositeKind::arrows;
             return binding;
         }
 
@@ -345,25 +429,36 @@ ResolvedBinding parseBinding(std::string_view binding_text, InputActionType acti
                                      "' only supports kbd:wasd and kbd:arrows as built-in keyboard composites");
         }
 
-        const auto key = keyboardControlToKey(control);
+        const auto key = keyboardControlToKey(chord.primary);
         if (!key) {
-            throw std::runtime_error("unknown keyboard binding control '" + std::string{control} + "'" +
+            throw std::runtime_error("unknown keyboard binding control '" + std::string{chord.primary} + "'" +
                                      actionContext(action_name));
         }
         binding.kind = BindingKind::key;
         binding.key = *key;
+        binding.modifiers = chord.modifiers;
         return binding;
     }
 
     if (device == "mouse") {
         requireNotPoseBinding(action_type, binding_text);
-        if (control == "delta_x" || control == "delta_y") {
+        const auto chord = parseChordControl(control, action_type, binding_text, action_name);
+        if (chord.primary == "delta_x" || chord.primary == "delta_y" ||
+            chord.primary == "wheel_x" || chord.primary == "wheel_y") {
             if (action_type != InputActionType::axis1) {
-                throw std::runtime_error("mouse delta binding '" + std::string{binding_text} +
+                throw std::runtime_error("mouse axis binding '" + std::string{binding_text} +
                                          "' requires an axis1 action" + actionContext(action_name));
             }
             binding.kind = BindingKind::mouse_axis1;
-            binding.mouse_axis = control == "delta_x" ? MouseAxis::delta_x : MouseAxis::delta_y;
+            if (chord.primary == "delta_x") {
+                binding.mouse_axis = MouseAxis::delta_x;
+            } else if (chord.primary == "delta_y") {
+                binding.mouse_axis = MouseAxis::delta_y;
+            } else if (chord.primary == "wheel_x") {
+                binding.mouse_axis = MouseAxis::wheel_x;
+            } else {
+                binding.mouse_axis = MouseAxis::wheel_y;
+            }
             return binding;
         }
         if (action_type == InputActionType::axis2) {
@@ -371,13 +466,14 @@ ResolvedBinding parseBinding(std::string_view binding_text, InputActionType acti
                                      "' does not support mouse button binding '" + std::string{binding_text} + "'");
         }
 
-        const auto key = mouseControlToKey(control);
+        const auto key = mouseControlToKey(chord.primary);
         if (!key) {
-            throw std::runtime_error("unknown mouse binding control '" + std::string{control} + "'" +
+            throw std::runtime_error("unknown mouse binding control '" + std::string{chord.primary} + "'" +
                                      actionContext(action_name));
         }
         binding.kind = BindingKind::key;
         binding.key = *key;
+        binding.modifiers = chord.modifiers;
         return binding;
     }
 
@@ -398,25 +494,93 @@ void mergeSample(InputActionState &state, bool &any_release, const BindingSample
     any_release = any_release || sample.any_release;
 }
 
-BindingSample readKeyBinding(KeyCode key, const InputSnapshot &snapshot, const ConsumedControls &already_consumed,
-                             InputActionType action_type) {
-    BindingSample sample;
+struct ModifierKeyPair {
+    std::uint8_t mask;
+    KeyCode left;
+    KeyCode right;
+};
+
+constexpr std::array<ModifierKeyPair, 4> modifier_key_pairs{{
+    {modifier_shift, KeyCode::LeftShift, KeyCode::RightShift},
+    {modifier_control, KeyCode::LeftControl, KeyCode::RightControl},
+    {modifier_alt, KeyCode::LeftAlt, KeyCode::RightAlt},
+    {modifier_super, KeyCode::LeftSuper, KeyCode::RightSuper},
+}};
+
+bool keyWasDown(KeyCode key, const InputSnapshot &snapshot) noexcept {
+    return (snapshot.getKey(key) && !snapshot.isKeyPushed(key)) || snapshot.isKeyReleased(key);
+}
+
+bool availableKeyState(KeyCode key, const InputSnapshot &snapshot,
+                       const ConsumedControls &already_consumed, bool previous) noexcept {
     if (already_consumed.contains(key)) {
+        return false;
+    }
+    return previous ? keyWasDown(key, snapshot) : snapshot.getKey(key);
+}
+
+bool modifiersMatch(std::uint8_t required, const InputSnapshot &snapshot,
+                    const ConsumedControls &already_consumed, bool previous) noexcept {
+    for (const auto &pair : modifier_key_pairs) {
+        if ((required & pair.mask) == 0) {
+            continue;
+        }
+        if (!availableKeyState(pair.left, snapshot, already_consumed, previous) &&
+            !availableKeyState(pair.right, snapshot, already_consumed, previous)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void markChordModifiers(ConsumedControls &consumed, std::uint8_t required,
+                        const InputSnapshot &snapshot) noexcept {
+    for (const auto &pair : modifier_key_pairs) {
+        if ((required & pair.mask) == 0) {
+            continue;
+        }
+        for (const auto key : {pair.left, pair.right}) {
+            if (snapshot.getKey(key) || snapshot.isKeyPushed(key) || snapshot.isKeyReleased(key)) {
+                consumed.mark(key);
+            }
+        }
+    }
+}
+
+BindingSample readKeyBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
+                             const ConsumedControls &already_consumed, InputActionType action_type) {
+    BindingSample sample;
+    if (already_consumed.contains(binding.key)) {
         return sample;
     }
 
-    const bool pressed = snapshot.isKeyPushed(key);
-    const bool released = snapshot.isKeyReleased(key);
-    const bool held = snapshot.getKey(key);
-    if (pressed || released || held) {
-        sample.consumed.mark(key);
+    if (binding.modifiers == modifier_none) {
+        const bool pressed = snapshot.isKeyPushed(binding.key);
+        const bool released = snapshot.isKeyReleased(binding.key);
+        const bool held = snapshot.getKey(binding.key);
+        if (pressed || released || held) {
+            sample.consumed.mark(binding.key);
+        }
+
+        sample.state.pressed = pressed;
+        sample.state.held = held;
+        sample.any_release = released;
+        if (action_type == InputActionType::axis1) {
+            sample.state.axis1 = held ? 1.0f : 0.0f;
+        }
+        return sample;
     }
 
-    sample.state.pressed = pressed;
+    const bool held = snapshot.getKey(binding.key) &&
+                      modifiersMatch(binding.modifiers, snapshot, already_consumed, false);
+    const bool was_held = keyWasDown(binding.key, snapshot) &&
+                          modifiersMatch(binding.modifiers, snapshot, already_consumed, true);
+    sample.state.pressed = held && !was_held;
     sample.state.held = held;
-    sample.any_release = released;
-    if (action_type == InputActionType::axis1) {
-        sample.state.axis1 = held ? 1.0f : 0.0f;
+    sample.any_release = was_held && !held;
+    if (sample.state.pressed || sample.state.held || sample.any_release) {
+        sample.consumed.mark(binding.key);
+        markChordModifiers(sample.consumed, binding.modifiers, snapshot);
     }
     return sample;
 }
@@ -459,12 +623,29 @@ BindingSample readCompositeBinding(CompositeKind composite, const InputSnapshot 
 }
 
 BindingSample readMouseAxisBinding(MouseAxis axis, const InputSnapshot &snapshot,
+                                   const MouseWheelDelta &wheel,
                                    const ConsumedControls &already_consumed) {
     BindingSample sample;
     if (already_consumed.containsMouseAxis(axis)) {
         return sample;
     }
-    const auto value = axis == MouseAxis::delta_x ? snapshot.mouse_delta_x : snapshot.mouse_delta_y;
+    float value = 0.0f;
+    switch (axis) {
+    case MouseAxis::delta_x:
+        value = snapshot.mouse_delta_x;
+        break;
+    case MouseAxis::delta_y:
+        value = snapshot.mouse_delta_y;
+        break;
+    case MouseAxis::wheel_x:
+        value = wheel.x;
+        break;
+    case MouseAxis::wheel_y:
+        value = wheel.y;
+        break;
+    case MouseAxis::count:
+        break;
+    }
     if (value != 0.0f) {
         sample.consumed.markMouseAxis(axis);
         sample.state.axis1 = value;
@@ -558,12 +739,13 @@ BindingSample readGamepadAxisBinding(const ResolvedBinding &binding, const Input
 }
 
 BindingSample readBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
+                          const MouseWheelDelta &wheel,
                           const ConsumedControls &already_consumed, InputActionType action_type) {
     switch (binding.kind) {
     case BindingKind::key:
-        return readKeyBinding(binding.key, snapshot, already_consumed, action_type);
+        return readKeyBinding(binding, snapshot, already_consumed, action_type);
     case BindingKind::mouse_axis1:
-        return readMouseAxisBinding(binding.mouse_axis, snapshot, already_consumed);
+        return readMouseAxisBinding(binding.mouse_axis, snapshot, wheel, already_consumed);
     case BindingKind::composite_axis2:
         return readCompositeBinding(binding.composite, snapshot, already_consumed);
     case BindingKind::gamepad_button:
@@ -747,10 +929,10 @@ InputActionMap parseInputActionsString(std::string_view document) {
 }
 
 InputBindingProfile parseInputProfileJson(const nlohmann::json &document, const InputActionMap &actions) {
-    if (!document.is_object() || document.value("schema", std::string{}) != "pelican.input_profile") {
+    if (!document.is_object() || document.value("schema", std::string{}) != input_profile_schema) {
         throw std::runtime_error("input profile schema is not supported");
     }
-    if (document.value("version", 0) != 1) {
+    if (document.value("version", 0) != supported_input_profile_version) {
         throw std::runtime_error("input profile version is not supported");
     }
     InputBindingProfile profile;
@@ -833,8 +1015,11 @@ InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &
     return map;
 }
 
-InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnapshot &snapshot,
-                                      const std::vector<std::string> &action_set_stack) {
+namespace {
+
+InputActionFrame evaluateInputActionsImpl(const InputActionMap &map, const InputSnapshot &snapshot,
+                                          const MouseWheelDelta &wheel,
+                                          const std::vector<std::string> &action_set_stack) {
     InputActionFrame frame;
     for (const auto &set : map.actionSets()) {
         for (const auto &action : set.actions) {
@@ -865,7 +1050,7 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
                 resolved.deadzone = binding.deadzone;
                 resolved.invert_x = binding.invert_x;
                 resolved.invert_y = binding.invert_y;
-                const auto sample = readBinding(resolved, snapshot, consumed, action.type);
+                const auto sample = readBinding(resolved, snapshot, wheel, consumed, action.type);
                 mergeSample(action_state, any_release, sample);
                 consumed_by_action.merge(sample.consumed);
             }
@@ -880,9 +1065,33 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
     return frame;
 }
 
+MouseWheelDelta collectMouseWheelDelta(const FrameInput &frame_input) noexcept {
+    MouseWheelDelta result;
+    for (const auto &event : frame_input.ordered_events) {
+        if (event.type != InputEvent::Type::scroll) {
+            continue;
+        }
+        if (std::isfinite(event.axis_x)) {
+            result.x += event.axis_x;
+        }
+        if (std::isfinite(event.axis_y)) {
+            result.y += event.axis_y;
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnapshot &snapshot,
+                                      const std::vector<std::string> &action_set_stack) {
+    return evaluateInputActionsImpl(map, snapshot, {}, action_set_stack);
+}
+
 InputActionFrame evaluateInputActions(const InputActionMap &map, const FrameInput &frame_input,
                                       const std::vector<std::string> &action_set_stack) {
-    auto frame = evaluateInputActions(map, frame_input.snapshot, action_set_stack);
+    auto frame = evaluateInputActionsImpl(map, frame_input.snapshot, collectMouseWheelDelta(frame_input),
+                                          action_set_stack);
     std::unordered_set<std::string> active_pose_actions;
     for (const auto &set_name : action_set_stack) {
         const auto *set = map.findActionSet(set_name);

@@ -81,14 +81,42 @@ control 名を含むエラーとし、deadzone / `invert_x` / `invert_y` は pad
   v1 から型だけ予約 — 6DoF 位置姿勢。native 実装は OpenXR トラックで)
 - **action set** = コンテキスト(gameplay / menu / vehicle)。スタックで
   優先順位を持ち、上のセットが消費した入力は下に流れない
-- **binding 記法** `device:control` は profile v1 で kbd/mouse/pad を定義、`xr:` は予約
-- processing(デッドゾーン・応答カーブ・tap/hold/連打/チョード)は
-  binding 側の修飾として v2 で拡張(器だけ設計)
+- **binding 記法** `device:control` は profile v1 で kbd/mouse/pad を定義、`xr:` は予約。
+  キーボード修飾 chord は control 内を `+` でつなぐ(`mouse:shift+middle`、
+  `kbd:ctrl+shift+k`)
+- wheel は `mouse:wheel_x` / `mouse:wheel_y` のフレーム内 axis1。processing のうち
+  デッドゾーン・応答カーブ・tap/hold/連打は将来の拡張
 - **ユーザーリバインドはプロジェクトの外**: actions.json はアクション定義、
   profile は配布既定。ユーザー上書きも同じ profile 形式を user 設定へ置く
   (プロジェクト配布物を汚さない)
 - ゲームロジック API は `actions.get("jump").pressed` 系のみ。
   **ロジック実行方式の設計(別文書)はこの API を前提にする**
+
+#### wheel / 修飾 chord と profile の版(WP271)
+
+wheel は離散的な擬似ボタンではなく、符号と量を持つ**フレーム内 axis1**として扱う。
+L1 の `scroll` event が水平・垂直の符号付き量を既に持ち、高分解能ホイールや
+トラックパッドでは小数値も届くためである。同一フレームの event を軸ごとに加算し、
+既存の action axis 規約どおり [-1,1] に clamp する。event のない次フレームは 0 に戻す。
+binding は `mouse:wheel_x` / `mouse:wheel_y`。
+
+修飾 chord は `device:<modifier>[+<modifier>...]+<button>` と書く。modifier は
+`shift` / `ctrl`(`control` も受理) / `alt` / `super` で、左右どちらのキーでも成立する。
+primary button は `kbd:` の単キーまたは `mouse:` のボタンで、action type は `button`。
+列挙した modifier がすべて押されている間だけ held となり、primary を押した後から
+modifier を足した場合も pressed、必要な modifier を離した場合は released になる。
+列挙していない modifier は無視する。
+
+修飾なしの既存 binding の意味は変えない。同一 action set に `mouse:middle` と
+`mouse:shift+middle` が別 action としてあれば Shift+MMB で両方が成立する。これは
+同じ set 内では action 同士が入力を奪わない既存規約に合わせたもので、用途側が pan を
+orbit より優先する、といった意味上の優先順位を決める。
+
+`pelican.input_profile` の版は **v1 のまま**とする。schema envelope、field、既存 control の
+解釈は変えず、従来は不正だった `binding` 文字列の語彙だけを加える変更だからである。
+単一版だけを受理する規則の下で v2 へ上げると、同じ意味の既存 profile をすべて v2 へ
+書き換えなければ読めなくなり、WP271 の既存 profile 維持に反する。parser は引き続き
+version 1 だけを受理し、旧 control を同じ意味で読む。
 
 ## 3. OpenXR との整合(設計だけ先に)
 

@@ -205,17 +205,17 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 ### L4: Action map
 
-[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L695) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key、mouse delta axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L24)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
+[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L877) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L220)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L220)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1086) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
-Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L683) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
+Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L865) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
-> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836))
+> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1086))
 >
 > **何をする所か**: action set stack を高優先から走査し、各 action の binding を評価します。使われた key / mouse axis / gamepad control を記録して、下位 set が同じ control を二重に読まないようにします。
 >
-> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L392) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
+> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, wheel, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L488) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
 >
 > **骨子**:
 > ```text
