@@ -576,13 +576,17 @@ transform update も即適用ではなく pending です。複数 update をま�
 
 ## 7.8 テスト構成: test を実装の仕様書として読む
 
-[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L1) は Catch2 executable と subprocess test を一か所で登録します。`pelican_define_test(name [GOLDEN] [GPU] libs...)` は `test/<name>.cpp` を executable にし、`catch_discover_tests()` で各 `TEST_CASE` を CTest へ公開します。
+[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L1) は Catch2 executable と subprocess test を一か所で登録します。`pelican_define_test(name [GOLDEN] [GPU] [QT] [RUNTIME_SHADER] libs...)` は `test/<name>.cpp` を executable にし、`catch_discover_tests()` で各 `TEST_CASE` を CTest へ公開します。**ただし公開は無条件ではありません** — 下記 `RUNTIME_SHADER` を参照。
 
 signature にフラグが入りました([test/CMakeLists.txt](../../test/CMakeLists.txt#L12))。
 
 ```cmake
-cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
+cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU;QT;RUNTIME_SHADER" "" "" ${ARGN})
 ```
+
+このうち **`RUNTIME_SHADER` だけが登録そのものを左右します**。付いたテストは `PELICAN_RUNTIME_SHADER_COMPILER` が OFF のとき、executable としてはビルドされる(コンパイル検査は効く)ものの、[`return()` により CTest に登録されません](../../test/CMakeLists.txt#L38)。dist-bake がまだ生成しない source variant を必要とするためで、根拠は [`design_build_tiers.md`](../design_build_tiers.md) §4 です。
+
+現在この扱いを受ける executable は **12 本**あります。したがって **OFF 構成の緑は ON 構成の緑より弱い主張です** — シェーダコンパイル経路を踏むテストがちょうど落ちる側にいます。OFF 構成で何かを立証したいときは、落ちた 12 本がその主張に関係しないことを先に確かめてください。
 
 `GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L52))。コメントが理由です。
 

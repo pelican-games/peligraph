@@ -1599,6 +1599,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/project/jsonrpc.hpp|`jsonrpc.hpp`": "namespace JsonRpcErrorCodes {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`pelican_define_python_test()`": "function(pelican_define_python_test test_name script)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`pelican_define_test()`": "function(pelican_define_test source_name)",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`return()` により CTest に登録されません": "if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`test/CMakeLists.txt`": "FetchContent_Declare(",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|test/CMakeLists.txt": "# duplicates pelican_core's Debug symbols hundreds of times. Keep Debug",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|付与箇所": "list(APPEND discovery_properties RESOURCE_LOCK pelican_golden_gpu)",
