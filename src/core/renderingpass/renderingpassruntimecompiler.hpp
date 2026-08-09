@@ -9,6 +9,7 @@ namespace Pelican {
 
 class DebugDraw;
 class DebugText;
+class Gizmo;
 class FullscreenPassContainer;
 class FrameGraphResourceContainer;
 class PathResolver;
@@ -33,6 +34,7 @@ struct RenderingPassRuntimeDependencies {
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
     std::function<DebugDraw &()> debug_draw_provider;
+    std::function<Gizmo &()> gizmo_provider;
     std::function<DebugText &()> debug_text_provider;
     const VulkanTargetPlan *target_plan = nullptr;
 };

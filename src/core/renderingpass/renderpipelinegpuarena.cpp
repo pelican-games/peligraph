@@ -5,6 +5,7 @@
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -84,6 +85,8 @@ std::string_view renderPipelineGpuResourceKindName(
         return "compute_task";
     case RenderPipelineGpuResourceKind::debug_draw_pass:
         return "debug_draw_pass";
+    case RenderPipelineGpuResourceKind::gizmo_pass:
+        return "gizmo_pass";
     case RenderPipelineGpuResourceKind::debug_text_pass:
         return "debug_text_pass";
     case RenderPipelineGpuResourceKind::shadow_depth_pass:
@@ -158,6 +161,7 @@ bool moduleIsLive(Module *module) noexcept {
 class ScopeRegistrationLease {
     RenderPipelineGpuRegistrationDependencies dependencies_;
     DebugDraw *debug_draw_ = nullptr;
+    Gizmo *gizmo_ = nullptr;
     DebugText *debug_text_ = nullptr;
     std::vector<GlobalRenderTargetId> render_targets_;
     std::vector<FrameGraphBufferId> frame_graph_buffers_;
@@ -167,6 +171,7 @@ class ScopeRegistrationLease {
     std::vector<ShaderBundleId> shader_bundles_;
     std::vector<PipelineHandle> pipelines_;
     std::vector<PassId> debug_draw_passes_;
+    std::vector<PassId> gizmo_passes_;
     std::vector<PassId> debug_text_passes_;
     std::vector<PassId> shadow_depth_passes_;
     std::vector<PassId> velocity_passes_;
@@ -175,11 +180,12 @@ class ScopeRegistrationLease {
   public:
     ScopeRegistrationLease(
         RenderPipelineGpuRegistrationDependencies dependencies,
-        DebugDraw *debug_draw, DebugText *debug_text,
+        DebugDraw *debug_draw, DebugText *debug_text, Gizmo *gizmo,
         const std::vector<RenderPipelineGpuResourceRegistration>
             &resources)
         : dependencies_{dependencies},
           debug_draw_{debug_draw},
+          gizmo_{gizmo},
           debug_text_{debug_text} {
         for (const auto &resource : resources) {
             if (resource.handle >
@@ -225,6 +231,9 @@ class ScopeRegistrationLease {
                 debug_draw_passes_.push_back(
                     PassId{int_handle});
                 break;
+            case RenderPipelineGpuResourceKind::gizmo_pass:
+                gizmo_passes_.push_back(PassId{int_handle});
+                break;
             case RenderPipelineGpuResourceKind::debug_text_pass:
                 debug_text_passes_.push_back(
                     PassId{int_handle});
@@ -258,6 +267,9 @@ class ScopeRegistrationLease {
         if (moduleIsLive(debug_draw_)) {
             debug_draw_->retireRegistrations(
                 debug_draw_passes_);
+        }
+        if (moduleIsLive(gizmo_)) {
+            gizmo_->retireRegistrations(gizmo_passes_);
         }
         if (moduleIsLive(
                 &dependencies_.velocity_passes)) {
@@ -354,6 +366,9 @@ struct RenderPipelineGpuRegistrationArena::Impl {
     DebugDraw *debug_draw = nullptr;
     std::optional<DebugDraw::RegistrationCheckpoint>
         debug_draw_checkpoint;
+    Gizmo *gizmo = nullptr;
+    std::optional<Gizmo::RegistrationCheckpoint>
+        gizmo_checkpoint;
     DebugText *debug_text = nullptr;
     std::optional<DebugText::RegistrationCheckpoint>
         debug_text_checkpoint;
@@ -404,6 +419,9 @@ struct RenderPipelineGpuRegistrationArena::Impl {
         if (debug_draw != nullptr && debug_draw_checkpoint) {
             debug_draw->rollbackRegistrations(
                 *debug_draw_checkpoint);
+        }
+        if (gizmo != nullptr && gizmo_checkpoint) {
+            gizmo->rollbackRegistrations(*gizmo_checkpoint);
         }
         dependencies.velocity_passes.rollbackRegistrations(
             velocity_checkpoint);
@@ -470,6 +488,21 @@ void RenderPipelineGpuRegistrationArena::enlist(
         impl_->debug_text = &debug_text;
         impl_->debug_text_checkpoint =
             debug_text.checkpointRegistrations();
+    }
+}
+
+void RenderPipelineGpuRegistrationArena::enlist(Gizmo &gizmo) {
+    if (!impl_->active) {
+        throw std::runtime_error(
+            "Render pipeline GPU registration arena is inactive");
+    }
+    if (impl_->gizmo != nullptr && impl_->gizmo != &gizmo) {
+        throw std::runtime_error(
+            "Render pipeline GPU registration arena changed Gizmo owner");
+    }
+    if (impl_->gizmo == nullptr) {
+        impl_->gizmo = &gizmo;
+        impl_->gizmo_checkpoint = gizmo.checkpointRegistrations();
     }
 }
 
@@ -561,6 +594,13 @@ RenderPipelineGpuRegistrationArena::preparedScope(
                                        id.value));
         }
     }
+    if (impl_->gizmo != nullptr && impl_->gizmo_checkpoint) {
+        for (const auto id : impl_->gizmo->registrationsSince(
+                 *impl_->gizmo_checkpoint)) {
+            append(RenderPipelineGpuResourceKind::gizmo_pass, id.value,
+                   numericResourceName("gizmo_pass", id.value));
+        }
+    }
     for (const auto id :
          impl_->dependencies.shadow_depth_passes
              .registrationsSince(
@@ -587,7 +627,7 @@ RenderPipelineGpuRegistrationArena::preparedScope(
     impl_->prepared_ownership =
         std::make_shared<ScopeRegistrationLease>(
             impl_->dependencies, impl_->debug_draw,
-            impl_->debug_text, result.resources);
+            impl_->debug_text, impl_->gizmo, result.resources);
     result.resource_leases.push_back(
         impl_->prepared_ownership);
     return result;
@@ -620,7 +660,8 @@ RenderPipelineGpuRegistryCounts
 inspectRenderPipelineGpuRegistryCounts(
     const RenderPipelineGpuRegistrationDependencies &dependencies,
     const DebugDraw *debug_draw,
-    const DebugText *debug_text) noexcept {
+    const DebugText *debug_text,
+    const Gizmo *gizmo) noexcept {
     return RenderPipelineGpuRegistryCounts{
         .render_targets =
             dependencies.render_targets.registrationCount(),
@@ -642,6 +683,8 @@ inspectRenderPipelineGpuRegistryCounts(
             debug_draw != nullptr
                 ? debug_draw->registrationCount()
                 : 0,
+        .gizmo_passes =
+            gizmo != nullptr ? gizmo->registrationCount() : 0,
         .debug_text_passes =
             debug_text != nullptr
                 ? debug_text->registrationCount()

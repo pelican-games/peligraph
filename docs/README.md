@@ -59,7 +59,7 @@
 | `design_asset_containers.md` | v1・K1〜K4 実装済み(WP77/79/81/84) | `#` fragment、glTF scene extract、PSD/atlas tools、import rules |
 | `design_animation_graph.md` | v2.1・A0〜A2 + VRM/VRMA 実装済み(WP94〜102/111/121〜134/176〜178) | graph v1、typed VRMA decode/retarget/source。graph v2/live/SpringBone は未 |
 | `design_openxr.md` | v2.2・XR0〜XR4実装済み(WP125〜138)、XR2b local implementation完了(WP203a〜c) | array stereo composition、optional depth submit、measured multiview profile gateまで実装済み。desktop mirror WSIは別正本へ分離。現実装のSimulator/物理HMD・対象GPU実測gateは未 |
-| `design_editor_tooling.md` | v2.5・共通 authoring/editor 基盤実装済み(WP149〜172) | typed RPC/service、transaction、undo/save/snapshot/watch/preview。Qt viewport/gizmo は未 |
+| `design_editor_tooling.md` | v2.5・共通 authoring/editor 基盤 + 汎用 gizmo feature/RPC 実装済み(WP149〜172/WP274) | typed RPC/service、transaction、undo/save/snapshot/watch/preview。Studio gizmo 操作は WP275 待ち |
 | `design_asset_hot_reload.md` | v2.1・HR0〜HR2-G + targeted animation generation 実装済み | 残り HR2-I、U3、VRMA watcher 自動配線 |
 | `design_debug_profiling.md` | D-P0〜D-P2 実装済み(WP139/140/143/145) | debug labels、RenderDoc、GPU/VRAM/XR timing。D-P3以降は未 |
 | `dcc_integration_qa_2026-06-12.md` | — | DCC 連携 QA。**§6 = pelican.vat v1 仕様の正** |

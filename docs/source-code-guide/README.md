@@ -65,7 +65,7 @@
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L128) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
-6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3827) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3827)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4708) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4708)。
+6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3859) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3859)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4740) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4740)。
 7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L119)）。
 
 ## リンクの見方

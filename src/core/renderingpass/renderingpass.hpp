@@ -267,6 +267,11 @@ struct DebugDrawPassInfo {
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
 };
 
+struct GizmoPassInfo {
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
+};
+
 struct DebugTextPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
@@ -295,7 +300,7 @@ struct ImGuiPassInfo {};
 #endif
 
 using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, GenericRasterPassInfo,
-                              DebugDrawPassInfo, DebugTextPassInfo,
+                              DebugDrawPassInfo, GizmoPassInfo, DebugTextPassInfo,
                               ShadowDepthPassInfo, VelocityPassInfo, PickingPassInfo,
                               UiPassInfo
 #if PELICAN_WITH_IMGUI
@@ -437,6 +442,7 @@ struct PassDefinition {
             GenericRasterPassInfo>(pass_info);
     }
     bool isDebugDraw() const { return std::holds_alternative<DebugDrawPassInfo>(pass_info); }
+    bool isGizmo() const { return std::holds_alternative<GizmoPassInfo>(pass_info); }
     bool isDebugText() const { return std::holds_alternative<DebugTextPassInfo>(pass_info); }
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
     bool isVelocity() const { return std::holds_alternative<VelocityPassInfo>(pass_info); }
@@ -569,6 +575,8 @@ struct PassDefinition {
     }
     DebugDrawPassInfo &debugDrawInfo() { return std::get<DebugDrawPassInfo>(pass_info); }
     const DebugDrawPassInfo &debugDrawInfo() const { return std::get<DebugDrawPassInfo>(pass_info); }
+    GizmoPassInfo &gizmoInfo() { return std::get<GizmoPassInfo>(pass_info); }
+    const GizmoPassInfo &gizmoInfo() const { return std::get<GizmoPassInfo>(pass_info); }
     DebugTextPassInfo &debugTextInfo() { return std::get<DebugTextPassInfo>(pass_info); }
     const DebugTextPassInfo &debugTextInfo() const { return std::get<DebugTextPassInfo>(pass_info); }
     ShadowDepthPassInfo &shadowDepthInfo() { return std::get<ShadowDepthPassInfo>(pass_info); }

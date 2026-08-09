@@ -13,6 +13,7 @@ namespace Pelican {
 class ComputeTaskContainer;
 class DebugDraw;
 class DebugText;
+class Gizmo;
 class FrameGraphResourceContainer;
 class FullscreenPassContainer;
 class PipelineFactory;
@@ -29,6 +30,7 @@ enum class RenderPipelineGpuResourceKind {
     fullscreen_pass,
     compute_task,
     debug_draw_pass,
+    gizmo_pass,
     debug_text_pass,
     shadow_depth_pass,
     velocity_pass,
@@ -102,6 +104,7 @@ struct RenderPipelineGpuRegistryCounts {
     std::size_t shadow_depth_passes = 0;
     std::size_t velocity_passes = 0;
     std::size_t debug_draw_passes = 0;
+    std::size_t gizmo_passes = 0;
     std::size_t debug_text_passes = 0;
 
     bool operator==(const RenderPipelineGpuRegistryCounts &) const = default;
@@ -110,7 +113,8 @@ struct RenderPipelineGpuRegistryCounts {
 RenderPipelineGpuRegistryCounts inspectRenderPipelineGpuRegistryCounts(
     const RenderPipelineGpuRegistrationDependencies &dependencies,
     const DebugDraw *debug_draw = nullptr,
-    const DebugText *debug_text = nullptr) noexcept;
+    const DebugText *debug_text = nullptr,
+    const Gizmo *gizmo = nullptr) noexcept;
 
 // Captures checkpoints across every GPU registry touched by render-config
 // compilation. A replacement temporarily hides the old scope's public names
@@ -137,6 +141,7 @@ class RenderPipelineGpuRegistrationArena {
         RenderPipelineGpuRegistrationArena &&) = delete;
 
     void enlist(DebugDraw &debug_draw);
+    void enlist(Gizmo &gizmo);
     void enlist(DebugText &debug_text);
 
     RenderPipelineGpuScopePreparation preparedScope(

@@ -26,15 +26,18 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/inputstate.hpp"
+#include "../os/window.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrsession.hpp"
 #endif
 #include "../playback/seqplayer.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../renderer/camera.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
@@ -331,6 +334,9 @@ struct EngineRpcModules {
     watch::ReloadService *reload_service;
     SpriteScene *sprite_scene;
     Renderer &renderer;
+    Gizmo *gizmo;
+    Window *window;
+    RenderingPassContainer &rendering_passes;
     SeqPlayer &seq_player;
     VulkanManageCore &vulkan;
 };
@@ -358,6 +364,9 @@ EngineRpcModules resolveEngineRpcModules() {
         FastModuleContainer::tryGet<watch::ReloadService>(),
         FastModuleContainer::tryGet<SpriteScene>(),
         GET_MODULE(Renderer),
+        FastModuleContainer::tryGet<Gizmo>(),
+        FastModuleContainer::tryGet<Window>(),
+        GET_MODULE(RenderingPassContainer),
         GET_MODULE(SeqPlayer),
         GET_MODULE(VulkanManageCore),
     };
@@ -436,6 +445,80 @@ nlohmann::json pickingReadbackJson(const PickingReadbackResult &readback,
         {"frame_index", readback.frame_index},
         {"hit", std::move(hit)},
     };
+}
+
+GizmoSelection parseGizmoSelection(const nlohmann::json &value,
+                                   std::string_view method) {
+    const auto context = std::string{method} + " selection";
+    if (!value.is_object() || value.size() != 2 ||
+        !value.contains("scene_id") ||
+        !value.contains("declaration_index")) {
+        throw JsonRpcHandlerError(
+            JsonRpcErrorCodes::invalidParams,
+            context +
+                " must contain exactly 'scene_id' and 'declaration_index'");
+    }
+    const auto scene_id =
+        requireStringParam(value, "scene_id", context);
+    const auto declaration_index = requireUnsignedIntegerParam(
+        value, "declaration_index", context);
+    if (declaration_index >
+        static_cast<std::uint64_t>(
+            std::numeric_limits<std::size_t>::max())) {
+        throw JsonRpcHandlerError(
+            JsonRpcErrorCodes::invalidParams,
+            context + " declaration_index exceeds the size_t range");
+    }
+    return GizmoSelection{
+        .scene_id = scene_id,
+        .declaration_index =
+            static_cast<std::size_t>(declaration_index),
+    };
+}
+
+GizmoMode parseGizmoMode(const nlohmann::json &params,
+                         std::string_view method) {
+    const auto value = requireStringParam(
+        params, "mode", std::string{method});
+    const auto mode = gizmoModeFromName(value);
+    if (!mode) {
+        throw JsonRpcHandlerError(
+            JsonRpcErrorCodes::invalidParams,
+            std::string{method} +
+                " mode must be 'translate', 'rotate', or 'scale'");
+    }
+    return *mode;
+}
+
+nlohmann::json gizmoSelectionJson(const GizmoSelection &selection) {
+    return {
+        {"scene_id", selection.scene_id},
+        {"declaration_index", selection.declaration_index},
+    };
+}
+
+void requireGizmoFeature(const EngineRpcModules &modules,
+                         std::string_view method) {
+    if (!modules.rendering_passes.isFeatureEnabled("gizmo")) {
+        throw std::runtime_error(
+            std::string{method} +
+            " requires engine://features/gizmo.json in the active render graph");
+    }
+}
+
+std::optional<GizmoTargetTransform> requireGizmoTarget(
+    const GizmoSelection &selection, EngineRpcModules &modules,
+    std::string_view method) {
+    const auto target = resolveGizmoTargetTransform(
+        selection, modules.project_config, modules.scene_loader,
+        modules.ecs_core);
+    if (!target) {
+        throw JsonRpcHandlerError(
+            JsonRpcErrorCodes::invalidParams,
+            std::string{method} +
+                " selection has no transform in the current runtime scene");
+    }
+    return target;
 }
 
 
@@ -1261,6 +1344,104 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 JsonRpcErrorCodes::invalidParams,
                 "pick_object: " + std::string{error.what()});
         }
+    });
+
+    server.setHandler("set_gizmo", [&modules](const nlohmann::json &params) {
+        constexpr auto method = "set_gizmo";
+        requireGizmoFeature(modules, method);
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 2 || !object.contains("selection") ||
+            !object.contains("mode")) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_gizmo params must contain exactly 'selection' and 'mode'");
+        }
+        const auto mode = parseGizmoMode(object, method);
+        std::optional<GizmoDisplayRequest> request;
+        if (!object.at("selection").is_null()) {
+            const auto selection =
+                parseGizmoSelection(object.at("selection"), method);
+            (void)requireGizmoTarget(selection, modules, method);
+            request = GizmoDisplayRequest{
+                .selection = selection,
+                .mode = mode,
+            };
+        }
+        if (modules.gizmo == nullptr) {
+            throw std::runtime_error(
+                "set_gizmo runtime is unavailable for the active gizmo feature");
+        }
+        modules.gizmo->setDisplayRequest(request);
+        return nlohmann::json{
+            {"contract", 1},
+            {"visible", request.has_value()},
+            {"selection",
+             request ? gizmoSelectionJson(request->selection)
+                     : nlohmann::json(nullptr)},
+            {"mode", gizmoModeName(mode)},
+        };
+    });
+
+    server.setHandler("query_gizmo_handle",
+                      [&modules](const nlohmann::json &params) {
+        constexpr auto method = "query_gizmo_handle";
+        requireGizmoFeature(modules, method);
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 4 || !object.contains("selection") ||
+            !object.contains("mode") || !object.contains("x") ||
+            !object.contains("y")) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "query_gizmo_handle params must contain exactly 'selection', 'mode', 'x', and 'y'");
+        }
+        const auto selection =
+            parseGizmoSelection(object.at("selection"), method);
+        const auto mode = parseGizmoMode(object, method);
+        const auto x = requireUnsignedIntegerParam(object, "x", method);
+        const auto y = requireUnsignedIntegerParam(object, "y", method);
+        if (x > std::numeric_limits<std::uint32_t>::max() ||
+            y > std::numeric_limits<std::uint32_t>::max()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "query_gizmo_handle coordinates exceed the uint32 range");
+        }
+
+        const auto extent = modules.render_target.getExtent();
+        if (x >= extent.width || y >= extent.height) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "query_gizmo_handle coordinate is outside the output extent");
+        }
+        const auto target =
+            requireGizmoTarget(selection, modules, method);
+        const auto content_scale =
+            modules.window != nullptr
+                ? gizmoContentScale(extent, modules.window->logicalExtent())
+                : 1.0f;
+        const auto geometry = buildGizmoGeometry(
+            mode, target->position, modules.camera.getVPMatrix(), extent,
+            content_scale);
+        const auto hit = hitTestGizmo(
+            geometry,
+            {static_cast<float>(x), static_cast<float>(y)});
+        nlohmann::json handle = nullptr;
+        if (hit) {
+            const auto axis = gizmoHandleAxis(*hit);
+            handle = {
+                {"id", gizmoHandleName(*hit)},
+                {"axis", gizmoAxisName(axis)},
+            };
+        }
+        return nlohmann::json{
+            {"contract", 1},
+            {"selection", gizmoSelectionJson(selection)},
+            {"mode", gizmoModeName(mode)},
+            {"coordinate", {{"x", x}, {"y", y}}},
+            {"extent",
+             {{"width", extent.width}, {"height", extent.height}}},
+            {"grab_radius_pixels", geometry.grab_radius_pixels},
+            {"handle", std::move(handle)},
+        };
     });
 
     server.setHandler("capture", [&modules](const nlohmann::json &params) {

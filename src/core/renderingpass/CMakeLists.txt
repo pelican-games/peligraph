@@ -5,6 +5,7 @@ target_sources(pelican_core PRIVATE
     frameexecutionadapter.cpp
     frameplanner.cpp
     framegraphruntime.cpp
+    gizmopassinfojsonparser.cpp
     graphtransformregistry.cpp
     renderstrategyregistry.cpp
     rendercompilerprogram.cpp

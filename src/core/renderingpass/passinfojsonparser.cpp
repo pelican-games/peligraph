@@ -3,6 +3,7 @@
 #include "debugtextpassinfojsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
 #include "genericrasterpassinfojsonparser.hpp"
+#include "gizmopassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <stdexcept>
 
@@ -53,6 +54,13 @@ void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohma
     }
 
     pass_def.debugDrawInfo() = parseDebugDrawPassInfoFromJson(pass_json, pass_def.name);
+}
+
+void parseGizmoPassInfoIntoDefinition(PassDefinition &pass_def,
+                                      const nlohmann::json &pass_json) {
+    if (!pass_def.isGizmo()) return;
+    pass_def.gizmoInfo() =
+        parseGizmoPassInfoFromJson(pass_json, pass_def.name);
 }
 
 void parseDebugTextPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {

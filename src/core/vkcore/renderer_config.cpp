@@ -8,6 +8,7 @@
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/atlasassetresource.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/spriterenderer.hpp"
@@ -78,6 +79,7 @@ RenderingPassConfigRegistrationDependencies registrationDependencies(
             {},
             GET_MODULE(ProjectBasicConfig).usesProjectSource(),
             []() -> DebugDraw & { return GET_MODULE(DebugDraw); },
+            []() -> Gizmo & { return GET_MODULE(Gizmo); },
             []() -> DebugText & { return GET_MODULE(DebugText); },
         },
         frame_graph_resources,
@@ -165,6 +167,9 @@ void validateFrozenRuntimeFeatureModules(
             generation, "debug_text")) {
         requireInitializedRuntimeModule<DebugText>(
             "debug_text", "DebugText");
+    }
+    if (generationEnablesFeature(generation, "gizmo")) {
+        requireInitializedRuntimeModule<Gizmo>("gizmo", "Gizmo");
     }
     if (generationEnablesFeature(
             generation, "gpu_timing")) {

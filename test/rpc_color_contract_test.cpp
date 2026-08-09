@@ -404,6 +404,175 @@ TEST_CASE("picking feature readback maps a pixel to the WP258 declaration identi
     }));
 }
 
+TEST_CASE("gizmo feature draws and exposes stateless handle queries",
+          "[wp274][rpc][gizmo][gpu]") {
+    setupLogger(true);
+    FastModuleContainer modules;
+    const auto suffix =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const TempProject project_dir{
+        std::filesystem::temp_directory_path() /
+        ("pelican_wp274_gizmo_" + std::to_string(suffix))};
+    const auto capture = project_dir.root / "gizmo.png";
+
+    std::filesystem::create_directories(project_dir.root);
+    writeFile(project_dir.root / "scene.json", R"json({
+  "schema":"pelican.scene","version":1,
+  "scenes":{"default_scene":{"objects":[
+    {"name":"GizmoCamera","components":[
+      {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
+      {"name":"camera"}
+    ]},
+    {"name":"GizmoTarget","components":[
+      {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}
+    ]}
+  ]}}
+})json");
+    writeFile(
+        project_dir.root / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeFile(
+        project_dir.root / "ui/ui.json",
+        R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeFile(project_dir.root / "passes/main.json", R"json({
+  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+  "features":["engine://features/gizmo.json"]
+})json");
+
+    const nlohmann::json project{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "WP274 gizmo"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"window_size", {{"width", 192}, {"height", 192}}},
+          {"framerate", 60},
+          {"camera",
+           {{"yfov", 0.7853981633974483},
+            {"znear", 0.1},
+            {"zfar", 100.0},
+            {"up", {0, 1, 0}}}},
+          {"default_scene_id", "default_scene"},
+          {"scene_data_json", "scene.json"},
+          {"asset_data_json", "assets.json"},
+          {"rendering_config_json", "passes/main.json"},
+          {"ui_config_json", "ui/ui.json"},
+          {"default_rendering_pass", "main_render"}}},
+    };
+    GET_MODULE(PathResolver).setup(project_dir.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{192, 192};
+    launch.shader_hot_reload = false;
+    GET_MODULE(EngineTime).setup(
+        EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless gizmo rendering unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+
+    const auto request = [](std::uint64_t id, std::string_view method,
+                            nlohmann::json params) {
+        return nlohmann::json{
+                   {"jsonrpc", "2.0"},
+                   {"id", id},
+                   {"method", method},
+                   {"params", std::move(params)}}
+                   .dump() +
+               "\n";
+    };
+    const nlohmann::json selection{
+        {"scene_id", "default_scene"}, {"declaration_index", 1}};
+    std::istringstream input{
+        request(1, "load_scene", {{"name", "default_scene"}}) +
+        request(2, "set_camera", {{"name", "GizmoCamera"}}) +
+        request(3, "set_gizmo",
+                {{"selection", selection}, {"mode", "translate"}}) +
+        request(4, "step_frame", nlohmann::json::object()) +
+        request(5, "capture", {{"path", capture.generic_string()}}) +
+        request(6, "set_gizmo",
+                {{"selection", nullptr}, {"mode", "translate"}}) +
+        request(7, "query_gizmo_handle",
+                {{"selection", selection},
+                 {"mode", "scale"},
+                 {"x", 56},
+                 {"y", 96}}) +
+        request(8, "query_gizmo_handle",
+                {{"selection", selection},
+                 {"mode", "translate"},
+                 {"x", 0},
+                 {"y", 0}}) +
+        request(9, "get_frame_plan", nlohmann::json::object())};
+    std::ostringstream output;
+    runEngineRpcServer(input, output);
+    GET_MODULE(VulkanManageCore).waitIdle();
+
+    const auto responses = parseRpcResponses(output.str());
+    REQUIRE(responses.size() == 9);
+    for (const auto &response : responses) {
+        INFO(response.dump(2));
+        REQUIRE(response.contains("result"));
+    }
+
+    const auto &display = responses.at(2).at("result");
+    REQUIRE(display.at("contract") == 1);
+    REQUIRE(display.at("visible") == true);
+    REQUIRE(display.at("selection") == selection);
+    REQUIRE(display.at("mode") == "translate");
+
+    const auto &cleared = responses.at(5).at("result");
+    REQUIRE(cleared.at("contract") == 1);
+    REQUIRE(cleared.at("visible") == false);
+    REQUIRE(cleared.at("selection").is_null());
+
+    // The query deliberately runs after display was cleared and asks for a
+    // different mode. It cannot accidentally consume display/drag state.
+    const auto &hit = responses.at(6).at("result");
+    REQUIRE(hit.at("contract") == 1);
+    REQUIRE(hit.at("selection") == selection);
+    REQUIRE(hit.at("mode") == "scale");
+    REQUIRE(hit.at("coordinate") ==
+            nlohmann::json{{"x", 56}, {"y", 96}});
+    REQUIRE(hit.at("extent") ==
+            nlohmann::json{{"width", 192}, {"height", 192}});
+    REQUIRE(hit.at("grab_radius_pixels").get<float>() > 1.0f);
+    REQUIRE(hit.at("handle") ==
+            nlohmann::json{{"id", "scale_x"}, {"axis", "x"}});
+    REQUIRE(responses.at(7).at("result").at("handle").is_null());
+
+    const auto &nodes = responses.at(8).at("result").at("nodes");
+    REQUIRE(std::any_of(nodes.begin(), nodes.end(), [](const auto &node) {
+        return node.value("name", std::string{}) == "gizmo_pass";
+    }));
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *pixels =
+        stbi_load(capture.string().c_str(), &width, &height, &channels, 4);
+    REQUIRE(pixels != nullptr);
+    REQUIRE(width == 192);
+    REQUIRE(height == 192);
+    bool found_red_axis = false;
+    for (int y = 91; y <= 101 && !found_red_axis; ++y) {
+        for (int x = 22; x <= 86; ++x) {
+            const auto offset =
+                static_cast<std::size_t>(y * width + x) * 4;
+            const auto red = static_cast<int>(pixels[offset]);
+            const auto green = static_cast<int>(pixels[offset + 1]);
+            const auto blue = static_cast<int>(pixels[offset + 2]);
+            if (red > 180 && red > green + 60 && red > blue + 60) {
+                found_red_axis = true;
+                break;
+            }
+        }
+    }
+    stbi_image_free(pixels);
+    REQUIRE(found_red_axis);
+}
+
 TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and GPU failure",
           "[wp144][rpc][gltf][transaction][gpu]") {
     setupLogger(true);

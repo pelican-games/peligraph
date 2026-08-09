@@ -3,6 +3,7 @@ target_sources(pelican_core PRIVATE
     spritescene.cpp
     spriterenderer.cpp
     debugdraw.cpp
+    gizmo.cpp
     debugtext.cpp
     drawqueuebuilder.cpp
     renderpolicyregistry.cpp

@@ -27,6 +27,10 @@ constexpr auto registered_ids =
     "render_pipelines/hybrid_v1.json",
     "debug_draw.frag.spv",
     "debug_draw.vert.spv",
+    "gizmo.frag",
+    "gizmo.frag.spv",
+    "gizmo.vert",
+    "gizmo.vert.spv",
     "debug_text.frag.spv",
     "debug_text.vert.spv",
     "debug_text.frag",
@@ -34,6 +38,7 @@ constexpr auto registered_ids =
     "debug_text_font.json",
     "debug_text_font.png",
     "features/debug_draw.json",
+    "features/gizmo.json",
     "features/debug_text.json",
     "features/ui.json",
     "features/sprite.json",
@@ -151,6 +156,10 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("render_pipelines/hybrid_v1.json")
     PELICAN_ENGINE_RESOURCE("debug_draw.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
+    PELICAN_ENGINE_RESOURCE("gizmo.frag")
+    PELICAN_ENGINE_RESOURCE("gizmo.frag.spv")
+    PELICAN_ENGINE_RESOURCE("gizmo.vert")
+    PELICAN_ENGINE_RESOURCE("gizmo.vert.spv")
     PELICAN_ENGINE_RESOURCE("debug_text.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_text.vert.spv")
     PELICAN_ENGINE_RESOURCE("debug_text.frag")
@@ -164,6 +173,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         static const std::string feature = b::embed<"features/debug_draw.json">().str();
         return std::string_view{feature};
     }
+    PELICAN_ENGINE_RESOURCE("features/gizmo.json")
     if (id == "features/debug_text.json") {
         static const std::string feature = b::embed<"features/debug_text.json">().str();
         return std::string_view{feature};

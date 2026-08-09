@@ -11,6 +11,7 @@ void parseGenericRasterPassInfoIntoDefinition(
     PassDefinition &pass_def,
     const nlohmann::json &pass_json);
 void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
+void parseGizmoPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseDebugTextPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseShadowDepthPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseVelocityPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);

@@ -108,6 +108,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     parseGenericRasterPassInfoIntoDefinition(
         pass_def, pass_json);
     parseDebugDrawPassInfoIntoDefinition(pass_def, pass_json);
+    parseGizmoPassInfoIntoDefinition(pass_def, pass_json);
     parseDebugTextPassInfoIntoDefinition(pass_def, pass_json);
     parseShadowDepthPassInfoIntoDefinition(pass_def, pass_json);
     parseVelocityPassInfoIntoDefinition(pass_def, pass_json);

@@ -5,7 +5,7 @@
 ## この章で学ぶこと
 
 - レンダリングパイプラインを **JSON だけ**で定義する方法(rendering config)
-- パス種別(`material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `debug_draw` / `debug_text`)と compute タスク
+- パス種別(`material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `gizmo` / `debug_draw` / `debug_text`)と compute タスク
 - カラーパイプライン(SRGB スワップチェーン + リニアワークフロー)で気をつけること
 - feature(1 行で有効化できるパージ可能な GPU 機能)— canonical anchor・パラメータ・named binding
 - フレームグラフ(依存宣言 → 機械最適化 → 手詰め)とプランダンプ
@@ -99,12 +99,12 @@ cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2D�
 | フィールド | 必須 | 既定 | 内容 |
 |---|---|---|---|
 | `name` | ✔ | — | パス列内で一意 |
-| `type` | ✔ | — | `material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
+| `type` | ✔ | — | `material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `gizmo` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / attachment / attachment配列)と `depth`(null / attachment)の**両キー必須**。attachmentは従来の名前または`{target, subresource}`。`"swapchain"` は color のみ |
 | `input` | 任意 | — | **`fullscreen` / `output_transform` / `raster` / `material` 限定**(ほかの type に書くと `Only fullscreen, raster, and material passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
 | `resource_ports` | 任意 | — | **`fullscreen` / `raster` 限定**(ほかは `Only fullscreen and raster passes support resource_ports`)。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
 | `view_family` | 任意 | `$main` | このパスを実行する ViewFamily の ID(§6.12)。compute タスクにも同じキーがある |
-| `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` / `picking` = `scene`、`output_transform` / `ui` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
+| `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` / `picking` = `scene`、`output_transform` / `ui` / `gizmo` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
 | `regions` | 任意 | — | subgraph replacement 用の region タグ(string 配列)。重複は `has duplicate region tag`(後述「差し替えプロバイダの入口」)|
 | `implementation` | 任意 | — | **`fullscreen` 限定**。`{"provider": "<名前>"}` **ちょうど 1 キー**。ほかの type に書くと `Pass implementation providers currently support fullscreen passes only`(同上)|
 | `draw` / `raster_state` | `raster` では `draw` のみ必須 | — | **`raster` 限定**(ほかの type に書くと `Only raster passes support draw` / `Only raster passes support raster_state`)。後述「type: raster」|
@@ -164,6 +164,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
 - **`picking`** — モデル面へ整数 ID を書く視覚ピッキングパス。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://picking` / `engine://picking_skinned`)。通常は `engine://features/picking.json` 経由(本節後半)。
+- **`gizmo`** — 選択 transform の移動・回転・拡縮ハンドルを canonical display へ重ねる line-list パス。通常は `engine://features/gizmo.json` 経由(本節後半)。
 - **`ui`** — UI オーバーレイ([第7章](07_input_ui.md))。WP87 以降は `engine://features/ui.json` 経由の挿入が標準です。
 - **`shadow_depth`** — depth 専用パス。`shader` 省略時は `engine://shadow_depth`。
 - **`debug_draw` / `debug_text` / `imgui`** — 通常は feature 経由で挿入されます(§6.5)。
@@ -362,7 +363,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(14 個・✅すべて実装済み):
+エンジン同梱 feature(15 個・✅すべて実装済み):
 
 | feature | 内容 |
 |---|---|
@@ -375,6 +376,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
 | `velocity.json` | モーションベクタ RT(`R16G16_SFLOAT`)+ `velocity` パスを `before:post_main` に挿入(✅WP88) |
 | `picking.json` | 視覚ピッキング用 `R32_UINT` ID RT + depth + `picking` パスを `before:post_main` に挿入。既定無効で、座標読み出しは §6.5「ID バッファ picking」(✅WP262) |
+| `gizmo.json` | 移動・回転・拡縮の world-axis ハンドルを `before:debug_text` に重ねる。既定無効で、表示と状態なし当たり判定は §6.5「ギズモ」(✅WP274) |
 | `taa.json` | **標準 TAA**(resolve + composite の二パス + halton23/8 の jitter provider + スカラーパラメータ。§6.8)✅WP113 |
 | `sprite.json` | **純ゲート**(RT もパスも足さない)。参照すると `__anchor_sprite` でスプライトが描かれる(§6.9) |
 | `debug_draw.json` | ワイヤフレームオーバーレイ(collider 可視化など) |
@@ -695,6 +697,45 @@ authoring 宣言を持たない一時オブジェクトでは、runtime の `mod
 高頻度 hover 用の非同期キューは v1 にはありません。汎用入口は
 [`Renderer::readPickingPixel()`](../../src/core/vkcore/renderer.hpp)、外部ツール入口は
 [`pick_object`](10_tools.md#基盤メソッド一覧) で、いずれも feature が無効なら明示エラーになります。
+
+### ギズモ render feature と状態なし当たり判定(✅WP274)
+
+ギズモも picking と同じくエディタ専用の裏口ではなく、通常の project 空間と汎用 RPC から
+利用する render feature です。既定は無効で、次の参照を明示したときだけ存在します。
+
+```json
+{
+  "pipeline": {"preset": "engine://render_pipelines/hybrid_v1.json"},
+  "features": ["engine://features/gizmo.json"]
+}
+```
+
+参照すると `gizmo_pass` が canonical `display` へ直接 overlay されます。透明な中間画像を
+必要としないため feature-private RT は作りません。参照を外すと `gizmo_pass`、その pass pipeline
+登録、`gizmo` 名の target は active graph に存在しません。最初から feature-off の構成では
+module も upload buffer も生成せず、既存出力に描画・メモリコストを加えません。
+
+表示は [`set_gizmo`](10_tools.md#基盤メソッド一覧) へ WP258 と同じ
+`(scene_id, declaration_index)` と `translate` / `rotate` / `scale` の mode を送ります。
+軸は world X/Y/Z、画面上の半径は 72 論理 px です。`selection: null` は表示を消します。
+視線方向へ潰れて線分が 8 論理 px 未満になる移動・拡縮軸は、同じ軸色の菱形・矩形マーカーへ
+切り替わるため、正面向きの軸も描画と当たり判定から消えません。
+engine が保持するのはこの**表示要求**だけで、hover、押下、active handle、ドラッグ開始点、
+ドラッグ中の値は一切保持しません。
+
+当たり判定は [`query_gizmo_handle`](10_tools.md#基盤メソッド一覧) へ選択、mode、左上原点の
+物理 pixel `(x, y)` を毎回すべて渡す純粋な問い合わせです。結果は
+`translate_x` / `rotate_z` / `scale_y` のような handle ID と axis、または `null` です。
+描画済み frame や `set_gizmo` の現在値には依存せず、問い合わせによって engine 状態も
+変わりません。このため WP275 側は押下時に一度だけ問い合わせ、掴んだ handle とドラッグ状態を
+Studio 側へ保持できます。
+
+線のラスタ幅は Vulkan pipeline の既定どおり **1 物理 px**ですが、掴み代は線幅と切り離した
+**半径 10 論理 px**です。window がある場合は
+`framebuffer extent / logical window extent` の X/Y 比の平均を content scale とし、異常な値を
+避けるため `0.5..4.0` に clamp して物理 pixel 半径へ変換します。headless または logical extent
+不明時は scale 1 です。したがって 2x DPI なら半径 20 物理 px になり、1 px 線でも操作しやすさを
+失いません。描画幾何と問い合わせは同じ投影関数を使います。
 
 ## 6.6 フレームグラフ(✅F0〜F2 = WP33〜35 + WP64)
 

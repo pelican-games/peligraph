@@ -25,6 +25,7 @@
 #include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
@@ -76,6 +77,16 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
             return debug_text;
         };
     }
+    auto gizmo_provider = dependencies.gizmo_provider;
+    if (gizmo_provider) {
+        gizmo_provider =
+            [provider = std::move(gizmo_provider),
+             &gpu_arena]() -> Gizmo & {
+            auto &gizmo = provider();
+            gpu_arena.enlist(gizmo);
+            return gizmo;
+        };
+    }
     return RenderingPassRuntimeDependencies{
         &dependencies.render_target,
         &rt_metadata,
@@ -89,6 +100,7 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
         std::move(debug_draw_provider),
+        std::move(gizmo_provider),
         std::move(debug_text_provider),
         nullptr,
     };

@@ -169,6 +169,12 @@ class PelicanRpc:
     def pick_object(self, params: dict[str, Any] | None = None) -> Any:
         return self.call("pick_object", params)
 
+    def set_gizmo(self, params: dict[str, Any] | None = None) -> Any:
+        return self.call("set_gizmo", params)
+
+    def query_gizmo_handle(self, params: dict[str, Any] | None = None) -> Any:
+        return self.call("query_gizmo_handle", params)
+
     def list_assets(self, params: dict[str, Any] | None = None) -> Any:
         return self.call("list_assets", params)
 

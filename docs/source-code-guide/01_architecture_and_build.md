@@ -84,9 +84,9 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 読む順序は次の3点です。
 
-- preset本体は [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json)。[`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`](../../src/core/resources/CMakeLists.txt#L66) でエンジンへ埋め込まれるので、`engine://` で解決されます。
+- preset本体は [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json)。[`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`](../../src/core/resources/CMakeLists.txt#L68) でエンジンへ埋め込まれるので、`engine://` で解決されます。
 - `pipeline.preset` の展開は純粋層の [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L589) が行います。`schema` は `pelican.render_pipeline`、`version` は1固定で、presetが更にpresetを指すことは禁止です。authored側の `features` / `shader_defines` / `graph_transforms` は追記される一方、`render_strategy` / `snapshots` / `target_planning` の上書きは明示エラーになります（構造を変えたいならpresetをコピーする、というeject方針）。
-- 呼び出し側は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) の先頭で、preset展開はfeature解析より前に走ります。
+- 呼び出し側は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2560) の先頭で、preset展開はfeature解析より前に走ります。
 
 旧テンプレートはgbuffer_pass / ssao_pass / ssao_blur_pass / presentの4passで、`present` が `uses_light_data: true` によりライティングとpresentを兼ねる構成でした。新しい既定は deferred_geometry → ssao_pass → ssao_blur_pass → deferred_lighting → forward_opaque → `snapshot_copy` 2本 → forward_transparent → scene_present という並びで、forward・半透明・snapshotを持ちます。「新規プロジェクトが最初から何を描くか」が変わっているので、この節より先の章を読むときの前提として押さえておきます。
 
@@ -121,7 +121,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L37) |
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L20) |
 | [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L206)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L64) |
-| [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L380)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L153) |
+| [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L385)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L153) |
 | [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L39)、[`Camera`](../../src/core/renderer/camera.hpp#L17) |
 | [`render_algorithms/`](../../src/core/render_algorithms) | 差し替え可能な標準render algorithm（cube capture / planar reflection）のViewFamily provider。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` で丸ごと外れる | [`registerStandardRenderAlgorithmProviders()`](../../src/core/render_algorithms/standardrenderalgorithms.hpp#L9) |
 | [`vkcore/`](../../src/core/vkcore) | Vulkan instance/device、FrameTarget、command、layout、renderer編成 | [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L45)、[`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) |
@@ -174,9 +174,9 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
                       project（純粋パース・検証）
 ```
 
-実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2751) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
+実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2783) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
 
-新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L27)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L63) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
+新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L29)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L65) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
 
 ## 1.5 Pelicanでいう「インターフェース」の種類
 
@@ -187,7 +187,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L56) | windowed/headless/XRの実装差し替え |
 | 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L22) | 呼び出しに必要な協力オブジェクトを明示 |
 | Concept/duck typing | [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77)、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) | メソッド形だけをcompile時に要求 |
-| `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L297)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L41) | 閉じた型集合を安全に分岐 |
+| `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L302)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L41) | 閉じた型集合を安全に分岐 |
 | 関数コールバック | [`RenderFeatureComposeDependencies`](../../src/project/featurecompose.hpp#L14)、[`RpcServer::MethodHandler`](../../src/core/communication/rpcserver.hpp#L41) | I/Oやdispatchだけを注入 |
 | サービスロケータ | [`DECLARE_MODULE` / `GET_MODULE`](../../src/core/container.hpp#L15) | プロセス内の共有モジュールを遅延生成 |
 
@@ -244,7 +244,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L453)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
 | SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L200)） |
 | Dear ImGui | 開発者UI（`PELICAN_WITH_IMGUI` 時） |
-| battery::embed | shaderのSPIR-VとengineリソースJSON（`render_pipelines/`、`features/`、`surfaces/` など）をバイナリへ埋め込む。入口は [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) で、以降に並ぶ `b_embed()` の一覧が `engine://` で引ける資源の全量。ビルドフラグで消えうる資源の扱いは2通りに分かれます。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` 側は [`PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS`](../../src/core/resources/CMakeLists.txt#L103) に積まれて `pelican_optional_engine_resources.inc` として生成されますが、[`embed_shader(vat.vert)`](../../src/core/resources/CMakeLists.txt#L29) だけはこの一覧に載らず、[`engineResource()`](../../src/core/loader/engineresources.cpp#L128) 側の `#if PELICAN_WITH_VAT` と対で書かれています。書き込み量削減のため [`cmake/patch_battery_embed_low_write.cmake`](../../cmake/patch_battery_embed_low_write.cmake) を `PATCH_COMMAND` で当てており、CMP0118のpinもこの依存のため |
+| battery::embed | shaderのSPIR-VとengineリソースJSON（`render_pipelines/`、`features/`、`surfaces/` など）をバイナリへ埋め込む。入口は [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) で、以降に並ぶ `b_embed()` の一覧が `engine://` で引ける資源の全量。ビルドフラグで消えうる資源の扱いは2通りに分かれます。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` 側は [`PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS`](../../src/core/resources/CMakeLists.txt#L106) に積まれて `pelican_optional_engine_resources.inc` として生成されますが、[`embed_shader(vat.vert)`](../../src/core/resources/CMakeLists.txt#L29) だけはこの一覧に載らず、[`engineResource()`](../../src/core/loader/engineresources.cpp#L133) 側の `#if PELICAN_WITH_VAT` と対で書かれています。書き込み量削減のため [`cmake/patch_battery_embed_low_write.cmake`](../../cmake/patch_battery_embed_low_write.cmake) を `PATCH_COMMAND` で当てており、CMP0118のpinもこの依存のため |
 | picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`target_link_libraries(pelican_core PRIVATE picosha2)`](../../src/core/CMakeLists.txt#L103)） |
 | RenderDoc in-application API | ヘッダのみvendor同梱（[`src/third_party/renderdoc/renderdoc_app.h`](../../src/third_party/renderdoc/renderdoc_app.h)）。外部取得もバイナリリンクもしません |
 | quill | ログ |

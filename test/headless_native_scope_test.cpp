@@ -146,6 +146,7 @@ gpuArenaRegistrationDependencies(
             []() -> DebugDraw & {
                 return GET_MODULE(DebugDraw);
             },
+            {},
             []() -> DebugText & {
                 return GET_MODULE(DebugText);
             },

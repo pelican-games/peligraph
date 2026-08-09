@@ -1,0 +1,21 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "gizmo",
+  "passes": [
+    {
+      "insert": "before:debug_text",
+      "pass": {
+        "name": "gizmo_pass",
+        "type": "gizmo",
+        "resolution_domain": "output",
+        "output": {"color": "swapchain", "depth": null},
+        "color_load_op": "load",
+        "shader": {
+          "vertex": "engine://gizmo",
+          "fragment": "engine://gizmo"
+        }
+      }
+    }
+  ]
+}

@@ -21,7 +21,7 @@ Runtime object
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L460) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L68) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L8)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L271) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L999) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2560) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1011) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L313) |
@@ -155,7 +155,7 @@ std::variant<
 
 ### engine resource
 
-shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L128) がIDを実データへ変換します。
+shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L133) がIDを実データへ変換します。
 
 resource追加には次の三箇所が必要です。
 
@@ -534,9 +534,9 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### render feature
 
-[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2559) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
+[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2560) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
-runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L999) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L222) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
+runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1011) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L227) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
 sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L218) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L937) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
 

@@ -4,6 +4,7 @@
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "rendertarget.hpp"
 #include <glm/glm.hpp>
+#include <optional>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -12,6 +13,7 @@ class Camera;
 class DebugDraw;
 class DebugText;
 class FrameResources;
+class Gizmo;
 struct FullscreenPassRendererDependencies;
 class FullscreenPassRenderer;
 struct MaterialRendererDependencies;
@@ -34,6 +36,7 @@ struct RenderPassDispatchDependencies {
     UiRenderer *ui_renderer = nullptr;
     const UiRendererDependencies *ui_renderer_dependencies = nullptr;
     DebugDraw *debug_draw = nullptr;
+    Gizmo *gizmo = nullptr;
     DebugText *debug_text = nullptr;
 #if PELICAN_WITH_IMGUI
     ImGuiSystem *imgui_system = nullptr;
@@ -41,6 +44,9 @@ struct RenderPassDispatchDependencies {
     const FrameResources &frame_resources;
     const Camera &camera;
     glm::mat4 view_projection{1.0f};
+    glm::mat4 view_projection_non_jittered{1.0f};
+    std::optional<glm::vec3> gizmo_world_position;
+    float output_content_scale = 1.0f;
     vk::Format swapchain_color_format;
 };
 

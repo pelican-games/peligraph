@@ -105,6 +105,8 @@ pelican_player --project mygame --free-camera unity                         # Un
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}` | フレームプラン JSON |
 | `pick_object` | `{x, y}` | 最後に完了した ID バッファの 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
+| `set_gizmo` | `{selection:{scene_id, declaration_index}\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
+| `query_gizmo_handle` | `{selection:{scene_id, declaration_index}, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
 | `load_scene` | `{name}` | シーン切替 |
 | `set_camera` | `{name}` | シーン内カメラへ切替 |
@@ -144,9 +146,53 @@ WP258 契約です。authoring 宣言を持たない一時モデルでは三つ�
 `null` でも、世代付き `model_instance` は残ります。読み出しを同期にした理由と ID の
 GPU 表現は[第6章](06_rendering.md#id-バッファ-pickingwp262)を参照してください。
 
+`set_gizmo` と `query_gizmo_handle` の mode は `translate` / `rotate` / `scale` のいずれかです。
+選択 identity は `pick_object` / `scene_tree` と同じ `(scene_id, declaration_index)` だけを使います。
+表示の設定例:
+
+```json
+{
+  "selection": {"scene_id": "default_scene", "declaration_index": 3},
+  "mode": "rotate"
+}
+```
+
+応答は `{"contract":1,"visible":true,"selection":...,"mode":"rotate"}` です。
+`selection: null` と mode を送ると表示だけを解除します。engine に hover、押下、active handle、
+ドラッグ状態は作られません。
+
+当たり判定は左上原点、右向き X、下向き Y の物理 pixel 座標で、選択と mode を問い合わせごとに
+明示します。たとえば:
+
+```json
+{
+  "selection": {"scene_id": "default_scene", "declaration_index": 3},
+  "mode": "rotate",
+  "x": 420,
+  "y": 240
+}
+```
+
+```json
+{
+  "contract": 1,
+  "selection": {"scene_id": "default_scene", "declaration_index": 3},
+  "mode": "rotate",
+  "coordinate": {"x": 420, "y": 240},
+  "extent": {"width": 1280, "height": 720},
+  "grab_radius_pixels": 20.0,
+  "handle": {"id": "rotate_z", "axis": "z"}
+}
+```
+
+外れは `handle: null` です。問い合わせは `set_gizmo` の値や描画済み frame を読み書きせず、
+掴み代は描画の 1 px 線幅とは独立した 10 論理 px(DPI 2x の例では応答どおり 20 物理 px)です。
+範囲外座標、不正 mode、存在しない transform は `-32602`、feature 無効は `-32000` です。
+詳細は[第6章](06_rendering.md#ギズモ-render-feature-と状態なし当たり判定wp274)を参照してください。
+
 ### エディタ拡張メソッド(詳細は[第13章](13_editor.md))
 
-上の表の `export_scene_snapshot` / `import_scene_snapshot` と合わせて、エディタトラックで増えたのは **23 メソッド**です(RPC は全部で 44 メソッド)。
+上の表の `export_scene_snapshot` / `import_scene_snapshot` と合わせて、エディタトラックで増えたのは **23 メソッド**です(RPC は全部で 46 メソッド)。
 
 シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。
 
@@ -428,7 +474,8 @@ render graph の hot reload 後など、変化を確認したい時に明示更�
 共通 editor 基盤は WP149〜172 で実装済みです: authoring document、typed query/edit、
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
 process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262、Studio の選択同期は
-WP264、Frame Plan パネルは WP269 で入りました。gizmo、複数 client WebSocket は未接続です。ツール自作の入口は
+WP264、Frame Plan パネルは WP269 で入りました。engine の汎用 gizmo feature/RPC は WP274 で入り、
+Studio のドラッグ接続(WP275)と複数 client WebSocket は未接続です。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤

@@ -3,6 +3,7 @@
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
@@ -61,6 +62,19 @@ void renderDebugTextPass(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D
         throw std::runtime_error("DebugText pass requires DebugText dependency");
     }
     dependencies.debug_text->render(cmd_buf, pass_id, target_extent, dependencies.frame_resources);
+}
+
+void renderGizmoPass(vk::CommandBuffer cmd_buf, PassId pass_id,
+                     vk::Extent2D target_extent,
+                     const RenderPassDispatchDependencies &dependencies) {
+    if (dependencies.gizmo == nullptr) {
+        throw std::runtime_error("Gizmo pass requires Gizmo dependency");
+    }
+    dependencies.gizmo->render(
+        cmd_buf, pass_id, dependencies.frame_resources,
+        dependencies.gizmo_world_position,
+        dependencies.view_projection_non_jittered, target_extent,
+        dependencies.output_content_scale);
 }
 
 void renderShadowDepthPass(vk::CommandBuffer cmd_buf, PassId pass_id,
@@ -177,6 +191,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderVelocityPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isPicking()) {
         renderPickingPass(cmd_buf, pass_id, dependencies);
+    } else if (pass_def.isGizmo()) {
+        renderGizmoPass(cmd_buf, pass_id, target_extent, dependencies);
     } else if (pass_def.isDebugDraw()) {
         renderDebugDrawPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugText()) {

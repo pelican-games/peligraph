@@ -1336,6 +1336,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
 endif()
 
 pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gizmo_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugtext_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugtext_ui_compat_test GPU pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugutils_test pelican_core)

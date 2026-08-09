@@ -454,7 +454,8 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
-    if (pass_def.isDebugDraw() || pass_def.isDebugText() || pass_def.isUi()
+    if (pass_def.isDebugDraw() || pass_def.isGizmo() ||
+        pass_def.isDebugText() || pass_def.isUi()
 #if PELICAN_WITH_IMGUI
         || pass_def.isImGui()
 #endif
@@ -546,11 +547,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
 
     if (!pass_def.isFullscreen() &&
         !pass_def.isGenericRaster() &&
-        !pass_def.isDebugDraw() && !pass_def.isDebugText() &&
+        !pass_def.isDebugDraw() && !pass_def.isGizmo() &&
+        !pass_def.isDebugText() &&
         !pass_def.isShadowDepth() && !pass_def.isVelocity() &&
         !pass_def.isPicking() &&
         pass_json.contains("shader")) {
-        throw std::runtime_error("Only fullscreen, raster, debug_draw, debug_text, shadow_depth, velocity, and picking passes support shader: " +
+        throw std::runtime_error("Only fullscreen, raster, debug_draw, gizmo, debug_text, shadow_depth, velocity, and picking passes support shader: " +
                                  pass_def.name);
     }
 

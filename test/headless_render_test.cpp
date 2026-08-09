@@ -14,6 +14,7 @@
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
+#include "../src/core/renderer/gizmo.hpp"
 #include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/shadowdepthpasscontainer.hpp"
@@ -580,6 +581,7 @@ nlohmann::json gpuArenaRenderingConfig() {
   ],
   "features": [
     "engine://features/debug_draw.json",
+    "engine://features/gizmo.json",
     "engine://features/debug_text.json"
   ],
   "render_targets": [
@@ -1327,6 +1329,9 @@ gpuArenaRegistrationDependencies(
             true,
             []() -> DebugDraw & {
                 return GET_MODULE(DebugDraw);
+            },
+            []() -> Gizmo & {
+                return GET_MODULE(Gizmo);
             },
             []() -> DebugText & {
                 return GET_MODULE(DebugText);
@@ -6996,9 +7001,11 @@ TEST_CASE(
             gpuArenaRegistryDependencies();
         auto &debug_draw = GET_MODULE(DebugDraw);
         auto &debug_text = GET_MODULE(DebugText);
+        auto &gizmo = GET_MODULE(Gizmo);
         const auto baseline =
             inspectRenderPipelineGpuRegistryCounts(
-                registries, &debug_draw, &debug_text);
+                registries, &debug_draw, &debug_text,
+                &gizmo);
         auto &runtime =
             GET_MODULE(FrameGraphRuntimeContainer);
         REQUIRE(runtime.snapshot() == nullptr);
@@ -7029,7 +7036,7 @@ TEST_CASE(
             REQUIRE(
                 inspectRenderPipelineGpuRegistryCounts(
                     registries, &debug_draw,
-                    &debug_text) == baseline);
+                    &debug_text, &gizmo) == baseline);
             REQUIRE(runtime.snapshot() == nullptr);
             REQUIRE_FALSE(
                 isConcreteRenderTarget(
@@ -7151,6 +7158,8 @@ TEST_CASE(
         REQUIRE(has_kind(
             RenderPipelineGpuResourceKind::debug_draw_pass));
         REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::gizmo_pass));
+        REQUIRE(has_kind(
             RenderPipelineGpuResourceKind::debug_text_pass));
         REQUIRE(has_kind(
             RenderPipelineGpuResourceKind::shadow_depth_pass));
@@ -7158,7 +7167,8 @@ TEST_CASE(
             RenderPipelineGpuResourceKind::velocity_pass));
         const auto committed =
             inspectRenderPipelineGpuRegistryCounts(
-                registries, &debug_draw, &debug_text);
+                registries, &debug_draw, &debug_text,
+                &gizmo);
         REQUIRE(committed.render_targets >
                 baseline.render_targets);
         REQUIRE(committed.frame_graph_buffers >
@@ -7173,6 +7183,8 @@ TEST_CASE(
                 baseline.pipelines);
         REQUIRE(committed.debug_draw_passes >
                 baseline.debug_draw_passes);
+        REQUIRE(committed.gizmo_passes >
+                baseline.gizmo_passes);
         REQUIRE(committed.debug_text_passes >
                 baseline.debug_text_passes);
         REQUIRE(committed.shadow_depth_passes >
@@ -7275,7 +7287,7 @@ TEST_CASE(
         REQUIRE(
             inspectRenderPipelineGpuRegistryCounts(
                 registries, &debug_draw,
-                &debug_text) == committed);
+                &debug_text, &gizmo) == committed);
         REQUIRE(
             GET_MODULE(RenderTargetContainer)
                 .getRenderTargetIdByName(
@@ -7299,6 +7311,12 @@ TEST_CASE(
                 replacement_config["features"].begin(),
                 replacement_config["features"].end(),
                 "engine://features/debug_text.json"),
+            replacement_config["features"].end());
+        replacement_config["features"].erase(
+            std::remove(
+                replacement_config["features"].begin(),
+                replacement_config["features"].end(),
+                "engine://features/gizmo.json"),
             replacement_config["features"].end());
         replacement_config["buffers"][0]["size"] = 32;
         auto &replacement_targets =
@@ -7344,7 +7362,7 @@ TEST_CASE(
         REQUIRE(
             inspectRenderPipelineGpuRegistryCounts(
                 registries, &debug_draw,
-                &debug_text) == committed);
+                &debug_text, &gizmo) == committed);
         REQUIRE(
             GET_MODULE(RenderTargetContainer)
                 .getRenderTargetIdByName(
@@ -7427,7 +7445,8 @@ TEST_CASE(
 
         const auto both_generations =
             inspectRenderPipelineGpuRegistryCounts(
-                registries, &debug_draw, &debug_text);
+                registries, &debug_draw, &debug_text,
+                &gizmo);
         REQUIRE(both_generations.render_targets >
                 committed.render_targets);
         REQUIRE(both_generations.frame_graph_buffers >
@@ -7441,13 +7460,16 @@ TEST_CASE(
         generation.reset();
         const auto retired =
             inspectRenderPipelineGpuRegistryCounts(
-                registries, &debug_draw, &debug_text);
+                registries, &debug_draw, &debug_text,
+                &gizmo);
         REQUIRE(retired.render_targets <
                 both_generations.render_targets);
         REQUIRE(retired.frame_graph_buffers <
                 both_generations.frame_graph_buffers);
         REQUIRE(retired.compute_tasks <
                 both_generations.compute_tasks);
+        REQUIRE(retired.gizmo_passes ==
+                baseline.gizmo_passes);
         REQUIRE_THROWS(
             GET_MODULE(RenderTargetContainer)
                 .getMetadata(old_target));

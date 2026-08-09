@@ -257,7 +257,7 @@ size_t canonicalBucket(const nlohmann::json &pass, bool hdr_enabled) {
     if (type == "ui") {
         return 4;
     }
-    if (type == "debug_draw") {
+    if (type == "debug_draw" || type == "gizmo") {
         return 5;
     }
     if (type == "debug_text") {
@@ -319,7 +319,8 @@ void prepareHdrSceneOutput(nlohmann::json &config) {
     for (auto &pass_set : ensureArray(config, "rendering_passes")) {
         for (auto &pass : pass_set.at("passes")) {
             const auto type = pass.value("type", std::string{});
-            if (type != "ui" && type != "debug_draw" && type != "debug_text" &&
+            if (type != "ui" && type != "debug_draw" && type != "gizmo" &&
+                type != "debug_text" &&
                 passWritesSwapchain(pass)) {
                 scene_terminal = &pass;
             }

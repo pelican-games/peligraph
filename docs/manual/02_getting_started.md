@@ -294,7 +294,7 @@ cmake --build ./build --target run_studio
 > **注意:** Qt Studio 自体は現状 **QML のダミー画面のみ**です。
 > 一方、engine側の typed editor service/RPC、Object Tree、Inspector、
 > undo/save/preview は実装済みで、通常playerのImGuiから利用できます。
-> Qtのプロジェクト読み込み・埋め込みviewport・gizmoは未実装です。
+> engine 側の汎用 gizmo render feature/RPC は実装済みですが、Qt Studio でのドラッグ操作は WP275 待ちです。
 > エディタの設計方向(D0「エディタ特権の禁止」など)は [第10章](10_tools.md) §10.7 と
 > [../design_devstudio_direction.md](../design_devstudio_direction.md) /
 > [../design_editor_tooling.md](../design_editor_tooling.md) を参照してください。

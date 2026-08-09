@@ -1477,6 +1477,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|GPU 捕捉": "return nlohmann::json{",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`EngineRpcEndpoint::EngineRpcEndpoint()`": "EngineRpcEndpoint::EngineRpcEndpoint(std::istream &input_stream,",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`EngineRpcEndpoint::run()`": "void EngineRpcEndpoint::run() {",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`RpcServer::handleLine()` の `std::exception` catch": "error.what()));",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`flushPendingTransforms()`": "void flushPendingTransforms(std::vector<PendingTransformUpdate> &pending, SceneLoader &scene_loader) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`get_status`": "server.setHandler(\"get_status\", [instance_id, &modules](const nlohmann::json &params) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`handleLine()`": "std::string RpcServer::handleLine(std::string_view line) const {",

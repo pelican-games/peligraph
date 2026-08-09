@@ -10,6 +10,7 @@
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
@@ -53,6 +54,16 @@ struct DebugTextRuntimeDependencies {
     const RenderTargetMetadataResolver &render_target_metadata;
     ShaderLibrary &shader_library;
     DebugText &debug_text;
+    const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
+    bool warn_backend_specific_shader_refs = false;
+};
+
+struct GizmoRuntimeDependencies {
+    RenderTarget &render_target;
+    const RenderTargetMetadataResolver &render_target_metadata;
+    ShaderLibrary &shader_library;
+    Gizmo &gizmo;
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
@@ -1425,6 +1436,28 @@ DebugTextRuntimeDependencies requireDebugTextDependencies(
     };
 }
 
+GizmoRuntimeDependencies requireGizmoDependencies(
+    const PassDefinition &pass_def,
+    const RenderingPassRuntimeDependencies &dependencies) {
+    if (dependencies.render_target == nullptr ||
+        dependencies.render_target_metadata == nullptr ||
+        dependencies.shader_library == nullptr ||
+        dependencies.path_resolver == nullptr || !dependencies.gizmo_provider) {
+        throw std::runtime_error(
+            "Gizmo pass runtime compile requires render target, render target metadata, shader library, path resolver, and gizmo dependencies: " +
+            pass_def.name);
+    }
+    return GizmoRuntimeDependencies{
+        *dependencies.render_target,
+        *dependencies.render_target_metadata,
+        *dependencies.shader_library,
+        dependencies.gizmo_provider(),
+        *dependencies.path_resolver,
+        dependencies.shader_defines,
+        dependencies.warn_backend_specific_shader_refs,
+    };
+}
+
 ShadowDepthRuntimeDependencies requireShadowDepthDependencies(
     const PassDefinition &pass_def,
     const RenderingPassRuntimeDependencies &dependencies) {
@@ -2270,6 +2303,25 @@ PassId compileDebugTextPass(const PassDefinition &pass_def, DebugTextRuntimeDepe
                                                 pass_def.rasterization_samples);
 }
 
+PassId compileGizmoPass(const PassDefinition &pass_def,
+                        GizmoRuntimeDependencies dependencies) {
+    const auto color_format = resolveFirstColorFormat(
+        pass_def, dependencies.render_target,
+        dependencies.render_target_metadata);
+    const auto &info = pass_def.gizmoInfo();
+    const auto vert_shader = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver,
+        info.vert_shader, dependencies.warn_backend_specific_shader_refs,
+        dependencies.shader_defines);
+    const auto frag_shader = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver,
+        info.frag_shader, dependencies.warn_backend_specific_shader_refs,
+        dependencies.shader_defines);
+    return dependencies.gizmo.registerPass(
+        color_format, vert_shader, frag_shader, dependencies.shader_defines,
+        pass_def.rasterization_samples);
+}
+
 PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntimeDependencies dependencies) {
     const auto depth_rt = dependencies.render_target_metadata.get(pass_def.output_depth);
     const auto vert_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
@@ -2409,6 +2461,13 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
             const auto debug_draw_dependencies = requireDebugDrawDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies), view, rendering});
+        } else if (pass_def.isGizmo()) {
+            const auto gizmo_dependencies =
+                requireGizmoDependencies(pass_def, dependencies);
+            compiled_pass.passes.push_back(
+                CompiledPass{pass_def,
+                             compileGizmoPass(pass_def, gizmo_dependencies),
+                             view, rendering});
         } else if (pass_def.isDebugText()) {
             const auto debug_text_dependencies = requireDebugTextDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(

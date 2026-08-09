@@ -25,6 +25,7 @@
 #include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/gizmo.hpp"
 #include "../renderer/directionalshadowviewprovider.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../model/vertbufcontainer.hpp"
@@ -36,6 +37,9 @@
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../renderingpass/vulkannativescopeexecutor.hpp"
+#include "../loader/scene.hpp"
+#include "../ecs/core.hpp"
+#include "../os/window.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
@@ -164,6 +168,7 @@ struct RenderFrameModules {
     const UIContainer *ui_container;
     const ui::UiModule *ui_module;
     DebugDraw *debug_draw;
+    Gizmo *gizmo;
     DebugText *debug_text;
 #if PELICAN_WITH_IMGUI
     ImGuiSystem *imgui_system;
@@ -246,6 +251,9 @@ RenderFrameModules resolveRenderFrameModules() {
         rendering_pass_container.isFeatureEnabled("debug_draw") ? &GET_MODULE(DebugDraw) : nullptr;
     DebugText *debug_text =
         rendering_pass_container.isFeatureEnabled("debug_text") ? &GET_MODULE(DebugText) : nullptr;
+    Gizmo *gizmo = rendering_pass_container.isFeatureEnabled("gizmo")
+                       ? &GET_MODULE(Gizmo)
+                       : nullptr;
     RenderTiming *render_timing =
         rendering_pass_container.isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
 #if PELICAN_WITH_IMGUI
@@ -279,6 +287,7 @@ RenderFrameModules resolveRenderFrameModules() {
         ui_enabled ? &GET_MODULE(UIContainer) : nullptr,
         ui_enabled ? &GET_MODULE(ui::UiModule) : nullptr,
         debug_draw,
+        gizmo,
         debug_text,
 #if PELICAN_WITH_IMGUI
         imgui_system,
@@ -834,7 +843,8 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         {"inputs", std::move(inputs)},
         {"input_buffers", definition.input_buffers},
         {"attachments", std::move(attachments)},
-        {"blend", definition.isUi() || definition.isDebugDraw() || definition.isDebugText()
+        {"blend", definition.isUi() || definition.isDebugDraw() ||
+                      definition.isGizmo() || definition.isDebugText()
 #if PELICAN_WITH_IMGUI
                       || definition.isImGui()
 #endif
@@ -2301,6 +2311,20 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
     if (modules.ui_renderer != nullptr && modules.ui_container != nullptr && modules.ui_module != nullptr)
         ui_renderer_dependencies.emplace(*modules.ui_container, *modules.ui_module, modules.frame_resources);
+    std::optional<glm::vec3> gizmo_world_position;
+    if (modules.gizmo != nullptr) {
+        if (const auto request = modules.gizmo->displayRequest()) {
+            const auto target = resolveGizmoTargetTransform(
+                request->selection, GET_MODULE(ProjectBasicConfig),
+                GET_MODULE(SceneLoader), GET_MODULE(ECSCore));
+            if (target) gizmo_world_position = target->position;
+        }
+    }
+    const auto *window = FastModuleContainer::tryGet<Window>();
+    const auto output_content_scale =
+        window != nullptr
+            ? gizmoContentScale(render_ctx.extent, window->logicalExtent())
+            : 1.0f;
     RenderPassDispatchDependencies pass_dispatch_dependencies{
         modules.material_renderer,
         material_renderer_dependencies,
@@ -2311,6 +2335,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         modules.ui_renderer,
         ui_renderer_dependencies ? &*ui_renderer_dependencies : nullptr,
         modules.debug_draw,
+        modules.gizmo,
         modules.debug_text,
 #if PELICAN_WITH_IMGUI
         modules.imgui_system,
@@ -2318,6 +2343,9 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         modules.frame_resources,
         modules.camera,
         default_snapshot.view_projection_jittered,
+        default_snapshot.view_projection_non_jittered,
+        gizmo_world_position,
+        output_content_scale,
         frame_target_format};
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
                                                                     pass_dispatch_dependencies};
@@ -2384,6 +2412,10 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                     .view_projection =
                     snapshot
                         .view_projection_jittered;
+                pass_dispatch_dependencies
+                    .view_projection_non_jittered =
+                    snapshot
+                        .view_projection_non_jittered;
                 if (invocation.execution ==
                     VulkanScopeViewExecution::
                         multiview) {

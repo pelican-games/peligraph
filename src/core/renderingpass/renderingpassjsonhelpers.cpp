@@ -140,6 +140,9 @@ PassInfo makePassInfo(const std::string &type_str) {
     if (type_str == "debug_draw") {
         return DebugDrawPassInfo{};
     }
+    if (type_str == "gizmo") {
+        return GizmoPassInfo{};
+    }
     if (type_str == "debug_text") {
         return DebugTextPassInfo{};
     }
@@ -198,6 +201,7 @@ RenderResolutionDomain defaultRenderResolutionDomain(
         return RenderResolutionDomain::scene;
     }
     if (pass_type == "output_transform" || pass_type == "ui" ||
+        pass_type == "gizmo" ||
         pass_type == "imgui") {
         return RenderResolutionDomain::output;
     }
