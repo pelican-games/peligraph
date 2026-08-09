@@ -12,15 +12,18 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
+#include "../src/core/renderer/gizmo.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "vulkan_test_support.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -530,7 +533,7 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
     // The query deliberately runs after display was cleared and asks for a
     // different mode. It cannot accidentally consume display/drag state.
     const auto &hit = responses.at(6).at("result");
-    REQUIRE(hit.at("contract") == 1);
+    REQUIRE(hit.at("contract") == 2);
     REQUIRE(hit.at("selection") == selection);
     REQUIRE(hit.at("mode") == "scale");
     REQUIRE(hit.at("coordinate") ==
@@ -538,8 +541,16 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
     REQUIRE(hit.at("extent") ==
             nlohmann::json{{"width", 192}, {"height", 192}});
     REQUIRE(hit.at("grab_radius_pixels").get<float>() > 1.0f);
-    REQUIRE(hit.at("handle") ==
-            nlohmann::json{{"id", "scale_x"}, {"axis", "x"}});
+    const auto &handle = hit.at("handle");
+    REQUIRE(handle.at("id") == "scale_x");
+    REQUIRE(handle.at("axis") == "x");
+    const auto &drag_direction = handle.at("drag_direction");
+    const auto direction_length = std::hypot(
+        drag_direction.at("x").get<float>(),
+        drag_direction.at("y").get<float>());
+    REQUIRE(direction_length == Catch::Approx(1.0f).margin(1.0e-4f));
+    REQUIRE(handle.at("value_per_logical_pixel").get<float>() ==
+            Catch::Approx(gizmoScaleExponentPerLogicalPixel));
     REQUIRE(responses.at(7).at("result").at("handle").is_null());
 
     const auto &nodes = responses.at(8).at("result").at("nodes");

@@ -1,13 +1,27 @@
 #include "inspectormodel.hpp"
+#include "gizmomodel.hpp"
+
+#include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/loader/editorprojectiontransaction.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/log.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -181,6 +195,136 @@ struct InspectorHarness {
         completeRefresh(position_x, committed_revision);
     }
 };
+
+struct PersistenceProject {
+    std::filesystem::path root;
+
+    PersistenceProject() {
+        const auto suffix =
+            std::chrono::steady_clock::now().time_since_epoch().count();
+        root = std::filesystem::temp_directory_path() /
+               ("pelican_wp276_gizmo_save_" + std::to_string(suffix));
+        std::filesystem::create_directories(root);
+    }
+
+    ~PersistenceProject() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }
+};
+
+class PersistencePreviewTarget final
+    : public Pelican::EditorProjectionDocumentTarget {
+    Pelican::AuthoringSceneDocument document_;
+
+  public:
+    explicit PersistencePreviewTarget(
+        const Pelican::AuthoringSceneDocument &source)
+        : document_{source.stage(
+              source.rawJson(),
+              Pelican::SceneRevision{source.revision().value + 1U})} {}
+
+    const Pelican::AuthoringSceneDocument &projectionDocument()
+        const override {
+        return document_;
+    }
+
+    Pelican::SceneRevision nextProjectionRevision() const override {
+        return Pelican::SceneRevision{document_.revision().value + 1U};
+    }
+
+    void publishProjectionDocument(
+        Pelican::AuthoringSceneDocument &&document) noexcept override {
+        document_.swap(document);
+    }
+};
+
+void writePersistenceFile(const std::filesystem::path &path,
+                          std::string_view bytes) {
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    if (!output.is_open()) {
+        throw std::runtime_error("failed to create persistence fixture: " +
+                                 path.string());
+    }
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+        throw std::runtime_error("failed to write persistence fixture: " +
+                                 path.string());
+    }
+}
+
+PelicanStudio::GizmoRpcRequest takeGizmoRpc(
+    PelicanStudio::GizmoModel &model, std::string_view method) {
+    auto requests = model.takeRpcRequests();
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().method == std::string{method});
+    return std::move(requests.front());
+}
+
+Json gizmoEditedPosition() {
+    using PelicanStudio::GizmoEditActionKind;
+    using PelicanStudio::GizmoEditableField;
+    using PelicanStudio::GizmoModel;
+    using PelicanStudio::GizmoTransformBinding;
+
+    const OutlinerObjectKey selection{.scene_id = "main",
+                                      .declaration_index = 0};
+    GizmoModel gizmo;
+    gizmo.setSelection(selection);
+    gizmo.startSession();
+    const auto display = takeGizmoRpc(gizmo, "set_gizmo");
+    gizmo.receiveRpcResult(
+        display.request_id,
+        Json{{"contract", 1},
+             {"visible", true},
+             {"selection",
+              {{"scene_id", "main"}, {"declaration_index", 0}}},
+             {"mode", "translate"}}
+            .dump());
+
+    gizmo.pointerPressed(
+        {100, 100},
+        GizmoTransformBinding{
+            .selection = selection,
+            .position = GizmoEditableField{
+                .field_key = "1:transform:0:/pos",
+                .value = Json::array({1.0, 2.0, 3.0})},
+        });
+    const auto query = takeGizmoRpc(gizmo, "query_gizmo_handle");
+    gizmo.receiveRpcResult(
+        query.request_id,
+        Json{{"contract", 2},
+             {"selection",
+              {{"scene_id", "main"}, {"declaration_index", 0}}},
+             {"mode", "translate"},
+             {"coordinate", {{"x", 100}, {"y", 100}}},
+             {"extent", {{"width", 640}, {"height", 480}}},
+             {"grab_radius_pixels", 10.0},
+             {"handle",
+              {{"id", "translate_x"},
+               {"axis", "x"},
+               {"drag_direction", {{"x", 1.0}, {"y", 0.0}}},
+               {"value_per_logical_pixel", 0.25}}}}
+            .dump());
+    auto actions = gizmo.takeEditActions();
+    REQUIRE(actions.size() == 1);
+    REQUIRE(actions.front().kind == GizmoEditActionKind::Begin);
+    gizmo.confirmEditStarted(actions.front().gesture_id, true);
+
+    gizmo.pointerMoved({112, 100});
+    actions = gizmo.takeEditActions();
+    REQUIRE(actions.size() == 1);
+    REQUIRE(actions.front().kind == GizmoEditActionKind::Preview);
+    const Json edited = actions.front().value;
+    REQUIRE(edited == Json::array({4.0, 2.0, 3.0}));
+
+    gizmo.pointerReleased({112, 100});
+    actions = gizmo.takeEditActions();
+    REQUIRE(actions.size() == 1);
+    REQUIRE(actions.front().kind == GizmoEditActionKind::Finish);
+    REQUIRE(actions.front().commit);
+    return edited;
+}
 
 } // namespace
 
@@ -524,8 +668,8 @@ TEST_CASE("Devstudio undo uses the editor session revision after a gizmo-style p
     REQUIRE(harness.take("scene_tree").method == "scene_tree");
 }
 
-TEST_CASE("Devstudio save scene persists committed authoring edits only while idle",
-          "[devstudio][inspector][save][wp275]") {
+TEST_CASE("Devstudio save scene RPC is serialized only while idle",
+          "[devstudio][inspector][save][rpc][wp275]") {
     InspectorHarness harness;
     harness.open();
     harness.commitGizmoStylePosition(4.0);
@@ -551,4 +695,157 @@ TEST_CASE("Devstudio save scene persists committed authoring edits only while id
     // object selection after the gizmo edit was committed.
     harness.model.selectObject(std::nullopt);
     REQUIRE(harness.model.canSave());
+}
+
+TEST_CASE("Devstudio gizmo commit survives save and a fresh authoring reload",
+          "[devstudio][inspector][gizmo][save][reload][wp276]") {
+    Pelican::setupLogger(true);
+    PersistenceProject project_dir;
+    const Json source{
+        {"schema", "pelican.scene"},
+        {"version", 1},
+        {"scenes",
+         {{"main",
+           {{"objects",
+             Json::array(
+                 {{{"name", "Target"},
+                   {"components",
+                    Json::array(
+                        {{{"name", "transform"},
+                          {"pos", {1.0, 2.0, 3.0}},
+                          {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                          {"scale", {1.0, 1.0, 1.0}}}})}}})}}}}},
+    };
+    writePersistenceFile(project_dir.root / "scene.json", source.dump(2));
+    const Json project{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "WP276 persistence"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"default_scene_id", "main"},
+          {"scene_data_json", "scene.json"}}},
+    };
+    const Json edited_position = gizmoEditedPosition();
+
+    {
+        Pelican::FastModuleContainer modules;
+        Pelican::FastModuleContainer::get<Pelican::PathResolver>()
+            .setup(project_dir.root, false);
+        Pelican::FastModuleContainer::get<Pelican::ProjectSource>()
+            .setProjectData(project.dump());
+        auto &config =
+            Pelican::FastModuleContainer::get<Pelican::ProjectBasicConfig>();
+        const auto &document = config.sceneDocument();
+        const auto scenes = document.query();
+        REQUIRE(scenes.size() == 1);
+        REQUIRE(scenes.front().objects.size() == 1);
+        const auto object_id =
+            scenes.front().objects.front().authoring_object_id.value;
+        const auto base_revision = document.revision();
+
+        Pelican::EditorCommandService service{
+            Pelican::EditorCommandServiceDependencies{
+                .document = [&config]()
+                    -> const Pelican::AuthoringSceneDocument & {
+                    return config.sceneDocument();
+                },
+                .current_scene_id = [] { return std::string{"main"}; },
+                .snapshot_state = [] {
+                    return Pelican::EditorSnapshotState{};
+                },
+                .edit = Pelican::EditorEditRuntimeDependencies{
+                    .document = [&config]()
+                        -> const Pelican::AuthoringSceneDocument & {
+                        return config.sceneDocument();
+                    },
+                    .current_scene_id = [] { return std::string{"main"}; },
+                    .execute = [&config](
+                                   const Pelican::EditorEditExecutionRequest
+                                       &request) {
+                        Pelican::ProjectBasicConfigProjectionTarget target{
+                            config};
+                        Pelican::EditorProjectionTransaction transaction{
+                            target, request.base_revision};
+                        std::vector<Pelican::EditorProjectionAdapter *>
+                            adapters;
+                        return transaction.commit(request.commands,
+                                                  adapters);
+                    },
+                    .execute_preview = [&config](
+                                           const Pelican::EditorPreviewExecutionRequest
+                                               &request) {
+                        PersistencePreviewTarget target{
+                            config.sceneDocument()};
+                        Pelican::EditorProjectionTransaction transaction{
+                            target, target.projectionDocument().revision()};
+                        std::vector<Pelican::EditorProjectionAdapter *>
+                            adapters;
+                        return transaction.commit(request.commands,
+                                                  adapters);
+                    },
+                    .gate = [] { return Pelican::EditorGateObservation{}; },
+                },
+                .save_scene = [&config] {
+                    const auto saved = config.saveSceneDocument();
+                    return Pelican::SaveSceneResult{
+                        .scene_revision = saved.scene_revision,
+                        .digest = {.algorithm = "sha256",
+                                   .hex = saved.digest},
+                        .byte_count = saved.byte_count,
+                        .scene_hot_reload = false,
+                    };
+                },
+            }};
+        const auto session = service.openEditorSession(
+            Json{{"display_name", "WP276 persistence fixture"}});
+        const Json operations = Json::array(
+            {{{"op", "set_component_value"},
+              {"object_id", object_id},
+              {"component_slot", "transform"},
+              {"field_path", "/pos"},
+              {"value", edited_position}}});
+        const auto opened = service.openPreview(
+            Json{{"actor_id", session.at("actor_id")},
+                 {"operations", operations}});
+        REQUIRE(opened.at("status") == "accepted");
+        service.commitPendingEdits();
+        const auto open_result = service.getPreviewResult(
+            Json{{"request_id", opened.at("request_id")}});
+        REQUIRE(open_result.at("status") == "open");
+
+        const auto commit = service.commitPreview(
+            Json{{"actor_id", session.at("actor_id")},
+                 {"ticket", opened.at("ticket")}});
+        REQUIRE(commit.at("status") == "accepted");
+        service.commitPendingEdits();
+        const auto committed = service.getPreviewResult(
+            Json{{"request_id", commit.at("request_id")}});
+        REQUIRE(committed.at("status") == "committed");
+        REQUIRE(committed.at("committed_revision") ==
+                base_revision.value + 1U);
+        const auto saved = service.saveScene();
+        REQUIRE(saved.byte_count > 0);
+    }
+
+    // A new module generation must decode the replaced file. Inspecting the
+    // RPC request or the old in-memory document cannot satisfy this check.
+    {
+        Pelican::FastModuleContainer modules;
+        Pelican::FastModuleContainer::get<Pelican::PathResolver>()
+            .setup(project_dir.root, false);
+        Pelican::FastModuleContainer::get<Pelican::ProjectSource>()
+            .setProjectData(project.dump());
+        const auto &reloaded =
+            Pelican::FastModuleContainer::get<Pelican::ProjectBasicConfig>()
+                .sceneDocument();
+        REQUIRE(reloaded.rawJson()
+                    .at("scenes")
+                    .at("main")
+                    .at("objects")
+                    .at(0)
+                    .at("components")
+                    .at(0)
+                    .at("pos") == edited_position);
+    }
 }

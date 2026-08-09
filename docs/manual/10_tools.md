@@ -175,18 +175,28 @@ GPU 表現は[第6章](06_rendering.md#id-バッファ-pickingwp262)を参照し
 
 ```json
 {
-  "contract": 1,
+  "contract": 2,
   "selection": {"scene_id": "default_scene", "declaration_index": 3},
   "mode": "rotate",
   "coordinate": {"x": 420, "y": 240},
   "extent": {"width": 1280, "height": 720},
   "grab_radius_pixels": 20.0,
-  "handle": {"id": "rotate_z", "axis": "z"}
+  "handle": {
+    "id": "rotate_z",
+    "axis": "z",
+    "drag_direction": {"x": -0.32, "y": 0.9474175},
+    "value_per_logical_pixel": 0.01
+  }
 }
 ```
 
-外れは `handle: null` です。問い合わせは `set_gizmo` の値や描画済み frame を読み書きせず、
-掴み代は描画の 1 px 線幅とは独立した 10 論理 px(DPI 2x の例では応答どおり 20 物理 px)です。
+外れは `handle: null` です。`drag_direction` は問い合わせ座標と同じ Y 下向き空間の単位ベクトル、
+`value_per_logical_pixel` は移動なら world 単位、回転なら radian、拡縮なら指数の無次元量です。
+client は論理 pixel 差分 `d` に対して
+`scalar = dot(d, drag_direction) * value_per_logical_pixel` だけを計算し、カメラ・射影を複製しません。
+問い合わせは `set_gizmo` の値や描画済み frame を読み書きせず、掴み代は描画の 1 px 線幅とは
+独立した 10 論理 px(DPI 2x の例では応答どおり 20 物理 px)です。射影軸が 8 論理 px 未満へ
+潰れた移動・拡縮マーカーは、方向が未定義なので `handle: null` になります。
 範囲外座標、不正 mode、存在しない transform は `-32602`、feature 無効は `-32000` です。
 詳細は[第6章](06_rendering.md#ギズモ-render-feature-と状態なし当たり判定wp274)を参照してください。
 
@@ -459,8 +469,10 @@ Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_proj
 維持し、viewport の警告行、status bar、Engine Log の三つへ理由を出します。feature は自動で有効化せず、
 project の purgeability を保ちます。
 
-gizmo の押下時は `query_gizmo_handle` を 1 回だけ呼び、掴んだ handle を Studio 側で保持します。
-以後の pointer move では hit test をやり直さず、選んだ軸へ拘束した移動・回転・拡縮を行います。
+gizmo の押下時は `query_gizmo_handle` を 1 回だけ呼び、掴んだ handle と engine が射影した drag 契約を
+Studio 側で保持します。以後の pointer move では hit test をやり直さず、上の単一内積式で選んだ軸へ
+拘束した移動・回転・拡縮を行います。新しい押下で問い合わせを置き換えた場合、古い成功・失敗応答は
+同じ世代判定で破棄します。
 値の反映には Inspector と同じ `open_preview` / `update_preview` / `commit_preview` /
 `abort_preview` lease を使います。ドラッグ中は Inspector の対応する数値も追従し、release で undo
 可能な authoring 編集として commit されます。選択・モード変更や player 停止では commit せず

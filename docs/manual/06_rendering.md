@@ -719,13 +719,16 @@ module も upload buffer も生成せず、既存出力に描画・メモリコ�
 `(scene_id, declaration_index)` と `translate` / `rotate` / `scale` の mode を送ります。
 軸は world X/Y/Z、画面上の半径は 72 論理 px です。`selection: null` は表示を消します。
 視線方向へ潰れて線分が 8 論理 px 未満になる移動・拡縮軸は、同じ軸色の菱形・矩形マーカーへ
-切り替わるため、正面向きの軸も描画と当たり判定から消えません。
+切り替わります。ただし射影方向が定まらないため、そのマーカー上の drag query は `handle: null` を
+返します。表示を残しつつ NaN や巨大な移動を起こさない退化規約です。
 engine が保持するのはこの**表示要求**だけで、hover、押下、active handle、ドラッグ開始点、
 ドラッグ中の値は一切保持しません。
 
 当たり判定は [`query_gizmo_handle`](10_tools.md#基盤メソッド一覧) へ選択、mode、左上原点の
-物理 pixel `(x, y)` を毎回すべて渡す純粋な問い合わせです。結果は
-`translate_x` / `rotate_z` / `scale_y` のような handle ID と axis、または `null` です。
+物理 pixel `(x, y)` を毎回すべて渡す純粋な問い合わせです。contract 2 の結果は
+`translate_x` / `rotate_z` / `scale_y` のような handle ID と axis に加え、値が増える
+`drag_direction` と `value_per_logical_pixel`、または `null` です。移動・拡縮の向きは投影軸、
+回転の向きは掴んだ線分における正回転の接線です。移動量だけはカメラ距離に応じて変わります。
 描画済み frame や `set_gizmo` の現在値には依存せず、問い合わせによって engine 状態も
 変わりません。このため WP275 側は押下時に一度だけ問い合わせ、掴んだ handle とドラッグ状態を
 Studio 側へ保持できます。

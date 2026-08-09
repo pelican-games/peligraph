@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
 #include <string_view>
 
@@ -65,9 +66,11 @@ Json displayResult(GizmoMode mode, bool visible = true) {
 }
 
 Json queryResult(GizmoMode mode, std::string_view handle,
-                 std::string_view axis, double grab_radius = 10.0) {
+                 std::string_view axis, double grab_radius = 10.0,
+                 std::array<double, 2> drag_direction = {1.0, 0.0},
+                 double value_per_logical_pixel = 0.01) {
     return {
-        {"contract", 1},
+        {"contract", 2},
         {"selection",
          {{"scene_id", Selection.scene_id},
           {"declaration_index", Selection.declaration_index}}},
@@ -75,7 +78,12 @@ Json queryResult(GizmoMode mode, std::string_view handle,
         {"coordinate", {{"x", 100}, {"y", 100}}},
         {"extent", {{"width", 800}, {"height", 600}}},
         {"grab_radius_pixels", grab_radius},
-        {"handle", {{"id", handle}, {"axis", axis}}},
+        {"handle",
+         {{"id", handle},
+          {"axis", axis},
+          {"drag_direction",
+           {{"x", drag_direction[0]}, {"y", drag_direction[1]}}},
+          {"value_per_logical_pixel", value_per_logical_pixel}}},
     };
 }
 
@@ -205,6 +213,28 @@ TEST_CASE("Devstudio gizmo rotation normalizes quaternion and scale follows DPI"
     REQUIRE(scale[2] == 1.0);
 }
 
+TEST_CASE("Devstudio gizmo applies the engine projected direction and magnitude",
+          "[devstudio][gizmo][projection][wp276]") {
+    GizmoModel model;
+    openModel(model);
+
+    model.pointerPressed({100, 100}, transformBinding());
+    const auto query = takeRpc(model, "query_gizmo_handle");
+    model.receiveRpcResult(
+        query.request_id,
+        queryResult(GizmoMode::Translate, "translate_x", "x", 10.0,
+                    {-1.0, 0.0}, 0.25)
+            .dump());
+    const auto begin = takeEdit(model, GizmoEditActionKind::Begin);
+    model.confirmEditStarted(begin.gesture_id, true);
+
+    model.pointerMoved({80, 100});
+    const auto preview = takeEdit(model, GizmoEditActionKind::Preview);
+    REQUIRE(preview.value.at(0).get<double>() == Catch::Approx(6.0));
+    REQUIRE(preview.value.at(1) == 2.0);
+    REQUIRE(preview.value.at(2) == 3.0);
+}
+
 TEST_CASE("Devstudio gizmo miss falls back to picking and stale query cannot start a drag",
           "[devstudio][gizmo][selection][stale][wp275]") {
     GizmoModel model;
@@ -241,6 +271,31 @@ TEST_CASE("Devstudio gizmo miss falls back to picking and stale query cannot sta
     REQUIRE(model.takeFallbackPicks() ==
             std::vector<GizmoPixelPosition>{{100, 100}});
     REQUIRE_FALSE(model.notice().message.empty());
+}
+
+TEST_CASE("Devstudio gizmo discards a superseded query failure symmetrically",
+          "[devstudio][gizmo][stale][failure][wp276]") {
+    GizmoModel model;
+    openModel(model);
+
+    model.pointerPressed({100, 100}, transformBinding());
+    const auto first = takeRpc(model, "query_gizmo_handle");
+    model.pointerPressed({120, 100}, transformBinding());
+    const auto second = takeRpc(model, "query_gizmo_handle");
+
+    model.receiveRpcFailure(
+        first.request_id,
+        "engine://features/gizmo.json is not enabled");
+    REQUIRE(model.notice().kind == PelicanStudio::GizmoNoticeKind::None);
+    REQUIRE(model.takeFallbackPicks().empty());
+    REQUIRE(model.takeEditActions().empty());
+    REQUIRE(model.gestureActive());
+
+    model.receiveRpcResult(
+        second.request_id,
+        queryResult(GizmoMode::Translate, "translate_x", "x").dump());
+    REQUIRE(takeEdit(model, GizmoEditActionKind::Begin).field_key ==
+            "41:transform:0:/pos");
 }
 
 TEST_CASE("Devstudio gizmo aborts its preview when mode changes during a drag",

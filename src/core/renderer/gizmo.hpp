@@ -70,11 +70,21 @@ struct GizmoProjectedVertex {
     glm::vec2 pixel{0.0f};
 };
 
+// Public, camera-resolved drag contract. direction is a unit vector in the
+// same top-left-origin physical-pixel space used by query_gizmo_handle. The
+// magnitude is expressed per logical pixel so every client can apply DPI
+// scaling without reproducing the engine camera or projection calculation.
+struct GizmoDragProjection {
+    glm::vec2 direction{0.0f};
+    float value_per_logical_pixel = 0.0f;
+};
+
 struct GizmoSegment {
     GizmoHandle handle = GizmoHandle::translate_x;
     GizmoProjectedVertex from;
     GizmoProjectedVertex to;
     glm::vec4 color{1.0f};
+    std::optional<GizmoDragProjection> drag;
 };
 
 struct GizmoGeometry {
@@ -89,6 +99,13 @@ struct GizmoGeometry {
 // of PipelineFactory's fixed lineWidth=1.0f.
 inline constexpr float gizmoGrabRadiusLogicalPixels = 10.0f;
 inline constexpr float gizmoAxisLengthLogicalPixels = 72.0f;
+inline constexpr float gizmoRotationRadiansPerLogicalPixel = 0.01f;
+inline constexpr float gizmoScaleExponentPerLogicalPixel = 0.01f;
+
+struct GizmoHit {
+    GizmoHandle handle = GizmoHandle::translate_x;
+    GizmoDragProjection drag;
+};
 
 std::string_view gizmoModeName(GizmoMode mode) noexcept;
 std::optional<GizmoMode> gizmoModeFromName(std::string_view name) noexcept;
@@ -104,6 +121,8 @@ GizmoGeometry buildGizmoGeometry(GizmoMode mode, glm::vec3 world_position,
                                  const glm::mat4 &view_projection,
                                  vk::Extent2D extent, float content_scale);
 std::optional<GizmoHandle> hitTestGizmo(const GizmoGeometry &geometry,
+                                        glm::vec2 pixel) noexcept;
+std::optional<GizmoHit> hitTestGizmoDrag(const GizmoGeometry &geometry,
                                         glm::vec2 pixel) noexcept;
 
 // Resolve the sole public object identity through the session-stable

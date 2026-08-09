@@ -1421,19 +1421,24 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         const auto geometry = buildGizmoGeometry(
             mode, target->position, modules.camera.getVPMatrix(), extent,
             content_scale);
-        const auto hit = hitTestGizmo(
+        const auto hit = hitTestGizmoDrag(
             geometry,
             {static_cast<float>(x), static_cast<float>(y)});
         nlohmann::json handle = nullptr;
         if (hit) {
-            const auto axis = gizmoHandleAxis(*hit);
+            const auto axis = gizmoHandleAxis(hit->handle);
             handle = {
-                {"id", gizmoHandleName(*hit)},
+                {"id", gizmoHandleName(hit->handle)},
                 {"axis", gizmoAxisName(axis)},
+                {"drag_direction",
+                 {{"x", hit->drag.direction.x},
+                  {"y", hit->drag.direction.y}}},
+                {"value_per_logical_pixel",
+                 hit->drag.value_per_logical_pixel},
             };
         }
         return nlohmann::json{
-            {"contract", 1},
+            {"contract", 2},
             {"selection", gizmoSelectionJson(selection)},
             {"mode", gizmoModeName(mode)},
             {"coordinate", {{"x", x}, {"y", y}}},

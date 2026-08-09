@@ -626,8 +626,9 @@ generation と scene epoch で再利用の誤対応を防ぐためです。
 ギズモの中心は [`gizmo.hpp`](../../src/core/renderer/gizmo.hpp) と
 [`gizmo.cpp`](../../src/core/renderer/gizmo.cpp) です。`buildGizmoGeometry()` は mode、world pivot、
 non-jittered view-projection、output extent、content scale だけを受ける pure geometry 関数で、
-描画と `query_gizmo_handle` が同じ `GizmoSegment` 列を共有します。`hitTestGizmo()` は各 segment
-との screen-space 距離を計り、最短の handle または `null` を返します。
+描画と `query_gizmo_handle` が同じ `GizmoSegment` 列を共有します。各操作可能 segment の
+`GizmoDragProjection` は、値が増える画面単位ベクトルと論理 px 当たり変化量を保持します。
+`hitTestGizmoDrag()` は最短線分の handle とこの drag 契約を返します。
 
 handle は world X/Y/Z の `translate_*` / `rotate_*` / `scale_*` です。線の pipeline は
 [`PipelineFactory`](../../src/core/shader/pipelinefactory.cpp) の `lineWidth = 1.0f` を変えず、hit 半径を
@@ -635,7 +636,10 @@ handle は world X/Y/Z の `translate_*` / `rotate_*` / `scale_*` です。線�
 window extent の X/Y 比の平均を `0.5..4.0` に clamp し、window を持たない headless では 1 です。
 これにより `wideLines` feature を要求せず、2x DPI では 20 物理 px の掴み代になります。
 視線とほぼ平行で投影長が 8 論理 px 未満になる移動・拡縮軸は、pivot 上の菱形・矩形へ
-フォールバックします。描画可能な線分を全 9 handle が持つことを CPU テストで固定しています。
+フォールバックします。描画可能な線分を全 9 handle が持つことを CPU テストで固定していますが、
+投影方向を持たないフォールバック segment には drag 契約を付けず、RPC hit は `null` にします。
+移動の変化量は pivot における軸別 pixel 微分から求めるため、同じ pointer 差分でも遠い target ほど
+world 移動が大きくなります。回転は正回転方向へ生成した輪の各 segment 接線、拡縮は投影軸を使います。
 
 [`resolveGizmoTargetTransform()`](../../src/core/renderer/gizmo.cpp) は外部から受けた
 `(scene_id, declaration_index)` を authoring document の既存 `AuthoringObjectId`、
@@ -645,7 +649,8 @@ window extent の X/Y 比の平均を `0.5..4.0` に clamp し、window を持�
 `Gizmo` module が mutex 下に保持するのは `set_gizmo` が設定した**表示要求**
 `{selection, mode}` だけです。hover/pressed/active handle/drag delta は型にもありません。
 `query_gizmo_handle` はリクエスト自身の selection/mode/coordinate から毎回 pure geometry を作り、
-module の表示要求を参照も変更もしません。WP275 は押下時の応答を Studio 側に保持します。
+module の表示要求を参照も変更もしません。contract 2 の handle は `id` / `axis` /
+`drag_direction` / `value_per_logical_pixel` を公開し、任意の client が engine と同じ射影結果を使えます。
 
 GPU 登録は picking/debug overlay と同じ feature lifetime に従います。
 [`gizmopassinfojsonparser.cpp`](../../src/core/renderingpass/gizmopassinfojsonparser.cpp) が `type:gizmo` を
@@ -923,7 +928,7 @@ compute target は [`transitionResourcesForDispatch()`](../../src/core/rendering
 >
 > **何をする所か**: frame target 側(headless)の color attachment のフォーマットを決め、選んだ結果を [`OutputCompileFacts::encoding_path`](../../src/core/vkcore/outputcompilefacts.hpp#L26)(`srgb_hardware` / `srgb_shader_unorm`)として外へ申告します。
 >
-> **素朴に読むと**: 第一候補は `R8G8B8A8Srgb` ですが、`COLOR_ATTACHMENT` と `TRANSFER_SRC` を optimalTiling で両方満たさない実装があるため `R8G8B8A8Unorm` へ落ちます(UNORM でも満たさなければ throw して黙って進みません、[format 選択の分岐](../../src/core/vkcore/offscreenframetarget.cpp#L113))。読みにくいのは、その判定式に**テスト専用フラグが `||` で混ざっている**ことです([`force_unorm_color_path_for_testing`](../../src/core/launchconfig.hpp#L57) / [その判定式](../../src/core/vkcore/offscreenframetarget.cpp#L113))。この分岐は大抵の開発機では絶対に通らないので、放っておくとテストが一度も踏まない到達不能経路になります。フラグはそれを CI で踏むための唯一の入口で、[`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L153) が `GENERATE(false, true)` で両方を回します。そして肝心なのは、**フォールバックしても出力バイトの意味は変わらない**ことです。選んだ format は終端 pass のフォーマットになり、UNORM なら [`renderingpassruntimecompiler.cpp` 内](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2067) が `PELICAN_OUTPUT_UNORM_FALLBACK` を define して [`output_transform.frag`](../../src/core/resources/output_transform.frag) が `linearToSrgb()` を自分で掛けるからです(§6.1 の「HW が OETF」の代替)。違うのは**手段と丸め誤差**だけで、同じテストが許容差を `fallback ? 1 : 0` に切り替えているのがその現れです。
+> **素朴に読むと**: 第一候補は `R8G8B8A8Srgb` ですが、`COLOR_ATTACHMENT` と `TRANSFER_SRC` を optimalTiling で両方満たさない実装があるため `R8G8B8A8Unorm` へ落ちます(UNORM でも満たさなければ throw して黙って進みません、[format 選択の分岐](../../src/core/vkcore/offscreenframetarget.cpp#L113))。読みにくいのは、その判定式に**テスト専用フラグが `||` で混ざっている**ことです([`force_unorm_color_path_for_testing`](../../src/core/launchconfig.hpp#L57) / [その判定式](../../src/core/vkcore/offscreenframetarget.cpp#L113))。この分岐は大抵の開発機では絶対に通らないので、放っておくとテストが一度も踏まない到達不能経路になります。フラグはそれを CI で踏むための唯一の入口で、[`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L156) が `GENERATE(false, true)` で両方を回します。そして肝心なのは、**フォールバックしても出力バイトの意味は変わらない**ことです。選んだ format は終端 pass のフォーマットになり、UNORM なら [`renderingpassruntimecompiler.cpp` 内](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2067) が `PELICAN_OUTPUT_UNORM_FALLBACK` を define して [`output_transform.frag`](../../src/core/resources/output_transform.frag) が `linearToSrgb()` を自分で掛けるからです(§6.1 の「HW が OETF」の代替)。違うのは**手段と丸め誤差**だけで、同じテストが許容差を `fallback ? 1 : 0` に切り替えているのがその現れです。
 >
 > **骨子**:
 > ```text

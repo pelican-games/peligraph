@@ -81,7 +81,12 @@ if(TARGET pelican_studio_outliner)
 endif()
 
 if(TARGET pelican_studio_inspector_model)
-  pelican_define_test(devstudio_inspector_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_inspector_test
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_core
+    glm
+  )
 endif()
 
 if(TARGET pelican_studio_gizmo_model)

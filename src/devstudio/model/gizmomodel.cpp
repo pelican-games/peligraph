@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <numbers>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -17,9 +16,6 @@ using Json = nlohmann::json;
 constexpr std::uint64_t MaximumExactJsonInteger = 9007199254740991ULL;
 constexpr double GrabRadiusLogicalPixels = 10.0;
 constexpr double DragThresholdLogicalPixels = 1.5;
-constexpr double TranslationUnitsPerLogicalPixel = 0.01;
-constexpr double RotationRadiansPerLogicalPixel = 0.01;
-constexpr double ScaleExponentPerLogicalPixel = 0.01;
 
 enum class RequestKind : std::uint8_t {
     SetDisplay,
@@ -29,6 +25,8 @@ enum class RequestKind : std::uint8_t {
 struct Handle {
     GizmoMode mode = GizmoMode::Translate;
     GizmoAxis axis = GizmoAxis::X;
+    std::array<double, 2> drag_direction{0.0, 0.0};
+    double value_per_logical_pixel = 0.0;
 };
 
 std::optional<std::uint64_t> unsignedInteger(const Json &value) {
@@ -88,23 +86,16 @@ std::size_t axisIndex(GizmoAxis axis) noexcept {
     return 0;
 }
 
-double pointerScalar(GizmoAxis axis, double dx, double dy) noexcept {
-    switch (axis) {
-    case GizmoAxis::X: return dx;
-    case GizmoAxis::Y: return -dy;
-    case GizmoAxis::Z:
-        // A stable diagonal lets the depth axis remain operable without a
-        // Studio-side copy of the engine camera/projection calculation.
-        return (dx - dy) * std::numbers::sqrt2 / 2.0;
-    }
-    return 0.0;
+double pointerScalar(const Handle &handle, double dx, double dy) noexcept {
+    return (dx * handle.drag_direction[0] +
+            dy * handle.drag_direction[1]) *
+           handle.value_per_logical_pixel;
 }
 
 Json translatedValue(const Json &baseline, GizmoAxis axis, double scalar) {
     Json result = baseline;
     const auto index = axisIndex(axis);
-    result[index] = baseline[index].get<double>() +
-                    scalar * TranslationUnitsPerLogicalPixel;
+    result[index] = baseline[index].get<double>() + scalar;
     return result;
 }
 
@@ -112,8 +103,7 @@ Json scaledValue(const Json &baseline, GizmoAxis axis, double scalar) {
     Json result = baseline;
     const auto index = axisIndex(axis);
     const double original = baseline[index].get<double>();
-    const double exponent = std::clamp(
-        scalar * ScaleExponentPerLogicalPixel, -8.0, 8.0);
+    const double exponent = std::clamp(scalar, -8.0, 8.0);
     result[index] =
         std::abs(original) > 1.0e-12 ? original * std::exp(exponent)
                                     : std::expm1(exponent);
@@ -121,8 +111,7 @@ Json scaledValue(const Json &baseline, GizmoAxis axis, double scalar) {
 }
 
 Json rotatedValue(const Json &baseline, GizmoAxis axis, double scalar) {
-    const double half_angle =
-        scalar * RotationRadiansPerLogicalPixel * 0.5;
+    const double half_angle = scalar * 0.5;
     const double sine = std::sin(half_angle);
     const double cosine = std::cos(half_angle);
     std::array<double, 4> delta{0.0, 0.0, 0.0, cosine};
@@ -281,6 +270,7 @@ struct GizmoModel::Impl {
     }
 
     void cancelInteraction() {
+        ++generation;
         pending_hit.reset();
         if (active && active->stage == EditStage::Editing) {
             edit_actions.push_back(
@@ -299,7 +289,7 @@ struct GizmoModel::Impl {
         const double dy =
             static_cast<double>(gesture.current.y - gesture.pressed.y) /
             gesture.content_scale;
-        const double scalar = pointerScalar(gesture.handle.axis, dx, dy);
+        const double scalar = pointerScalar(gesture.handle, dx, dy);
         switch (gesture.handle.mode) {
         case GizmoMode::Translate:
             return translatedValue(gesture.baseline, gesture.handle.axis,
@@ -370,8 +360,8 @@ struct GizmoModel::Impl {
             return;
         }
         const auto contract = result.find("contract");
-        if (contract == result.end() || unsignedInteger(*contract) != 1) {
-            invalid("contract 1 is required");
+        if (contract == result.end() || unsignedInteger(*contract) != 2) {
+            invalid("contract 2 is required");
             return;
         }
         const auto result_selection = result.find("selection");
@@ -409,13 +399,41 @@ struct GizmoModel::Impl {
             invalid("handle requires string id and axis");
             return;
         }
-        const auto handle = handleFromNames(
+        auto handle = handleFromNames(
             id->get_ref<const std::string &>(),
             axis->get_ref<const std::string &>());
         if (!handle || handle->mode != query.mode) {
             invalid("handle is inconsistent with the requested mode");
             return;
         }
+        const auto direction = handle_value->find("drag_direction");
+        if (direction == handle_value->end() || !direction->is_object() ||
+            direction->size() != 2 || !direction->contains("x") ||
+            !direction->contains("y") ||
+            !direction->at("x").is_number() ||
+            !direction->at("y").is_number()) {
+            invalid("handle drag_direction requires exactly numeric x and y");
+            return;
+        }
+        const double direction_x = direction->at("x").get<double>();
+        const double direction_y = direction->at("y").get<double>();
+        const double direction_length = std::hypot(direction_x, direction_y);
+        if (!std::isfinite(direction_length) ||
+            std::abs(direction_length - 1.0) > 1.0e-4) {
+            invalid("handle drag_direction must be a finite unit vector");
+            return;
+        }
+        const auto value_per_pixel =
+            handle_value->find("value_per_logical_pixel");
+        if (value_per_pixel == handle_value->end() ||
+            !value_per_pixel->is_number() ||
+            !std::isfinite(value_per_pixel->get<double>()) ||
+            value_per_pixel->get<double>() <= 0.0) {
+            invalid("handle value_per_logical_pixel must be positive and finite");
+            return;
+        }
+        handle->drag_direction = {direction_x, direction_y};
+        handle->value_per_logical_pixel = value_per_pixel->get<double>();
         const auto grab_radius = result.find("grab_radius_pixels");
         if (grab_radius == result.end() || !grab_radius->is_number() ||
             !std::isfinite(grab_radius->get<double>()) ||
@@ -458,6 +476,13 @@ struct GizmoModel::Impl {
              .field_key = active->field.field_key});
         setNotice(GizmoNoticeKind::None, {});
     }
+
+    bool acceptsResponse(std::uint64_t request_id,
+                         const RequestState &state) const noexcept {
+        if (state.generation != generation) return false;
+        return state.kind != RequestKind::QueryHandle ||
+               (pending_hit && pending_hit->request_id == request_id);
+    }
 };
 
 GizmoModel::GizmoModel() : impl_{std::make_unique<Impl>()} {}
@@ -467,7 +492,6 @@ GizmoModel::~GizmoModel() = default;
 void GizmoModel::startSession() {
     impl_->cancelInteraction();
     impl_->connected = true;
-    ++impl_->generation;
     impl_->requests.clear();
     impl_->outgoing.clear();
     impl_->queueDisplay();
@@ -476,7 +500,6 @@ void GizmoModel::startSession() {
 void GizmoModel::stopSession() {
     impl_->cancelInteraction();
     impl_->connected = false;
-    ++impl_->generation;
     impl_->requests.clear();
     impl_->outgoing.clear();
 }
@@ -486,7 +509,6 @@ void GizmoModel::setSelection(
     if (impl_->selection == selection) return;
     impl_->cancelInteraction();
     impl_->selection = std::move(selection);
-    ++impl_->generation;
     impl_->queueDisplay();
 }
 
@@ -494,7 +516,6 @@ void GizmoModel::setMode(GizmoMode mode) {
     if (impl_->mode == mode) return;
     impl_->cancelInteraction();
     impl_->mode = mode;
-    ++impl_->generation;
     impl_->queueDisplay();
 }
 
@@ -564,14 +585,13 @@ void GizmoModel::receiveRpcResult(std::uint64_t request_id,
     if (found == impl_->requests.end()) return;
     const Impl::RequestState state = found->second;
     impl_->requests.erase(found);
-    if (state.generation != impl_->generation) return;
+    if (!impl_->acceptsResponse(request_id, state)) return;
 
     Json result;
     try {
         result = Json::parse(result_json);
     } catch (const Json::exception &error) {
-        if (state.kind == RequestKind::QueryHandle && impl_->pending_hit &&
-            impl_->pending_hit->request_id == request_id) {
+        if (state.kind == RequestKind::QueryHandle) {
             impl_->failPendingHit(
                 "query_gizmo_handle returned invalid JSON: " +
                     std::string{error.what()},
@@ -604,10 +624,9 @@ void GizmoModel::receiveRpcFailure(std::uint64_t request_id,
     if (found == impl_->requests.end()) return;
     const Impl::RequestState state = found->second;
     impl_->requests.erase(found);
-    if (state.generation != impl_->generation) return;
+    if (!impl_->acceptsResponse(request_id, state)) return;
     if (message.empty()) message = "RPC failed without an error message";
-    if (state.kind == RequestKind::QueryHandle && impl_->pending_hit &&
-        impl_->pending_hit->request_id == request_id) {
+    if (state.kind == RequestKind::QueryHandle) {
         impl_->failPendingHit("Gizmo handle query failed: " + message, true);
         return;
     }

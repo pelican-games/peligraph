@@ -99,18 +99,27 @@ GizmoHandle handleFor(GizmoMode mode, std::size_t axis) {
     return handles[static_cast<std::size_t>(mode)][axis];
 }
 
-void appendSegment(GizmoGeometry &geometry, GizmoHandle handle,
-                   GizmoProjectedVertex from, GizmoProjectedVertex to,
-                   glm::vec4 color) {
+void appendSegment(
+    GizmoGeometry &geometry, GizmoHandle handle,
+    GizmoProjectedVertex from, GizmoProjectedVertex to, glm::vec4 color,
+    std::optional<GizmoDragProjection> drag = std::nullopt) {
     if (!finite(from.pixel) || !finite(to.pixel) || !finite(from.ndc) ||
         !finite(to.ndc)) {
         return;
+    }
+    if (drag &&
+        (!finite(drag->direction) ||
+         !std::isfinite(drag->value_per_logical_pixel) ||
+         drag->value_per_logical_pixel <= 0.0f ||
+         glm::length(drag->direction) <= minimum_projected_derivative)) {
+        drag.reset();
     }
     geometry.segments.push_back(GizmoSegment{
         .handle = handle,
         .from = from,
         .to = to,
         .color = color,
+        .drag = drag,
     });
 }
 
@@ -145,26 +154,34 @@ void appendLinearFallbackMarker(GizmoGeometry &geometry, GizmoMode mode,
     }
 }
 
+std::optional<glm::vec2> projectedPixelDerivative(
+    glm::vec3 world, glm::vec3 axis, const glm::mat4 &view_projection,
+    vk::Extent2D extent) {
+    const auto clip = view_projection * glm::vec4{world, 1.0f};
+    if (!finite(clip) || clip.w <= minimum_clip_w) return std::nullopt;
+
+    const auto delta = view_projection * glm::vec4{axis, 0.0f};
+    const auto denominator = clip.w * clip.w;
+    const glm::vec2 derivative_ndc{
+        (delta.x * clip.w - clip.x * delta.w) / denominator,
+        (delta.y * clip.w - clip.y * delta.w) / denominator,
+    };
+    const glm::vec2 derivative_pixels{
+        derivative_ndc.x * 0.5f * static_cast<float>(extent.width),
+        derivative_ndc.y * 0.5f * static_cast<float>(extent.height),
+    };
+    if (!finite(derivative_pixels)) return std::nullopt;
+    return derivative_pixels;
+}
+
 float projectedPixelsPerWorldUnit(glm::vec3 world,
                                   const glm::mat4 &view_projection,
                                   vk::Extent2D extent) {
-    const auto clip = view_projection * glm::vec4{world, 1.0f};
-    if (!finite(clip) || clip.w <= minimum_clip_w) return 0.0f;
-
     float largest = 0.0f;
     for (const auto axis : axes) {
-        const auto delta = view_projection * glm::vec4{axis, 0.0f};
-        const auto denominator = clip.w * clip.w;
-        const glm::vec2 derivative_ndc{
-            (delta.x * clip.w - clip.x * delta.w) / denominator,
-            (delta.y * clip.w - clip.y * delta.w) / denominator,
-        };
-        const glm::vec2 derivative_pixels{
-            derivative_ndc.x * 0.5f * static_cast<float>(extent.width),
-            derivative_ndc.y * 0.5f * static_cast<float>(extent.height),
-        };
-        if (finite(derivative_pixels)) {
-            largest = std::max(largest, glm::length(derivative_pixels));
+        if (const auto derivative = projectedPixelDerivative(
+                world, axis, view_projection, extent)) {
+            largest = std::max(largest, glm::length(*derivative));
         }
     }
     return largest;
@@ -194,13 +211,33 @@ void appendLinearHandles(GizmoGeometry &geometry, GizmoMode mode,
 
         auto direction = to->pixel - from->pixel;
         const auto length = glm::length(direction);
-        if (length < minimumLinearHandleLogicalPixels * scale) {
+        const auto derivative = projectedPixelDerivative(
+            world_position, axes[axis_index], view_projection,
+            geometry.extent);
+        if (length < minimumLinearHandleLogicalPixels * scale ||
+            !derivative) {
             appendLinearFallbackMarker(geometry, mode, handle, *pivot,
                                        color);
             continue;
         }
-        appendSegment(geometry, handle, *from, *to, color);
         direction /= length;
+        const auto projected_pixels_per_world =
+            glm::dot(*derivative, direction);
+        if (!std::isfinite(projected_pixels_per_world) ||
+            projected_pixels_per_world <= minimum_projected_derivative) {
+            appendLinearFallbackMarker(geometry, mode, handle, *pivot,
+                                       color);
+            continue;
+        }
+        const auto value_per_logical_pixel =
+            mode == GizmoMode::translate
+                ? geometry.content_scale / projected_pixels_per_world
+                : gizmoScaleExponentPerLogicalPixel;
+        const GizmoDragProjection drag{
+            .direction = direction,
+            .value_per_logical_pixel = value_per_logical_pixel,
+        };
+        appendSegment(geometry, handle, *from, *to, color, drag);
         const glm::vec2 perpendicular{-direction.y, direction.x};
 
         if (mode == GizmoMode::translate) {
@@ -211,12 +248,12 @@ void appendLinearHandles(GizmoGeometry &geometry, GizmoMode mode,
                 geometry, handle, *to,
                 vertexAtPixel(base + perpendicular * half_width, to->ndc.z,
                               geometry.extent),
-                color);
+                color, drag);
             appendSegment(
                 geometry, handle, *to,
                 vertexAtPixel(base - perpendicular * half_width, to->ndc.z,
                               geometry.extent),
-                color);
+                color, drag);
         } else {
             const auto half = scaleCapHalfSizeLogicalPixels * scale;
             const auto a = to->pixel + direction * half + perpendicular * half;
@@ -224,17 +261,21 @@ void appendLinearHandles(GizmoGeometry &geometry, GizmoMode mode,
             const auto c = to->pixel - direction * half - perpendicular * half;
             const auto d = to->pixel - direction * half + perpendicular * half;
             appendSegment(geometry, handle,
-                          vertexAtPixel(a, to->ndc.z, geometry.extent),
-                          vertexAtPixel(b, to->ndc.z, geometry.extent), color);
+                           vertexAtPixel(a, to->ndc.z, geometry.extent),
+                           vertexAtPixel(b, to->ndc.z, geometry.extent), color,
+                           drag);
             appendSegment(geometry, handle,
-                          vertexAtPixel(b, to->ndc.z, geometry.extent),
-                          vertexAtPixel(c, to->ndc.z, geometry.extent), color);
+                           vertexAtPixel(b, to->ndc.z, geometry.extent),
+                           vertexAtPixel(c, to->ndc.z, geometry.extent), color,
+                           drag);
             appendSegment(geometry, handle,
-                          vertexAtPixel(c, to->ndc.z, geometry.extent),
-                          vertexAtPixel(d, to->ndc.z, geometry.extent), color);
+                           vertexAtPixel(c, to->ndc.z, geometry.extent),
+                           vertexAtPixel(d, to->ndc.z, geometry.extent), color,
+                           drag);
             appendSegment(geometry, handle,
-                          vertexAtPixel(d, to->ndc.z, geometry.extent),
-                          vertexAtPixel(a, to->ndc.z, geometry.extent), color);
+                           vertexAtPixel(d, to->ndc.z, geometry.extent),
+                           vertexAtPixel(a, to->ndc.z, geometry.extent), color,
+                           drag);
         }
     }
 }
@@ -270,7 +311,17 @@ void appendRotationHandles(GizmoGeometry &geometry, glm::vec3 world_position,
             const auto to =
                 projectPoint(point(angle_b), view_projection, geometry.extent);
             if (from && to) {
-                appendSegment(geometry, handle, *from, *to, color);
+                const auto tangent = to->pixel - from->pixel;
+                const auto tangent_length = glm::length(tangent);
+                std::optional<GizmoDragProjection> drag;
+                if (tangent_length > minimum_projected_derivative) {
+                    drag = GizmoDragProjection{
+                        .direction = tangent / tangent_length,
+                        .value_per_logical_pixel =
+                            gizmoRotationRadiansPerLogicalPixel,
+                    };
+                }
+                appendSegment(geometry, handle, *from, *to, color, drag);
             }
         }
     }
@@ -288,6 +339,24 @@ float squaredDistanceToSegment(glm::vec2 point, glm::vec2 from,
                               0.0f, 1.0f);
     const auto distance = point - (from + delta * t);
     return glm::dot(distance, distance);
+}
+
+const GizmoSegment *nearestGizmoSegment(const GizmoGeometry &geometry,
+                                        glm::vec2 pixel) noexcept {
+    if (!finite(pixel) || geometry.segments.empty()) return nullptr;
+    const auto radius_squared = geometry.grab_radius_pixels *
+                                geometry.grab_radius_pixels;
+    auto best_distance = std::numeric_limits<float>::max();
+    const GizmoSegment *best = nullptr;
+    for (const auto &segment : geometry.segments) {
+        const auto distance = squaredDistanceToSegment(
+            pixel, segment.from.pixel, segment.to.pixel);
+        if (distance <= radius_squared && distance < best_distance) {
+            best_distance = distance;
+            best = &segment;
+        }
+    }
+    return best;
 }
 
 vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
@@ -442,20 +511,18 @@ GizmoGeometry buildGizmoGeometry(GizmoMode mode, glm::vec3 world_position,
 
 std::optional<GizmoHandle> hitTestGizmo(const GizmoGeometry &geometry,
                                         glm::vec2 pixel) noexcept {
-    if (!finite(pixel) || geometry.segments.empty()) return std::nullopt;
-    const auto radius_squared = geometry.grab_radius_pixels *
-                                geometry.grab_radius_pixels;
-    auto best_distance = std::numeric_limits<float>::max();
-    std::optional<GizmoHandle> best;
-    for (const auto &segment : geometry.segments) {
-        const auto distance = squaredDistanceToSegment(
-            pixel, segment.from.pixel, segment.to.pixel);
-        if (distance <= radius_squared && distance < best_distance) {
-            best_distance = distance;
-            best = segment.handle;
-        }
-    }
-    return best;
+    const auto *segment = nearestGizmoSegment(geometry, pixel);
+    return segment ? std::optional{segment->handle} : std::nullopt;
+}
+
+std::optional<GizmoHit> hitTestGizmoDrag(const GizmoGeometry &geometry,
+                                        glm::vec2 pixel) noexcept {
+    const auto *segment = nearestGizmoSegment(geometry, pixel);
+    if (segment == nullptr || !segment->drag) return std::nullopt;
+    return GizmoHit{
+        .handle = segment->handle,
+        .drag = *segment->drag,
+    };
 }
 
 std::optional<GizmoTargetTransform> resolveGizmoTargetTransform(
