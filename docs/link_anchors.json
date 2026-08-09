@@ -1597,6 +1597,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/project/importmanifest.cpp|`src/project/importmanifest.cpp`": "#include \"importmanifest.hpp\"",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/project/jsonrpc.cpp|`jsonrpc.cpp`": "JsonRpcParseResult parseJsonRpcRequest(std::string_view line) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/project/jsonrpc.hpp|`jsonrpc.hpp`": "namespace JsonRpcErrorCodes {",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`cmake_parse_arguments` の行": "cmake_parse_arguments(PELICAN_TEST \"GOLDEN;GPU;QT;RUNTIME_SHADER\" \"\" \"\" ${ARGN})",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`pelican_define_python_test()`": "function(pelican_define_python_test test_name script)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`pelican_define_test()`": "function(pelican_define_test source_name)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`return()` により CTest に登録されません": "if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)",

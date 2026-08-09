@@ -578,7 +578,7 @@ transform update も即適用ではなく pending です。複数 update をま�
 
 [`test/CMakeLists.txt`](../../test/CMakeLists.txt#L1) は Catch2 executable と subprocess test を一か所で登録します。`pelican_define_test(name [GOLDEN] [GPU] [QT] [RUNTIME_SHADER] libs...)` は `test/<name>.cpp` を executable にし、`catch_discover_tests()` で各 `TEST_CASE` を CTest へ公開します。**ただし公開は無条件ではありません** — 下記 `RUNTIME_SHADER` を参照。
 
-signature にフラグが入りました([test/CMakeLists.txt](../../test/CMakeLists.txt#L12))。
+signature にフラグが入りました([`cmake_parse_arguments` の行](../../test/CMakeLists.txt#L28))。
 
 ```cmake
 cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU;QT;RUNTIME_SHADER" "" "" ${ARGN})
