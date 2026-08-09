@@ -528,17 +528,28 @@ std::optional<GizmoHit> hitTestGizmoDrag(const GizmoGeometry &geometry,
 std::optional<GizmoTargetTransform> resolveGizmoTargetTransform(
     const GizmoSelection &selection, const ProjectBasicConfig &project_config,
     const SceneLoader &scene_loader, ECSCore &ecs_core) {
-    if (selection.scene_id != scene_loader.currentScene()) {
+    if (const auto *runtime =
+            std::get_if<GizmoRuntimeSelection>(&selection)) {
+        const auto *transform = ecs_core.getTemplatePublicModule()
+                                    .tryComponent<TransformComponent>(
+                                        runtime->object_id);
+        if (transform == nullptr) return std::nullopt;
+        return GizmoTargetTransform{.position = transform->pos};
+    }
+
+    const auto &declaration =
+        std::get<GizmoDeclarationSelection>(selection);
+    if (declaration.scene_id != scene_loader.currentScene()) {
         return std::nullopt;
     }
 
     std::optional<AuthoringObjectId> authoring_object_id;
     for (const auto &scene : project_config.sceneDocument().query()) {
-        if (scene.scene_id != selection.scene_id) continue;
+        if (scene.scene_id != declaration.scene_id) continue;
         const auto object = std::find_if(
             scene.objects.begin(), scene.objects.end(), [&](const auto &candidate) {
                 return candidate.declaration_index ==
-                       selection.declaration_index;
+                       declaration.declaration_index;
             });
         if (object != scene.objects.end()) {
             authoring_object_id = object->authoring_object_id;

@@ -12,6 +12,7 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
+#include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/gizmo.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
@@ -22,6 +23,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -487,7 +489,9 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
                "\n";
     };
     const nlohmann::json selection{
-        {"scene_id", "default_scene"}, {"declaration_index", 1}};
+        {"kind", "declaration"},
+        {"scene_id", "default_scene"},
+        {"declaration_index", 1}};
     std::istringstream input{
         request(1, "load_scene", {{"name", "default_scene"}}) +
         request(2, "set_camera", {{"name", "GizmoCamera"}}) +
@@ -582,6 +586,267 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
     }
     stbi_image_free(pixels);
     REQUIRE(found_red_axis);
+}
+
+TEST_CASE("gizmo targets an undeclared runtime object with strict identity errors",
+          "[wp277][rpc][gizmo][gpu]") {
+    setupLogger(true);
+    FastModuleContainer modules;
+    const auto suffix =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const TempProject project_dir{
+        std::filesystem::temp_directory_path() /
+        ("pelican_wp277_runtime_gizmo_" + std::to_string(suffix))};
+    const auto capture = project_dir.root / "runtime-gizmo.png";
+
+    std::filesystem::create_directories(project_dir.root);
+    writeFile(project_dir.root / "scene.json", R"json({
+  "schema":"pelican.scene","version":1,
+  "scenes":{"default_scene":{"objects":[
+    {"name":"GizmoCamera","components":[
+      {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
+      {"name":"camera"}
+    ]}
+  ]}}
+})json");
+    writeFile(
+        project_dir.root / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeFile(
+        project_dir.root / "ui/ui.json",
+        R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeFile(project_dir.root / "passes/main.json", R"json({
+  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+  "features":["engine://features/gizmo.json"]
+})json");
+
+    const nlohmann::json project{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "WP277 runtime gizmo"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"window_size", {{"width", 192}, {"height", 192}}},
+          {"framerate", 60},
+          {"camera",
+           {{"yfov", 0.7853981633974483},
+            {"znear", 0.1},
+            {"zfar", 100.0},
+            {"up", {0, 1, 0}}}},
+          {"default_scene_id", "default_scene"},
+          {"scene_data_json", "scene.json"},
+          {"asset_data_json", "assets.json"},
+          {"rendering_config_json", "passes/main.json"},
+          {"ui_config_json", "ui/ui.json"},
+          {"default_rendering_pass", "main_render"}}},
+    };
+    GET_MODULE(PathResolver).setup(project_dir.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{192, 192};
+    launch.shader_hot_reload = false;
+    GET_MODULE(EngineTime).setup(
+        EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+
+    TestSupport::requireVulkanDevice(
+        "Vulkan headless runtime gizmo rendering unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+
+    const auto request = [](std::uint64_t id, std::string_view method,
+                            nlohmann::json params) {
+        return nlohmann::json{
+                   {"jsonrpc", "2.0"},
+                   {"id", id},
+                   {"method", method},
+                   {"params", std::move(params)}}
+                   .dump() +
+               "\n";
+    };
+    std::istringstream input;
+    std::ostringstream output;
+    EngineRpcEndpoint endpoint{input, output};
+    const auto call = [&](std::uint64_t id, std::string_view method,
+                          nlohmann::json params) {
+        return nlohmann::json::parse(
+            endpoint.processLine(request(id, method, std::move(params))));
+    };
+    const auto require_result = [](const nlohmann::json &response) {
+        INFO(response.dump(2));
+        REQUIRE(response.contains("result"));
+    };
+
+    const auto loaded =
+        call(1, "load_scene", {{"name", "default_scene"}});
+    const auto camera =
+        call(2, "set_camera", {{"name", "GizmoCamera"}});
+    require_result(loaded);
+    require_result(camera);
+
+    // Created after authoring load: this entity has no declaration index and
+    // is deliberately absent from SceneRuntimeObjectBinding.
+    const LocalTransformComponent runtime_transform{
+        .scale = {1.0f, 1.0f, 1.0f},
+        .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+        .pos = {0.45f, 0.35f, 0.0f},
+        .parent = invalidGameObjectId,
+    };
+    const auto runtime_object =
+        GameObjects::add()
+            .addComponent<TransformComponent>()
+            .addComponent<LocalTransformComponent>(runtime_transform)
+            .finish();
+    REQUIRE(GameObjects::setLocalTransform(runtime_object,
+                                            runtime_transform));
+    REQUIRE(std::none_of(
+        GET_MODULE(SceneLoader).runtimeObjectBindings().begin(),
+        GET_MODULE(SceneLoader).runtimeObjectBindings().end(),
+        [&](const auto &binding) {
+            return binding.object_id == runtime_object;
+        }));
+
+    const nlohmann::json runtime_selection{
+        {"kind", "runtime"},
+        {"object_id",
+         {{"index", runtime_object.index},
+          {"generation", runtime_object.generation}}}};
+
+    const auto display =
+        call(3, "set_gizmo",
+             {{"selection", runtime_selection}, {"mode", "translate"}});
+    const auto stepped = call(4, "step_frame", nlohmann::json::object());
+    const auto captured =
+        call(5, "capture", {{"path", capture.generic_string()}});
+    require_result(display);
+    require_result(stepped);
+    require_result(captured);
+    REQUIRE(display.at("result").at("visible") == true);
+    REQUIRE(display.at("result").at("selection") == runtime_selection);
+
+    const auto runtime_geometry = buildGizmoGeometry(
+        GizmoMode::translate, glm::vec3{0.45f, 0.35f, 0.0f},
+        GET_MODULE(Camera).getVPMatrix(), vk::Extent2D{192, 192}, 1.0f);
+    const auto runtime_x_segment = std::find_if(
+        runtime_geometry.segments.begin(), runtime_geometry.segments.end(),
+        [](const auto &segment) {
+            return segment.handle == GizmoHandle::translate_x &&
+                   segment.drag.has_value();
+        });
+    REQUIRE(runtime_x_segment != runtime_geometry.segments.end());
+    const auto runtime_hit_pixel =
+        (runtime_x_segment->from.pixel + runtime_x_segment->to.pixel) * 0.5f;
+    const auto runtime_hit_x = static_cast<std::uint32_t>(
+        std::lround(runtime_hit_pixel.x));
+    const auto runtime_hit_y = static_cast<std::uint32_t>(
+        std::lround(runtime_hit_pixel.y));
+    REQUIRE(runtime_hit_x < 192);
+    REQUIRE(runtime_hit_y < 192);
+
+    const auto cleared =
+        call(6, "set_gizmo",
+             {{"selection", nullptr}, {"mode", "translate"}});
+    const auto hit =
+        call(7, "query_gizmo_handle",
+             {{"selection", runtime_selection},
+              {"mode", "translate"},
+              {"x", runtime_hit_x},
+              {"y", runtime_hit_y}});
+    const auto miss =
+        call(8, "query_gizmo_handle",
+             {{"selection", runtime_selection},
+              {"mode", "translate"},
+              {"x", 0},
+              {"y", 0}});
+    require_result(cleared);
+    require_result(hit);
+    require_result(miss);
+    REQUIRE(cleared.at("result").at("visible") == false);
+    REQUIRE(hit.at("result").at("selection") == runtime_selection);
+    REQUIRE(hit.at("result").at("coordinate") ==
+            nlohmann::json{{"x", runtime_hit_x}, {"y", runtime_hit_y}});
+    REQUIRE(hit.at("result").at("handle").at("id") == "translate_x");
+    REQUIRE(hit.at("result").at("handle").at("axis") == "x");
+    REQUIRE(hit.at("result")
+                .at("handle")
+                .at("value_per_logical_pixel")
+                .get<float>() > 0.0f);
+    REQUIRE(miss.at("result").at("handle").is_null());
+
+    auto missing_runtime_selection = runtime_selection;
+    missing_runtime_selection["object_id"]["generation"] =
+        static_cast<std::uint64_t>(runtime_object.generation) + 1;
+    const auto missing =
+        call(9, "set_gizmo",
+             {{"selection", missing_runtime_selection},
+              {"mode", "translate"}});
+    auto mixed_selection = runtime_selection;
+    mixed_selection["scene_id"] = "default_scene";
+    mixed_selection["declaration_index"] = 0;
+    const auto mixed =
+        call(10, "set_gizmo",
+             {{"selection", mixed_selection}, {"mode", "translate"}});
+    const auto neither =
+        call(11, "set_gizmo",
+             {{"selection", nlohmann::json::object()},
+              {"mode", "translate"}});
+    const auto require_named_error = [](const nlohmann::json &response,
+                                        std::string_view code) {
+        INFO(response.dump(2));
+        const auto &error = response.at("error");
+        REQUIRE(error.at("code") == JsonRpcErrorCodes::invalidParams);
+        REQUIRE(error.at("data").at("code").get<std::string>() ==
+                std::string{code});
+    };
+    require_named_error(missing, "gizmo_runtime_object_not_found");
+    require_named_error(mixed, "gizmo_selection_mixed_identity");
+    require_named_error(neither, "gizmo_selection_invalid_shape");
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *pixels =
+        stbi_load(capture.string().c_str(), &width, &height, &channels, 4);
+    REQUIRE(pixels != nullptr);
+    REQUIRE(width == 192);
+    REQUIRE(height == 192);
+    const int min_x = std::clamp(
+        static_cast<int>(std::floor(std::min(runtime_x_segment->from.pixel.x,
+                                             runtime_x_segment->to.pixel.x))) -
+            2,
+        0, width - 1);
+    const int max_x = std::clamp(
+        static_cast<int>(std::ceil(std::max(runtime_x_segment->from.pixel.x,
+                                            runtime_x_segment->to.pixel.x))) +
+            2,
+        0, width - 1);
+    const int min_y = std::clamp(
+        static_cast<int>(std::floor(std::min(runtime_x_segment->from.pixel.y,
+                                             runtime_x_segment->to.pixel.y))) -
+            2,
+        0, height - 1);
+    const int max_y = std::clamp(
+        static_cast<int>(std::ceil(std::max(runtime_x_segment->from.pixel.y,
+                                            runtime_x_segment->to.pixel.y))) +
+            2,
+        0, height - 1);
+    bool found_runtime_red_axis = false;
+    for (int y = min_y; y <= max_y && !found_runtime_red_axis; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
+            const auto offset =
+                static_cast<std::size_t>(y * width + x) * 4;
+            const auto red = static_cast<int>(pixels[offset]);
+            const auto green = static_cast<int>(pixels[offset + 1]);
+            const auto blue = static_cast<int>(pixels[offset + 2]);
+            if (red > 180 && red > green + 60 && red > blue + 60) {
+                found_runtime_red_axis = true;
+                break;
+            }
+        }
+    }
+    stbi_image_free(pixels);
+    REQUIRE(found_runtime_red_axis);
 }
 
 TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and GPU failure",

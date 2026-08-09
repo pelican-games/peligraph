@@ -447,33 +447,120 @@ nlohmann::json pickingReadbackJson(const PickingReadbackResult &readback,
     };
 }
 
+[[noreturn]] void throwGizmoSelectionError(std::string_view method,
+                                           std::string_view code,
+                                           std::string message) {
+    throw JsonRpcHandlerError{
+        JsonRpcErrorCodes::invalidParams,
+        std::string{method} + " selection " + std::move(message),
+        {{"code", code}}};
+}
+
+std::uint64_t requireGizmoSelectionUnsigned(
+    const nlohmann::json &object, std::string_view field,
+    std::string_view method) {
+    const auto found = object.find(field);
+    if (found != object.end()) {
+        if (found->is_number_unsigned()) {
+            return found->get<std::uint64_t>();
+        }
+        if (found->is_number_integer()) {
+            const auto value = found->get<std::int64_t>();
+            if (value >= 0) return static_cast<std::uint64_t>(value);
+        }
+    }
+    throwGizmoSelectionError(
+        method, "gizmo_selection_invalid_shape",
+        "field '" + std::string{field} +
+            "' must be a non-negative integer");
+}
+
 GizmoSelection parseGizmoSelection(const nlohmann::json &value,
                                    std::string_view method) {
-    const auto context = std::string{method} + " selection";
-    if (!value.is_object() || value.size() != 2 ||
-        !value.contains("scene_id") ||
-        !value.contains("declaration_index")) {
-        throw JsonRpcHandlerError(
-            JsonRpcErrorCodes::invalidParams,
-            context +
-                " must contain exactly 'scene_id' and 'declaration_index'");
+    if (!value.is_object()) {
+        throwGizmoSelectionError(
+            method, "gizmo_selection_invalid_shape",
+            "must be one strict tagged object");
     }
-    const auto scene_id =
-        requireStringParam(value, "scene_id", context);
-    const auto declaration_index = requireUnsignedIntegerParam(
-        value, "declaration_index", context);
-    if (declaration_index >
-        static_cast<std::uint64_t>(
-            std::numeric_limits<std::size_t>::max())) {
-        throw JsonRpcHandlerError(
-            JsonRpcErrorCodes::invalidParams,
-            context + " declaration_index exceeds the size_t range");
+
+    const bool has_declaration_identity =
+        value.contains("scene_id") || value.contains("declaration_index");
+    const bool has_runtime_identity = value.contains("object_id");
+    if (has_declaration_identity && has_runtime_identity) {
+        throwGizmoSelectionError(
+            method, "gizmo_selection_mixed_identity",
+            "must not mix declaration and runtime identity fields");
     }
-    return GizmoSelection{
-        .scene_id = scene_id,
-        .declaration_index =
-            static_cast<std::size_t>(declaration_index),
-    };
+
+    const auto kind = value.find("kind");
+    if (kind == value.end() || !kind->is_string()) {
+        throwGizmoSelectionError(
+            method, "gizmo_selection_invalid_shape",
+            "requires string discriminator 'kind'");
+    }
+
+    const auto &kind_name = kind->get_ref<const std::string &>();
+    if (kind_name == "declaration") {
+        if (value.size() != 3 || !value.contains("scene_id") ||
+            !value.contains("declaration_index") ||
+            !value.at("scene_id").is_string() ||
+            value.at("scene_id").get_ref<const std::string &>().empty()) {
+            throwGizmoSelectionError(
+                method, "gizmo_selection_invalid_shape",
+                "kind 'declaration' requires exactly non-empty 'scene_id' "
+                "and unsigned 'declaration_index'");
+        }
+        const auto declaration_index = requireGizmoSelectionUnsigned(
+            value, "declaration_index", method);
+        if (declaration_index >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+            throwGizmoSelectionError(
+                method, "gizmo_selection_invalid_shape",
+                "declaration_index exceeds the size_t range");
+        }
+        return GizmoDeclarationSelection{
+            .scene_id = value.at("scene_id").get<std::string>(),
+            .declaration_index =
+                static_cast<std::size_t>(declaration_index),
+        };
+    }
+
+    if (kind_name == "runtime") {
+        if (value.size() != 2 || !value.contains("object_id") ||
+            !value.at("object_id").is_object()) {
+            throwGizmoSelectionError(
+                method, "gizmo_selection_invalid_shape",
+                "kind 'runtime' requires exactly object 'object_id'");
+        }
+        const auto &object_id = value.at("object_id");
+        if (object_id.size() != 2 || !object_id.contains("index") ||
+            !object_id.contains("generation")) {
+            throwGizmoSelectionError(
+                method, "gizmo_selection_invalid_shape",
+                "object_id requires exactly unsigned 'index' and "
+                "'generation'");
+        }
+        const auto index =
+            requireGizmoSelectionUnsigned(object_id, "index", method);
+        const auto generation = requireGizmoSelectionUnsigned(
+            object_id, "generation", method);
+        if (index > std::numeric_limits<std::uint32_t>::max() ||
+            generation > std::numeric_limits<std::uint32_t>::max()) {
+            throwGizmoSelectionError(
+                method, "gizmo_selection_invalid_shape",
+                "object_id index and generation must fit uint32");
+        }
+        return GizmoRuntimeSelection{
+            .object_id = GameObjectId{
+                static_cast<std::uint32_t>(index),
+                static_cast<std::uint32_t>(generation)},
+        };
+    }
+
+    throwGizmoSelectionError(
+        method, "gizmo_selection_unknown_kind",
+        "kind must be 'declaration' or 'runtime'");
 }
 
 GizmoMode parseGizmoMode(const nlohmann::json &params,
@@ -491,9 +578,20 @@ GizmoMode parseGizmoMode(const nlohmann::json &params,
 }
 
 nlohmann::json gizmoSelectionJson(const GizmoSelection &selection) {
+    if (const auto *declaration =
+            std::get_if<GizmoDeclarationSelection>(&selection)) {
+        return {
+            {"kind", "declaration"},
+            {"scene_id", declaration->scene_id},
+            {"declaration_index", declaration->declaration_index},
+        };
+    }
+    const auto &runtime = std::get<GizmoRuntimeSelection>(selection);
     return {
-        {"scene_id", selection.scene_id},
-        {"declaration_index", selection.declaration_index},
+        {"kind", "runtime"},
+        {"object_id",
+         {{"index", runtime.object_id.index},
+          {"generation", runtime.object_id.generation}}},
     };
 }
 
@@ -509,6 +607,20 @@ void requireGizmoFeature(const EngineRpcModules &modules,
 std::optional<GizmoTargetTransform> requireGizmoTarget(
     const GizmoSelection &selection, EngineRpcModules &modules,
     std::string_view method) {
+    if (const auto *runtime =
+            std::get_if<GizmoRuntimeSelection>(&selection);
+        runtime != nullptr &&
+        !modules.ecs_core.getTemplatePublicModule().isAlive(
+            runtime->object_id)) {
+        throw JsonRpcHandlerError{
+            JsonRpcErrorCodes::invalidParams,
+            std::string{method} +
+                " selection runtime object does not exist",
+            {{"code", "gizmo_runtime_object_not_found"},
+             {"object_id",
+              {{"index", runtime->object_id.index},
+               {"generation", runtime->object_id.generation}}}}};
+    }
     const auto target = resolveGizmoTargetTransform(
         selection, modules.project_config, modules.scene_loader,
         modules.ecs_core);
@@ -516,7 +628,8 @@ std::optional<GizmoTargetTransform> requireGizmoTarget(
         throw JsonRpcHandlerError(
             JsonRpcErrorCodes::invalidParams,
             std::string{method} +
-                " selection has no transform in the current runtime scene");
+                " selection has no transform in the current runtime scene",
+            {{"code", "gizmo_target_transform_not_found"}});
     }
     return target;
 }

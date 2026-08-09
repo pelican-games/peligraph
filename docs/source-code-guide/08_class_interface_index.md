@@ -286,11 +286,11 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `JsonRpcRequest/Error/ParseResult` | pure protocol values | [`jsonrpc.hpp`](../../src/project/jsonrpc.hpp#L22) | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | engine 非依存の JSON-RPC parse/serialize |
-| `RpcServer` | stream dispatcher | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L39) | [`handleLine()`](../../src/core/communication/rpcserver.cpp#L878) | 1行1 request、method handler map、error normalization |
+| `RpcServer` | stream dispatcher | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L39) | [`handleLine()`](../../src/core/communication/rpcserver.cpp#L991) | 1行1 request、method handler map、error normalization |
 | `EngineRpcEndpoint` | 状態付きディスパッチャ | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L60) | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp) | headless は `run()`、windowed は frame 境界で `processLine()` |
 | `WindowedRpcHost` | frame-boundary transport | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L78) | [`windowedrpchost.cpp`](../../src/core/communication/windowedrpchost.cpp) | reader スレッドは enqueue のみ。dispatch は engine スレッド。容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L99) |
 | `JsonRpcHandlerError` | 構造化エラー | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L28) | 同左 | code に加えて任意の `data` JSON を運ぶ |
-| engine RPC handlers | free registration function | [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1495) | 同左 | 43 の protocol method を module/GameContext/編集サービスへ bind |
+| engine RPC handlers | free registration function | [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1608) | 同左 | 43 の protocol method を module/GameContext/編集サービスへ bind |
 | `EditorCommandService` | typed 編集サービス | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L222) | [`editorcommandservice.cpp`](../../src/core/communication/editorcommandservice.cpp) | 全編集 RPC の実体 |
 | `EditorCommandRpcAdapter` / `EditorCommandImGuiFakeAdapter` | adapter | [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L291) / [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L329) | 同左 | RPC と ImGui が **同じサービス**を呼ぶことの担保 |
 | `EditorCommandErrorCode` | 正準エラーカタログ | [`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L24) | 同左 | 13 種(`RuntimeOnlyData` / `ExternalModification` など) |

@@ -278,7 +278,9 @@ Json gizmoEditedPosition() {
         Json{{"contract", 1},
              {"visible", true},
              {"selection",
-              {{"scene_id", "main"}, {"declaration_index", 0}}},
+              {{"kind", "declaration"},
+               {"scene_id", "main"},
+               {"declaration_index", 0}}},
              {"mode", "translate"}}
             .dump());
 
@@ -295,7 +297,9 @@ Json gizmoEditedPosition() {
         query.request_id,
         Json{{"contract", 2},
              {"selection",
-              {{"scene_id", "main"}, {"declaration_index", 0}}},
+              {{"kind", "declaration"},
+               {"scene_id", "main"},
+               {"declaration_index", 0}}},
              {"mode", "translate"},
              {"coordinate", {{"x", 100}, {"y", 100}}},
              {"extent", {{"width", 640}, {"height", 480}}},

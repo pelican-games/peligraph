@@ -160,19 +160,23 @@ bool validField(const GizmoEditableField &field, GizmoMode mode) {
 }
 
 Json selectionJson(const OutlinerObjectKey &selection) {
-    return Json{{"scene_id", selection.scene_id},
+    return Json{{"kind", "declaration"},
+                {"scene_id", selection.scene_id},
                 {"declaration_index", selection.declaration_index}};
 }
 
 bool resultSelectionMatches(const Json &value,
                             const OutlinerObjectKey &selection) {
-    if (!value.is_object()) return false;
+    if (!value.is_object() || value.size() != 3) return false;
+    const auto kind = value.find("kind");
     const auto scene = value.find("scene_id");
     const auto index = value.find("declaration_index");
-    return scene != value.end() && scene->is_string() &&
+    return kind != value.end() && kind->is_string() &&
+           kind->get_ref<const std::string &>() == "declaration" &&
+           scene != value.end() && scene->is_string() &&
            scene->get_ref<const std::string &>() == selection.scene_id &&
            index != value.end() && unsignedInteger(*index) ==
-                                      selection.declaration_index;
+                                       selection.declaration_index;
 }
 
 } // namespace

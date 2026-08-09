@@ -105,8 +105,8 @@ pelican_player --project mygame --free-camera unity                         # Un
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}` | フレームプラン JSON |
 | `pick_object` | `{x, y}` | 最後に完了した ID バッファの 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
-| `set_gizmo` | `{selection:{scene_id, declaration_index}\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
-| `query_gizmo_handle` | `{selection:{scene_id, declaration_index}, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
+| `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
+| `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
 | `load_scene` | `{name}` | シーン切替 |
 | `set_camera` | `{name}` | シーン内カメラへ切替 |
@@ -147,27 +147,46 @@ WP258 契約です。authoring 宣言を持たない一時モデルでは三つ�
 GPU 表現は[第6章](06_rendering.md#id-バッファ-pickingwp262)を参照してください。
 
 `set_gizmo` と `query_gizmo_handle` の mode は `translate` / `rotate` / `scale` のいずれかです。
-選択 identity は `pick_object` / `scene_tree` と同じ `(scene_id, declaration_index)` だけを使います。
+`GizmoSelection` は次のどちらか**ちょうど一つ**を表すタグ付き object です。記載した鍵以外は
+受理しません。
+
+| `kind` | 厳密な形 | 対象 |
+|---|---|---|
+| `declaration` | `{"kind":"declaration","scene_id":string,"declaration_index":uint}` | `pick_object` / `scene_tree` と同じ authoring 宣言 |
+| `runtime` | `{"kind":"runtime","object_id":{"index":uint32,"generation":uint32}}` | 現在の実行に存在する世代付き `GameObjectId` |
+
+Studio の Outliner 選択は前者を送ります。後者は authoring 宣言を持たず、実行中に生成した
+オブジェクトも直接指せます。
 表示の設定例:
 
 ```json
 {
-  "selection": {"scene_id": "default_scene", "declaration_index": 3},
+  "selection": {
+    "kind": "declaration",
+    "scene_id": "default_scene",
+    "declaration_index": 3
+  },
   "mode": "rotate"
 }
 ```
 
-応答は `{"contract":1,"visible":true,"selection":...,"mode":"rotate"}` です。
+応答は `{"contract":1,"visible":true,"selection":...,"mode":"rotate"}` で、同じタグ付き
+selection を返します。
 `selection: null` と mode を送ると表示だけを解除します。engine に hover、押下、active handle、
-ドラッグ状態は作られません。
+ドラッグ状態は作られません。表示要求は process memory にしかなく、scene/project へ保存する経路も
+ありません。`GameObjectId` は実行をまたいで安定しないため、runtime selection は対象を生成した
+現在の実行でだけ使い、次の実行では新しい ID で要求し直してください。
 
 当たり判定は左上原点、右向き X、下向き Y の物理 pixel 座標で、選択と mode を問い合わせごとに
 明示します。たとえば:
 
 ```json
 {
-  "selection": {"scene_id": "default_scene", "declaration_index": 3},
-  "mode": "rotate",
+  "selection": {
+    "kind": "runtime",
+    "object_id": {"index": 17, "generation": 4}
+  },
+  "mode": "translate",
   "x": 420,
   "y": 240
 }
@@ -176,16 +195,19 @@ GPU 表現は[第6章](06_rendering.md#id-バッファ-pickingwp262)を参照し
 ```json
 {
   "contract": 2,
-  "selection": {"scene_id": "default_scene", "declaration_index": 3},
-  "mode": "rotate",
+  "selection": {
+    "kind": "runtime",
+    "object_id": {"index": 17, "generation": 4}
+  },
+  "mode": "translate",
   "coordinate": {"x": 420, "y": 240},
   "extent": {"width": 1280, "height": 720},
   "grab_radius_pixels": 20.0,
   "handle": {
-    "id": "rotate_z",
-    "axis": "z",
-    "drag_direction": {"x": -0.32, "y": 0.9474175},
-    "value_per_logical_pixel": 0.01
+    "id": "translate_x",
+    "axis": "x",
+    "drag_direction": {"x": -1.0, "y": 0.0},
+    "value_per_logical_pixel": 0.0125
   }
 }
 ```
@@ -198,6 +220,11 @@ client は論理 pixel 差分 `d` に対して
 独立した 10 論理 px(DPI 2x の例では応答どおり 20 物理 px)です。射影軸が 8 論理 px 未満へ
 潰れた移動・拡縮マーカーは、方向が未定義なので `handle: null` になります。
 範囲外座標、不正 mode、存在しない transform は `-32602`、feature 無効は `-32000` です。
+selection の硬いエラーは `error.data.code` でも判別できます。宣言鍵と runtime 鍵の混在は
+`gizmo_selection_mixed_identity`、どちらの厳密形でもないもの(旧 untagged 形を含む)は
+`gizmo_selection_invalid_shape`、未知の `kind` は `gizmo_selection_unknown_kind`、存在しない／世代が
+古い runtime ID は `gizmo_runtime_object_not_found`、対象に transform が無い場合は
+`gizmo_target_transform_not_found` です。混在時に一方を優先する互換経路はありません。
 詳細は[第6章](06_rendering.md#ギズモ-render-feature-と状態なし当たり判定wp274)を参照してください。
 
 ### エディタ拡張メソッド(詳細は[第13章](13_editor.md))

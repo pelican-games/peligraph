@@ -888,12 +888,12 @@ TEST_CASE("...") {
 
 | skip していたテスト | 握り潰されていた engine の例外 |
 |---|---|
-| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L587) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialcontainer.cpp#L3159) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L852) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialcontainer.cpp#L3159) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L368) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L906) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L490) | 同上 |
 | [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L765) | 同上 |
 
-`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L368) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L374) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
+`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L368) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L376) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
 
 > 🧩 **難所 — 捕まるものと捕まらないものが逆に見える**(`catch (const std::exception &)` と Catch2)
 >

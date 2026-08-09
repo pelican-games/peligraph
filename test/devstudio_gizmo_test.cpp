@@ -57,7 +57,8 @@ Json displayResult(GizmoMode mode, bool visible = true) {
         {"contract", 1},
         {"visible", visible},
         {"selection", visible
-                          ? Json{{"scene_id", Selection.scene_id},
+                          ? Json{{"kind", "declaration"},
+                                 {"scene_id", Selection.scene_id},
                                  {"declaration_index",
                                   Selection.declaration_index}}
                           : Json(nullptr)},
@@ -72,7 +73,8 @@ Json queryResult(GizmoMode mode, std::string_view handle,
     return {
         {"contract", 2},
         {"selection",
-         {{"scene_id", Selection.scene_id},
+         {{"kind", "declaration"},
+          {"scene_id", Selection.scene_id},
           {"declaration_index", Selection.declaration_index}}},
         {"mode", PelicanStudio::gizmoModeName(mode)},
         {"coordinate", {{"x", 100}, {"y", 100}}},
@@ -93,7 +95,9 @@ void openModel(GizmoModel &model) {
     const auto display = takeRpc(model, "set_gizmo");
     REQUIRE(display.params ==
             Json{{"selection",
-                  {{"scene_id", "main"}, {"declaration_index", 2}}},
+                  {{"kind", "declaration"},
+                   {"scene_id", "main"},
+                   {"declaration_index", 2}}},
                  {"mode", "translate"}});
     model.receiveRpcResult(display.request_id,
                            displayResult(GizmoMode::Translate).dump());
@@ -128,7 +132,9 @@ TEST_CASE("Devstudio gizmo queries once then previews and commits the captured a
     const auto query = takeRpc(model, "query_gizmo_handle");
     REQUIRE(query.params ==
             Json{{"selection",
-                  {{"scene_id", "main"}, {"declaration_index", 2}}},
+                  {{"kind", "declaration"},
+                   {"scene_id", "main"},
+                   {"declaration_index", 2}}},
                  {"mode", "translate"},
                  {"x", 100},
                  {"y", 100}});

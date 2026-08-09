@@ -4,6 +4,7 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
+#include <details/ecs/entity.hpp>
 
 #include <cstddef>
 #include <mutex>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -47,12 +49,21 @@ enum class GizmoHandle {
     scale_z,
 };
 
-struct GizmoSelection {
+struct GizmoDeclarationSelection {
     std::string scene_id;
     std::size_t declaration_index = 0;
 
-    bool operator==(const GizmoSelection &) const = default;
+    bool operator==(const GizmoDeclarationSelection &) const = default;
 };
+
+struct GizmoRuntimeSelection {
+    GameObjectId object_id = invalidGameObjectId;
+
+    bool operator==(const GizmoRuntimeSelection &) const = default;
+};
+
+using GizmoSelection =
+    std::variant<GizmoDeclarationSelection, GizmoRuntimeSelection>;
 
 struct GizmoDisplayRequest {
     GizmoSelection selection;
@@ -125,9 +136,9 @@ std::optional<GizmoHandle> hitTestGizmo(const GizmoGeometry &geometry,
 std::optional<GizmoHit> hitTestGizmoDrag(const GizmoGeometry &geometry,
                                         glm::vec2 pixel) noexcept;
 
-// Resolve the sole public object identity through the session-stable
-// authoring id already used by SceneLoader. No second public identity leaves
-// this boundary.
+// Declaration selections retain the authoring-document/SceneLoader route.
+// Runtime selections are process-local GameObjectIds and resolve directly in
+// ECS; they must never be persisted or reused by a later execution.
 std::optional<GizmoTargetTransform> resolveGizmoTargetTransform(
     const GizmoSelection &selection, const ProjectBasicConfig &project_config,
     const SceneLoader &scene_loader, ECSCore &ecs_core);
@@ -152,6 +163,8 @@ DECLARE_MODULE(Gizmo) {
     int next_pass_id = 0;
 
     mutable std::mutex display_mutex;
+    // This process-memory-only request intentionally has no serialization
+    // path: a runtime GameObjectId is not stable across executions.
     std::optional<GizmoDisplayRequest> display_request;
 
     void ensureDevice();

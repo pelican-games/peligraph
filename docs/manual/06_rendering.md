@@ -715,14 +715,16 @@ authoring 宣言を持たない一時オブジェクトでは、runtime の `mod
 登録、`gizmo` 名の target は active graph に存在しません。最初から feature-off の構成では
 module も upload buffer も生成せず、既存出力に描画・メモリコストを加えません。
 
-表示は [`set_gizmo`](10_tools.md#基盤メソッド一覧) へ WP258 と同じ
-`(scene_id, declaration_index)` と `translate` / `rotate` / `scale` の mode を送ります。
+表示は [`set_gizmo`](10_tools.md#基盤メソッド一覧) へ、`kind:declaration` の
+`(scene_id, declaration_index)` または `kind:runtime` の世代付き `GameObjectId` と、
+`translate` / `rotate` / `scale` の mode を送ります。
 軸は world X/Y/Z、画面上の半径は 72 論理 px です。`selection: null` は表示を消します。
 視線方向へ潰れて線分が 8 論理 px 未満になる移動・拡縮軸は、同じ軸色の菱形・矩形マーカーへ
 切り替わります。ただし射影方向が定まらないため、そのマーカー上の drag query は `handle: null` を
 返します。表示を残しつつ NaN や巨大な移動を起こさない退化規約です。
 engine が保持するのはこの**表示要求**だけで、hover、押下、active handle、ドラッグ開始点、
-ドラッグ中の値は一切保持しません。
+ドラッグ中の値は一切保持しません。表示要求は保存されず、実行をまたいで不安定な runtime ID を
+scene/project へ永続化しません。
 
 当たり判定は [`query_gizmo_handle`](10_tools.md#基盤メソッド一覧) へ選択、mode、左上原点の
 物理 pixel `(x, y)` を毎回すべて渡す純粋な問い合わせです。contract 2 の結果は
