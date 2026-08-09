@@ -2627,6 +2627,81 @@ ON のビルドでは通り OFF のビルドでは通らない、という形で
 
 依存: **WP277**(同じファイル群に触れるため、WP277 のマージ後に着手すること)。見積: 小。
 
+### WP280: レイトレの能力配線(feature はまだ作らない)
+
+**目的**: ハードウェアレイトレの**デバイス能力だけ**を配線する。
+acceleration structure も pass も shader も作らない。**この WP で絵は 1 ピクセルも変わらない。**
+
+**位置づけ**: レイトレ対応の第一歩。以降の順は
+(この WP) → BLAS/TLAS を静的ジオメトリ限定でリース管理下に → `rt_shadow_mask` feature。
+最初の feature を ray query にするのは、`rayQueryEXT` が通常の fragment / compute シェーダの中で走り、
+shader binding table も新しいパイプライン種別も新しいシェーダステージも要らないためである。
+
+**前提**: WP278(マージ済み)でシェーダターゲットの所在が一箇所になった。
+ray query は SPIR-V 1.4 以上を要求するため、これが先に必要だった。
+
+**手本にすべき前例**: `multiview`。`src/core/vkcore/core.cpp:475-478` のコメントが意図を述べている
+——「機能があれば日和見的に有効化する。target planning は選択の前に実装/シェーダの宣言を要求する」。
+**ただし multiview をそのまま真似てはいけない箇所が 2 つある**。下記 3 と 6 を読むこと。
+
+**実装範囲**:
+
+1. `queryDeviceFeatureSupport`(`core.cpp:276`)の `StructureChain` に
+   `PhysicalDeviceAccelerationStructureFeaturesKHR` と `PhysicalDeviceRayQueryFeaturesKHR` を加え、
+   `vk12.bufferDeviceAddress` を読むこと。`DeviceFeatureSupport`(`core.cpp:262`)に
+   **日和見的な**項目として追加すること。**required に入れないこと** —
+   レイトレの無いデバイスでも従来どおり起動しなければならない。
+2. `createLogicalDevice`(`core.cpp:464-529`)で、対応がある場合に限り
+   `VK_KHR_acceleration_structure` / `VK_KHR_ray_query` / `VK_KHR_deferred_host_operations` を有効化し、
+   対応する feature 構造体を chain に繋ぎ、`vk12features.bufferDeviceAddress` を立てること。
+   **3 つは揃って初めて意味を持つ**。片方だけ有効になる状態を作らないこと。
+3. **VMA に `eBufferDeviceAddress` フラグを立てること**(`createAllocator`、`core.cpp:555`)。
+   **ただし `bufferDeviceAddress` を実際に有効化したときに限る。**
+   全バッファが `VulkanManageCore::allocBuf` を通る以上、
+   フラグ無しのアロケータで device address 付きバッファを確保するのは VMA の誤用である。
+4. 拡張関数のエントリポイントを読み込むこと。動的ディスパッチャは存在せず、
+   `core.hpp:62-67` のように PFN メンバを手で持つ規約である。必要なのは
+   `vkCreateAccelerationStructureKHR` / `vkDestroyAccelerationStructureKHR` /
+   `vkGetAccelerationStructureBuildSizesKHR` / `vkGetAccelerationStructureDeviceAddressKHR` /
+   `vkCmdBuildAccelerationStructuresKHR`。
+5. `VkPhysicalDeviceAccelerationStructurePropertiesKHR` を照会し
+   `minAccelerationStructureScratchOffsetAlignment` を保持すること。
+   `core.cpp:287` は素の `getProperties()` しか呼んでいない。
+6. **能力の事実は「有効化した結果」から作ること。**
+   `renderingsamplecount.cpp:2146-2157` は物理デバイスを**再照会**して multiview の
+   *supported* を読んでいるが、これは `core.hpp:27-29` が禁じている書き方である
+   (multiview では supported == enabled なので無害なだけ)。
+   レイトレでは 3 つの拡張が揃わなければ有効化しないため **supported と enabled が食い違いうる**。
+   `VulkanRuntimeCapabilities` を経由すること。**この誤りを複製しないこと。**
+7. target planning に能力文字列として公開すること(`pelican.vulkan.ray_query@1` など。
+   命名は `src/project/vulkanviewplanning.hpp:15-18` の既存規約に合わせること)。
+   **プロジェクトが要求したのに実機に無い場合は名前付きの硬いエラー**にすること。
+   前例は `pelican.plan.multiview_required_unavailable@1`
+   (`src/project/vulkanviewplanning.cpp:186-192`)。
+   **multiview の `automatic` のように黙って落とす経路を作らないこと** ——
+   multiview は縮退しても同じ絵が出るから正当なのであって、レイトレは絵が変わる。
+
+**範囲外**: acceleration structure そのもの、新しい pass 種別、新しい resource kind、
+シェーダの変更、`rt_shadow_mask`。すべて後続 WP に属する。
+
+**受け入れ条件**:
+
+- **絵が変わらないこと。** 既存 golden が 1 枚も動かないこと。動いた場合はこの WP の失敗である
+- `ctest` 全数が緑、GPU ラベル全数を含むこと
+- 開発機(RTX 5080)で 3 拡張と `bufferDeviceAddress` が**有効化された**ことがログまたはテストで確認できること
+- **レイトレの無いデバイスでも起動できること。**実機が用意できないため、
+  能力判定の入力を合成した単体テストで、
+  (a) 拡張が 1 つも要求されないこと、(b) VMA の BDA フラグが立たないこと、
+  (c) 起動が失敗しないこと、を検証すること。**実機が無いことを条件を省く理由にしないこと**
+- **VMA の BDA フラグが `bufferDeviceAddress` の有効化と厳密に一致**すること。
+  片方だけ立つ入力を与えて検証すること
+- 能力の事実が `VulkanRuntimeCapabilities` 由来であること。
+  物理デバイスの再照会を新たに書いていないことを grep で示すこと
+- プロジェクトが ray query を要求して実機に無い場合、名前付きの硬いエラーになること
+- `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: WP278(マージ済み)。見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
