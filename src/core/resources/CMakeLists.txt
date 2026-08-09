@@ -7,6 +7,7 @@ function(embed_shader file_name)
             -I${CMAKE_CURRENT_SOURCE_DIR}/shaders/include
             ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}
             -V
+            --target-env ${PELICAN_SHADER_TARGET_ENV}
             -o ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
         DEPENDS ${file_name} shaders/include/pelican_sets.glsl
                 shaders/include/pelican_frame.glsl

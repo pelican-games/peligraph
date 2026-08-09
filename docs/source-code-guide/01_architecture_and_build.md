@@ -48,7 +48,7 @@ flowchart TD
 
 ### `pelican_core`
 
-宣言は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L1) です。公開includeディレクトリに [`src/core/userpublic`](../../src/core/userpublic) と [`src/core`](../../src/core) を追加します。`userpublic`、`ecs`、`handle.hpp`、`physquery.hpp` の公開ヘッダを `dist*/lib/include` へコピーするPOST_BUILD処理は、[`PELICAN_AUTO_STAGE_SDK`](../../CMakeLists.txt#L85)（既定 **OFF**）がONのときだけ登録されます（[`pelican_copy_headers()`](../../src/core/CMakeLists.txt#L135)）。既定でOFFなのは、Debugの `pelican_core` アーカイブが約1 GiBあり、通常の再リンクごとにコピーすると書き込み量が跳ね上がるためです。`dist*/lib/include` が空でも異常ではありません。
+宣言は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L1) です。公開includeディレクトリに [`src/core/userpublic`](../../src/core/userpublic) と [`src/core`](../../src/core) を追加します。`userpublic`、`ecs`、`handle.hpp`、`physquery.hpp` の公開ヘッダを `dist*/lib/include` へコピーするPOST_BUILD処理は、[`PELICAN_AUTO_STAGE_SDK`](../../CMakeLists.txt#L86)（既定 **OFF**）がONのときだけ登録されます（[`pelican_copy_headers()`](../../src/core/CMakeLists.txt#L136)）。既定でOFFなのは、Debugの `pelican_core` アーカイブが約1 GiBあり、通常の再リンクごとにコピーすると書き込み量が跳ね上がるためです。`dist*/lib/include` が空でも異常ではありません。
 
 ### `pelican_player`
 
@@ -84,7 +84,7 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 読む順序は次の3点です。
 
-- preset本体は [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json)。[`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`](../../src/core/resources/CMakeLists.txt#L68) でエンジンへ埋め込まれるので、`engine://` で解決されます。
+- preset本体は [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json)。[`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`](../../src/core/resources/CMakeLists.txt#L69) でエンジンへ埋め込まれるので、`engine://` で解決されます。
 - `pipeline.preset` の展開は純粋層の [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L589) が行います。`schema` は `pelican.render_pipeline`、`version` は1固定で、presetが更にpresetを指すことは禁止です。authored側の `features` / `shader_defines` / `graph_transforms` は追記される一方、`render_strategy` / `snapshots` / `target_planning` の上書きは明示エラーになります（構造を変えたいならpresetをコピーする、というeject方針）。
 - 呼び出し側は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2560) の先頭で、preset展開はfeature解析より前に走ります。
 
@@ -103,7 +103,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 トップレベルの [`cmake_minimum_required(VERSION 3.13)`](../../CMakeLists.txt#L1) は多くのポリシーを未設定のまま残し、CMake 4.x は未設定をOLDとして解決します。その結果「CIの古いCMakeでは通るが、手元の新しいCMakeではconfigureが落ちる」種類の破綻が2系統あります。CMP0118はトップレベル1箇所の宣言で固定できますが、CMP0169はトップレベルに閉じず、`FetchContent_Populate()` を直接呼ぶ箇所ごとに戻す形（サブディレクトリの `src/core/imgui/CMakeLists.txt` を含む）です。原因は同じなので、片方を触るときはもう片方も見ます。
 
 - [`cmake_policy(SET CMP0118 NEW)`](../../CMakeLists.txt#L10) — ファイル冒頭、`project()` より前に置いています。battery::embedは `embed.hpp` の生成を `cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL ...)` でトップレベルディレクトリへ遅延させ、そのスコープから `file(GENERATE)` で書きます。一方それを `target_sources` で消費するのは [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) が作る `pelican_resources` で、`b_embed()` は `src/core/resources` のディレクトリスコープで走ります。CMP0118がOLDだと `GENERATED` プロパティがディレクトリ境界を越えないため、generate段階で `battery/embed.hpp` が「存在しないsource file」として拒否されます。
-- `CMP0169`（`FetchContent_Populate` の単独呼び出しの禁止）— こちらはNEWにできないので、必要な箇所ごとに `cmake_policy(PUSH)` / `SET ... OLD` / `POP` で囲んでOLDへ戻しています。`FetchContent_MakeAvailable()` を使わず、展開だけしてターゲットの作り方を自分で決めている依存が対象で、トップレベルのminiaudio・[`FetchContent_Populate(picosha2)`](../../CMakeLists.txt#L186)・SPIRV-Headers・tinyexr・JoltPhysicsの5箇所に、`PELICAN_WITH_IMGUI` がONのときだけ通る [`FetchContent_Populate(imgui_vendor)`](../../src/core/imgui/CMakeLists.txt#L14) を加えた6箇所に同じ定型が並びます。`FetchContent_Populate()` を直接呼ぶ場所を増やすたびに同じ定型が要る、という形です。
+- `CMP0169`（`FetchContent_Populate` の単独呼び出しの禁止）— こちらはNEWにできないので、必要な箇所ごとに `cmake_policy(PUSH)` / `SET ... OLD` / `POP` で囲んでOLDへ戻しています。`FetchContent_MakeAvailable()` を使わず、展開だけしてターゲットの作り方を自分で決めている依存が対象で、トップレベルのminiaudio・[`FetchContent_Populate(picosha2)`](../../CMakeLists.txt#L187)・SPIRV-Headers・tinyexr・JoltPhysicsの5箇所に、`PELICAN_WITH_IMGUI` がONのときだけ通る [`FetchContent_Populate(imgui_vendor)`](../../src/core/imgui/CMakeLists.txt#L14) を加えた6箇所に同じ定型が並びます。`FetchContent_Populate()` を直接呼ぶ場所を増やすたびに同じ定型が要る、という形です。
 
 ## 1.3 `src/core` の責務地図
 
@@ -195,7 +195,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 ## 1.6 ビルド機能フラグ
 
-トップレベルの定義は [`option(PELICAN_RUNTIME_SHADER_COMPILER ...)` 以下のoption群](../../CMakeLists.txt#L41) です。
+トップレベルの定義は [`option(PELICAN_RUNTIME_SHADER_COMPILER ...)` 以下のoption群](../../CMakeLists.txt#L42) です。
 
 | フラグ | ON時 | OFF時の動作 |
 |---|---|---|
@@ -209,23 +209,23 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、sceneにcolliderがあると明示エラー（[`scene.cpp`](../../src/core/loader/scene.cpp#L323)） |
 | `PELICAN_WITH_OPENXR` | private OpenXR unit（`pelican_openxr`）をリンク | `--xr` 指定時に明示エラー |
 | `PELICAN_WITH_RENDERDOC` | **既に注入済みの**RenderDoc APIを受動利用（F11キャプチャ、`capture_gpu` RPC） | [`renderdoccapture_stub.cpp`](../../src/core/renderdoc/renderdoccapture_stub.cpp) をリンクし、`RenderDocCapture` は常に `unavailable`（理由 `renderdoc_build_disabled`）。キャプチャ要求は理由付きで拒否 |
-| `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` | 差し替え可能な標準render algorithmパッケージ [`src/core/render_algorithms/`](../../src/core/render_algorithms) と、その専用engine resourceを含める（[`PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES`](../../src/core/resources/render_algorithms/standard_algorithms.cmake#L6)） | サブディレクトリごと [`add_subdirectory(render_algorithms)`](../../src/core/CMakeLists.txt#L48) から外れ、[`registerStandardRenderAlgorithmProviders()`](../../src/core/renderer/viewfamilyproviderregistry.cpp#L71) の呼び出しも `#if` で消える。グラフ／コンパイラ／provider機構そのものは残るので、プロジェクト側で自前のViewFamily実装を差せる |
+| `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` | 差し替え可能な標準render algorithmパッケージ [`src/core/render_algorithms/`](../../src/core/render_algorithms) と、その専用engine resourceを含める（[`PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES`](../../src/core/resources/render_algorithms/standard_algorithms.cmake#L6)） | サブディレクトリごと [`add_subdirectory(render_algorithms)`](../../src/core/CMakeLists.txt#L49) から外れ、[`registerStandardRenderAlgorithmProviders()`](../../src/core/renderer/viewfamilyproviderregistry.cpp#L71) の呼び出しも `#if` で消える。グラフ／コンパイラ／provider機構そのものは残るので、プロジェクト側で自前のViewFamily実装を差せる |
 | `PELICAN_ENABLE_ASAN` | ASan用compile/link option | 追加なし |
 
 このほか `PELICAN_AUTO_STAGE_SDK`（既定OFF、`dist*` へのSDK staging）と `PELICAN_LEAN_TEST_ARTIFACTS`（既定ON、テスト実行ファイルのPDB削減）は機能ではなくビルド成果物の量を決めるoptionです。
 
-物理providerの選択だけは `option()` ではなく `cmake_dependent_option()` で、`PELICAN_WITH_PHYSICS` がONのときにだけ現れます（[`cmake_dependent_option(PELICAN_WITH_JOLT_PHYSICS ...)`](../../CMakeLists.txt#L59)）。
+物理providerの選択だけは `option()` ではなく `cmake_dependent_option()` で、`PELICAN_WITH_PHYSICS` がONのときにだけ現れます（[`cmake_dependent_option(PELICAN_WITH_JOLT_PHYSICS ...)`](../../CMakeLists.txt#L60)）。
 
 | フラグ | 既定 | ON時 |
 |---|---|---|
 | `PELICAN_WITH_JOLT_PHYSICS` | OFF | optionalのJolt query providerを使う |
 | `PELICAN_WITH_BUILTIN_PHYSICS` | ON | Pelican内蔵のsphere/box/capsule query providerを使う |
 
-両方ONならJoltを優先し、内蔵providerは強制的にOFFへ戻されます（[`if(PELICAN_WITH_JOLT_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)`](../../CMakeLists.txt#L73)）。この2つだけはPUBLICではなく [`target_compile_definitions(pelican_core PRIVATE ...)`](../../src/core/CMakeLists.txt#L18) のPRIVATE compile definitionです。
+両方ONならJoltを優先し、内蔵providerは強制的にOFFへ戻されます（[`if(PELICAN_WITH_JOLT_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)`](../../CMakeLists.txt#L74)）。この2つだけはPUBLICではなく [`target_compile_definitions(pelican_core PRIVATE ...)`](../../src/core/CMakeLists.txt#L19) のPRIVATE compile definitionです。
 
 機能OFF時にヘッダのAPI形状を消すのではなく、できる限り同じ入口を保ち、明示的な「このバイナリでは無効」エラーへ寄せています。共通例外は [`BuildFeatureDisabledError`](../../src/core/build_features.hpp#L20) です。
 
-実装の差し替え方は、サブディレクトリのCMakeが `.cpp` を選ぶ形です。たとえば [`src/core/renderdoc/CMakeLists.txt`](../../src/core/renderdoc/CMakeLists.txt) は `PELICAN_WITH_RENDERDOC` により `renderdoccapture.cpp` か `renderdoccapture_stub.cpp` のどちらかだけを `pelican_core` へ追加します。フラグ自体は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L15) でPUBLICなcompile definitionとしても公開されるため、他のサブシステムからも `#if PELICAN_WITH_RENDERDOC` で参照できます。
+実装の差し替え方は、サブディレクトリのCMakeが `.cpp` を選ぶ形です。たとえば [`src/core/renderdoc/CMakeLists.txt`](../../src/core/renderdoc/CMakeLists.txt) は `PELICAN_WITH_RENDERDOC` により `renderdoccapture.cpp` か `renderdoccapture_stub.cpp` のどちらかだけを `pelican_core` へ追加します。フラグ自体は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L16) でPUBLICなcompile definitionとしても公開されるため、他のサブシステムからも `#if PELICAN_WITH_RENDERDOC` で参照できます。
 
 ## 1.7 主な外部ライブラリ
 
@@ -240,18 +240,18 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2267)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |
 | miniaudio | 音声backend |
-| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L303)、`PELICAN_WITH_OPENXR` 時） |
-| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L453)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
-| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L200)） |
+| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L304)、`PELICAN_WITH_OPENXR` 時） |
+| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L454)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
+| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L201)） |
 | Dear ImGui | 開発者UI（`PELICAN_WITH_IMGUI` 時） |
-| battery::embed | shaderのSPIR-VとengineリソースJSON（`render_pipelines/`、`features/`、`surfaces/` など）をバイナリへ埋め込む。入口は [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) で、以降に並ぶ `b_embed()` の一覧が `engine://` で引ける資源の全量。ビルドフラグで消えうる資源の扱いは2通りに分かれます。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` 側は [`PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS`](../../src/core/resources/CMakeLists.txt#L106) に積まれて `pelican_optional_engine_resources.inc` として生成されますが、[`embed_shader(vat.vert)`](../../src/core/resources/CMakeLists.txt#L29) だけはこの一覧に載らず、[`engineResource()`](../../src/core/loader/engineresources.cpp#L133) 側の `#if PELICAN_WITH_VAT` と対で書かれています。書き込み量削減のため [`cmake/patch_battery_embed_low_write.cmake`](../../cmake/patch_battery_embed_low_write.cmake) を `PATCH_COMMAND` で当てており、CMP0118のpinもこの依存のため |
-| picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`target_link_libraries(pelican_core PRIVATE picosha2)`](../../src/core/CMakeLists.txt#L103)） |
+| battery::embed | shaderのSPIR-VとengineリソースJSON（`render_pipelines/`、`features/`、`surfaces/` など）をバイナリへ埋め込む。入口は [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) で、以降に並ぶ `b_embed()` の一覧が `engine://` で引ける資源の全量。ビルドフラグで消えうる資源の扱いは2通りに分かれます。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` 側は [`PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS`](../../src/core/resources/CMakeLists.txt#L107) に積まれて `pelican_optional_engine_resources.inc` として生成されますが、[`embed_shader(vat.vert)`](../../src/core/resources/CMakeLists.txt#L33) だけはこの一覧に載らず、[`engineResource()`](../../src/core/loader/engineresources.cpp#L133) 側の `#if PELICAN_WITH_VAT` と対で書かれています。書き込み量削減のため [`cmake/patch_battery_embed_low_write.cmake`](../../cmake/patch_battery_embed_low_write.cmake) を `PATCH_COMMAND` で当てており、CMP0118のpinもこの依存のため |
+| picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`target_link_libraries(pelican_core PRIVATE picosha2)`](../../src/core/CMakeLists.txt#L104)） |
 | RenderDoc in-application API | ヘッダのみvendor同梱（[`src/third_party/renderdoc/renderdoc_app.h`](../../src/third_party/renderdoc/renderdoc_app.h)）。外部取得もバイナリリンクもしません |
 | quill | ログ |
 | Catch2 | 単体テスト |
 | Qt6/QML | Pelican Studio |
 
-外部依存のバージョンはトップレベル [`FetchContent_Declare` の `GIT_TAG` 群](../../CMakeLists.txt#L105) に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
+外部依存のバージョンはトップレベルの `GIT_TAG` 群（先頭は [`GIT_TAG v10.2.0`](../../CMakeLists.txt#L108)）に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
 
 ## 1.8 読解用のビルド
 

@@ -25,7 +25,7 @@ if(MSVC AND PELICAN_LEAN_TEST_ARTIFACTS)
 endif()
 
 function(pelican_define_test source_name)
-cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU;QT" "" "" ${ARGN})
+cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU;QT;RUNTIME_SHADER" "" "" ${ARGN})
 set(target_name pelican_test_${source_name})
 add_executable(${target_name} ${source_name}.cpp)
 set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
@@ -35,6 +35,11 @@ target_compile_definitions(${target_name} PRIVATE
 )
 target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
+if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
+  # These executables remain compile-checked, but their cases require source
+  # variants that dist-bake does not produce yet (design_build_tiers.md §4).
+  return()
+endif()
 set(discovery_properties)
 set(discovery_arguments)
 if(PELICAN_TEST_QT)
@@ -470,7 +475,7 @@ pelican_define_test(vrmaretarget_test pelican_core glm)
 pelican_define_test(animation_probe_test pelican_core glm)
 pelican_define_test(animation_jobs_test pelican_core glm)
 pelican_define_test(animgraph_test pelican_core glm)
-pelican_define_test(vrmasource_test GPU pelican_core VulkanMemoryAllocator
+pelican_define_test(vrmasource_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator
                     VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -502,7 +507,7 @@ if(WIN32)
     PELICAN_ANIM_NEW_DLL="$<TARGET_FILE:pelican_animation_abi_new>"
     PELICAN_ANIM_EVALUATOR_DLL="$<TARGET_FILE:pelican_animation_public_evaluator>"
   )
-  pelican_define_test(vrmapplication_test GPU pelican_core VulkanMemoryAllocator
+  pelican_define_test(vrmapplication_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator
                       VulkanMemoryAllocator-Hpp glm)
   add_dependencies(pelican_test_vrmapplication_test
                    pelican_vrm_application_public_evaluator)
@@ -642,17 +647,17 @@ set(pelican_golden_test_sources
     golden_framegraph_test
 )
 foreach(golden_test_source IN LISTS pelican_golden_test_sources)
-    pelican_define_test(${golden_test_source} GOLDEN GPU pelican_golden_harness)
+    pelican_define_test(${golden_test_source} GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)
     if(PELICAN_RUNTIME_SHADER_COMPILER AND COMMAND pelican_copy_shaderc_runtime)
         pelican_copy_shaderc_runtime(pelican_test_${golden_test_source})
     endif()
 endforeach()
-pelican_define_test(gltf_fragment_test GPU pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gltf_fragment_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(gltfimage_test pelican_core tinygltf)
-pelican_define_test(modelhotreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(modelhotreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(drawqueuebuilder_test pelican_core)
 pelican_define_test(renderpolicyregistry_test pelican_core)
 pelican_define_test(passimplementationregistry_test pelican_core)
@@ -660,10 +665,10 @@ pelican_define_test(subgraphreplacementregistry_test pelican_core)
 pelican_define_test(graphtransformregistry_test pelican_core)
 pelican_define_test(renderstrategyregistry_test pelican_core)
 pelican_define_test(modelinstance_slotmap_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(skeletal_gltf_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(morph_gltf_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(skeletal_gltf_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(morph_gltf_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(vrmfirstperson_test pelican_core glm)
-pelican_define_test(vrm_xr_demo_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(vrm_xr_demo_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_vrm_xr_demo_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
@@ -719,7 +724,7 @@ target_compile_definitions(pelican_test_temporal_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(color_pipeline_test pelican_core glm)
-pelican_define_test(rpc_color_contract_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+pelican_define_test(rpc_color_contract_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})
 target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -821,9 +826,9 @@ endif()
 if(PELICAN_WITH_VAT)
 pelican_define_test(vatformat_test pelican_core glm)
 endif()
-pelican_define_test(shader_compile_test spirv-reflect-static stb)
+pelican_define_test(shader_compile_test pelican_target_environment spirv-reflect-static stb)
 pelican_define_test(parallel_prepare_test)
-pelican_define_test(shader_cache_test pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_cache_test RUNTIME_SHADER pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_cache_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
@@ -833,7 +838,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_shader_cache_test)
     endif()
 endif()
-pelican_define_test(shader_cache_wp254_test pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_cache_wp254_test RUNTIME_SHADER pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_cache_wp254_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
@@ -852,7 +857,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_shader_compile_test)
     endif()
 endif()
-pelican_define_test(shader_compiler_reflection_test pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_compiler_reflection_test pelican_core pelican_target_environment spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_compiler_reflection_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -901,7 +906,7 @@ if(PELICAN_WITH_SPIRV_LINK AND PELICAN_SLANGC_EXECUTABLE)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/fixtures/spvlink
         COMMAND ${PELICAN_SLANGC_EXECUTABLE}
             -target spirv
-            -profile ps_6_0+spirv_1_5
+            -profile ps_6_0+${PELICAN_SLANG_SPIRV_PROFILE}
             -entry main
             -stage fragment
             -O0
@@ -911,7 +916,7 @@ if(PELICAN_WITH_SPIRV_LINK AND PELICAN_SLANGC_EXECUTABLE)
             -o ${PELICAN_SLANG_COOL_FIXTURE}
         COMMAND ${PELICAN_SLANGC_EXECUTABLE}
             -target spirv
-            -profile ps_6_0+spirv_1_5
+            -profile ps_6_0+${PELICAN_SLANG_SPIRV_PROFILE}
             -entry main
             -stage fragment
             -O0
@@ -940,6 +945,7 @@ if(PELICAN_WITH_SPIRV_LINK AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
             -DLINKER=$<TARGET_FILE:pelican-spv-link>
             -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/spvlink_cli_golden
+            -DTARGET_ENV=${PELICAN_SHADER_TARGET_ENV}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_spvlink_golden.cmake
     )
 endif()
@@ -1473,7 +1479,7 @@ if(WIN32)
             LABELS gpu)
 endif()
 pelican_define_test(texturereload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(materialvaluesreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(materialvaluesreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_materialvaluesreload_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -1502,6 +1508,51 @@ if(PELICAN_NODE_EXECUTABLE)
             ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ui_semantic/normative/check_coverage.mjs
             ${CMAKE_SOURCE_DIR}
     )
+endif()
+
+# The OFF tier consumes already-baked SPIR-V. Until dist-bake emits every
+# project stem/define variant, process tests that launch source-driven sample
+# projects are ON-only. Keep the supported OFF test surface registered and
+# running; disable only these known source-variant consumers.
+set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
+    physics_trigger_behavior_e2e
+    behavior_dll_reload_code_only
+    behavior_dll_reload_schema_drift
+    behavior_dll_reload_version_bump_success
+    behavior_dll_reload_version_bump_failure
+    behavior_dll_reload_type_removed
+    behavior_dll_reload_candidate_lifecycle_zero
+    behavior_dll_reload_pending_recovery
+    behavior_dll_reload_queued_event_purge
+    behavior_dll_reload_oninit_rollback
+    behavior_project_e2e
+    game_logic_dll_reload
+    seqplayer_headless_player
+    vatplayer_headless_player
+    free_camera_runtime_overlay_player
+    vrm_xr_demo_rpc_player
+    rpc_headless_player
+    rpc_set_camera_headless_player
+    rpc_scene_flow_headless_player
+    rpc_inject_input_headless_player
+    input_record_replay_headless_player
+    devcli_bake_camera_replay
+    rpc_inject_event_headless_player
+    ui_u2_rpc_replay_player
+    compute_buffer_headless_player
+    gpu_timing_headless_player
+    frame_plan_dump_headless_player
+    devcli_project_init_command
+    animgraph_demo_preset_headless_player
+    devcli_assets_command
+    wsi_fault_window_player
+)
+if(NOT PELICAN_RUNTIME_SHADER_COMPILER)
+    foreach(runtime_shader_test IN LISTS PELICAN_RUNTIME_SHADER_PROCESS_TESTS)
+        if(TEST ${runtime_shader_test})
+            set_tests_properties(${runtime_shader_test} PROPERTIES DISABLED TRUE)
+        endif()
+    endforeach()
 endif()
 
 set(PELICAN_PYTHON_TESTS "OFF" CACHE STRING

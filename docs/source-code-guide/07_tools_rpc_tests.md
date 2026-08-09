@@ -581,7 +581,7 @@ signature にフラグが入りました([test/CMakeLists.txt](../../test/CMakeL
 cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 ```
 
-`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L47))。コメントが理由です。
+`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L52))。コメントが理由です。
 
 > Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
 
@@ -591,7 +591,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1540) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1591) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -649,7 +649,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 | physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L112)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L49) |
 | frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L190) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L20) |
-| shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L29)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L84) |
+| shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L31)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L84) |
 | feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L167) |
 | persistence の atomic save/path | [`persistence_test.cpp`](../../test/persistence_test.cpp#L81) |
 

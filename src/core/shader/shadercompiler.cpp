@@ -53,7 +53,7 @@ std::filesystem::path normalizedPath(const std::filesystem::path &path) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
 constexpr std::string_view shaderCacheFormat = "pelican-shader-cache-v1";
 constexpr std::string_view shaderContractSalt = "pelican-shader-contract-v1-wp82-20260712";
-constexpr std::string_view shaderTargetEnvironment = "vulkan-1.2";
+constexpr std::string_view shaderTargetEnvironment = PELICAN_SHADER_TARGET_CACHE_ENV_NAME;
 std::atomic_bool shaderCacheWarningEmitted = false;
 
 shaderc_shader_kind toShadercKind(vk::ShaderStageFlagBits stage) {
@@ -448,7 +448,7 @@ ShaderCompileResult compileGlslUncached(std::string_view source, vk::ShaderStage
                                        const std::vector<std::pair<std::string, std::string>> &virtual_includes) {
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
-    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+    options.SetTargetEnvironment(shaderc_target_env_vulkan, PELICAN_SHADERC_TARGET_ENV_VERSION);
     options.SetIncluder(std::make_unique<FileIncluder>(include_dirs, virtual_includes));
     for (const auto &define : defines) {
         const auto separator = define.find('=');

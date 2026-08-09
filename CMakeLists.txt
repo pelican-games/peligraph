@@ -33,6 +33,7 @@ endif()
 
 include(FetchContent)
 include(CMakeDependentOption)
+include(cmake/pelican_target_environment.cmake)
 
 # variable definition
 set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)

@@ -360,7 +360,7 @@ struct ImGuiSystem::Impl {
         pipeline_rendering_info.pColorAttachmentFormats = &raw_color_format;
 
         ImGui_ImplVulkan_InitInfo init_info{};
-        init_info.ApiVersion = VK_API_VERSION_1_3;
+        init_info.ApiVersion = PELICAN_VULKAN_API_TARGET_VERSION;
         init_info.Instance = static_cast<VkInstance>(vk_core.getInstance());
         init_info.PhysicalDevice = static_cast<VkPhysicalDevice>(vk_core.getPhysDevice());
         init_info.Device = static_cast<VkDevice>(vk_core.getDevice());

@@ -1,12 +1,14 @@
-if(NOT DEFINED GLSLANG OR NOT DEFINED LINKER OR NOT DEFINED SOURCE_DIR OR NOT DEFINED OUT_DIR)
-    message(FATAL_ERROR "spvlink golden requires GLSLANG, LINKER, SOURCE_DIR, and OUT_DIR")
+if(NOT DEFINED GLSLANG OR NOT DEFINED LINKER OR NOT DEFINED SOURCE_DIR OR
+   NOT DEFINED OUT_DIR OR NOT DEFINED TARGET_ENV)
+    message(FATAL_ERROR
+        "spvlink golden requires GLSLANG, LINKER, SOURCE_DIR, OUT_DIR, and TARGET_ENV")
 endif()
 
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY "${OUT_DIR}")
 
 execute_process(
-    COMMAND "${GLSLANG}" -V --target-env vulkan1.2 -S frag
+    COMMAND "${GLSLANG}" -V --target-env "${TARGET_ENV}" -S frag
         "${SOURCE_DIR}/experiments/spvlink/shaders/template.frag.glsl"
         -o "${OUT_DIR}/template.spv"
     RESULT_VARIABLE template_result
@@ -17,7 +19,7 @@ endif()
 
 # --keep-uncalled is the production convention for a GLSL library module.
 execute_process(
-    COMMAND "${GLSLANG}" -V --target-env vulkan1.2 -S frag --keep-uncalled
+    COMMAND "${GLSLANG}" -V --target-env "${TARGET_ENV}" -S frag --keep-uncalled
         -DPELICAN_VARIANT_WARM
         "${SOURCE_DIR}/experiments/spvlink/shaders/surface.glsl"
         -o "${OUT_DIR}/user.spv"
@@ -43,7 +45,7 @@ endif()
 
 if(DEFINED SPIRV_VAL AND EXISTS "${SPIRV_VAL}")
     execute_process(
-        COMMAND "${SPIRV_VAL}" --target-env vulkan1.2 "${OUT_DIR}/final.spv"
+        COMMAND "${SPIRV_VAL}" --target-env "${TARGET_ENV}" "${OUT_DIR}/final.spv"
         RESULT_VARIABLE val_result
     )
     if(NOT val_result EQUAL 0)

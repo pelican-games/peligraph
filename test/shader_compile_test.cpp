@@ -17,6 +17,8 @@ TEST_CASE("shader tool dependencies link and can create compiler/reflection obje
 #if PELICAN_RUNTIME_SHADER_COMPILER
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
+    options.SetTargetEnvironment(shaderc_target_env_vulkan,
+                                 PELICAN_SHADERC_TARGET_ENV_VERSION);
 
     const char *source = R"glsl(
 #version 450
@@ -30,6 +32,8 @@ void main() {
 
     std::vector<uint32_t> spirv{result.cbegin(), result.cend()};
     REQUIRE_FALSE(spirv.empty());
+    REQUIRE(spirv.size() >= 2);
+    REQUIRE(spirv[1] == PELICAN_SPIRV_TARGET_VERSION_WORD);
 
     SpvReflectShaderModule module{};
     REQUIRE(spvReflectCreateShaderModule(spirv.size() * sizeof(uint32_t), spirv.data(), &module) ==

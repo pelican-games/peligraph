@@ -21,7 +21,7 @@
 
 namespace Pelican {
 
-constexpr auto vulkan_api_version = VK_MAKE_API_VERSION(0, 1, 3, 283);
+constexpr auto vulkan_api_version = PELICAN_VULKAN_API_TARGET_VERSION;
 
 static std::vector<std::string> supportedInstanceExtensions() {
     std::vector<std::string> result;

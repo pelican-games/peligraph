@@ -164,7 +164,8 @@ void main(){ pelican_hook(forbidden); color=vec4(0.0); }
 #endif
 }
 
-#if defined(PELICAN_TEST_SLANG_COOL_FIXTURE) && defined(PELICAN_TEST_SLANG_WARM_FIXTURE)
+#if PELICAN_RUNTIME_SHADER_COMPILER && defined(PELICAN_TEST_SLANG_COOL_FIXTURE) && \
+    defined(PELICAN_TEST_SLANG_WARM_FIXTURE)
 TEST_CASE("SPV link accepts noinline Slang split texture sampler variant corpus",
           "[spv-link][corpus][slang]") {
     ShaderCompiler compiler;

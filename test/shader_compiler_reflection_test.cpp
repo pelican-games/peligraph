@@ -1,4 +1,5 @@
 #include "../src/core/shader/shadercompiler.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
 #include "../src/core/shader/shaderresourceinterface.hpp"
@@ -8,6 +9,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -51,6 +53,31 @@ TEST_CASE("shader compiler compiles GLSL and reports failures without throwing",
     const auto result = compiler.compileFile(sourceRoot() / "src/core/resources/default.vert");
     REQUIRE_FALSE(result.ok);
     REQUIRE_FALSE(result.log.empty());
+#endif
+}
+
+TEST_CASE("embedded and runtime shaders share the configured SPIR-V version",
+          "[shader][target-environment]") {
+    const auto embedded = engineResource("default.vert.spv");
+    REQUIRE(embedded.has_value());
+    REQUIRE(embedded->size() >= 2 * sizeof(std::uint32_t));
+
+    std::uint32_t embedded_magic = 0;
+    std::uint32_t embedded_version = 0;
+    std::memcpy(&embedded_magic, embedded->data(), sizeof(embedded_magic));
+    std::memcpy(&embedded_version, embedded->data() + sizeof(embedded_magic),
+                sizeof(embedded_version));
+    REQUIRE(embedded_magic == 0x07230203u);
+    REQUIRE(embedded_version == PELICAN_SPIRV_TARGET_VERSION_WORD);
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto runtime =
+        compiler.compileFile(sourceRoot() / "src/core/resources/default.vert");
+    INFO(runtime.log);
+    REQUIRE(runtime.ok);
+    REQUIRE(runtime.spirv.size() >= 2);
+    REQUIRE(runtime.spirv[1] == embedded_version);
 #endif
 }
 

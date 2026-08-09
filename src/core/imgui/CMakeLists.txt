@@ -48,6 +48,7 @@ target_compile_definitions(pelican_imgui PRIVATE
   "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
 )
 target_link_libraries(pelican_imgui PRIVATE
+  pelican_target_environment
   glfw
   quill
   glm

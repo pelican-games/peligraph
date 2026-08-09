@@ -382,6 +382,23 @@ material defines は WP58/M1 時点では parser の結果に保持されるだ�
 M2 以降で合流する場合は、feature 由来 defines の後ろに material 由来 defines を追加するのが
 `design_material_shading.md` の契約である。
 
+## SPIR-V / Vulkan ターゲット環境
+
+ターゲット版の宣言箇所は
+[`cmake/pelican_target_environment.cmake`](../cmake/pelican_target_environment.cmake) だけである。
+Vulkan instance、VMA、ImGui、埋め込み用 glslang、runtime shaderc、SPIRV-Tools、Slang fixture、
+外部 validator はすべてこの契約から値を受け取る。変更時はこのファイルだけを編集し、
+未対応の組合せと、shader target が Vulkan API target を超える組合せは configure 時に拒否する。
+
+現行契約は Vulkan API 1.3.283 と、shader target `vulkan1.2` / SPIR-V 1.5 である。
+renderer は core dynamic rendering を使うため Vulkan API 1.3 を維持する一方、SPIR-V は
+既知の 1.4 以上の要件を満たす既存 runtime target 1.5 に留め、理由なく 1.6 へ上げない。
+この変更で runtime compiler の出力版と Vulkan API の宣言値は変わらない。
+埋め込み SPIR-V は 1.0 から 1.5 へ上がるため、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` は
+SPIR-V 1.5 を直接消費する。これは engine の Vulkan 1.3 最低要件の範囲内である。
+OFF の CTest はこの埋め込み版と OFF 対応済みの実行面を検証する。`dist-bake` 未実装のため
+source stem / feature define の事前焼き出しを要するテストだけは ON 専用として登録する。
+
 ## ランタイム SPIR-V ディスクキャッシュ (WP82)
 
 runtime shaderc の出力はプロジェクトローカルの
@@ -393,7 +410,7 @@ runtime shaderc の出力はプロジェクトローカルの
    include root 配下・virtual source・埋込み engine shader source の全候補も保守的に含める
 2. shaderc に渡す全 define（値と順序を含む。source 内で未使用でも含む）
 3. shaderc toolchain version と、runtime が報告する SPIR-V version / revision
-4. target environment (`vulkan-1.2`)、shader stage、entry point
+4. 上記の一元化された target environment、shader stage、entry point
 5. engine shader contract salt (`pelican-shader-contract-v1-wp82-20260712`)
 
 この列挙の変更・shader ABI の変更・compile option の追加は cache key version または

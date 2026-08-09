@@ -22,7 +22,8 @@
 namespace Pelican {
 namespace {
 
-constexpr auto target_env = SPV_ENV_VULKAN_1_2;
+constexpr auto target_env = PELICAN_SPIRV_TOOLS_TARGET_ENV;
+constexpr std::string_view target_env_name = PELICAN_SHADER_TARGET_ENV_NAME;
 constexpr std::string_view headers_revision = "09913f088a1197aba4aefd300a876b2ebbaa3391";
 constexpr std::string_view tools_revision = "f289d047f49fb60488301ec62bafab85573668cc";
 constexpr std::string_view reflect_revision = "c637858562fbce1b6f5dc7ca48d4e8a5bd117b70";
@@ -519,7 +520,7 @@ std::string digest(std::span<const std::uint32_t> words) {
 std::string makeCacheKey(const SpvLinkRequest &request) {
     std::ostringstream material;
     material << spvLinkToolchainManifest()
-             << ";target=vulkan1.2;template-generator=0x" << std::hex
+             << ";target=" << target_env_name << ";template-generator=0x" << std::hex
              << (request.template_module.size() > 2 ? request.template_module[2] : 0)
              << ";user-generator=0x"
              << (request.user_module.size() > 2 ? request.user_module[2] : 0) << std::dec
