@@ -134,6 +134,52 @@ struct InspectorHarness {
         }
         FAIL("missing component " << std::string{component});
     }
+
+    void completeRefresh(double position_x, std::uint64_t scene_revision) {
+        const auto tree = take("scene_tree");
+        reply(tree, sceneTreeResult(scene_revision));
+        const auto components = take("get_components");
+        reply(components, componentResult(position_x, scene_revision));
+        const auto watch = take("get_scene_revision");
+        reply(watch, {{"scene_revision", scene_revision},
+                      {"preview_epoch", 0}});
+    }
+
+    void commitGizmoStylePosition(double position_x,
+                                  std::uint64_t committed_revision = 2) {
+        const std::string field_key = field("transform", "pos").field_key;
+        REQUIRE(model.previewWidgetValue(
+            field_key, Json::array({position_x - 0.5, 2.0, 3.0})));
+        const auto open = take("open_preview");
+        reply(open, {{"status", "accepted"},
+                     {"ticket", "preview:1"},
+                     {"request_id", "preview-request:open"}});
+        model.pollPendingOperations();
+        const auto open_result = take("get_preview_result");
+        reply(open_result, {{"status", "open"}});
+
+        REQUIRE(model.previewWidgetValue(
+            field_key, Json::array({position_x, 2.0, 3.0})));
+        const auto update = take("update_preview");
+        REQUIRE(update.params.at("operations").at(0).at("value") ==
+                Json::array({position_x, 2.0, 3.0}));
+        REQUIRE(model.finishWidgetEdit(field_key, true));
+        reply(update, {{"status", "accepted"},
+                       {"request_id", "preview-request:update"}});
+        model.pollPendingOperations();
+        const auto update_result = take("get_preview_result");
+        reply(update_result, {{"status", "updated"}});
+
+        const auto commit = take("commit_preview");
+        reply(commit, {{"status", "accepted"},
+                       {"request_id", "preview-request:commit"}});
+        model.pollPendingOperations();
+        const auto commit_result = take("get_preview_result");
+        reply(commit_result,
+              {{"status", "committed"},
+               {"committed_revision", committed_revision}});
+        completeRefresh(position_x, committed_revision);
+    }
 };
 
 } // namespace
@@ -457,4 +503,52 @@ TEST_CASE("Devstudio aborts the live lease after a terminal preview failure",
     REQUIRE(harness.model.notice().message.find("runtime_binding_missing") !=
             std::string::npos);
     REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}
+
+TEST_CASE("Devstudio undo uses the editor session revision after a gizmo-style preview",
+          "[devstudio][inspector][gizmo][undo][wp266][wp275]") {
+    InspectorHarness harness;
+    harness.open();
+    harness.commitGizmoStylePosition(3.0);
+
+    REQUIRE(harness.field("transform", "pos").value ==
+            Json::array({3.0, 2.0, 3.0}));
+
+    harness.model.undo();
+    const auto undo = harness.take("undo");
+    REQUIRE(undo.params == Json{{"actor_id", 9}, {"base_revision", 2}});
+    harness.reply(undo,
+                  {{"status", "committed"}, {"committed_revision", 3}});
+
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
+    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+}
+
+TEST_CASE("Devstudio save scene persists committed authoring edits only while idle",
+          "[devstudio][inspector][save][wp275]") {
+    InspectorHarness harness;
+    harness.open();
+    harness.commitGizmoStylePosition(4.0);
+
+    REQUIRE(harness.model.canSave());
+    REQUIRE(harness.model.saveScene());
+    const auto save = harness.take("save_scene");
+    REQUIRE(save.params == Json::object());
+    REQUIRE(harness.model.busy());
+    REQUIRE_FALSE(harness.model.saveScene());
+
+    harness.reply(save,
+                  {{"status", "saved"},
+                   {"scene_revision", 2},
+                   {"scene_hot_reload", false},
+                   {"byte_count", 1234}});
+    REQUIRE_FALSE(harness.model.busy());
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
+    REQUIRE(harness.model.notice().message.find("revision 2") !=
+            std::string::npos);
+
+    // Saving is scene-wide and must not depend on retaining an Inspector
+    // object selection after the gizmo edit was committed.
+    harness.model.selectObject(std::nullopt);
+    REQUIRE(harness.model.canSave());
 }

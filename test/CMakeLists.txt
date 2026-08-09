@@ -84,6 +84,10 @@ if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_inspector_test pelican_studio_inspector_model)
 endif()
 
+if(TARGET pelican_studio_gizmo_model)
+  pelican_define_test(devstudio_gizmo_test pelican_studio_gizmo_model)
+endif()
+
 if(TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_frameplan_test pelican_studio_frame_plan)
 endif()

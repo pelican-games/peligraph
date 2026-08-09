@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -249,6 +250,93 @@ struct InspectorWidget::Impl {
         model.selectObject(std::move(selection));
         synchronize();
         dispatchRequests();
+    }
+
+    std::optional<GizmoTransformBinding> gizmoTransformBinding() const {
+        if (model.refreshBlocked() || model.busy() || !model.snapshot()) {
+            return std::nullopt;
+        }
+        const InspectorObjectSnapshot &snapshot = *model.snapshot();
+        GizmoTransformBinding binding{
+            .selection = {.scene_id = snapshot.scene_id,
+                          .declaration_index = snapshot.declaration_index},
+        };
+        const auto component = std::find_if(
+            snapshot.components.begin(), snapshot.components.end(),
+            [](const InspectorComponentSnapshot &candidate) {
+                return candidate.name == "transform" && candidate.editable &&
+                       !candidate.pending;
+            });
+        if (component == snapshot.components.end()) {
+            return binding;
+        }
+        for (const InspectorWidgetDescriptor &widget : component->widgets) {
+            if (!widget.authored || !widget.value_matches_schema ||
+                widget.component_slot != "transform") {
+                continue;
+            }
+            GizmoEditableField field{.field_key = widget.field_key,
+                                     .value = widget.value};
+            if (widget.field_name == "pos" && widget.columns == 3) {
+                binding.position = std::move(field);
+            } else if (widget.field_name == "rotation" &&
+                       widget.columns == 4) {
+                binding.rotation = std::move(field);
+            } else if (widget.field_name == "scale" && widget.columns == 3) {
+                binding.scale = std::move(field);
+            }
+        }
+        return binding;
+    }
+
+    bool beginGizmoEdit(std::string_view field_key) {
+        if (model.refreshBlocked() || model.busy()) return false;
+        const bool started = model.beginWidgetEdit(field_key);
+        synchronize();
+        dispatchRequests();
+        return started;
+    }
+
+    void reflectGizmoValue(std::string_view field_key, const Json &value) {
+        for (const auto &binding : numeric_bindings) {
+            if (binding->field_key != field_key) continue;
+            if (binding->editors.size() == 1 && value.is_number()) {
+                const QSignalBlocker blocker{binding->editors.front()};
+                binding->editors.front()->setValue(value.get<double>());
+            } else if (value.is_array() &&
+                       value.size() == binding->editors.size()) {
+                for (std::size_t index = 0; index < value.size(); ++index) {
+                    if (!value[index].is_number()) return;
+                    const QSignalBlocker blocker{binding->editors[index]};
+                    binding->editors[index]->setValue(
+                        value[index].get<double>());
+                }
+            }
+            return;
+        }
+    }
+
+    bool previewGizmoEdit(std::string_view field_key, Json value) {
+        const Json reflected = value;
+        const bool accepted =
+            model.previewWidgetValue(field_key, std::move(value));
+        if (accepted) reflectGizmoValue(field_key, reflected);
+        synchronize();
+        dispatchRequests();
+        return accepted;
+    }
+
+    void finishGizmoEdit(std::string_view field_key, bool commit) {
+        model.finishWidgetEdit(field_key, commit);
+        synchronize();
+        dispatchRequests();
+    }
+
+    bool saveScene() {
+        const bool started = model.saveScene();
+        synchronize();
+        dispatchRequests();
+        return started;
     }
 
     void dispatchRequests() {
@@ -752,6 +840,27 @@ void InspectorWidget::setSelection(
     const QString &display_text) {
     impl_->setSelection(std::move(selection), display_text);
 }
+
+std::optional<GizmoTransformBinding>
+InspectorWidget::gizmoTransformBinding() const {
+    return impl_->gizmoTransformBinding();
+}
+
+bool InspectorWidget::beginGizmoEdit(std::string_view field_key) {
+    return impl_->beginGizmoEdit(field_key);
+}
+
+bool InspectorWidget::previewGizmoEdit(std::string_view field_key,
+                                       nlohmann::json value) {
+    return impl_->previewGizmoEdit(field_key, std::move(value));
+}
+
+void InspectorWidget::finishGizmoEdit(std::string_view field_key,
+                                      bool commit) {
+    impl_->finishGizmoEdit(field_key, commit);
+}
+
+bool InspectorWidget::saveScene() { return impl_->saveScene(); }
 
 bool InspectorWidget::eventFilter(QObject *watched, QEvent *event) {
     return impl_->handleEvent(watched, event) ||

@@ -209,6 +209,13 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     picking_notice_->setStyleSheet(QStringLiteral("color: #d98c00;"));
     picking_notice_->hide();
 
+    gizmo_notice_ = new QLabel(this);
+    gizmo_notice_->setObjectName(QStringLiteral("pelican.gizmoNotice"));
+    gizmo_notice_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    gizmo_notice_->setStyleSheet(QStringLiteral("color: #d98c00;"));
+    gizmo_notice_->setWordWrap(true);
+    gizmo_notice_->hide();
+
     restart_button_ = new QPushButton(tr("Start Engine"), footer);
     restart_button_->setObjectName(QStringLiteral("pelican.viewportRestart"));
     stop_button_ = new QPushButton(tr("Stop Engine"), footer);
@@ -218,6 +225,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     footer_layout->addWidget(stop_button_);
     layout->addWidget(footer);
     layout->addWidget(picking_notice_);
+    layout->addWidget(gizmo_notice_);
 
     window_discovery_timer_ = new QTimer(this);
     window_discovery_timer_->setInterval(WindowDiscoveryIntervalMs);
@@ -257,6 +265,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 resize_coalescer_.reset();
                 pointer_button_was_down_ = false;
                 primary_pointer_was_down_ = false;
+                primary_pointer_owned_ = false;
+                last_primary_pointer_position_.reset();
                 rpc_ready_ = false;
                 child_window_ = 0;
                 last_requested_extent_ = {};
@@ -286,6 +296,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         resize_coalescer_.reset();
         pointer_button_was_down_ = false;
         primary_pointer_was_down_ = false;
+        primary_pointer_owned_ = false;
+        last_primary_pointer_position_.reset();
         rpc_ready_ = false;
         restart_button_->setText(tr("Retry Engine"));
         restart_button_->setEnabled(true);
@@ -467,6 +479,8 @@ void EmbeddedViewport::startEngine() {
     resize_timer_->stop();
     resize_coalescer_.reset();
     primary_pointer_was_down_ = false;
+    primary_pointer_owned_ = false;
+    last_primary_pointer_position_.reset();
     setPickingNotice({});
     restart_button_->setEnabled(false);
     stop_button_->setEnabled(true);
@@ -534,6 +548,9 @@ void EmbeddedViewport::discoverEngineWindow() {
     window_discovery_timer_->stop();
     diagnostics_timer_->start();
     pointer_button_was_down_ = false;
+    primary_pointer_was_down_ = false;
+    primary_pointer_owned_ = false;
+    last_primary_pointer_position_.reset();
     pointer_focus_timer_->start();
     rpc_ready_ = true;
     emit engineRpcBecameAvailable();
@@ -601,11 +618,41 @@ void EmbeddedViewport::pollPointerFocus() {
 
     const NativePrimaryPointerState primary_pointer =
         NativeWindowHost::primaryPointerState(child_window_);
-    if (primary_pointer.button_down && !primary_pointer_was_down_ &&
-        primary_pointer.child_client_position) {
-        emit viewportPickRequested(*primary_pointer.child_client_position);
+    if (primary_pointer.button_down && !primary_pointer_was_down_) {
+        primary_pointer_owned_ =
+            primary_pointer.over_child &&
+            primary_pointer.child_client_position.has_value();
+        if (primary_pointer_owned_) {
+            last_primary_pointer_position_ =
+                primary_pointer.child_client_position;
+            emit viewportPointerPressed(*last_primary_pointer_position_);
+        }
+    } else if (primary_pointer.button_down && primary_pointer_owned_ &&
+               primary_pointer.child_client_position) {
+        if (last_primary_pointer_position_ !=
+            primary_pointer.child_client_position) {
+            last_primary_pointer_position_ =
+                primary_pointer.child_client_position;
+            emit viewportPointerMoved(*last_primary_pointer_position_);
+        }
+    } else if (!primary_pointer.button_down && primary_pointer_was_down_ &&
+               primary_pointer_owned_) {
+        const auto released_position =
+            primary_pointer.child_client_position
+                ? primary_pointer.child_client_position
+                : last_primary_pointer_position_;
+        if (released_position) {
+            emit viewportPointerReleased(*released_position);
+        }
+        primary_pointer_owned_ = false;
+        last_primary_pointer_position_.reset();
     }
     primary_pointer_was_down_ = primary_pointer.button_down;
+}
+
+void EmbeddedViewport::setGizmoNotice(const QString &message) {
+    gizmo_notice_->setText(message);
+    gizmo_notice_->setVisible(!message.isEmpty());
 }
 
 void EmbeddedViewport::updateDiagnostics() {

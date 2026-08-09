@@ -369,6 +369,7 @@ struct InspectorModel::Impl {
         EditPoll,
         PreviewSubmit,
         PreviewPoll,
+        Save,
     };
 
     enum class PreviewRequestKind : std::uint8_t {
@@ -463,6 +464,13 @@ struct InspectorModel::Impl {
 
     bool editPending() const noexcept {
         return !pending_edits.empty() || editSubmissionInFlight();
+    }
+
+    bool saveInFlight() const noexcept {
+        return std::any_of(
+            requests.begin(), requests.end(), [](const auto &request) {
+                return request.second.purpose == RequestPurpose::Save;
+            });
     }
 
     bool refreshSuppressed() const noexcept {
@@ -1148,8 +1156,20 @@ struct InspectorModel::Impl {
         handleEditCompletion(result, completed);
     }
 
+    void handleSave(const Json &result) {
+        if (requiredString(result, "status", "save_scene result") != "saved") {
+            throw std::runtime_error("save_scene result status must be 'saved'");
+        }
+        const auto revision = unsignedInteger(
+            requiredField(result, "scene_revision", "save_scene result"),
+            "save_scene scene_revision");
+        setNotice(InspectorNoticeKind::Success,
+                  "Scene saved at revision " + std::to_string(revision) + ".");
+    }
+
     void handleResult(const RequestState &state, const Json &result) {
         if (state.purpose != RequestPurpose::OpenSession &&
+            state.purpose != RequestPurpose::Save &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -1185,11 +1205,15 @@ struct InspectorModel::Impl {
         case RequestPurpose::PreviewPoll:
             handlePreviewPoll(state, result);
             break;
+        case RequestPurpose::Save:
+            handleSave(result);
+            break;
         }
     }
 
     void handleFailure(const RequestState &state, std::string message) {
         if (state.purpose != RequestPurpose::OpenSession &&
+            state.purpose != RequestPurpose::Save &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -1230,6 +1254,8 @@ struct InspectorModel::Impl {
             break;
         case RequestPurpose::EditSubmit:
             requestRefresh(true);
+            break;
+        case RequestPurpose::Save:
             break;
         }
         setNotice(InspectorNoticeKind::Error, std::move(message));
@@ -1540,6 +1566,19 @@ void InspectorModel::redo() {
     impl_->enqueueUndoRedo(true);
 }
 
+bool InspectorModel::saveScene() {
+    if (!canSave()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Save requires an idle Inspector editor session.");
+        return false;
+    }
+    impl_->queue("save_scene", Json::object(),
+                 {.purpose = Impl::RequestPurpose::Save,
+                  .selection_generation = impl_->selection_generation});
+    impl_->setNotice(InspectorNoticeKind::Information, "Saving scene...");
+    return true;
+}
+
 const std::optional<OutlinerObjectKey> &InspectorModel::selection() const noexcept {
     return impl_->selection;
 }
@@ -1561,7 +1600,8 @@ bool InspectorModel::refreshBlocked() const noexcept {
 }
 
 bool InspectorModel::busy() const noexcept {
-    return impl_->preview.has_value() || impl_->editPending();
+    return impl_->preview.has_value() || impl_->editPending() ||
+           impl_->saveInFlight();
 }
 
 bool InspectorModel::canEdit() const noexcept {
@@ -1570,6 +1610,12 @@ bool InspectorModel::canEdit() const noexcept {
 
 bool InspectorModel::canUndoRedo() const noexcept {
     return canEdit() && !busy() && !impl_->refresh_in_flight;
+}
+
+bool InspectorModel::canSave() const noexcept {
+    return impl_->connected && impl_->actor_id && !busy() &&
+           !refreshBlocked() &&
+           !impl_->refresh_in_flight;
 }
 
 } // namespace PelicanStudio

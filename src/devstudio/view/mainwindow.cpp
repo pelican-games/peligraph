@@ -4,6 +4,7 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QDir>
@@ -12,6 +13,9 @@
 #include <QFrame>
 #include <QFont>
 #include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -25,6 +29,7 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTextCursor>
+#include <QToolBar>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
@@ -34,6 +39,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <unordered_set>
 #include <vector>
 
 namespace PelicanStudio {
@@ -179,9 +185,17 @@ void MainWindow::createWorkspace() {
         frame_plan_);
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
-    connect(viewport_, &EmbeddedViewport::viewportPickRequested, this,
+    connect(viewport_, &EmbeddedViewport::viewportPointerPressed, this,
             [this](const QPoint &pixel_position) {
-                beginViewportPick(pixel_position);
+                beginViewportPointer(pixel_position);
+            });
+    connect(viewport_, &EmbeddedViewport::viewportPointerMoved, this,
+            [this](const QPoint &pixel_position) {
+                moveViewportPointer(pixel_position);
+            });
+    connect(viewport_, &EmbeddedViewport::viewportPointerReleased, this,
+            [this](const QPoint &pixel_position) {
+                releaseViewportPointer(pixel_position);
             });
     connect(viewport_, &EmbeddedViewport::pickObjectSucceeded, this,
             [this](qint64 request_id, const QByteArray &result_json) {
@@ -190,6 +204,26 @@ void MainWindow::createWorkspace() {
     connect(viewport_, &EmbeddedViewport::pickObjectFailed, this,
             [this](qint64 request_id, const QString &message) {
                 failViewportPick(request_id, message);
+            });
+    connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
+            [this] {
+                pending_gizmo_requests_.clear();
+                gizmo_model_.startSession();
+                dispatchGizmoModel();
+            });
+    connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
+            [this](const QString &) {
+                pending_gizmo_requests_.clear();
+                gizmo_model_.stopSession();
+                dispatchGizmoModel();
+            });
+    connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
+            [this](qint64 request_id, const QByteArray &result_json) {
+                completeGizmoRpc(request_id, result_json);
+            });
+    connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
+            [this](qint64 request_id, const QString &message) {
+                failGizmoRpc(request_id, message);
             });
 }
 
@@ -200,6 +234,17 @@ void MainWindow::createMenus() {
     QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
     connect(open_project_action, &QAction::triggered, this,
             [this]() { chooseProject(); });
+    QAction *save_scene_action = file_menu->addAction(tr("&Save Scene"));
+    save_scene_action->setShortcut(QKeySequence::Save);
+    connect(save_scene_action, &QAction::triggered, this, [this] {
+        if (inspector_->saveScene()) {
+            statusBar()->showMessage(tr("Saving scene..."), 3000);
+        } else {
+            statusBar()->showMessage(
+                tr("Scene save is unavailable while an edit is active."),
+                5000);
+        }
+    });
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     QMenu *panels_menu = view_menu->addMenu(tr("&Panels"));
@@ -221,6 +266,30 @@ void MainWindow::createMenus() {
         applyDefaultLayout();
         statusBar()->showMessage(tr("Default layout restored"), 3000);
     });
+
+    auto *gizmo_toolbar = addToolBar(tr("Gizmo"));
+    gizmo_toolbar->setObjectName(QStringLiteral("pelican.gizmoToolbar"));
+    gizmo_toolbar->setMovable(true);
+    auto *gizmo_group = new QActionGroup(gizmo_toolbar);
+    gizmo_group->setExclusive(true);
+    const auto add_mode = [&](const QString &label, GizmoMode mode,
+                              const QString &tool_tip) {
+        QAction *action = gizmo_toolbar->addAction(label);
+        action->setCheckable(true);
+        action->setToolTip(tool_tip);
+        gizmo_group->addAction(action);
+        connect(action, &QAction::triggered, this,
+                [this, mode] { setGizmoMode(mode); });
+        return action;
+    };
+    QAction *translate = add_mode(
+        tr("Move"), GizmoMode::Translate,
+        tr("Move the selection along one world axis"));
+    add_mode(tr("Rotate"), GizmoMode::Rotate,
+             tr("Rotate the selection around one world axis"));
+    add_mode(tr("Scale"), GizmoMode::Scale,
+             tr("Scale the selection along one axis"));
+    translate->setChecked(true);
 }
 
 void MainWindow::chooseProject() {
@@ -355,9 +424,157 @@ void MainWindow::failViewportPick(qint64 request_id,
     }
 }
 
+void MainWindow::beginViewportPointer(const QPoint &pixel_position) {
+    gizmo_model_.pointerPressed(
+        {.x = pixel_position.x(), .y = pixel_position.y()},
+        inspector_->gizmoTransformBinding());
+    dispatchGizmoModel();
+}
+
+void MainWindow::moveViewportPointer(const QPoint &pixel_position) {
+    gizmo_model_.pointerMoved(
+        {.x = pixel_position.x(), .y = pixel_position.y()});
+    dispatchGizmoModel();
+}
+
+void MainWindow::releaseViewportPointer(const QPoint &pixel_position) {
+    gizmo_model_.pointerReleased(
+        {.x = pixel_position.x(), .y = pixel_position.y()});
+    dispatchGizmoModel();
+}
+
+void MainWindow::completeGizmoRpc(qint64 request_id,
+                                  const QByteArray &result_json) {
+    const auto pending = pending_gizmo_requests_.find(request_id);
+    if (pending == pending_gizmo_requests_.end()) return;
+    const std::uint64_t model_request_id = pending.value();
+    pending_gizmo_requests_.erase(pending);
+    gizmo_model_.receiveRpcResult(
+        model_request_id,
+        std::string_view{result_json.constData(),
+                         static_cast<std::size_t>(result_json.size())});
+    dispatchGizmoModel();
+}
+
+void MainWindow::failGizmoRpc(qint64 request_id, const QString &message) {
+    const auto pending = pending_gizmo_requests_.find(request_id);
+    if (pending == pending_gizmo_requests_.end()) return;
+    const std::uint64_t model_request_id = pending.value();
+    pending_gizmo_requests_.erase(pending);
+    gizmo_model_.receiveRpcFailure(model_request_id,
+                                   message.toStdString());
+    dispatchGizmoModel();
+}
+
+void MainWindow::dispatchGizmoModel() {
+    std::unordered_set<std::uint64_t> rejected_gestures;
+    for (;;) {
+        bool progressed = false;
+
+        auto edit_actions = gizmo_model_.takeEditActions();
+        progressed = progressed || !edit_actions.empty();
+        for (auto &action : edit_actions) {
+            switch (action.kind) {
+            case GizmoEditActionKind::Begin: {
+                const bool started =
+                    inspector_->beginGizmoEdit(action.field_key);
+                gizmo_model_.confirmEditStarted(
+                    action.gesture_id, started,
+                    started ? std::string{}
+                            : "The Inspector is not ready for a gizmo edit.");
+                break;
+            }
+            case GizmoEditActionKind::Preview:
+                if (!inspector_->previewGizmoEdit(
+                        action.field_key, std::move(action.value))) {
+                    rejected_gestures.insert(action.gesture_id);
+                    gizmo_model_.cancelActiveEdit(
+                        "The Inspector rejected the gizmo preview value.");
+                }
+                break;
+            case GizmoEditActionKind::Finish:
+                inspector_->finishGizmoEdit(action.field_key,
+                                             action.commit &&
+                                                 !rejected_gestures.contains(
+                                                     action.gesture_id));
+                break;
+            }
+        }
+
+        auto fallback_picks = gizmo_model_.takeFallbackPicks();
+        progressed = progressed || !fallback_picks.empty();
+        for (const GizmoPixelPosition position : fallback_picks) {
+            beginViewportPick(QPoint{position.x, position.y});
+        }
+
+        auto requests = gizmo_model_.takeRpcRequests();
+        progressed = progressed || !requests.empty();
+        for (auto &request : requests) {
+            QJsonParseError parse_error;
+            const QJsonDocument params_document = QJsonDocument::fromJson(
+                QByteArray::fromStdString(request.params.dump()),
+                &parse_error);
+            if (parse_error.error != QJsonParseError::NoError ||
+                !params_document.isObject()) {
+                gizmo_model_.receiveRpcFailure(
+                    request.request_id,
+                    "Studio generated invalid gizmo RPC parameters.");
+                continue;
+            }
+            QString error;
+            const qint64 transport_request_id = viewport_->requestRpc(
+                QString::fromStdString(request.method),
+                params_document.object(), &error);
+            if (transport_request_id == 0) {
+                gizmo_model_.receiveRpcFailure(request.request_id,
+                                               error.toStdString());
+                continue;
+            }
+            pending_gizmo_requests_.insert(
+                transport_request_id,
+                static_cast<quint64>(request.request_id));
+        }
+
+        if (!progressed) break;
+    }
+    presentGizmoNotice();
+}
+
+void MainWindow::setGizmoMode(GizmoMode mode) {
+    gizmo_model_.setMode(mode);
+    dispatchGizmoModel();
+    statusBar()->showMessage(
+        tr("Gizmo mode: %1")
+            .arg(QString::fromUtf8(gizmoModeName(mode).data(),
+                                   static_cast<qsizetype>(
+                                       gizmoModeName(mode).size()))),
+        2500);
+}
+
+void MainWindow::presentGizmoNotice() {
+    if (presented_gizmo_notice_revision_ ==
+        gizmo_model_.noticeRevision()) {
+        return;
+    }
+    presented_gizmo_notice_revision_ = gizmo_model_.noticeRevision();
+    QString message = QString::fromStdString(gizmo_model_.notice().message);
+    if (message.contains(QStringLiteral("engine://features/gizmo.json"))) {
+        message = tr("Gizmo is unavailable: the active project render graph "
+                     "does not include engine://features/gizmo.json. Add the "
+                     "feature to use Move, Rotate, and Scale handles.");
+    }
+    viewport_->setGizmoNotice(message);
+    if (!message.isEmpty()) {
+        appendEngineOutput(tr("[Studio gizmo] %1\n").arg(message));
+        statusBar()->showMessage(message, 8000);
+    }
+}
+
 void MainWindow::refreshSelectionViews() {
     const QSignalBlocker block_outliner{outliner_};
     const auto &selection = selection_model_.selected();
+    gizmo_model_.setSelection(selection);
+    dispatchGizmoModel();
     if (!selection) {
         outliner_->setCurrentItem(nullptr);
         outliner_->clearSelection();

@@ -19,6 +19,18 @@ target_link_libraries(pelican_studio_inspector_model PUBLIC
     pelican_studio_outliner
 )
 
+add_library(pelican_studio_gizmo_model STATIC
+    gizmomodel.cpp
+    gizmomodel.hpp
+)
+
+set_target_properties(pelican_studio_gizmo_model PROPERTIES CXX_STANDARD 20)
+target_include_directories(pelican_studio_gizmo_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pelican_studio_gizmo_model PUBLIC
+    nlohmann_json
+    pelican_studio_outliner
+)
+
 add_library(pelican_studio_frame_plan STATIC
     frameplanmodel.cpp
     frameplanmodel.hpp
@@ -30,4 +42,5 @@ target_link_libraries(pelican_studio_frame_plan PUBLIC nlohmann_json)
 
 target_link_libraries(pelican_studio PRIVATE pelican_studio_outliner)
 target_link_libraries(pelican_studio PRIVATE pelican_studio_inspector_model)
+target_link_libraries(pelican_studio PRIVATE pelican_studio_gizmo_model)
 target_link_libraries(pelican_studio PRIVATE pelican_studio_frame_plan)

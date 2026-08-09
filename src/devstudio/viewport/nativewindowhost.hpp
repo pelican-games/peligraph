@@ -26,6 +26,7 @@ struct NativeViewportDiagnostics {
 
 struct NativePrimaryPointerState {
     bool button_down = false;
+    bool over_child = false;
     std::optional<QPoint> child_client_position;
 };
 

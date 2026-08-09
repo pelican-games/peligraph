@@ -234,27 +234,22 @@ NativePrimaryPointerState
 NativeWindowHost::primaryPointerState(NativeWindowHandle child_handle) noexcept {
     NativePrimaryPointerState result;
     result.button_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    if (!result.button_down) {
-        return result;
-    }
-
     HWND child = asHwnd(child_handle);
     POINT cursor{};
     if (!IsWindow(child) || !GetCursorPos(&cursor)) {
         return result;
     }
     const HWND pointed_window = WindowFromPoint(cursor);
-    if (pointed_window != child && !IsChild(child, pointed_window)) {
-        return result;
+    result.over_child =
+        pointed_window == child || IsChild(child, pointed_window);
+    GUITHREADINFO thread_info{sizeof(GUITHREADINFO)};
+    const DWORD child_thread = GetWindowThreadProcessId(child, nullptr);
+    if (GetGUIThreadInfo(child_thread, &thread_info) &&
+        (thread_info.hwndCapture == child ||
+         IsChild(child, thread_info.hwndCapture))) {
+        result.over_child = true;
     }
     if (!ScreenToClient(child, &cursor)) {
-        return result;
-    }
-
-    RECT client{};
-    if (!GetClientRect(child, &client) || cursor.x < client.left ||
-        cursor.y < client.top || cursor.x >= client.right ||
-        cursor.y >= client.bottom) {
         return result;
     }
     result.child_client_position =

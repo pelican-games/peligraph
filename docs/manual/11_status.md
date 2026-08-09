@@ -371,7 +371,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_asset_hot_reload.md](../design_asset_hot_reload.md) | ✅ v2.1・HR0〜HR2-G、targeted animation generation(WP147)、VRMA reload entry(WP178)実装済み。HR2-I/U3/VRMA watcher配線は未 | [第10章](10_tools.md) |
 | [design_text_hud.md](../design_text_hud.md) | ✅ WP54 | [第7章](07_input_ui.md) |
 | [design_game_logic_native.md](../design_game_logic_native.md) | ✅ G1/G2 + behavior attachment/edit + two-generation reload(WP90/155/162/167) | [第8章](08_gameplay.md) |
-| [design_editor_tooling.md](../design_editor_tooling.md) | ✅ v2.5(条件付き受理)。authoring/service/RPC/transaction/undo/save/snapshot/watch/preview、汎用 gizmo feature/RPC 実装済み(WP149〜172/WP274)。Studio gizmo 操作/WebSocket は未 | [第13章](13_editor.md)・[第10章](10_tools.md) |
+| [design_editor_tooling.md](../design_editor_tooling.md) | ✅ v2.5(条件付き受理)。authoring/service/RPC/transaction/undo/save/snapshot/watch/preview、汎用 gizmo feature/RPC と Studio 操作を実装済み(WP149〜172/WP274/275)。WebSocket は未 | [第13章](13_editor.md)・[第10章](10_tools.md) |
 | [design_object_behaviors.md](../design_object_behaviors.md) | ✅ v2.1・BEH0/BEH1/BEH2 実装済み(WP155/162/167)。`onFixedUpdate` や behavior 間の直接参照は未 | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) |
 | [design_event_layer.md](../design_event_layer.md) | ✅ v1.1 E1 + typed schema + E2 Enter/Exit(WP56/71/179)。Stay は未採用 | [第8章](08_gameplay.md) |
 | [design_scene_flow.md](../design_scene_flow.md) | ✅ S1(S2 は未) | [第8章](08_gameplay.md) |

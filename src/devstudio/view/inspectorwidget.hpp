@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../model/gizmomodel.hpp"
 #include "../model/project.hpp"
 
 #include <QWidget>
@@ -26,6 +27,12 @@ class InspectorWidget final : public QWidget {
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
                       const QString &display_text);
+    std::optional<GizmoTransformBinding> gizmoTransformBinding() const;
+    bool beginGizmoEdit(std::string_view field_key);
+    bool previewGizmoEdit(std::string_view field_key,
+                          nlohmann::json value);
+    void finishGizmoEdit(std::string_view field_key, bool commit);
+    bool saveScene();
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

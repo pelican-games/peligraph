@@ -449,7 +449,8 @@ overlay はメモリ上だけにあり、scene JSON や入力 profile を保存�
 viewport の左クリックは child client の物理 pixel 座標を `pick_object` へ送り、応答の
 `(scene_id, declaration_index)` を Outliner と Inspector に反映します。Outliner を選んだ方向も
 同じ `SelectionModel` を更新し、viewport はその 1 個の状態を非所有参照します。名前は表示にしか
-使わないため、無名 object も別々に選択できます。この WP では枠線や gizmo は描きません。
+使わないため、無名 object も別々に選択できます。WP264 の時点では枠線や gizmo を描きませんでしたが、
+現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
 選択は engine/game の共有状態ではなく、各ツールが持つ client-session の注視対象です。engine に
 Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_project` の identity だけから
@@ -457,6 +458,17 @@ Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_proj
 `picking` feature が無い、RPC が失敗した、または応答を Outliner と対応付けられない場合は現在選択を
 維持し、viewport の警告行、status bar、Engine Log の三つへ理由を出します。feature は自動で有効化せず、
 project の purgeability を保ちます。
+
+gizmo の押下時は `query_gizmo_handle` を 1 回だけ呼び、掴んだ handle を Studio 側で保持します。
+以後の pointer move では hit test をやり直さず、選んだ軸へ拘束した移動・回転・拡縮を行います。
+値の反映には Inspector と同じ `open_preview` / `update_preview` / `commit_preview` /
+`abort_preview` lease を使います。ドラッグ中は Inspector の対応する数値も追従し、release で undo
+可能な authoring 編集として commit されます。選択・モード変更や player 停止では commit せず
+abort します。handle 以外を押した場合は通常の object pick へ移ります。
+
+`File > Save Scene` または `Ctrl+S` は commit 済みの authoring document を `save_scene` で保存します。
+その後にシーンを開き直しても gizmo 編集は残ります。gizmo feature が project の render graph に
+含まれない場合は viewport と status bar に理由を表示し、自動で feature を追加しません。
 
 `View > Panels > Frame Plan` は、実行中 player の公開 `get_frame_plan` を読むレンダーパス調査用の
 読み取り専用 dock です。Passes タブの先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、
@@ -475,7 +487,8 @@ render graph の hot reload 後など、変化を確認したい時に明示更�
 CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated preview。Studio の
 process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262、Studio の選択同期は
 WP264、Frame Plan パネルは WP269 で入りました。engine の汎用 gizmo feature/RPC は WP274 で入り、
-Studio のドラッグ接続(WP275)と複数 client WebSocket は未接続です。ツール自作の入口は
+Studio の preview lease を使うドラッグ接続は WP275 で入りました。複数 client WebSocket は
+未接続です。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤

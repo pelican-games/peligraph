@@ -291,10 +291,10 @@ cmake --build ./build --target run_studio
 
 `run_studio` ターゲットは windeployqt(Qt DLL 配置)まで面倒を見ます。
 
-> **注意:** Qt Studio 自体は現状 **QML のダミー画面のみ**です。
-> 一方、engine側の typed editor service/RPC、Object Tree、Inspector、
-> undo/save/preview は実装済みで、通常playerのImGuiから利用できます。
-> engine 側の汎用 gizmo render feature/RPC は実装済みですが、Qt Studio でのドラッグ操作は WP275 待ちです。
+> **注意:** Qt Studio は Widgets shell から別 process の player を native viewport に埋め込み、
+> Outliner 選択、schema-driven Inspector、undo/redo、保存、Frame Plan、Move / Rotate / Scale
+> gizmo のドラッグまで利用できます。gizmo は project の render graph に
+> `engine://features/gizmo.json` が含まれる場合だけ有効で、無い場合は理由を表示します。
 > エディタの設計方向(D0「エディタ特権の禁止」など)は [第10章](10_tools.md) §10.7 と
 > [../design_devstudio_direction.md](../design_devstudio_direction.md) /
 > [../design_editor_tooling.md](../design_editor_tooling.md) を参照してください。

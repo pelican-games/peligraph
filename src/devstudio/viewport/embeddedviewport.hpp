@@ -9,6 +9,8 @@
 #include <QSet>
 #include <QWidget>
 
+#include <optional>
+
 class QLabel;
 class QPushButton;
 class QTimer;
@@ -36,10 +38,13 @@ class EmbeddedViewport final : public QWidget {
                       QString *error = nullptr);
     bool rpcReady() const noexcept { return rpc_ready_; }
     void setPickingNotice(const QString &message);
+    void setGizmoNotice(const QString &message);
 
   signals:
     void engineOutputReceived(const QString &output);
-    void viewportPickRequested(const QPoint &pixel_position);
+    void viewportPointerPressed(const QPoint &pixel_position);
+    void viewportPointerMoved(const QPoint &pixel_position);
+    void viewportPointerReleased(const QPoint &pixel_position);
     void pickObjectSucceeded(qint64 request_id,
                              const QByteArray &result_json);
     void pickObjectFailed(qint64 request_id, const QString &message);
@@ -54,6 +59,7 @@ class EmbeddedViewport final : public QWidget {
     QWidget *native_host_ = nullptr;
     QLabel *status_ = nullptr;
     QLabel *picking_notice_ = nullptr;
+    QLabel *gizmo_notice_ = nullptr;
     QPushButton *restart_button_ = nullptr;
     QPushButton *stop_button_ = nullptr;
     QTimer *window_discovery_timer_ = nullptr;
@@ -66,6 +72,8 @@ class EmbeddedViewport final : public QWidget {
     NativeWindowHandle child_window_ = 0;
     bool pointer_button_was_down_ = false;
     bool primary_pointer_was_down_ = false;
+    bool primary_pointer_owned_ = false;
+    std::optional<QPoint> last_primary_pointer_position_;
     bool restart_after_stop_ = false;
     bool shutting_down_ = false;
     bool rpc_ready_ = false;

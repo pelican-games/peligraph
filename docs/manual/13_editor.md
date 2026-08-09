@@ -18,8 +18,8 @@
 > **設計決定(D0 の具体化 — 編集 API は RPC ひとつだけ):** 編集操作は**まず RPC メソッドとして定義**され、エンジン内の ImGui インスペクタも、外部の Python クライアントも、将来の Qt エディタも、**同じ関数を呼ぶ**。エディタ専用の裏口 API は作らない。結果として「人間の GUI 操作」と「エージェントの自動操作」が同じ意味論・同じテストになる。
 
 ⚠ 用語の注意: この章でいう「エディタ」は次の 2 つを指します。Qt 版の Pelican
-Studio(`pelican_studio`)には Widgets shell と別 process player の native viewport が入りましたが、
-**この章の編集 RPC はまだ呼んでいません**([第10章](10_tools.md) §10.7)。
+Studio(`pelican_studio`)は別 process player の native viewport を持ち、schema-driven Inspector と
+gizmo からもこの章と同じ編集 RPC / preview lease を呼びます([第10章](10_tools.md) §10.7)。
 
 1. **編集 RPC**(この章の §13.3〜§13.8)
 2. **エンジン内蔵の ImGui パネル**(§13.9 — Object Tree / Inspector / Asset Browser)
@@ -308,9 +308,10 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | チケットプレビューの対象拡大 | 🚧(transform / light のみ) |
 | GUI と RPC の同居 | 📐未実装 |
 | Qt Studio shell / native engine viewport | ✅WP249/251 |
-| Qt Studio からの編集 RPC 利用(D2〜D3) | 📐未着手 |
+| Qt Studio からの編集 RPC 利用(D2) | ✅WP266/275。Inspector と gizmo が同じ preview lease / undo / save を利用 |
 | ID バッファピッキングの engine/RPC 基盤 | ✅WP262 |
-| Qt Studio の viewport / Outliner 選択同期 | ✅WP264。枠線・ギズモは後続 |
+| Qt Studio の viewport / Outliner 選択同期 | ✅WP264 |
+| 汎用 gizmo feature/RPC と Qt Studio のドラッグ操作 | ✅WP274/275 |
 
 ## 関連文書
 

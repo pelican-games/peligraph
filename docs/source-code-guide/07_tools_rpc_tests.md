@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L31) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L32) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -196,15 +196,15 @@ flowchart LR
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L100) は Project / Outliner /
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L106) は Project / Outliner /
 Inspector / Output / Engine Log / Frame Plan の6パネルを stable object name を持つ dock として作ります。パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
-中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L21) は
+中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L23) は
 `pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L24) で別 process
 として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
-[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L32) が Windows style、parent、
+[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L33) が Windows style、parent、
 focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。したがって
 resize は player の通常の GLFW framebuffer callback から既存の Surface/Swapchain epoch 経路へ
 入ります。通常の resize は最後の寸法イベントから 50 ms 静止するまで native child を凍結し、
@@ -264,7 +264,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L250) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L319) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L62) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -302,7 +302,14 @@ project を開くと viewport は同じ root を `--rpc --project` で再起動�
 左クリックを物理 client 座標へ変換し、`EngineProcess` の stdio JSON-RPC から `pick_object` を
 呼びます。成功は Outliner と Inspector に反映し、背景なら解除します。picking feature が無い場合は
 選択を維持し、viewport/status/log に有効化方法を明示します。property 編集は Inspector から同じ
-child の編集 RPC へ接続済みで、枠線と gizmo は後続です。
+child の編集 RPC へ接続済みです。
+
+[`GizmoModel`](../../src/devstudio/model/gizmomodel.hpp) は選択と toolbar の mode を `set_gizmo` へ送り、
+左押下時の `query_gizmo_handle` 1 回だけで handle を確定します。以後は editor 側に保持した軸へ
+pointer 移動を拘束し、Inspector と同じ preview lease へ値を渡します。release は commit、選択・mode
+変更や player 停止は abort になり、Inspector の数値表示もドラッグ中に追従します。handle の外側は
+従来の object pick へ戻ります。この Qt 非依存状態遷移は
+[`devstudio_gizmo_test.cpp`](../../test/devstudio_gizmo_test.cpp) が headless に検査します。
 同期、無名 object、stale 応答、背景、feature 無効の意味論は
 [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp) が headless に固定し、stdio の
 応答/通常 log 分離は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp) が検査します。
@@ -582,7 +589,7 @@ cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1531) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1535) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

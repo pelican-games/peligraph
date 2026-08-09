@@ -126,6 +126,7 @@ class InspectorModel {
     void abortActivePreview();
     void undo();
     void redo();
+    bool saveScene();
 
     const std::optional<OutlinerObjectKey> &selection() const noexcept;
     const std::optional<InspectorObjectSnapshot> &snapshot() const noexcept;
@@ -135,6 +136,7 @@ class InspectorModel {
     bool busy() const noexcept;
     bool canEdit() const noexcept;
     bool canUndoRedo() const noexcept;
+    bool canSave() const noexcept;
 };
 
 } // namespace PelicanStudio
