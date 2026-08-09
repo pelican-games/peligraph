@@ -2553,6 +2553,80 @@ WP275 の受け入れ条件「保存して開き直しても残ること」は�
 
 依存: WP276(マージ済み)。見積: 小。
 
+### WP278: SPIR-V / Vulkan ターゲットの所在を一箇所にする
+
+**目的**: シェーダのターゲット環境が **4 箇所に 3 つの異なる値**で宣言されている。一箇所に寄せる。
+
+**確認済みの現状**:
+
+| 場所 | 値 |
+|---|---|
+| `src/core/resources/CMakeLists.txt:6` の `glslang -V`(`--target-env` 指定なし) | Vulkan 1.0 / SPIR-V **1.0** |
+| `src/core/shader/shadercompiler.cpp:56` / `:451` | `vulkan-1.2` / SPIR-V **1.5** |
+| `src/core/shader/spvlink.cpp:25` | `SPV_ENV_VULKAN_1_2` |
+| `src/core/vkcore/core.cpp:24` | Vulkan **1.3.283** |
+
+実測で裏が取れている。`src/core/resources/*.spv` のバージョン語は `0x00010000`(SPIR-V 1.0)であり、
+実行時コンパイラの出力は 1.5 である。
+
+**なぜ欠陥か**: エンジンシェーダは GLSL と SPIR-V の**両方**が埋め込まれ、
+`ShaderLibrary::loadFromStemReference` は `PELICAN_RUNTIME_SHADER_COMPILER` が ON のときだけ
+GLSL を優先する。つまり**同じシェーダがビルド構成によって異なる能力を持つ**。
+SPIR-V 1.0 でしか表現できない機能しか使っていない今は表に出ないが、
+1.4 以上を要求する拡張(ray query など)を入れた瞬間に、
+ON のビルドでは通り OFF のビルドでは通らない、という形で噛む。
+`CMakeLists.txt:41` が OFF 構成を支持し `:325-332` が SDK 無し環境向けに明記している以上、
+これは仮定ではなく支持された構成である。
+
+**実装範囲**:
+
+1. ターゲットの宣言を**一箇所**に置くこと。他の 3 箇所はそこから導出すること。
+   どこを正とするかを決め、理由を書くこと。
+2. `embed_shader` に明示的な `--target-env` を渡すこと。
+   ビルド時経路と実行時経路が**同じ SPIR-V バージョンを出す**ようにすること。
+3. 値を上げること自体が目的ではない。**食い違いを無くすことが目的**である。
+   ただし将来 1.4 以上が必要になることは分かっているので、
+   上げる場合はどの構成に影響するかを述べること。
+
+**受け入れ条件**:
+
+- `src/core/resources/*.spv` のバージョン語と、実行時コンパイラの出力のバージョンが**一致**すること。
+  両方を実際に読んで比較するテストまたは検証手順を示すこと
+- ターゲットを変えたいとき、**編集する箇所が 1 つ**であること。どこかを示すこと
+- `PELICAN_RUNTIME_SHADER_COMPILER` が ON の構成と OFF の構成の**両方**でビルドが通り、
+  `ctest` 全数が緑であること。OFF 構成を実際に走らせること
+- 既存 golden が動かないこと。動いた場合は 1 枚ずつ理由を述べること
+- `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし。レイトレの前提だが、単独で価値がある。見積: 小〜中。
+
+### WP279: ギズモの掴み代の既定値を一箇所に戻す
+
+**目的**: `gizmoGrabRadiusLogicalPixels = 10.0f`(`src/core/renderer/gizmo.hpp:90`)が
+`GrabRadiusLogicalPixels = 10.0`(`src/devstudio/model/gizmomodel.cpp:18`)として複製されている。
+既定値の所在は一箇所の違反。
+
+さらに悪いことに、devstudio は `query_gizmo_handle` が返す `grab_radius_pixels` を
+**自分の複製で割って content scale を逆算している**(`gizmomodel.cpp:440-441`)。
+クライアントが当たり判定の半径からスケール係数を逆算しなければならないのは、
+**応答が過小仕様である**という徴候である。
+
+**実装範囲**:
+
+1. `query_gizmo_handle` の応答に content scale を明示的に含めること。
+   クライアントが逆算しなくてよくすること。
+2. devstudio 側の掴み代の複製を**削除**すること。
+3. WP276 で追加した応答の形と整合させること。**第二の版を作らないこと。**
+
+**受け入れ条件**:
+
+- `src/devstudio/` に掴み代の数値定数が存在しないこと。grep して 0 件であることを示すこと
+- devstudio が content scale を割り算で逆算していないこと
+- DPI 追従の既存テスト(WP274 の「掴み代が 1 ピクセルより広い」)が期待値を変えずに通ること
+- `ctest` 全数が緑(`-DSKIP_DEVSTUDIO=ON` でも通ること)、`git diff --check` クリーン
+
+依存: **WP277**(同じファイル群に触れるため、WP277 のマージ後に着手すること)。見積: 小。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
