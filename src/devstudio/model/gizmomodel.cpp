@@ -14,7 +14,6 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr std::uint64_t MaximumExactJsonInteger = 9007199254740991ULL;
-constexpr double GrabRadiusLogicalPixels = 10.0;
 constexpr double DragThresholdLogicalPixels = 1.5;
 
 enum class RequestKind : std::uint8_t {
@@ -438,11 +437,11 @@ struct GizmoModel::Impl {
         }
         handle->drag_direction = {direction_x, direction_y};
         handle->value_per_logical_pixel = value_per_pixel->get<double>();
-        const auto grab_radius = result.find("grab_radius_pixels");
-        if (grab_radius == result.end() || !grab_radius->is_number() ||
-            !std::isfinite(grab_radius->get<double>()) ||
-            grab_radius->get<double>() <= 0.0) {
-            invalid("grab_radius_pixels must be positive and finite");
+        const auto content_scale = result.find("content_scale");
+        if (content_scale == result.end() || !content_scale->is_number() ||
+            !std::isfinite(content_scale->get<double>()) ||
+            content_scale->get<double>() <= 0.0) {
+            invalid("content_scale must be positive and finite");
             return;
         }
         if (!query.binding || query.binding->selection != query.selection) {
@@ -459,8 +458,6 @@ struct GizmoModel::Impl {
             return;
         }
 
-        const double content_scale = std::clamp(
-            grab_radius->get<double>() / GrabRadiusLogicalPixels, 0.5, 4.0);
         active = ActiveGesture{
             .gesture_id = query.gesture_id,
             .handle = *handle,
@@ -469,7 +466,7 @@ struct GizmoModel::Impl {
             .field = *field,
             .baseline = field->value,
             .last_value = field->value,
-            .content_scale = content_scale,
+            .content_scale = content_scale->get<double>(),
             .stage = EditStage::BeginRequested,
             .button_down = query.button_down,
         };

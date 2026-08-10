@@ -303,6 +303,7 @@ Json gizmoEditedPosition() {
              {"mode", "translate"},
              {"coordinate", {{"x", 100}, {"y", 100}}},
              {"extent", {{"width", 640}, {"height", 480}}},
+             {"content_scale", 1.0},
              {"grab_radius_pixels", 10.0},
              {"handle",
               {{"id", "translate_x"},

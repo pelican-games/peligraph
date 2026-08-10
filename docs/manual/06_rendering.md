@@ -727,9 +727,10 @@ engine が保持するのはこの**表示要求**だけで、hover、押下、a
 scene/project へ永続化しません。
 
 当たり判定は [`query_gizmo_handle`](10_tools.md#基盤メソッド一覧) へ選択、mode、左上原点の
-物理 pixel `(x, y)` を毎回すべて渡す純粋な問い合わせです。contract 2 の結果は
-`translate_x` / `rotate_z` / `scale_y` のような handle ID と axis に加え、値が増える
-`drag_direction` と `value_per_logical_pixel`、または `null` です。移動・拡縮の向きは投影軸、
+物理 pixel `(x, y)` を毎回すべて渡す純粋な問い合わせです。contract 2 の結果は、物理 pixel 差分を
+論理 pixel 差分へ直す `content_scale` を含みます。handle は `translate_x` / `rotate_z` /
+`scale_y` のような ID と axis、値が増える `drag_direction` と `value_per_logical_pixel`、
+または `null` です。移動・拡縮の向きは投影軸、
 回転の向きは掴んだ線分における正回転の接線です。移動量だけはカメラ距離に応じて変わります。
 描画済み frame や `set_gizmo` の現在値には依存せず、問い合わせによって engine 状態も
 変わりません。このため WP275 側は押下時に一度だけ問い合わせ、掴んだ handle とドラッグ状態を

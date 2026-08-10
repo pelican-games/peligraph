@@ -544,6 +544,7 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
             nlohmann::json{{"x", 56}, {"y", 96}});
     REQUIRE(hit.at("extent") ==
             nlohmann::json{{"width", 192}, {"height", 192}});
+    REQUIRE(hit.at("content_scale").get<float>() == Catch::Approx(1.0f));
     REQUIRE(hit.at("grab_radius_pixels").get<float>() > 1.0f);
     const auto &handle = hit.at("handle");
     REQUIRE(handle.at("id") == "scale_x");

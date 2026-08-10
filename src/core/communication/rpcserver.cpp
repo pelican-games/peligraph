@@ -1557,6 +1557,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"coordinate", {{"x", x}, {"y", y}}},
             {"extent",
              {{"width", extent.width}, {"height", extent.height}}},
+            {"content_scale", geometry.content_scale},
             {"grab_radius_pixels", geometry.grab_radius_pixels},
             {"handle", std::move(handle)},
         };

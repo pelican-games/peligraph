@@ -202,6 +202,7 @@ selection を返します。
   "mode": "translate",
   "coordinate": {"x": 420, "y": 240},
   "extent": {"width": 1280, "height": 720},
+  "content_scale": 2.0,
   "grab_radius_pixels": 20.0,
   "handle": {
     "id": "translate_x",
@@ -214,7 +215,8 @@ selection を返します。
 
 外れは `handle: null` です。`drag_direction` は問い合わせ座標と同じ Y 下向き空間の単位ベクトル、
 `value_per_logical_pixel` は移動なら world 単位、回転なら radian、拡縮なら指数の無次元量です。
-client は論理 pixel 差分 `d` に対して
+`content_scale` は物理 pixel 差分を論理 pixel 差分へ直す係数です。client は物理 pixel 差分を
+この明示値で割った論理 pixel 差分 `d` に対して
 `scalar = dot(d, drag_direction) * value_per_logical_pixel` だけを計算し、カメラ・射影を複製しません。
 問い合わせは `set_gizmo` の値や描画済み frame を読み書きせず、掴み代は描画の 1 px 線幅とは
 独立した 10 論理 px(DPI 2x の例では応答どおり 20 物理 px)です。射影軸が 8 論理 px 未満へ

@@ -67,7 +67,7 @@ Json displayResult(GizmoMode mode, bool visible = true) {
 }
 
 Json queryResult(GizmoMode mode, std::string_view handle,
-                 std::string_view axis, double grab_radius = 10.0,
+                 std::string_view axis, double content_scale = 1.0,
                  std::array<double, 2> drag_direction = {1.0, 0.0},
                  double value_per_logical_pixel = 0.01) {
     return {
@@ -79,7 +79,8 @@ Json queryResult(GizmoMode mode, std::string_view handle,
         {"mode", PelicanStudio::gizmoModeName(mode)},
         {"coordinate", {{"x", 100}, {"y", 100}}},
         {"extent", {{"width", 800}, {"height", 600}}},
-        {"grab_radius_pixels", grab_radius},
+        {"content_scale", content_scale},
+        {"grab_radius_pixels", 10.0},
         {"handle",
          {{"id", handle},
           {"axis", axis},
@@ -176,7 +177,7 @@ TEST_CASE("Devstudio gizmo queries once then previews and commits the captured a
 }
 
 TEST_CASE("Devstudio gizmo rotation normalizes quaternion and scale follows DPI",
-          "[devstudio][gizmo][rotation][scale][dpi][wp275]") {
+          "[devstudio][gizmo][rotation][scale][dpi][wp275][wp279]") {
     GizmoModel model;
     openModel(model);
 
@@ -206,9 +207,11 @@ TEST_CASE("Devstudio gizmo rotation normalizes quaternion and scale follows DPI"
     (void)takeRpc(model, "set_gizmo");
     model.pointerPressed({100, 100}, transformBinding());
     const auto scale_query = takeRpc(model, "query_gizmo_handle");
+    // The fixture keeps grab_radius_pixels at 10.0, so scale cannot be
+    // recovered from the hit radius.
     model.receiveRpcResult(
         scale_query.request_id,
-        queryResult(GizmoMode::Scale, "scale_x", "x", 20.0).dump());
+        queryResult(GizmoMode::Scale, "scale_x", "x", 2.0).dump());
     begin = takeEdit(model, GizmoEditActionKind::Begin);
     model.confirmEditStarted(begin.gesture_id, true);
     model.pointerMoved({300, 100});
@@ -228,7 +231,7 @@ TEST_CASE("Devstudio gizmo applies the engine projected direction and magnitude"
     const auto query = takeRpc(model, "query_gizmo_handle");
     model.receiveRpcResult(
         query.request_id,
-        queryResult(GizmoMode::Translate, "translate_x", "x", 10.0,
+        queryResult(GizmoMode::Translate, "translate_x", "x", 1.0,
                     {-1.0, 0.0}, 0.25)
             .dump());
     const auto begin = takeEdit(model, GizmoEditActionKind::Begin);

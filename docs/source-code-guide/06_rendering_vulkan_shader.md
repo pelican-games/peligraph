@@ -652,8 +652,9 @@ runtime world transform の pivot を使います。
 `{selection, mode}` だけです。hover/pressed/active handle/drag delta は型にもありません。この要求に
 serialize 経路はなく、実行をまたいで不安定な runtime ID を永続化しません。
 `query_gizmo_handle` はリクエスト自身の selection/mode/coordinate から毎回 pure geometry を作り、
-module の表示要求を参照も変更もしません。contract 2 の handle は `id` / `axis` /
-`drag_direction` / `value_per_logical_pixel` を公開し、任意の client が engine と同じ射影結果を使えます。
+module の表示要求を参照も変更もしません。contract 2 は幾何計算に使った `content_scale` を明示し、
+handle は `id` / `axis` / `drag_direction` / `value_per_logical_pixel` を公開するため、任意の client が
+掴み半径から scale を逆算せず engine と同じ射影結果を使えます。
 
 GPU 登録は picking/debug overlay と同じ feature lifetime に従います。
 [`gizmopassinfojsonparser.cpp`](../../src/core/renderingpass/gizmopassinfojsonparser.cpp) が `type:gizmo` を
