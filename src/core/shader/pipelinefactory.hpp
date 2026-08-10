@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -136,6 +137,8 @@ struct PipelineRebuildResult {
 // only pipelines that reflect the TLAS binding use the extended form.
 std::vector<vk::DescriptorSetLayoutBinding>
 frameDescriptorSetLayoutBindings(bool ray_query);
+bool shaderReflectionUsesRayQueryFrameSet(
+    const ShaderReflection &reflection) noexcept;
 
 DECLARE_MODULE(PipelineFactory) {
     struct DescriptorSetLayoutKey {
@@ -165,6 +168,8 @@ DECLARE_MODULE(PipelineFactory) {
         descriptor_set_layout_cache;
     ResourceContainer<PipelineHandle, PipelineRecord> pipelines;
     std::vector<PipelineHandle> pipeline_handles;
+    std::unordered_set<VkPipelineLayout>
+        ray_query_pipeline_layouts;
 
     std::vector<DescriptorSetLayoutKey> descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const;
     std::vector<vk::DescriptorSetLayout> descriptorSetLayoutsFor(const ShaderReflection &reflection);
@@ -199,6 +204,8 @@ DECLARE_MODULE(PipelineFactory) {
         bool ray_query = false);
     bool pipelineLayoutUsesRayQueryFrameSet(
         vk::PipelineLayout layout) const noexcept;
+    bool pipelineUsesRayQueryFrameSet(
+        PipelineHandle handle) const;
     const ShaderReflection &reflection(PipelineHandle handle) const;
     GraphicsPipelineDesc graphicsDesc(
         PipelineHandle handle) const;

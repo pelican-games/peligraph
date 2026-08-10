@@ -114,6 +114,9 @@
               ],
               "depth": "scene_depth"
             },
+            "clear_colors": {
+              "gbuffer_worldpos": [0.0, 0.0, 0.0, 0.0]
+            },
             "depth_store_op": "store"
           },
           {

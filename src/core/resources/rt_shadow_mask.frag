@@ -9,12 +9,16 @@ layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
 PELICAN_DECLARE_INPUT_0(worldPosSampler);
+PELICAN_DECLARE_INPUT_1(normalSampler);
 
 layout(set = PELICAN_SET_FRAME,
        binding = PELICAN_RAY_QUERY_TLAS_BINDING)
     uniform accelerationStructureEXT pelicanRayQueryScene;
 
-const float RAY_ORIGIN_BIAS = 0.01;
+const float RAY_ORIGIN_ABSOLUTE_BIAS = 0.01;
+// R16F world positions have roughly one ULP per 1024 units of magnitude.
+// Two ULPs cover interpolation/round-trip error before the normal offset.
+const float RAY_ORIGIN_RELATIVE_BIAS = 1.0 / 512.0;
 const float RAY_MAX_DISTANCE = 10000.0;
 
 void main() {
@@ -26,7 +30,15 @@ void main() {
 
     vec3 toLight = normalize(
         -pelicanLights.directionalLights[0].direction);
-    vec3 origin = world.xyz + toLight * RAY_ORIGIN_BIAS;
+    vec3 normal = normalize(
+        PELICAN_TEXTURE_2D_1(normalSampler, inUV).xyz * 2.0 - 1.0);
+    float coordinateScale = max(
+        1.0, max(abs(world.x), max(abs(world.y), abs(world.z))));
+    float originBias = max(
+        RAY_ORIGIN_ABSOLUTE_BIAS,
+        coordinateScale * RAY_ORIGIN_RELATIVE_BIAS);
+    float normalSide = dot(normal, toLight) >= 0.0 ? 1.0 : -1.0;
+    vec3 origin = world.xyz + normal * normalSide * originBias;
     rayQueryEXT query;
     rayQueryInitializeEXT(
         query, pelicanRayQueryScene,

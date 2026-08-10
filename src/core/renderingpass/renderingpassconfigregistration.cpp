@@ -905,7 +905,7 @@ registerRenderingPassConfigVariantsData(
     const auto output_facts =
         first.runtime.render_target.caps()
             .compile_facts;
-    const bool requires_ray_query = std::any_of(
+    const bool plan_requires_ray_query = std::any_of(
         program_preparations.begin(),
         program_preparations.end(),
         [](const auto &program) {
@@ -921,7 +921,19 @@ registerRenderingPassConfigVariantsData(
         });
     auto prepared_gpu_scope =
         gpu_arena.preparedScope(owner_scope);
-    if (requires_ray_query) {
+    const bool reflection_requires_ray_query = std::any_of(
+        prepared_gpu_scope.resources.begin(),
+        prepared_gpu_scope.resources.end(),
+        [&](const auto &resource) {
+            return resource.kind ==
+                       RenderPipelineGpuResourceKind::pipeline &&
+                   first.runtime.pipeline_factory
+                       .pipelineUsesRayQueryFrameSet(
+                           PipelineHandle{static_cast<int>(
+                               resource.handle)});
+        });
+    if (plan_requires_ray_query ||
+        reflection_requires_ray_query) {
         attachRayQueryAccelerationStructures(
             prepared_gpu_scope);
     }

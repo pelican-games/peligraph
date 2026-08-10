@@ -370,7 +370,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `hdr.json` | `format_class: scene` の RT を float16 化(切替はエンジンの色リゾルバが feature の有無で行う)し、`scene_ldr_in` を挟んでトーンマップパスを `after:tonemap` アンカーに挿入 |
 | `clustered_lighting.json` | computeでViewFamily/view別のcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入。planar reflection併用時はreflection-local selectorも自動合成 |
 | `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
-| `rt_shadow_mask.json` | `pelican.vulkan.ray_query@1` を要求し、`gbuffer_worldpos` から static-only TLAS へ hard shadow ray を飛ばして、誰も消費しない `R8_UNORM` マスクへ出力。既定無効。TLAS は set 0、fullscreen 入力は従来の set 1 |
+| `rt_shadow_mask.json` | `pelican.vulkan.ray_query@1` を要求し、被覆付き `gbuffer_worldpos` と `gbuffer_normal` から static-only TLAS へ法線方向 bias 付き hard shadow ray を飛ばして、誰も消費しない `R8_UNORM` マスクへ出力。静的対象 0 件は全面可視。既定無効。TLAS は set 0、fullscreen 入力は従来の set 1 |
 | `sky_ambient.json` | `scene_depth` の遠クリップだけを塗る単色背景と、deferred/forward共通の単色環境光。色・ambient強度・sky強度はruntime parameter。IBLは含まない |
 | `planar_reflection.json` | 指定world planeでmain viewを反転し、独立解像度のdeferred G-buffer/SSAO/lightingを`$reflection/planar` familyへ追加。結果をforward transparentの`planar_reflection` resource portへ割り当て |
 | `cube_capture.json` | stable `$capture/cube` family の 6 面 sequential capture。`cube_capture_color`(現在 1 mip)を作る。cube 専用のパス種別は増やさない(本節後半)✅WP237 |

@@ -105,20 +105,24 @@ std::shared_ptr<RayQueryAccelerationStructureScope>
 rayQueryAccelerationStructureScope(
     const RendererRuntimeGeneration &generation,
     const CompiledRenderProgram &program) {
-    if (!programRequiresRayQuery(program)) return {};
+    const auto planned = programRequiresRayQuery(program);
     if (generation.gpu_arena == nullptr) {
+        if (!planned) return {};
         throw std::runtime_error(
             "ray-query program has no GPU resource arena");
     }
     const auto *scope = generation.gpu_arena->findScope(
         program.owner_scope);
-    if (scope == nullptr ||
-        scope->acceleration_structures == nullptr) {
+    if (scope != nullptr &&
+        scope->acceleration_structures != nullptr) {
+        return scope->acceleration_structures;
+    }
+    if (planned) {
         throw std::runtime_error(
             "ray-query program has no acceleration-structure GPU "
             "owner scope");
     }
-    return scope->acceleration_structures;
+    return {};
 }
 
 std::optional<watch::AssetKey> projectAssetKeyForReference(
@@ -3933,13 +3937,13 @@ Renderer::rayQueryAccelerationStructureDiagnosticsForTesting() const {
         generation != nullptr
             ? generation->find(current_rendering_pass_id)
             : nullptr;
-    if (generation == nullptr || program == nullptr ||
-        !programRequiresRayQuery(*program)) {
+    if (generation == nullptr || program == nullptr) {
         return {};
     }
-    return rayQueryAccelerationStructureScope(
-               *generation, *program)
-        ->diagnostics();
+    const auto scope = rayQueryAccelerationStructureScope(
+        *generation, *program);
+    return scope != nullptr ? scope->diagnostics()
+                            : RayQueryAccelerationStructureDiagnostics{};
 }
 
 void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {

@@ -3407,7 +3407,7 @@
               0.0,
               0.0,
               0.0,
-              1.0
+              0.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "R16G16B16A16_SFLOAT",
@@ -3991,7 +3991,7 @@
               0.0,
               0.0,
               0.0,
-              1.0
+              0.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "R16G16B16A16_SFLOAT",
@@ -4588,7 +4588,7 @@
               0.0,
               0.0,
               0.0,
-              1.0
+              0.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "R16G16B16A16_SFLOAT",
@@ -15747,7 +15747,7 @@
               0.0,
               0.0,
               0.0,
-              1.0
+              0.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "R16G16B16A16_SFLOAT",
@@ -16318,7 +16318,7 @@
               0.0,
               0.0,
               0.0,
-              1.0
+              0.0
             ],
             "final_layout": "color_attachment_optimal",
             "format": "R16G16B16A16_SFLOAT",

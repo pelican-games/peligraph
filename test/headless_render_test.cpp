@@ -150,7 +150,6 @@ void writeEmbeddedRtShadowMaskTestProject(
     writeTextFile(
         directory / "hybrid.json",
         R"json({
-  "features": ["engine://features/rt_shadow_mask.json"],
   "render_targets": [
     {
       "name": "gbuffer_worldpos",
@@ -159,6 +158,22 @@ void writeEmbeddedRtShadowMaskTestProject(
       "format_class": "data",
       "role": "data",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gbuffer_normal",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "rt_shadow_mask",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["COLOR_ATTACHMENT", "TRANSFER_SRC"]
     }
   ],
   "rendering_passes": [
@@ -173,6 +188,32 @@ void writeEmbeddedRtShadowMaskTestProject(
             "vertex": "engine://fullscreen",
             "fragment": "engine://shader_lab_hello"
           }
+        },
+        {
+          "name": "deferred_normal",
+          "type": "fullscreen",
+          "output": {"color": "gbuffer_normal", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://shader_lab_hello"
+          }
+        },
+        {
+          "name": "rt_shadow_mask",
+          "type": "fullscreen",
+          "output": {"color": "rt_shadow_mask", "depth": null},
+          "input": ["gbuffer_worldpos", "gbuffer_normal"],
+          "input_sampling": [
+            {"filter": "nearest", "address": "clamp_to_edge"},
+            {"filter": "nearest", "address": "clamp_to_edge"}
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://rt_shadow_mask"
+          },
+          "uses_light_data": true,
+          "clear_color": [1.0, 1.0, 1.0, 1.0],
+          "color_store_op": "store"
         },
         {
           "name": "present",
@@ -252,6 +293,16 @@ CommonPolygonVertData makeScreenQuad(float half_extent, float z) {
                      {1.0f, 1.0f}, {0.0f, 1.0f}};
     data.color.assign(4, glm::vec4{1.0f});
     return data;
+}
+
+std::uint8_t r8PixelAt(const R8RenderTargetReadback &readback,
+                       std::uint32_t x, std::uint32_t y) {
+    if (x >= readback.extent.width || y >= readback.extent.height) {
+        throw std::out_of_range(
+            "R8 readback pixel coordinate is out of range");
+    }
+    return readback.pixels.at(
+        static_cast<std::size_t>(y) * readback.extent.width + x);
 }
 
 std::vector<std::uint8_t>
@@ -8408,7 +8459,7 @@ TEST_CASE(
 
 TEST_CASE(
     "rt shadow mask pixels expose the static-only boundary and overlap raster shadow",
-    "[headless][gpu][wp283][ray-query][pixel]") {
+    "[headless][gpu][wp283][wp284][ray-query][pixel]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
@@ -8427,7 +8478,8 @@ TEST_CASE(
             RayQueryAccelerationStructureDiagnostics diagnostics;
         };
         const auto render = [&](BlockerKind blocker,
-                                bool raster_shadow) {
+                                bool raster_shadow,
+                                float world_x = 0.0F) {
             FastModuleContainer modules;
             writeRtShadowMaskTestProject(
                 temp_dir, raster_shadow);
@@ -8473,8 +8525,12 @@ TEST_CASE(
             if (blocker == BlockerKind::static_geometry ||
                 blocker == BlockerKind::morph ||
                 blocker == BlockerKind::vat) {
+                auto blocker_data = makeScreenQuad(0.18F, 0.5F);
+                for (auto &position : blocker_data.pos) {
+                    position.x -= 0.25F;
+                }
                 auto candidate = geometry.addPrimitiveEntry(
-                    makeScreenQuad(0.18F, 0.5F));
+                    std::move(blocker_data));
                 candidate.mesh_index = 1;
                 candidate.primitive_index = 0;
                 candidate.morph_deformed =
@@ -8487,6 +8543,9 @@ TEST_CASE(
                 std::move(opaque));
             if (blocker == BlockerKind::skinned) {
                 auto data = makeScreenQuad(0.18F, 0.5F);
+                for (auto &position : data.pos) {
+                    position.x -= 0.25F;
+                }
                 data.joint.assign(
                     data.pos.size(), glm::i16vec4{0});
                 data.weight.assign(
@@ -8508,6 +8567,12 @@ TEST_CASE(
                 GET_MODULE(PolygonInstanceContainer);
             const auto instance =
                 instances.placeModelInstance(model);
+            if (world_x != 0.0F) {
+                instances.setTrs(
+                    instance, {world_x, 0.0F, 0.0F},
+                    glm::quat{1.0F, 0.0F, 0.0F, 0.0F},
+                    {1.0F, 1.0F, 1.0F});
+            }
             if (blocker == BlockerKind::skinned) {
                 const std::array palette{glm::mat4{1.0F}};
                 instances.setSkinningPalette(instance, palette);
@@ -8517,6 +8582,10 @@ TEST_CASE(
                     .name = "WP283 directional",
                     .component = {
                         {"type", "directional"},
+                        // A background sample at the cleared world origin
+                        // intersects the x=-0.25 blocker along this ray.
+                        // The corner assertions therefore exercise coverage,
+                        // rather than relying on an incidental miss.
                         {"direction", {0.5, 0.0, -1.0}},
                         {"intensity", 4.0},
                         {"color", {1.0, 1.0, 1.0}},
@@ -8524,7 +8593,7 @@ TEST_CASE(
                 },
             });
             auto &camera = GET_MODULE(Camera);
-            camera.setPos({0.0F, 0.0F, 2.0F});
+            camera.setPos({world_x, 0.0F, 2.0F});
             camera.setDir({0.0F, 0.0F, -1.0F});
             camera.setUp({0.0F, 1.0F, 0.0F});
 
@@ -8541,16 +8610,20 @@ TEST_CASE(
                         .rayQueryAccelerationStructureDiagnosticsForTesting(),
             };
         };
-        const auto dark_count = [](const auto &pixels) {
-            return std::count_if(
+        const auto dark_count = [](const auto &pixels) -> std::size_t {
+            return static_cast<std::size_t>(std::count_if(
                 pixels.begin(), pixels.end(),
-                [](const auto value) { return value < 64; });
+                [](const auto value) { return value < 64; }));
         };
 
         const auto baseline =
             render(BlockerKind::none, false);
         const auto static_only =
             render(BlockerKind::static_geometry, false);
+        const auto far_baseline =
+            render(BlockerKind::none, false, 128.0F);
+        const auto far_static =
+            render(BlockerKind::static_geometry, false, 128.0F);
         const auto skinned =
             render(BlockerKind::skinned, false);
         const auto morph =
@@ -8560,7 +8633,15 @@ TEST_CASE(
         REQUIRE(baseline.mask.extent.width == 32);
         REQUIRE(baseline.mask.extent.height == 32);
         REQUIRE(dark_count(baseline.mask.pixels) == 0);
-        REQUIRE(dark_count(static_only.mask.pixels) >= 4);
+        REQUIRE(dark_count(far_baseline.mask.pixels) == 0);
+        // With no coverage guard these background pixels cast from the
+        // cleared origin and hit the deliberately aligned blocker.
+        REQUIRE(r8PixelAt(static_only.mask, 0, 0) > 192);
+        REQUIRE(r8PixelAt(static_only.mask, 31, 31) > 192);
+        REQUIRE(r8PixelAt(static_only.mask, 16, 16) < 64);
+        REQUIRE(r8PixelAt(static_only.mask, 5, 16) > 192);
+        REQUIRE(r8PixelAt(far_static.mask, 16, 16) < 64);
+        REQUIRE(r8PixelAt(far_static.mask, 5, 16) > 192);
         // These blockers are still rasterized into gbuffer_worldpos, but the
         // WP281/WP282 static-only TLAS deliberately omits them. Their missing
         // shadows are an asserted image contract, not a blessed golden.
@@ -8618,8 +8699,117 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "rt shadow mask renders from the embedded shader path",
-    "[headless][gpu][wp283][ray-query][embedded]") {
+    "rt shadow mask treats a scene with no eligible static geometry as fully visible",
+    "[headless][gpu][wp284][ray-query][empty]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeRtShadowMaskTestProject(temp_dir, false);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+        auto &standard =
+            GET_MODULE(StandardMaterialResource);
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto skinned_material =
+            materials.registerMaterial(MaterialInfo{
+                .vert_shader = standard.skinnedVertShader(),
+                .frag_shader = standard.standardFragShader(),
+                .skinned = true,
+                .base_color_texture = standard.whiteTexture(),
+                .metallic_roughness_texture =
+                    standard.metallicRoughnessDefaultTexture(),
+                .normal_texture = standard.normalDefaultTexture(),
+                .emissive_texture =
+                    standard.emissiveDefaultTexture(),
+                .occlusion_texture =
+                    standard.occlusionDefaultTexture(),
+            });
+        auto data = makeScreenQuad(0.95F, 0.0F);
+        data.joint.assign(data.pos.size(), glm::i16vec4{0});
+        data.weight.assign(
+            data.pos.size(),
+            glm::vec4{1.0F, 0.0F, 0.0F, 0.0F});
+        auto primitive =
+            GET_MODULE(VertBufContainer)
+                .addSkinnedPrimitiveEntry(std::move(data));
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2841};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = skinned_material,
+                .primitives = {primitive},
+            },
+        };
+        auto &instances =
+            GET_MODULE(PolygonInstanceContainer);
+        const auto instance = instances.placeModelInstance(model);
+        const std::array palette{glm::mat4{1.0F}};
+        instances.setSkinningPalette(instance, palette);
+        GET_MODULE(LightContainer).load({
+            LightLoadEntry{
+                .name = "WP284 empty-TLAS directional",
+                .component = {
+                    {"type", "directional"},
+                    {"direction", {0.0, 0.0, -1.0}},
+                    {"intensity", 1.0},
+                    {"color", {1.0, 1.0, 1.0}},
+                },
+            },
+        });
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0F, 0.0F, 2.0F});
+        camera.setDir({0.0F, 0.0F, -1.0F});
+        camera.setUp({0.0F, 1.0F, 0.0F});
+
+        renderer.render();
+        vkcore.waitIdle();
+        const auto mask =
+            renderer.readR8RenderTargetForTesting(
+                "rt_shadow_mask");
+        REQUIRE(mask.extent == vk::Extent2D{32, 32});
+        REQUIRE(std::all_of(
+            mask.pixels.begin(), mask.pixels.end(),
+            [](const auto value) { return value > 192; }));
+        const auto diagnostics =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        REQUIRE(diagnostics.requested);
+        REQUIRE(diagnostics.tlas_build_count == 1);
+        REQUIRE(diagnostics.active_blas_count == 0);
+        REQUIRE(diagnostics.tlas_instance_count == 0);
+        REQUIRE(diagnostics.excluded.instance_count == 1);
+        REQUIRE(
+            diagnostics.excluded.skinned_primitive_count == 1);
+        const auto plan = renderer.currentFramePlanJson();
+        REQUIRE(
+            plan.at("ray_query_acceleration_structures")
+                .at("excluded")
+                .at("instance_count") == 1);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan empty ray-query scene rendering unavailable");
+        throw;
+    }
+#endif
+}
+
+TEST_CASE(
+    "reflected TLAS requirement renders real shadows from the embedded shader path",
+    "[headless][gpu][wp283][wp284][ray-query][embedded]") {
     setupLogger();
     std::filesystem::path temp_dir;
     try {
@@ -8633,7 +8823,7 @@ TEST_CASE(
         REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
         auto &geometry = GET_MODULE(VertBufContainer);
         auto primitive = geometry.addPrimitiveEntry(
-            makeScreenQuad(0.95F, 0.0F));
+            makeScreenQuad(0.55F, 1.0F));
         primitive.mesh_index = 0;
         primitive.primitive_index = 0;
         ModelTemplate model;
@@ -8667,15 +8857,34 @@ TEST_CASE(
                 "rt_shadow_mask");
         REQUIRE(mask.extent == vk::Extent2D{32, 32});
         REQUIRE(mask.pixels.size() == 32 * 32);
-        REQUIRE(std::all_of(
-            mask.pixels.begin(), mask.pixels.end(),
-            [](const auto value) { return value > 192; }));
+        for (std::uint32_t y = 4; y <= 10; ++y) {
+            for (std::uint32_t x = 4; x <= 10; ++x) {
+                REQUIRE(r8PixelAt(mask, x, y) < 64);
+            }
+        }
+        for (std::uint32_t y = 0; y < 32; ++y) {
+            for (std::uint32_t x = 22; x < 32; ++x) {
+                REQUIRE(r8PixelAt(mask, x, y) > 192);
+            }
+        }
         const auto diagnostics =
             renderer
                 .rayQueryAccelerationStructureDiagnosticsForTesting();
         REQUIRE(diagnostics.requested);
         REQUIRE(diagnostics.tlas_build_count == 1);
         REQUIRE(diagnostics.tlas_instance_count == 1);
+        const auto plan = renderer.currentFramePlanJson();
+        bool acceleration_structure_registered = false;
+        for (const auto &scope :
+             plan.at("gpu_resource_arena").at("scopes")) {
+            for (const auto &resource : scope.at("resources")) {
+                acceleration_structure_registered =
+                    acceleration_structure_registered ||
+                    resource.at("kind") ==
+                        "acceleration_structure";
+            }
+        }
+        REQUIRE(acceleration_structure_registered);
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {

@@ -101,7 +101,10 @@ uint32_t maxDescriptorSet(const ShaderReflection &reflection) {
     return max_set;
 }
 
-bool usesRayQueryFrameSet(const ShaderReflection &reflection) {
+} // namespace
+
+bool shaderReflectionUsesRayQueryFrameSet(
+    const ShaderReflection &reflection) noexcept {
     return std::any_of(
         reflection.bindings.begin(), reflection.bindings.end(),
         [](const auto &binding) {
@@ -111,8 +114,6 @@ bool usesRayQueryFrameSet(const ShaderReflection &reflection) {
                        vk::DescriptorType::eAccelerationStructureKHR;
         });
 }
-
-} // namespace
 
 std::vector<vk::DescriptorSetLayoutBinding>
 frameDescriptorSetLayoutBindings(bool ray_query) {
@@ -346,7 +347,7 @@ PipelineFactory::descriptorSetLayoutKeysFor(const ShaderReflection &reflection) 
     std::vector<DescriptorSetLayoutKey> keys(maxDescriptorSet(reflection) + 1);
     keys[PELICAN_SET_FRAME].bindings =
         frameDescriptorSetLayoutBindings(
-            usesRayQueryFrameSet(reflection));
+            shaderReflectionUsesRayQueryFrameSet(reflection));
     for (uint32_t set = 1; set < keys.size(); ++set) {
         keys[set].bindings = makeDescriptorSetLayoutBindings(reflection, set);
     }
@@ -579,12 +580,21 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     validateGraphicsReflection(desc, merged_reflection);
     validateShaderResourceInterfaceReflection(
         desc.resource_interface, merged_reflection);
+    const auto ray_query_frame_set =
+        shaderReflectionUsesRayQueryFrameSet(
+            merged_reflection);
+    if (ray_query_frame_set &&
+        !GET_MODULE(VulkanManageCore)
+             .getRuntimeCapabilities()
+             .ray_query) {
+        throw std::runtime_error(
+            "pelican.plan.ray_query_required_unavailable@1: shader "
+            "reflection requires pelican.vulkan.ray_query@1");
+    }
 
     auto set_layouts = descriptorSetLayoutsFor(merged_reflection);
     auto pipeline_layout = createPipelineLayout(merged_reflection, set_layouts);
     auto pipeline_object = createGraphicsPipeline(desc, pipeline_layout.get());
-    const auto ray_query_frame_set =
-        usesRayQueryFrameSet(merged_reflection);
 
     return PipelineRecord{
         desc,
@@ -602,11 +612,19 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
     validatePushConstantContract(reflection);
     validateShaderResourceInterfaceReflection(
         desc.resource_interface, reflection);
+    const auto ray_query_frame_set =
+        shaderReflectionUsesRayQueryFrameSet(reflection);
+    if (ray_query_frame_set &&
+        !GET_MODULE(VulkanManageCore)
+             .getRuntimeCapabilities()
+             .ray_query) {
+        throw std::runtime_error(
+            "pelican.plan.ray_query_required_unavailable@1: shader "
+            "reflection requires pelican.vulkan.ray_query@1");
+    }
     auto set_layouts = descriptorSetLayoutsFor(reflection);
     auto pipeline_layout = createPipelineLayout(reflection, set_layouts);
     auto pipeline_object = createComputePipeline(desc, pipeline_layout.get());
-    const auto ray_query_frame_set =
-        usesRayQueryFrameSet(reflection);
 
     return PipelineRecord{
         desc,
@@ -636,31 +654,67 @@ void PipelineFactory::savePipelineCache() noexcept {
 
 PipelineHandle PipelineFactory::create(const GraphicsPipelineDesc &desc) {
     pipeline_handles.reserve(pipeline_handles.size() + 1);
-    auto handle = pipelines.reg(buildGraphicsPipeline(desc));
+    auto record = buildGraphicsPipeline(desc);
+    const auto layout = static_cast<VkPipelineLayout>(
+        record.layout.get());
+    const auto ray_query = record.ray_query_frame_set;
+    auto handle = pipelines.reg(std::move(record));
+    try {
+        if (ray_query) {
+            ray_query_pipeline_layouts.emplace(layout);
+        }
+    } catch (...) {
+        (void)pipelines.extract(handle, false);
+        throw;
+    }
     pipeline_handles.push_back(handle);
     return handle;
 }
 
 PipelineHandle PipelineFactory::createCompute(const ComputePipelineDesc &desc) {
     pipeline_handles.reserve(pipeline_handles.size() + 1);
-    auto handle = pipelines.reg(buildComputePipeline(desc));
+    auto record = buildComputePipeline(desc);
+    const auto layout = static_cast<VkPipelineLayout>(
+        record.layout.get());
+    const auto ray_query = record.ray_query_frame_set;
+    auto handle = pipelines.reg(std::move(record));
+    try {
+        if (ray_query) {
+            ray_query_pipeline_layouts.emplace(layout);
+        }
+    } catch (...) {
+        (void)pipelines.extract(handle, false);
+        throw;
+    }
     pipeline_handles.push_back(handle);
     return handle;
 }
 
 void PipelineFactory::replacePipeline(PipelineHandle handle, PipelineRecord replacement) {
     auto &current = pipelines.get(handle);
+    const auto old_layout = static_cast<VkPipelineLayout>(
+        current.layout.get());
+    const auto replacement_layout =
+        static_cast<VkPipelineLayout>(replacement.layout.get());
+    if (replacement.ray_query_frame_set) {
+        ray_query_pipeline_layouts.emplace(
+            replacement_layout);
+    }
     auto old_pipeline = std::move(current.pipeline);
-    auto old_layout = std::move(current.layout);
+    auto retired_layout = std::move(current.layout);
 
     current = std::move(replacement);
+    if (old_layout != replacement_layout ||
+        !current.ray_query_frame_set) {
+        ray_query_pipeline_layouts.erase(old_layout);
+    }
 
     auto &deletion_queue = GET_MODULE(DeletionQueue);
     if (old_pipeline) {
         deletion_queue.defer(std::move(old_pipeline));
     }
-    if (old_layout) {
-        deletion_queue.defer(std::move(old_layout));
+    if (retired_layout) {
+        deletion_queue.defer(std::move(retired_layout));
     }
 }
 
@@ -690,13 +744,13 @@ vk::DescriptorSetLayout PipelineFactory::frameDescriptorSetLayout(
 
 bool PipelineFactory::pipelineLayoutUsesRayQueryFrameSet(
     vk::PipelineLayout layout) const noexcept {
-    return std::any_of(
-        pipeline_handles.begin(), pipeline_handles.end(),
-        [&](const auto handle) {
-            const auto &record = pipelines.get(handle);
-            return record.layout.get() == layout &&
-                   record.ray_query_frame_set;
-        });
+    return ray_query_pipeline_layouts.contains(
+        static_cast<VkPipelineLayout>(layout));
+}
+
+bool PipelineFactory::pipelineUsesRayQueryFrameSet(
+    PipelineHandle handle) const {
+    return pipelines.get(handle).ray_query_frame_set;
 }
 
 const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const {
@@ -943,6 +997,9 @@ void PipelineFactory::rollbackRegistrations(
     while (pipeline_handles.size() >
            checkpoint.pipeline_count) {
         const auto handle = pipeline_handles.back();
+        ray_query_pipeline_layouts.erase(
+            static_cast<VkPipelineLayout>(
+                pipelines.get(handle).layout.get()));
         (void)pipelines.extract(handle, false);
         pipeline_handles.pop_back();
     }
@@ -977,6 +1034,11 @@ PipelineFactory::registrationsSince(
 void PipelineFactory::retireRegistrations(
     const std::vector<PipelineHandle> &handles) noexcept {
     for (const auto handle : handles) {
+        if (pipelines.contains(handle)) {
+            ray_query_pipeline_layouts.erase(
+                static_cast<VkPipelineLayout>(
+                    pipelines.get(handle).layout.get()));
+        }
         auto retired = pipelines.extract(handle, false);
         std::erase(pipeline_handles, handle);
         if (!retired) continue;

@@ -26,7 +26,7 @@ layout(location = 5) in vec3 inBitangent;
 layout(location = 0) out vec4 outAlbedo;      // RGB: Albedo, A: Alpha
 layout(location = 1) out vec4 outNormal;      // RGB: 法線(0-1に正規化), A: reserved
 layout(location = 2) out vec4 outMaterial;    // R: Roughness, G: Metallic, B: AO, A: reserved
-layout(location = 3) out vec4 outWorldPos;    // RGB: WorldPos, A: reserved
+layout(location = 3) out vec4 outWorldPos;    // RGB: WorldPos, A: coverage
 layout(location = 4) out vec4 outEmissive;    // RGB: Emissive, A: reserved
 
 void main() {

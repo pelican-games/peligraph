@@ -101,10 +101,17 @@ TEST_CASE(
     REQUIRE(tlas->type ==
             vk::DescriptorType::eAccelerationStructureKHR);
     REQUIRE(tlas->count == 1);
+    REQUIRE(shaderReflectionUsesRayQueryFrameSet(
+        reflection));
     const auto *world_position = findBinding(
         reflection, PELICAN_SET_PASS_INPUT, 0);
     REQUIRE(world_position != nullptr);
     REQUIRE(world_position->type ==
+            vk::DescriptorType::eCombinedImageSampler);
+    const auto *normal = findBinding(
+        reflection, PELICAN_SET_PASS_INPUT, 1);
+    REQUIRE(normal != nullptr);
+    REQUIRE(normal->type ==
             vk::DescriptorType::eCombinedImageSampler);
     REQUIRE(std::count_if(
                 reflection.bindings.begin(),
@@ -112,7 +119,7 @@ TEST_CASE(
                 [](const auto &binding) {
                     return binding.set ==
                            PELICAN_SET_PASS_INPUT;
-                }) == 1);
+                }) == 2);
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
     ShaderCompiler compiler;

@@ -347,7 +347,8 @@ TEST_CASE(
         passByName(enabled.config, "rt_shadow_mask");
     REQUIRE(pass.at("type") == "fullscreen");
     REQUIRE(pass.at("input") ==
-            nlohmann::json::array({"gbuffer_worldpos"}));
+            nlohmann::json::array(
+                {"gbuffer_worldpos", "gbuffer_normal"}));
     REQUIRE(pass.at("output").at("color") ==
             "rt_shadow_mask");
     const auto &required =

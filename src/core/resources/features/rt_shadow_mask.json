@@ -21,8 +21,12 @@
         "name": "rt_shadow_mask",
         "type": "fullscreen",
         "output": {"color": "rt_shadow_mask", "depth": null},
-        "input": ["gbuffer_worldpos"],
+        "input": ["gbuffer_worldpos", "gbuffer_normal"],
         "input_sampling": [
+          {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          },
           {
             "filter": "nearest",
             "address": "clamp_to_edge"
