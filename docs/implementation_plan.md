@@ -2786,6 +2786,64 @@ dirty 追跡は存在しない。TLAS の毎フレーム再構築はその地点
 
 依存: WP280(マージ済み)。見積: 大。
 
+### WP282: 加速構造の対象外を、落とさずに数える
+
+**目的**: WP281 が入れた加速構造の分類に残った 2 つの穴を塞ぐ。
+
+**根拠**: WP281 マージ後の敵対的レビューで確定。
+
+#### 欠陥 1: 不正ジオメトリがフレームごと落とす
+
+`src/core/renderer/accelerationstructure.cpp:417-427` は静的プリミティブの
+`index_count % 3 != 0` を `std::runtime_error` にする。ところが公開 API の
+`VertBufContainer::addPrimitiveEntry` は索引列が無いとき
+`indices = iota(vertex_count)` を合成する(`vertbufcontainer.cpp:391-394`)ため、
+**4 頂点の非索引プリミティブは合法な入力でありながら `index_count = 4` になる**。
+`validateVertexStreams`(`:141-174`)は長さと範囲しか見ておらず 3 の倍数性を検査しない。
+ラスタライザは末尾の不完全な三角形を捨てて普通に描く。
+
+つまり **ray query を要求した瞬間にだけ、それまで動いていたプロジェクトが毎フレーム死ぬ。**
+`Renderer::render` が捕まえるのは `OutputTemporarilyUnavailable` と
+`OutputRelowerRequired` だけ(`renderer.cpp:4838-4871`)なので、例外は外まで抜ける。
+
+**これは WP281 自身の方針と非対称である。**変形ジオメトリは*除外して数える*のに、
+不正ジオメトリは*フレームごと落とす*。同じ扱いにすること。
+
+**実装範囲**: 3 の倍数でない索引数、頂点数 0、索引数 0、負の頂点オフセットを、
+変形ジオメトリと**同じ診断経路の除外区分**として扱うこと。区分は変形とは別の名前にすること
+(「BLAS を作れない」理由が違うため)。
+
+#### 欠陥 2: 除外フラグを実ジオメトリから導出するテストが無い
+
+`test/accelerationstructurepolicy_test.cpp` の除外テストは
+`morph_deformed` / `vat_deformed` を**手書きの入力として与えている**。
+分類器は検証されているが、**フラグを立てる側は検証されていない**。
+
+この穴は既に一度刺さっている。WP281 の `gltf.cpp:2099` は
+`vat_deformed` を `#if PELICAN_WITH_VAT` の外で代入しており、
+`PELICAN_WITH_VAT=OFF` の構成をコンパイル不能にしていた
+(別途修正済み)。手書き入力のテストでは検出できない場所である。
+
+**実装範囲**: **実際の glTF を読み込んで**、
+skinned / morph / VAT のプリミティブに対応するフラグが立ち、
+静的プリミティブでは立たないことを検証すること。
+既存のテスト資産で足りない形式があれば、足りないことを述べること。
+
+#### 受け入れ条件
+
+- 索引数が 3 の倍数でない静的プリミティブを含むシーンで、ray query を要求しても
+  **フレームが落ちず**、そのプリミティブが除外区分として**数えられる**こと
+- その件数が変形による除外と**区別できる**こと
+- 実 glTF から `skinned` / `morph_deformed` / `vat_deformed` が導出されることを、
+  手書きフラグではなく読み込み経由で検証すること
+- **ビルド階層の全構成でビルドが通ること。**
+  `PELICAN_WITH_VAT` / `PELICAN_RUNTIME_SHADER_COMPILER` の OFF 構成を**実際に構成してビルドすること**。
+  ON だけで済ませないこと
+- 既存 golden が 1 枚も動かないこと
+- `ctest` 全数が緑、`git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: WP281(マージ済み)。見積: 小〜中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
@@ -3778,6 +3836,27 @@ cascade、複数mirror、将来のsecondary providerも同じ経路を使える�
    ディレクトリごと削除できなくなる。実例として WP254 のエージェントが
    `build/wp254-uv-install/` へ uv を入れ、その worktree だけ削除できずに残った。
    ツールが要るなら worktree の外か、OS の一時領域を使うこと。
+
+9. **(2026-08-09 追加)`#if` で囲まれた識別子に触れる WP は、その構成を実際にビルドすること。**
+   エンジン開発の既定は機能フラグが軒並み ON なので、OFF 構成のコンパイルエラーは
+   手元でもテスト行列でも**表に出ない**。実例として WP281 が
+   `gltf.cpp` の `vat_deformed` を `#if PELICAN_WITH_VAT` の外で代入し、
+   `PELICAN_WITH_VAT=OFF` を丸ごとビルド不能にした。
+   `pelican_cli dist-config` は VAT 資産の無いプロジェクトに OFF を出すため、
+   該当する配布ビルドが全滅する状態だった。CI でも手元でも緑のまま。
+
+   **WP の受け入れ条件に、触れた機能フラグの OFF 構成を明記すること。**
+   これは指示書を書く側の責任である。WP278 は
+   `PELICAN_RUNTIME_SHADER_COMPILER` の両構成を明示的に要求して防げていた。
+
+   OFF 構成を新しいビルドディレクトリで構成するときに二つ詰まる。両方あらかじめ避けること。
+
+   - **短いパスを使う。**`_deps/battery-embed-subbuild/...` が深く、
+     OS の一時領域のような長いパスに置くと MSBuild が MAX_PATH で落ちる
+     (`%USERPROFILE%/pvoff` 程度なら通る)。
+   - **`-DPython3_EXECUTABLE=` を明示する。**`PELICAN_WITH_SPIRV_LINK=ON` が引く
+     SPIRV-Tools は Python3 を要求するが、`WindowsApps` の stub は検出されない。
+     既存 `build/CMakeCache.txt` の `Python3_EXECUTABLE` をそのまま渡すのが早い。
 
 ### 競合が予想されるファイルと作法
 
