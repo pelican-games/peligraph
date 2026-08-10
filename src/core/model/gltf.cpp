@@ -2096,8 +2096,12 @@ struct InternalGltfLoader {
                     node_index < 0 ? noSourceNodeIndex
                                    : static_cast<std::uint32_t>(node_index);
                 primitive_info.view_visibility = variant.visibility;
-                primitive_info.vat_deformed = vat_info.has_value();
 #if PELICAN_WITH_VAT
+                // vat_info only exists in this configuration. With VAT compiled
+                // out a GLB carrying pelican.vat extras is rejected at load, so
+                // the member keeps its false default and the ray-query
+                // classification is unchanged.
+                primitive_info.vat_deformed = vat_info.has_value();
                 if (vat_info) {
                     primitive_info.bounds_source =
                         std::make_shared<const ModelPrimitiveBoundsSource>(
