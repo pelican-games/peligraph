@@ -659,6 +659,8 @@ target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
 pelican_define_test(gltfimage_test pelican_core tinygltf)
 pelican_define_test(modelhotreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(drawqueuebuilder_test pelican_core)
+pelican_define_test(accelerationstructurepolicy_test pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(renderpolicyregistry_test pelican_core)
 pelican_define_test(passimplementationregistry_test pelican_core)
 pelican_define_test(subgraphreplacementregistry_test pelican_core)
@@ -684,6 +686,11 @@ target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
+if(MSVC)
+    # This integration translation unit intentionally aggregates the complete
+    # headless renderer matrix; WP281 adds another GPU lifecycle scenario.
+    target_compile_options(pelican_test_headless_render_test PRIVATE /bigobj)
+endif()
 target_sources(pelican_test_headless_render_test PRIVATE
     headless_native_scope_test.cpp
 )

@@ -5,6 +5,7 @@
 #include "../model/modeltemplate.hpp"
 #include "../userpublic/animation/abi_v1.hpp"
 #include "../vkcore/buf.hpp"
+#include "../vkcore/accelerationstructure.hpp"
 #include "modelinstance.hpp"
 #include "modelinstanceslots.hpp"
 #include "drawqueuebuilder.hpp"
@@ -266,6 +267,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<MaterialDrawTagFilter>
         draw_queue_material_filters;
     std::uint64_t next_draw_declaration_ordinal = 0;
+    std::uint64_t ray_query_geometry_generation = 1;
     BufferWrapper indirect_buf;
     BufferWrapper view_family_indirect_buf;
     std::map<std::string,
@@ -349,6 +351,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     bool canRebuildModelInstances(std::span<const ModelInstanceRebuild> replacements) const;
     void rebuildModelInstances(std::span<const ModelInstanceRebuild> replacements);
     void rebuildModelInstances(ModelAssetId asset_id, const ModelTemplate &replacement);
+    std::vector<RayQueryGeometryInstanceSnapshot>
+    rayQueryGeometryInstances() const;
+    std::uint64_t rayQueryGeometryGeneration() const noexcept {
+        return ray_query_geometry_generation;
+    }
 
     PreparedModelTrs prepareTrs(ModelInstanceId id, glm::vec3 pos,
                                 glm::quat rotation, glm::vec3 scale) const;

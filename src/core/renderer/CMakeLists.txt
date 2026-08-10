@@ -6,6 +6,7 @@ target_sources(pelican_core PRIVATE
     gizmo.cpp
     debugtext.cpp
     drawqueuebuilder.cpp
+    accelerationstructure.cpp
     renderpolicyregistry.cpp
     modelinstanceslots.cpp
     indirectdrawlimits.cpp

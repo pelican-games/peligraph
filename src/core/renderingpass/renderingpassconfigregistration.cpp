@@ -1,6 +1,7 @@
 #include "renderingpassconfigregistration.hpp"
 #include "computetask.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "../../project/vulkanviewplanning.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
 #include "graphtransformregistry.hpp"
@@ -904,11 +905,31 @@ registerRenderingPassConfigVariantsData(
     const auto output_facts =
         first.runtime.render_target.caps()
             .compile_facts;
+    const bool requires_ray_query = std::any_of(
+        program_preparations.begin(),
+        program_preparations.end(),
+        [](const auto &program) {
+            return program.target_plan != nullptr &&
+                   std::find(
+                       program.target_plan
+                           ->required_physical_features.begin(),
+                       program.target_plan
+                           ->required_physical_features.end(),
+                       vulkanRayQueryCapability) !=
+                       program.target_plan
+                           ->required_physical_features.end();
+        });
+    auto prepared_gpu_scope =
+        gpu_arena.preparedScope(owner_scope);
+    if (requires_ray_query) {
+        attachRayQueryAccelerationStructures(
+            prepared_gpu_scope);
+    }
     auto prepared_generation =
         first.frame_graph_runtime.prepareGeneration(
             std::move(program_preparations),
             std::move(enabled_feature_names),
-            gpu_arena.preparedScope(owner_scope),
+            std::move(prepared_gpu_scope),
             output_facts.target_kind ==
                     OutputTargetKind::window
                 ? std::optional<OutputCompileFacts>{

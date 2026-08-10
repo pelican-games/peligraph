@@ -293,6 +293,7 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
     uint32_t next_vertex_ = 0;
     uint32_t next_skin_vertex_ = 0;
     uint32_t next_morph_delta_ = 0;
+    std::uint64_t next_geometry_allocation_id_ = 1;
 
   public:
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
@@ -321,6 +322,10 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
         ModelTemplate::PrimitiveRefInfo primitive{index_count, next_index_,
                                                   static_cast<int32_t>(vertex_offset), skinned};
         primitive.bounds_source = makePrimitiveBoundsSource(data);
+        primitive.vertex_count = vertex_count;
+        primitive.morph_deformed = !data.morph_targets.empty();
+        primitive.geometry_allocation_id =
+            next_geometry_allocation_id_++;
         std::vector<MorphTargetDeltaRange> ranges;
         if (!data.morph_targets.empty()) {
             if (vertex_offset > maxMorphVerticesPerPool ||
@@ -2091,6 +2096,7 @@ struct InternalGltfLoader {
                     node_index < 0 ? noSourceNodeIndex
                                    : static_cast<std::uint32_t>(node_index);
                 primitive_info.view_visibility = variant.visibility;
+                primitive_info.vat_deformed = vat_info.has_value();
 #if PELICAN_WITH_VAT
                 if (vat_info) {
                     primitive_info.bounds_source =

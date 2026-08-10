@@ -840,6 +840,18 @@ VulkanManageCore::VulkanManageCore() {
                 "Vulkan ray query was enabled but acceleration "
                 "structure device command entry points are unavailable");
         }
+        acceleration_structure_dispatch = {
+            .vkCreateAccelerationStructureKHR =
+                create_acceleration_structure,
+            .vkDestroyAccelerationStructureKHR =
+                destroy_acceleration_structure,
+            .vkGetAccelerationStructureBuildSizesKHR =
+                get_acceleration_structure_build_sizes,
+            .vkGetAccelerationStructureDeviceAddressKHR =
+                get_acceleration_structure_device_address,
+            .vkCmdBuildAccelerationStructuresKHR =
+                cmd_build_acceleration_structures,
+        };
     }
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);

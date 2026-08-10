@@ -142,6 +142,10 @@ struct DrawItemSnapshot {
     std::shared_ptr<const ModelPrimitiveBoundsSource> bounds_source;
     std::optional<DrawWorldBounds> world_bounds;
     DrawViewMask view_mask = DrawViewMask::both;
+    std::uint32_t vertex_count = 0;
+    bool morph_deformed = false;
+    bool vat_deformed = false;
+    std::uint64_t geometry_allocation_id = 0;
 
     bool operator==(const DrawItemSnapshot &) const = default;
 };

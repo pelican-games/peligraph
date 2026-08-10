@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 #include "../renderer/camera.hpp"
+#include "accelerationstructure.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/frameresources.hpp"
 #include "../renderer/materialrender.hpp"
@@ -43,6 +44,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
+#include "../../project/vulkanviewplanning.hpp"
 #include "deletionqueue.hpp"
 #include "core.hpp"
 #include "debugutils.hpp"
@@ -86,6 +88,38 @@ struct RenderPipelineReloadState {
 };
 
 namespace {
+
+bool programRequiresRayQuery(
+    const CompiledRenderProgram &program) {
+    const auto &target_plan =
+        program.frame_graph.target_plan;
+    return target_plan != nullptr &&
+           std::find(
+               target_plan->required_physical_features.begin(),
+               target_plan->required_physical_features.end(),
+               vulkanRayQueryCapability) !=
+               target_plan->required_physical_features.end();
+}
+
+std::shared_ptr<RayQueryAccelerationStructureScope>
+rayQueryAccelerationStructureScope(
+    const RendererRuntimeGeneration &generation,
+    const CompiledRenderProgram &program) {
+    if (!programRequiresRayQuery(program)) return {};
+    if (generation.gpu_arena == nullptr) {
+        throw std::runtime_error(
+            "ray-query program has no GPU resource arena");
+    }
+    const auto *scope = generation.gpu_arena->findScope(
+        program.owner_scope);
+    if (scope == nullptr ||
+        scope->acceleration_structures == nullptr) {
+        throw std::runtime_error(
+            "ray-query program has no acceleration-structure GPU "
+            "owner scope");
+    }
+    return scope->acceleration_structures;
+}
 
 std::optional<watch::AssetKey> projectAssetKeyForReference(
     std::string_view reference) {
@@ -3358,6 +3392,9 @@ nlohmann::json Renderer::currentFramePlanJson() const {
             {"scopes", std::move(scopes)},
         };
     }
+    result["ray_query_acceleration_structures"] =
+        rayQueryAccelerationStructureDiagnosticsToJson(
+            rayQueryAccelerationStructureDiagnosticsForTesting());
     if (frame_graph->target_plan != nullptr) {
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);
@@ -3790,6 +3827,28 @@ std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
     return framePlanOrder(frame_graph->plan);
 }
 
+RayQueryAccelerationStructureDiagnostics
+Renderer::rayQueryAccelerationStructureDiagnosticsForTesting() const {
+    const auto *frame_graph_runtime =
+        FastModuleContainer::tryGet<
+            FrameGraphRuntimeContainer>();
+    const auto generation =
+        frame_graph_runtime != nullptr
+            ? frame_graph_runtime->snapshot()
+            : nullptr;
+    const auto *program =
+        generation != nullptr
+            ? generation->find(current_rendering_pass_id)
+            : nullptr;
+    if (generation == nullptr || program == nullptr ||
+        !programRequiresRayQuery(*program)) {
+        return {};
+    }
+    return rayQueryAccelerationStructureScope(
+               *generation, *program)
+        ->diagnostics();
+}
+
 void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     auto modules = resolveRenderFrameModules();
     auto prepared =
@@ -3886,6 +3945,33 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "Renderer logical frame requires a compiled render pipeline");
     }
+    const auto acceleration_structures =
+        rayQueryAccelerationStructureScope(
+            *runtime_generation, *program);
+    std::optional<
+        RayQueryAccelerationStructureScope::FrameBuild>
+        acceleration_structure_build;
+    const auto record_acceleration_structures =
+        [&](vk::CommandBuffer command_buffer) {
+            if (acceleration_structures == nullptr) return;
+            const auto geometry_instances =
+                modules.instance_container
+                    .rayQueryGeometryInstances();
+            acceleration_structure_build.emplace(
+                acceleration_structures->recordFrame(
+                    command_buffer,
+                    GET_MODULE(VulkanManageCore),
+                    deletion_queue,
+                    modules.vert_buf_container
+                        .indexBuffer(),
+                    modules.vert_buf_container
+                        .vertexBuffer(false),
+                    modules.vert_buf_container
+                        .geometryAddressGeneration(),
+                    geometry_instances,
+                    modules.instance_container
+                        .rayQueryGeometryGeneration()));
+        };
     // Most output revisions are caught before an image is acquired. The
     // post-begin check remains necessary because acquire itself may replace a
     // blocking legacy WP215 swapchain; WP216 removes that mutable cutover.
@@ -4418,6 +4504,8 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+        record_acceleration_structures(
+            render_ctx.cmd_buf);
         capture_picking_model_instances();
         prepareSecondaryViewFamilyDraws(
             modules.instance_container,
@@ -4559,6 +4647,8 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+            record_acceleration_structures(
+                render_ctx.cmd_buf);
             capture_picking_model_instances();
             prepareSecondaryViewFamilyDraws(
                 modules.instance_container,
@@ -4657,6 +4747,9 @@ void Renderer::renderLogicalFrame(
     }
 
     target.endLogicalFrame(submission_lease);
+    if (acceleration_structure_build) {
+        acceleration_structure_build->commit();
+    }
     frame_abort_guard.complete();
     deletion_queue.confirmSubmission();
     if (picking_pass_active &&

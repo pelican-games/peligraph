@@ -14,10 +14,23 @@ namespace Pelican {
 constexpr uint32_t initial_indices_num = 65536;
 constexpr uint32_t initial_vertices_num = 32768;
 
+static vk::BufferUsageFlags geometryBuildInputUsage(
+    const VulkanManageCore &vkcore) {
+    auto usage = vk::BufferUsageFlags{
+        vk::BufferUsageFlagBits::eStorageBuffer};
+    if (vkcore.getRuntimeCapabilities().buffer_device_address) {
+        usage |=
+            vk::BufferUsageFlagBits::eShaderDeviceAddress |
+            vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
+    }
+    return usage;
+}
+
 static BufferWrapper createIndexBuf(VulkanManageCore &vkcore, size_t num) {
     return vkcore.allocBuf(sizeof(uint32_t) * num,
                            vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferSrc |
-                               vk::BufferUsageFlagBits::eTransferDst,
+                               vk::BufferUsageFlagBits::eTransferDst |
+                               geometryBuildInputUsage(vkcore),
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
@@ -25,7 +38,8 @@ static BufferWrapper createIndexBuf(VulkanManageCore &vkcore, size_t num) {
 static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
     return vkcore.allocBuf(sizeof(CommonVertStruct) * num,
                            vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferSrc |
-                               vk::BufferUsageFlagBits::eTransferDst,
+                               vk::BufferUsageFlagBits::eTransferDst |
+                               geometryBuildInputUsage(vkcore),
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
@@ -33,7 +47,8 @@ static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
 static BufferWrapper createSkinVertBuf(VulkanManageCore &vkcore, size_t num) {
     return vkcore.allocBuf(sizeof(CommonSkinningVertStruct) * num,
                            vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferSrc |
-                               vk::BufferUsageFlagBits::eTransferDst,
+                               vk::BufferUsageFlagBits::eTransferDst |
+                               geometryBuildInputUsage(vkcore),
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
@@ -303,6 +318,11 @@ VertBufContainer::uploadMorphData(const CommonPolygonVertData &data,
 
 void VertBufContainer::ensureIndexCapacity(uint32_t required) {
     if (required <= indices_cap) return;
+    if (geometry_address_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "model geometry address generation exhausted");
+    }
     const auto old_cap = indices_cap;
     auto replacement_cap = indices_cap;
     while (required > replacement_cap) {
@@ -316,6 +336,7 @@ void VertBufContainer::ensureIndexCapacity(uint32_t required) {
     auto old = std::move(indices_mem_pool);
     indices_mem_pool = std::move(replacement);
     indices_cap = replacement_cap;
+    ++geometry_address_generation;
     deferOldBuffer(std::move(old));
     LOG_INFO(logger, "VertBufContainer: reallocated index buffer");
 }
@@ -323,6 +344,11 @@ void VertBufContainer::ensureIndexCapacity(uint32_t required) {
 void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
     auto &capacity = skinned ? skin_vertices_cap : vertices_cap;
     if (required <= capacity) return;
+    if (geometry_address_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "model geometry address generation exhausted");
+    }
     const auto old_cap = capacity;
     auto replacement_cap = capacity;
     while (required > replacement_cap) {
@@ -347,13 +373,20 @@ void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
         capacity = replacement_cap;
         deferOldBuffer(std::move(old));
     }
+    ++geometry_address_generation;
     LOG_INFO(logger, "VertBufContainer: reallocated {} vertex buffer",
              skinned ? "skinned" : "static");
 }
 
 ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, false);
+    if (next_geometry_allocation_id ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "model geometry allocation identity exhausted");
+    }
     const auto bounds_source = makePrimitiveBoundsSource(data);
+    const bool morph_deformed = !data.morph_targets.empty();
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
     if (data.indices.empty()) {
         data.indices.resize(vertex_count);
@@ -398,12 +431,22 @@ ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVe
     ModelPrimitiveRefInfo primitive{
         index_count, index_offset, static_cast<int32_t>(vertex_offset), false};
     primitive.bounds_source = bounds_source;
+    primitive.vertex_count = vertex_count;
+    primitive.morph_deformed = morph_deformed;
+    primitive.geometry_allocation_id =
+        next_geometry_allocation_id++;
     return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
 
 ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, true);
+    if (next_geometry_allocation_id ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "model geometry allocation identity exhausted");
+    }
     const auto bounds_source = makePrimitiveBoundsSource(data);
+    const bool morph_deformed = !data.morph_targets.empty();
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
     if (data.indices.empty()) {
         data.indices.resize(vertex_count);
@@ -454,6 +497,10 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
     ModelPrimitiveRefInfo primitive{
         index_count, index_offset, static_cast<int32_t>(vertex_offset), true};
     primitive.bounds_source = bounds_source;
+    primitive.vertex_count = vertex_count;
+    primitive.morph_deformed = morph_deformed;
+    primitive.geometry_allocation_id =
+        next_geometry_allocation_id++;
     return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
 

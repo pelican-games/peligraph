@@ -12,6 +12,7 @@
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/gizmo.hpp"
@@ -40,6 +41,7 @@
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/core/watch/reloadservice.hpp"
+#include "../src/project/vulkanviewplanning.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <algorithm>
@@ -83,6 +85,54 @@ nlohmann::json makeProjectConfig(const std::filesystem::path &scene_path, const 
              {"asset_data_json", asset_path.generic_string()},
          }},
     };
+}
+
+void writeRayQueryTestProject(
+    const std::filesystem::path &directory,
+    bool require_ray_query) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    nlohmann::json rendering{
+        {"pipeline",
+         {{"preset",
+           "engine://render_pipelines/hybrid_v1.json"}}},
+    };
+    if (require_ray_query) {
+        rendering["target_planning"] = {
+            {"graphs",
+             {{"main_render",
+               {{"required_capabilities",
+                 nlohmann::json::array(
+                     {vulkanRayQueryCapability})}}}}},
+        };
+    }
+    writeTextFile(directory / "hybrid.json",
+                  rendering.dump(2));
+}
+
+void configureRayQueryTestRuntime(
+    const std::filesystem::path &directory) {
+    auto project =
+        makeProjectConfig("scene.json", "assets.json");
+    project["basic_config"]["default_scene_id"] =
+        "default_scene";
+    project["basic_config"]["rendering_config_json"] =
+        "hybrid.json";
+    project["basic_config"]["default_rendering_pass"] =
+        "main_render";
+    GET_MODULE(ProjectSource).setSourceByData(
+        project.dump());
+    GET_MODULE(PathResolver).setup(directory, false);
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{32, 32};
+    launch.headless_frames = 1;
+    GET_MODULE(EngineTime).setup(
+        EngineTime::Mode::fixed_step, 1.0 / 60.0);
 }
 
 void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_color) {
@@ -7888,6 +7938,348 @@ TEST_CASE(
         TestSupport::skipIfVulkanDeviceUnavailable(
             error,
             "Vulkan depth-pyramid subresource rendering unavailable");
+        throw;
+    }
+#endif
+}
+
+TEST_CASE(
+    "ray-query acceleration structures remain unbuilt when not requested",
+    "[headless][gpu][wp281][ray-query]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeRayQueryTestProject(temp_dir, false);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &geometry = GET_MODULE(VertBufContainer);
+        auto primitive = geometry.addPrimitiveEntry(
+            makeScreenQuad(0.25F, 0.0F));
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2801};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material =
+                    GET_MODULE(StandardMaterialResource)
+                        .standardTransparentMaterial(),
+                .primitives = {primitive},
+            },
+        };
+        GET_MODULE(PolygonInstanceContainer)
+            .placeModelInstance(model);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        const auto diagnostics =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK_FALSE(diagnostics.requested);
+        CHECK(diagnostics.blas_build_count == 0);
+        CHECK(diagnostics.tlas_build_count == 0);
+        CHECK(diagnostics.active_blas_count == 0);
+
+        const auto plan = renderer.currentFramePlanJson();
+        CHECK_FALSE(
+            plan.at("ray_query_acceleration_structures")
+                .at("requested")
+                .get<bool>());
+        bool registered = false;
+        for (const auto &scope :
+             plan.at("gpu_resource_arena").at("scopes")) {
+            for (const auto &resource :
+                 scope.at("resources")) {
+                registered = registered ||
+                             resource.at("kind") ==
+                                 "acceleration_structure";
+            }
+        }
+        CHECK_FALSE(registered);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan non-ray-query headless rendering unavailable");
+        throw;
+    }
+#endif
+}
+
+TEST_CASE(
+    "ray-query static BLAS and frame TLAS invalidate on real pool growth and model rebuild",
+    "[headless][gpu][wp281][ray-query]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeRayQueryTestProject(temp_dir, true);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+        auto &geometry = GET_MODULE(VertBufContainer);
+        auto &standard =
+            GET_MODULE(StandardMaterialResource);
+        auto &materials = GET_MODULE(MaterialContainer);
+
+        const auto skinned_material =
+            materials.registerMaterial(MaterialInfo{
+                .vert_shader = standard.skinnedVertShader(),
+                .frag_shader = standard.standardFragShader(),
+                .skinned = true,
+                .base_color_texture =
+                    standard.transparentTexture(),
+                .metallic_roughness_texture =
+                    standard.metallicRoughnessDefaultTexture(),
+                .normal_texture =
+                    standard.normalDefaultTexture(),
+                .emissive_texture =
+                    standard.emissiveDefaultTexture(),
+                .occlusion_texture =
+                    standard.occlusionDefaultTexture(),
+            });
+
+        auto static_primitive = geometry.addPrimitiveEntry(
+            makeScreenQuad(0.2F, 0.0F));
+        static_primitive.mesh_index = 0;
+        static_primitive.primitive_index = 0;
+
+        auto morph_primitive = geometry.addPrimitiveEntry(
+            makeScreenQuad(0.2F, 0.0F));
+        morph_primitive.mesh_index = 1;
+        morph_primitive.primitive_index = 0;
+        morph_primitive.morph_deformed = true;
+
+        auto vat_primitive = geometry.addPrimitiveEntry(
+            makeScreenQuad(0.2F, 0.0F));
+        vat_primitive.mesh_index = 2;
+        vat_primitive.primitive_index = 0;
+        vat_primitive.vat_deformed = true;
+
+        auto skinned_data = makeScreenQuad(0.2F, 0.0F);
+        skinned_data.joint.assign(
+            skinned_data.pos.size(), glm::i16vec4{0});
+        skinned_data.weight.assign(
+            skinned_data.pos.size(),
+            glm::vec4{1.0F, 0.0F, 0.0F, 0.0F});
+        auto skinned_primitive =
+            geometry.addSkinnedPrimitiveEntry(
+                std::move(skinned_data));
+        skinned_primitive.mesh_index = 3;
+        skinned_primitive.primitive_index = 0;
+
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2811};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material =
+                    standard.standardTransparentMaterial(),
+                .primitives = {
+                    static_primitive,
+                    morph_primitive,
+                    vat_primitive,
+                },
+            },
+            ModelTemplate::MaterialPrimitives{
+                .material = skinned_material,
+                .primitives = {skinned_primitive},
+            },
+        };
+        auto &instances =
+            GET_MODULE(PolygonInstanceContainer);
+        const auto model_instance =
+            instances.placeModelInstance(model);
+        const std::array skin_palette{
+            glm::mat4{1.0F}};
+        instances.setSkinningPalette(
+            model_instance, skin_palette);
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0F, 0.0F, 2.0F});
+        camera.setDir({0.0F, 0.0F, -1.0F});
+        camera.setUp({0.0F, 1.0F, 0.0F});
+
+        renderer.render();
+        auto initial = renderer
+                           .rayQueryAccelerationStructureDiagnosticsForTesting();
+        REQUIRE(initial.requested);
+        CHECK(initial.blas_build_count == 1);
+        CHECK(initial.tlas_build_count == 1);
+        CHECK(initial.active_blas_count == 1);
+        CHECK(initial.tlas_instance_count == 1);
+        CHECK(initial.excluded.primitive_count == 3);
+        CHECK(initial.excluded.instance_count == 3);
+        CHECK(initial.excluded.skinned_primitive_count == 1);
+        CHECK(initial.excluded.morph_primitive_count == 1);
+        CHECK(initial.excluded.vat_primitive_count == 1);
+        REQUIRE(initial.excluded.skinned_names.size() == 1);
+        REQUIRE(initial.excluded.morph_names.size() == 1);
+        REQUIRE(initial.excluded.vat_names.size() == 1);
+        REQUIRE(initial.active_blas_inputs.size() == 1);
+        const auto old_blas_input =
+            initial.active_blas_inputs.front();
+
+        // Transform changes are TLAS data, not a BLAS invalidation source.
+        instances.setTrs(
+            model_instance, {0.1F, 0.0F, 0.0F},
+            glm::quat{1.0F, 0.0F, 0.0F, 0.0F},
+            {1.0F, 1.0F, 1.0F});
+        renderer.render();
+        const auto transformed =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(transformed.blas_build_count ==
+              initial.blas_build_count);
+        CHECK(transformed.tlas_build_count ==
+              initial.tlas_build_count + 1);
+        CHECK(transformed.geometry_pool_invalidation_count == 0);
+        CHECK(transformed.model_rebuild_invalidation_count == 0);
+
+        const auto rebuild_generation =
+            instances.rayQueryGeometryGeneration();
+        instances.rebuildModelInstances(model.asset_id, model);
+        instances.setSkinningPalette(
+            model_instance, skin_palette);
+        REQUIRE(instances.rayQueryGeometryGeneration() ==
+                rebuild_generation + 1);
+        renderer.render();
+        const auto rebuilt =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(rebuilt.blas_build_count ==
+              transformed.blas_build_count + 1);
+        CHECK(rebuilt.model_rebuild_invalidation_count == 1);
+
+        const auto old_index_capacity =
+            geometry.indexCapacityForTesting();
+        const auto old_vertex_capacity =
+            geometry.vertexCapacityForTesting(false);
+        const auto allocated_indices =
+            geometry.allocatedIndexCountForTesting();
+        const auto allocated_vertices =
+            geometry.allocatedVertexCountForTesting(false);
+        REQUIRE(allocated_indices < old_index_capacity);
+        REQUIRE(allocated_vertices < old_vertex_capacity);
+
+        // One model allocation deliberately crosses both global pool
+        // capacities. vertex_count fills the remaining static-vertex range
+        // plus one; index_count does the same and is rounded up to a complete
+        // triangle. This calls ensureVertexCapacity and ensureIndexCapacity,
+        // rather than simulating their notification in a unit test.
+        const auto crossing_vertex_count =
+            static_cast<std::uint32_t>(
+                old_vertex_capacity - allocated_vertices + 1);
+        auto crossing_index_count =
+            static_cast<std::uint32_t>(
+                old_index_capacity - allocated_indices + 1);
+        crossing_index_count +=
+            (3 - crossing_index_count % 3) % 3;
+        CommonPolygonVertData crossing_data;
+        crossing_data.pos.resize(crossing_vertex_count);
+        for (std::uint32_t index = 0;
+             index < crossing_vertex_count; ++index) {
+            crossing_data.pos[index] = {
+                static_cast<float>(index % 3),
+                static_cast<float>((index / 3) % 3),
+                0.0F,
+            };
+        }
+        crossing_data.indices.resize(crossing_index_count);
+        for (std::uint32_t index = 0;
+             index < crossing_index_count; index += 3) {
+            crossing_data.indices[index] = 0;
+            crossing_data.indices[index + 1] = 1;
+            crossing_data.indices[index + 2] = 2;
+        }
+        const auto old_pool_generation =
+            geometry.geometryAddressGeneration();
+        ModelTemplate capacity_crossing_model;
+        capacity_crossing_model.asset_id = ModelAssetId{2812};
+        capacity_crossing_model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material =
+                    standard.standardTransparentMaterial(),
+                .primitives = {geometry.addPrimitiveEntry(
+                    std::move(crossing_data))},
+            },
+        };
+        REQUIRE(geometry.indexCapacityForTesting() >
+                old_index_capacity);
+        REQUIRE(geometry.vertexCapacityForTesting(false) >
+                old_vertex_capacity);
+        REQUIRE(geometry.geometryAddressGeneration() >=
+                old_pool_generation + 2);
+
+        renderer.render();
+        const auto reallocated =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(reallocated.geometry_pool_invalidation_count == 1);
+        CHECK(reallocated.blas_build_count ==
+              rebuilt.blas_build_count + 1);
+        REQUIRE(reallocated.active_blas_inputs.size() == 1);
+        const auto &new_blas_input =
+            reallocated.active_blas_inputs.front();
+        CHECK(new_blas_input.index_device_address !=
+              old_blas_input.index_device_address);
+        CHECK(new_blas_input.vertex_device_address !=
+              old_blas_input.vertex_device_address);
+        const auto current_index_address =
+            vkcore.getDevice().getBufferAddress(
+                vk::BufferDeviceAddressInfo{
+                    geometry.indexBuffer().buffer.get()});
+        const auto current_vertex_address =
+            vkcore.getDevice().getBufferAddress(
+                vk::BufferDeviceAddressInfo{
+                    geometry.vertexBuffer(false).buffer.get()});
+        CHECK(new_blas_input.index_device_address ==
+              current_index_address +
+                  sizeof(std::uint32_t) *
+                      static_primitive.index_offset);
+        CHECK(new_blas_input.vertex_device_address ==
+              current_vertex_address +
+                  sizeof(CommonVertStruct) *
+                      static_cast<std::uint32_t>(
+                          static_primitive.vert_offset));
+
+        const auto plan = renderer.currentFramePlanJson();
+        CHECK(plan.at("ray_query_acceleration_structures")
+                  .at("static_only") == true);
+        CHECK(plan.at("ray_query_acceleration_structures")
+                  .at("excluded")
+                  .at("primitive_count") == 3);
+        bool registered = false;
+        for (const auto &scope :
+             plan.at("gpu_resource_arena").at("scopes")) {
+            for (const auto &resource :
+                 scope.at("resources")) {
+                registered = registered ||
+                             resource.at("kind") ==
+                                 "acceleration_structure";
+            }
+        }
+        CHECK(registered);
+
+        vkcore.waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan ray-query acceleration-structure rendering unavailable");
         throw;
     }
 #endif

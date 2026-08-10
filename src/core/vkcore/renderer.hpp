@@ -22,6 +22,7 @@
 namespace Pelican {
 
 struct RenderPipelineReloadState;
+struct RayQueryAccelerationStructureDiagnostics;
 namespace watch {
 struct ReloadRequest;
 }
@@ -147,6 +148,8 @@ DECLARE_MODULE(Renderer) {
     std::optional<vk::Format>
     xrCompositionDepthFormat() const;
     std::vector<std::string> currentFramePlanOrderForTesting() const;
+    RayQueryAccelerationStructureDiagnostics
+    rayQueryAccelerationStructureDiagnosticsForTesting() const;
     void setExecutionTracingForTesting(bool enabled) { execution_tracing_for_testing = enabled; }
     const nlohmann::json &lastExecutionTraceForTesting() const { return last_execution_trace; }
     std::size_t imageMemoryDependencyCountForTesting() const noexcept {

@@ -81,6 +81,12 @@ struct ModelPrimitiveRefInfo {
     std::uint32_t node_index = noSourceNodeIndex;
     PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
     std::shared_ptr<const ModelPrimitiveBoundsSource> bounds_source;
+    // Ray-query BLAS input metadata. The allocation identity is never reused,
+    // so a released range cannot alias a cached BLAS for a later model.
+    std::uint32_t vertex_count = 0;
+    bool morph_deformed = false;
+    bool vat_deformed = false;
+    std::uint64_t geometry_allocation_id = 0;
 };
 
 // Exact suballocations owned by one model generation. Keeping this metadata

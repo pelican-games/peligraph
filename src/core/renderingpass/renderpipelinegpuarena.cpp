@@ -8,6 +8,7 @@
 #include "../renderer/gizmo.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
+#include "../vkcore/accelerationstructure.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 
@@ -93,6 +94,8 @@ std::string_view renderPipelineGpuResourceKindName(
         return "shadow_depth_pass";
     case RenderPipelineGpuResourceKind::velocity_pass:
         return "velocity_pass";
+    case RenderPipelineGpuResourceKind::acceleration_structure:
+        return "acceleration_structure";
     }
     return "unknown";
 }
@@ -136,9 +139,16 @@ compileRenderPipelineGpuArena(
                        prepared_scope->owner_scope;
             });
         RenderPipelineGpuResourceScope replacement{
-            std::move(prepared_scope->owner_scope),
-            std::move(prepared_scope->resources),
-            std::move(prepared_scope->resource_leases),
+            .owner_scope =
+                std::move(prepared_scope->owner_scope),
+            .resources =
+                std::move(prepared_scope->resources),
+            .resource_leases =
+                std::move(prepared_scope->resource_leases),
+            .acceleration_structures =
+                std::move(
+                    prepared_scope
+                        ->acceleration_structures),
         };
         if (existing != candidate->scopes.end()) {
             *existing = std::move(replacement);
@@ -148,6 +158,41 @@ compileRenderPipelineGpuArena(
         }
     }
     return candidate;
+}
+
+void attachRayQueryAccelerationStructures(
+    RenderPipelineGpuScopePreparation &scope) {
+    if (scope.acceleration_structures != nullptr) {
+        throw std::runtime_error(
+            "ray-query acceleration structures are already attached "
+            "to the GPU owner scope");
+    }
+    if (std::any_of(
+            scope.resources.begin(), scope.resources.end(),
+            [](const auto &resource) {
+                return resource.kind ==
+                       RenderPipelineGpuResourceKind::
+                           acceleration_structure;
+            })) {
+        throw std::runtime_error(
+            "GPU owner scope already registers an acceleration "
+            "structure resource");
+    }
+    auto acceleration_structures =
+        std::make_shared<
+            RayQueryAccelerationStructureScope>();
+    scope.resources.push_back(
+        RenderPipelineGpuResourceRegistration{
+            .kind = RenderPipelineGpuResourceKind::
+                acceleration_structure,
+            .handle = 0,
+            .name = "ray_query_scene_static_only",
+            .declared_bytes = 0,
+        });
+    scope.resource_leases.push_back(
+        acceleration_structures);
+    scope.acceleration_structures =
+        std::move(acceleration_structures);
 }
 
 namespace {

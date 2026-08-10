@@ -350,6 +350,11 @@ DrawItemSnapshot makeDrawItemSnapshot(
         .bounds_source = primitive.bounds_source,
         .world_bounds = std::nullopt,
         .view_mask = drawViewMask(primitive.view_visibility),
+        .vertex_count = primitive.vertex_count,
+        .morph_deformed = primitive.morph_deformed,
+        .vat_deformed = primitive.vat_deformed,
+        .geometry_allocation_id =
+            primitive.geometry_allocation_id,
     };
 }
 } // namespace
@@ -877,6 +882,12 @@ bool PolygonInstanceContainer::canRebuildModelInstances(
 
 void PolygonInstanceContainer::rebuildModelInstances(
     std::span<const ModelInstanceRebuild> replacements) {
+    if (!replacements.empty() &&
+        ray_query_geometry_generation ==
+            std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "ray-query model rebuild generation exhausted");
+    }
     if (!canRebuildModelInstances(replacements))
         throw std::runtime_error("Render command capacity exceeded by model reload batch");
     std::unordered_map<std::uint64_t, const ModelTemplate *> by_asset;
@@ -1014,7 +1025,49 @@ void PolygonInstanceContainer::rebuildModelInstances(
         std::move(next_material_absolute_override_frames);
     previous_model_instances_data = std::move(next_previous_models);
     model_history_valid = std::move(next_history_valid);
+    if (!replacements.empty()) {
+        ++ray_query_geometry_generation;
+    }
     uploadMaterialAbsoluteOverrides();
+}
+
+std::vector<RayQueryGeometryInstanceSnapshot>
+PolygonInstanceContainer::rayQueryGeometryInstances() const {
+    std::vector<RayQueryGeometryInstanceSnapshot> result;
+    result.reserve(draw_inventory.size());
+    for (const auto &item : draw_inventory) {
+        const auto instance =
+            item.stable_identity.instance.index;
+        if (instance >= model_instances_data.size() ||
+            instance >= model_asset_ids.size() ||
+            !instance_slots.alive(instance)) {
+            continue;
+        }
+        result.push_back(
+            RayQueryGeometryInstanceSnapshot{
+                .asset_identity =
+                    model_asset_ids[instance].value,
+                .geometry_allocation_id =
+                    item.geometry_allocation_id,
+                .index_count = item.indexed.index_count,
+                .index_offset = item.indexed.first_index,
+                .vertex_offset = item.indexed.vertex_offset,
+                .vertex_count = item.vertex_count,
+                .skinned =
+                    item.pipeline_material_key.skinned,
+                .morph_deformed = item.morph_deformed,
+                .vat_deformed = item.vat_deformed,
+                .mesh_index =
+                    item.stable_identity.mesh_index,
+                .primitive_index =
+                    item.stable_identity.primitive_index,
+                .node_index =
+                    item.stable_identity.node_index,
+                .world_transform =
+                    model_instances_data[instance],
+            });
+    }
+    return result;
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(

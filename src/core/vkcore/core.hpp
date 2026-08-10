@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "buf.hpp"
+#include "accelerationstructuredispatch.hpp"
 #include "cmdbuf.hpp"
 #include "debugutils.hpp"
 #include "image.hpp"
@@ -63,6 +64,8 @@ DECLARE_MODULE(VulkanManageCore) {
         get_acceleration_structure_device_address = nullptr;
     PFN_vkCmdBuildAccelerationStructuresKHR
         cmd_build_acceleration_structures = nullptr;
+    AccelerationStructureDispatch
+        acceleration_structure_dispatch;
     mutable std::mutex presentation_quarantine_mutex;
     std::vector<std::shared_ptr<const void>>
         presentation_quarantine;
@@ -89,6 +92,10 @@ DECLARE_MODULE(VulkanManageCore) {
     const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
     const VulkanRuntimeCapabilities &getRuntimeCapabilities() const noexcept {
         return runtime_capabilities;
+    }
+    const AccelerationStructureDispatch &
+    getAccelerationStructureDispatch() const noexcept {
+        return acceleration_structure_dispatch;
     }
     std::span<const std::string>
     getEnabledDeviceExtensions() const noexcept {

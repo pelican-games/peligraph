@@ -42,6 +42,8 @@ DECLARE_MODULE(VertBufContainer) {
     uint32_t vertices_cap;
     uint32_t skin_vertices_offset;
     uint32_t skin_vertices_cap;
+    std::uint64_t geometry_address_generation = 1;
+    std::uint64_t next_geometry_allocation_id = 1;
     BufferWrapper indices_mem_pool;
     BufferWrapper vertices_mem_pool;
     BufferWrapper skin_vertices_mem_pool;
@@ -83,6 +85,13 @@ DECLARE_MODULE(VertBufContainer) {
         return skinned ? morph_skinned_metadata_buffer : morph_static_metadata_buffer;
     }
     const BufferWrapper &morphDeltaBuffer() const { return morph_delta_buffer; }
+    const BufferWrapper &indexBuffer() const { return indices_mem_pool; }
+    const BufferWrapper &vertexBuffer(bool skinned = false) const {
+        return skinned ? skin_vertices_mem_pool : vertices_mem_pool;
+    }
+    std::uint64_t geometryAddressGeneration() const noexcept {
+        return geometry_address_generation;
+    }
 
     struct CommonVertDataDescription {
         std::vector<vk::VertexInputBindingDescription> binding_descs;
@@ -93,6 +102,12 @@ DECLARE_MODULE(VertBufContainer) {
     size_t allocatedIndexCountForTesting() const;
     size_t allocatedVertexCountForTesting(bool skinned = false) const;
     size_t allocatedMorphDeltaCountForTesting() const;
+    std::uint32_t indexCapacityForTesting() const noexcept {
+        return indices_cap;
+    }
+    std::uint32_t vertexCapacityForTesting(bool skinned = false) const noexcept {
+        return skinned ? skin_vertices_cap : vertices_cap;
+    }
 };
 
 } // namespace Pelican
