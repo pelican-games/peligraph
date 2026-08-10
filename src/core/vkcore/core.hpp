@@ -7,6 +7,7 @@
 #include "debugutils.hpp"
 #include "image.hpp"
 #include "memorydiagnostics.hpp"
+#include "raytracingpipelinedispatch.hpp"
 #include "runtimecapabilities.hpp"
 #include "windowsurface.hpp"
 #include <cstdint>
@@ -66,6 +67,14 @@ DECLARE_MODULE(VulkanManageCore) {
         cmd_build_acceleration_structures = nullptr;
     AccelerationStructureDispatch
         acceleration_structure_dispatch;
+    PFN_vkCreateRayTracingPipelinesKHR
+        create_ray_tracing_pipelines = nullptr;
+    PFN_vkGetRayTracingShaderGroupHandlesKHR
+        get_ray_tracing_shader_group_handles = nullptr;
+    PFN_vkCmdTraceRaysKHR cmd_trace_rays = nullptr;
+    PFN_vkDestroyPipeline destroy_pipeline = nullptr;
+    RayTracingPipelineDispatch
+        ray_tracing_pipeline_dispatch;
     mutable std::mutex presentation_quarantine_mutex;
     std::vector<std::shared_ptr<const void>>
         presentation_quarantine;
@@ -96,6 +105,10 @@ DECLARE_MODULE(VulkanManageCore) {
     const AccelerationStructureDispatch &
     getAccelerationStructureDispatch() const noexcept {
         return acceleration_structure_dispatch;
+    }
+    const RayTracingPipelineDispatch &
+    getRayTracingPipelineDispatch() const noexcept {
+        return ray_tracing_pipeline_dispatch;
     }
     std::span<const std::string>
     getEnabledDeviceExtensions() const noexcept {

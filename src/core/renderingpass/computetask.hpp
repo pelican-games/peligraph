@@ -214,6 +214,7 @@ DECLARE_MODULE(ComputeTaskContainer) {
                 std::vector<vk::ImageView>, 2>>
             bound_image_views;
         std::uint64_t binding_revision = 0;
+        bool ray_tracing = false;
         uint32_t dispatch_x = 1;
         uint32_t dispatch_y = 1;
         uint32_t dispatch_z = 1;

@@ -116,7 +116,8 @@ void writeRayQueryTestProject(
 
 void writeRtShadowMaskTestProject(
     const std::filesystem::path &directory,
-    bool raster_shadow) {
+    bool raster_shadow,
+    bool ray_tracing_pipeline = false) {
     writeTextFile(
         directory / "scene.json",
         R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
@@ -125,6 +126,10 @@ void writeRtShadowMaskTestProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     nlohmann::json features = nlohmann::json::array({
         "engine://features/rt_shadow_mask.json"});
+    if (ray_tracing_pipeline) {
+        features.push_back(
+            "engine://features/rt_shadow_mask_pipeline.json");
+    }
     if (raster_shadow) {
         features.push_back(
             "engine://features/shadow_directional.json");
@@ -147,6 +152,8 @@ void writeEmbeddedRtShadowMaskTestProject(
     writeTextFile(
         directory / "assets.json",
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    // This intentionally has no shader defines or generated includes. The
+    // compiler-OFF build must resolve every stage to embedded SPIR-V.
     writeTextFile(
         directory / "hybrid.json",
         R"json({
@@ -174,6 +181,14 @@ void writeEmbeddedRtShadowMaskTestProject(
       "format_class": "data",
       "role": "data",
       "usage": ["COLOR_ATTACHMENT", "TRANSFER_SRC"]
+    },
+    {
+      "name": "rt_shadow_mask_pipeline",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE", "TRANSFER_SRC"]
     }
   ],
   "rendering_passes": [
@@ -230,7 +245,46 @@ void writeEmbeddedRtShadowMaskTestProject(
         }
       ]
     }
-  ]
+  ],
+  "compute_tasks": [
+    {
+      "name": "rt_shadow_mask_pipeline",
+      "ray_tracing": {
+        "raygen": "engine://rt_shadow_mask_pipeline",
+        "miss": "engine://rt_shadow_mask_pipeline",
+        "closesthit": "engine://rt_shadow_mask_pipeline"
+      },
+      "reads": ["gbuffer_worldpos", "gbuffer_normal"],
+      "writes": ["rt_shadow_mask_pipeline"],
+      "resource_ports": {
+        "world_position": {
+          "resource": "gbuffer_worldpos",
+          "access": "sampled",
+          "sampling": {"filter": "nearest", "address": "clamp_to_edge"}
+        },
+        "normal": {
+          "resource": "gbuffer_normal",
+          "access": "sampled",
+          "sampling": {"filter": "nearest", "address": "clamp_to_edge"}
+        },
+        "shadow_mask": {
+          "resource": "rt_shadow_mask_pipeline",
+          "access": "storage"
+        }
+      },
+      "dispatch": {"rays_from": {"port": "shadow_mask"}}
+    }
+  ],
+  "target_planning": {
+    "graphs": {
+      "main_render": {
+        "required_capabilities": [
+          "pelican.vulkan.ray_query@1",
+          "pelican.vulkan.ray_tracing_pipeline@1"
+        ]
+      }
+    }
+  }
 })json");
 }
 
@@ -8458,8 +8512,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "rt shadow mask pixels expose the static-only boundary and overlap raster shadow",
-    "[headless][gpu][wp283][wp284][ray-query][pixel]") {
+    "ray query and RT pipeline shadow masks match pixel-exactly across the static-only boundary",
+    "[headless][gpu][wp283][wp284][wp285][ray-query][ray-tracing][pixel]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
@@ -8474,6 +8528,7 @@ TEST_CASE(
         };
         struct RenderResult {
             R8RenderTargetReadback mask;
+            R8RenderTargetReadback pipeline_mask;
             std::vector<std::uint8_t> color;
             RayQueryAccelerationStructureDiagnostics diagnostics;
         };
@@ -8482,12 +8537,14 @@ TEST_CASE(
                                 float world_x = 0.0F) {
             FastModuleContainer modules;
             writeRtShadowMaskTestProject(
-                temp_dir, raster_shadow);
+                temp_dir, raster_shadow, true);
             configureRayQueryTestRuntime(temp_dir);
 
             auto &renderer = GET_MODULE(Renderer);
             auto &vkcore = GET_MODULE(VulkanManageCore);
             REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+            REQUIRE(
+                vkcore.getRuntimeCapabilities().ray_tracing_pipeline);
             auto &standard =
                 GET_MODULE(StandardMaterialResource);
             auto &materials = GET_MODULE(MaterialContainer);
@@ -8603,6 +8660,9 @@ TEST_CASE(
                 .mask =
                     renderer.readR8RenderTargetForTesting(
                         "rt_shadow_mask"),
+                .pipeline_mask =
+                    renderer.readR8RenderTargetForTesting(
+                        "rt_shadow_mask_pipeline"),
                 .color = GET_MODULE(RenderTarget)
                              .readbackLastFrameRGBA8(),
                 .diagnostics =
@@ -8630,6 +8690,20 @@ TEST_CASE(
             render(BlockerKind::morph, false);
         const auto vat =
             render(BlockerKind::vat, false);
+        const auto require_pipeline_match =
+            [](const RenderResult &result) {
+                REQUIRE(result.pipeline_mask.extent ==
+                        result.mask.extent);
+                REQUIRE(result.pipeline_mask.pixels ==
+                        result.mask.pixels);
+            };
+        require_pipeline_match(baseline);
+        require_pipeline_match(static_only);
+        require_pipeline_match(far_baseline);
+        require_pipeline_match(far_static);
+        require_pipeline_match(skinned);
+        require_pipeline_match(morph);
+        require_pipeline_match(vat);
         REQUIRE(baseline.mask.extent.width == 32);
         REQUIRE(baseline.mask.extent.height == 32);
         REQUIRE(dark_count(baseline.mask.pixels) == 0);
@@ -8654,6 +8728,7 @@ TEST_CASE(
 
         const auto raster =
             render(BlockerKind::static_geometry, true);
+        require_pipeline_match(raster);
         REQUIRE(raster.color.size() == static_only.color.size());
         REQUIRE(raster.mask.pixels.size() ==
                 static_only.mask.pixels.size());
@@ -8699,20 +8774,22 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "rt shadow mask treats a scene with no eligible static geometry as fully visible",
-    "[headless][gpu][wp284][ray-query][empty]") {
+    "ray query and RT pipeline shadow masks match for an empty static scene",
+    "[headless][gpu][wp284][wp285][ray-query][ray-tracing][empty]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
     try {
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
-        writeRtShadowMaskTestProject(temp_dir, false);
+        writeRtShadowMaskTestProject(temp_dir, false, true);
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+        REQUIRE(
+            vkcore.getRuntimeCapabilities().ray_tracing_pipeline);
         auto &standard =
             GET_MODULE(StandardMaterialResource);
         auto &materials = GET_MODULE(MaterialContainer);
@@ -8774,7 +8851,12 @@ TEST_CASE(
         const auto mask =
             renderer.readR8RenderTargetForTesting(
                 "rt_shadow_mask");
+        const auto pipeline_mask =
+            renderer.readR8RenderTargetForTesting(
+                "rt_shadow_mask_pipeline");
         REQUIRE(mask.extent == vk::Extent2D{32, 32});
+        REQUIRE(pipeline_mask.extent == mask.extent);
+        REQUIRE(pipeline_mask.pixels == mask.pixels);
         REQUIRE(std::all_of(
             mask.pixels.begin(), mask.pixels.end(),
             [](const auto value) { return value > 192; }));
@@ -8808,8 +8890,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "reflected TLAS requirement renders real shadows from the embedded shader path",
-    "[headless][gpu][wp283][wp284][ray-query][embedded]") {
+    "embedded ray query and RT pipeline shaders render matching real shadows",
+    "[headless][gpu][wp283][wp284][wp285][ray-query][ray-tracing][embedded]") {
     setupLogger();
     std::filesystem::path temp_dir;
     try {
@@ -8821,13 +8903,15 @@ TEST_CASE(
         auto &renderer = GET_MODULE(Renderer);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+        REQUIRE(
+            vkcore.getRuntimeCapabilities().ray_tracing_pipeline);
         auto &geometry = GET_MODULE(VertBufContainer);
         auto primitive = geometry.addPrimitiveEntry(
             makeScreenQuad(0.55F, 1.0F));
         primitive.mesh_index = 0;
         primitive.primitive_index = 0;
         ModelTemplate model;
-        model.asset_id = ModelAssetId{2832};
+        model.asset_id = ModelAssetId{2852};
         model.material_primitives = {
             ModelTemplate::MaterialPrimitives{
                 .material =
@@ -8840,7 +8924,7 @@ TEST_CASE(
             .placeModelInstance(model);
         GET_MODULE(LightContainer).load({
             LightLoadEntry{
-                .name = "WP283 embedded directional",
+                .name = "WP285 embedded directional",
                 .component = {
                     {"type", "directional"},
                     {"direction", {0.0, 0.0, -1.0}},
@@ -8855,8 +8939,13 @@ TEST_CASE(
         const auto mask =
             renderer.readR8RenderTargetForTesting(
                 "rt_shadow_mask");
+        const auto pipeline_mask =
+            renderer.readR8RenderTargetForTesting(
+                "rt_shadow_mask_pipeline");
         REQUIRE(mask.extent == vk::Extent2D{32, 32});
         REQUIRE(mask.pixels.size() == 32 * 32);
+        REQUIRE(pipeline_mask.extent == mask.extent);
+        REQUIRE(pipeline_mask.pixels == mask.pixels);
         for (std::uint32_t y = 4; y <= 10; ++y) {
             for (std::uint32_t x = 4; x <= 10; ++x) {
                 REQUIRE(r8PixelAt(mask, x, y) < 64);

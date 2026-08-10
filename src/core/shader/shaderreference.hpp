@@ -9,6 +9,9 @@ enum class ShaderStage {
     vertex,
     fragment,
     compute,
+    raygen,
+    miss,
+    closesthit,
 };
 
 enum class ShaderReferenceKind {

@@ -864,8 +864,14 @@ ResolvedImageExtentDispatch resolveImageExtentDispatch(
         resources,
     const RenderTargetContainer
         &render_target_container) {
-    const auto &authored =
-        *definition.dispatch.groups_from;
+    const auto ray_tracing =
+        definition.dispatch.rays_from.has_value();
+    const auto &authored = ray_tracing
+                               ? *definition.dispatch.rays_from
+                               : *definition.dispatch.groups_from;
+    const auto dispatch_name = ray_tracing
+                                   ? "dispatch.rays_from"
+                                   : "dispatch.groups_from";
     const auto port = std::find_if(
         definition.resource_ports.begin(),
         definition.resource_ports.end(),
@@ -876,7 +882,8 @@ ResolvedImageExtentDispatch resolveImageExtentDispatch(
     if (port == definition.resource_ports.end()) {
         throw std::runtime_error(
             "Compute task '" + definition.name +
-            "' dispatch.groups_from references unknown resource "
+            "' " + std::string{dispatch_name} +
+            " references unknown resource "
             "port '" +
             authored.port + "'");
     }
@@ -884,7 +891,7 @@ ResolvedImageExtentDispatch resolveImageExtentDispatch(
         ShaderResourcePortKind::buffer) {
         throw std::runtime_error(
             "Compute task '" + definition.name +
-            "' dispatch.groups_from port '" +
+            "' " + std::string{dispatch_name} + " port '" +
             authored.port +
             "' must resolve to an image");
     }
@@ -900,7 +907,7 @@ ResolvedImageExtentDispatch resolveImageExtentDispatch(
             resource->render_target)) {
         throw std::runtime_error(
             "Compute task '" + definition.name +
-            "' dispatch.groups_from port '" +
+            "' " + std::string{dispatch_name} + " port '" +
             authored.port +
             "' does not resolve to a render target");
     }
@@ -1083,24 +1090,192 @@ std::vector<ReflectedBinding> passInputBindings(const ShaderReflection &reflecti
 }
 
 vk::PipelineStageFlags shaderStage(FramePlanNodeKind kind) {
-    return kind == FramePlanNodeKind::compute
-               ? vk::PipelineStageFlagBits::
-                     eComputeShader
-               : vk::PipelineStageFlagBits::
-                         eVertexShader |
-                     vk::PipelineStageFlagBits::
-                         eFragmentShader;
+    if (kind == FramePlanNodeKind::compute) {
+        vk::PipelineStageFlags stages =
+            vk::PipelineStageFlagBits::eComputeShader;
+        if (GET_MODULE(VulkanManageCore)
+                .getRuntimeCapabilities()
+                .ray_tracing_pipeline) {
+            stages |= vk::PipelineStageFlagBits::
+                eRayTracingShaderKHR;
+        }
+        return stages;
+    }
+    return vk::PipelineStageFlagBits::eVertexShader |
+           vk::PipelineStageFlagBits::eFragmentShader;
 }
 
-ComputeDispatchDefinition parseDispatch(const nlohmann::json &task_json, const std::string &name) {
+std::vector<ShaderReference> parseRayTracingShaderList(
+    const nlohmann::json &pipeline_json,
+    std::string_view field, ShaderStage stage,
+    const std::string &name) {
+    const auto found = pipeline_json.find(field);
+    if (found == pipeline_json.end()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.shader_stage_required@1: compute task '" +
+            name + "' requires ray_tracing." +
+            std::string{field});
+    }
+    std::vector<ShaderReference> result;
+    const auto append = [&](const nlohmann::json &value) {
+        if (!value.is_string() ||
+            value.get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_shader_reference@1: compute "
+                "task '" +
+                name + "' ray_tracing." + std::string{field} +
+                " must contain non-empty strings");
+        }
+        result.push_back(makeShaderReference(
+            value.get<std::string>(), stage));
+    };
+    if (found->is_string()) {
+        append(*found);
+    } else if (found->is_array()) {
+        for (const auto &value : *found) append(value);
+    } else {
+        throw std::runtime_error(
+            "pelican.ray_tracing.invalid_shader_reference@1: compute "
+            "task '" +
+            name + "' ray_tracing." + std::string{field} +
+            " must be a string or string array");
+    }
+    if (result.empty()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.shader_stage_required@1: compute task '" +
+            name + "' requires at least one ray_tracing." +
+            std::string{field} + " shader");
+    }
+    return result;
+}
+
+std::array<std::uint32_t, 3>
+imageExtentTraceDimensions(
+    const ComputeTaskDefinition &definition,
+    const ResolvedImageExtentDispatch &dispatch,
+    const RenderTargetContainer &render_target_container) {
+    const auto metadata = render_target_container.getMetadata(
+        dispatch.render_target);
+    if (dispatch.mip_level >= metadata.mip_levels) {
+        throw std::runtime_error(
+            "Ray tracing task '" + definition.name +
+            "' image extent dispatch mip is outside render target '" +
+            metadata.name + "'");
+    }
+    const auto mip_dimension =
+        [mip = dispatch.mip_level](std::uint32_t dimension) {
+            if (mip >=
+                std::numeric_limits<std::uint32_t>::digits) {
+                return 1u;
+            }
+            return std::max(1u, dimension >> mip);
+        };
+    return {mip_dimension(metadata.extent.width),
+            mip_dimension(metadata.extent.height), 1u};
+}
+
+RayTracingTaskShaderDefinition parseRayTracingShaders(
+    const nlohmann::json &task_json,
+    const std::string &name) {
+    const auto &pipeline_json = task_json.at("ray_tracing");
+    if (!pipeline_json.is_object()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.invalid_pipeline_declaration@1: compute "
+            "task '" +
+            name + "' ray_tracing must be an object");
+    }
+    for (auto field = pipeline_json.begin();
+         field != pipeline_json.end(); ++field) {
+        if (field.key() == "raygen" || field.key() == "miss" ||
+            field.key() == "closesthit") {
+            continue;
+        }
+        if (field.key() == "any_hit" || field.key() == "anyhit" ||
+            field.key() == "intersection" ||
+            field.key() == "callable") {
+            throw std::runtime_error(
+                "pelican.ray_tracing.unsupported_shader_stage@1: compute "
+                "task '" +
+                name + "' declares unsupported ray tracing stage '" +
+                field.key() + "'");
+        }
+        throw std::runtime_error(
+            "pelican.ray_tracing.unknown_shader_stage@1: compute task '" +
+            name + "' declares unknown ray tracing field '" +
+            field.key() + "'");
+    }
+    return RayTracingTaskShaderDefinition{
+        .raygen = makeShaderReference(
+            requireString(
+                pipeline_json, "raygen",
+                "compute task ray_tracing: " + name),
+            ShaderStage::raygen),
+        .misses = parseRayTracingShaderList(
+            pipeline_json, "miss", ShaderStage::miss, name),
+        .closest_hits = parseRayTracingShaderList(
+            pipeline_json, "closesthit",
+            ShaderStage::closesthit, name),
+    };
+}
+
+ComputeDispatchDefinition parseDispatch(
+    const nlohmann::json &task_json, const std::string &name,
+    bool ray_tracing) {
     ComputeDispatchDefinition dispatch;
     if (!task_json.contains("dispatch")) {
+        if (ray_tracing) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.trace_extent_required@1: compute "
+                "task '" +
+                name + "' requires dispatch.rays_from");
+        }
         return dispatch;
     }
 
     const auto &json = task_json.at("dispatch");
     if (!json.is_object()) {
         throw std::runtime_error("compute task dispatch must be an object: " + name);
+    }
+
+    if (json.contains("rays_from")) {
+        if (!ray_tracing) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.rays_from_requires_pipeline@1: "
+                "dispatch.rays_from requires a ray_tracing task: " +
+                name);
+        }
+        if (json.size() != 1) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_trace_dispatch@1: "
+                "dispatch.rays_from cannot be combined with compute "
+                "dispatch fields: " +
+                name);
+        }
+        const auto &rays_from = json.at("rays_from");
+        if (!rays_from.is_object() || rays_from.size() != 1 ||
+            !rays_from.contains("port")) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_trace_dispatch@1: "
+                "dispatch.rays_from must contain exactly one image port: " +
+                name);
+        }
+        auto port = requireString(
+            rays_from, "port",
+            "compute task dispatch.rays_from: " + name);
+        if (port.empty()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_trace_dispatch@1: "
+                "dispatch.rays_from.port must not be empty: " + name);
+        }
+        dispatch.rays_from =
+            ComputeImageExtentDispatchDefinition{
+                .port = std::move(port)};
+        return dispatch;
+    }
+    if (ray_tracing) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.trace_extent_required@1: compute task '" +
+            name + "' requires dispatch.rays_from");
     }
 
     if (json.contains("indirect")) {
@@ -1480,8 +1655,37 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
         }
         ComputeTaskDefinition definition;
         definition.name = requireString(task_json, "name", "compute task");
-        definition.shader = makeShaderReference(requireString(task_json, "shader", "compute task: " + definition.name),
-                                                ShaderStage::compute);
+        for (const auto *unsupported :
+             {"any_hit", "anyhit", "intersection", "callable"}) {
+            if (task_json.contains(unsupported)) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.unsupported_shader_stage@1: "
+                    "compute task '" +
+                    definition.name +
+                    "' declares unsupported top-level ray tracing stage '" +
+                    unsupported + "'");
+            }
+        }
+        const auto ray_tracing =
+            task_json.contains("ray_tracing");
+        if (ray_tracing && task_json.contains("shader")) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.ambiguous_pipeline_declaration@1: "
+                "compute task '" +
+                definition.name +
+                "' cannot declare both shader and ray_tracing");
+        }
+        if (ray_tracing) {
+            definition.ray_tracing =
+                parseRayTracingShaders(
+                    task_json, definition.name);
+        } else {
+            definition.shader = makeShaderReference(
+                requireString(
+                    task_json, "shader",
+                    "compute task: " + definition.name),
+                ShaderStage::compute);
+        }
         definition.reads = parseOptionalStringList(task_json, "reads", "compute task: " + definition.name);
         definition.writes = parseOptionalStringList(task_json, "writes", "compute task: " + definition.name);
         definition.after = parseOptionalStringList(task_json, "after", "compute task: " + definition.name);
@@ -1496,11 +1700,15 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
                 task_json, definition.reads,
                 definition.writes,
                 "compute task '" + definition.name + "'");
-        definition.dispatch = parseDispatch(task_json, definition.name);
-        if (definition.dispatch.groups_from) {
+        definition.dispatch = parseDispatch(
+            task_json, definition.name, ray_tracing);
+        const auto extent_from =
+            definition.dispatch.groups_from
+                ? definition.dispatch.groups_from
+                : definition.dispatch.rays_from;
+        if (extent_from) {
             const auto &port_name =
-                definition.dispatch
-                    .groups_from->port;
+                extent_from->port;
             const auto port = std::find_if(
                 definition.resource_ports.begin(),
                 definition.resource_ports.end(),
@@ -1512,7 +1720,7 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
             if (port ==
                 definition.resource_ports.end()) {
                 throw std::runtime_error(
-                    "compute task dispatch.groups_from references "
+                    "compute task image extent dispatch references "
                     "unknown resource port '" +
                     port_name + "': " +
                     definition.name);
@@ -1520,7 +1728,7 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
             if (port->kind ==
                 ShaderResourcePortKind::buffer) {
                 throw std::runtime_error(
-                    "compute task dispatch.groups_from port must be "
+                    "compute task image extent dispatch port must be "
                     "an image: " +
                     definition.name);
             }
@@ -2177,6 +2385,13 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     std::optional<IndirectDispatchRecord>
         indirect_dispatch;
     if (definition.dispatch.indirect) {
+        if (definition.ray_tracing) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.indirect_trace_unsupported@1: ray "
+                "tracing task '" +
+                definition.name +
+                "' cannot declare compute indirect dispatch");
+        }
         const auto &authored =
             *definition.dispatch.indirect;
         if (std::find(
@@ -2238,31 +2453,57 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     auto &shader_library = dependencies.shader_library;
     std::vector<std::pair<std::string, std::string>>
         virtual_includes;
-    if (!resource_interface.empty()) {
+    if (!definition.ray_tracing &&
+        !resource_interface.empty()) {
         virtual_includes =
             makeShaderResourcePortVirtualIncludes(
                 resource_interface);
     }
     const auto shader_defines =
-        dependencies.shader_defines != nullptr
+        !definition.ray_tracing &&
+                dependencies.shader_defines != nullptr
             ? *dependencies.shader_defines
             : std::vector<std::string>{};
-    const auto shader =
-        shader_library.loadFromReference(
-            definition.shader,
-            dependencies.path_resolver, true,
-            shader_defines,
-            std::move(virtual_includes));
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto pipeline =
-        pipeline_factory.createCompute(
-            ComputePipelineDesc{
-                .shader = shader,
-                .shader_defines =
-                    shader_defines,
-                .resource_interface =
-                    resource_interface,
+    PipelineHandle pipeline;
+    const auto load_shader =
+        [&](const ShaderReference &reference) {
+            return shader_library.loadFromReference(
+                reference, dependencies.path_resolver, true,
+                shader_defines, virtual_includes);
+        };
+    if (definition.ray_tracing) {
+        std::vector<ShaderBundleId> misses;
+        misses.reserve(
+            definition.ray_tracing->misses.size());
+        for (const auto &reference :
+             definition.ray_tracing->misses) {
+            misses.push_back(load_shader(reference));
+        }
+        std::vector<ShaderBundleId> closest_hits;
+        closest_hits.reserve(
+            definition.ray_tracing->closest_hits.size());
+        for (const auto &reference :
+             definition.ray_tracing->closest_hits) {
+            closest_hits.push_back(load_shader(reference));
+        }
+        pipeline = pipeline_factory.createRayTracing(
+            RayTracingPipelineDesc{
+                .raygen = load_shader(
+                    definition.ray_tracing->raygen),
+                .misses = std::move(misses),
+                .closest_hits = std::move(closest_hits),
+                .shader_defines = shader_defines,
+                .resource_interface = resource_interface,
             });
+    } else {
+        pipeline = pipeline_factory.createCompute(
+            ComputePipelineDesc{
+                .shader = load_shader(definition.shader),
+                .shader_defines = shader_defines,
+                .resource_interface = resource_interface,
+            });
+    }
     std::array<std::uint32_t, 3>
         dispatch_groups{
             definition.dispatch.groups_x,
@@ -2271,20 +2512,26 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         };
     std::optional<ImageExtentDispatchRecord>
         image_extent_dispatch;
-    if (definition.dispatch.groups_from) {
+    if (definition.dispatch.groups_from ||
+        definition.dispatch.rays_from) {
         const auto resolved_dispatch =
             resolveImageExtentDispatch(
                 definition, resolved_resources,
                 dependencies
                     .render_target_container);
-        dispatch_groups =
-            imageExtentDispatchGroups(
-                definition, resolved_dispatch,
-                dependencies
-                    .render_target_container,
-                pipeline_factory
-                    .reflection(pipeline)
-                    .local_size);
+        dispatch_groups = definition.ray_tracing
+                              ? imageExtentTraceDimensions(
+                                    definition,
+                                    resolved_dispatch,
+                                    dependencies
+                                        .render_target_container)
+                              : imageExtentDispatchGroups(
+                                    definition, resolved_dispatch,
+                                    dependencies
+                                        .render_target_container,
+                                    pipeline_factory
+                                        .reflection(pipeline)
+                                        .local_size);
         image_extent_dispatch =
             ImageExtentDispatchRecord{
                 .render_target =
@@ -2377,6 +2624,8 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 std::move(bound_image_views),
             .binding_revision =
                 next_binding_revision++,
+            .ray_tracing =
+                definition.ray_tracing.has_value(),
             .dispatch_x =
                 dispatch_groups[0],
             .dispatch_y =
@@ -2432,20 +2681,21 @@ void ComputeTaskContainer::rebindRenderTargets(
         if (task.image_extent_dispatch) {
             const auto &dispatch =
                 *task.image_extent_dispatch;
+            const ResolvedImageExtentDispatch resolved{
+                .render_target = dispatch.render_target,
+                .mip_level = dispatch.mip_level,
+            };
             next.dispatch_groups =
-                imageExtentDispatchGroups(
-                    task.definition,
-                    ResolvedImageExtentDispatch{
-                        .render_target =
-                            dispatch
-                                .render_target,
-                        .mip_level =
-                            dispatch.mip_level,
-                    },
-                    render_target_container,
-                    GET_MODULE(PipelineFactory)
-                        .reflection(task.pipeline)
-                        .local_size);
+                task.ray_tracing
+                    ? imageExtentTraceDimensions(
+                          task.definition, resolved,
+                          render_target_container)
+                    : imageExtentDispatchGroups(
+                          task.definition, resolved,
+                          render_target_container,
+                          GET_MODULE(PipelineFactory)
+                              .reflection(task.pipeline)
+                              .local_size);
         }
         next.descriptor_sets.resize(
             task.descriptor_sets.size());
@@ -2540,6 +2790,11 @@ void ComputeTaskContainer::setDispatchGroups(ComputeTaskId task_id, uint32_t x, 
     if (found == tasks.end()) {
         throw std::runtime_error("Compute task not found");
     }
+    if (found->second.ray_tracing) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.fixed_trace_extent_unsupported@1: trace "
+            "dimensions are derived from dispatch.rays_from");
+    }
     if (found->second.indirect_dispatch) {
         throw std::runtime_error(
             "cannot set direct dispatch groups on an indirect "
@@ -2572,6 +2827,12 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
     if (found == tasks.end()) {
         throw std::runtime_error("Compute task not found");
     }
+    const auto shader_stage =
+        found->second.ray_tracing
+            ? vk::PipelineStageFlags{
+                  vk::PipelineStageFlagBits::eRayTracingShaderKHR}
+            : vk::PipelineStageFlags{
+                  vk::PipelineStageFlagBits::eComputeShader};
     for (const auto &resource :
          found->second.resource_bindings) {
         const auto rt_id = resource.render_target;
@@ -2607,12 +2868,15 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
                                              &render_target_container) ==
                 desired_layout) {
                 layout_tracker.memoryDependency(cmd_buf, render_target_container,
-                                                vk_utils, rt_id,
-                                                resource.history_read);
+                                                 vk_utils, rt_id,
+                                                 resource.history_read,
+                                                 shader_stage);
             } else {
                 layout_tracker.transition(cmd_buf, render_target_container, vk_utils,
-                                          rt_id, desired_layout,
-                                          resource.history_read);
+                                           rt_id, desired_layout,
+                                           resource.history_read,
+                                           RenderTargetImageKind::resolved,
+                                           shader_stage);
             }
         }
     }
@@ -2641,14 +2905,25 @@ void ComputeTaskContainer::dispatch(
             "Compute task descriptor view index is out of range");
     }
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    cmd_buf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_factory.pipeline(record.pipeline));
-    frame_resources.bindCompute(
-        cmd_buf,
-        pipeline_factory.layout(record.pipeline));
+    const auto bind_point =
+        record.ray_tracing
+            ? vk::PipelineBindPoint::eRayTracingKHR
+            : vk::PipelineBindPoint::eCompute;
+    cmd_buf.bindPipeline(
+        bind_point, pipeline_factory.pipeline(record.pipeline));
+    if (record.ray_tracing) {
+        frame_resources.bindRayTracing(
+            cmd_buf,
+            pipeline_factory.layout(record.pipeline));
+    } else {
+        frame_resources.bindCompute(
+            cmd_buf,
+            pipeline_factory.layout(record.pipeline));
+    }
     const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
     if (record.descriptor_sets
             [descriptor_view][parity]) {
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_factory.layout(record.pipeline),
+        cmd_buf.bindDescriptorSets(bind_point, pipeline_factory.layout(record.pipeline),
                                    PELICAN_SET_PASS_INPUT,
                                    record.descriptor_sets
                                        [descriptor_view]
@@ -2656,7 +2931,12 @@ void ComputeTaskContainer::dispatch(
                                            .get(),
                                    {});
     }
-    if (record.indirect_dispatch) {
+    if (record.ray_tracing) {
+        pipeline_factory.traceRays(
+            cmd_buf, record.pipeline,
+            record.dispatch_x, record.dispatch_y,
+            record.dispatch_z);
+    } else if (record.indirect_dispatch) {
         const auto &indirect =
             *record.indirect_dispatch;
         const auto &resources =

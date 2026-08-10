@@ -582,7 +582,10 @@ void FrameResources::updateMultiviewResolutions(
         data.begin(), data.end());
 }
 
-void FrameResources::bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const {
+void FrameResources::bindFrameDescriptorSet(
+    vk::CommandBuffer cmd_buf,
+    vk::PipelineLayout pipeline_layout,
+    vk::PipelineBindPoint bind_point) const {
     const auto ray_query =
         GET_MODULE(PipelineFactory)
             .pipelineLayoutUsesRayQueryFrameSet(
@@ -604,38 +607,33 @@ void FrameResources::bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout 
         throw std::runtime_error(
             "pipeline requires a ray-query frame descriptor set");
     }
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, PELICAN_SET_FRAME,
+    cmd_buf.bindDescriptorSets(bind_point, pipeline_layout,
+                               PELICAN_SET_FRAME,
                                descriptor_set, {});
+}
+
+void FrameResources::bindGraphics(
+    vk::CommandBuffer cmd_buf,
+    vk::PipelineLayout pipeline_layout) const {
+    bindFrameDescriptorSet(
+        cmd_buf, pipeline_layout,
+        vk::PipelineBindPoint::eGraphics);
 }
 
 void FrameResources::bindCompute(
     vk::CommandBuffer cmd_buf,
     vk::PipelineLayout pipeline_layout) const {
-    const auto ray_query =
-        GET_MODULE(PipelineFactory)
-            .pipelineLayoutUsesRayQueryFrameSet(
-                pipeline_layout);
-    vk::DescriptorSet descriptor_set;
-    if (active_multiview_slot) {
-        const auto &slot =
-            multiview_frame_slots.at(active_slot);
-        descriptor_set =
-            ray_query ? slot.ray_query_descriptor_set.get()
-                      : slot.descriptor_set.get();
-    } else {
-        const auto &slot = frame_slots.at(active_slot);
-        descriptor_set =
-            ray_query ? slot.ray_query_descriptor_set.get()
-                      : slot.descriptor_set.get();
-    }
-    if (!descriptor_set) {
-        throw std::runtime_error(
-            "pipeline requires a ray-query frame descriptor set");
-    }
-    cmd_buf.bindDescriptorSets(
-        vk::PipelineBindPoint::eCompute,
-        pipeline_layout, PELICAN_SET_FRAME,
-        descriptor_set, {});
+    bindFrameDescriptorSet(
+        cmd_buf, pipeline_layout,
+        vk::PipelineBindPoint::eCompute);
+}
+
+void FrameResources::bindRayTracing(
+    vk::CommandBuffer cmd_buf,
+    vk::PipelineLayout pipeline_layout) const {
+    bindFrameDescriptorSet(
+        cmd_buf, pipeline_layout,
+        vk::PipelineBindPoint::eRayTracingKHR);
 }
 
 vk::Buffer FrameResources::slotBufferForTesting(std::uint32_t in_flight_frame_index,

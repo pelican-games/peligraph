@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include "../vkcore/buf.hpp"
 #include "pelican_sets.hpp"
 #include "../log.hpp"
 #include "../model/vertbufcontainer.hpp"
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <span>
 #include <stdexcept>
@@ -305,19 +307,58 @@ bool containsShader(std::span<const ShaderBundleId> shaders, ShaderBundleId shad
     return std::find(shaders.begin(), shaders.end(), shader) != shaders.end();
 }
 
-bool pipelineUsesShader(const std::variant<GraphicsPipelineDesc, ComputePipelineDesc> &desc,
-                        std::span<const ShaderBundleId> dirty_shaders) {
+bool pipelineUsesShader(
+    const std::variant<GraphicsPipelineDesc, ComputePipelineDesc,
+                       RayTracingPipelineDesc> &desc,
+                         std::span<const ShaderBundleId> dirty_shaders) {
     return std::visit(
         [dirty_shaders](const auto &pipeline_desc) {
             using Desc = std::decay_t<decltype(pipeline_desc)>;
             if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
                 return containsShader(dirty_shaders, pipeline_desc.vert) ||
                        (pipeline_desc.frag && containsShader(dirty_shaders, *pipeline_desc.frag));
-            } else {
+            } else if constexpr (
+                std::is_same_v<Desc, ComputePipelineDesc>) {
                 return containsShader(dirty_shaders, pipeline_desc.shader);
+            } else {
+                return containsShader(
+                           dirty_shaders,
+                           pipeline_desc.raygen) ||
+                       std::any_of(
+                           pipeline_desc.misses.begin(),
+                           pipeline_desc.misses.end(),
+                           [&](const auto shader) {
+                               return containsShader(
+                                   dirty_shaders, shader);
+                           }) ||
+                       std::any_of(
+                           pipeline_desc.closest_hits.begin(),
+                           pipeline_desc.closest_hits.end(),
+                           [&](const auto shader) {
+                               return containsShader(
+                                   dirty_shaders, shader);
+                           });
             }
         },
         desc);
+}
+
+vk::Pipeline pipelineObject(
+    const std::variant<vk::UniquePipeline,
+                       UniqueRayTracingPipeline> &pipeline) {
+    return std::visit(
+        [](const auto &object) { return object.get(); },
+        pipeline);
+}
+
+bool hasPipelineObject(
+    const std::variant<vk::UniquePipeline,
+                       UniqueRayTracingPipeline> &pipeline) {
+    return std::visit(
+        [](const auto &object) {
+            return static_cast<bool>(object);
+        },
+        pipeline);
 }
 
 } // namespace
@@ -507,7 +548,7 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
 }
 
 vk::UniquePipeline PipelineFactory::createComputePipeline(const ComputePipelineDesc &desc,
-                                                          vk::PipelineLayout layout) const {
+                                                           vk::PipelineLayout layout) const {
     const auto &shader = shader_library.get(desc.shader);
 
     vk::PipelineShaderStageCreateInfo stage;
@@ -524,6 +565,178 @@ vk::UniquePipeline PipelineFactory::createComputePipeline(const ComputePipelineD
         throw std::runtime_error("failed on vkCreateComputePipeline : " + vk::to_string(result.result));
     }
     return std::move(result.value);
+}
+
+UniqueRayTracingPipeline
+PipelineFactory::createRayTracingPipeline(
+    const RayTracingPipelineDesc &desc,
+    vk::PipelineLayout layout) const {
+    std::vector<vk::PipelineShaderStageCreateInfo> stages;
+    stages.reserve(
+        1 + desc.misses.size() + desc.closest_hits.size());
+    const auto append_stage = [&](ShaderBundleId shader,
+                                  vk::ShaderStageFlagBits stage) {
+        stages.push_back(
+            vk::PipelineShaderStageCreateInfo{
+                {}, stage,
+                shader_library.get(shader).module.get(), "main"});
+    };
+    append_stage(desc.raygen,
+                 vk::ShaderStageFlagBits::eRaygenKHR);
+    for (const auto shader : desc.misses) {
+        append_stage(shader, vk::ShaderStageFlagBits::eMissKHR);
+    }
+    for (const auto shader : desc.closest_hits) {
+        append_stage(
+            shader, vk::ShaderStageFlagBits::eClosestHitKHR);
+    }
+
+    std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
+    groups.reserve(stages.size());
+    const auto unused = VK_SHADER_UNUSED_KHR;
+    const auto append_general = [&](std::uint32_t stage_index) {
+        vk::RayTracingShaderGroupCreateInfoKHR group;
+        group.type = vk::RayTracingShaderGroupTypeKHR::eGeneral;
+        group.generalShader = stage_index;
+        group.closestHitShader = unused;
+        group.anyHitShader = unused;
+        group.intersectionShader = unused;
+        groups.push_back(group);
+    };
+    append_general(0);
+    for (std::uint32_t index = 0;
+         index < desc.misses.size(); ++index) {
+        append_general(1 + index);
+    }
+    for (std::uint32_t index = 0;
+         index < desc.closest_hits.size(); ++index) {
+        vk::RayTracingShaderGroupCreateInfoKHR group;
+        group.type =
+            vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup;
+        group.generalShader = unused;
+        group.closestHitShader =
+            1 + static_cast<std::uint32_t>(desc.misses.size()) +
+            index;
+        group.anyHitShader = unused;
+        group.intersectionShader = unused;
+        groups.push_back(group);
+    }
+
+    vk::RayTracingPipelineCreateInfoKHR create_info;
+    create_info.setStages(stages);
+    create_info.setGroups(groups);
+    create_info.maxPipelineRayRecursionDepth = 1;
+    create_info.layout = layout;
+    auto result = device.createRayTracingPipelineKHRUnique(
+        {}, pipeline_cache.get(), create_info, nullptr,
+        GET_MODULE(VulkanManageCore)
+            .getRayTracingPipelineDispatch());
+    if (result.result != vk::Result::eSuccess) {
+        throw std::runtime_error(
+            "failed on vkCreateRayTracingPipelinesKHR: " +
+            vk::to_string(result.result));
+    }
+    return std::move(result.value);
+}
+
+PipelineFactory::PipelineRecord::RayTracingShaderBindingTable
+PipelineFactory::createRayTracingShaderBindingTable(
+    vk::Pipeline pipeline,
+    ShaderBindingTableGroupCounts group_counts) const {
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto &capabilities = vkcore.getRuntimeCapabilities();
+    const auto layout = calculateShaderBindingTableLayout(
+        capabilities.shader_group_handle_size,
+        capabilities.shader_group_handle_alignment,
+        capabilities.shader_group_base_alignment,
+        group_counts);
+    const auto group_count =
+        static_cast<std::uint64_t>(group_counts.raygen) +
+        group_counts.miss + group_counts.hit;
+    if (group_count >
+            std::numeric_limits<std::uint32_t>::max() ||
+        group_count >
+            std::numeric_limits<std::size_t>::max() /
+                capabilities.shader_group_handle_size ||
+        layout.total_size >
+            std::numeric_limits<std::size_t>::max()) {
+        throw std::overflow_error(
+            "pelican.sbt.layout_overflow@1: SBT host allocation overflow");
+    }
+
+    std::vector<std::byte> handles(
+        static_cast<std::size_t>(group_count) *
+        capabilities.shader_group_handle_size);
+    const auto get_result =
+        device.getRayTracingShaderGroupHandlesKHR(
+            pipeline, 0,
+            static_cast<std::uint32_t>(group_count),
+            handles.size(), handles.data(),
+            vkcore.getRayTracingPipelineDispatch());
+    if (get_result != vk::Result::eSuccess) {
+        throw std::runtime_error(
+            "failed on vkGetRayTracingShaderGroupHandlesKHR: " +
+            vk::to_string(get_result));
+    }
+
+    std::vector<std::byte> packed(
+        static_cast<std::size_t>(layout.total_size));
+    std::uint32_t source_group = 0;
+    const auto copy_region = [&](const auto &region) {
+        for (std::uint32_t record = 0;
+             record < region.group_count; ++record) {
+            std::memcpy(
+                packed.data() + region.offset +
+                    region.stride * record,
+                handles.data() +
+                    static_cast<std::size_t>(source_group++) *
+                        capabilities.shader_group_handle_size,
+                capabilities.shader_group_handle_size);
+        }
+    };
+    copy_region(layout.raygen);
+    copy_region(layout.miss);
+    copy_region(layout.hit);
+
+    const auto padding =
+        capabilities.shader_group_base_alignment - 1u;
+    auto buffer = vkcore.allocBuf(
+        layout.total_size + padding,
+        vk::BufferUsageFlagBits::eShaderBindingTableKHR |
+            vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    const auto address = device.getBufferAddress(
+        vk::BufferDeviceAddressInfo{buffer.buffer.get()});
+    const auto remainder =
+        address % capabilities.shader_group_base_alignment;
+    const auto buffer_offset =
+        remainder == 0
+            ? vk::DeviceSize{0}
+            : static_cast<vk::DeviceSize>(
+                  capabilities.shader_group_base_alignment -
+                  remainder);
+    vkcore.writeBuf(buffer, packed.data(), buffer_offset,
+                    layout.total_size);
+    const auto base_address = address + buffer_offset;
+    const auto make_region = [&](const auto &region) {
+        return region.group_count == 0
+                   ? vk::StridedDeviceAddressRegionKHR{}
+                   : vk::StridedDeviceAddressRegionKHR{
+                         base_address + region.offset,
+                         region.stride, region.size};
+    };
+    return {
+        .buffer = std::make_shared<BufferWrapper>(
+            std::move(buffer)),
+        .layout = layout,
+        .regions = {
+            .raygen = make_region(layout.raygen),
+            .miss = make_region(layout.miss),
+            .hit = make_region(layout.hit),
+            .callable = {},
+        },
+    };
 }
 
 PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const GraphicsPipelineDesc &desc) {
@@ -597,12 +810,12 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     auto pipeline_object = createGraphicsPipeline(desc, pipeline_layout.get());
 
     return PipelineRecord{
-        desc,
-        std::move(merged_reflection),
-        std::move(set_layouts),
-        std::move(pipeline_layout),
-        std::move(pipeline_object),
-        ray_query_frame_set,
+        .desc = desc,
+        .reflection = std::move(merged_reflection),
+        .descriptor_set_layouts = std::move(set_layouts),
+        .layout = std::move(pipeline_layout),
+        .pipeline = std::move(pipeline_object),
+        .ray_query_frame_set = ray_query_frame_set,
     };
 }
 
@@ -627,12 +840,89 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
     auto pipeline_object = createComputePipeline(desc, pipeline_layout.get());
 
     return PipelineRecord{
-        desc,
-        std::move(reflection),
-        std::move(set_layouts),
-        std::move(pipeline_layout),
-        std::move(pipeline_object),
-        ray_query_frame_set,
+        .desc = desc,
+        .reflection = std::move(reflection),
+        .descriptor_set_layouts = std::move(set_layouts),
+        .layout = std::move(pipeline_layout),
+        .pipeline = std::move(pipeline_object),
+        .ray_query_frame_set = ray_query_frame_set,
+    };
+}
+
+PipelineFactory::PipelineRecord
+PipelineFactory::buildRayTracingPipeline(
+    const RayTracingPipelineDesc &desc) {
+    const auto &capabilities =
+        GET_MODULE(VulkanManageCore).getRuntimeCapabilities();
+    if (!capabilities.ray_tracing_pipeline) {
+        throw std::runtime_error(
+            "pelican.plan.ray_tracing_pipeline_required_unavailable@1: "
+            "pipeline requires pelican.vulkan.ray_tracing_pipeline@1");
+    }
+    if (desc.misses.empty()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.miss_shader_required@1: ray tracing "
+            "pipeline requires at least one miss shader");
+    }
+    if (desc.closest_hits.empty()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.closesthit_shader_required@1: ray tracing "
+            "pipeline requires at least one closesthit shader");
+    }
+    if (desc.misses.size() >
+            std::numeric_limits<std::uint32_t>::max() ||
+        desc.closest_hits.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error(
+            "pelican.ray_tracing.shader_group_count_overflow@1: ray "
+            "tracing shader group count exceeds uint32_t");
+    }
+
+    std::vector<ShaderReflection> reflections;
+    reflections.reserve(
+        1 + desc.misses.size() + desc.closest_hits.size());
+    reflections.push_back(
+        shader_library.get(desc.raygen).reflection);
+    for (const auto shader : desc.misses) {
+        reflections.push_back(shader_library.get(shader).reflection);
+    }
+    for (const auto shader : desc.closest_hits) {
+        reflections.push_back(shader_library.get(shader).reflection);
+    }
+    auto reflection = merge(reflections);
+    validateFrameBindings(reflection);
+    validatePushConstantContract(reflection);
+    validateShaderResourceInterfaceReflection(
+        desc.resource_interface, reflection);
+    const auto ray_query_frame_set =
+        shaderReflectionUsesRayQueryFrameSet(reflection);
+    if (!ray_query_frame_set) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.frame_tlas_required@1: ray tracing "
+            "pipeline must reflect the frame TLAS binding");
+    }
+    auto set_layouts = descriptorSetLayoutsFor(reflection);
+    auto pipeline_layout =
+        createPipelineLayout(reflection, set_layouts);
+    auto pipeline_object = createRayTracingPipeline(
+        desc, pipeline_layout.get());
+    auto sbt = createRayTracingShaderBindingTable(
+        pipeline_object.get(),
+        ShaderBindingTableGroupCounts{
+            .raygen = 1,
+            .miss = static_cast<std::uint32_t>(
+                desc.misses.size()),
+            .hit = static_cast<std::uint32_t>(
+                desc.closest_hits.size()),
+        });
+    return PipelineRecord{
+        .desc = desc,
+        .reflection = std::move(reflection),
+        .descriptor_set_layouts = std::move(set_layouts),
+        .layout = std::move(pipeline_layout),
+        .pipeline = std::move(pipeline_object),
+        .ray_tracing_sbt = std::move(sbt),
+        .ray_query_frame_set = true,
     };
 }
 
@@ -690,6 +980,23 @@ PipelineHandle PipelineFactory::createCompute(const ComputePipelineDesc &desc) {
     return handle;
 }
 
+PipelineHandle PipelineFactory::createRayTracing(
+    const RayTracingPipelineDesc &desc) {
+    pipeline_handles.reserve(pipeline_handles.size() + 1);
+    auto record = buildRayTracingPipeline(desc);
+    const auto layout = static_cast<VkPipelineLayout>(
+        record.layout.get());
+    auto handle = pipelines.reg(std::move(record));
+    try {
+        ray_query_pipeline_layouts.emplace(layout);
+    } catch (...) {
+        (void)pipelines.extract(handle, false);
+        throw;
+    }
+    pipeline_handles.push_back(handle);
+    return handle;
+}
+
 void PipelineFactory::replacePipeline(PipelineHandle handle, PipelineRecord replacement) {
     auto &current = pipelines.get(handle);
     const auto old_layout = static_cast<VkPipelineLayout>(
@@ -701,6 +1008,8 @@ void PipelineFactory::replacePipeline(PipelineHandle handle, PipelineRecord repl
             replacement_layout);
     }
     auto old_pipeline = std::move(current.pipeline);
+    auto retired_sbt =
+        std::move(current.ray_tracing_sbt);
     auto retired_layout = std::move(current.layout);
 
     current = std::move(replacement);
@@ -710,15 +1019,20 @@ void PipelineFactory::replacePipeline(PipelineHandle handle, PipelineRecord repl
     }
 
     auto &deletion_queue = GET_MODULE(DeletionQueue);
-    if (old_pipeline) {
+    if (hasPipelineObject(old_pipeline)) {
         deletion_queue.defer(std::move(old_pipeline));
+    }
+    if (retired_sbt) {
+        deletion_queue.defer(std::move(*retired_sbt));
     }
     if (retired_layout) {
         deletion_queue.defer(std::move(retired_layout));
     }
 }
 
-vk::Pipeline PipelineFactory::pipeline(PipelineHandle handle) const { return pipelines.get(handle).pipeline.get(); }
+vk::Pipeline PipelineFactory::pipeline(PipelineHandle handle) const {
+    return pipelineObject(pipelines.get(handle).pipeline);
+}
 
 vk::PipelineLayout PipelineFactory::layout(PipelineHandle handle) const { return pipelines.get(handle).layout.get(); }
 
@@ -751,6 +1065,42 @@ bool PipelineFactory::pipelineLayoutUsesRayQueryFrameSet(
 bool PipelineFactory::pipelineUsesRayQueryFrameSet(
     PipelineHandle handle) const {
     return pipelines.get(handle).ray_query_frame_set;
+}
+
+bool PipelineFactory::pipelineIsRayTracing(
+    PipelineHandle handle) const {
+    return std::holds_alternative<RayTracingPipelineDesc>(
+        pipelines.get(handle).desc);
+}
+
+const RayTracingShaderBindingTableRegions &
+PipelineFactory::rayTracingShaderBindingTableRegions(
+    PipelineHandle handle) const {
+    const auto &sbt =
+        pipelines.get(handle).ray_tracing_sbt;
+    if (!sbt) {
+        throw std::runtime_error(
+            "pipeline is not a ray tracing pipeline");
+    }
+    return sbt->regions;
+}
+
+void PipelineFactory::traceRays(
+    vk::CommandBuffer command_buffer, PipelineHandle handle,
+    std::uint32_t width, std::uint32_t height,
+    std::uint32_t depth) const {
+    if (width == 0 || height == 0 || depth == 0) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.invalid_trace_extent@1: trace-rays "
+            "dimensions must be positive");
+    }
+    const auto &regions =
+        rayTracingShaderBindingTableRegions(handle);
+    command_buffer.traceRaysKHR(
+        regions.raygen, regions.miss, regions.hit,
+        regions.callable, width, height, depth,
+        GET_MODULE(VulkanManageCore)
+            .getRayTracingPipelineDispatch());
 }
 
 const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const {
@@ -865,8 +1215,14 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
                                       GraphicsPipelineDesc>) {
                                   return buildGraphicsPipeline(
                                       pipeline_desc);
-                              } else {
+                              } else if constexpr (
+                                  std::is_same_v<
+                                      Desc,
+                                      ComputePipelineDesc>) {
                                   return buildComputePipeline(
+                                      pipeline_desc);
+                              } else {
+                                  return buildRayTracingPipeline(
                                       pipeline_desc);
                               }
                           },
@@ -957,8 +1313,12 @@ PipelineRebuildResult PipelineFactory::rebuildDirty() {
                     using Desc = std::decay_t<decltype(pipeline_desc)>;
                     if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
                         return buildGraphicsPipeline(pipeline_desc);
-                    } else {
+                    } else if constexpr (
+                        std::is_same_v<Desc,
+                                       ComputePipelineDesc>) {
                         return buildComputePipeline(pipeline_desc);
+                    } else {
+                        return buildRayTracingPipeline(pipeline_desc);
                     }
                 },
                 record.desc);

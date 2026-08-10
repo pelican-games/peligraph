@@ -27,6 +27,12 @@ std::string_view shaderStageSourceExtension(ShaderStage stage) {
         return ".frag";
     case ShaderStage::compute:
         return ".comp";
+    case ShaderStage::raygen:
+        return ".rgen";
+    case ShaderStage::miss:
+        return ".rmiss";
+    case ShaderStage::closesthit:
+        return ".rchit";
     }
     throw std::runtime_error("unknown shader stage");
 }
@@ -39,13 +45,21 @@ std::string shaderStageName(ShaderStage stage) {
         return "fragment";
     case ShaderStage::compute:
         return "compute";
+    case ShaderStage::raygen:
+        return "raygen";
+    case ShaderStage::miss:
+        return "miss";
+    case ShaderStage::closesthit:
+        return "closesthit";
     }
     throw std::runtime_error("unknown shader stage");
 }
 
 bool hasKnownShaderExtension(std::string_view ref) {
     const auto ext = lowerExtension(ref);
-    return ext == ".spv" || ext == ".vert" || ext == ".frag" || ext == ".comp" || ext == ".wgsl";
+    return ext == ".spv" || ext == ".vert" || ext == ".frag" ||
+           ext == ".comp" || ext == ".rgen" || ext == ".rmiss" ||
+           ext == ".rchit" || ext == ".wgsl";
 }
 
 ShaderReference makeShaderReference(std::string ref, ShaderStage stage) {

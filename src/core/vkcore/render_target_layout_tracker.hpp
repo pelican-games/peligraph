@@ -22,10 +22,18 @@ class RenderTargetLayoutTracker {
                     GlobalRenderTargetId rt_id, vk::ImageLayout new_layout,
                     bool history_read = false,
                     RenderTargetImageKind image_kind =
-                        RenderTargetImageKind::resolved);
+                        RenderTargetImageKind::resolved,
+                    vk::PipelineStageFlags shader_stages =
+                        vk::PipelineStageFlagBits::eVertexShader |
+                        vk::PipelineStageFlagBits::eFragmentShader |
+                        vk::PipelineStageFlagBits::eComputeShader);
     void memoryDependency(vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
                           VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
-                          bool history_read = false);
+                          bool history_read = false,
+                          vk::PipelineStageFlags shader_stages =
+                              vk::PipelineStageFlagBits::eVertexShader |
+                              vk::PipelineStageFlagBits::eFragmentShader |
+                              vk::PipelineStageFlagBits::eComputeShader);
     vk::ImageLayout currentLayout(GlobalRenderTargetId rt_id, bool history_read = false,
                                   const RenderTargetContainer *rt_container = nullptr,
                                   RenderTargetImageKind image_kind =
@@ -50,6 +58,8 @@ class RenderTargetLayoutTracker {
 
   private:
     std::unordered_map<std::uint64_t, vk::ImageLayout> layouts;
+    std::unordered_map<std::uint64_t, vk::PipelineStageFlags>
+        shader_access_stages;
     std::unordered_map<std::uint64_t, std::uint64_t>
         active_alias_resources;
     std::unordered_set<std::uint64_t>

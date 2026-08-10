@@ -1,15 +1,18 @@
 #pragma once
 
 #include "graphicsviewcontract.hpp"
+#include "shaderbindingtable.hpp"
 #include "shaderlibrary.hpp"
 #include "shaderreflection.hpp"
 #include "shaderresourceinterface.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
+#include "../vkcore/raytracingpipelinedispatch.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -20,6 +23,8 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct BufferWrapper;
 
 inline constexpr std::uint32_t
     unusedGraphicsAttachmentMapping =
@@ -117,6 +122,22 @@ struct ComputePipelineDesc {
         resource_interface;
 };
 
+struct RayTracingPipelineDesc {
+    ShaderBundleId raygen;
+    std::vector<ShaderBundleId> misses;
+    std::vector<ShaderBundleId> closest_hits;
+    std::vector<std::string> shader_defines;
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface;
+};
+
+struct RayTracingShaderBindingTableRegions {
+    vk::StridedDeviceAddressRegionKHR raygen;
+    vk::StridedDeviceAddressRegionKHR miss;
+    vk::StridedDeviceAddressRegionKHR hit;
+    vk::StridedDeviceAddressRegionKHR callable;
+};
+
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);
 
 struct GraphicsPipelineReloadOverride {
@@ -152,11 +173,23 @@ DECLARE_MODULE(PipelineFactory) {
     };
 
     struct PipelineRecord {
-        std::variant<GraphicsPipelineDesc, ComputePipelineDesc> desc;
+        struct RayTracingShaderBindingTable {
+            std::shared_ptr<BufferWrapper> buffer;
+            ShaderBindingTableLayout layout;
+            RayTracingShaderBindingTableRegions regions;
+        };
+
+        std::variant<GraphicsPipelineDesc, ComputePipelineDesc,
+                     RayTracingPipelineDesc>
+            desc;
         ShaderReflection reflection;
         std::vector<vk::DescriptorSetLayout> descriptor_set_layouts;
         vk::UniquePipelineLayout layout;
-        vk::UniquePipeline pipeline;
+        std::variant<vk::UniquePipeline,
+                     UniqueRayTracingPipeline>
+            pipeline;
+        std::optional<RayTracingShaderBindingTable>
+            ray_tracing_sbt;
         bool ray_query_frame_set = false;
     };
 
@@ -179,8 +212,17 @@ DECLARE_MODULE(PipelineFactory) {
                                               vk::PipelineLayout layout) const;
     vk::UniquePipeline createComputePipeline(const ComputePipelineDesc &desc,
                                              vk::PipelineLayout layout) const;
+    UniqueRayTracingPipeline createRayTracingPipeline(
+        const RayTracingPipelineDesc &desc,
+        vk::PipelineLayout layout) const;
+    PipelineRecord::RayTracingShaderBindingTable
+    createRayTracingShaderBindingTable(
+        vk::Pipeline pipeline,
+        ShaderBindingTableGroupCounts group_counts) const;
     PipelineRecord buildGraphicsPipeline(const GraphicsPipelineDesc &desc);
     PipelineRecord buildComputePipeline(const ComputePipelineDesc &desc);
+    PipelineRecord buildRayTracingPipeline(
+        const RayTracingPipelineDesc &desc);
     void replacePipeline(PipelineHandle handle, PipelineRecord replacement);
     void savePipelineCache() noexcept;
 
@@ -196,6 +238,8 @@ DECLARE_MODULE(PipelineFactory) {
 
     PipelineHandle create(const GraphicsPipelineDesc &desc);
     PipelineHandle createCompute(const ComputePipelineDesc &desc);
+    PipelineHandle createRayTracing(
+        const RayTracingPipelineDesc &desc);
 
     vk::Pipeline pipeline(PipelineHandle handle) const;
     vk::PipelineLayout layout(PipelineHandle handle) const;
@@ -206,6 +250,14 @@ DECLARE_MODULE(PipelineFactory) {
         vk::PipelineLayout layout) const noexcept;
     bool pipelineUsesRayQueryFrameSet(
         PipelineHandle handle) const;
+    bool pipelineIsRayTracing(PipelineHandle handle) const;
+    const RayTracingShaderBindingTableRegions &
+    rayTracingShaderBindingTableRegions(
+        PipelineHandle handle) const;
+    void traceRays(vk::CommandBuffer command_buffer,
+                   PipelineHandle handle, std::uint32_t width,
+                   std::uint32_t height,
+                   std::uint32_t depth = 1) const;
     const ShaderReflection &reflection(PipelineHandle handle) const;
     GraphicsPipelineDesc graphicsDesc(
         PipelineHandle handle) const;

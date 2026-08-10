@@ -119,6 +119,10 @@ DECLARE_MODULE(FrameResources) {
         std::uint32_t sequential_count,
         bool ray_query);
     void updateSceneDescriptors();
+    void bindFrameDescriptorSet(
+        vk::CommandBuffer cmd_buf,
+        vk::PipelineLayout pipeline_layout,
+        vk::PipelineBindPoint bind_point) const;
 
   public:
     FrameResources();
@@ -154,6 +158,9 @@ DECLARE_MODULE(FrameResources) {
     void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
     void bindCompute(vk::CommandBuffer cmd_buf,
                      vk::PipelineLayout pipeline_layout) const;
+    void bindRayTracing(
+        vk::CommandBuffer cmd_buf,
+        vk::PipelineLayout pipeline_layout) const;
 
     std::uint32_t viewCountForTesting() const { return view_count; }
     std::uint32_t sequentialViewCountForTesting() const {

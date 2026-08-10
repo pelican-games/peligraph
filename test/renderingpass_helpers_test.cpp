@@ -953,6 +953,60 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "ray tracing compute tasks parse supported stages and hard-reject out-of-scope stages",
+    "[renderingpass][compute][ray-tracing][wp285]") {
+    const auto config = nlohmann::json::parse(R"json({
+      "compute_tasks": [{
+        "name": "trace_mask",
+        "ray_tracing": {
+          "raygen": "shaders/trace_mask",
+          "miss": "shaders/trace_mask",
+          "closesthit": "shaders/trace_mask"
+        },
+        "writes": ["mask"],
+        "resource_ports": {
+          "mask": {"resource": "mask", "access": "storage"}
+        },
+        "dispatch": {"rays_from": {"port": "mask"}}
+      }]
+    })json");
+    const auto tasks =
+        parseComputeTaskDefinitionsFromConfigJson(config);
+    REQUIRE(tasks.size() == 1);
+    REQUIRE(tasks.front().ray_tracing.has_value());
+    CHECK(tasks.front().ray_tracing->raygen.stage ==
+          ShaderStage::raygen);
+    REQUIRE(tasks.front().ray_tracing->misses.size() == 1);
+    CHECK(tasks.front().ray_tracing->misses.front().stage ==
+          ShaderStage::miss);
+    REQUIRE(
+        tasks.front().ray_tracing->closest_hits.size() == 1);
+    CHECK(tasks.front().ray_tracing->closest_hits.front().stage ==
+          ShaderStage::closesthit);
+    REQUIRE(tasks.front().dispatch.rays_from.has_value());
+    CHECK(tasks.front().dispatch.rays_from->port == "mask");
+
+    for (const auto *unsupported :
+         {"any_hit", "intersection", "callable"}) {
+        auto invalid = config;
+        invalid["compute_tasks"][0]["ray_tracing"]
+               [unsupported] = "shaders/unsupported";
+        REQUIRE_THROWS_WITH(
+            parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.unsupported_shader_stage@1"));
+
+        invalid = config;
+        invalid["compute_tasks"][0][unsupported] =
+            "shaders/unsupported";
+        REQUIRE_THROWS_WITH(
+            parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.unsupported_shader_stage@1"));
+    }
+}
+
+TEST_CASE(
     "compute image dispatch derives groups from a typed resource port",
     "[renderingpass][compute][dispatch][extent][wp231]") {
     const auto config =

@@ -1,0 +1,56 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "rt_shadow_mask_pipeline",
+  "runtime_shader_compiler": "optional",
+  "required_capabilities": ["pelican.vulkan.ray_tracing_pipeline@1"],
+  "render_targets": [
+    {
+      "name": "rt_shadow_mask_pipeline",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE", "TRANSFER_SRC"]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "rt_shadow_mask_pipeline",
+      "ray_tracing": {
+        "raygen": "engine://rt_shadow_mask_pipeline",
+        "miss": "engine://rt_shadow_mask_pipeline",
+        "closesthit": "engine://rt_shadow_mask_pipeline"
+      },
+      "reads": ["gbuffer_worldpos", "gbuffer_normal"],
+      "writes": ["rt_shadow_mask_pipeline"],
+      "resource_ports": {
+        "world_position": {
+          "resource": "gbuffer_worldpos",
+          "access": "sampled",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        },
+        "normal": {
+          "resource": "gbuffer_normal",
+          "access": "sampled",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        },
+        "shadow_mask": {
+          "resource": "rt_shadow_mask_pipeline",
+          "access": "storage"
+        }
+      },
+      "dispatch": {
+        "rays_from": {
+          "port": "shadow_mask"
+        }
+      }
+    }
+  ]
+}

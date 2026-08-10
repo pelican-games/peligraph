@@ -613,8 +613,21 @@ struct ComputeDispatchDefinition {
     uint32_t groups_z = 1;
     std::optional<ComputeImageExtentDispatchDefinition>
         groups_from;
+    // Ray-tracing tasks launch one ray per selected image pixel. This uses
+    // the same typed image-port resolution as groups_from, without a compute
+    // local-size conversion.
+    std::optional<ComputeImageExtentDispatchDefinition>
+        rays_from;
     std::optional<ComputeIndirectDispatchDefinition>
         indirect;
+};
+
+struct RayTracingTaskShaderDefinition {
+    ShaderReference raygen{
+        "", ShaderStage::raygen,
+        ShaderReferenceKind::explicit_file, false};
+    std::vector<ShaderReference> misses;
+    std::vector<ShaderReference> closest_hits;
 };
 
 enum class ComputeTaskSchedule : std::uint8_t {
@@ -631,6 +644,10 @@ std::string_view computeTaskScheduleName(
 struct ComputeTaskDefinition {
     std::string name;
     ShaderReference shader = ShaderReference{"", ShaderStage::compute, ShaderReferenceKind::explicit_file, false};
+    // Present for a trace-rays task. It remains a top-level compute node in
+    // the frame plan because both execution kinds must run outside dynamic
+    // rendering.
+    std::optional<RayTracingTaskShaderDefinition> ray_tracing;
     std::vector<std::string> reads;
     std::vector<std::string> writes;
     std::vector<std::string> after;

@@ -7,7 +7,9 @@ namespace Pelican {
 namespace {
 
 VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
-    vk::ImageLayout old_layout, vk::ImageLayout new_layout) {
+    vk::ImageLayout old_layout, vk::ImageLayout new_layout,
+    vk::PipelineStageFlags source_shader_stages,
+    vk::PipelineStageFlags destination_shader_stages) {
     VulkanUtils::ChangeImageLayoutInfo info{
         .src_stage = vk::PipelineStageFlagBits::eTopOfPipe,
         .dst_stage = vk::PipelineStageFlagBits::eTopOfPipe,
@@ -16,10 +18,7 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
     };
 
     if (old_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-        info.src_stage =
-            vk::PipelineStageFlagBits::eVertexShader |
-            vk::PipelineStageFlagBits::eFragmentShader |
-            vk::PipelineStageFlagBits::eComputeShader;
+        info.src_stage = source_shader_stages;
         info.src_access = vk::AccessFlagBits::eShaderRead;
     } else if (old_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
@@ -37,7 +36,7 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
                           vk::AccessFlagBits::eDepthStencilAttachmentWrite |
                           vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (old_layout == vk::ImageLayout::eGeneral) {
-        info.src_stage = vk::PipelineStageFlagBits::eComputeShader;
+        info.src_stage = source_shader_stages;
         info.src_access = vk::AccessFlagBits::eShaderRead |
                           vk::AccessFlagBits::eShaderWrite;
     } else if (old_layout == vk::ImageLayout::eTransferSrcOptimal) {
@@ -67,10 +66,7 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
     }
 
     if (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-        info.dst_stage =
-            vk::PipelineStageFlagBits::eVertexShader |
-            vk::PipelineStageFlagBits::eFragmentShader |
-            vk::PipelineStageFlagBits::eComputeShader;
+        info.dst_stage = destination_shader_stages;
         info.dst_access = vk::AccessFlagBits::eShaderRead;
     } else if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
@@ -84,7 +80,7 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
                           vk::AccessFlagBits::eDepthStencilAttachmentWrite |
                           vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (new_layout == vk::ImageLayout::eGeneral) {
-        info.dst_stage = vk::PipelineStageFlagBits::eComputeShader;
+        info.dst_stage = destination_shader_stages;
         info.dst_access = vk::AccessFlagBits::eShaderRead |
                           vk::AccessFlagBits::eShaderWrite;
     } else if (new_layout == vk::ImageLayout::eTransferSrcOptimal) {
@@ -131,7 +127,8 @@ void RenderTargetLayoutTracker::transition(
     vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
     VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
     vk::ImageLayout new_layout, bool history_read,
-    RenderTargetImageKind image_kind) {
+    RenderTargetImageKind image_kind,
+    vk::PipelineStageFlags shader_stages) {
     if (isSpecialRenderTarget(rt_id)) return;
     if (image_kind == RenderTargetImageKind::attachment &&
         !rt_container.hasSeparateAttachment(rt_id)) {
@@ -165,9 +162,11 @@ void RenderTargetLayoutTracker::transition(
             if (switched) {
                 layouts[active->second] =
                     vk::ImageLayout::eUndefined;
+                shader_access_stages.erase(active->second);
             }
             layouts[key] =
                 vk::ImageLayout::eUndefined;
+            shader_access_stages.erase(key);
             ++alias_dependency_count;
         }
         active->second = key;
@@ -178,6 +177,10 @@ void RenderTargetLayoutTracker::transition(
     (void)inserted;
     const auto old_layout = it->second;
     if (old_layout == new_layout) return;
+    const auto old_shader_stages =
+        shader_access_stages.contains(key)
+            ? shader_access_stages.at(key)
+            : shader_stages;
 
     const auto &image =
         image_kind == RenderTargetImageKind::attachment
@@ -185,13 +188,22 @@ void RenderTargetLayoutTracker::transition(
             : rt_container.getImage(rt_id, history_read);
     vk_utils.changeImageLayoutCmd(
         cmd_buf, image, old_layout, new_layout,
-        makeTransitionInfo(old_layout, new_layout));
+        makeTransitionInfo(old_layout, new_layout,
+                           old_shader_stages,
+                           shader_stages));
     it->second = new_layout;
+    if (new_layout == vk::ImageLayout::eGeneral ||
+        new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        shader_access_stages[key] = shader_stages;
+    } else {
+        shader_access_stages.erase(key);
+    }
 }
 
 void RenderTargetLayoutTracker::memoryDependency(
     vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
-    VulkanUtils &vk_utils, GlobalRenderTargetId rt_id, bool history_read) {
+    VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
+    bool history_read, vk::PipelineStageFlags shader_stages) {
     if (isSpecialRenderTarget(rt_id)) return;
 
     const auto surface = rt_container.surfaceIndex(rt_id, history_read);
@@ -218,8 +230,19 @@ void RenderTargetLayoutTracker::memoryDependency(
             kind == RenderTargetImageKind::attachment
                 ? rt_container.getAttachmentImage(rt_id, history_read)
                 : rt_container.getImage(rt_id, history_read);
-        vk_utils.changeImageLayoutCmd(cmd_buf, image, layout, layout,
-                                      makeTransitionInfo(layout, layout));
+        const auto old_shader_stages =
+            shader_access_stages.contains(key)
+                ? shader_access_stages.at(key)
+                : shader_stages;
+        vk_utils.changeImageLayoutCmd(
+            cmd_buf, image, layout, layout,
+            makeTransitionInfo(layout, layout,
+                               old_shader_stages,
+                               shader_stages));
+        if (layout == vk::ImageLayout::eGeneral ||
+            layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+            shader_access_stages[key] = shader_stages;
+        }
         ++memory_dependency_count;
     };
 
@@ -281,10 +304,12 @@ void RenderTargetLayoutTracker::assumeLayout(
         if (!inserted && active->second != key) {
             layouts[active->second] =
                 vk::ImageLayout::eUndefined;
+            shader_access_stages.erase(active->second);
         }
         active->second = key;
     }
     layouts[key] = layout;
+    shader_access_stages.erase(key);
 }
 
 void RenderTargetLayoutTracker::reset() {
@@ -295,6 +320,7 @@ void RenderTargetLayoutTracker::reset() {
     }
     active_alias_resources.clear();
     layouts.clear();
+    shader_access_stages.clear();
     memory_dependency_count = 0;
     alias_dependency_count = 0;
 }

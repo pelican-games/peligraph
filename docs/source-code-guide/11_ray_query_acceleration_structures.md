@@ -1,4 +1,4 @@
-# Ray query 用加速構造の静的限定契約
+# Ray query / RT pipeline 用加速構造と静的限定契約
 
 `RayQueryAccelerationStructureScope` が作る BLAS / TLAS は、静的ジオメトリ専用です。`VertBufContainer` に存在する頂点は元姿勢だけであり、頂点シェーダで変形されるスキン付き、morph、VAT のプリミティブを BLAS に入れてはいけません。入れると、描画と異なるバインドポーズの形状が ray query から見えてしまいます。
 
@@ -26,10 +26,24 @@ feature は早期の target planning のため `pelican.vulkan.ray_query@1` を 
 
 ray origin は射線方向ではなく、光の側へ向けた G-buffer 法線方向にずらします。bias は最小 0.01 に加えて `max(abs(world_position)) / 512` を使います。これは `R16G16B16A16_SFLOAT` の world position を原点から 100 以上離したときにも約 2 ULP を確保し、量子化された受け面への自己ヒットを避けるためです。最大距離は 10000 で、現時点では先頭の directional light だけを扱います。static receiver と static blocker の画素テストでは、影になる固定領域と可視の固定領域を別々に assertion します。一方、同じ位置に置いた skinned / morph / VAT blocker は G-buffer には描かれても TLAS に無いため、マスクに影が生じないことを個別の画素 assertion と除外診断の両方で固定しています。これは一時的な静的限定を見える形にした契約であり、golden による黙示的な正当化ではありません。
 
+## `rt_shadow_mask_pipeline` feature
+
+`engine://features/rt_shadow_mask_pipeline.json` は、同じ hard shadow を `VK_KHR_ray_tracing_pipeline` の raygen / miss / closest-hit と SBT でも計算する、別の opt-in feature です。既存の ray query feature を置き換えません。両方を同時に有効化でき、RT pipeline 版は専有の `R8_UNORM` storage image `rt_shadow_mask_pipeline` へ `imageStore` します。set 0 binding 6 の TLAS、set 1 binding 0/1 の world position/normal、同 binding 2 の storage image が固定 ABI です。
+
+この処理を fullscreen pass にしてはいけません。`vkCmdTraceRaysKHR` は dynamic rendering scope 内へ記録できないため、feature は既存の最上位 `compute_tasks` に ray-tracing 宣言を載せます。frame plan 上の kind は `compute` のままであり、通常の compute dispatch と同じく render pass の外で実行されます。`dispatch.rays_from.port` が選んだ image mip の幅・高さをそのまま trace dimensions にし、1 画素につき 1 raygen invocation を起動します。workgroup の切り上げ除算は行いません。
+
+raygen は ray query shader と同じ被覆判定、先頭 directional light、法線側 bias、最大距離 10000、opaque/first-hit flag を使います。miss は payload へ 1、closest-hit は 0 を書き、raygen が storage image へ保存します。したがって受け入れテストの許容差は 0 です。同一フレームから 2 枚の R8 target を読み戻し、背景、影、可視域、原点から 128 離した scene、静的対象 0 件、skinned/morph/VAT 除外の全ケースで byte vector の完全一致を検証します。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` でも同じ比較を埋め込み SPIR-V で実行します。
+
+設定で使える RT stage は `raygen` / `miss` / `closesthit` だけです。`any_hit` / `intersection` / `callable` を `ray_tracing` 内または task 直下に宣言すると `pelican.ray_tracing.unsupported_shader_stage@1` で停止します。未知の stage も無視しません。
+
+デバイス選択では、WP280 の acceleration structure / ray query / deferred host operations / buffer device address が揃った上で、RT pipeline feature、extension、`shaderGroupHandleSize` / `shaderGroupHandleAlignment` / `shaderGroupBaseAlignment` の全てが有効な場合だけ `pelican.vulkan.ray_tracing_pipeline@1` を公開します。途中までしか揃わない場合、RT pipeline extension を部分的に有効化しませんが、成立している ray query 経路は維持します。要求 graph を非対応 endpoint へ割り当てると `pelican.plan.ray_tracing_pipeline_required_unavailable@1`、有効化済み extension の PFN が取得できない場合は `pelican.vulkan.ray_tracing_pipeline_entry_points_unavailable@1` です。
+
+SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderbindingtable.cpp) の純粋関数で決めます。record stride は handle size を handle alignment へ切り上げ、raygen / miss / hit の各 region offset はそれぞれ base alignment へ切り上げます。実バッファでは device address 自体を base alignment へ進め、handle の実データだけを各 stride の先頭へコピーします。この計算は Vulkan device を作らない単体テストで、handle size と handle alignment が異なる場合、および base alignment の方が大きい場合を別々に固定しています。`PipelineFactory` は RT pipeline、shader group handle、SBT buffer を同じ pipeline record として所有し、hot reload の世代退役にもまとめて載せます。
+
 同じ static blocker を directional raster shadow と比較すると、影領域は一部重なりますが完全一致しません。主な差は次のとおりです。
 
 - ray mask は二値の 0 / 1 ですが、現在の raster lighting は shadow visibility 0.35 / 1 を BRDF に掛けます。
 - raster は cascade の投影範囲、shadow-map 解像度、depth bias の影響を受けます。ray query は world-space origin bias と最大距離を使うため、輪郭と接触部がずれます。
 - ray query は静的 TLAS と opaque ray flag を使います。raster 側で扱える変形 geometry や material/shadow-caster の条件とは対象集合が異なります。
 
-このためテストは同一性ではなく、同じ scene で raster の暗化画素が存在すること、ray mask と重なる画素が存在すること、かつ異なる画素も存在することを検証します。
+このため raster shadow との比較テストは同一性ではなく、同じ scene で raster の暗化画素が存在すること、ray mask と重なる画素が存在すること、かつ異なる画素も存在することを検証します。一方、ray query 版と RT pipeline 版の比較は前述のとおり完全一致です。

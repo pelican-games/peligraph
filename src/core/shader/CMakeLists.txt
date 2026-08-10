@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     pipelinefactory.cpp
     shadercontainer.cpp
     shadercompiler.cpp
+    shaderbindingtable.cpp
     shaderlibrary.cpp
     shaderreference.cpp
     shaderreflection.cpp

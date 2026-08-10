@@ -376,6 +376,11 @@ TargetTopologySnapshot runtimeTopology(
         capabilities.push_back(
             std::string{vulkanRayQueryCapability});
     }
+    if (facts.ray_tracing_pipeline) {
+        capabilities.push_back(
+            std::string{
+                vulkanRayTracingPipelineCapability});
+    }
     return TargetTopologySnapshot{
         .name = "runtime_vulkan_device",
         .endpoints =
@@ -2185,6 +2190,8 @@ compileRenderingTargetPlansForVulkanDevice(
                           .maxMultiviewViewCount
                     : 0u,
             .ray_query = runtime_capabilities.ray_query,
+            .ray_tracing_pipeline =
+                runtime_capabilities.ray_tracing_pipeline,
             .device_identity = {
                 .vendor_id =
                     device_properties.vendorID,

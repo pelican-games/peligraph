@@ -393,6 +393,71 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "RT pipeline shadow mask is a purgeable storage-image compute node",
+    "[render-feature][wp285][ray-tracing]") {
+    const auto make_config = [](bool enabled) {
+        return nlohmann::json{
+            {"pipeline",
+             {{"preset",
+               "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features",
+             enabled
+                 ? nlohmann::json::array({
+                       "engine://features/rt_shadow_mask_pipeline.json"})
+                 : nlohmann::json::array()},
+        };
+    };
+    const auto enabled = composeRenderFeatureConfig(
+        make_config(true),
+        RenderFeatureComposeDependencies{
+            loadEngineFeature, false});
+    REQUIRE(enabled.feature_names ==
+            std::vector<std::string>{
+                "rt_shadow_mask_pipeline"});
+    const auto &target = renderTargetByName(
+        enabled.config, "rt_shadow_mask_pipeline");
+    CHECK(target.at("format") == "R8_UNORM");
+    CHECK(target.at("usage") ==
+          nlohmann::json::array(
+              {"STORAGE", "TRANSFER_SRC"}));
+    const auto &task = computeTaskByName(
+        enabled.config, "rt_shadow_mask_pipeline");
+    CHECK(task.contains("ray_tracing"));
+    CHECK(task.at("writes") ==
+          nlohmann::json::array(
+              {"rt_shadow_mask_pipeline"}));
+    CHECK(task.at("dispatch").at("rays_from").at("port") ==
+          "shadow_mask");
+    const auto &required =
+        enabled.config.at("target_planning")
+            .at("graphs")
+            .at("main_render")
+            .at("required_capabilities");
+    CHECK(required == nlohmann::json::array(
+                          {"pelican.vulkan.ray_tracing_pipeline@1"}));
+    for (const auto &pass_set :
+         enabled.config.at("rendering_passes")) {
+        for (const auto &pass : pass_set.at("passes")) {
+            CHECK(pass.value("name", std::string{}) !=
+                  "rt_shadow_mask_pipeline");
+        }
+    }
+
+    const auto disabled = composeRenderFeatureConfig(
+        make_config(false),
+        RenderFeatureComposeDependencies{
+            loadEngineFeature, false});
+    CHECK(disabled.feature_names.empty());
+    CHECK_THROWS_WITH(
+        renderTargetByName(
+            disabled.config, "rt_shadow_mask_pipeline"),
+        Catch::Matchers::ContainsSubstring(
+            "render target not found"));
+    CHECK_FALSE(disabled.config.contains("compute_tasks"));
+    CHECK_FALSE(disabled.config.contains("target_planning"));
+}
+
+TEST_CASE(
     "surface resource selectors validate even without fullscreen passes",
     "[render-feature][shadow][validation][wp205]") {
     auto feature = nlohmann::json::parse(

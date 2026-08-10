@@ -282,7 +282,8 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                                     vk::PhysicalDeviceVulkan12Features,
                                     vk::PhysicalDeviceDynamicRenderingFeatures,
                                     vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
-                                    vk::PhysicalDeviceRayQueryFeaturesKHR>();
+                                    vk::PhysicalDeviceRayQueryFeaturesKHR,
+                                    vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>();
     const auto &core = chain.get<vk::PhysicalDeviceFeatures2>().features;
     const auto &vk11 = chain.get<vk::PhysicalDeviceVulkan11Features>();
     const auto &vk12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
@@ -292,6 +293,9 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
     const auto &ray_query =
         chain.get<vk::PhysicalDeviceRayQueryFeaturesKHR>();
+    const auto &ray_tracing_pipeline =
+        chain.get<
+            vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>();
     const auto api_version =
         physical_device.getProperties().apiVersion;
     const auto draw_indirect_count_core =
@@ -317,6 +321,27 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                 .get<
                     vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
                 .minAccelerationStructureScratchOffsetAlignment;
+    }
+    std::uint32_t shader_group_handle_size = 0;
+    std::uint32_t shader_group_base_alignment = 0;
+    std::uint32_t shader_group_handle_alignment = 0;
+    const auto ray_tracing_pipeline_extension =
+        has_extension(
+            VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    if (ray_tracing_pipeline_extension) {
+        const auto properties =
+            physical_device.getProperties2<
+                vk::PhysicalDeviceProperties2,
+                vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+        const auto &ray_tracing_properties =
+            properties.get<
+                vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+        shader_group_handle_size =
+            ray_tracing_properties.shaderGroupHandleSize;
+        shader_group_base_alignment =
+            ray_tracing_properties.shaderGroupBaseAlignment;
+        shader_group_handle_alignment =
+            ray_tracing_properties.shaderGroupHandleAlignment;
     }
     DeviceFeatureSupport result{
         .required =
@@ -350,8 +375,19 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             .deferred_host_operations_extension =
                 has_extension(
                     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME),
+            .ray_tracing_pipeline_feature =
+                ray_tracing_pipeline.rayTracingPipeline ==
+                VK_TRUE,
+            .ray_tracing_pipeline_extension =
+                ray_tracing_pipeline_extension,
             .min_acceleration_structure_scratch_offset_alignment =
                 scratch_alignment,
+            .shader_group_handle_size =
+                shader_group_handle_size,
+            .shader_group_base_alignment =
+                shader_group_base_alignment,
+            .shader_group_handle_alignment =
+                shader_group_handle_alignment,
         },
     };
 
@@ -553,6 +589,12 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     vk::PhysicalDeviceRayQueryFeaturesKHR ray_query_features;
     ray_query_features.rayQuery =
         ray_query_selection.ray_query ? VK_TRUE : VK_FALSE;
+    vk::PhysicalDeviceRayTracingPipelineFeaturesKHR
+        ray_tracing_pipeline_features;
+    ray_tracing_pipeline_features.rayTracingPipeline =
+        ray_query_selection.ray_tracing_pipeline
+            ? VK_TRUE
+            : VK_FALSE;
     vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR local_read_features;
     local_read_features.dynamicRenderingLocalRead =
         feature_support.dynamic_rendering_local_read ? VK_TRUE : VK_FALSE;
@@ -569,6 +611,7 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
         acceleration_structure_features,
         ray_query_features,
+        ray_tracing_pipeline_features,
         local_read_features,
         swapchain_maintenance_features,
     };
@@ -583,6 +626,11 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         create_info_chain
             .unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
     }
+    if (!ray_query_selection.ray_tracing_pipeline) {
+        create_info_chain
+            .unlink<
+                vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>();
+    }
     if (!swapchain_maintenance1) {
         create_info_chain
             .unlink<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>();
@@ -595,9 +643,17 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         .ray_query = ray_query_selection.ray_query,
         .buffer_device_address =
             ray_query_selection.buffer_device_address,
+        .ray_tracing_pipeline =
+            ray_query_selection.ray_tracing_pipeline,
         .min_acceleration_structure_scratch_offset_alignment =
             ray_query_selection
                 .min_acceleration_structure_scratch_offset_alignment,
+        .shader_group_handle_size =
+            ray_query_selection.shader_group_handle_size,
+        .shader_group_base_alignment =
+            ray_query_selection.shader_group_base_alignment,
+        .shader_group_handle_alignment =
+            ray_query_selection.shader_group_handle_alignment,
         .dynamic_rendering_local_read =
             feature_support.dynamic_rendering_local_read,
         .sampler_anisotropy =
@@ -853,6 +909,44 @@ VulkanManageCore::VulkanManageCore() {
                 cmd_build_acceleration_structures,
         };
     }
+    if (runtime_capabilities.ray_tracing_pipeline) {
+        const auto raw_device =
+            static_cast<VkDevice>(device.get());
+        const auto load = [&](const char *name) {
+            return vkGetDeviceProcAddr(raw_device, name);
+        };
+        create_ray_tracing_pipelines =
+            reinterpret_cast<
+                PFN_vkCreateRayTracingPipelinesKHR>(
+                load("vkCreateRayTracingPipelinesKHR"));
+        get_ray_tracing_shader_group_handles =
+            reinterpret_cast<
+                PFN_vkGetRayTracingShaderGroupHandlesKHR>(
+                load("vkGetRayTracingShaderGroupHandlesKHR"));
+        cmd_trace_rays =
+            reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
+                load("vkCmdTraceRaysKHR"));
+        destroy_pipeline =
+            reinterpret_cast<PFN_vkDestroyPipeline>(
+                load("vkDestroyPipeline"));
+        if (create_ray_tracing_pipelines == nullptr ||
+            get_ray_tracing_shader_group_handles == nullptr ||
+            cmd_trace_rays == nullptr ||
+            destroy_pipeline == nullptr) {
+            throw std::runtime_error(
+                "pelican.vulkan.ray_tracing_pipeline_entry_points_unavailable@1: "
+                "VK_KHR_ray_tracing_pipeline was enabled but its device "
+                "command entry points are unavailable");
+        }
+        ray_tracing_pipeline_dispatch = {
+            .vkCreateRayTracingPipelinesKHR =
+                create_ray_tracing_pipelines,
+            .vkGetRayTracingShaderGroupHandlesKHR =
+                get_ray_tracing_shader_group_handles,
+            .vkCmdTraceRaysKHR = cmd_trace_rays,
+            .vkDestroyPipeline = destroy_pipeline,
+        };
+    }
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);
@@ -873,12 +967,18 @@ VulkanManageCore::VulkanManageCore() {
     LOG_INFO(
         logger,
         "Vulkan ray query: acceleration_structure={}, ray_query={}, "
-        "buffer_device_address={}, scratch_alignment={}",
+        "buffer_device_address={}, ray_tracing_pipeline={}, "
+        "scratch_alignment={}, shader_group_handle_size={}, "
+        "shader_group_base_alignment={}, shader_group_handle_alignment={}",
         runtime_capabilities.acceleration_structure,
         runtime_capabilities.ray_query,
         runtime_capabilities.buffer_device_address,
+        runtime_capabilities.ray_tracing_pipeline,
         runtime_capabilities
-            .min_acceleration_structure_scratch_offset_alignment);
+            .min_acceleration_structure_scratch_offset_alignment,
+        runtime_capabilities.shader_group_handle_size,
+        runtime_capabilities.shader_group_base_alignment,
+        runtime_capabilities.shader_group_handle_alignment);
     LOG_INFO(logger,
              "Vulkan optional features: timeline_semaphore={}, multiview={}, "
              "dynamic_rendering_local_read={}, sampler_anisotropy={}, "

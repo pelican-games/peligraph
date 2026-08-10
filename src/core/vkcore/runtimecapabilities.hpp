@@ -13,8 +13,12 @@ struct VulkanRuntimeCapabilities {
     bool acceleration_structure = false;
     bool ray_query = false;
     bool buffer_device_address = false;
+    bool ray_tracing_pipeline = false;
     std::uint32_t
         min_acceleration_structure_scratch_offset_alignment = 0;
+    std::uint32_t shader_group_handle_size = 0;
+    std::uint32_t shader_group_base_alignment = 0;
+    std::uint32_t shader_group_handle_alignment = 0;
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
     bool independent_blend = false;

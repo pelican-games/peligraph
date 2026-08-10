@@ -166,6 +166,14 @@ void requireVulkanEndpointCapabilities(
                 endpoint.id + "' lacks capability '" +
                 required + "'");
         }
+        if (required ==
+            vulkanRayTracingPipelineCapability) {
+            throw std::runtime_error(
+                "pelican.plan.ray_tracing_pipeline_required_unavailable@1: "
+                "endpoint '" +
+                endpoint.id + "' lacks capability '" +
+                required + "'");
+        }
         throw std::runtime_error(
             "pelican.plan.endpoint_capability_required_unavailable@1: "
             "endpoint '" +

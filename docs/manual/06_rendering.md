@@ -363,7 +363,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(15 個・✅すべて実装済み):
+エンジン同梱 feature(16 個・✅すべて実装済み):
 
 | feature | 内容 |
 |---|---|
@@ -371,6 +371,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `clustered_lighting.json` | computeでViewFamily/view別のcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入。planar reflection併用時はreflection-local selectorも自動合成 |
 | `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
 | `rt_shadow_mask.json` | `pelican.vulkan.ray_query@1` を要求し、被覆付き `gbuffer_worldpos` と `gbuffer_normal` から static-only TLAS へ法線方向 bias 付き hard shadow ray を飛ばして、誰も消費しない `R8_UNORM` マスクへ出力。静的対象 0 件は全面可視。既定無効。TLAS は set 0、fullscreen 入力は従来の set 1 |
+| `rt_shadow_mask_pipeline.json` | `pelican.vulkan.ray_tracing_pipeline@1` を要求し、上の ray query 版と同じマスクを raygen / miss / closest-hit と SBT で専有 `R8_UNORM` storage image へ出力。既定無効で、両 feature は同時利用可能。画素テストは許容差 0 で完全一致を要求 |
 | `sky_ambient.json` | `scene_depth` の遠クリップだけを塗る単色背景と、deferred/forward共通の単色環境光。色・ambient強度・sky強度はruntime parameter。IBLは含まない |
 | `planar_reflection.json` | 指定world planeでmain viewを反転し、独立解像度のdeferred G-buffer/SSAO/lightingを`$reflection/planar` familyへ追加。結果をforward transparentの`planar_reflection` resource portへ割り当て |
 | `cube_capture.json` | stable `$capture/cube` family の 6 面 sequential capture。`cube_capture_color`(現在 1 mip)を作る。cube 専用のパス種別は増やさない(本節後半)✅WP237 |
@@ -858,6 +859,29 @@ render target resizeとrebind時にも自動再計算されます。`local_size`
 設定とshaderの最小例は
 [`adding_features.md`のレシピ4](../adding_features.md)と
 `test/run_compute_headless.cmake`です。
+
+RT pipeline task も最上位 `compute_tasks` を使います。これは `vkCmdTraceRaysKHR` を dynamic rendering scope の外へ置くための実行上の分類であり、fullscreen pass ではありません。
+
+```json
+{
+  "name": "trace_mask",
+  "ray_tracing": {
+    "raygen": "shaders/trace_mask",
+    "miss": "shaders/trace_mask",
+    "closesthit": "shaders/trace_mask"
+  },
+  "reads": ["gbuffer_worldpos", "gbuffer_normal"],
+  "writes": ["trace_mask"],
+  "resource_ports": {
+    "world_position": {"resource": "gbuffer_worldpos", "access": "sampled"},
+    "normal": {"resource": "gbuffer_normal", "access": "sampled"},
+    "mask": {"resource": "trace_mask", "access": "storage"}
+  },
+  "dispatch": {"rays_from": {"port": "mask"}}
+}
+```
+
+stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` / `indirect` との併記はエラーです。trace 幅・高さは `rays_from` が指す image mip の実 extent で、resize/rebind 後も再計算されます。`any_hit` / `intersection` / `callable` は現 ABI の範囲外で、宣言すると `pelican.ray_tracing.unsupported_shader_stage@1` です。現在の固定 resource ABI、capability、SBT alignment、ray query 版との完全一致条件は[ソースコード読解ガイド第11章](../source-code-guide/11_ray_query_acceleration_structures.md#rt_shadow_mask_pipeline-feature)を参照してください。
 
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
 typed command buffer と `dispatch.indirect` を使います。

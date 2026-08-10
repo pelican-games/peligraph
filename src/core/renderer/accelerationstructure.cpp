@@ -667,12 +667,19 @@ RayQueryAccelerationStructureScope::recordFrame(
     recorded->transient_buffers.push_back(
         std::move(instance_buffer.buffer));
     ++candidate->diagnostics.tlas_build_count;
+    vk::PipelineStageFlags ray_consumer_stages =
+        vk::PipelineStageFlagBits::eFragmentShader |
+        vk::PipelineStageFlagBits::eComputeShader;
+    if (vkcore.getRuntimeCapabilities()
+            .ray_tracing_pipeline) {
+        ray_consumer_stages |=
+            vk::PipelineStageFlagBits::eRayTracingShaderKHR;
+    }
     recordMemoryBarrier(
         command_buffer,
         vk::PipelineStageFlagBits::
             eAccelerationStructureBuildKHR,
-        vk::PipelineStageFlagBits::eFragmentShader |
-            vk::PipelineStageFlagBits::eComputeShader,
+        ray_consumer_stages,
         vk::AccessFlagBits::
             eAccelerationStructureWriteKHR,
         vk::AccessFlagBits::

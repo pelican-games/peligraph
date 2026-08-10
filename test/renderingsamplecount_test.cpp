@@ -444,6 +444,63 @@ TEST_CASE("ray query target requirement is hard and uses the enabled runtime cap
                 ->required_physical_features.end());
 }
 
+TEST_CASE(
+    "ray tracing pipeline target requirement is hard and uses the enabled runtime capability",
+    "[target-planning][ray-tracing][capability][wp285]") {
+    const std::vector targets{
+        target("albedo", vk::Format::eB8G8R8A8Unorm),
+        target("normal", vk::Format::eR16G16B16A16Sfloat),
+        target("custom_id", vk::Format::eR32Uint),
+        target("depth", vk::Format::eD32Sfloat,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                   vk::ImageUsageFlagBits::eTransferSrc),
+        target("lit", vk::Format::eR16G16B16A16Sfloat),
+        target("display", vk::Format::eB8G8R8A8Srgb),
+    };
+    const auto config = hybridConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto query = [](const RenderTargetDefinition &) {
+        return std::vector<std::uint32_t>{1, 2, 4};
+    };
+    const TargetPlanningPolicy planning{
+        .graphs = {
+            PlanningGraphConstraints{
+                .graph = "main",
+                .required_capabilities = {
+                    std::string{
+                        vulkanRayTracingPipelineCapability}},
+            },
+        },
+        .authored = true,
+    };
+    const auto compile = [&](bool ray_tracing_pipeline) {
+        return compileRenderingTargetPlans(
+            graphs, targets, compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .ray_tracing_pipeline = ray_tracing_pipeline,
+                .query_attachment_samples = query,
+            },
+            std::nullopt, std::nullopt, planning);
+    };
+
+    requireThrowsContaining(
+        [&] { (void)compile(false); },
+        "pelican.plan.ray_tracing_pipeline_required_unavailable@1");
+
+    const auto capable = compile(true);
+    REQUIRE(capable.plans.size() == 1);
+    REQUIRE(std::find(
+                capable.plans.front()
+                    ->required_physical_features.begin(),
+                capable.plans.front()
+                    ->required_physical_features.end(),
+                vulkanRayTracingPipelineCapability) !=
+            capable.plans.front()
+                ->required_physical_features.end());
+}
+
 TEST_CASE("rendering target bridge links attachment operations into the physical plan",
           "[target-planning][rendering][physical-attachment][bridge]") {
     const std::vector targets{

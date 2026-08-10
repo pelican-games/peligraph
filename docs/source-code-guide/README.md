@@ -34,7 +34,7 @@
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
 | [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
 | [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値) | コードは素直なのに読めないとき |
-| [第11章 Ray query 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、`rt_shadow_mask`、set 0 契約、raster shadow との差 | ray query の土台や最初の描画 feature を変更する人 |
+| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、2 種の shadow mask、SBT、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
 
 ## 難所インデックス(詰まったときの逆引き)
 

@@ -56,6 +56,12 @@ vk::ShaderStageFlagBits toVkStage(ShaderStage stage) {
         return vk::ShaderStageFlagBits::eFragment;
     case ShaderStage::compute:
         return vk::ShaderStageFlagBits::eCompute;
+    case ShaderStage::raygen:
+        return vk::ShaderStageFlagBits::eRaygenKHR;
+    case ShaderStage::miss:
+        return vk::ShaderStageFlagBits::eMissKHR;
+    case ShaderStage::closesthit:
+        return vk::ShaderStageFlagBits::eClosestHitKHR;
     }
     throw std::runtime_error("unknown shader stage");
 }

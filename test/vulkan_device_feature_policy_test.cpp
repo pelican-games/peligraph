@@ -26,6 +26,7 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
     REQUIRE_FALSE(disabled.acceleration_structure);
     REQUIRE_FALSE(disabled.ray_query);
     REQUIRE_FALSE(disabled.buffer_device_address);
+    REQUIRE_FALSE(disabled.ray_tracing_pipeline);
     REQUIRE(disabled.device_extensions.empty());
 
     SECTION("advertised BDA alone is not treated as enabled") {
@@ -90,6 +91,54 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
         REQUIRE(hasExtension(
             selection,
             VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME));
+    }
+
+    SECTION("an incomplete ray tracing pipeline contract stays disabled") {
+        const RayQueryDeviceSupport supported{
+            .acceleration_structure_feature = true,
+            .ray_query_feature = true,
+            .buffer_device_address_feature = true,
+            .acceleration_structure_extension = true,
+            .ray_query_extension = true,
+            .deferred_host_operations_extension = true,
+            .ray_tracing_pipeline_feature = true,
+            .ray_tracing_pipeline_extension = true,
+            .shader_group_handle_size = 32,
+            .shader_group_base_alignment = 64,
+            .shader_group_handle_alignment = 0,
+        };
+        const auto selection =
+            selectRayQueryDeviceFeatures(supported);
+        CHECK(selection.ray_query);
+        CHECK_FALSE(selection.ray_tracing_pipeline);
+        CHECK_FALSE(hasExtension(
+            selection,
+            VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
+    }
+
+    SECTION("the complete ray tracing pipeline contract is atomic") {
+        const RayQueryDeviceSupport supported{
+            .acceleration_structure_feature = true,
+            .ray_query_feature = true,
+            .buffer_device_address_feature = true,
+            .acceleration_structure_extension = true,
+            .ray_query_extension = true,
+            .deferred_host_operations_extension = true,
+            .ray_tracing_pipeline_feature = true,
+            .ray_tracing_pipeline_extension = true,
+            .shader_group_handle_size = 32,
+            .shader_group_base_alignment = 64,
+            .shader_group_handle_alignment = 32,
+        };
+        const auto selection =
+            selectRayQueryDeviceFeatures(supported);
+        CHECK(selection.ray_tracing_pipeline);
+        CHECK(selection.shader_group_handle_size == 32);
+        CHECK(selection.shader_group_base_alignment == 64);
+        CHECK(selection.shader_group_handle_alignment == 32);
+        CHECK(hasExtension(
+            selection,
+            VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
     }
 }
 
