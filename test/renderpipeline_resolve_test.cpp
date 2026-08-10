@@ -507,8 +507,11 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
         {"profile",
          {{"kind", "hazard_stress"}, {"seed", 17}}},
         {"graphs",
-         {{"main",
-           {{"nodes",
+          {{"main",
+           {{"required_capabilities",
+             Json::array(
+                 {"pelican.vulkan.ray_query@1"})},
+            {"nodes",
              {{"scene",
                {{"serial", true}, {"isolate", true}}}}},
             {"resources",
@@ -529,6 +532,10 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
     REQUIRE(resolved.target_planning.graphs.size() == 1);
     REQUIRE(resolved.target_planning.graphs.front().graph ==
             selected_graph);
+    REQUIRE((resolved.target_planning.graphs.front()
+                 .required_capabilities ==
+             std::vector<std::string>{
+                 "pelican.vulkan.ray_query@1"}));
     REQUIRE((resolved.target_planning.graphs.front().nodes ==
              std::vector<PlanningNodeConstraint>{
                  {"scene", true, true}}));
@@ -555,6 +562,9 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
                 "fixture.warning.b"})}}},
     };
     expected_target_planning["graphs"][selected_graph] = {
+        {"required_capabilities",
+         Json::array(
+             {"pelican.vulkan.ray_query@1"})},
         {"nodes",
          {{"scene",
            {{"serial", true},
@@ -616,6 +626,25 @@ TEST_CASE("target planning authoring rejects ambiguous controls",
                 RenderEnvironmentCapabilities{}),
             Catch::Matchers::ContainsSubstring(
                 "must not contain duplicates"));
+    }
+
+    SECTION("required capabilities are unique") {
+        authored["target_planning"] = {
+            {"graphs",
+             {{"main",
+               {{"required_capabilities",
+                 Json::array({
+                     "pelican.vulkan.ray_query@1",
+                     "pelican.vulkan.ray_query@1",
+                 })}}}}},
+        };
+        REQUIRE_THROWS_WITH(
+            resolveRenderPipeline(
+                RenderPipelineRequest{
+                    authored, "invalid target planning"},
+                RenderEnvironmentCapabilities{}),
+            Catch::Matchers::ContainsSubstring(
+                "required_capabilities must not contain duplicates"));
     }
 }
 

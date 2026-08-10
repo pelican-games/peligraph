@@ -441,6 +441,7 @@ struct VulkanPhysicalFragmentPackage {
 struct VulkanTargetPlanRequest {
     std::string endpoint;
     std::string provider;
+    std::vector<std::string> required_endpoint_capabilities;
     std::vector<ResourcePatternBinding> pattern_bindings;
     PlanningProfile profile;
     std::vector<PlanningNodeConstraint> node_constraints;

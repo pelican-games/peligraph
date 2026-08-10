@@ -964,6 +964,7 @@ pelican_define_test(vulkan_headless_test GPU pelican_core VulkanMemoryAllocator 
 target_compile_definitions(pelican_test_vulkan_headless_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
+pelican_define_test(vulkan_device_feature_policy_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(atlas_descriptor_pool_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_atlas_descriptor_pool_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic

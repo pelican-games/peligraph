@@ -2,6 +2,7 @@
 
 #include "frameplanner.hpp"
 #include "rendertargetdefinition.hpp"
+#include "../vkcore/runtimecapabilities.hpp"
 #include "../../project/targetrenderplanning.hpp"
 
 #include <cstdint>
@@ -87,6 +88,7 @@ struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_color_attachments = 8;
     bool multiview = false;
     std::uint32_t max_multiview_view_count = 0;
+    bool ray_query = false;
     XrMultiviewDeviceIdentity device_identity;
     AttachmentSampleCapabilityQuery query_attachment_samples;
     ExternalDepthTransferCapabilityQuery
@@ -168,6 +170,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
     vk::PhysicalDevice physical_device,
+    const VulkanRuntimeCapabilities &runtime_capabilities,
     std::optional<VulkanViewExecutionPlanRequest> view_execution =
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>

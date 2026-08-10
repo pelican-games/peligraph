@@ -2549,6 +2549,10 @@ CandidateDraft buildCandidateDraft(
         std::string{kGraphicsCapability},
         std::string{kSampledImageCapability},
     };
+    result.required_features.insert(
+        result.required_features.end(),
+        request.required_endpoint_capabilities.begin(),
+        request.required_endpoint_capabilities.end());
     if (tile_candidate) {
         result.required_features.insert(
             result.required_features.end(),
@@ -3459,6 +3463,9 @@ VulkanTargetPlan compileVulkanTargetPlan(
                     "Vulkan target plan endpoint");
     requireVersionedName(request.provider,
                          "Vulkan target plan provider");
+    canonicalizeCapabilities(
+        request.required_endpoint_capabilities,
+        "Vulkan target plan required endpoint capability");
     const auto logical_graph_fingerprint =
         vulkanTargetPlanLogicalGraphFingerprint(
             canonical_graph);
@@ -3526,6 +3533,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         canonicalizeTargetTopology(source_topology);
     const auto &endpoint =
         requireEndpoint(topology, request.endpoint);
+    requireVulkanEndpointCapabilities(
+        endpoint, request.required_endpoint_capabilities);
     const auto view_execution = resolveVulkanViewExecutionPlan(
         canonical_graph, endpoint, request.view_execution);
 

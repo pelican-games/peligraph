@@ -289,6 +289,7 @@ struct PlanningResourceConstraint {
 // this portable surface.
 struct PlanningGraphConstraints {
     std::string graph;
+    std::vector<std::string> required_capabilities;
     std::vector<PlanningNodeConstraint> nodes;
     std::vector<PlanningResourceConstraint> resources;
 

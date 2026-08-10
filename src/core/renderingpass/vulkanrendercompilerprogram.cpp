@@ -490,6 +490,7 @@ compileDefaultVulkanVariant(
             compiled_pipeline->sample_count_policy,
             backend.output_format,
             backend.physical_device,
+            backend.runtime_capabilities,
             targetViewExecutionRequest(
                 *compiled_pipeline,
                 logical.composed_config,

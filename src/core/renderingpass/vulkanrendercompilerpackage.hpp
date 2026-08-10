@@ -27,12 +27,14 @@ class VulkanRenderCompilerBackendContext final
         vk::Extent2D output_extent = {},
         vk::PhysicalDevice physical_device = {},
         std::vector<std::string>
-            enabled_device_extensions = {})
+            enabled_device_extensions = {},
+        VulkanRuntimeCapabilities runtime_capabilities = {})
         : output_format{output_format},
           output_extent{output_extent},
           physical_device{physical_device},
           enabled_device_extensions{
-              std::move(enabled_device_extensions)} {}
+              std::move(enabled_device_extensions)},
+          runtime_capabilities{runtime_capabilities} {}
 
     vk::Format output_format =
         vk::Format::eUndefined;
@@ -40,6 +42,7 @@ class VulkanRenderCompilerBackendContext final
     vk::PhysicalDevice physical_device{};
     std::vector<std::string>
         enabled_device_extensions;
+    VulkanRuntimeCapabilities runtime_capabilities;
 
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;

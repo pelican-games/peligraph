@@ -1,5 +1,6 @@
 #include "core.hpp"
 #include "bootstrap.hpp"
+#include "devicefeaturepolicy.hpp"
 #include "windowsurface.hpp"
 #include "../startup.hpp"
 #include "../config.hpp"
@@ -268,6 +269,7 @@ struct DeviceFeatureSupport {
     bool independent_blend = false;
     bool swapchain_maintenance1 = false;
     bool draw_indirect_count = false;
+    RayQueryDeviceSupport ray_query;
 };
 
 static std::vector<std::string> supportedDeviceExtensions(
@@ -278,17 +280,44 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         physical_device.getFeatures2<vk::PhysicalDeviceFeatures2,
                                     vk::PhysicalDeviceVulkan11Features,
                                     vk::PhysicalDeviceVulkan12Features,
-                                    vk::PhysicalDeviceDynamicRenderingFeatures>();
+                                    vk::PhysicalDeviceDynamicRenderingFeatures,
+                                    vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+                                    vk::PhysicalDeviceRayQueryFeaturesKHR>();
     const auto &core = chain.get<vk::PhysicalDeviceFeatures2>().features;
     const auto &vk11 = chain.get<vk::PhysicalDeviceVulkan11Features>();
     const auto &vk12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
     const auto &dynamic = chain.get<vk::PhysicalDeviceDynamicRenderingFeatures>();
+    const auto &acceleration_structure =
+        chain.get<
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
+    const auto &ray_query =
+        chain.get<vk::PhysicalDeviceRayQueryFeaturesKHR>();
     const auto api_version =
         physical_device.getProperties().apiVersion;
     const auto draw_indirect_count_core =
         VK_API_VERSION_MAJOR(api_version) > 1 ||
         (VK_API_VERSION_MAJOR(api_version) == 1 &&
          VK_API_VERSION_MINOR(api_version) >= 2);
+    const auto extensions = supportedDeviceExtensions(physical_device);
+    const auto has_extension = [&](const char *name) {
+        return std::find(extensions.begin(), extensions.end(),
+                         name) != extensions.end();
+    };
+    const auto acceleration_structure_extension =
+        has_extension(
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    std::uint32_t scratch_alignment = 0;
+    if (acceleration_structure_extension) {
+        const auto properties =
+            physical_device.getProperties2<
+                vk::PhysicalDeviceProperties2,
+                vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+        scratch_alignment =
+            properties
+                .get<
+                    vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
+                .minAccelerationStructureScratchOffsetAlignment;
+    }
     DeviceFeatureSupport result{
         .required =
             {
@@ -306,9 +335,26 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         .draw_indirect_count =
             draw_indirect_count_core &&
             vk12.drawIndirectCount == VK_TRUE,
+        .ray_query = {
+            .acceleration_structure_feature =
+                acceleration_structure.accelerationStructure ==
+                VK_TRUE,
+            .ray_query_feature =
+                ray_query.rayQuery == VK_TRUE,
+            .buffer_device_address_feature =
+                vk12.bufferDeviceAddress == VK_TRUE,
+            .acceleration_structure_extension =
+                acceleration_structure_extension,
+            .ray_query_extension =
+                has_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME),
+            .deferred_host_operations_extension =
+                has_extension(
+                    VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME),
+            .min_acceleration_structure_scratch_offset_alignment =
+                scratch_alignment,
+        },
     };
 
-    const auto extensions = supportedDeviceExtensions(physical_device);
     if (std::find(extensions.begin(), extensions.end(),
                   VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME) !=
         extensions.end()) {
@@ -422,8 +468,14 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     }
     memory_budget_enabled = std::find(supported_extensions.begin(), supported_extensions.end(),
                                       VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) != supported_extensions.end();
+    const auto ray_query_selection =
+        selectRayQueryDeviceFeatures(feature_support.ray_query);
     auto enabled_extensions = required_extensions;
     if (memory_budget_enabled) enabled_extensions.emplace_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    enabled_extensions.insert(
+        enabled_extensions.end(),
+        ray_query_selection.device_extensions.begin(),
+        ray_query_selection.device_extensions.end());
     if (feature_support.dynamic_rendering_local_read) {
         enabled_extensions.emplace_back(
             VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
@@ -488,6 +540,19 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         feature_support.draw_indirect_count
             ? VK_TRUE
             : VK_FALSE;
+    vk12features.bufferDeviceAddress =
+        ray_query_selection.buffer_device_address
+            ? VK_TRUE
+            : VK_FALSE;
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR
+        acceleration_structure_features;
+    acceleration_structure_features.accelerationStructure =
+        ray_query_selection.acceleration_structure
+            ? VK_TRUE
+            : VK_FALSE;
+    vk::PhysicalDeviceRayQueryFeaturesKHR ray_query_features;
+    ray_query_features.rayQuery =
+        ray_query_selection.ray_query ? VK_TRUE : VK_FALSE;
     vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR local_read_features;
     local_read_features.dynamicRenderingLocalRead =
         feature_support.dynamic_rendering_local_read ? VK_TRUE : VK_FALSE;
@@ -502,12 +567,21 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         vk11features,
         vk12features,
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
+        acceleration_structure_features,
+        ray_query_features,
         local_read_features,
         swapchain_maintenance_features,
     };
     if (!feature_support.dynamic_rendering_local_read) {
         create_info_chain
             .unlink<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>();
+    }
+    if (!ray_query_selection.ray_query) {
+        create_info_chain
+            .unlink<
+                vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
+        create_info_chain
+            .unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
     }
     if (!swapchain_maintenance1) {
         create_info_chain
@@ -516,6 +590,14 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     runtime_capabilities = {
         .timeline_semaphore = feature_support.timeline_semaphore,
         .multiview = feature_support.multiview,
+        .acceleration_structure =
+            ray_query_selection.acceleration_structure,
+        .ray_query = ray_query_selection.ray_query,
+        .buffer_device_address =
+            ray_query_selection.buffer_device_address,
+        .min_acceleration_structure_scratch_offset_alignment =
+            ray_query_selection
+                .min_acceleration_structure_scratch_offset_alignment,
         .dynamic_rendering_local_read =
             feature_support.dynamic_rendering_local_read,
         .sampler_anisotropy =
@@ -553,11 +635,11 @@ static vk::UniqueCommandPool createCommandPool(vk::Device device, uint32_t queue
 }
 
 static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::Device device,
-                                            vk::Instance instance, bool memory_budget_enabled) {
+                                             vk::Instance instance, bool memory_budget_enabled,
+                                             bool buffer_device_address_enabled) {
     vma::AllocatorCreateInfo create_info;
-    if (memory_budget_enabled) {
-        create_info.flags |= vma::AllocatorCreateFlagBits::eExtMemoryBudget;
-    }
+    create_info.flags = selectVmaAllocatorCreateFlags(
+        memory_budget_enabled, buffer_device_address_enabled);
     create_info.vulkanApiVersion = vulkan_api_version;
     create_info.physicalDevice = phys_device;
     create_info.device = device;
@@ -723,6 +805,42 @@ VulkanManageCore::VulkanManageCore() {
                 "vkReleaseSwapchainImagesEXT is unavailable");
         }
     }
+    if (runtime_capabilities.ray_query) {
+        const auto raw_device =
+            static_cast<VkDevice>(device.get());
+        const auto load = [&](const char *name) {
+            return vkGetDeviceProcAddr(raw_device, name);
+        };
+        create_acceleration_structure =
+            reinterpret_cast<
+                PFN_vkCreateAccelerationStructureKHR>(
+                load("vkCreateAccelerationStructureKHR"));
+        destroy_acceleration_structure =
+            reinterpret_cast<
+                PFN_vkDestroyAccelerationStructureKHR>(
+                load("vkDestroyAccelerationStructureKHR"));
+        get_acceleration_structure_build_sizes =
+            reinterpret_cast<
+                PFN_vkGetAccelerationStructureBuildSizesKHR>(
+                load("vkGetAccelerationStructureBuildSizesKHR"));
+        get_acceleration_structure_device_address =
+            reinterpret_cast<
+                PFN_vkGetAccelerationStructureDeviceAddressKHR>(
+                load("vkGetAccelerationStructureDeviceAddressKHR"));
+        cmd_build_acceleration_structures =
+            reinterpret_cast<
+                PFN_vkCmdBuildAccelerationStructuresKHR>(
+                load("vkCmdBuildAccelerationStructuresKHR"));
+        if (create_acceleration_structure == nullptr ||
+            destroy_acceleration_structure == nullptr ||
+            get_acceleration_structure_build_sizes == nullptr ||
+            get_acceleration_structure_device_address == nullptr ||
+            cmd_build_acceleration_structures == nullptr) {
+            throw std::runtime_error(
+                "Vulkan ray query was enabled but acceleration "
+                "structure device command entry points are unavailable");
+        }
+    }
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);
@@ -733,10 +851,22 @@ VulkanManageCore::VulkanManageCore() {
              debug_status.available, debug_status.enabled, debug_status.reason);
     graphic_cmd_pool = createCommandPool(device.get(), queue_set.graphic_queue);
     compute_cmd_pool = createCommandPool(device.get(), queue_set.compute_queue);
-    allocator = createAllocator(phys_device, device.get(), instance.get(), memory_budget_enabled);
+    allocator = createAllocator(
+        phys_device, device.get(), instance.get(),
+        memory_budget_enabled,
+        runtime_capabilities.buffer_device_address);
     LOG_INFO(logger, "Vulkan memory budget: available={}, reason={}", memory_budget_enabled,
              memory_budget_enabled ? "VK_EXT_memory_budget_enabled"
                                    : "VK_EXT_memory_budget_not_supported");
+    LOG_INFO(
+        logger,
+        "Vulkan ray query: acceleration_structure={}, ray_query={}, "
+        "buffer_device_address={}, scratch_alignment={}",
+        runtime_capabilities.acceleration_structure,
+        runtime_capabilities.ray_query,
+        runtime_capabilities.buffer_device_address,
+        runtime_capabilities
+            .min_acceleration_structure_scratch_offset_alignment);
     LOG_INFO(logger,
              "Vulkan optional features: timeline_semaphore={}, multiview={}, "
              "dynamic_rendering_local_read={}, sampler_anisotropy={}, "

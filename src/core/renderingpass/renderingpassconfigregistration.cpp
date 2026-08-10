@@ -771,9 +771,10 @@ registerRenderingPassConfigVariantsData(
     constexpr bool runtime_shader_compiler_enabled =
         false;
 #endif
+    const auto &vulkan_core =
+        GET_MODULE(VulkanManageCore);
     const auto enabled_device_extensions =
-        GET_MODULE(VulkanManageCore)
-            .getEnabledDeviceExtensions();
+        vulkan_core.getEnabledDeviceExtensions();
     const VulkanRenderCompilerBackendContext
         backend_context{
             dependencies.front()
@@ -782,11 +783,11 @@ registerRenderingPassConfigVariantsData(
             dependencies.front()
                 .runtime.render_target
                 .getExtent(),
-            GET_MODULE(VulkanManageCore)
-                .getPhysDevice(),
+            vulkan_core.getPhysDevice(),
             std::vector<std::string>{
                 enabled_device_extensions.begin(),
                 enabled_device_extensions.end()},
+            vulkan_core.getRuntimeCapabilities(),
         };
     const RenderCompilerProgramInput compiler_input{
         .rendering_config = rendering_pass_data,

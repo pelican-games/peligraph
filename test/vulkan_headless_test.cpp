@@ -5,6 +5,7 @@
 #include "vulkan_test_support.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
+#include <array>
 #include <string_view>
 
 namespace Pelican {
@@ -22,6 +23,39 @@ TEST_CASE("VulkanManageCore initializes without a Window in headless mode", "[vu
     REQUIRE(static_cast<VkPhysicalDevice>(vkcore.getPhysDevice()) != VK_NULL_HANDLE);
     REQUIRE_FALSE(
         vkcore.takeInitialWindowSurface().has_value());
+    const auto &runtime_capabilities =
+        vkcore.getRuntimeCapabilities();
+    const auto enabled_extensions =
+        vkcore.getEnabledDeviceExtensions();
+    const auto has_enabled_extension =
+        [&](std::string_view name) {
+            return std::ranges::any_of(
+                enabled_extensions,
+                [&](const std::string &extension) {
+                    return extension == name;
+                });
+        };
+    const std::array ray_query_extensions{
+        std::string_view{
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME},
+        std::string_view{VK_KHR_RAY_QUERY_EXTENSION_NAME},
+        std::string_view{
+            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME},
+    };
+    CAPTURE(runtime_capabilities.ray_query);
+    REQUIRE(runtime_capabilities.acceleration_structure ==
+            runtime_capabilities.ray_query);
+    REQUIRE(runtime_capabilities.buffer_device_address ==
+            runtime_capabilities.ray_query);
+    for (const auto extension : ray_query_extensions) {
+        REQUIRE(has_enabled_extension(extension) ==
+                runtime_capabilities.ray_query);
+    }
+    if (runtime_capabilities.ray_query) {
+        REQUIRE(runtime_capabilities
+                    .min_acceleration_structure_scratch_offset_alignment >
+                0);
+    }
     if (vkcore.getRuntimeCapabilities().dynamic_rendering_local_read) {
         const auto extensions =
             vkcore.getPhysDevice().enumerateDeviceExtensionProperties();

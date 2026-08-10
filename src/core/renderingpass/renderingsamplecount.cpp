@@ -372,6 +372,10 @@ TargetTopologySnapshot runtimeTopology(
              std::to_string(
                  facts.max_multiview_view_count)});
     }
+    if (facts.ray_query) {
+        capabilities.push_back(
+            std::string{vulkanRayQueryCapability});
+    }
     return TargetTopologySnapshot{
         .name = "runtime_vulkan_device",
         .endpoints =
@@ -1830,6 +1834,11 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 VulkanTargetPlanRequest{
                     .endpoint = "device:0",
                     .provider = std::string{kRuntimeProvider},
+                    .required_endpoint_capabilities =
+                        graph_constraints == nullptr
+                            ? std::vector<std::string>{}
+                            : graph_constraints
+                                  ->required_capabilities,
                     .pattern_bindings =
                         runtimePatternBindings(
                             types, logical_graph, target_by_name,
@@ -2134,6 +2143,7 @@ compileRenderingTargetPlansForVulkanDevice(
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
     vk::PhysicalDevice physical_device,
+    const VulkanRuntimeCapabilities &runtime_capabilities,
     std::optional<VulkanViewExecutionPlanRequest>
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
@@ -2174,6 +2184,7 @@ compileRenderingTargetPlansForVulkanDevice(
                               vk::PhysicalDeviceMultiviewProperties>()
                           .maxMultiviewViewCount
                     : 0u,
+            .ray_query = runtime_capabilities.ray_query,
             .device_identity = {
                 .vendor_id =
                     device_properties.vendorID,

@@ -6,6 +6,7 @@
 #include "debugutils.hpp"
 #include "image.hpp"
 #include "memorydiagnostics.hpp"
+#include "runtimecapabilities.hpp"
 #include "windowsurface.hpp"
 #include <cstdint>
 #include <memory>
@@ -22,19 +23,6 @@ struct QueueSet {
     uint32_t graphic_queue;
     uint32_t presentation_queue;
     uint32_t compute_queue;
-};
-
-// Features that were both advertised by the selected physical device and
-// enabled on the logical device. Callers must use this runtime contract rather
-// than treating an extension name in the Vulkan headers as device support.
-struct VulkanRuntimeCapabilities {
-    bool timeline_semaphore = false;
-    bool multiview = false;
-    bool dynamic_rendering_local_read = false;
-    bool sampler_anisotropy = false;
-    bool independent_blend = false;
-    bool swapchain_maintenance1 = false;
-    bool draw_indirect_count = false;
 };
 
 enum class VulkanProcessType {
@@ -65,6 +53,16 @@ DECLARE_MODULE(VulkanManageCore) {
         set_rendering_input_attachment_indices = nullptr;
     PFN_vkReleaseSwapchainImagesEXT
         release_swapchain_images = nullptr;
+    PFN_vkCreateAccelerationStructureKHR
+        create_acceleration_structure = nullptr;
+    PFN_vkDestroyAccelerationStructureKHR
+        destroy_acceleration_structure = nullptr;
+    PFN_vkGetAccelerationStructureBuildSizesKHR
+        get_acceleration_structure_build_sizes = nullptr;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR
+        get_acceleration_structure_device_address = nullptr;
+    PFN_vkCmdBuildAccelerationStructuresKHR
+        cmd_build_acceleration_structures = nullptr;
     mutable std::mutex presentation_quarantine_mutex;
     std::vector<std::shared_ptr<const void>>
         presentation_quarantine;

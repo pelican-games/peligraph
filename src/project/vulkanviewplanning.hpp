@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,6 +15,8 @@ namespace Pelican {
 
 inline constexpr std::string_view vulkanMultiviewCapability =
     "pelican.vulkan.multiview@1";
+inline constexpr std::string_view vulkanRayQueryCapability =
+    "pelican.vulkan.ray_query@1";
 inline constexpr std::string_view vulkanMaxMultiviewViewCountFact =
     "pelican.vulkan.max_multiview_view_count@1";
 inline constexpr std::string_view vulkanVendorIdFact =
@@ -33,6 +36,12 @@ enum class VulkanScopeViewExecution : std::uint8_t {
 
 std::string_view vulkanScopeViewExecutionName(
     VulkanScopeViewExecution execution);
+
+// Authored endpoint requirements are hard constraints. In particular ray
+// query must never inherit multiview's automatic sequential fallback.
+void requireVulkanEndpointCapabilities(
+    const TargetEndpoint &endpoint,
+    std::span<const std::string> required_capabilities);
 
 struct VulkanViewExecutionPlanRequest {
     std::uint32_t view_count = 1;

@@ -154,6 +154,26 @@ std::string_view vulkanScopeViewExecutionName(
         "unknown Vulkan scope view execution");
 }
 
+void requireVulkanEndpointCapabilities(
+    const TargetEndpoint &endpoint,
+    std::span<const std::string> required_capabilities) {
+    for (const auto &required : required_capabilities) {
+        if (hasCapability(endpoint, required)) continue;
+        if (required == vulkanRayQueryCapability) {
+            throw std::runtime_error(
+                "pelican.plan.ray_query_required_unavailable@1: "
+                "endpoint '" +
+                endpoint.id + "' lacks capability '" +
+                required + "'");
+        }
+        throw std::runtime_error(
+            "pelican.plan.endpoint_capability_required_unavailable@1: "
+            "endpoint '" +
+            endpoint.id + "' lacks capability '" + required +
+            "'");
+    }
+}
+
 const VulkanNodeViewExecutionPlan &
 ResolvedVulkanViewExecutionPlan::requireNode(
     std::string_view name) const {

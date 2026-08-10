@@ -241,11 +241,48 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
         const auto context =
             "target_planning graph '" + graph.key() + "'";
         requireOnlyKeys(
-            graph.value(), {"nodes", "resources"}, context);
+            graph.value(),
+            {"required_capabilities", "nodes", "resources"},
+            context);
         PlanningGraphConstraints compiled{
             .graph = graph.key() +
                      std::string{graph_name_suffix},
         };
+
+        if (const auto capabilities =
+                graph->find("required_capabilities");
+            capabilities != graph->end()) {
+            if (!capabilities->is_array()) {
+                throw std::runtime_error(
+                    context +
+                    " required_capabilities must be an array");
+            }
+            for (const auto &capability : *capabilities) {
+                if (!capability.is_string() ||
+                    capability
+                        .get_ref<const std::string &>()
+                        .empty()) {
+                    throw std::runtime_error(
+                        context +
+                        " required_capabilities entries must be "
+                        "non-empty strings");
+                }
+                compiled.required_capabilities.push_back(
+                    capability.get<std::string>());
+            }
+            std::sort(
+                compiled.required_capabilities.begin(),
+                compiled.required_capabilities.end());
+            if (std::adjacent_find(
+                    compiled.required_capabilities.begin(),
+                    compiled.required_capabilities.end()) !=
+                compiled.required_capabilities.end()) {
+                throw std::runtime_error(
+                    context +
+                    " required_capabilities must not contain "
+                    "duplicates");
+            }
+        }
 
         if (const auto nodes = graph->find("nodes");
             nodes != graph->end()) {
@@ -331,6 +368,10 @@ nlohmann::json targetPlanningPolicyToJson(
         auto graphs = nlohmann::json::object();
         for (const auto &graph : policy.graphs) {
             auto declaration = nlohmann::json::object();
+            if (!graph.required_capabilities.empty()) {
+                declaration["required_capabilities"] =
+                    graph.required_capabilities;
+            }
             if (!graph.nodes.empty()) {
                 auto nodes = nlohmann::json::object();
                 for (const auto &node : graph.nodes) {
