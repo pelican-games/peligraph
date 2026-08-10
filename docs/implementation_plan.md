@@ -3021,6 +3021,89 @@ R8_UNORM に書く 255 と**ビット単位で同じ**である。
 
 依存: WP283(マージ済み)。見積: 中。
 
+### WP285: レイトレーシングパイプラインと SBT
+
+**目的**: `VK_KHR_ray_tracing_pipeline` によるディスパッチ経路を engine に置く。
+ray query と**同じ影マスクをもう一度**、今度は raygen / miss / closest-hit と
+shader binding table で実装する。
+
+**なぜ二度実装するのか**: これが受け入れ条件の本体である。
+同じシーン・同じ光源で **2 つの独立実装が同じ絵を出せば、どちらも正しい**と言える。
+片方だけでは言えない。実際 WP283 は、クリア値と区別できない主張で緑になっていた。
+
+**なぜマテリアル表を待たないのか**: 遮蔽判定は**ヒット地点で何も読まない**。
+miss なら 1.0、hit なら 0.0 を書くだけである。
+GPU 常駐のジオメトリ→マテリアル対応表と descriptor indexing が要るのは
+反射・GI・アルファテスト形状であって、可視性クエリではない。
+
+#### 設計の要:fullscreen パスの真似をしないこと
+
+**`vkCmdTraceRaysKHR` は dynamic rendering のスコープ内に記録できない。**
+したがって WP283 が使った fullscreen パスの形は取れない。
+
+**手本は `compute_tasks` である。** `FramePlanNodeKind`
+(`src/core/renderingpass/frameplanner.hpp:14-20`)は
+`{render, compute, anchor, snapshot_copy, output_transform}` の閉じた enum で、
+`compute` は既に「レンダーパスの外で走る独立した最上位ノード」として存在し、
+`featurecompose.cpp:460-471` が `compute_tasks` を最上位キーとして合成している。
+**同じ制約を持つ既存の前例がある。**そこに寄せること。
+
+出力も違う。raygen は色アタッチメントではなく**ストレージ画像へ `imageStore`** する。
+ターゲットの usage に STORAGE が要る。
+
+#### 実装範囲
+
+1. `VK_KHR_ray_tracing_pipeline` を、WP280 の
+   `src/core/vkcore/devicefeaturepolicy.cpp` の方針関数に**同じ原子性で**追加すること。
+   `VkPhysicalDeviceRayTracingPipelinePropertiesKHR` から
+   `shaderGroupHandleSize` / `shaderGroupBaseAlignment` / `shaderGroupHandleAlignment` を取得すること。
+   能力文字列 `pelican.vulkan.ray_tracing_pipeline@1` と名前付きの硬いエラーを、
+   WP280 の `pelican.plan.ray_query_required_unavailable@1` と同じ形で用意すること。
+2. `PipelineFactory` に RT パイプラインの生成経路を足すこと
+   (今は `create` と `createCompute` しかない)。
+   PFN は `vkCreateRayTracingPipelinesKHR` /
+   `vkGetRayTracingShaderGroupHandlesKHR` / `vkCmdTraceRaysKHR`。
+   動的ディスパッチャは無く、`core.hpp:62-67` の手動 PFN が規約である。
+3. **SBT の詰め方を純粋関数として切り出すこと。**
+   3 つのアライメント値とグループ数を入力に、各領域の
+   stride / size / オフセットを返す形にすること。
+   WP280 の `selectVmaAllocatorCreateFlags` が同じ作法で、
+   デバイス無しの単体テストで検証できたのが効いた。**同じ形にすること。**
+4. `ShaderStage`(`src/core/shader/shaderreference.hpp:8`)に
+   `raygen` / `miss` / `closesthit` を足すこと。
+   シェーダコンパイラは既にこの 3 つを写せる(`shadercompiler.cpp:67-72`)。
+   **`any_hit` / `intersection` / `callable` は範囲外**とし、
+   宣言されたら名前付きの硬いエラーにすること。黙って無視しないこと。
+   (これらはアルファテスト形状に要るもので、マテリアル表が前提になる。)
+5. `engine://features/rt_shadow_mask_pipeline.json` を
+   **既定で無効・パージ可能**な feature として置くこと。自前の R8_UNORM ターゲットを持つ。
+
+#### 範囲外
+
+反射・GI・アルファテスト形状。ジオメトリ→マテリアル対応表。descriptor indexing。
+`any_hit` / `intersection` / `callable`。既存 ray query 経路の置き換え
+(**両方が残ること**が受け入れ条件である)。
+
+#### 受け入れ条件
+
+- **同じシーン・同じ光源で、ray query 版のマスクと RT パイプライン版のマスクが一致すること。**
+  レイの起点バイアスに起因する差が残る場合は、許容幅とその根拠を述べること。
+  「どちらも影がある」では条件を満たさない。**画素単位で比較すること**
+- WP284 が固定した性質を両方の実装が満たすこと。すなわち
+  **背景が遮蔽されない**、**静的ジオメトリ 0 で落ちない**、
+  **原点から 100 単位以上離しても自己遮蔽しない**、
+  **影の領域と影でない領域の両方が固定されている**
+- **SBT のアライメント計算が、デバイス無しの単体テストで検証されていること。**
+  `shaderGroupHandleSize != shaderGroupHandleAlignment` の場合と、
+  `shaderGroupBaseAlignment > shaderGroupHandleAlignment` の場合を含めること
+  (実機で最も踏まれる形である)
+- feature を外すとターゲットもパスも存在しないこと
+- RT パイプラインを要求しないプロジェクトの挙動が変わらないこと。既存 golden が動かないこと
+- `any_hit` / `intersection` / `callable` を宣言すると名前付きの硬いエラーになること
+- `ctest` 全数が緑(GPU ラベル全数を含む)、両ビルド階層でビルドが通ること(§4 規約 9)
+
+依存: WP284(マージ済み)。見積: 大。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
