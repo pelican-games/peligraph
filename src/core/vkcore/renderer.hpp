@@ -48,6 +48,11 @@ struct PickingReadbackResult {
     std::optional<PickingModelInstanceToken> model_instance;
 };
 
+struct R8RenderTargetReadback {
+    vk::Extent2D extent{};
+    std::vector<std::uint8_t> pixels;
+};
+
 struct LogicalFrameRuntime {
     std::shared_ptr<const RendererRuntimeGeneration>
         renderer_generation;
@@ -145,6 +150,8 @@ DECLARE_MODULE(Renderer) {
     nlohmann::json currentFramePlanJson() const;
     PickingReadbackResult readPickingPixel(std::uint32_t x,
                                            std::uint32_t y);
+    R8RenderTargetReadback readR8RenderTargetForTesting(
+        std::string_view name);
     std::optional<vk::Format>
     xrCompositionDepthFormat() const;
     std::vector<std::string> currentFramePlanOrderForTesting() const;

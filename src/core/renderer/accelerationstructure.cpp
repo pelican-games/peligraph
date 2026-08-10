@@ -318,6 +318,13 @@ RayQueryAccelerationStructureScope::FrameBuild &
 RayQueryAccelerationStructureScope::FrameBuild::operator=(
     FrameBuild &&) noexcept = default;
 
+vk::AccelerationStructureKHR
+RayQueryAccelerationStructureScope::FrameBuild::topLevel() const noexcept {
+    return candidate_ != nullptr && candidate_->tlas != nullptr
+               ? candidate_->tlas->handle.get()
+               : vk::AccelerationStructureKHR{};
+}
+
 void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
     if (owner_ == nullptr || candidate_ == nullptr) return;
     owner_->active_state_ = candidate_;

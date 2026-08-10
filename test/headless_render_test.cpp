@@ -114,6 +114,85 @@ void writeRayQueryTestProject(
                   rendering.dump(2));
 }
 
+void writeRtShadowMaskTestProject(
+    const std::filesystem::path &directory,
+    bool raster_shadow) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    nlohmann::json features = nlohmann::json::array({
+        "engine://features/rt_shadow_mask.json"});
+    if (raster_shadow) {
+        features.push_back(
+            "engine://features/shadow_directional.json");
+    }
+    writeTextFile(
+        directory / "hybrid.json",
+        nlohmann::json{
+            {"pipeline",
+             {{"preset",
+               "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features", std::move(features)},
+        }.dump(2));
+}
+
+void writeEmbeddedRtShadowMaskTestProject(
+    const std::filesystem::path &directory) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeTextFile(
+        directory / "hybrid.json",
+        R"json({
+  "features": ["engine://features/rt_shadow_mask.json"],
+  "render_targets": [
+    {
+      "name": "gbuffer_worldpos",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "deferred_geometry",
+          "type": "fullscreen",
+          "output": {"color": "gbuffer_worldpos", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://shader_lab_hello"
+          }
+        },
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "input": ["gbuffer_worldpos"],
+          "input_sampling": [
+            {"filter": "nearest", "address": "clamp_to_edge"}
+          ],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://shader_lab_present"
+          }
+        }
+      ]
+    }
+  ]
+})json");
+}
+
 void configureRayQueryTestRuntime(
     const std::filesystem::path &directory) {
     auto project =
@@ -1452,6 +1531,31 @@ gpuArenaRegistryDependencies() {
 }
 
 } // namespace
+
+TEST_CASE(
+    "non-ray frame descriptor pool retains its exact allocation plan",
+    "[headless][render][wp283][ray-query]") {
+    const auto base_pool =
+        makeFrameDescriptorPoolPlan(5, false);
+    REQUIRE(base_pool.max_sets == 5);
+    REQUIRE(base_pool.pool_sizes.size() == 2);
+    REQUIRE(base_pool.pool_sizes[0].type ==
+            vk::DescriptorType::eUniformBuffer);
+    REQUIRE(base_pool.pool_sizes[0].descriptorCount == 15);
+    REQUIRE(base_pool.pool_sizes[1].type ==
+            vk::DescriptorType::eStorageBuffer);
+    REQUIRE(base_pool.pool_sizes[1].descriptorCount == 15);
+
+    const auto ray_pool =
+        makeFrameDescriptorPoolPlan(5, true);
+    REQUIRE(ray_pool.max_sets == 10);
+    REQUIRE(ray_pool.pool_sizes.size() == 3);
+    REQUIRE(ray_pool.pool_sizes[0].descriptorCount == 30);
+    REQUIRE(ray_pool.pool_sizes[1].descriptorCount == 30);
+    REQUIRE(ray_pool.pool_sizes[2].type ==
+            vk::DescriptorType::eAccelerationStructureKHR);
+    REQUIRE(ray_pool.pool_sizes[2].descriptorCount == 5);
+}
 
 TEST_CASE("GPU mip generation rejects missing linear-blit features with a named format",
           "[headless][render][mipmap]") {
@@ -8300,6 +8404,289 @@ TEST_CASE(
         throw;
     }
 #endif
+}
+
+TEST_CASE(
+    "rt shadow mask pixels expose the static-only boundary and overlap raster shadow",
+    "[headless][gpu][wp283][ray-query][pixel]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        temp_dir = makeTempProjectDir();
+        enum class BlockerKind {
+            none,
+            static_geometry,
+            skinned,
+            morph,
+            vat,
+        };
+        struct RenderResult {
+            R8RenderTargetReadback mask;
+            std::vector<std::uint8_t> color;
+            RayQueryAccelerationStructureDiagnostics diagnostics;
+        };
+        const auto render = [&](BlockerKind blocker,
+                                bool raster_shadow) {
+            FastModuleContainer modules;
+            writeRtShadowMaskTestProject(
+                temp_dir, raster_shadow);
+            configureRayQueryTestRuntime(temp_dir);
+
+            auto &renderer = GET_MODULE(Renderer);
+            auto &vkcore = GET_MODULE(VulkanManageCore);
+            REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+            auto &standard =
+                GET_MODULE(StandardMaterialResource);
+            auto &materials = GET_MODULE(MaterialContainer);
+            const auto make_material = [&](bool skinned) {
+                return materials.registerMaterial(MaterialInfo{
+                    .vert_shader =
+                        skinned ? standard.skinnedVertShader()
+                                : standard.standardVertShader(),
+                    .frag_shader = standard.standardFragShader(),
+                    .skinned = skinned,
+                    .base_color_texture = standard.whiteTexture(),
+                    .metallic_roughness_texture =
+                        standard.metallicRoughnessDefaultTexture(),
+                    .normal_texture = standard.normalDefaultTexture(),
+                    .emissive_texture =
+                        standard.emissiveDefaultTexture(),
+                    .occlusion_texture =
+                        standard.occlusionDefaultTexture(),
+                });
+            };
+            const auto opaque_material = make_material(false);
+            const auto skinned_material = make_material(true);
+
+            auto &geometry = GET_MODULE(VertBufContainer);
+            auto receiver = geometry.addPrimitiveEntry(
+                makeScreenQuad(0.95F, 0.0F));
+            receiver.mesh_index = 0;
+            receiver.primitive_index = 0;
+            ModelTemplate model;
+            model.asset_id = ModelAssetId{2831};
+            ModelTemplate::MaterialPrimitives opaque{
+                .material = opaque_material,
+                .primitives = {receiver},
+            };
+            if (blocker == BlockerKind::static_geometry ||
+                blocker == BlockerKind::morph ||
+                blocker == BlockerKind::vat) {
+                auto candidate = geometry.addPrimitiveEntry(
+                    makeScreenQuad(0.18F, 0.5F));
+                candidate.mesh_index = 1;
+                candidate.primitive_index = 0;
+                candidate.morph_deformed =
+                    blocker == BlockerKind::morph;
+                candidate.vat_deformed =
+                    blocker == BlockerKind::vat;
+                opaque.primitives.push_back(candidate);
+            }
+            model.material_primitives.push_back(
+                std::move(opaque));
+            if (blocker == BlockerKind::skinned) {
+                auto data = makeScreenQuad(0.18F, 0.5F);
+                data.joint.assign(
+                    data.pos.size(), glm::i16vec4{0});
+                data.weight.assign(
+                    data.pos.size(),
+                    glm::vec4{1.0F, 0.0F, 0.0F, 0.0F});
+                auto candidate =
+                    geometry.addSkinnedPrimitiveEntry(
+                        std::move(data));
+                candidate.mesh_index = 1;
+                candidate.primitive_index = 0;
+                model.material_primitives.push_back(
+                    ModelTemplate::MaterialPrimitives{
+                        .material = skinned_material,
+                        .primitives = {candidate},
+                    });
+            }
+
+            auto &instances =
+                GET_MODULE(PolygonInstanceContainer);
+            const auto instance =
+                instances.placeModelInstance(model);
+            if (blocker == BlockerKind::skinned) {
+                const std::array palette{glm::mat4{1.0F}};
+                instances.setSkinningPalette(instance, palette);
+            }
+            GET_MODULE(LightContainer).load({
+                LightLoadEntry{
+                    .name = "WP283 directional",
+                    .component = {
+                        {"type", "directional"},
+                        {"direction", {0.5, 0.0, -1.0}},
+                        {"intensity", 4.0},
+                        {"color", {1.0, 1.0, 1.0}},
+                    },
+                },
+            });
+            auto &camera = GET_MODULE(Camera);
+            camera.setPos({0.0F, 0.0F, 2.0F});
+            camera.setDir({0.0F, 0.0F, -1.0F});
+            camera.setUp({0.0F, 1.0F, 0.0F});
+
+            renderer.render();
+            vkcore.waitIdle();
+            return RenderResult{
+                .mask =
+                    renderer.readR8RenderTargetForTesting(
+                        "rt_shadow_mask"),
+                .color = GET_MODULE(RenderTarget)
+                             .readbackLastFrameRGBA8(),
+                .diagnostics =
+                    renderer
+                        .rayQueryAccelerationStructureDiagnosticsForTesting(),
+            };
+        };
+        const auto dark_count = [](const auto &pixels) {
+            return std::count_if(
+                pixels.begin(), pixels.end(),
+                [](const auto value) { return value < 64; });
+        };
+
+        const auto baseline =
+            render(BlockerKind::none, false);
+        const auto static_only =
+            render(BlockerKind::static_geometry, false);
+        const auto skinned =
+            render(BlockerKind::skinned, false);
+        const auto morph =
+            render(BlockerKind::morph, false);
+        const auto vat =
+            render(BlockerKind::vat, false);
+        REQUIRE(baseline.mask.extent.width == 32);
+        REQUIRE(baseline.mask.extent.height == 32);
+        REQUIRE(dark_count(baseline.mask.pixels) == 0);
+        REQUIRE(dark_count(static_only.mask.pixels) >= 4);
+        // These blockers are still rasterized into gbuffer_worldpos, but the
+        // WP281/WP282 static-only TLAS deliberately omits them. Their missing
+        // shadows are an asserted image contract, not a blessed golden.
+        REQUIRE(dark_count(skinned.mask.pixels) == 0);
+        REQUIRE(dark_count(morph.mask.pixels) == 0);
+        REQUIRE(dark_count(vat.mask.pixels) == 0);
+        REQUIRE(skinned.diagnostics.excluded.skinned_primitive_count == 1);
+        REQUIRE(morph.diagnostics.excluded.morph_primitive_count == 1);
+        REQUIRE(vat.diagnostics.excluded.vat_primitive_count == 1);
+
+        const auto raster =
+            render(BlockerKind::static_geometry, true);
+        REQUIRE(raster.color.size() == static_only.color.size());
+        REQUIRE(raster.mask.pixels.size() ==
+                static_only.mask.pixels.size());
+        std::size_t raster_shadow_pixels = 0;
+        std::size_t overlapping_shadow_pixels = 0;
+        std::size_t differing_mask_pixels = 0;
+        for (std::size_t pixel = 0;
+             pixel < raster.mask.pixels.size(); ++pixel) {
+            const auto rgba = pixel * 4;
+            const auto without_shadow =
+                static_cast<int>(static_only.color[rgba]) +
+                static_cast<int>(static_only.color[rgba + 1]) +
+                static_cast<int>(static_only.color[rgba + 2]);
+            const auto with_shadow =
+                static_cast<int>(raster.color[rgba]) +
+                static_cast<int>(raster.color[rgba + 1]) +
+                static_cast<int>(raster.color[rgba + 2]);
+            const bool raster_shadowed =
+                without_shadow > with_shadow + 12;
+            const bool ray_shadowed =
+                raster.mask.pixels[pixel] < 64;
+            raster_shadow_pixels += raster_shadowed;
+            overlapping_shadow_pixels +=
+                raster_shadowed && ray_shadowed;
+            differing_mask_pixels +=
+                raster_shadowed != ray_shadowed;
+        }
+        REQUIRE(raster_shadow_pixels >= 4);
+        REQUIRE(overlapping_shadow_pixels >= 1);
+        REQUIRE(differing_mask_pixels >= 1);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan ray-query shadow-mask pixel rendering unavailable");
+        throw;
+    }
+#endif
+}
+
+TEST_CASE(
+    "rt shadow mask renders from the embedded shader path",
+    "[headless][gpu][wp283][ray-query][embedded]") {
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeEmbeddedRtShadowMaskTestProject(temp_dir);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+        auto &geometry = GET_MODULE(VertBufContainer);
+        auto primitive = geometry.addPrimitiveEntry(
+            makeScreenQuad(0.95F, 0.0F));
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2832};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material =
+                    GET_MODULE(StandardMaterialResource)
+                        .standardTransparentMaterial(),
+                .primitives = {primitive},
+            },
+        };
+        GET_MODULE(PolygonInstanceContainer)
+            .placeModelInstance(model);
+        GET_MODULE(LightContainer).load({
+            LightLoadEntry{
+                .name = "WP283 embedded directional",
+                .component = {
+                    {"type", "directional"},
+                    {"direction", {0.0, 0.0, -1.0}},
+                    {"intensity", 1.0},
+                    {"color", {1.0, 1.0, 1.0}},
+                },
+            },
+        });
+
+        renderer.render();
+        vkcore.waitIdle();
+        const auto mask =
+            renderer.readR8RenderTargetForTesting(
+                "rt_shadow_mask");
+        REQUIRE(mask.extent == vk::Extent2D{32, 32});
+        REQUIRE(mask.pixels.size() == 32 * 32);
+        REQUIRE(std::all_of(
+            mask.pixels.begin(), mask.pixels.end(),
+            [](const auto value) { return value > 192; }));
+        const auto diagnostics =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        REQUIRE(diagnostics.requested);
+        REQUIRE(diagnostics.tlas_build_count == 1);
+        REQUIRE(diagnostics.tlas_instance_count == 1);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan embedded ray-query shadow-mask rendering unavailable");
+        throw;
+    }
 }
 
 } // namespace Pelican

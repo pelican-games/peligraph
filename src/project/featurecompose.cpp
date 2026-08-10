@@ -2555,6 +2555,82 @@ void appendShaderDefines(std::vector<std::string> &defines, const nlohmann::json
     appendUnique(defines, parseStringArray(json, "shader_defines", context));
 }
 
+bool featureRequiresRuntimeShaderCompiler(
+    const nlohmann::json &feature,
+    std::string_view feature_name) {
+    if (!feature.contains("runtime_shader_compiler")) {
+        return true;
+    }
+    if (!feature.at("runtime_shader_compiler").is_string()) {
+        throw std::runtime_error(
+            "render feature '" + std::string{feature_name} +
+            "' runtime_shader_compiler must be 'required' or 'optional'");
+    }
+    const auto value =
+        feature.at("runtime_shader_compiler").get<std::string>();
+    if (value == "required") return true;
+    if (value == "optional") return false;
+    throw std::runtime_error(
+        "render feature '" + std::string{feature_name} +
+        "' runtime_shader_compiler must be 'required' or 'optional'");
+}
+
+void appendRequiredCapabilities(
+    nlohmann::json &config,
+    const nlohmann::json &feature,
+    std::string_view feature_name) {
+    if (!feature.contains("required_capabilities")) return;
+    const auto capabilities = parseStringArray(
+        feature, "required_capabilities",
+        "render feature '" + std::string{feature_name} + "'");
+    if (capabilities.empty()) {
+        throw std::runtime_error(
+            "render feature required_capabilities must not be empty: " +
+            std::string{feature_name});
+    }
+    auto &planning = config["target_planning"];
+    if (planning.is_null()) planning = nlohmann::json::object();
+    if (!planning.is_object()) {
+        throw std::runtime_error(
+            "rendering config target_planning must be an object");
+    }
+    auto &graphs = planning["graphs"];
+    if (graphs.is_null()) graphs = nlohmann::json::object();
+    if (!graphs.is_object()) {
+        throw std::runtime_error(
+            "rendering config target_planning.graphs must be an object");
+    }
+    for (const auto &pass_set :
+         ensureArray(config, "rendering_passes")) {
+        const auto graph_name = requireStringField(
+            pass_set, "name", "rendering pass set");
+        auto &graph = graphs[graph_name];
+        if (graph.is_null()) graph = nlohmann::json::object();
+        if (!graph.is_object()) {
+            throw std::runtime_error(
+                "rendering config target_planning graph must be an object: " +
+                graph_name);
+        }
+        auto &required = graph["required_capabilities"];
+        if (required.is_null()) required = nlohmann::json::array();
+        if (!required.is_array()) {
+            throw std::runtime_error(
+                "rendering config required_capabilities must be an array: " +
+                graph_name);
+        }
+        for (const auto &capability : capabilities) {
+            if (std::none_of(
+                    required.begin(), required.end(),
+                    [&](const auto &entry) {
+                        return entry.is_string() &&
+                               entry.get<std::string>() == capability;
+                    })) {
+                required.push_back(capability);
+            }
+        }
+    }
+}
+
 } // namespace
 
 RenderFeatureComposeResult composeRenderFeatureConfig(
@@ -2583,10 +2659,6 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     const auto feature_instances = parseFeatureInstances(resolved_config);
     std::vector<std::string> shader_defines;
     appendShaderDefines(shader_defines, resolved_config, "rendering config");
-    if (!feature_instances.empty() && !dependencies.runtime_shader_compiler_enabled) {
-        throw std::runtime_error(std::string{runtime_compiler_required_message});
-    }
-
     struct LoadedFeature {
         FeatureInstance instance;
         std::string name;
@@ -2621,6 +2693,16 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         }
         loaded_features.push_back(LoadedFeature{instance, feature_name, std::move(feature)});
     }
+    if (!dependencies.runtime_shader_compiler_enabled &&
+        std::any_of(
+            loaded_features.begin(), loaded_features.end(),
+            [](const auto &loaded) {
+                return featureRequiresRuntimeShaderCompiler(
+                    loaded.feature, loaded.name);
+            })) {
+        throw std::runtime_error(
+            std::string{runtime_compiler_required_message});
+    }
 
     auto composed = resolved_config;
     composed.erase("features");
@@ -2652,6 +2734,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         addFeaturePasses(composed, feature, pass_names);
         applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
+        appendRequiredCapabilities(
+            composed, feature, loaded.name);
         applyLightingDataPlan(
             composed, feature, loaded.name,
             loaded.instance.ref);

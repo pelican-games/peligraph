@@ -3,6 +3,7 @@
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
 #include "../src/core/shader/shaderresourceinterface.hpp"
+#include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/ui/gpuabi.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -79,6 +80,103 @@ TEST_CASE("embedded and runtime shaders share the configured SPIR-V version",
     REQUIRE(runtime.spirv.size() >= 2);
     REQUIRE(runtime.spirv[1] == embedded_version);
 #endif
+}
+
+TEST_CASE(
+    "rt shadow shader reflects TLAS in frame set and keeps fullscreen input in set one",
+    "[shader][wp283][ray-query]") {
+    const auto embedded =
+        engineResource("rt_shadow_mask.frag.spv");
+    REQUIRE(embedded.has_value());
+    REQUIRE(embedded->size() % sizeof(std::uint32_t) == 0);
+    std::vector<std::uint32_t> words(
+        embedded->size() / sizeof(std::uint32_t));
+    std::memcpy(
+        words.data(), embedded->data(), embedded->size());
+    const auto reflection = reflect(words);
+    const auto *tlas = findBinding(
+        reflection, PELICAN_SET_FRAME,
+        PELICAN_RAY_QUERY_TLAS_BINDING);
+    REQUIRE(tlas != nullptr);
+    REQUIRE(tlas->type ==
+            vk::DescriptorType::eAccelerationStructureKHR);
+    REQUIRE(tlas->count == 1);
+    const auto *world_position = findBinding(
+        reflection, PELICAN_SET_PASS_INPUT, 0);
+    REQUIRE(world_position != nullptr);
+    REQUIRE(world_position->type ==
+            vk::DescriptorType::eCombinedImageSampler);
+    REQUIRE(std::count_if(
+                reflection.bindings.begin(),
+                reflection.bindings.end(),
+                [](const auto &binding) {
+                    return binding.set ==
+                           PELICAN_SET_PASS_INPUT;
+                }) == 1);
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    compiler.addIncludeDir(
+        sourceRoot() /
+        "src/core/resources/shaders/include");
+    const auto runtime = compiler.compileFile(
+        sourceRoot() /
+        "src/core/resources/rt_shadow_mask.frag");
+    INFO(runtime.log);
+    REQUIRE(runtime.ok);
+    const auto runtime_reflection = reflect(runtime.spirv);
+    const auto *runtime_tlas = findBinding(
+        runtime_reflection, PELICAN_SET_FRAME,
+        PELICAN_RAY_QUERY_TLAS_BINDING);
+    REQUIRE(runtime_tlas != nullptr);
+    REQUIRE(runtime_tlas->type == tlas->type);
+#endif
+}
+
+TEST_CASE(
+    "non-ray frame descriptor layout retains the six-binding ABI",
+    "[shader][wp283][ray-query]") {
+    const auto base =
+        frameDescriptorSetLayoutBindings(false);
+    REQUIRE(base.size() == 6);
+    REQUIRE(base[0].binding == PELICAN_FRAME_UBO_BINDING);
+    REQUIRE(base[0].descriptorType ==
+            vk::DescriptorType::eUniformBuffer);
+    REQUIRE(base[1].binding == PELICAN_OBJECT_BUFFER_BINDING);
+    REQUIRE(base[1].descriptorType ==
+            vk::DescriptorType::eStorageBuffer);
+    REQUIRE(base[2].binding == PELICAN_LIGHT_UBO_BINDING);
+    REQUIRE(base[2].descriptorType ==
+            vk::DescriptorType::eUniformBuffer);
+    REQUIRE(base[3].binding ==
+            PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING);
+    REQUIRE(base[3].descriptorType ==
+            vk::DescriptorType::eStorageBuffer);
+    REQUIRE(base[4].binding ==
+            PELICAN_FRAME_RESOLUTION_UBO_BINDING);
+    REQUIRE(base[4].descriptorType ==
+            vk::DescriptorType::eUniformBuffer);
+    REQUIRE(base[5].binding ==
+            PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING);
+    REQUIRE(base[5].descriptorType ==
+            vk::DescriptorType::eStorageBuffer);
+
+    const auto extended =
+        frameDescriptorSetLayoutBindings(true);
+    REQUIRE(extended.size() == 7);
+    REQUIRE(std::equal(
+        base.begin(), base.end(), extended.begin(),
+        [](const auto &left, const auto &right) {
+            return left.binding == right.binding &&
+                   left.descriptorType == right.descriptorType &&
+                   left.descriptorCount == right.descriptorCount &&
+                   left.stageFlags == right.stageFlags;
+        }));
+    REQUIRE(extended.back().binding ==
+            PELICAN_RAY_QUERY_TLAS_BINDING);
+    REQUIRE(extended.back().descriptorType ==
+            vk::DescriptorType::eAccelerationStructureKHR);
+
 }
 
 TEST_CASE("shader compiler resolves include directories", "[shader]") {

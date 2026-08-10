@@ -14,19 +14,48 @@ namespace Pelican {
 
 namespace {
 
-vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, std::uint32_t slot_count) {
-    const std::array pool_sizes{
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 3 * slot_count},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 * slot_count},
-    };
+vk::UniqueDescriptorPool createDescriptorPool(
+    vk::Device device, const FrameDescriptorPoolPlan &plan) {
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = slot_count;
-    create_info.setPoolSizes(pool_sizes);
+    create_info.maxSets = plan.max_sets;
+    create_info.setPoolSizes(plan.pool_sizes);
     return device.createDescriptorPoolUnique(create_info);
 }
 
 } // namespace
+
+FrameDescriptorPoolPlan makeFrameDescriptorPoolPlan(
+    std::uint32_t slot_count, bool ray_query) {
+    const auto multiplier = ray_query ? 6u : 3u;
+    if (slot_count >
+        std::numeric_limits<std::uint32_t>::max() /
+            multiplier) {
+        throw std::overflow_error(
+            "frame descriptor pool size overflow");
+    }
+    if (ray_query &&
+        slot_count >
+            std::numeric_limits<std::uint32_t>::max() / 2u) {
+        throw std::overflow_error(
+            "frame descriptor set count overflow");
+    }
+    FrameDescriptorPoolPlan result{
+        .max_sets = slot_count * (ray_query ? 2u : 1u),
+        .pool_sizes = {
+            {vk::DescriptorType::eUniformBuffer,
+             multiplier * slot_count},
+            {vk::DescriptorType::eStorageBuffer,
+             multiplier * slot_count},
+        },
+    };
+    if (ray_query) {
+        result.pool_sizes.emplace_back(
+            vk::DescriptorType::eAccelerationStructureKHR,
+            slot_count);
+    }
+    return result;
+}
 
 std::vector<std::byte> packFrameUniformViews(
     std::span<const FrameUniformData> views) {
@@ -73,14 +102,15 @@ std::vector<std::byte> packFrameResolutionViews(
 }
 
 FrameResources::FrameResources() : device{GET_MODULE(VulkanManageCore).getDevice()} {
-    configureViewCount(1, 1);
+    configureViewCount(1, 1, false);
 }
 
 FrameResources::~FrameResources() = default;
 
 void FrameResources::configureViewCount(
     std::uint32_t count,
-    std::uint32_t sequential_count) {
+    std::uint32_t sequential_count,
+    bool ray_query) {
     if (count == 0) {
         throw std::runtime_error("FrameResources requires at least one view");
     }
@@ -91,7 +121,8 @@ void FrameResources::configureViewCount(
     }
     if (view_count == count &&
         sequential_view_count ==
-            sequential_count) {
+            sequential_count &&
+        ray_query_enabled == ray_query) {
         return;
     }
 
@@ -113,10 +144,22 @@ void FrameResources::configureViewCount(
         sequential_slot_count +
         multiview_slot_count;
     descriptor_pool =
-        createDescriptorPool(device, descriptor_count);
-    const auto layout = GET_MODULE(PipelineFactory).frameDescriptorSetLayout();
+        createDescriptorPool(
+            device,
+            makeFrameDescriptorPoolPlan(
+                descriptor_count, ray_query));
+    auto &pipeline_factory = GET_MODULE(PipelineFactory);
+    const auto layout =
+        pipeline_factory.frameDescriptorSetLayout(false);
     std::vector<vk::DescriptorSetLayout> layouts(
         descriptor_count, layout);
+    if (ray_query) {
+        const auto ray_query_layout =
+            pipeline_factory.frameDescriptorSetLayout(true);
+        layouts.insert(
+            layouts.end(), descriptor_count,
+            ray_query_layout);
+    }
     vk::DescriptorSetAllocateInfo allocate_info;
     allocate_info.descriptorPool = descriptor_pool.get();
     allocate_info.setSetLayouts(layouts);
@@ -138,6 +181,11 @@ void FrameResources::configureViewCount(
                 vma::AllocationCreateFlagBits::
                     eHostAccessSequentialWrite);
         frame_slot.descriptor_set = std::move(descriptor_sets[slot]);
+        if (ray_query) {
+            frame_slot.ray_query_descriptor_set =
+                std::move(descriptor_sets[
+                    descriptor_count + slot]);
+        }
 
         const auto frame_index =
             slot / sequential_count;
@@ -153,6 +201,11 @@ void FrameResources::configureViewCount(
             (base + "/resolution_ubo").c_str());
         debug_utils.nameDescriptorSet(frame_slot.descriptor_set.get(),
                                       (base + "/descriptor_set").c_str());
+        if (ray_query) {
+            debug_utils.nameDescriptorSet(
+                frame_slot.ray_query_descriptor_set.get(),
+                (base + "/ray_query_descriptor_set").c_str());
+        }
 
         const std::array buffer_infos{
             vk::DescriptorBufferInfo{
@@ -162,22 +215,26 @@ void FrameResources::configureViewCount(
                 frame_slot.resolution_buffer.buffer.get(), 0,
                 sizeof(FrameResolutionUniformData)},
         };
-        std::array<vk::WriteDescriptorSet, 2> writes{};
-        writes[0].dstSet =
-            frame_slot.descriptor_set.get();
-        writes[0].dstBinding =
-            PELICAN_FRAME_UBO_BINDING;
-        writes[0].descriptorType =
-            vk::DescriptorType::eUniformBuffer;
-        writes[0].setBufferInfo(buffer_infos[0]);
-        writes[1].dstSet =
-            frame_slot.descriptor_set.get();
-        writes[1].dstBinding =
-            PELICAN_FRAME_RESOLUTION_UBO_BINDING;
-        writes[1].descriptorType =
-            vk::DescriptorType::eUniformBuffer;
-        writes[1].setBufferInfo(buffer_infos[1]);
-        device.updateDescriptorSets(writes, {});
+        const std::array descriptor_sets_to_update{
+            frame_slot.descriptor_set.get(),
+            frame_slot.ray_query_descriptor_set.get()};
+        for (const auto descriptor_set :
+             descriptor_sets_to_update) {
+            if (!descriptor_set) continue;
+            std::array<vk::WriteDescriptorSet, 2> writes{};
+            writes[0].dstSet = descriptor_set;
+            writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING;
+            writes[0].descriptorType =
+                vk::DescriptorType::eUniformBuffer;
+            writes[0].setBufferInfo(buffer_infos[0]);
+            writes[1].dstSet = descriptor_set;
+            writes[1].dstBinding =
+                PELICAN_FRAME_RESOLUTION_UBO_BINDING;
+            writes[1].descriptorType =
+                vk::DescriptorType::eUniformBuffer;
+            writes[1].setBufferInfo(buffer_infos[1]);
+            device.updateDescriptorSets(writes, {});
+        }
         frame_slots.push_back(std::move(frame_slot));
     }
 
@@ -211,6 +268,12 @@ void FrameResources::configureViewCount(
             std::move(
                 descriptor_sets
                     [sequential_slot_count + frame]);
+        if (ray_query) {
+            frame_slot.ray_query_descriptor_set =
+                std::move(descriptor_sets[
+                    descriptor_count +
+                    sequential_slot_count + frame]);
+        }
         frame_slot.last_data.resize(count);
         frame_slot.last_resolution.resize(count);
 
@@ -230,6 +293,11 @@ void FrameResources::configureViewCount(
         debug_utils.nameDescriptorSet(
             frame_slot.descriptor_set.get(),
             (base + "/descriptor_set").c_str());
+        if (ray_query) {
+            debug_utils.nameDescriptorSet(
+                frame_slot.ray_query_descriptor_set.get(),
+                (base + "/ray_query_descriptor_set").c_str());
+        }
 
         const std::array buffer_infos{
             vk::DescriptorBufferInfo{
@@ -239,22 +307,26 @@ void FrameResources::configureViewCount(
                 frame_slot.resolution_buffer.buffer.get(), 0,
                 resolution_byte_size},
         };
-        std::array<vk::WriteDescriptorSet, 2> writes{};
-        writes[0].dstSet =
-            frame_slot.descriptor_set.get();
-        writes[0].dstBinding =
-            PELICAN_FRAME_UBO_BINDING;
-        writes[0].descriptorType =
-            vk::DescriptorType::eUniformBuffer;
-        writes[0].setBufferInfo(buffer_infos[0]);
-        writes[1].dstSet =
-            frame_slot.descriptor_set.get();
-        writes[1].dstBinding =
-            PELICAN_FRAME_RESOLUTION_UBO_BINDING;
-        writes[1].descriptorType =
-            vk::DescriptorType::eUniformBuffer;
-        writes[1].setBufferInfo(buffer_infos[1]);
-        device.updateDescriptorSets(writes, {});
+        const std::array descriptor_sets_to_update{
+            frame_slot.descriptor_set.get(),
+            frame_slot.ray_query_descriptor_set.get()};
+        for (const auto descriptor_set :
+             descriptor_sets_to_update) {
+            if (!descriptor_set) continue;
+            std::array<vk::WriteDescriptorSet, 2> writes{};
+            writes[0].dstSet = descriptor_set;
+            writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING;
+            writes[0].descriptorType =
+                vk::DescriptorType::eUniformBuffer;
+            writes[0].setBufferInfo(buffer_infos[0]);
+            writes[1].dstSet = descriptor_set;
+            writes[1].dstBinding =
+                PELICAN_FRAME_RESOLUTION_UBO_BINDING;
+            writes[1].descriptorType =
+                vk::DescriptorType::eUniformBuffer;
+            writes[1].setBufferInfo(buffer_infos[1]);
+            device.updateDescriptorSets(writes, {});
+        }
         multiview_frame_slots.push_back(
             std::move(frame_slot));
     }
@@ -262,6 +334,7 @@ void FrameResources::configureViewCount(
     view_count = count;
     sequential_view_count =
         sequential_count;
+    ray_query_enabled = ray_query;
     active_slot = 0;
     active_multiview_slot = false;
     updateSceneDescriptors();
@@ -301,9 +374,15 @@ void FrameResources::updateSceneDescriptors() {
     };
     for (const auto &slot : frame_slots) {
         update(slot.descriptor_set.get());
+        if (slot.ray_query_descriptor_set) {
+            update(slot.ray_query_descriptor_set.get());
+        }
     }
     for (const auto &slot : multiview_frame_slots) {
         update(slot.descriptor_set.get());
+        if (slot.ray_query_descriptor_set) {
+            update(slot.ray_query_descriptor_set.get());
+        }
     }
 }
 
@@ -325,15 +404,68 @@ void FrameResources::setSceneBuffers(const BufferWrapper &objects,
 }
 
 void FrameResources::beginLogicalFrame(std::uint32_t count) {
-    beginLogicalFrame(count, count);
+    beginLogicalFrame(count, count, false);
 }
 
 void FrameResources::beginLogicalFrame(
     std::uint32_t main_view_count,
     std::uint32_t sequential_count) {
+    beginLogicalFrame(
+        main_view_count, sequential_count, false);
+}
+
+void FrameResources::beginLogicalFrame(
+    std::uint32_t main_view_count,
+    std::uint32_t sequential_count,
+    bool ray_query) {
     configureViewCount(
         main_view_count,
-        sequential_count);
+        sequential_count,
+        ray_query);
+}
+
+void FrameResources::setRayQueryAccelerationStructure(
+    std::uint32_t in_flight_frame_index,
+    vk::AccelerationStructureKHR top_level) {
+    if (!ray_query_enabled) {
+        throw std::logic_error(
+            "ray-query frame descriptor set is not enabled");
+    }
+    if (!top_level) {
+        throw std::runtime_error(
+            "ray-query frame descriptor requires a TLAS");
+    }
+    if (in_flight_frame_index >= in_flight_frames_num) {
+        throw std::out_of_range(
+            "ray-query in-flight frame index is out of range");
+    }
+    const std::array acceleration_structures{top_level};
+    vk::WriteDescriptorSetAccelerationStructureKHR acceleration_info;
+    acceleration_info.setAccelerationStructures(
+        acceleration_structures);
+    const auto update = [&](vk::DescriptorSet descriptor_set) {
+        vk::WriteDescriptorSet write;
+        write.pNext = &acceleration_info;
+        write.dstSet = descriptor_set;
+        write.dstBinding = PELICAN_RAY_QUERY_TLAS_BINDING;
+        write.descriptorCount = 1;
+        write.descriptorType =
+            vk::DescriptorType::eAccelerationStructureKHR;
+        device.updateDescriptorSets(write, {});
+    };
+    const auto first =
+        static_cast<std::size_t>(in_flight_frame_index) *
+        sequential_view_count;
+    for (std::uint32_t view = 0;
+         view < sequential_view_count; ++view) {
+        update(frame_slots.at(first + view)
+                   .ray_query_descriptor_set.get());
+    }
+    if (!multiview_frame_slots.empty()) {
+        update(multiview_frame_slots
+                   .at(in_flight_frame_index)
+                   .ray_query_descriptor_set.get());
+    }
 }
 
 void FrameResources::selectView(std::uint32_t in_flight_frame_index,
@@ -451,12 +583,27 @@ void FrameResources::updateMultiviewResolutions(
 }
 
 void FrameResources::bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const {
-    const auto descriptor_set =
-        active_multiview_slot
-            ? multiview_frame_slots.at(active_slot)
-                  .descriptor_set.get()
-            : frame_slots.at(active_slot)
-                  .descriptor_set.get();
+    const auto ray_query =
+        GET_MODULE(PipelineFactory)
+            .pipelineLayoutUsesRayQueryFrameSet(
+                pipeline_layout);
+    vk::DescriptorSet descriptor_set;
+    if (active_multiview_slot) {
+        const auto &slot =
+            multiview_frame_slots.at(active_slot);
+        descriptor_set =
+            ray_query ? slot.ray_query_descriptor_set.get()
+                      : slot.descriptor_set.get();
+    } else {
+        const auto &slot = frame_slots.at(active_slot);
+        descriptor_set =
+            ray_query ? slot.ray_query_descriptor_set.get()
+                      : slot.descriptor_set.get();
+    }
+    if (!descriptor_set) {
+        throw std::runtime_error(
+            "pipeline requires a ray-query frame descriptor set");
+    }
     cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, PELICAN_SET_FRAME,
                                descriptor_set, {});
 }
@@ -464,12 +611,27 @@ void FrameResources::bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout 
 void FrameResources::bindCompute(
     vk::CommandBuffer cmd_buf,
     vk::PipelineLayout pipeline_layout) const {
-    const auto descriptor_set =
-        active_multiview_slot
-            ? multiview_frame_slots.at(active_slot)
-                  .descriptor_set.get()
-            : frame_slots.at(active_slot)
-                  .descriptor_set.get();
+    const auto ray_query =
+        GET_MODULE(PipelineFactory)
+            .pipelineLayoutUsesRayQueryFrameSet(
+                pipeline_layout);
+    vk::DescriptorSet descriptor_set;
+    if (active_multiview_slot) {
+        const auto &slot =
+            multiview_frame_slots.at(active_slot);
+        descriptor_set =
+            ray_query ? slot.ray_query_descriptor_set.get()
+                      : slot.descriptor_set.get();
+    } else {
+        const auto &slot = frame_slots.at(active_slot);
+        descriptor_set =
+            ray_query ? slot.ray_query_descriptor_set.get()
+                      : slot.descriptor_set.get();
+    }
+    if (!descriptor_set) {
+        throw std::runtime_error(
+            "pipeline requires a ray-query frame descriptor set");
+    }
     cmd_buf.bindDescriptorSets(
         vk::PipelineBindPoint::eCompute,
         pipeline_layout, PELICAN_SET_FRAME,

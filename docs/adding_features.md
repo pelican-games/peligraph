@@ -22,8 +22,10 @@
 
 1. feature fragment を書く: `src/core/resources/features/<name>.json`
    (`pelican.render_feature` v1 — passes 挿入 / render_targets 追加 /
-   render_target_overrides / shader_defines。挿入アンカーは自動的に
-   after/before エッジ化される)
+   render_target_overrides / shader_defines / required_capabilities。
+   挿入アンカーは自動的に after/before エッジ化される。define や生成 include がなく、
+   必要な SPIR-V をすべて埋め込む feature だけは
+   `runtime_shader_compiler: "optional"` を明示できる。省略時は compiler 必須)
 2. シェーダを stem で書く(`<name>.frag` 等)。マテリアル系に合流する場合は
    `#include "pelican_features.glsl"` + `#ifdef PELICAN_FEATURE_<NAME>`
    (set / push constant / 頂点入力は `docs/shader_contract.md` を確認)

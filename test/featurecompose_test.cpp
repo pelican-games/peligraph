@@ -315,6 +315,83 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "rt shadow mask is purgeable, compiler-optional, and propagates ray-query planning",
+    "[render-feature][wp283][ray-query]") {
+    const auto make_config = [](bool enabled) {
+        return nlohmann::json{
+            {"pipeline",
+             {{"preset",
+               "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features",
+             enabled
+                 ? nlohmann::json::array({
+                       "engine://features/rt_shadow_mask.json"})
+                 : nlohmann::json::array()},
+        };
+    };
+    // This feature has a no-define embedded SPIR-V artifact, so composition
+    // itself is valid with the optional runtime compiler disabled.
+    const auto enabled = composeRenderFeatureConfig(
+        make_config(true),
+        RenderFeatureComposeDependencies{
+            loadEngineFeature, false});
+    REQUIRE(enabled.feature_names ==
+            std::vector<std::string>{"rt_shadow_mask"});
+    const auto &target =
+        renderTargetByName(enabled.config, "rt_shadow_mask");
+    REQUIRE(target.at("format") == "R8_UNORM");
+    REQUIRE(target.at("usage") ==
+            nlohmann::json::array(
+                {"COLOR_ATTACHMENT", "TRANSFER_SRC"}));
+    const auto &pass =
+        passByName(enabled.config, "rt_shadow_mask");
+    REQUIRE(pass.at("type") == "fullscreen");
+    REQUIRE(pass.at("input") ==
+            nlohmann::json::array({"gbuffer_worldpos"}));
+    REQUIRE(pass.at("output").at("color") ==
+            "rt_shadow_mask");
+    const auto &required =
+        enabled.config.at("target_planning")
+            .at("graphs")
+            .at("main_render")
+            .at("required_capabilities");
+    REQUIRE(required == nlohmann::json::array(
+                            {"pelican.vulkan.ray_query@1"}));
+    for (const auto &candidate :
+         enabled.config.at("rendering_passes")
+             .at(0)
+             .at("passes")) {
+        if (candidate.value("name", std::string{}) ==
+            "rt_shadow_mask") {
+            continue;
+        }
+        if (!candidate.contains("input")) continue;
+        REQUIRE(std::none_of(
+            candidate.at("input").begin(),
+            candidate.at("input").end(),
+            [](const auto &input) {
+                return input.is_string() &&
+                       input.get<std::string>() ==
+                           "rt_shadow_mask";
+            }));
+    }
+
+    const auto disabled = composeRenderFeatureConfig(
+        make_config(false),
+        RenderFeatureComposeDependencies{
+            loadEngineFeature, false});
+    REQUIRE(disabled.feature_names.empty());
+    REQUIRE_THROWS_WITH(
+        renderTargetByName(disabled.config, "rt_shadow_mask"),
+        Catch::Matchers::ContainsSubstring(
+            "render target not found"));
+    REQUIRE_THROWS_WITH(
+        passByName(disabled.config, "rt_shadow_mask"),
+        Catch::Matchers::ContainsSubstring("pass not found"));
+    REQUIRE_FALSE(disabled.config.contains("target_planning"));
+}
+
+TEST_CASE(
     "surface resource selectors validate even without fullscreen passes",
     "[render-feature][shadow][validation][wp205]") {
     auto feature = nlohmann::json::parse(

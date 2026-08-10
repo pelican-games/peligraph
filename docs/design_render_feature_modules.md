@@ -52,7 +52,9 @@ feature fragment(engine:// 埋め込み or プロジェクト内 JSON)は次を�
   "passes": [                                // パス挿入。位置はアンカー指定
     {"insert": "before:present", "pass": { ... "shader": {"fragment": "engine://tonemap"} }}
   ],
-  "shader_defines": ["PELICAN_FEATURE_HDR"]  // §1.2 の variant に合流
+  "shader_defines": ["PELICAN_FEATURE_HDR"], // §1.2 の variant に合流
+  "required_capabilities": ["pelican.vulkan.ray_query@1"],
+  "runtime_shader_compiler": "required"      // 既定。埋め込みだけなら optional
 }
 ```
 
@@ -84,7 +86,12 @@ feature がマテリアル/ライティングシェーダに合流する点(影�
 - **v1 の割り切り**: defines は実行時コンパイル前提。feature を使う config は
   `PELICAN_RUNTIME_SHADER_COMPILER=ON` を要求し、OFF ビルドでは
   「feature には実行時コンパイラが必要」と明確なエラーで拒否する。
-  variant ごとの .spv ビルド時焼き出しは将来課題(§5)
+  variant ごとの .spv ビルド時焼き出しは将来課題(§5)。ただし、define や生成 include を
+  使わない専用 shader の SPIR-V を feature と一緒に埋め込める場合だけ、fragment が
+  `"runtime_shader_compiler": "optional"` を明示できる。省略時は従来どおり `required` である
+- `required_capabilities` は feature を挿入する全 graph の
+  `target_planning.graphs.<name>.required_capabilities` へ重複なく合流する。未対応環境の拒否は
+  target planning の既存 error kind を使い、feature 固有の capability 判定経路を作らない
 
 ### 1.3 RT パラメータ化 — `render_target_overrides`
 

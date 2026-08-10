@@ -48,6 +48,7 @@ constexpr auto registered_ids =
     "features/hdr.json",
     "features/planar_reflection.json",
     "features/picking.json",
+    "features/rt_shadow_mask.json",
     "features/shadow_directional.json",
     "features/sky_ambient.json",
     "features/taa.json",
@@ -61,6 +62,8 @@ constexpr auto registered_ids =
     "fullscreen.vert.spv",
     "scene_present.frag",
     "scene_present.frag.spv",
+    "rt_shadow_mask.frag",
+    "rt_shadow_mask.frag.spv",
     "sky_ambient.frag",
     "sky_ambient.frag.spv",
     "output_transform.frag",
@@ -195,6 +198,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("features/hdr.json")
     PELICAN_ENGINE_RESOURCE("features/planar_reflection.json")
     PELICAN_ENGINE_RESOURCE("features/picking.json")
+    PELICAN_ENGINE_RESOURCE("features/rt_shadow_mask.json")
     PELICAN_ENGINE_RESOURCE("features/shadow_directional.json")
     PELICAN_ENGINE_RESOURCE("features/sky_ambient.json")
     PELICAN_ENGINE_RESOURCE("features/taa.json")
@@ -208,6 +212,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
     PELICAN_ENGINE_RESOURCE("scene_present.frag")
     PELICAN_ENGINE_RESOURCE("scene_present.frag.spv")
+    PELICAN_ENGINE_RESOURCE("rt_shadow_mask.frag")
+    PELICAN_ENGINE_RESOURCE("rt_shadow_mask.frag.spv")
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag")
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag.spv")
     PELICAN_ENGINE_RESOURCE("output_transform.frag")

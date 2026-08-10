@@ -70,11 +70,22 @@ std::vector<std::byte> packFrameUniformViews(
 std::vector<std::byte> packFrameResolutionViews(
     std::span<const FrameResolutionUniformData> views);
 
+struct FrameDescriptorPoolPlan {
+    std::uint32_t max_sets = 0;
+    std::vector<vk::DescriptorPoolSize> pool_sizes;
+
+    bool operator==(const FrameDescriptorPoolPlan &) const = default;
+};
+
+FrameDescriptorPoolPlan makeFrameDescriptorPoolPlan(
+    std::uint32_t slot_count, bool ray_query);
+
 DECLARE_MODULE(FrameResources) {
     struct FrameSlot {
         BufferWrapper frame_buffer;
         BufferWrapper resolution_buffer;
         vk::UniqueDescriptorSet descriptor_set;
+        vk::UniqueDescriptorSet ray_query_descriptor_set;
         FrameUniformData last_data;
         FrameResolutionUniformData last_resolution;
     };
@@ -82,6 +93,7 @@ DECLARE_MODULE(FrameResources) {
         BufferWrapper frame_buffer;
         BufferWrapper resolution_buffer;
         vk::UniqueDescriptorSet descriptor_set;
+        vk::UniqueDescriptorSet ray_query_descriptor_set;
         std::vector<FrameUniformData> last_data;
         std::vector<FrameResolutionUniformData>
             last_resolution;
@@ -100,10 +112,12 @@ DECLARE_MODULE(FrameResources) {
     std::uint32_t sequential_view_count = 0;
     std::size_t active_slot = 0;
     bool active_multiview_slot = false;
+    bool ray_query_enabled = false;
 
     void configureViewCount(
         std::uint32_t count,
-        std::uint32_t sequential_count);
+        std::uint32_t sequential_count,
+        bool ray_query);
     void updateSceneDescriptors();
 
   public:
@@ -117,6 +131,13 @@ DECLARE_MODULE(FrameResources) {
     void beginLogicalFrame(
         std::uint32_t main_view_count,
         std::uint32_t sequential_count);
+    void beginLogicalFrame(
+        std::uint32_t main_view_count,
+        std::uint32_t sequential_count,
+        bool ray_query);
+    void setRayQueryAccelerationStructure(
+        std::uint32_t in_flight_frame_index,
+        vk::AccelerationStructureKHR top_level);
     void selectView(std::uint32_t in_flight_frame_index, std::uint32_t view_index);
     void selectSequentialView(
         std::uint32_t in_flight_frame_index,

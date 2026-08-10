@@ -34,7 +34,7 @@
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
 | [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
 | [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値) | コードは素直なのに読めないとき |
-| [第11章 Ray query 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、除外診断、無効化と submission lease | ray query の土台を変更する人 |
+| [第11章 Ray query 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、`rt_shadow_mask`、set 0 契約、raster shadow との差 | ray query の土台や最初の描画 feature を変更する人 |
 
 ## 難所インデックス(詰まったときの逆引き)
 
@@ -66,7 +66,7 @@
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L338) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L128) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
-6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3918) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3918)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4833) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4833)。
+6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4011) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4011)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4934) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L4934)。
 7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L119)）。
 
 ## リンクの見方

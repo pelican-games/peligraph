@@ -111,6 +111,7 @@ class RayQueryAccelerationStructureScope {
         FrameBuild(const FrameBuild &) = delete;
         FrameBuild &operator=(const FrameBuild &) = delete;
 
+        vk::AccelerationStructureKHR topLevel() const noexcept;
         void commit() noexcept;
     };
 

@@ -132,6 +132,11 @@ struct PipelineRebuildResult {
     std::string last_error;
 };
 
+// Set 0 is engine-owned. The six-binding form is the stable non-ray ABI;
+// only pipelines that reflect the TLAS binding use the extended form.
+std::vector<vk::DescriptorSetLayoutBinding>
+frameDescriptorSetLayoutBindings(bool ray_query);
+
 DECLARE_MODULE(PipelineFactory) {
     struct DescriptorSetLayoutKey {
         std::vector<vk::DescriptorSetLayoutBinding> bindings;
@@ -149,6 +154,7 @@ DECLARE_MODULE(PipelineFactory) {
         std::vector<vk::DescriptorSetLayout> descriptor_set_layouts;
         vk::UniquePipelineLayout layout;
         vk::UniquePipeline pipeline;
+        bool ray_query_frame_set = false;
     };
 
     vk::Device device;
@@ -189,7 +195,10 @@ DECLARE_MODULE(PipelineFactory) {
     vk::Pipeline pipeline(PipelineHandle handle) const;
     vk::PipelineLayout layout(PipelineHandle handle) const;
     vk::DescriptorSetLayout descriptorSetLayout(PipelineHandle handle, uint32_t set) const;
-    vk::DescriptorSetLayout frameDescriptorSetLayout();
+    vk::DescriptorSetLayout frameDescriptorSetLayout(
+        bool ray_query = false);
+    bool pipelineLayoutUsesRayQueryFrameSet(
+        vk::PipelineLayout layout) const noexcept;
     const ShaderReflection &reflection(PipelineHandle handle) const;
     GraphicsPipelineDesc graphicsDesc(
         PipelineHandle handle) const;

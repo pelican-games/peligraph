@@ -3750,6 +3750,99 @@ PickingReadbackResult Renderer::readPickingPixel(std::uint32_t x,
     return result;
 }
 
+R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
+    std::string_view name) {
+    const auto generation =
+        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    const auto *program = generation != nullptr
+                              ? generation->find(
+                                    current_rendering_pass_id)
+                              : nullptr;
+    if (program == nullptr) {
+        throw std::runtime_error(
+            "R8 readback requires a compiled render pipeline");
+    }
+    const auto target_id =
+        boundRenderTarget(
+            program->frame_graph, std::string{name});
+    if (!isConcreteRenderTarget(target_id)) {
+        throw std::runtime_error(
+            "R8 readback target is not active: " +
+            std::string{name});
+    }
+
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto metadata = targets.getMetadata(target_id);
+    if (metadata.format != vk::Format::eR8Unorm ||
+        metadata.samples != 1 ||
+        metadata.dimension != ImageResourceDimension::two_d ||
+        metadata.array_layers != 1 ||
+        (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
+            vk::ImageUsageFlagBits::eTransferSrc) {
+        throw std::runtime_error(
+            "R8 readback requires a single-sample R8_UNORM 2D transfer source: " +
+            std::string{name});
+    }
+    const auto pixel_count =
+        static_cast<std::uint64_t>(metadata.extent.width) *
+        metadata.extent.height;
+    if (pixel_count == 0 ||
+        pixel_count >
+            std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error(
+            "R8 readback target has an invalid extent: " +
+            std::string{name});
+    }
+    const auto previous_layout =
+        render_target_layout_tracker.currentLayout(
+            target_id, false, &targets);
+    if (previous_layout == vk::ImageLayout::eUndefined) {
+        throw std::runtime_error(
+            "R8 readback target has no completed contents: " +
+            std::string{name});
+    }
+
+    auto &vulkan = GET_MODULE(VulkanManageCore);
+    auto staging = vulkan.allocBuf(
+        pixel_count,
+        vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::eHostAccessRandom);
+    auto &utils = GET_MODULE(VulkanUtils);
+    utils.executeOneTimeCmd(
+        [&](vk::CommandBuffer command) {
+            render_target_layout_tracker.transition(
+                command, targets, utils, target_id,
+                vk::ImageLayout::eTransferSrcOptimal);
+            vk::BufferImageCopy copy;
+            copy.imageSubresource = {
+                vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            copy.imageExtent = vk::Extent3D{
+                metadata.extent.width,
+                metadata.extent.height, 1};
+            command.copyImageToBuffer(
+                targets.getImage(target_id).image.get(),
+                vk::ImageLayout::eTransferSrcOptimal,
+                staging.buffer.get(), copy);
+            render_target_layout_tracker.transition(
+                command, targets, utils, target_id,
+                previous_layout);
+        },
+        true);
+
+    const auto bytes = vulkan.readBuf(
+        staging, static_cast<std::size_t>(pixel_count));
+    R8RenderTargetReadback result{
+        .extent = metadata.extent,
+        .pixels = std::vector<std::uint8_t>(
+            static_cast<std::size_t>(pixel_count)),
+    };
+    std::memcpy(
+        result.pixels.data(), bytes.data(),
+        result.pixels.size());
+    return result;
+}
+
 std::optional<vk::Format>
 Renderer::xrCompositionDepthFormat() const {
     if (!xr_rendering_pass_id) {
@@ -3952,7 +4045,8 @@ void Renderer::renderLogicalFrame(
         RayQueryAccelerationStructureScope::FrameBuild>
         acceleration_structure_build;
     const auto record_acceleration_structures =
-        [&](vk::CommandBuffer command_buffer) {
+        [&](vk::CommandBuffer command_buffer,
+            std::uint32_t in_flight_frame_index) {
             if (acceleration_structures == nullptr) return;
             const auto geometry_instances =
                 modules.instance_container
@@ -3971,6 +4065,10 @@ void Renderer::renderLogicalFrame(
                     geometry_instances,
                     modules.instance_container
                         .rayQueryGeometryGeneration()));
+            modules.frame_resources
+                .setRayQueryAccelerationStructure(
+                    in_flight_frame_index,
+                    acceleration_structure_build->topLevel());
         };
     // Most output revisions are caught before an image is acquired. The
     // post-begin check remains necessary because acquire itself may replace a
@@ -4192,7 +4290,8 @@ void Renderer::renderLogicalFrame(
     modules.frame_resources.beginLogicalFrame(
         view_count,
         static_cast<std::uint32_t>(
-            sequential_view_count));
+            sequential_view_count),
+        acceleration_structures != nullptr);
 
     auto shader_hot_reload = resolveShaderHotReloadModules();
     if (consumeShaderReloadPublication(shader_hot_reload)) {
@@ -4505,7 +4604,8 @@ void Renderer::renderLogicalFrame(
                     material_draw_filters,
             });
         record_acceleration_structures(
-            render_ctx.cmd_buf);
+            render_ctx.cmd_buf,
+            render_ctx.in_flight_frame_index);
         capture_picking_model_instances();
         prepareSecondaryViewFamilyDraws(
             modules.instance_container,
@@ -4648,7 +4748,8 @@ void Renderer::renderLogicalFrame(
                     material_draw_filters,
             });
             record_acceleration_structures(
-                render_ctx.cmd_buf);
+                render_ctx.cmd_buf,
+                render_ctx.in_flight_frame_index);
             capture_picking_model_instances();
             prepareSecondaryViewFamilyDraws(
                 modules.instance_container,

@@ -101,9 +101,23 @@ uint32_t maxDescriptorSet(const ShaderReflection &reflection) {
     return max_set;
 }
 
-std::vector<vk::DescriptorSetLayoutBinding> frameDescriptorSetLayoutBindings() {
+bool usesRayQueryFrameSet(const ShaderReflection &reflection) {
+    return std::any_of(
+        reflection.bindings.begin(), reflection.bindings.end(),
+        [](const auto &binding) {
+            return binding.set == PELICAN_SET_FRAME &&
+                   binding.binding == PELICAN_RAY_QUERY_TLAS_BINDING &&
+                   binding.type ==
+                       vk::DescriptorType::eAccelerationStructureKHR;
+        });
+}
+
+} // namespace
+
+std::vector<vk::DescriptorSetLayoutBinding>
+frameDescriptorSetLayoutBindings(bool ray_query) {
     const auto all_stages = vk::ShaderStageFlagBits::eAll;
-    return {
+    std::vector<vk::DescriptorSetLayoutBinding> bindings{
         vk::DescriptorSetLayoutBinding{PELICAN_FRAME_UBO_BINDING, vk::DescriptorType::eUniformBuffer, 1,
                                        all_stages},
         vk::DescriptorSetLayoutBinding{PELICAN_OBJECT_BUFFER_BINDING, vk::DescriptorType::eStorageBuffer, 1,
@@ -119,7 +133,16 @@ std::vector<vk::DescriptorSetLayoutBinding> frameDescriptorSetLayoutBindings() {
             PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING,
             vk::DescriptorType::eStorageBuffer, 1, all_stages},
     };
+    if (ray_query) {
+        bindings.emplace_back(
+            PELICAN_RAY_QUERY_TLAS_BINDING,
+            vk::DescriptorType::eAccelerationStructureKHR, 1,
+            all_stages);
+    }
+    return bindings;
 }
+
+namespace {
 
 void validateFrameBindings(const ShaderReflection &reflection) {
     for (const auto &binding : reflection.bindings) {
@@ -142,12 +165,16 @@ void validateFrameBindings(const ShaderReflection &reflection) {
             (binding.binding ==
                  PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING &&
              binding.type ==
-                 vk::DescriptorType::eStorageBuffer);
+                 vk::DescriptorType::eStorageBuffer) ||
+            (binding.binding ==
+                 PELICAN_RAY_QUERY_TLAS_BINDING &&
+             binding.type ==
+                 vk::DescriptorType::eAccelerationStructureKHR);
         if (!valid || binding.count != 1) {
             throw std::runtime_error(
                 "Shader set 0 must use FrameUBO binding 0, ObjectBuffer binding 1, LightUBO binding 2, "
                 "PreviousObjectBuffer binding 3, FrameResolutionUBO binding 4, or "
-                "DirectionalShadowData binding 5");
+                "DirectionalShadowData binding 5, or RayQueryTLAS binding 6");
         }
     }
 }
@@ -317,7 +344,9 @@ PipelineFactory::~PipelineFactory() { savePipelineCache(); }
 std::vector<PipelineFactory::DescriptorSetLayoutKey>
 PipelineFactory::descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const {
     std::vector<DescriptorSetLayoutKey> keys(maxDescriptorSet(reflection) + 1);
-    keys[PELICAN_SET_FRAME].bindings = frameDescriptorSetLayoutBindings();
+    keys[PELICAN_SET_FRAME].bindings =
+        frameDescriptorSetLayoutBindings(
+            usesRayQueryFrameSet(reflection));
     for (uint32_t set = 1; set < keys.size(); ++set) {
         keys[set].bindings = makeDescriptorSetLayoutBindings(reflection, set);
     }
@@ -554,6 +583,8 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     auto set_layouts = descriptorSetLayoutsFor(merged_reflection);
     auto pipeline_layout = createPipelineLayout(merged_reflection, set_layouts);
     auto pipeline_object = createGraphicsPipeline(desc, pipeline_layout.get());
+    const auto ray_query_frame_set =
+        usesRayQueryFrameSet(merged_reflection);
 
     return PipelineRecord{
         desc,
@@ -561,6 +592,7 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
         std::move(set_layouts),
         std::move(pipeline_layout),
         std::move(pipeline_object),
+        ray_query_frame_set,
     };
 }
 
@@ -573,6 +605,8 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
     auto set_layouts = descriptorSetLayoutsFor(reflection);
     auto pipeline_layout = createPipelineLayout(reflection, set_layouts);
     auto pipeline_object = createComputePipeline(desc, pipeline_layout.get());
+    const auto ray_query_frame_set =
+        usesRayQueryFrameSet(reflection);
 
     return PipelineRecord{
         desc,
@@ -580,6 +614,7 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
         std::move(set_layouts),
         std::move(pipeline_layout),
         std::move(pipeline_object),
+        ray_query_frame_set,
     };
 }
 
@@ -641,14 +676,27 @@ vk::DescriptorSetLayout PipelineFactory::descriptorSetLayout(PipelineHandle hand
     return layouts[set];
 }
 
-vk::DescriptorSetLayout PipelineFactory::frameDescriptorSetLayout() {
-    const DescriptorSetLayoutKey key{frameDescriptorSetLayoutBindings()};
+vk::DescriptorSetLayout PipelineFactory::frameDescriptorSetLayout(
+    bool ray_query) {
+    const DescriptorSetLayoutKey key{
+        frameDescriptorSetLayoutBindings(ray_query)};
     auto found = descriptor_set_layout_cache.find(key);
     if (found == descriptor_set_layout_cache.end()) {
         const auto create_info = makeDescriptorSetLayoutCreateInfo(key.bindings);
         found = descriptor_set_layout_cache.emplace(key, device.createDescriptorSetLayoutUnique(create_info)).first;
     }
     return found->second.get();
+}
+
+bool PipelineFactory::pipelineLayoutUsesRayQueryFrameSet(
+    vk::PipelineLayout layout) const noexcept {
+    return std::any_of(
+        pipeline_handles.begin(), pipeline_handles.end(),
+        [&](const auto handle) {
+            const auto &record = pipelines.get(handle);
+            return record.layout.get() == layout &&
+                   record.ray_query_frame_set;
+        });
 }
 
 const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const {

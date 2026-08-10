@@ -12,7 +12,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 |---|---|---|
 | process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 |
 | public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) | game code に内部 module を直接見せない、状態を持たない/薄い value façade |
-| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L57) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
+| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L62) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
 | tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L302) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch |
 | type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L21) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 |
 | resolver/adaptor | [`RenderTargetNameResolver`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | parser に巨大 container を渡さず、必要な名前解決だけを公開 |
@@ -99,7 +99,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `ImportManifest` 群 | pure document | [`importmanifest.hpp`](../../src/project/importmanifest.hpp#L11) | [`importmanifest.cpp`](../../src/project/importmanifest.cpp#L1) | 外部 tool delivery の source/output/SHA schema |
 | `SurfaceFormatDocument` | pure document | [`surfaceformat.hpp`](../../src/project/surfaceformat.hpp#L193) | [`surfaceformat.cpp`](../../src/project/surfaceformat.cpp#L1) | `.surface` header と shader code の解析結果 |
 | `MaterialFormatDocument` | pure document | [`materialformat.hpp`](../../src/project/materialformat.hpp#L41) | [`materialformat.cpp`](../../src/project/materialformat.cpp#L1) | material base、surface、parameter、texture の型付き定義 |
-| `RenderFeatureComposeResult` | pure transformation result | [`featurecompose.hpp`](../../src/project/featurecompose.hpp#L16) | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2560) | base rendering JSON に feature fragment を順序付き合成 |
+| `RenderFeatureComposeResult` | pure transformation result | [`featurecompose.hpp`](../../src/project/featurecompose.hpp#L16) | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2636) | base rendering JSON に feature fragment を順序付き合成 |
 | VRM semantic 型群 | pure document | [`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp#L21) | [`vrmsemantic.cpp`](../../src/core/model/vrmsemantic.cpp) | VRM の humanoid bone / expression / lookAt / firstPerson デコード(WP111) |
 | `VrmAutoTriangleSplit` | pure algorithm | [`vrmfirstperson.hpp`](../../src/core/model/vrmfirstperson.hpp#L22) | [`vrmfirstperson.cpp`](../../src/core/model/vrmfirstperson.cpp) | VRM firstPerson の MeshAnnotation.Auto 三角形分割(WP134) |
 | `MorphTargetLayout` | value | [`morphtarget.hpp`](../../src/core/model/morphtarget.hpp#L43) | header only | morph target delta の GPU layout(WP121) |
@@ -200,7 +200,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L64) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L3918) / [`render()`](../../src/core/vkcore/renderer.cpp#L4833) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
+| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L69) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4011) / [`render()`](../../src/core/vkcore/renderer.cpp#L4934) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
 | `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替 |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |
@@ -243,7 +243,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `ShaderCompiler` | module/service | [`shadercompiler.hpp`](../../src/core/shader/shadercompiler.hpp#L27) | [`compileFile()`](../../src/core/shader/shadercompiler.cpp#L583) | GLSL source + define/include を SPIR-V へ compile |
 | `ShaderReflection` | value | [`shaderreflection.hpp`](../../src/core/shader/shaderreflection.hpp#L21) | [`reflect()`](../../src/core/shader/shaderreflection.cpp#L152) | descriptor、push constant、vertex input、local size |
 | `ShaderLibrary` | module/registry | [`shaderlibrary.hpp`](../../src/core/shader/shaderlibrary.hpp#L74) | [`load/reload`](../../src/core/shader/shaderlibrary.cpp#L356) | module + reflection + source/version/log の [`ShaderBundle`](../../src/core/shader/shaderlibrary.hpp#L30) 管理 |
-| `PipelineFactory` | module/factory+registry | [`pipelinefactory.hpp`](../../src/core/shader/pipelinefactory.hpp#L59) | [`buildGraphicsPipeline()`](../../src/core/shader/pipelinefactory.cpp#L499) | reflection-driven layout、graphics/compute pipeline、cache、hot rebuild |
+| `PipelineFactory` | module/factory+registry | [`pipelinefactory.hpp`](../../src/core/shader/pipelinefactory.hpp#L59) | [`buildGraphicsPipeline()`](../../src/core/shader/pipelinefactory.cpp#L528) | reflection-driven layout、graphics/compute pipeline、cache、hot rebuild |
 | `compileSurfaceShaders()` | free function | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp#L42) | [`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp) | `.surface` を GLSL/SPIR-V 化して pipeline へつなぐ |
 | spvlink | free functions | [`spvlink.hpp`](../../src/core/shader/spvlink.hpp) | [`spvlink.cpp`](../../src/core/shader/spvlink.cpp) | SPIR-V linking(`spvlink` CLI からも使用) |
 | `MaterialValuesReloadHandler` / `TextureReloadHandler` | reload handler | [`materialvaluesreloadhandler.hpp`](../../src/core/material/materialvaluesreloadhandler.hpp) / [`texturereloadhandler.hpp`](../../src/core/material/texturereloadhandler.hpp) | 同名 .cpp | `.material.json` values / texture の hot reload |

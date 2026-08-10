@@ -1,0 +1,41 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "rt_shadow_mask",
+  "runtime_shader_compiler": "optional",
+  "required_capabilities": ["pelican.vulkan.ray_query@1"],
+  "render_targets": [
+    {
+      "name": "rt_shadow_mask",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["COLOR_ATTACHMENT", "TRANSFER_SRC"]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "after:deferred_geometry",
+      "pass": {
+        "name": "rt_shadow_mask",
+        "type": "fullscreen",
+        "output": {"color": "rt_shadow_mask", "depth": null},
+        "input": ["gbuffer_worldpos"],
+        "input_sampling": [
+          {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        ],
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://rt_shadow_mask"
+        },
+        "uses_light_data": true,
+        "clear_color": [1.0, 1.0, 1.0, 1.0],
+        "color_store_op": "store"
+      }
+    }
+  ]
+}
