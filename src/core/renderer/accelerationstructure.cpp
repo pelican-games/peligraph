@@ -39,6 +39,12 @@ void appendUnique(std::set<std::uint64_t> &identities,
     }
 }
 
+bool isBlasIneligibleStaticGeometry(
+    const RayQueryGeometryInstanceSnapshot &instance) noexcept {
+    return instance.vertex_count == 0 || instance.index_count == 0 ||
+           instance.index_count % 3 != 0 || instance.vertex_offset < 0;
+}
+
 std::string joinNames(std::span<const std::string> names) {
     std::ostringstream output;
     for (std::size_t index = 0; index < names.size(); ++index) {
@@ -191,10 +197,15 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     std::set<std::uint64_t> skinned;
     std::set<std::uint64_t> morph;
     std::set<std::uint64_t> vat;
+    std::set<std::uint64_t> blas_ineligible;
     for (std::size_t index = 0; index < instances.size(); ++index) {
         const auto &instance = instances[index];
-        if (!instance.skinned && !instance.morph_deformed &&
-            !instance.vat_deformed) {
+        const bool deformed = instance.skinned ||
+                              instance.morph_deformed ||
+                              instance.vat_deformed;
+        const bool invalid_static_geometry =
+            !deformed && isBlasIneligibleStaticGeometry(instance);
+        if (!deformed && !invalid_static_geometry) {
             result.static_instance_indices.push_back(index);
             continue;
         }
@@ -212,11 +223,19 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
             appendUnique(vat, result.excluded.vat_names,
                          instance);
         }
+        if (invalid_static_geometry) {
+            appendUnique(
+                blas_ineligible,
+                result.excluded.blas_ineligible_names,
+                instance);
+        }
     }
     result.excluded.primitive_count = excluded.size();
     result.excluded.skinned_primitive_count = skinned.size();
     result.excluded.morph_primitive_count = morph.size();
     result.excluded.vat_primitive_count = vat.size();
+    result.excluded.blas_ineligible_primitive_count =
+        blas_ineligible.size();
     return result;
 }
 
@@ -259,10 +278,15 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
            diagnostics.excluded.morph_primitive_count},
           {"vat_primitive_count",
            diagnostics.excluded.vat_primitive_count},
+          {"blas_ineligible_primitive_count",
+           diagnostics.excluded
+               .blas_ineligible_primitive_count},
           {"skinned_names",
            diagnostics.excluded.skinned_names},
           {"morph_names", diagnostics.excluded.morph_names},
-          {"vat_names", diagnostics.excluded.vat_names}}},
+          {"vat_names", diagnostics.excluded.vat_names},
+          {"blas_ineligible_names",
+           diagnostics.excluded.blas_ineligible_names}}},
         {"active_blas_inputs", std::move(inputs)},
     };
 }
@@ -307,8 +331,9 @@ void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
                 "Ray-query acceleration structures are static-only: "
                 "active_blas={}, tlas_instances={}, excluded_primitives={}, "
                 "excluded_instances={}, skinned={} [{}], morph={} [{}], "
-                "VAT={} [{}]. A compute deform pass for deformed geometry "
-                "is future work.",
+                "VAT={} [{}], BLAS-ineligible={} [{}]. A compute deform "
+                "pass for deformed geometry is future work; invalid static "
+                "triangle ranges remain raster-only.",
                 owner_->diagnostics_.active_blas_count,
                 owner_->diagnostics_.tlas_instance_count,
                 excluded.primitive_count,
@@ -318,7 +343,9 @@ void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
                 excluded.morph_primitive_count,
                 joinNames(excluded.morph_names),
                 excluded.vat_primitive_count,
-                joinNames(excluded.vat_names));
+                joinNames(excluded.vat_names),
+                excluded.blas_ineligible_primitive_count,
+                joinNames(excluded.blas_ineligible_names));
         } catch (...) {
             // Submission publication is intentionally no-fail. Diagnostics
             // remain queryable even if formatting the informational log runs
@@ -417,13 +444,9 @@ RayQueryAccelerationStructureScope::recordFrame(
     for (const auto index :
          classification.static_instance_indices) {
         const auto &instance = instances[index];
-        if (instance.geometry_allocation_id == 0 ||
-            instance.vertex_count == 0 ||
-            instance.index_count == 0 ||
-            instance.index_count % 3 != 0 ||
-            instance.vertex_offset < 0) {
+        if (instance.geometry_allocation_id == 0) {
             throw std::runtime_error(
-                "static ray-query primitive has invalid indexed geometry");
+                "static ray-query primitive has no geometry allocation identity");
         }
         const auto [found, inserted] = unique_geometry.emplace(
             instance.geometry_allocation_id, &instance);

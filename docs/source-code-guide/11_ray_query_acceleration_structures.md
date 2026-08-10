@@ -2,7 +2,7 @@
 
 `RayQueryAccelerationStructureScope` が作る BLAS / TLAS は、静的ジオメトリ専用です。`VertBufContainer` に存在する頂点は元姿勢だけであり、頂点シェーダで変形されるスキン付き、morph、VAT のプリミティブを BLAS に入れてはいけません。入れると、描画と異なるバインドポーズの形状が ray query から見えてしまいます。
 
-この除外は無言のフォールバックではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
+この除外は無言のフォールバックではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT / `blas_ineligible` 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。`blas_ineligible` は、頂点または索引が空、索引数が三角形を構成できない、あるいは頂点オフセットが負で、ラスタライズはできても BLAS の三角形入力にはできない静的プリミティブです。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
 
 変形後ジオメトリを生成する compute deform pass と、その出力からの BLAS 構築は後続 WP の範囲です。現時点でスキン付き、morph、VAT を静的 BLAS に代入する経路はありません。
 

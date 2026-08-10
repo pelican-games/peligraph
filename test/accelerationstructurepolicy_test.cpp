@@ -11,6 +11,8 @@ TEST_CASE(
         RayQueryGeometryInstanceSnapshot{
             .asset_identity = 281,
             .geometry_allocation_id = 1,
+            .index_count = 3,
+            .vertex_count = 3,
             .mesh_index = 0,
             .primitive_index = 0,
         },
@@ -55,6 +57,7 @@ TEST_CASE(
     CHECK(classified.excluded.skinned_primitive_count == 1);
     CHECK(classified.excluded.morph_primitive_count == 1);
     CHECK(classified.excluded.vat_primitive_count == 1);
+    CHECK(classified.excluded.blas_ineligible_primitive_count == 0);
     REQUIRE(classified.excluded.skinned_names.size() == 1);
     REQUIRE(classified.excluded.morph_names.size() == 1);
     REQUIRE(classified.excluded.vat_names.size() == 1);
@@ -66,6 +69,62 @@ TEST_CASE(
           std::string::npos);
     CHECK(classified.excluded.vat_names.front().find(
               "asset[281]/geometry[4]/mesh[3]/primitive[0]") !=
+          std::string::npos);
+}
+
+TEST_CASE(
+    "ray-query geometry policy counts BLAS-ineligible static ranges separately",
+    "[wp282][ray-query][static-only]") {
+    const std::vector<RayQueryGeometryInstanceSnapshot> instances{
+        RayQueryGeometryInstanceSnapshot{
+            .geometry_allocation_id = 1,
+            .index_count = 3,
+            .vertex_count = 3,
+        },
+        RayQueryGeometryInstanceSnapshot{
+            .asset_identity = 282,
+            .geometry_allocation_id = 2,
+            .index_count = 4,
+            .vertex_count = 4,
+            .mesh_index = 1,
+        },
+        RayQueryGeometryInstanceSnapshot{
+            .asset_identity = 282,
+            .geometry_allocation_id = 3,
+            .index_count = 3,
+            .vertex_count = 0,
+            .mesh_index = 2,
+        },
+        RayQueryGeometryInstanceSnapshot{
+            .asset_identity = 282,
+            .geometry_allocation_id = 4,
+            .index_count = 0,
+            .vertex_count = 3,
+            .mesh_index = 3,
+        },
+        RayQueryGeometryInstanceSnapshot{
+            .asset_identity = 282,
+            .geometry_allocation_id = 5,
+            .index_count = 3,
+            .vertex_offset = -1,
+            .vertex_count = 3,
+            .mesh_index = 4,
+        },
+    };
+
+    const auto classified =
+        classifyRayQueryStaticGeometry(instances);
+    REQUIRE(classified.static_instance_indices ==
+            std::vector<std::size_t>{0});
+    CHECK(classified.excluded.primitive_count == 4);
+    CHECK(classified.excluded.instance_count == 4);
+    CHECK(classified.excluded.skinned_primitive_count == 0);
+    CHECK(classified.excluded.morph_primitive_count == 0);
+    CHECK(classified.excluded.vat_primitive_count == 0);
+    CHECK(classified.excluded.blas_ineligible_primitive_count == 4);
+    REQUIRE(classified.excluded.blas_ineligible_names.size() == 4);
+    CHECK(classified.excluded.blas_ineligible_names.front().find(
+              "asset[282]/geometry[2]/mesh[1]/primitive[0]") !=
           std::string::npos);
 }
 

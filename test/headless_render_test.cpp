@@ -8056,6 +8056,17 @@ TEST_CASE(
         static_primitive.mesh_index = 0;
         static_primitive.primitive_index = 0;
 
+        auto blas_ineligible_data =
+            makeScreenQuad(0.2F, 0.0F);
+        blas_ineligible_data.indices.clear();
+        REQUIRE(blas_ineligible_data.pos.size() == 4);
+        auto blas_ineligible_primitive =
+            geometry.addPrimitiveEntry(
+                std::move(blas_ineligible_data));
+        REQUIRE(blas_ineligible_primitive.index_count == 4);
+        blas_ineligible_primitive.mesh_index = 4;
+        blas_ineligible_primitive.primitive_index = 0;
+
         auto morph_primitive = geometry.addPrimitiveEntry(
             makeScreenQuad(0.2F, 0.0F));
         morph_primitive.mesh_index = 1;
@@ -8090,6 +8101,7 @@ TEST_CASE(
                     static_primitive,
                     morph_primitive,
                     vat_primitive,
+                    blas_ineligible_primitive,
                 },
             },
             ModelTemplate::MaterialPrimitives{
@@ -8118,14 +8130,16 @@ TEST_CASE(
         CHECK(initial.tlas_build_count == 1);
         CHECK(initial.active_blas_count == 1);
         CHECK(initial.tlas_instance_count == 1);
-        CHECK(initial.excluded.primitive_count == 3);
-        CHECK(initial.excluded.instance_count == 3);
+        CHECK(initial.excluded.primitive_count == 4);
+        CHECK(initial.excluded.instance_count == 4);
         CHECK(initial.excluded.skinned_primitive_count == 1);
         CHECK(initial.excluded.morph_primitive_count == 1);
         CHECK(initial.excluded.vat_primitive_count == 1);
+        CHECK(initial.excluded.blas_ineligible_primitive_count == 1);
         REQUIRE(initial.excluded.skinned_names.size() == 1);
         REQUIRE(initial.excluded.morph_names.size() == 1);
         REQUIRE(initial.excluded.vat_names.size() == 1);
+        REQUIRE(initial.excluded.blas_ineligible_names.size() == 1);
         REQUIRE(initial.active_blas_inputs.size() == 1);
         const auto old_blas_input =
             initial.active_blas_inputs.front();
@@ -8258,7 +8272,10 @@ TEST_CASE(
                   .at("static_only") == true);
         CHECK(plan.at("ray_query_acceleration_structures")
                   .at("excluded")
-                  .at("primitive_count") == 3);
+                  .at("primitive_count") == 4);
+        CHECK(plan.at("ray_query_acceleration_structures")
+                  .at("excluded")
+                  .at("blas_ineligible_primitive_count") == 1);
         bool registered = false;
         for (const auto &scope :
              plan.at("gpu_resource_arena").at("scopes")) {

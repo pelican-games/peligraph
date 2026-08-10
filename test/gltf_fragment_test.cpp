@@ -17,6 +17,8 @@
 #include "../src/project/materialformat.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "gltf_fragment_fixture.hpp"
+#include "morph_fixture.hpp"
+#include "skeletal_fixture.hpp"
 #include "vulkan_test_support.hpp"
 #include "vat_fixture.hpp"
 
@@ -81,6 +83,81 @@ struct TempDirGuard {
 };
 
 } // namespace
+
+TEST_CASE(
+    "glTF loading derives ray-query deformation flags from source geometry",
+    "[wp282][gltf][ray-query]") {
+    setupLogger();
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+                          ("pelican_wp282_flags_" + std::to_string(
+                               std::chrono::steady_clock::now()
+                                   .time_since_epoch()
+                                   .count()));
+    std::filesystem::create_directories(temp_dir);
+    const TempDirGuard temp_guard{temp_dir};
+    const auto static_path = temp_dir / "static.glb";
+    const auto skinned_path = temp_dir / "skinned.glb";
+    const auto morph_path = temp_dir / "morph.glb";
+    TestGltfFragmentFixture::writeGlb(static_path);
+    TestSkeletalFixture::writeGlb(skinned_path);
+    TestMorphFixture::writeGlb(morph_path);
+#if PELICAN_WITH_VAT
+    const auto vat_path = temp_dir / "vat.glb";
+    TestVatFixture::writeTinyVatGlb(vat_path);
+#endif
+
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice(
+        "Vulkan glTF geometry-flag loading unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+
+    auto &loader = GET_MODULE(GltfLoader);
+    const auto static_model = loader.loadGltfBinary(
+        static_path.string(), fragment("mesh", "MeshA"));
+    REQUIRE(static_model.material_primitives.size() == 1);
+    REQUIRE(static_model.material_primitives.front().primitives.size() == 1);
+    const auto &static_primitive =
+        static_model.material_primitives.front().primitives.front();
+    CHECK_FALSE(static_primitive.skinned);
+    CHECK_FALSE(static_primitive.morph_deformed);
+    CHECK_FALSE(static_primitive.vat_deformed);
+
+    const auto skinned_model =
+        loader.loadGltfBinary(skinned_path.string());
+    REQUIRE(skinned_model.material_primitives.size() == 1);
+    REQUIRE(skinned_model.material_primitives.front().primitives.size() == 1);
+    const auto &skinned_primitive =
+        skinned_model.material_primitives.front().primitives.front();
+    CHECK(skinned_primitive.skinned);
+    CHECK_FALSE(skinned_primitive.morph_deformed);
+    CHECK_FALSE(skinned_primitive.vat_deformed);
+
+    const auto morph_model =
+        loader.loadGltfBinary(morph_path.string());
+    REQUIRE(morph_model.material_primitives.size() == 1);
+    REQUIRE(morph_model.material_primitives.front().primitives.size() == 1);
+    const auto &morph_primitive =
+        morph_model.material_primitives.front().primitives.front();
+    CHECK_FALSE(morph_primitive.skinned);
+    CHECK(morph_primitive.morph_deformed);
+    CHECK_FALSE(morph_primitive.vat_deformed);
+
+#if PELICAN_WITH_VAT
+    const auto vat_model = loader.loadGltfBinary(vat_path.string());
+    REQUIRE(vat_model.material_primitives.size() == 1);
+    REQUIRE(vat_model.material_primitives.front().primitives.size() == 1);
+    const auto &vat_primitive =
+        vat_model.material_primitives.front().primitives.front();
+    CHECK_FALSE(vat_primitive.skinned);
+    CHECK_FALSE(vat_primitive.morph_deformed);
+    CHECK(vat_primitive.vat_deformed);
+#endif
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
 
 TEST_CASE("glTF fragments load only the selected object and dependencies", "[gltf][fragment]") {
     setupLogger();

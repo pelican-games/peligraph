@@ -340,15 +340,15 @@ sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/
 
 ## 3.8 Asset modelから描画instanceまで
 
-[`ModelAssetContainer`](../../src/core/asset/model.hpp#L21) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2364) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2354) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L218)）。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2359) が使われます。
+[`ModelAssetContainer`](../../src/core/asset/model.hpp#L21) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2368) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2358) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L218)）。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2363) が使われます。
 
 これらの `loadGltf*()` は、現在は三段APIのラッパです（[`gltf.hpp`](../../src/core/model/gltf.hpp#L29)）。
 
 | 段 | 関数 | 性質 |
 |---|---|---|
-| prepare | [`prepareGltf()`](../../src/core/model/gltf.cpp#L2280) / [`prepareGltfBinary()`](../../src/core/model/gltf.cpp#L2275) / [`prepareGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2285) | ファイル読み取りとparseまで |
-| inspect | [`inspect()`](../../src/core/model/gltf.cpp#L2337) | **副作用なし**の候補パス。fragment解決と検証だけ |
-| commit | [`commit()`](../../src/core/model/gltf.cpp#L2296) | GPU資源を確保して `ModelTemplate` を作る |
+| prepare | [`prepareGltf()`](../../src/core/model/gltf.cpp#L2284) / [`prepareGltfBinary()`](../../src/core/model/gltf.cpp#L2279) / [`prepareGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2289) | ファイル読み取りとparseまで |
+| inspect | [`inspect()`](../../src/core/model/gltf.cpp#L2341) | **副作用なし**の候補パス。fragment解決と検証だけ |
+| commit | [`commit()`](../../src/core/model/gltf.cpp#L2300) | GPU資源を確保して `ModelTemplate` を作る |
 
 glTFロードの大まかな変換は次です。
 
@@ -403,7 +403,7 @@ tinygltf Model
 >
 > **何をする所か**: 頂点シェーダだけを差し替えた派生マテリアルを登録し、そのIDをモデル内ローカルのmaterial ID空間へ割り当てます。
 >
-> **素朴に読むと**: `using ModelLocalMaterialId = int;`([宣言](../../src/core/model/gltf.cpp#L418))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [同じ構造体](../../src/core/model/gltf.cpp#L440) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp` 内](../../src/core/renderer/polygoninstancecontainer.cpp#L1176) がその index で初期値表を引き直すため、この表が無いと [`generated_source` の復元](../../src/core/model/gltf.cpp#L2237) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
+> **素朴に読むと**: `using ModelLocalMaterialId = int;`([宣言](../../src/core/model/gltf.cpp#L418))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [同じ構造体](../../src/core/model/gltf.cpp#L440) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp` 内](../../src/core/renderer/polygoninstancecontainer.cpp#L1176) がその index で初期値表を引き直すため、この表が無いと [`generated_source` の復元](../../src/core/model/gltf.cpp#L2241) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
 >
 > **骨子**:
 > ```text
@@ -421,7 +421,7 @@ tinygltf Model
 >
 > **何をする所か**: モデル全体で1本の `default_weights` 配列へこのmesh分の既定weightを追記し、そのスライスの先頭位置を `morph_weight_offset` として返します。
 >
-> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([その return](../../src/core/model/gltf.cpp#L1087))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` 内](../../src/core/model/gltf.cpp#L2163))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [`vertbufcontainer.cpp` 内](../../src/core/model/vertbufcontainer.cpp#L226))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([この検査](../../src/core/model/gltf.cpp#L817))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([その throw](../../src/core/model/gltf.cpp#L828))。
+> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([その return](../../src/core/model/gltf.cpp#L1087))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` 内](../../src/core/model/gltf.cpp#L2167))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [`vertbufcontainer.cpp` 内](../../src/core/model/vertbufcontainer.cpp#L226))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([この検査](../../src/core/model/gltf.cpp#L817))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([その throw](../../src/core/model/gltf.cpp#L828))。
 >
 > **骨子**:
 > ```text
@@ -479,8 +479,8 @@ API面の主な変化は次の通りです。
 RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L637) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
 
 1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L651)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
-2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2337) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L336) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
-3. [`commit()`](../../src/core/model/gltf.cpp#L2296) でGPU資源を確保し、`stageModelInstance()` でstagingします。
+2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2341) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L336) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
+3. [`commit()`](../../src/core/model/gltf.cpp#L2300) でGPU資源を確保し、`stageModelInstance()` でstagingします。
 4. エンティティ生成がthrowしたら `releaseModelGpuResources()` して `transient_models.pop_back()` します。
 5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L703)）。
 

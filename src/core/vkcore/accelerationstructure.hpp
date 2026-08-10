@@ -43,9 +43,11 @@ struct RayQueryGeometryExclusionDiagnostics {
     std::size_t skinned_primitive_count = 0;
     std::size_t morph_primitive_count = 0;
     std::size_t vat_primitive_count = 0;
+    std::size_t blas_ineligible_primitive_count = 0;
     std::vector<std::string> skinned_names;
     std::vector<std::string> morph_names;
     std::vector<std::string> vat_names;
+    std::vector<std::string> blas_ineligible_names;
 
     bool operator==(
         const RayQueryGeometryExclusionDiagnostics &) const = default;
