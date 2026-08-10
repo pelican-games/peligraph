@@ -2702,6 +2702,90 @@ ray query は SPIR-V 1.4 以上を要求するため、これが先に必要だ�
 
 依存: WP278(マージ済み)。見積: 中。
 
+### WP281: 加速構造を静的ジオメトリ限定で置く
+
+**目的**: BLAS / TLAS を GPU 資源として engine に置く。**まだ誰も参照しない。**
+レイトレの二歩目で、`rt_shadow_mask`(三歩目)の土台。
+
+**前提**: WP280(マージ済み)が 3 拡張と `bufferDeviceAddress` を有効化し、
+5 本の PFN と `minAccelerationStructureScratchOffsetAlignment` を取得し、
+能力を `pelican.vulkan.ray_query@1` として公開し、
+不在時の硬いエラー `pelican.plan.ray_query_required_unavailable@1` を用意した。
+
+#### 静的ジオメトリ限定であることを、見える形で宣言すること
+
+**この engine には変形後のジオメトリがメモリ上に存在しない。**
+スキニングは `skinned.vert` が `pelican_skin_matrix()` を頂点シェーダ内で適用し、
+morph は `pelican_morph_vertex()`、VAT は `vat.vert` が位置を `texelFetch` して補間する。
+compute skinning も transform feedback も変形後頂点のアリーナも無い。
+`VertBufContainer` が持つのは**元の姿勢の頂点だけ**である。
+
+BLAS はバッファに実在する頂点からしか作れない。したがって**この WP の時点では、
+スキン付き・morph・VAT のメッシュはレイトレから見えない**。
+そのまま入れると全キャラクタがバインドポーズの影を落とすことになる。
+
+**要求**: 対象外であることを**黙って落とさず、宣言として扱うこと。**
+
+- `ModelPrimitiveRefInfo::skinned`(`src/core/model/modeltemplate.hpp:75`)が既に判別子として在る。
+  これを使い、対象外のプリミティブを**数え、名前を出して記録すること**。
+  「静かに 0 件」と「静かに除外した 40 件」が区別できない状態にしないこと
+- 対象外が存在すること自体は**エラーにしないこと**(まだ誰も参照しないため)。
+  ただしログまたは診断で件数が見えること
+- 変形後ジオメトリを扱う compute deform pass は**この WP の範囲外**であり、
+  後続 WP に属することを文書に書くこと
+
+#### 実装範囲
+
+1. 三つのジオメトリプール(`vertbufcontainer.cpp:17-38` の
+   `createIndexBuf` / `createVertBuf` / `createSkinVertBuf`)の usage に
+   `eShaderDeviceAddress | eAccelerationStructureBuildInputReadOnlyKHR | eStorageBuffer` を足すこと。
+   **device address が要るのは BLAS の構築入力としてであり、シェーダからの読み出しには不要**である
+   (全ジオメトリは 3 本の大域プールとオフセットで届く)。
+2. 静的プリミティブごとの BLAS と、フレームごとの TLAS を作ること。
+   TLAS の再構築は `renderer.cpp:4553` の
+   「Object, skin, morph, and material-override GPU state is frozen after target acquisition
+   and before the first view records」の地点に入れること。
+3. **寿命は既存のリース式 `DeletionQueue` にそのまま乗せること。**
+   `leaseForNextSubmission` / `confirmSubmission` は既に正しい形であり、
+   `VertBufContainer` が退役プールに対して `deferOldBuffer`(`vertbufcontainer.cpp:120`)で
+   やっていることと同じである。**フレーム数による寿命管理を新設しないこと。**
+4. `RenderPipelineGpuResourceKind`(`renderpipelinegpuarena.hpp:25`)は閉じた enum である。
+   加速構造の居場所を決め、既存のパージ可能な scope に乗せること。
+5. **構築は宣言が要求したときだけ行うこと。** 常時構築にすると、
+   レイトレを使わないプロジェクトも BLAS の構築費用を払う。パージ可能の原則に反する。
+   WP280 の能力文字列と要求の仕組みに接続すること。
+
+#### 無効化
+
+**無効化の契機は transform 編集ではない。** transform は
+`polygoninstancecontainer.cpp:782-786` が毎フレーム全行列を無条件に再アップロードしており、
+dirty 追跡は存在しない。TLAS の毎フレーム再構築はその地点にそのまま入る。
+
+**本当の危険は BLAS で、契機はジオメトリプールの再確保である。**
+`ensureIndexCapacity`(`vertbufcontainer.cpp:304`)と
+`ensureVertexCapacity`(`:323`)はプールを倍化して内容を複写し、
+古いバッファを `deferOldBuffer` に渡す。BLAS は構築時にジオメトリを**デバイスアドレスで捕まえる**ため、
+**容量を跨ぐモデル読み込み 1 回で、シーン中の全 BLAS が一斉に無効になる。**
+現状これを知らせるものは `:320` のログ 1 行しかない。
+
+**要求**: プール再確保と `rebuildModelInstances` の両方に無効化を接続すること。
+黙って古いアドレスを掴んだままにしないこと。
+
+#### 受け入れ条件
+
+- **絵が変わらないこと。**既存 golden が 1 枚も動かないこと
+- 能力を要求しないプロジェクトで、**加速構造が構築されないこと**。
+  構築回数が 0 であることをテストで示すこと(「作っていないつもり」では条件を満たさない)
+- 静的プリミティブから BLAS が作られ、TLAS のインスタンス数が静的インスタンス数と一致すること
+- **プールの再確保を実際に起こし**(容量を跨ぐモデル読み込み)、
+  その後に古いデバイスアドレスを参照した加速構造が残っていないことを検証すること。
+  容量を跨がせる方法をテストに書くこと
+- スキン付き / morph / VAT のプリミティブが**除外され、その件数が観測できる**こと
+- `ctest` 全数が緑(GPU ラベル全数を含む)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
+
+依存: WP280(マージ済み)。見積: 大。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
