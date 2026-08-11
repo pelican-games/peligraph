@@ -14,7 +14,7 @@
     "asset_data_json": "assets/asset_data.json",
     "rendering_config_json": "passes/main.json",
     "default_rendering_pass": "main_render",
-    "ui_config_json": "ui/empty.json",
+    "ui_config_json": "ui/status_overlay.json",
     "input_actions_json": "input/actions.json",
     "input_profiles": {"keyboard": "input/keyboard.json"},
     "input_profile": "keyboard"

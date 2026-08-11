@@ -2248,6 +2248,16 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
           "[render-feature][temporal][taa]") {
     auto config = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
                            "projects/example/passes/main_rendering_config.json");
+    // TAA's named binding intentionally requires the dynamic scene format
+    // class. The example itself pins float16 because its forward material ABI
+    // consumes scene-linear HDR without enabling the optional HDR feature.
+    auto &authored_targets = config.at("render_targets");
+    const auto lit_color = std::find_if(
+        authored_targets.begin(), authored_targets.end(), [](const auto &target) {
+            return target.value("name", std::string{}) == "lit_color";
+        });
+    REQUIRE(lit_color != authored_targets.end());
+    (*lit_color)["format_class"] = "scene";
     config["features"].push_back("engine://features/velocity.json");
     config["features"].push_back(nlohmann::json{
         {"ref", "engine://features/taa.json"},
@@ -2283,7 +2293,8 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
     });
     REQUIRE(depth != targets.end());
     REQUIRE(depth->at("usage") ==
-            nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}));
+            nlohmann::json::array(
+                {"DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC", "SAMPLED"}));
     const auto accum = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
         return target.value("name", std::string{}) == "taa_accum";
     });

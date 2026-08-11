@@ -2,6 +2,7 @@
   "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
   "features": [
     "engine://features/shadow_directional.json",
-    "engine://features/sky_ambient.json"
+    "engine://features/sky_ambient.json",
+    "engine://features/ui.json"
   ]
 }

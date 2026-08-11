@@ -359,6 +359,10 @@ ProjectMaterialAssetContainer::
             surface_reference, shader_defines,
             standard, shaders,
             *impl_->texture_resolver);
+        const auto &source_document =
+            documents.at(entry.document_index);
+        info.name = entry.definition.name;
+        info.source_asset = source_document.reference;
         const auto material =
             materials.registerMaterial(
                 std::move(info));
@@ -372,16 +376,22 @@ ProjectMaterialAssetContainer::
             const auto &variant_surface =
                 surfaces.at(
                     variant.material.surface);
+            auto variant_info = makeMaterialInfo(
+                entry.definition.base,
+                variant.material,
+                variant_surface,
+                variant.material.surface,
+                shader_defines,
+                standard, shaders,
+                *impl_->texture_resolver);
+            variant_info.name =
+                entry.definition.name + "#variant/" +
+                variant.name;
+            variant_info.source_asset =
+                source_document.reference;
             variants.push_back({
                 .name = variant.name,
-                .material = makeMaterialInfo(
-                    entry.definition.base,
-                    variant.material,
-                    variant_surface,
-                    variant.material.surface,
-                    shader_defines,
-                    standard, shaders,
-                    *impl_->texture_resolver),
+                .material = std::move(variant_info),
             });
         }
         materials.registerMaterialVariants(

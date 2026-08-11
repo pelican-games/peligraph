@@ -1635,7 +1635,12 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
         appendUnique(graph.declared_resources, declared_buffers);
         size_t declaration_index = graph.nodes.size();
         appendNodes(graph.nodes, parseComputeNodes(config_json, declaration_index));
-        assignSnapshotByteSizes(graph.nodes, render_target_sizes);
+        // Raw authored configs do not yet contain the resolved display extent.
+        // Preserve an unknown byte size for logical shadow planning; resolved
+        // runtime configs still require every snapshot target to have a size.
+        if (!render_target_sizes.empty()) {
+            assignSnapshotByteSizes(graph.nodes, render_target_sizes);
+        }
         graphs.push_back(std::move(graph));
     }
 

@@ -1,4 +1,5 @@
 #include "materialcontainer.hpp"
+#include "../loader/basicconfig.hpp"
 #include "../loader/imageloader.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -222,8 +223,27 @@ resolveMaterialPipelineRenderingContract(
                     ? " exact pass '" +
                           *info.exact_pass + "'"
                     : std::string{};
+            const auto material_name =
+                info.name.empty()
+                    ? std::string{"<unnamed>"}
+                    : info.name;
+            const auto source_asset =
+                info.source_asset.empty()
+                    ? std::string{}
+                    : " from asset '" +
+                          info.source_asset + "'";
+            const auto *project_config =
+                FastModuleContainer::tryGet<
+                    ProjectBasicConfig>();
+            const auto config_source =
+                project_config == nullptr
+                    ? std::string{
+                          "<active rendering configuration>"}
+                    : project_config
+                          ->renderingConfigReference();
             throw std::runtime_error(
-                "material route '" +
+                "material '" + material_name + "'" +
+                source_asset + " requires route '" +
                 std::string{
                     materialRouteClassName(
                         info.route)} +
@@ -231,6 +251,8 @@ resolveMaterialPipelineRenderingContract(
                 std::string{
                     materialShaderContractName(
                         info.shader_contract)} +
+                "', but rendering config '" +
+                config_source +
                 "' has no compatible registered material pass" +
                 selected);
         }

@@ -1,0 +1,23 @@
+{
+  "schema": "pelican.ui",
+  "version": 1,
+  "key": "animgraph_demo_status",
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "running_marker",
+        "type": "image",
+        "sprite": "assets/status.atlas.json#sprite/running",
+        "sampler": "nearest",
+        "layer": 1,
+        "layout": {
+          "x": {"mode": "fixed", "value": 32},
+          "y": {"mode": "fixed", "value": 32},
+          "offsets": [8, 8, 0, 0]
+        }
+      }
+    ]
+  }
+}

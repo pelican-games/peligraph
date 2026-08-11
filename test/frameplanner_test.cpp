@@ -273,7 +273,15 @@ TEST_CASE("frame planner preserves existing rendering config order", "[frameplan
                 config_case.config, resolvers.nameResolver(), resolvers.metadataResolver());
             REQUIRE(parsed_definitions.size() == raw_graphs.size());
             for (const auto &definition : parsed_definitions) {
-                const auto graph = makeFrameGraphDefinition(definition);
+                auto graph = makeFrameGraphDefinition(definition);
+                // The legacy PassDefinition adapter has no snapshot-copy
+                // node. Its screen-input targets therefore enter this shadow
+                // graph as declared resources instead of snapshot writes.
+                for (std::size_t index = 0;
+                     index < resolvers.metadata.size(); ++index) {
+                    graph.declared_resources.push_back(
+                        "rt:" + std::to_string(index));
+                }
                 const auto plan = planFrameGraph(graph);
                 REQUIRE(framePlanOrder(plan) == passNames(definition));
             }
@@ -909,7 +917,14 @@ TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target 
             new_legacy_order.push_back(node.name);
         }
     }
-    REQUIRE(new_legacy_order == framePlanOrder(old_plan));
+    std::vector<std::string> old_legacy_order;
+    for (const auto &node : old_plan.nodes) {
+        if (node.kind == FramePlanNodeKind::render ||
+            node.kind == FramePlanNodeKind::compute) {
+            old_legacy_order.push_back(node.name);
+        }
+    }
+    REQUIRE(new_legacy_order == old_legacy_order);
     REQUIRE(legacyPassProjection(composed.config) == legacyPassProjection(legacy));
     REQUIRE(legacyTargetProjection(composed.config) == legacyTargetProjection(legacy));
 

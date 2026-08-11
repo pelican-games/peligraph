@@ -76,6 +76,10 @@ struct MaterialInfo {
     std::optional<std::string> exact_pass;
     std::vector<MaterialScreenInputContract> screen_inputs;
     std::vector<SurfaceResourcePortDefinition> resource_ports;
+    // Authored identity retained through lowering so fail-fast pipeline
+    // diagnostics can point back to the material and its containing asset.
+    std::string name;
+    std::string source_asset;
 };
 
 struct alignas(16) MaterialGpuData {

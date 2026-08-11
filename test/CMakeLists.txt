@@ -1427,6 +1427,22 @@ add_test(
 set_tests_properties(animgraph_demo_preset_headless_player PROPERTIES
     TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
 
+add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
+set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
+
+add_test(
+    NAME project_catalog_headless_smoke
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
+        -DPROJECTS_DIR=${CMAKE_SOURCE_DIR}/projects
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
+)
+set_tests_properties(project_catalog_headless_smoke PROPERTIES
+    TIMEOUT 600 RESOURCE_LOCK pelican_gpu LABELS gpu)
+
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test pelican_core)
 endif()
@@ -1553,6 +1569,7 @@ set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
     frame_plan_dump_headless_player
     devcli_project_init_command
     animgraph_demo_preset_headless_player
+    project_catalog_headless_smoke
     devcli_assets_command
     wsi_fault_window_player
 )

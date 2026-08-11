@@ -70,7 +70,7 @@ TEST_CASE("Devstudio outliner opens the example without collapsing unnamed objec
 
     const auto &main = requireScene(model, "default_scene");
     const auto &second = requireScene(model, "scene_flow_second");
-    REQUIRE(main.objects.size() == 46);
+    REQUIRE(main.objects.size() == 47);
     REQUIRE(second.objects.size() == 2);
 
     std::set<std::pair<std::string, std::size_t>> keys;
@@ -88,8 +88,8 @@ TEST_CASE("Devstudio outliner opens the example without collapsing unnamed objec
                                                "default_scene", index + 1, {}));
         }
     }
-    REQUIRE(keys.size() == 46);
-    REQUIRE(display_names.size() == 46);
+    REQUIRE(keys.size() == 47);
+    REQUIRE(display_names.size() == 47);
     REQUIRE(unnamed_count == 32);
 }
 

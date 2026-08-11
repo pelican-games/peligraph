@@ -31,6 +31,34 @@
           ]
         },
         {
+          "name": "DamagedHelmet",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -2,
+                -0.3,
+                0.5
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                0.8,
+                0.8,
+                0.8
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "DamagedHelmet"
+            }
+          ]
+        },
+        {
           "components": [
             {
               "name": "transform",

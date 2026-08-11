@@ -195,7 +195,7 @@ TEST_CASE("RPC declaration indices match the direct project view for unnamed exa
     const EditorCommandRpcAdapter rpc{service};
 
     const auto tree = rpc.sceneTree({{"scene_id", "default_scene"}});
-    REQUIRE(direct_objects.size() == 46);
+    REQUIRE(direct_objects.size() == 47);
     REQUIRE(tree.at("objects").size() == direct_objects.size());
 
     std::size_t unnamed_count = 0;

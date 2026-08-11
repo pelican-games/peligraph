@@ -58,6 +58,42 @@
       "from": "lighting_pass",
       "kind": "read_after_write",
       "resource": "lit_color",
+      "to": "__snapshot_opaque_color"
+    },
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "offscreen_depth",
+      "to": "__snapshot_opaque_depth"
+    },
+    {
+      "from": "__snapshot_opaque_depth",
+      "kind": "read_after_write",
+      "resource": "opaque_depth",
+      "to": "forward_transparent"
+    },
+    {
+      "from": "__snapshot_opaque_color",
+      "kind": "read_after_write",
+      "resource": "opaque_color",
+      "to": "forward_transparent"
+    },
+    {
+      "from": "lighting_pass",
+      "kind": "read_after_write",
+      "resource": "lit_color",
+      "to": "forward_transparent"
+    },
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "offscreen_depth",
+      "to": "forward_transparent"
+    },
+    {
+      "from": "forward_transparent",
+      "kind": "read_after_write",
+      "resource": "lit_color",
       "to": "HighLuminanceExtraction"
     },
     {
@@ -163,7 +199,7 @@
       "to": "UpsampleBlend_1"
     },
     {
-      "from": "lighting_pass",
+      "from": "forward_transparent",
       "kind": "read_after_write",
       "resource": "lit_color",
       "to": "FinalBloomComposite"
@@ -181,13 +217,20 @@
       "gbuffer_pass"
     ],
     [
-      "ssao_pass"
+      "ssao_pass",
+      "__snapshot_opaque_depth"
     ],
     [
       "ssao_blur_pass"
     ],
     [
       "lighting_pass"
+    ],
+    [
+      "__snapshot_opaque_color"
+    ],
+    [
+      "forward_transparent"
     ],
     [
       "HighLuminanceExtraction"
@@ -296,11 +339,65 @@
       ]
     },
     {
+      "byte_size": 0,
       "declaration_index": 4,
-      "kind": "render",
+      "kind": "snapshot_copy",
       "level": 4,
-      "name": "HighLuminanceExtraction",
+      "name": "__snapshot_opaque_color",
       "order": 4,
+      "reads": [
+        "lit_color"
+      ],
+      "reads_history": [],
+      "semantics": "fixed_once_before_transparency",
+      "sequential_refraction": false,
+      "snapshot_after": "lighting_pass",
+      "writes": [
+        "opaque_color"
+      ]
+    },
+    {
+      "byte_size": 0,
+      "declaration_index": 5,
+      "kind": "snapshot_copy",
+      "level": 1,
+      "name": "__snapshot_opaque_depth",
+      "order": 5,
+      "reads": [
+        "offscreen_depth"
+      ],
+      "reads_history": [],
+      "semantics": "fixed_once_before_transparency",
+      "sequential_refraction": false,
+      "snapshot_after": "lighting_pass",
+      "writes": [
+        "opaque_depth"
+      ]
+    },
+    {
+      "declaration_index": 6,
+      "kind": "render",
+      "level": 5,
+      "name": "forward_transparent",
+      "order": 6,
+      "reads": [
+        "opaque_depth",
+        "opaque_color",
+        "lit_color",
+        "offscreen_depth"
+      ],
+      "reads_history": [],
+      "writes": [
+        "lit_color",
+        "offscreen_depth"
+      ]
+    },
+    {
+      "declaration_index": 7,
+      "kind": "render",
+      "level": 6,
+      "name": "HighLuminanceExtraction",
+      "order": 7,
       "reads": [
         "lit_color"
       ],
@@ -310,11 +407,11 @@
       ]
     },
     {
-      "declaration_index": 5,
+      "declaration_index": 8,
       "kind": "render",
-      "level": 5,
+      "level": 7,
       "name": "HorizontalBlur_0",
-      "order": 5,
+      "order": 8,
       "reads": [
         "Bloom_Threshold_RT"
       ],
@@ -324,11 +421,11 @@
       ]
     },
     {
-      "declaration_index": 6,
+      "declaration_index": 9,
       "kind": "render",
-      "level": 6,
+      "level": 8,
       "name": "VerticalBlur_0",
-      "order": 6,
+      "order": 9,
       "reads": [
         "Bloom_Downsample_H_0_RT"
       ],
@@ -338,11 +435,11 @@
       ]
     },
     {
-      "declaration_index": 7,
+      "declaration_index": 10,
       "kind": "render",
-      "level": 7,
+      "level": 9,
       "name": "HorizontalBlur_1",
-      "order": 7,
+      "order": 10,
       "reads": [
         "Bloom_Upsample_V_0_RT"
       ],
@@ -352,11 +449,11 @@
       ]
     },
     {
-      "declaration_index": 8,
+      "declaration_index": 11,
       "kind": "render",
-      "level": 8,
+      "level": 10,
       "name": "VerticalBlur_1",
-      "order": 8,
+      "order": 11,
       "reads": [
         "Bloom_Downsample_H_1_RT"
       ],
@@ -366,11 +463,11 @@
       ]
     },
     {
-      "declaration_index": 9,
+      "declaration_index": 12,
       "kind": "render",
-      "level": 9,
+      "level": 11,
       "name": "HorizontalBlur_2",
-      "order": 9,
+      "order": 12,
       "reads": [
         "Bloom_Upsample_V_1_RT"
       ],
@@ -380,11 +477,11 @@
       ]
     },
     {
-      "declaration_index": 10,
+      "declaration_index": 13,
       "kind": "render",
-      "level": 10,
+      "level": 12,
       "name": "VerticalBlur_2",
-      "order": 10,
+      "order": 13,
       "reads": [
         "Bloom_Downsample_H_2_RT"
       ],
@@ -394,11 +491,11 @@
       ]
     },
     {
-      "declaration_index": 11,
+      "declaration_index": 14,
       "kind": "render",
-      "level": 11,
+      "level": 13,
       "name": "HorizontalBlur_3",
-      "order": 11,
+      "order": 14,
       "reads": [
         "Bloom_Upsample_V_2_RT"
       ],
@@ -408,11 +505,11 @@
       ]
     },
     {
-      "declaration_index": 12,
+      "declaration_index": 15,
       "kind": "render",
-      "level": 12,
+      "level": 14,
       "name": "VerticalBlur_3",
-      "order": 12,
+      "order": 15,
       "reads": [
         "Bloom_Downsample_H_3_RT"
       ],
@@ -422,11 +519,11 @@
       ]
     },
     {
-      "declaration_index": 13,
+      "declaration_index": 16,
       "kind": "render",
-      "level": 13,
+      "level": 15,
       "name": "UpsampleBlend_3",
-      "order": 13,
+      "order": 16,
       "reads": [
         "Bloom_Upsample_V_3_RT",
         "Bloom_Upsample_V_2_RT",
@@ -438,11 +535,11 @@
       ]
     },
     {
-      "declaration_index": 14,
+      "declaration_index": 17,
       "kind": "render",
-      "level": 14,
+      "level": 16,
       "name": "UpsampleBlend_2",
-      "order": 14,
+      "order": 17,
       "reads": [
         "Bloom_Downsample_H_2_RT",
         "Bloom_Upsample_V_1_RT",
@@ -454,11 +551,11 @@
       ]
     },
     {
-      "declaration_index": 15,
+      "declaration_index": 18,
       "kind": "render",
-      "level": 15,
+      "level": 17,
       "name": "UpsampleBlend_1",
-      "order": 15,
+      "order": 18,
       "reads": [
         "Bloom_Downsample_H_1_RT",
         "Bloom_Upsample_V_0_RT",
@@ -470,11 +567,11 @@
       ]
     },
     {
-      "declaration_index": 16,
+      "declaration_index": 19,
       "kind": "render",
-      "level": 16,
+      "level": 18,
       "name": "FinalBloomComposite",
-      "order": 16,
+      "order": 19,
       "reads": [
         "lit_color",
         "Bloom_Downsample_H_0_RT",

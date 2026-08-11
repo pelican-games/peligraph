@@ -25,12 +25,16 @@ string(JSON shadow_feature ERROR_VARIABLE shadow_feature_error
     GET "${rendering_config}" features 0)
 string(JSON sky_feature ERROR_VARIABLE sky_feature_error
     GET "${rendering_config}" features 1)
+string(JSON ui_feature ERROR_VARIABLE ui_feature_error
+    GET "${rendering_config}" features 2)
 if(NOT feature_count_error STREQUAL "NOTFOUND" OR
    NOT shadow_feature_error STREQUAL "NOTFOUND" OR
    NOT sky_feature_error STREQUAL "NOTFOUND" OR
-   NOT feature_count EQUAL 2 OR
+   NOT ui_feature_error STREQUAL "NOTFOUND" OR
+   NOT feature_count EQUAL 3 OR
    NOT shadow_feature STREQUAL "engine://features/shadow_directional.json" OR
-   NOT sky_feature STREQUAL "engine://features/sky_ambient.json")
+   NOT sky_feature STREQUAL "engine://features/sky_ambient.json" OR
+   NOT ui_feature STREQUAL "engine://features/ui.json")
     message(FATAL_ERROR
         "project rendering config does not select the default feature set\n${rendering_config}")
 endif()

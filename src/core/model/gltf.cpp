@@ -1726,6 +1726,12 @@ struct InternalGltfLoader {
         };
         applyLoweredMaterialForRoute(
             material_info, lowered);
+        material_info.name =
+            material.name.empty()
+                ? "material[" +
+                      std::to_string(material_index) + "]"
+                : material.name;
+        material_info.source_asset = source_path;
         material_infos.at(material_index) =
             std::move(material_info);
         material_routings.at(material_index) =
