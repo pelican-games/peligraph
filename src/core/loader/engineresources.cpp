@@ -38,6 +38,7 @@ constexpr auto registered_ids =
     "debug_text_font.json",
     "debug_text_font.png",
     "features/debug_draw.json",
+    "features/editor.json",
     "features/gizmo.json",
     "features/debug_text.json",
     "features/ui.json",
@@ -183,6 +184,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         static const std::string feature = b::embed<"features/debug_draw.json">().str();
         return std::string_view{feature};
     }
+    PELICAN_ENGINE_RESOURCE("features/editor.json")
     PELICAN_ENGINE_RESOURCE("features/gizmo.json")
     if (id == "features/debug_text.json") {
         static const std::string feature = b::embed<"features/debug_text.json">().str();

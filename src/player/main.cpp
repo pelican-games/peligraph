@@ -256,6 +256,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("dir|project.json")
         .help("load a Pelican project directory or project.json");
+    program.add_argument("--feature-overlay")
+        .default_value(std::string{})
+        .metavar("uri")
+        .help("overlay a pelican.render_feature_overlay document for this launch");
     program.add_argument("--game-logic")
         .default_value(std::string{})
         .metavar("path.dll")
@@ -344,6 +348,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             configureImplicitProject(parsed, argv[0]);
         } else {
             configureExplicitProject(parsed, project);
+        }
+        const auto feature_overlay =
+            program.get<std::string>("--feature-overlay");
+        if (!feature_overlay.empty()) {
+            config.render_feature_overlays.push_back(feature_overlay);
         }
 
         const int frames = program.get<int>("--frames");

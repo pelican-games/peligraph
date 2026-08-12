@@ -17,7 +17,10 @@ set_target_properties(pelican_studio_viewport PROPERTIES
 )
 
 target_include_directories(pelican_studio_viewport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pelican_studio_viewport PUBLIC Qt6::Core Qt6::Widgets)
+target_link_libraries(pelican_studio_viewport
+    PUBLIC Qt6::Core Qt6::Widgets
+    PRIVATE pelican_project
+)
 
 if(WIN32)
     target_link_libraries(pelican_studio_viewport PRIVATE user32)

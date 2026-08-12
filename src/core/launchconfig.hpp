@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -54,6 +55,9 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool strict_assets = false;
     bool dump_frame_plan = false;
     bool gpu_labels = false;
+    // Tool-declared startup inputs. These are deliberately absent from
+    // ProjectBasicConfig, so project loading cannot opt into or persist them.
+    std::vector<std::string> render_feature_overlays;
     bool force_unorm_color_path_for_testing = false;
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;

@@ -1,5 +1,6 @@
 #include "embeddedviewport.hpp"
 #include "../model/selection.hpp"
+#include "../../project/renderfeatureoverlay.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -145,6 +146,8 @@ QByteArray serializeJsonValue(const QJsonValue &value) {
     return {};
 }
 
+} // namespace
+
 QStringList studioPlayerArguments(QStringList configured,
                                   const QString &project_root) {
     QStringList additional;
@@ -163,19 +166,33 @@ QStringList studioPlayerArguments(QStringList configured,
         if (argument.startsWith(QStringLiteral("--project="))) {
             continue;
         }
+        if (argument == QStringLiteral("--feature-overlay")) {
+            if (index + 1 < configured.size()) {
+                ++index;
+            }
+            continue;
+        }
+        if (argument.startsWith(QStringLiteral("--feature-overlay="))) {
+            continue;
+        }
         additional.push_back(argument);
     }
+
+    const auto overlay_reference =
+        Pelican::editorFeatureOverlayReference;
 
     QStringList arguments{
         QStringLiteral("--rpc"),
         QStringLiteral("--project"),
         project_root,
+        QStringLiteral("--feature-overlay"),
+        QString::fromUtf8(
+            overlay_reference.data(),
+            static_cast<qsizetype>(overlay_reference.size())),
     };
     arguments.append(additional);
     return arguments;
 }
-
-} // namespace
 
 EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(this) {
     setObjectName(QStringLiteral("pelican.viewportPanel"));

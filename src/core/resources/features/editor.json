@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.render_feature_overlay",
+  "version": 1,
+  "name": "editor",
+  "features": [
+    "engine://features/gizmo.json",
+    "engine://features/picking.json"
+  ]
+}

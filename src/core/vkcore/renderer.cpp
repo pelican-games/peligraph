@@ -2819,7 +2819,8 @@ class LogicalFrameAbortGuard {
 } // namespace
 
 Renderer::Renderer() {
-    const auto variants = loadRenderGraphVariantsFromConfig();
+    const auto variants =
+        loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
     flat_rendering_pass_id = variants.flat;
     xr_rendering_pass_id = variants.xr;
     xr_excluded_features = variants.xr_excluded_features;
@@ -2992,7 +2993,7 @@ void Renderer::installRenderPipelineReloadParticipant() {
 
 void Renderer::relowerRenderPipelineForCurrentOutput() {
     auto variants =
-        loadRenderGraphVariantsFromConfig();
+        loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
     const auto generation =
         GET_MODULE(FrameGraphRuntimeContainer)
             .snapshot();
@@ -3090,7 +3091,7 @@ bool Renderer::reloadRenderPipelineFromDisk(
                 };
         }
         auto variants =
-            loadRenderGraphVariantsFromConfigData(
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
                 json, std::move(hooks));
         const auto generation =
             GET_MODULE(FrameGraphRuntimeContainer)

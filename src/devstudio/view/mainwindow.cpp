@@ -558,10 +558,10 @@ void MainWindow::presentGizmoNotice() {
     }
     presented_gizmo_notice_revision_ = gizmo_model_.noticeRevision();
     QString message = QString::fromStdString(gizmo_model_.notice().message);
-    if (message.contains(QStringLiteral("engine://features/gizmo.json"))) {
-        message = tr("Gizmo is unavailable: the active project render graph "
-                     "does not include engine://features/gizmo.json. Add the "
-                     "feature to use Move, Rotate, and Scale handles.");
+    if (message.contains(QStringLiteral("gizmo"), Qt::CaseInsensitive) &&
+        message.contains(QStringLiteral("requires"), Qt::CaseInsensitive)) {
+        message = tr("Gizmo is unavailable: the required gizmo feature is not "
+                     "active in this player session.");
     }
     viewport_->setGizmoNotice(message);
     if (!message.isEmpty()) {
@@ -610,10 +610,11 @@ void MainWindow::refreshSelectionViews() {
 
 void MainWindow::presentPickingFailure(const QString &message) {
     QString notice = message;
-    if (message.contains(QStringLiteral("engine://features/picking.json"))) {
-        notice = tr("Picking is unavailable: the active project render graph "
-                    "does not include engine://features/picking.json. The "
-                    "current selection was preserved.");
+    if (message.contains(QStringLiteral("picking"), Qt::CaseInsensitive) &&
+        message.contains(QStringLiteral("requires"), Qt::CaseInsensitive)) {
+        notice = tr("Picking is unavailable: the required picking feature is "
+                    "not active in this player session. The current selection "
+                    "was preserved.");
     } else {
         notice = tr("Picking failed: %1 The current selection was preserved.")
                      .arg(message);

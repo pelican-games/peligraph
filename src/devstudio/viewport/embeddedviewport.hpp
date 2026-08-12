@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QPoint>
 #include <QSet>
+#include <QStringList>
 #include <QWidget>
 
 #include <optional>
@@ -19,6 +20,9 @@ namespace PelicanStudio {
 
 class SelectionModel;
 struct OutlinerObjectKey;
+
+QStringList studioPlayerArguments(QStringList configured,
+                                  const QString &project_root);
 
 class EmbeddedViewport final : public QWidget {
     Q_OBJECT

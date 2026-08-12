@@ -2,6 +2,7 @@
 #include "enginelogbuffer.hpp"
 #include "engineprocess.hpp"
 #include "viewportgeometry.hpp"
+#include "../src/project/renderfeatureoverlay.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -116,6 +117,29 @@ TEST_CASE("Engine log keeps a bounded UTF-8 tail on line boundaries",
     EngineLogBuffer single_line_log{8};
     REQUIRE(single_line_log.append(QStringLiteral("1234567890")));
     REQUIRE(single_line_log.text() == QStringLiteral("34567890"));
+}
+
+TEST_CASE("Studio player arguments force the public editor feature overlay",
+          "[devstudio][viewport][feature-overlay][wp289]") {
+    const auto arguments = studioPlayerArguments(
+        {QStringLiteral("--rpc"), QStringLiteral("--project"),
+         QStringLiteral("stale-project"),
+         QStringLiteral("--feature-overlay"),
+         QStringLiteral("project://stale-overlay.json"),
+         QStringLiteral("--frames"), QStringLiteral("5")},
+        QStringLiteral("C:/projects/example"));
+    const auto expected_overlay = QString::fromUtf8(
+        Pelican::editorFeatureOverlayReference.data(),
+        static_cast<qsizetype>(
+            Pelican::editorFeatureOverlayReference.size()));
+
+    REQUIRE(arguments ==
+            QStringList{QStringLiteral("--rpc"),
+                        QStringLiteral("--project"),
+                        QStringLiteral("C:/projects/example"),
+                        QStringLiteral("--feature-overlay"), expected_overlay,
+                        QStringLiteral("--frames"), QStringLiteral("5")});
+    REQUIRE(arguments.count(QStringLiteral("--feature-overlay")) == 1);
 }
 
 TEST_CASE("Continuous embedded viewport resizes stay frozen and apply only the trailing extent",

@@ -19,6 +19,7 @@
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
+#include "../renderingpass/renderingpassconfigloader.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
@@ -27,6 +28,7 @@
 #include "core.hpp"
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
+#include "../../project/renderfeatureoverlay.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrmirrorsink.hpp"
 #endif
@@ -222,6 +224,39 @@ RenderingPassId loadDefaultRenderingPassFromConfig() {
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfig() {
     return loadRenderGraphVariantsFromConfigData(
         GET_MODULE(ProjectBasicConfig).renderingConfigJson());
+}
+
+RenderGraphVariantConfig
+loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays() {
+    const auto &overlays =
+        GET_MODULE(EngineLaunchConfig).render_feature_overlays;
+    if (overlays.empty()) {
+        return loadRenderGraphVariantsFromConfig();
+    }
+    return loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+        GET_MODULE(ProjectBasicConfig).renderingConfigJson());
+}
+
+RenderGraphVariantConfig
+loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+    std::string_view rendering_config_json,
+    RenderGraphVariantLoadHooks hooks) {
+    const auto &overlays =
+        GET_MODULE(EngineLaunchConfig).render_feature_overlays;
+    if (overlays.empty()) {
+        return loadRenderGraphVariantsFromConfigData(
+            rendering_config_json, std::move(hooks));
+    }
+
+    const auto authored = loadRenderingPassConfigJsonFromString(
+        rendering_config_json, "ProjectBasicConfig");
+    const auto effective = applyRenderFeatureOverlays(
+        authored, overlays,
+        [](std::string_view reference) {
+            return GET_MODULE(PathResolver).loadText(reference);
+        });
+    return loadRenderGraphVariantsFromConfigData(
+        effective.dump(), std::move(hooks));
 }
 
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(

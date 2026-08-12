@@ -4,7 +4,7 @@
 
 ## この章で学ぶこと
 
-- `pelican_player` の全 CLI 引数(22 個)
+- `pelican_player` の全 CLI 引数(23 個)
 - JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
 - `pelican_cli` の 6 サブコマンド系統(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material`)
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
@@ -30,6 +30,7 @@
 | 引数 | 既定 | 意味 |
 |---|---|---|
 | `--project <dir\|project.json>` | (暗黙探索) | プロジェクトを開く。省略時は exe ディレクトリ → 祖先の `projects/example` を探索し、WARN を出す |
+| `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
 | `--rpc` | off | stdio JSON-RPC モード。**`--headless` は不要になりました**(✅WP156): ヘッドレスでは stdin を読み切るまでブロッキング、**ウィンドウモードではフレーム境界処理 + 有界キュー(既定 64 件)**。溢れると `busy` エラーを即返します。※`--rpc` を付けると ImGui UI は無効([第13章](13_editor.md)) |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
@@ -58,6 +59,7 @@
 
 ```sh
 pelican_player --project projects/example                                    # 通常起動
+pelican_player --project projects/example --feature-overlay engine://features/editor.json # editor用featureを起動時だけ重ねる
 pelican_player --headless --project mygame --frames 3 --render-out out.png  # ヘッドレス→PNG
 pelican_player --rpc --headless --project mygame                            # 外部制御
 pelican_player --project mygame --record-input s.jsonl                      # プレイ収録
@@ -66,6 +68,13 @@ pelican_player --headless --project mygame --replay s.jsonl \
 pelican_player --project mygame --free-camera                               # Blender 操作(既定)
 pelican_player --project mygame --free-camera unity                         # Unity 操作
 ```
+
+`--feature-overlay` が読む文書は、厳密な `pelican.render_feature_overlay` v1 envelope
+(`schema` / `version` / `name` / `features`)です。`features` の順序を保ったまま、project が
+`rendering_config_json` で宣言した `features` の後ろへメモリ上で加え、同じ entry は重複させません。
+引数が無ければ loader 自体を呼ばず、従来の rendering config をそのまま登録します。overlay URI は
+`project.json` / scene / user 層には保存されず、overlay から追加された target と pass もその process の
+寿命にだけ存在します。
 
 視点移動 preset の操作は次のとおりです。
 
@@ -463,12 +472,13 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
 
-project を開くと、中央 viewport は同じ project を `--rpc --project <root>` 付きの
+project を開くと、中央 viewport は同じ project を `--rpc --project <root>` と editor feature
+overlay 付きの
 `pelican_player` 子 process として起動し、Windows の native HWND を
 Qt host へ再親付けします。player が自分の swapchain へ描いて OS が合成するため、pixel readback、
 copy、process 間 frame 転送はありません。player が終了しても Studio は残り、`Restart Engine`
 から再起動できます。既定では Studio と同じ directory、次に
-`../build/src/player/Debug/pelican_player.exe` を探します。project と `--rpc` は Studio が所有し、
+`../build/src/player/Debug/pelican_player.exe` を探します。project、`--rpc`、`--feature-overlay` は Studio が所有し、
 `PELICAN_STUDIO_PLAYER_ARGUMENTS` 内の同名指定は除去します。開発時の executable と追加引数の
 override は次です:
 
@@ -480,10 +490,11 @@ dist_debug/pelican_studio.exe
 
 `--project` はここに書きません。Studio が開いた project から自分で渡すため、同名指定は除去されます。
 
-`--free-camera [blender|unity]` は Studio 固有機能ではなく同じ `pelican_player` の公開引数です。
-したがって上の環境変数を使わず、素の player へ直接指定しても同じ orbit camera になります。
-overlay はメモリ上だけにあり、scene JSON や入力 profile を保存しません。この WP では Studio
-内の選択 UI は持たず、必要なら上の追加引数で player の公開面を使います。
+`--free-camera [blender|unity]` と `--feature-overlay` は Studio 固有機能ではなく、どちらも同じ
+`pelican_player` の公開引数です。したがって素の player や profiler からも同じ起動時 overlay を
+使えます。Studio が必要とする bundle の内容(gizmo + picking)は
+`engine://features/editor.json` だけが所有し、Studio source は個別 feature URI の一覧を持ちません。
+overlay はメモリ上だけにあり、project / scene JSON や入力 profile を保存しません。
 
 viewport の左クリックは child client の物理 pixel 座標を `pick_object` へ送り、応答の
 `(scene_id, declaration_index)` を Outliner と Inspector に反映します。Outliner を選んだ方向も
@@ -494,9 +505,10 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 選択は engine/game の共有状態ではなく、各ツールが持つ client-session の注視対象です。engine に
 Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_project` の identity だけから
 任意の client が同じ状態を作れる形にしたのが D0 上の理由です。背景への成功 pick は選択を解除します。
-`picking` feature が無い、RPC が失敗した、または応答を Outliner と対応付けられない場合は現在選択を
-維持し、viewport の警告行、status bar、Engine Log の三つへ理由を出します。feature は自動で有効化せず、
-project の purgeability を保ちます。
+Studio 起動時の editor overlay が `picking` feature を用意します。overlay のロード失敗、RPC の失敗、
+または応答を Outliner と対応付けられない場合は現在選択を維持し、viewport の警告行、status bar、
+Engine Log の三つへ理由を出します。Studio を介さない player は overlay を受け取らないため、project の
+purgeability と通常起動の出力は変わりません。
 
 gizmo の押下時は `query_gizmo_handle` を 1 回だけ呼び、掴んだ handle と engine が射影した drag 契約を
 Studio 側で保持します。以後の pointer move では hit test をやり直さず、上の単一内積式で選んだ軸へ
@@ -508,8 +520,8 @@ Studio 側で保持します。以後の pointer move では hit test をやり�
 abort します。handle 以外を押した場合は通常の object pick へ移ります。
 
 `File > Save Scene` または `Ctrl+S` は commit 済みの authoring document を `save_scene` で保存します。
-その後にシーンを開き直しても gizmo 編集は残ります。gizmo feature が project の render graph に
-含まれない場合は viewport と status bar に理由を表示し、自動で feature を追加しません。
+その後にシーンを開き直しても gizmo 編集は残ります。gizmo の描画機能自体は Studio 起動時の editor
+overlay が用意しますが、overlay の feature 一覧を scene や project へ書き戻す経路はありません。
 
 `View > Panels > Frame Plan` は、実行中 player の公開 `get_frame_plan` を読むレンダーパス調査用の
 読み取り専用 dock です。Passes タブの先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、
@@ -529,7 +541,7 @@ CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated previ
 process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262、Studio の選択同期は
 WP264、Frame Plan パネルは WP269 で入りました。engine の汎用 gizmo feature/RPC は WP274 で入り、
 Studio の preview lease を使うドラッグ接続は WP275 で入りました。複数 client WebSocket は
-未接続です。ツール自作の入口は
+未接続です。起動主体が宣言する editor feature overlay は WP289 で入りました。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 ## 10.8 テスト基盤

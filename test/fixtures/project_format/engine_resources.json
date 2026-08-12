@@ -28,6 +28,7 @@
     "debug_text_font.json",
     "debug_text_font.png",
     "features/debug_draw.json",
+    "features/editor.json",
     "features/gizmo.json",
     "features/debug_text.json",
   "features/ui.json",

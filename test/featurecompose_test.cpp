@@ -1,4 +1,5 @@
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
@@ -2103,6 +2104,104 @@ TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary
     REQUIRE(pass != passes.end());
     REQUIRE(post_main != passes.end());
     REQUIRE(pass < post_main);
+}
+
+TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
+          "[render-feature][overlay][editor][wp289]") {
+    const auto base = readJson(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example" / "passes" / "main_rendering_config.json");
+    const std::vector<std::string> no_overlays;
+    bool loader_called = false;
+    const auto unchanged = applyRenderFeatureOverlays(
+        base, no_overlays,
+        [&loader_called](std::string_view) {
+            loader_called = true;
+            return std::string{};
+        });
+    REQUIRE_FALSE(loader_called);
+    REQUIRE(unchanged == base);
+
+    const std::vector<std::string> overlays{
+        std::string{editorFeatureOverlayReference}};
+    const auto effective = applyRenderFeatureOverlays(
+        base, overlays, loadEngineFeature);
+    REQUIRE(base.at("features") == nlohmann::json::array(
+                                      {"engine://features/ui.json"}));
+    REQUIRE(effective.at("features") ==
+            nlohmann::json::array(
+                {"engine://features/ui.json",
+                 "engine://features/gizmo.json",
+                 "engine://features/picking.json"}));
+
+    const auto baseline = composeRenderFeatureConfig(
+        base, RenderFeatureComposeDependencies{loadEngineFeature, true});
+    const auto enabled = composeRenderFeatureConfig(
+        effective,
+        RenderFeatureComposeDependencies{loadEngineFeature, true});
+    REQUIRE(baseline.feature_names == std::vector<std::string>{"ui"});
+    REQUIRE(enabled.feature_names ==
+            std::vector<std::string>{"ui", "gizmo", "picking"});
+
+    const auto has_pass = [](const nlohmann::json &config,
+                             std::string_view name) {
+        for (const auto &pass_set : config.at("rendering_passes")) {
+            for (const auto &pass : pass_set.at("passes")) {
+                if (pass.value("name", std::string{}) == name) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    const auto has_target = [](const nlohmann::json &config,
+                               std::string_view name) {
+        return std::any_of(
+            config.at("render_targets").begin(),
+            config.at("render_targets").end(),
+            [name](const auto &target) {
+                return target.value("name", std::string{}) == name;
+            });
+    };
+    REQUIRE_FALSE(has_pass(baseline.config, "gizmo_pass"));
+    REQUIRE_FALSE(has_pass(baseline.config, "picking_pass"));
+    REQUIRE_FALSE(has_target(baseline.config, "picking_id"));
+    REQUIRE(has_pass(enabled.config, "gizmo_pass"));
+    REQUIRE(has_pass(enabled.config, "picking_pass"));
+    REQUIRE(has_target(enabled.config, "picking_id"));
+
+    auto project_already_uses_gizmo = base;
+    project_already_uses_gizmo.at("features").push_back(
+        "engine://features/gizmo.json");
+    const auto deduplicated = applyRenderFeatureOverlays(
+        project_already_uses_gizmo, overlays, loadEngineFeature);
+    REQUIRE(std::count(
+                deduplicated.at("features").begin(),
+                deduplicated.at("features").end(),
+                nlohmann::json("engine://features/gizmo.json")) == 1);
+}
+
+TEST_CASE("startup feature overlay accepts only its strict v1 envelope",
+          "[render-feature][overlay][format][wp289]") {
+    const auto base = nlohmann::json{{"features", nlohmann::json::array()}};
+    const std::vector<std::string> overlays{"project://overlay.json"};
+    const auto apply = [&](std::string bytes) {
+        return applyRenderFeatureOverlays(
+            base, overlays,
+            [bytes = std::move(bytes)](std::string_view) {
+                return bytes;
+            });
+    };
+
+    REQUIRE_THROWS_WITH(
+        apply(R"json({"schema":"pelican.render_feature_overlay","version":2,"name":"tool","features":[]})json"),
+        Catch::Matchers::ContainsSubstring("version must be exactly 1"));
+    REQUIRE_THROWS_WITH(
+        apply(R"json({"schema":"pelican.render_feature_overlay","version":1,"name":"tool","features":[],"project":true})json"),
+        Catch::Matchers::ContainsSubstring("unknown key 'project'"));
+    REQUIRE_THROWS_WITH(
+        apply(R"json({"schema":"pelican.render_feature_overlay","version":1,"name":"tool","features":[""]})json"),
+        Catch::Matchers::ContainsSubstring("empty feature reference"));
 }
 
 TEST_CASE("picking feature owns a purgeable integer target and geometry pass",

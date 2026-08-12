@@ -71,6 +71,33 @@ feature fragment(engine:// 埋め込み or プロジェクト内 JSON)は次を�
 5. 差し替え = fragment をプロジェクトにコピーして `features` の参照を
    `engine://` からプロジェクトパスへ書き換える(シェーダ stem と同じ運用)
 
+#### 1.1.1 起動主体による feature overlay
+
+Studio や profiler のような道具が必要とする feature は、ゲーム設定の `features` へ書き足さない。
+公開 CLI `pelican_player --feature-overlay <uri>` が、次の厳密な v1 bundle を process-local に重ねる。
+
+```json
+{
+  "schema": "pelican.render_feature_overlay",
+  "version": 1,
+  "name": "editor",
+  "features": [
+    "engine://features/gizmo.json",
+    "engine://features/picking.json"
+  ]
+}
+```
+
+engine 既定の editor bundle は `engine://features/editor.json` が単独所有する。Studio はこの bundle を
+公開 CLI へ渡すだけで、個別 feature URI を列挙しない。bundle の feature entry は通常の rendering
+config と同じ string または `{ref, parameters}` で、authored `features` の後へ順序を保って加算する。
+
+出荷経路 `ProjectBasicConfig::renderingConfigJson()` → `loadRenderGraphVariantsFromConfigData()` は overlay を
+読まない。overlay reference は project format に field を持たず、`EngineLaunchConfig` の process-local
+起動引数だけが所有し、`...WithStartupFeatureOverlays()` という別名の入口で適用する。無指定時は従来経路へ
+byte-for-byte の JSON を渡す。この構造により、project の load/save/open-again 経路は overlay を発見も
+永続化もできない。
+
 ### 1.2 シェーダ variant — defines
 
 feature がマテリアル/ライティングシェーダに合流する点(影のサンプリング、
