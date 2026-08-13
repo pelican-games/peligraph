@@ -4,7 +4,8 @@
 
 namespace Pelican {
 
-TEST_CASE("golden image cases match expected output", "[golden][headless]") {
+TEST_CASE("golden image cases match expected output",
+          "[golden][headless][byte-exact][framegraph]") {
     GoldenHarness::runGoldenImages();
 }
 
@@ -64,11 +65,6 @@ TEST_CASE(
         runGpuSegmentedOcclusionHotReload();
     SUCCEED(
         "segmented graph and shader transactions preserved the published frame");
-}
-
-TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
-          "[golden][headless][byte-exact]") {
-    GoldenHarness::runRgba8Hashes();
 }
 
 } // namespace Pelican

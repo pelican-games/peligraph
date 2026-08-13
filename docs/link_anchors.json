@@ -1643,7 +1643,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/frameplanner_test.cpp|`frameplanner_test.cpp`": "if (mode == \"stem_fullscreen\") {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/gamesystem_test.cpp|`gamesystem_test.cpp`": ".parent = invalidGameObjectId,",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/golden_harness.hpp|`runFullscreenRebind()`": "void runFullscreenRebind();",
-    "docs/source-code-guide/07_tools_rpc_tests.md|../../test/golden_harness.hpp|`runRendererTrace()`": "void runRendererTrace();",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../test/golden_harness.hpp|`runGoldenImages()`": "void runGoldenImages();",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/headless_render_test.cpp|`headless_render_test.cpp`": "void writeTextFile(const std::filesystem::path &path, const std::string &contents) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/importmanifest_test.cpp|`importmanifest_test.cpp`": "#include \"../src/project/importmanifest.hpp\"",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/inputactions_test.cpp|`inputactions_test.cpp`": "} // namespace",

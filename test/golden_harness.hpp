@@ -20,13 +20,11 @@ void runOpenXrTaaTransition();
 void runVelocityFeature();
 void runSetTimeSkinnedVelocity();
 void runMorphVelocity();
-void runRgba8Hashes();
 void runGpuTimingIdentity();
 void runGpuTimingRing();
 void runGpuTimingCompute();
 void runGpuTimingSprite();
 void runGpuDrawBreakEvenTiming();
-void runRendererTrace();
 void runFullscreenRebind();
 
 } // namespace Pelican::GoldenHarness

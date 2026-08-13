@@ -9509,77 +9509,113 @@ void GoldenHarness::
 #endif
 }
 
+std::string canonicalTraceLineForCase(
+    const std::string &trace,
+    const std::string &case_name);
+std::string loadTextFile(const std::filesystem::path &path);
+
 void GoldenHarness::runGoldenImages() {
     setupLogger();
     requireGoldenVulkanDevice();
     const auto cases = loadGoldenInventoryCases();
 
-    for (const auto &golden_case : cases) {
-        DYNAMIC_SECTION(golden_case.name) {
-            const auto rendered = renderCase(golden_case);
-            if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
-                REQUIRE(rendered.ui_module_created);
-                REQUIRE(rendered.ui_gpu_created);
-                REQUIRE(rendered.ui_parser_invocations == 1);
-            }
-            if (golden_case.mode == "stem_fullscreen") {
-                REQUIRE_FALSE(rendered.ui_module_created);
-                REQUIRE_FALSE(rendered.ui_gpu_created);
-                REQUIRE(rendered.ui_parser_invocations == 0);
-            }
-            if (isSpriteGoldenMode(golden_case.mode)) {
-                REQUIRE(rendered.atlas_created);
-                REQUIRE(rendered.sprite_scene_created);
-                REQUIRE(rendered.sprite_gpu_created);
-                REQUIRE(rendered.ui_module_created == (golden_case.mode == "sprite_ownership"));
-                REQUIRE(rendered.ui_gpu_created == (golden_case.mode == "sprite_ownership"));
-                if (golden_case.mode == "sprite_ownership") REQUIRE(rendered.atlas_page_count == 2);
-                if (isStrictSpriteGoldenMode(golden_case.mode)) {
-                    const auto &pixel = rendered.sprite_status.at("pixel_perfect");
-                    REQUIRE(pixel.at("requested") == true);
-                    REQUIRE(pixel.at("active") == true);
-                    REQUIRE(pixel.at("method") == "render_only_quantization");
-                    REQUIRE(pixel.at("content_viewport").at("width") == golden_case.width);
-                    REQUIRE(pixel.at("content_viewport").at("height") == golden_case.height);
+    const bool update_golden_images = updateGoldenRequested();
+    const bool update_rgba8_fixtures = updateRgba8HashFixturesRequested();
+#if !PELICAN_WITH_VAT
+    if (update_rgba8_fixtures) {
+        FAIL("RGBA8 aggregate fixture update requires PELICAN_WITH_VAT=ON");
+    }
+#endif
+    const auto rgba8_fixture_path = rgba8HashFixturePath();
+    const auto expected_rgba8 =
+        update_rgba8_fixtures ? nlohmann::json::object() : loadJsonFile(rgba8_fixture_path);
+    nlohmann::json captured_rgba8 = nlohmann::json::object();
 
-                    if (golden_case.mode == "sprite_pixel_zoom1") {
-                        REQUIRE(rendered.sprite_status.at("sort") == "declaration");
-                        REQUIRE(pixel.at("integer_zoom") == 1);
-                        REQUIRE(pixel.at("eligible") == 2);
-                        REQUIRE(pixel.at("downgraded") == 0);
-                    } else if (golden_case.mode == "sprite_pixel_zoom2_odd") {
-                        REQUIRE(rendered.sprite_status.at("sort") == "y_down");
-                        REQUIRE(pixel.at("integer_zoom") == 2);
-                        REQUIRE(pixel.at("eligible") == 1);
-                        REQUIRE(pixel.at("downgraded") == 0);
-                    } else if (golden_case.mode == "sprite_pixel_zoom3_policy") {
-                        REQUIRE(pixel.at("integer_zoom") == 3);
-                        REQUIRE(pixel.at("eligible") == 1);
-                        REQUIRE(pixel.at("downgraded") == 2);
-                        REQUIRE(pixel.at("downgrades").at("non_integer_texel_scale") == 1);
-                        REQUIRE(pixel.at("downgrades").at("rotated_or_tilted") == 1);
-                    } else if (golden_case.mode == "sprite_billboard") {
-                        REQUIRE(pixel.at("integer_zoom") == 1);
-                        REQUIRE(pixel.at("eligible") == 0);
-                        REQUIRE(pixel.at("downgraded") == 1);
-                        REQUIRE(pixel.at("downgrades").at("billboard") == 1);
-                    }
+    const bool update_renderer_fixtures = updateRendererTraceFixturesRequested();
+#if !PELICAN_WITH_VAT
+    if (update_renderer_fixtures) {
+        FAIL("renderer aggregate fixture update requires PELICAN_WITH_VAT=ON");
+    }
+#endif
+    const auto renderer_fixture_path = rendererTraceFixturePath();
+    const auto expected_renderer = update_renderer_fixtures
+                                       ? nlohmann::json::object()
+                                       : loadJsonFile(renderer_fixture_path);
+    const auto plan_trace_path = canonicalFramePlanTraceFixturePath();
+    const auto expected_plan_trace =
+        update_renderer_fixtures ? std::string{} : loadTextFile(plan_trace_path);
+    nlohmann::json captured_renderer = nlohmann::json::object();
+    std::string captured_plan_trace;
+    std::string active_expected_plan_trace;
+
+    for (const auto &golden_case : cases) {
+        CAPTURE(golden_case.name);
+        INFO("golden case=" << golden_case.name);
+        const auto labels_off = renderCase(golden_case, false);
+        const auto labels_on = renderCase(golden_case, true);
+        const auto &rendered = labels_off;
+
+        if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
+            REQUIRE(rendered.ui_module_created);
+            REQUIRE(rendered.ui_gpu_created);
+            REQUIRE(rendered.ui_parser_invocations == 1);
+        }
+        if (golden_case.mode == "stem_fullscreen") {
+            REQUIRE_FALSE(rendered.ui_module_created);
+            REQUIRE_FALSE(rendered.ui_gpu_created);
+            REQUIRE(rendered.ui_parser_invocations == 0);
+        }
+        if (isSpriteGoldenMode(golden_case.mode)) {
+            REQUIRE(rendered.atlas_created);
+            REQUIRE(rendered.sprite_scene_created);
+            REQUIRE(rendered.sprite_gpu_created);
+            REQUIRE(rendered.ui_module_created == (golden_case.mode == "sprite_ownership"));
+            REQUIRE(rendered.ui_gpu_created == (golden_case.mode == "sprite_ownership"));
+            if (golden_case.mode == "sprite_ownership") REQUIRE(rendered.atlas_page_count == 2);
+            if (isStrictSpriteGoldenMode(golden_case.mode)) {
+                const auto &pixel = rendered.sprite_status.at("pixel_perfect");
+                REQUIRE(pixel.at("requested") == true);
+                REQUIRE(pixel.at("active") == true);
+                REQUIRE(pixel.at("method") == "render_only_quantization");
+                REQUIRE(pixel.at("content_viewport").at("width") == golden_case.width);
+                REQUIRE(pixel.at("content_viewport").at("height") == golden_case.height);
+
+                if (golden_case.mode == "sprite_pixel_zoom1") {
+                    REQUIRE(rendered.sprite_status.at("sort") == "declaration");
+                    REQUIRE(pixel.at("integer_zoom") == 1);
+                    REQUIRE(pixel.at("eligible") == 2);
+                    REQUIRE(pixel.at("downgraded") == 0);
+                } else if (golden_case.mode == "sprite_pixel_zoom2_odd") {
+                    REQUIRE(rendered.sprite_status.at("sort") == "y_down");
+                    REQUIRE(pixel.at("integer_zoom") == 2);
+                    REQUIRE(pixel.at("eligible") == 1);
+                    REQUIRE(pixel.at("downgraded") == 0);
+                } else if (golden_case.mode == "sprite_pixel_zoom3_policy") {
+                    REQUIRE(pixel.at("integer_zoom") == 3);
+                    REQUIRE(pixel.at("eligible") == 1);
+                    REQUIRE(pixel.at("downgraded") == 2);
+                    REQUIRE(pixel.at("downgrades").at("non_integer_texel_scale") == 1);
+                    REQUIRE(pixel.at("downgrades").at("rotated_or_tilted") == 1);
+                } else if (golden_case.mode == "sprite_billboard") {
+                    REQUIRE(pixel.at("integer_zoom") == 1);
+                    REQUIRE(pixel.at("eligible") == 0);
+                    REQUIRE(pixel.at("downgraded") == 1);
+                    REQUIRE(pixel.at("downgrades").at("billboard") == 1);
                 }
             }
-            if (golden_case.mode == "ui_u1") {
-                REQUIRE(rendered.atlas_created);
-                REQUIRE_FALSE(rendered.sprite_scene_created);
-                REQUIRE_FALSE(rendered.sprite_gpu_created);
-                REQUIRE(rendered.atlas_page_count == 3);
-            }
+        }
+        if (golden_case.mode == "ui_u1") {
+            REQUIRE(rendered.atlas_created);
+            REQUIRE_FALSE(rendered.sprite_scene_created);
+            REQUIRE_FALSE(rendered.sprite_gpu_created);
+            REQUIRE(rendered.atlas_page_count == 3);
+        }
 
-            const auto expected_path = golden_case.root / "expected.png";
-            if (updateGoldenRequested()) {
-                writePng(expected_path, rendered.image);
-                SUCCEED("updated golden image: " << expected_path.string());
-                continue;
-            }
-
+        const auto expected_path = golden_case.root / "expected.png";
+        if (update_golden_images) {
+            writePng(expected_path, rendered.image);
+            SUCCEED("updated golden image: " << expected_path.string());
+        } else {
             const auto expected = loadPng(expected_path);
             const auto tolerance = loadTolerance(golden_case.root / "tolerance.json");
             const auto comparison = compareImages(expected, rendered.image);
@@ -9594,7 +9630,8 @@ void GoldenHarness::runGoldenImages() {
             if (comparison.average > tolerance.average || comparison.max > tolerance.max) {
                 writePng(artifact_dir / "actual.png", rendered.image);
                 writePng(artifact_dir / "diff.png", comparison.diff);
-                writeFailureMetadata(artifact_dir / "failure.json", golden_case, rendered, comparison, tolerance);
+                writeFailureMetadata(artifact_dir / "failure.json", golden_case, rendered,
+                                     comparison, tolerance);
             }
 
             INFO("device=" << rendered.device_name);
@@ -9602,6 +9639,60 @@ void GoldenHarness::runGoldenImages() {
             REQUIRE(comparison.average <= tolerance.average);
             REQUIRE(comparison.max <= tolerance.max);
         }
+
+        REQUIRE(labels_on.image.pixels == labels_off.image.pixels);
+        const auto hash = picosha2::hash256_hex_string(rendered.image.pixels.begin(),
+                                                       rendered.image.pixels.end());
+        const auto labels_on_hash = picosha2::hash256_hex_string(
+            labels_on.image.pixels.begin(), labels_on.image.pixels.end());
+        captured_rgba8[golden_case.name] = hash;
+        if (!update_rgba8_fixtures) {
+            REQUIRE(hash == expected_rgba8.at(golden_case.name).get<std::string>());
+            REQUIRE(labels_on_hash == expected_rgba8.at(golden_case.name).get<std::string>());
+        }
+
+        if (!usesRenderer(golden_case)) {
+            continue;
+        }
+
+        INFO("renderer trace case=" << golden_case.name);
+        std::vector<std::string> executed_order;
+        std::string plan_line;
+        for (const auto &node : rendered.execution_trace.at("nodes")) {
+            executed_order.push_back(node.at("name").get<std::string>());
+            if (!plan_line.empty()) {
+                plan_line += " -> ";
+            }
+            plan_line += node.at("name").get<std::string>() + "[" +
+                         node.at("kind").get<std::string>() + "]";
+        }
+        captured_plan_trace += golden_case.name + ": " + plan_line + "\n";
+        if (!update_renderer_fixtures) {
+            active_expected_plan_trace +=
+                canonicalTraceLineForCase(expected_plan_trace, golden_case.name);
+        }
+
+        REQUIRE(executed_order == rendered.plan_order);
+        if (golden_case.mode == "explicit_order") {
+            REQUIRE(rendered.gpu_timing_node_names == rendered.plan_order);
+            REQUIRE(rendered.gpu_timing_query_count == rendered.plan_order.size() * 4);
+            REQUIRE(rendered.gpu_timing_queries_collected);
+        }
+        captured_renderer[golden_case.name] = rendered.execution_trace;
+        if (!update_renderer_fixtures) {
+            REQUIRE(rendered.execution_trace == expected_renderer.at(golden_case.name));
+        }
+    }
+
+    if (update_rgba8_fixtures) {
+        writeTextFile(rgba8_fixture_path, captured_rgba8.dump(2) + "\n");
+    }
+
+    if (update_renderer_fixtures) {
+        writeTextFile(renderer_fixture_path, captured_renderer.dump(2) + "\n");
+        writeTextFile(plan_trace_path, captured_plan_trace);
+    } else {
+        REQUIRE(captured_plan_trace == active_expected_plan_trace);
     }
 }
 
@@ -10174,40 +10265,6 @@ std::string canonicalTraceLineForCase(const std::string &trace, const std::strin
     return match;
 }
 
-void GoldenHarness::runRgba8Hashes() {
-    setupLogger();
-    requireGoldenVulkanDevice();
-    const bool update_fixtures = updateRgba8HashFixturesRequested();
-#if !PELICAN_WITH_VAT
-    if (update_fixtures) {
-        FAIL("RGBA8 aggregate fixture update requires PELICAN_WITH_VAT=ON");
-    }
-#endif
-    const auto fixture_path = rgba8HashFixturePath();
-    const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
-    nlohmann::json captured = nlohmann::json::object();
-
-    for (const auto &golden_case : loadGoldenInventoryCases()) {
-        CAPTURE(golden_case.name);
-        const auto labels_off = renderCase(golden_case, false);
-        const auto labels_on = renderCase(golden_case, true);
-        REQUIRE(labels_on.image.pixels == labels_off.image.pixels);
-        const auto hash = picosha2::hash256_hex_string(labels_off.image.pixels.begin(),
-                                                       labels_off.image.pixels.end());
-        const auto labels_on_hash = picosha2::hash256_hex_string(
-            labels_on.image.pixels.begin(), labels_on.image.pixels.end());
-        captured[golden_case.name] = hash;
-        if (!update_fixtures) {
-            REQUIRE(hash == expected.at(golden_case.name).get<std::string>());
-            REQUIRE(labels_on_hash == expected.at(golden_case.name).get<std::string>());
-        }
-    }
-
-    if (update_fixtures) {
-        writeTextFile(fixture_path, captured.dump(2) + "\n");
-    }
-}
-
 void GoldenHarness::runGpuTimingIdentity() {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -10708,66 +10765,6 @@ void GoldenHarness::runGpuTimingSprite() {
 #else
     SKIP("GPU timing sprite fixture requires the runtime shader compiler");
 #endif
-}
-
-void GoldenHarness::runRendererTrace() {
-    setupLogger();
-    requireGoldenVulkanDevice();
-    const bool update_fixtures = updateRendererTraceFixturesRequested();
-#if !PELICAN_WITH_VAT
-    if (update_fixtures) {
-        FAIL("renderer aggregate fixture update requires PELICAN_WITH_VAT=ON");
-    }
-#endif
-    const auto fixture_path = rendererTraceFixturePath();
-    const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
-    const auto plan_trace_path = canonicalFramePlanTraceFixturePath();
-    const auto expected_plan_trace = update_fixtures ? std::string{} : loadTextFile(plan_trace_path);
-    nlohmann::json captured = nlohmann::json::object();
-    std::string captured_plan_trace;
-    std::string active_expected_plan_trace;
-
-    for (const auto &golden_case : loadGoldenInventoryCases()) {
-        if (!usesRenderer(golden_case)) {
-            continue;
-        }
-        CAPTURE(golden_case.name);
-        INFO("renderer trace case=" << golden_case.name);
-        const auto rendered = renderCase(golden_case);
-        std::vector<std::string> executed_order;
-        std::string plan_line;
-        for (const auto &node : rendered.execution_trace.at("nodes")) {
-            executed_order.push_back(node.at("name").get<std::string>());
-            if (!plan_line.empty()) {
-                plan_line += " -> ";
-            }
-            plan_line += node.at("name").get<std::string>() + "[" +
-                         node.at("kind").get<std::string>() + "]";
-        }
-        captured_plan_trace += golden_case.name + ": " + plan_line + "\n";
-        if (!update_fixtures) {
-            active_expected_plan_trace +=
-                canonicalTraceLineForCase(expected_plan_trace, golden_case.name);
-        }
-
-        REQUIRE(executed_order == rendered.plan_order);
-        if (golden_case.mode == "explicit_order") {
-            REQUIRE(rendered.gpu_timing_node_names == rendered.plan_order);
-            REQUIRE(rendered.gpu_timing_query_count == rendered.plan_order.size() * 4);
-            REQUIRE(rendered.gpu_timing_queries_collected);
-        }
-        captured[golden_case.name] = rendered.execution_trace;
-        if (!update_fixtures) {
-            REQUIRE(rendered.execution_trace == expected.at(golden_case.name));
-        }
-    }
-
-    if (update_fixtures) {
-        writeTextFile(fixture_path, captured.dump(2) + "\n");
-        writeTextFile(plan_trace_path, captured_plan_trace);
-    } else {
-        REQUIRE(captured_plan_trace == active_expected_plan_trace);
-    }
 }
 
 void GoldenHarness::runFullscreenRebind() {
