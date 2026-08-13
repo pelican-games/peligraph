@@ -46,7 +46,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `PelicanCore` | public façade | [`pelican_core.hpp`](../../src/core/userpublic/pelican_core.hpp#L8) | [`run()`](../../src/core/userpublic/pelican_core.cpp#L46) | settings から runtime 全体を起動し、loop と teardown を囲む |
-| `EngineLaunchConfig` | module | [`launchconfig.hpp`](../../src/core/launchconfig.hpp#L20) | [`player main` で設定](../../src/player/main.cpp#L480) | headless、RPC、XR mode、game logic DLL、record/replay など起動時値 |
+| `EngineLaunchConfig` | module | [`launchconfig.hpp`](../../src/core/launchconfig.hpp#L20) | [`player main` で設定](../../src/player/main.cpp#L502) | headless、RPC、XR mode、game logic DLL、record/replay など起動時値 |
 | `StartupMetrics` | module | [`startup.hpp`](../../src/core/startup.hpp#L21) | [`startup.cpp`](../../src/core/startup.cpp) | 起動段階の計測 |
 | `XrActivationDecision` / `resolveXrActivation()` | pure decision | [`xractivation.hpp`](../../src/core/xractivation.hpp#L31) | [同 header](../../src/core/xractivation.hpp#L89) | headless/RPC/replay の forced-off と discovery hook から XR 起動可否を決定 |
 | `gameLogicAbiVersion` / `initializeConfiguredGameLogic()` | game DLL 境界 | [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L8) | [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L371) | game DLL(`pelican_game_logic`)の ABI 契約とロード・ホットリロード |

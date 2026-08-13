@@ -553,21 +553,22 @@ pelican_define_test(editorjournal_test pelican_core glm)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})
-    add_executable(${target_name} EXCLUDE_FROM_ALL fixtures/event_payload_schema/${fixture}.cpp)
-    set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
     add_test(
         NAME event_schema_compile_${fixture}
         COMMAND ${CMAKE_COMMAND}
-            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/schema_compile_fixture
+            -DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/schema_compile/${target_name}
+            -DFIXTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/event_payload_schema/${fixture}.cpp
             -DCONFIG=$<CONFIG>
             -DTARGET_NAME=${target_name}
             -DEXPECT_FAILURE=${expect_failure}
+            -DGENERATOR=${CMAKE_GENERATOR}
+            -DGENERATOR_INSTANCE=${CMAKE_GENERATOR_INSTANCE}
+            -DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
+            -DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
+            -DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+            -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_event_schema_compile.cmake
-    )
-    # These tests drive msbuild on the shared build tree; serialize them so a
-    # parallel ctest run cannot race two builds in the same directory.
-    set_tests_properties(event_schema_compile_${fixture} PROPERTIES
-        RESOURCE_LOCK event_schema_compile_build
     )
 endfunction()
 
@@ -583,19 +584,22 @@ pelican_event_schema_compile_fixture(fail_unsupported_type TRUE)
 
 function(pelican_struct_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_struct_schema_${fixture})
-    add_executable(${target_name} EXCLUDE_FROM_ALL fixtures/struct_schema/${fixture}.cpp)
-    set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
     add_test(
         NAME struct_schema_compile_${fixture}
         COMMAND ${CMAKE_COMMAND}
-            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/schema_compile_fixture
+            -DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/schema_compile/${target_name}
+            -DFIXTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/struct_schema/${fixture}.cpp
             -DCONFIG=$<CONFIG>
             -DTARGET_NAME=${target_name}
             -DEXPECT_FAILURE=${expect_failure}
+            -DGENERATOR=${CMAKE_GENERATOR}
+            -DGENERATOR_INSTANCE=${CMAKE_GENERATOR_INSTANCE}
+            -DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
+            -DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
+            -DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+            -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_event_schema_compile.cmake
-    )
-    set_tests_properties(struct_schema_compile_${fixture} PROPERTIES
-        RESOURCE_LOCK event_schema_compile_build
     )
 endfunction()
 

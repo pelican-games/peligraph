@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.13)
+
+if(NOT DEFINED TARGET_NAME OR NOT DEFINED FIXTURE_SOURCE)
+    message(FATAL_ERROR "TARGET_NAME and FIXTURE_SOURCE are required")
+endif()
+
+project(${TARGET_NAME} LANGUAGES CXX)
+
+add_executable(${TARGET_NAME} "${FIXTURE_SOURCE}")
+set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 20)

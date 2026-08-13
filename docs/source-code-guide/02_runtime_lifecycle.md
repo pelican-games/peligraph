@@ -28,7 +28,7 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L470) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L237) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L492) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L249) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
@@ -43,9 +43,9 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L240)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L252)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
-`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L193)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L207)）。
+`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L205)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L219)）。
 
 ### 段階B: `run()` 前に共有moduleへ起動情報を注入
 
@@ -432,7 +432,7 @@ ECSCore::update()
 
 ### inputの1フレーム固定
 
-[`InputStateCore::beginFrame()`](../../src/core/os/inputstate.cpp#L373) がpending eventをframe eventへswapし、down/pushed/released/mouse deltaを作ります。Action層は [`freezeInputActionsFrame()`](../../src/core/userpublic/userinput.cpp#L337) で消費maskを適用したsnapshotを評価します。以後の`Actions::*`は再計算せず同じ`InputActionFrame`を返します。
+[`InputStateCore::beginFrame()`](../../src/core/os/inputstate.cpp#L373) がpending eventをframe eventへswapし、down/pushed/released/mouse deltaを作ります。Action層は [`freezeInputActionsFrame()`](../../src/core/userpublic/userinput.cpp#L416) で消費maskを適用したsnapshotを評価します。以後の`Actions::*`は再計算せず同じ`InputActionFrame`を返します。
 
 ## 2.6 EngineTime
 

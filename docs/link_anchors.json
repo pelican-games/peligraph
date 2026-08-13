@@ -1045,6 +1045,8 @@
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/serialize/serialize.hpp|`ISerializable<Event, JsonArchiveLoader>`": "concept ISerializable = requires(T v, TArchive ar) { v.ref(ar); };",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/userinput.cpp|`InputActionsRuntime::pushSet()`": "void pushSet(std::string set_name) {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/userinput.cpp|`UserInput`": "bool UserInput::getKey(KeyCode code) {",
+    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/userinput.cpp|`loadInputActionsRuntimeSourceFromProject()`": "InputActionsRuntimeSource loadInputActionsRuntimeSourceFromProject() {",
+    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/userinput.cpp|`loadInputActionsRuntimeSourceWithStartupActionOverlays()`": "loadInputActionsRuntimeSourceWithStartupActionOverlays() {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/userinput.cpp|`userinput.cpp`": "",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/userinput.hpp|`Actions::pushActionSet` / `popActionSet`": "static void pushActionSet(std::string action_set_name);",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/vkcore/renderer.cpp|`renderer.cpp` 内": "return isConcreteRenderTarget(target) &&",
