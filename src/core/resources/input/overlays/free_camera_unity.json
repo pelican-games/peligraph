@@ -1,0 +1,7 @@
+{
+  "schema": "pelican.input_action_overlay",
+  "version": 1,
+  "name": "free_camera_unity",
+  "actions": "engine://input/free_camera_actions.json",
+  "profile": "engine://input/profiles/free_camera_unity.json"
+}

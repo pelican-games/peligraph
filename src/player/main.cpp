@@ -18,6 +18,7 @@
 #include "../core/loader/pathresolver.hpp"
 #include "../core/loader/projectsrc.hpp"
 #include "../core/log.hpp"
+#include "../project/inputactionoverlay.hpp"
 #include "../project/projectformat.hpp"
 
 namespace {
@@ -105,6 +106,17 @@ Pelican::EngineLaunchFreeCameraPreset parseFreeCameraPreset(const std::string &v
         return Pelican::EngineLaunchFreeCameraPreset::Unity;
     }
     throw std::runtime_error("--free-camera must be one of: blender, unity");
+}
+
+std::string_view freeCameraInputActionOverlayReference(
+    Pelican::EngineLaunchFreeCameraPreset preset) {
+    switch (preset) {
+    case Pelican::EngineLaunchFreeCameraPreset::Blender:
+        return Pelican::freeCameraBlenderInputActionOverlayReference;
+    case Pelican::EngineLaunchFreeCameraPreset::Unity:
+        return Pelican::freeCameraUnityInputActionOverlayReference;
+    }
+    throw std::runtime_error("unknown runtime free camera preset");
 }
 
 std::filesystem::path resolveExistingCliFile(const std::string &value, const std::string &name) {
@@ -260,6 +272,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("uri")
         .help("overlay a pelican.render_feature_overlay document for this launch");
+    program.add_argument("--input-action-overlay")
+        .default_value(std::string{})
+        .metavar("uri")
+        .help("overlay a pelican.input_action_overlay document for this launch");
     program.add_argument("--game-logic")
         .default_value(std::string{})
         .metavar("path.dll")
@@ -354,6 +370,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (!feature_overlay.empty()) {
             config.render_feature_overlays.push_back(feature_overlay);
         }
+        const auto input_action_overlay =
+            program.get<std::string>("--input-action-overlay");
+        if (!input_action_overlay.empty()) {
+            config.input_action_overlays.push_back(input_action_overlay);
+        }
 
         const int frames = program.get<int>("--frames");
         if (frames < 0) {
@@ -400,12 +421,13 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.input_profile = input_profile;
         }
         if (program.is_used("--free-camera")) {
-            if (config.input_profile) {
-                throw std::runtime_error("--free-camera cannot be combined with --input-profile");
-            }
+            const auto preset =
+                parseFreeCameraPreset(program.get<std::string>("--free-camera"));
             config.free_camera = Pelican::EngineLaunchFreeCamera{
-                .preset = parseFreeCameraPreset(program.get<std::string>("--free-camera")),
+                .preset = preset,
             };
+            config.input_action_overlays.emplace_back(
+                freeCameraInputActionOverlayReference(preset));
         }
         const auto camera_bake_output = program.get<std::string>("--bake-camera-output");
         if (!camera_bake_output.empty()) {

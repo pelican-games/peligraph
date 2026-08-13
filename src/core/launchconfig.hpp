@@ -58,6 +58,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // Tool-declared startup inputs. These are deliberately absent from
     // ProjectBasicConfig, so project loading cannot opt into or persist them.
     std::vector<std::string> render_feature_overlays;
+    std::vector<std::string> input_action_overlays;
     bool force_unorm_color_path_for_testing = false;
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;

@@ -1,7 +1,7 @@
 # カメラシステム: glTF 同等以上(v1)
 
 対象読者: エンジン担当。
-ステータス: v1.2 ドラフト(2026-08-08。WP273 の視点移動 preset を追記)。
+ステータス: v1.3 ドラフト(2026-08-13。WP290 の入力 overlay 合成を追記)。
 前提: `design_scene_format.md`(camera コンポーネント)、R6(glTF 規約)、
 `design_game_logic_native.md`(コントローラの置き場所)、
 transform_seq v2 予約(カメラトラック)。
@@ -69,14 +69,15 @@ transform_seq v2 予約(カメラトラック)。
 - camera: 解決済み scene camera 群とは別に synthetic な `orbit` camera を加え、最初の
   scene camera があればその pose/projection を開始値にする。既存 camera の controller と
   authored transform は変更しない
-- input: `engine://input/free_camera_actions.json` と
-  `engine://input/profiles/free_camera_blender.json` / `free_camera_unity.json` を入力 runtime が
-  選ぶ。project の
-  `input/actions.json`、`input/profiles/*.json`、`project.json` は読替えも書込みもしない
+- input: `engine://input/overlays/free_camera_blender.json` / `free_camera_unity.json` が
+  `free_camera_actions.json` と対応 profile を bundle し、入力 runtime が project の action/profile
+  **と並べて**合成する。project の `input/actions.json`、`input/profiles/*.json`、`project.json` は
+  読替えも書込みもしない
 
 この overlay は `EngineLaunchConfig::free_camera` がある起動だけに存在し、省略時は camera と
-input の従来経路だけを通る。既存の `Orbit` とその runtime 注視点・パン・ズームを使い、
-新 controller 型は加えない。
+input の従来経路だけを通る。入力 bundle URI 自体は `EngineLaunchConfig::input_action_overlays` に
+あり、`ProjectBasicConfig` には対応フィールドがない。既存の `Orbit` とその runtime 注視点・
+パン・ズームを使い、新 controller 型は加えない。
 
 ### 2.2 視点移動 preset(WP273)
 

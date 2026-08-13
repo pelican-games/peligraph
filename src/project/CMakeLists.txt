@@ -9,6 +9,7 @@ add_library(pelican_project
     gltfmateriallowering.cpp
     importmanifest.cpp
     importrules.cpp
+    inputactionoverlay.cpp
     jsonrpc.cpp
     lightingdata.cpp
     logicalrendergraph.cpp

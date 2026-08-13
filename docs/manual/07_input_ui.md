@@ -94,7 +94,8 @@ L1 の要点(✅WP69 で改訂):
 - binding 要素のフィールド: `action` / `binding` + 任意 `deadzone`(数値 [0,1)、pad 軸限定)、`invert_x`(bool、pad 軸なら axis1 / axis2 どちらでも可)/ `invert_y`(bool、axis2 限定)。反転はいずれも deadzone 適用後です。
 - プロファイルの登録と既定は `project.json`: `basic_config.input_profiles`(名前 → ファイルの辞書)と `basic_config.input_profile`(既定名)。
 - 切替は 3 通り: 起動引数 `--input-profile <name>` / rpc `set_input_profile` / ゲームコード `selectInputProfile`。筐体・環境差(アーケード筐体等)は**プロファイルを増やして**表現します。
-- `--free-camera [blender|unity]` はデバッグ用の例外ではなく、公開された runtime overlay です。明示した起動だけで埋め込み profile `blender` / `unity` を選び、プロジェクトの actions/profile ファイルは変更しません。省略時 preset は `blender`、`--input-profile` との同時指定は、どちらを選ぶか曖昧になるためエラーです。各操作は[ツール章 §10.2](10_tools.md#102-pelican_player-cli-リファレンス)にあります。
+- `--input-action-overlay <uri>` は `pelican.input_action_overlay` v1 bundle の action 集合と固定 profile を**この起動だけ** project 集合へ重ねます。action / action set の同名衝突は名前付きの hard error で、暗黙の上書きはありません。未知 action の問い合わせも hard error のままです。
+- `--free-camera [blender|unity]` はこの公開 overlay の同梱 bundle を使います。project の actions/profile と同時に有効で、`--input-profile` は project profile だけを選ぶため併用できます。プロジェクトファイルは変更されません。省略時 preset は `blender` です。各操作は[ツール章 §10.2](10_tools.md#102-pelican_player-cli-リファレンス)にあります。
 
 ### binding 記法 `device:control`
 

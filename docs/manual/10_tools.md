@@ -51,7 +51,8 @@
 | `--record-input <path.jsonl>` | なし | 順序付き入力を `pelican.input_seq` v1 で収録(✅WP89) |
 | `--replay <path.jsonl>` | なし | input_seq のリプレイ。`--record-input` と排他、ホットリロード自動無効(✅WP89) |
 | `--input-profile <name>` | project.json の既定 | アクティブ入力プロファイルの上書き(✅WP91) |
-| `--free-camera [blender\|unity]` | off (`blender` が省略時 preset) | project を変更せず runtime-only の `orbit` camera と埋め込み入力 profile を有効化(✅WP273) |
+| `--input-action-overlay <uri>` | なし | `pelican.input_action_overlay` v1 の action/profile bundle を**この起動だけ** project 入力へ重ねる |
+| `--free-camera [blender\|unity]` | off (`blender` が省略時 preset) | project 入力と並存する runtime-only の `orbit` camera と同梱入力 overlay を有効化 |
 | `--xr off\|auto\|on` | off | OpenXR(PCVR)起動(✅WP125。`auto` = 不在なら flat 続行 / `on` = 不在・headless・rpc・リプレイでは名指しエラー — [第2章](02_getting_started.md)) |
 | `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須(✅WP89) |
 
@@ -67,6 +68,7 @@ pelican_player --headless --project mygame --replay s.jsonl \
   --bake-camera-output cam.jsonl                                            # カメラ焼き出し
 pelican_player --project mygame --free-camera                               # Blender 操作(既定)
 pelican_player --project mygame --free-camera unity                         # Unity 操作
+pelican_player --project mygame --input-profile gamepad --free-camera       # gamepad profile と Blender 視点操作を併用
 ```
 
 `--feature-overlay` が読む文書は、厳密な `pelican.render_feature_overlay` v1 envelope
@@ -75,6 +77,15 @@ pelican_player --project mygame --free-camera unity                         # Un
 引数が無ければ loader 自体を呼ばず、従来の rendering config をそのまま登録します。overlay URI は
 `project.json` / scene / user 層には保存されず、overlay から追加された target と pass もその process の
 寿命にだけ存在します。
+
+`--input-action-overlay` が読む文書は、厳密な `pelican.input_action_overlay` v1 envelope
+(`schema` / `version` / `name` / `actions` / 任意の `profile`)です。`actions` は
+`pelican.input_actions` v1、`profile` はその actions だけを参照する `pelican.input_profile` v1
+への URI です。project の最初の action set の後ろへ overlay の全 set を積み、後ろほど高優先で
+評価します。action 名・action set 名・overlay 名の衝突は衝突名を含む hard error です。
+project profile と固定 overlay profile は同時適用され、RPC の profile 切替でも overlay binding は
+残ります。引数が無ければ overlay loader を呼ばず、従来の project 定義をそのまま使います。
+URI は `ProjectBasicConfig` に入らず、保存・再読み込みの対象にもなりません。
 
 視点移動 preset の操作は次のとおりです。
 
@@ -85,7 +96,8 @@ pelican_player --project mygame --free-camera unity                         # Un
 
 既定を Blender にしたのは、要望が Blender の操作を起点としており、通常の視点移動も orbit
 だからです。初期注視点は開始 camera の視線上 5 world units 先です。scene object を追加せず、
-選択物へのフォーカスも行いません。`--input-profile` との同時指定と未知の preset 名はエラーです。
+選択物へのフォーカスも行いません。未知の preset 名はエラーです。`--input-profile` は project 側、
+free-camera preset は overlay 側を選ぶため、両者は併用できます。
 
 ※ `--play-seq` / `--seq-mesh` の相対パスは現状 cwd 基準で解決されます(既知の食い違い。[第11章](11_status.md))。
 
@@ -490,7 +502,7 @@ dist_debug/pelican_studio.exe
 
 `--project` はここに書きません。Studio が開いた project から自分で渡すため、同名指定は除去されます。
 
-`--free-camera [blender|unity]` と `--feature-overlay` は Studio 固有機能ではなく、どちらも同じ
+`--free-camera [blender|unity]`、`--feature-overlay`、`--input-action-overlay` は Studio 固有機能ではなく、いずれも同じ
 `pelican_player` の公開引数です。したがって素の player や profiler からも同じ起動時 overlay を
 使えます。Studio が必要とする bundle の内容(gizmo + picking)は
 `engine://features/editor.json` だけが所有し、Studio source は個別 feature URI の一覧を持ちません。

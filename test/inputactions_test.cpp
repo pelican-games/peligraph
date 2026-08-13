@@ -6,8 +6,10 @@
 #include "../src/core/os/actionmap.hpp"
 #include "../src/core/os/inputstate.hpp"
 #include "../src/core/userpublic/userinput.hpp"
+#include "../src/project/inputactionoverlay.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
 #include <filesystem>
@@ -17,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
@@ -331,6 +334,102 @@ TEST_CASE("Repository input profiles remain readable as v1", "[input-actions][wp
     REQUIRE(profile_count > 0);
 }
 
+TEST_CASE("startup input action overlay is explicit, additive, and rejects named collisions",
+          "[input-actions][overlay][wp290]") {
+    const auto authored = readText(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example" / "input" / "actions.json");
+    const std::vector<std::string> no_overlays;
+    bool loader_called = false;
+    const auto unchanged = applyInputActionOverlays(
+        authored, no_overlays,
+        [&loader_called](std::string_view) {
+            loader_called = true;
+            return std::string{};
+        });
+    REQUIRE_FALSE(loader_called);
+    REQUIRE(unchanged.effective_actions_json == authored);
+    REQUIRE(unchanged.overlays.empty());
+
+    const std::string overlay_reference = "project://tool.json";
+    const std::string actions_reference = "project://tool-actions.json";
+    const std::string profile_reference = "project://tool-profile.json";
+    const std::unordered_map<std::string, std::string> documents{
+        {overlay_reference,
+         R"json({"schema":"pelican.input_action_overlay","version":1,"name":"tool","actions":"project://tool-actions.json","profile":"project://tool-profile.json"})json"},
+        {actions_reference,
+         R"json({"schema":"pelican.input_actions","version":1,"action_sets":[{"name":"tool","actions":[{"name":"tool_action","type":"button"}]}]})json"},
+        {profile_reference,
+         R"json({"schema":"pelican.input_profile","version":1,"name":"tool","bindings":[{"action":"tool_action","binding":"kbd:t"}]})json"},
+    };
+    const auto load = [&documents](std::string_view reference) {
+        const auto found = documents.find(std::string{reference});
+        if (found == documents.end()) {
+            throw std::runtime_error("missing fixture");
+        }
+        return found->second;
+    };
+    const std::vector<std::string> overlays{overlay_reference};
+    const auto applied = applyInputActionOverlays(authored, overlays, load);
+    REQUIRE(applied.effective_actions_json.has_value());
+    const auto effective =
+        parseInputActionsString(*applied.effective_actions_json);
+    REQUIRE(effective.findAction("move") != nullptr);
+    REQUIRE(effective.findAction("jump") != nullptr);
+    REQUIRE(effective.findAction("tool_action") != nullptr);
+    REQUIRE(applied.overlays.size() == 1);
+    REQUIRE(applied.overlays.front().action_set_names ==
+            std::vector<std::string>{"tool"});
+    REQUIRE(applied.overlays.front().profile_json.has_value());
+    const auto overlay_definitions =
+        parseInputActionsString(applied.overlays.front().actions_json);
+    const auto overlay_profile = parseInputProfileString(
+        *applied.overlays.front().profile_json, overlay_definitions);
+    REQUIRE(overlay_profile.bindings.front().action == "tool_action");
+
+    auto collision_documents = documents;
+    collision_documents.at(actions_reference) =
+        R"json({"schema":"pelican.input_actions","version":1,"action_sets":[{"name":"tool","actions":[{"name":"move","type":"axis2"}]}]})json";
+    const auto load_collision = [&collision_documents](
+                                    std::string_view reference) {
+        return collision_documents.at(std::string{reference});
+    };
+    REQUIRE_THROWS_WITH(
+        applyInputActionOverlays(authored, overlays, load_collision),
+        Catch::Matchers::ContainsSubstring("action name collision: move"));
+
+    collision_documents.at(actions_reference) =
+        R"json({"schema":"pelican.input_actions","version":1,"action_sets":[{"name":"gameplay","actions":[{"name":"tool_action","type":"button"}]}]})json";
+    REQUIRE_THROWS_WITH(
+        applyInputActionOverlays(authored, overlays, load_collision),
+        Catch::Matchers::ContainsSubstring(
+            "action set name collision: gameplay"));
+}
+
+TEST_CASE("startup input action overlay accepts only its strict v1 envelope",
+          "[input-actions][overlay][format][wp290]") {
+    const std::optional<std::string> no_authored_actions;
+    const std::vector<std::string> overlays{"project://overlay.json"};
+    const auto apply = [&](std::string bytes) {
+        return applyInputActionOverlays(
+            no_authored_actions, overlays,
+            [bytes = std::move(bytes)](std::string_view) {
+                return bytes;
+            });
+    };
+
+    REQUIRE_THROWS_WITH(
+        apply(R"json({"schema":"pelican.input_action_overlay","version":2,"name":"tool","actions":"project://actions.json"})json"),
+        Catch::Matchers::ContainsSubstring("version must be exactly 1"));
+    REQUIRE_THROWS_WITH(
+        apply(R"json({"schema":"pelican.input_action_overlay","version":1,"name":"tool","actions":"project://actions.json","project":true})json"),
+        Catch::Matchers::ContainsSubstring("unknown key 'project'"));
+    REQUIRE_THROWS_WITH(
+        apply(R"json({"schema":"pelican.input_action_overlay","version":1,"name":"tool","actions":""})json"),
+        Catch::Matchers::ContainsSubstring(
+            "non-empty string actions reference"));
+}
+
 TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicConfig", "[input-actions]") {
     ensureLogger();
     Sandbox sandbox;
@@ -382,10 +481,11 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 3);
 }
 
-TEST_CASE("Runtime free camera supplies embedded Blender and Unity profiles without project declarations",
-          "[input-actions][free-camera][wp273]") {
+TEST_CASE("Runtime free camera overlays project actions and keeps project profile selection",
+          "[input-actions][free-camera][overlay][wp290]") {
     struct PresetCase {
         EngineLaunchFreeCameraPreset preset;
+        std::string_view overlay;
         std::string_view name;
         std::string_view orbit;
         std::string_view pan;
@@ -394,10 +494,12 @@ TEST_CASE("Runtime free camera supplies embedded Blender and Unity profiles with
         KeyCode orbit_button;
     };
     const PresetCase cases[] = {
-        {EngineLaunchFreeCameraPreset::Blender, "blender", "mouse:middle",
+        {EngineLaunchFreeCameraPreset::Blender,
+         freeCameraBlenderInputActionOverlayReference, "blender", "mouse:middle",
          "mouse:shift+middle", "mouse:ctrl+middle", std::nullopt,
          KeyCode::MouseMiddle},
-        {EngineLaunchFreeCameraPreset::Unity, "unity", "mouse:alt+left",
+        {EngineLaunchFreeCameraPreset::Unity,
+         freeCameraUnityInputActionOverlayReference, "unity", "mouse:alt+left",
          "mouse:middle", "mouse:alt+right", KeyCode::LeftAlt,
          KeyCode::MouseLeft},
     };
@@ -406,25 +508,51 @@ TEST_CASE("Runtime free camera supplies embedded Blender and Unity profiles with
     for (const auto &preset : cases) {
         DYNAMIC_SECTION(std::string{preset.name}) {
             Sandbox sandbox;
-            std::filesystem::create_directories(sandbox.root);
+            writeText(sandbox.root / "input" / "actions.json",
+                      readText(fixtureRoot() / "valid" /
+                               "gameplay_menu.json"));
+            writeText(sandbox.root / "input" / "keyboard.json",
+                      readText(fixtureRoot() / "valid" / "keyboard.json"));
+            writeText(sandbox.root / "input" / "gamepad.json",
+                      readText(fixtureRoot() / "valid" / "gamepad.json"));
+            const auto project = nlohmann::json{
+                {"schema", "pelican.project"},
+                {"version", 1},
+                {"name", "input-action-overlay"},
+                {"engine_min_version", "0.1.0"},
+                {"basic_config",
+                 {{"input_actions_json", "input/actions.json"},
+                  {"input_profiles",
+                   {{"keyboard", "input/keyboard.json"},
+                    {"gamepad", "input/gamepad.json"}}},
+                  {"input_profile", "keyboard"}}},
+            };
+            const auto project_bytes = project.dump(2);
+            writeText(sandbox.root / "project.json", project_bytes);
 
             FastModuleContainer modules;
             GET_MODULE(PathResolver).setup(sandbox.root, false);
-            GET_MODULE(EngineLaunchConfig).free_camera = EngineLaunchFreeCamera{
+            GET_MODULE(ProjectSource).setProjectData(project_bytes);
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.input_profile = "keyboard";
+            launch.free_camera = EngineLaunchFreeCamera{
                 .preset = preset.preset,
             };
+            launch.input_action_overlays.emplace_back(preset.overlay);
 
             REQUIRE(Actions::isConfigured());
             REQUIRE(Actions::actionSetStack() ==
-                    std::vector<std::string>{"free_camera"});
+                    std::vector<std::string>{"gameplay", "free_camera"});
             REQUIRE(internal::activeInputProfile() ==
-                    std::optional<std::string>{std::string{preset.name}});
+                    std::optional<std::string>{"keyboard"});
             REQUIRE(internal::availableInputProfiles() ==
-                    std::vector<std::string>{"blender", "unity"});
+                    std::vector<std::string>{"gamepad", "keyboard"});
             REQUIRE_FALSE(internal::gamepadPollingEnabled());
 
             const auto *map = internal::inputActionMap();
             REQUIRE(map != nullptr);
+            REQUIRE(map->findAction("move") != nullptr);
+            REQUIRE(map->findAction("jump") != nullptr);
             const auto require_binding = [map](std::string_view action,
                                                std::string_view binding) {
                 const auto *definition = map->findAction(action);
@@ -440,6 +568,8 @@ TEST_CASE("Runtime free camera supplies embedded Blender and Unity profiles with
             require_binding("pelican_view_wheel", "mouse:wheel_y");
 
             auto &input = GET_MODULE(InputState);
+            input.queueEvent(InputEvent::button(KeyCode::D, true));
+            input.queueEvent(InputEvent::button(KeyCode::Space, true));
             if (preset.modifier) {
                 input.queueEvent(InputEvent::button(*preset.modifier, true));
             }
@@ -447,10 +577,26 @@ TEST_CASE("Runtime free camera supplies embedded Blender and Unity profiles with
             input.queueEvent(InputEvent::axis(0.25f, -0.5f));
             input.queueEvent(InputEvent::scroll(0.0f, 0.75f));
             input.beginFrame();
+            REQUIRE(Actions::axis2("move").x == 1.0f);
+            REQUIRE(Actions::isHeld("jump"));
             REQUIRE(Actions::isHeld("pelican_view_orbit"));
             REQUIRE(Actions::axis1("pelican_view_pointer_x") == 0.25f);
             REQUIRE(Actions::axis1("pelican_view_pointer_y") == -0.5f);
             REQUIRE(Actions::axis1("pelican_view_wheel") == 0.75f);
+            REQUIRE_THROWS_WITH(
+                Actions::axis1("missing_action"),
+                Catch::Matchers::ContainsSubstring(
+                    "unknown input action: missing_action"));
+
+            internal::selectInputProfile("gamepad");
+            REQUIRE(internal::activeInputProfile() ==
+                    std::optional<std::string>{"gamepad"});
+            REQUIRE(internal::gamepadPollingEnabled());
+            const auto *switched = internal::inputActionMap();
+            REQUIRE(switched != nullptr);
+            REQUIRE(switched->findAction("pelican_view_orbit")
+                        ->bindings.front().text == std::string{preset.orbit});
+            REQUIRE(readText(sandbox.root / "project.json") == project_bytes);
         }
     }
 }

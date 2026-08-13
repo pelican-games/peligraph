@@ -1,5 +1,6 @@
 #include "gamesystem.hpp"
 
+#include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/scene.hpp"
 #include "../renderer/camera.hpp"
@@ -180,81 +181,38 @@ glm::quat rotationFromPose(const CameraPose &pose) {
     return glm::quat_cast(glm::mat3{right, up, dir});
 }
 
-bool isUnknownActionError(const std::runtime_error &error) {
-    const std::string message = error.what();
-    return message.rfind("unknown input action:", 0) == 0;
-}
-
-ActionAxis2 optionalAxis2(GameContext &ctx, std::string_view action_name) {
-    if (!ctx.actionsConfigured()) {
-        return {};
-    }
-    try {
-        return ctx.actionAxis2(action_name);
-    } catch (const std::runtime_error &error) {
-        if (isUnknownActionError(error)) {
-            return {};
-        }
-        throw;
-    }
-}
-
-float optionalAxis1(GameContext &ctx, std::string_view action_name) {
-    if (!ctx.actionsConfigured()) {
-        return 0.0f;
-    }
-    try {
-        return ctx.actionAxis1(action_name);
-    } catch (const std::runtime_error &error) {
-        if (isUnknownActionError(error)) {
-            return 0.0f;
-        }
-        throw;
-    }
-}
-
-bool optionalActionHeld(GameContext &ctx, std::string_view action_name) {
-    if (!ctx.actionsConfigured()) {
-        return false;
-    }
-    try {
-        return ctx.actionHeld(action_name);
-    } catch (const std::runtime_error &error) {
-        if (isUnknownActionError(error)) {
-            return false;
-        }
-        throw;
-    }
-}
-
 struct OrbitInput {
     ActionAxis2 look;
     ActionAxis2 pan;
     float zoom = 0.0f;
 };
 
-OrbitInput readOrbitInput(GameContext &ctx) {
+OrbitInput readAuthoredOrbitInput(GameContext &ctx) {
     auto result = OrbitInput{
-        .look = optionalAxis2(ctx, "look"),
-        .pan = optionalAxis2(ctx, "pan"),
-        .zoom = optionalAxis1(ctx, "zoom"),
+        .look = ctx.actionAxis2("look"),
+        .pan = ctx.actionAxis2("pan"),
+        .zoom = ctx.actionAxis1("zoom"),
     };
-    const auto move = optionalAxis2(ctx, "move");
+    const auto move = ctx.actionAxis2("move");
     result.look.x += move.x;
     result.zoom += move.y;
+    return result;
+}
 
-    const auto pointer_x = optionalAxis1(ctx, "pelican_view_pointer_x");
-    const auto pointer_y = optionalAxis1(ctx, "pelican_view_pointer_y");
-    result.zoom += optionalAxis1(ctx, "pelican_view_wheel");
+OrbitInput readRuntimeFreeCameraInput(GameContext &ctx) {
+    OrbitInput result;
+    const auto pointer_x = ctx.actionAxis1("pelican_view_pointer_x");
+    const auto pointer_y = ctx.actionAxis1("pelican_view_pointer_y");
+    result.zoom = ctx.actionAxis1("pelican_view_wheel");
 
     // A chord such as Shift+MMB also satisfies the unmodified MMB binding.
     // Resolve that deliberate input-profile overlap by operation priority.
-    if (optionalActionHeld(ctx, "pelican_view_zoom_drag")) {
+    if (ctx.actionHeld("pelican_view_zoom_drag")) {
         result.zoom -= pointer_y;
-    } else if (optionalActionHeld(ctx, "pelican_view_pan")) {
+    } else if (ctx.actionHeld("pelican_view_pan")) {
         result.pan.x -= pointer_x;
         result.pan.y += pointer_y;
-    } else if (optionalActionHeld(ctx, "pelican_view_orbit")) {
+    } else if (ctx.actionHeld("pelican_view_orbit")) {
         result.look.x += pointer_x;
         result.look.y += pointer_y;
     }
@@ -305,7 +263,13 @@ CameraPose updateOrbit(GameContext &ctx, std::string_view camera_name, const Con
         state.distance = controller.distance;
         state.initialized = true;
     }
-    const auto input = readOrbitInput(ctx);
+    const auto &camera = GET_MODULE(Camera);
+    const bool runtime_free_camera =
+        GET_MODULE(EngineLaunchConfig).free_camera.has_value() &&
+        camera.activeCameraName() == camera_name;
+    const auto input = runtime_free_camera
+                           ? readRuntimeFreeCameraInput(ctx)
+                           : readAuthoredOrbitInput(ctx);
     state.yaw += input.look.x * controller.sensitivity * static_cast<float>(dt);
     state.pitch = clampPitch(state.pitch + input.look.y * controller.sensitivity * static_cast<float>(dt));
     state.distance =
@@ -364,8 +328,8 @@ CameraPose updateFly(GameContext &ctx, std::string_view camera_name, const Contr
         state.initialized = true;
     }
     const auto dt = static_cast<float>(std::max(ctx.deltaTime(), 0.0));
-    const auto look = optionalAxis2(ctx, "look");
-    const auto move = optionalAxis2(ctx, "move");
+    const auto look = ctx.actionAxis2("look");
+    const auto move = ctx.actionAxis2("move");
     state.yaw += look.x * controller.sensitivity * dt;
     state.pitch = clampPitch(state.pitch + look.y * controller.sensitivity * dt);
 

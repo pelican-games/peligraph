@@ -46,6 +46,8 @@
     "features/taa.json",
     "features/velocity.json",
     "input/free_camera_actions.json",
+    "input/overlays/free_camera_blender.json",
+    "input/overlays/free_camera_unity.json",
     "input/profiles/free_camera_blender.json",
     "input/profiles/free_camera_unity.json",
     "fullscreen.frag",

@@ -15,6 +15,7 @@ set(project_dir "${OUT_DIR}/project")
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY
     "${project_dir}/assets"
+    "${project_dir}/input/profiles"
     "${project_dir}/passes"
     "${project_dir}/scenes"
     "${project_dir}/ui"
@@ -38,7 +39,10 @@ file(WRITE "${project_dir}/project.json" [=[
     "asset_data_json": "assets/asset_data.json",
     "rendering_config_json": "passes/main.json",
     "default_rendering_pass": "main_render",
-    "ui_config_json": "ui/empty.json"
+    "ui_config_json": "ui/empty.json",
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {"keyboard": "input/profiles/keyboard.json"},
+    "input_profile": "keyboard"
   }
 }
 ]=])
@@ -46,6 +50,30 @@ file(WRITE "${project_dir}/assets/asset_data.json"
     "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
 file(WRITE "${project_dir}/ui/empty.json"
     "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
+file(WRITE "${project_dir}/input/actions.json" [=[
+{
+  "schema": "pelican.input_actions",
+  "version": 1,
+  "action_sets": [{
+    "name": "gameplay",
+    "actions": [
+      {"name": "move", "type": "axis2"},
+      {"name": "jump", "type": "button"}
+    ]
+  }]
+}
+]=])
+file(WRITE "${project_dir}/input/profiles/keyboard.json" [=[
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "keyboard",
+  "bindings": [
+    {"action": "move", "binding": "kbd:wasd"},
+    {"action": "jump", "binding": "kbd:space"}
+  ]
+}
+]=])
 file(WRITE "${project_dir}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
@@ -234,11 +262,13 @@ endif()
 project_digest(before_digest)
 
 set(default_bake "${OUT_DIR}/default.transform_seq.jsonl")
-run_bake("${default_bake}" "${blender_replay}" --free-camera)
+run_bake("${default_bake}" "${blender_replay}"
+    --input-profile keyboard --free-camera)
 assert_navigation("${default_bake}" "default Blender")
 
 set(blender_bake "${OUT_DIR}/blender.transform_seq.jsonl")
-run_bake("${blender_bake}" "${blender_replay}" --free-camera blender)
+run_bake("${blender_bake}" "${blender_replay}"
+    --input-profile keyboard --free-camera blender)
 assert_navigation("${blender_bake}" "Blender")
 
 file(SHA256 "${default_bake}" default_bake_digest)
@@ -248,8 +278,63 @@ if(NOT default_bake_digest STREQUAL blender_bake_digest)
 endif()
 
 set(unity_bake "${OUT_DIR}/unity.transform_seq.jsonl")
-run_bake("${unity_bake}" "${unity_replay}" --free-camera unity)
+run_bake("${unity_bake}" "${unity_replay}"
+    --input-profile keyboard --free-camera unity)
 assert_navigation("${unity_bake}" "Unity")
+
+set(recorded_input "${OUT_DIR}/recorded.input_seq.jsonl")
+execute_process(
+    COMMAND "${PLAYER}"
+        --headless
+        --project "${project_dir}"
+        --size 64x64
+        --frames 3
+        --record-input "${recorded_input}"
+        --input-profile keyboard
+        --free-camera
+    WORKING_DIRECTORY "${PLAYER_DIR}"
+    RESULT_VARIABLE record_result
+    OUTPUT_VARIABLE record_stdout
+    ERROR_VARIABLE record_stderr
+)
+if(NOT record_result EQUAL 0 OR NOT EXISTS "${recorded_input}")
+    message(FATAL_ERROR
+        "input recording with the free-camera overlay failed: ${record_result}\n${record_stdout}\n${record_stderr}")
+endif()
+execute_process(
+    COMMAND "${PLAYER}"
+        --headless
+        --project "${project_dir}"
+        --size 64x64
+        --replay "${recorded_input}"
+        --input-profile keyboard
+        --free-camera
+    WORKING_DIRECTORY "${PLAYER_DIR}"
+    RESULT_VARIABLE replay_result
+    OUTPUT_VARIABLE replay_stdout
+    ERROR_VARIABLE replay_stderr
+)
+if(NOT replay_result EQUAL 0)
+    message(FATAL_ERROR
+        "input replay with the free-camera overlay failed: ${replay_result}\n${replay_stdout}\n${replay_stderr}")
+endif()
+execute_process(
+    COMMAND "${PLAYER}"
+        --headless
+        --project "${project_dir}"
+        --size 64x64
+        --frames 1
+        --input-profile keyboard
+        --input-action-overlay engine://input/overlays/free_camera_blender.json
+    WORKING_DIRECTORY "${PLAYER_DIR}"
+    RESULT_VARIABLE public_overlay_result
+    OUTPUT_VARIABLE public_overlay_stdout
+    ERROR_VARIABLE public_overlay_stderr
+)
+if(NOT public_overlay_result EQUAL 0)
+    message(FATAL_ERROR
+        "public input-action overlay CLI failed: ${public_overlay_result}\n${public_overlay_stdout}\n${public_overlay_stderr}")
+endif()
 
 execute_process(
     COMMAND "${PLAYER}" --headless --project "${project_dir}" --free-camera unknown

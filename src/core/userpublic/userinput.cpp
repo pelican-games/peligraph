@@ -4,6 +4,7 @@
 #include "../launchconfig.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
+#include "../../project/inputactionoverlay.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -16,29 +17,54 @@ namespace Pelican {
 
 namespace {
 
-constexpr std::string_view freeCameraActionsResource =
-    "engine://input/free_camera_actions.json";
-constexpr std::string_view freeCameraBlenderProfileResource =
-    "engine://input/profiles/free_camera_blender.json";
-constexpr std::string_view freeCameraUnityProfileResource =
-    "engine://input/profiles/free_camera_unity.json";
-constexpr std::string_view freeCameraBlenderProfileName = "blender";
-constexpr std::string_view freeCameraUnityProfileName = "unity";
+struct InputActionsRuntimeSource {
+    std::optional<std::string> authored_actions_json;
+    std::optional<std::string> effective_actions_json;
+    std::unordered_map<std::string, std::string> project_profile_jsons;
+    std::optional<std::string> selected_project_profile;
+    std::vector<AppliedInputActionOverlay> overlays;
+};
 
-std::string_view freeCameraProfileName(EngineLaunchFreeCameraPreset preset) {
-    switch (preset) {
-    case EngineLaunchFreeCameraPreset::Blender:
-        return freeCameraBlenderProfileName;
-    case EngineLaunchFreeCameraPreset::Unity:
-        return freeCameraUnityProfileName;
+InputActionsRuntimeSource loadInputActionsRuntimeSourceFromProject() {
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto actions_json = config.inputActionsJson();
+    return {
+        .authored_actions_json = actions_json,
+        .effective_actions_json = std::move(actions_json),
+        .project_profile_jsons = config.inputProfileJsons(),
+        .selected_project_profile = config.defaultInputProfile(),
+    };
+}
+
+// Explicit launch/tooling path. The project-only source above never inspects
+// EngineLaunchConfig overlays, and ProjectBasicConfig has no field for them.
+InputActionsRuntimeSource
+loadInputActionsRuntimeSourceWithStartupActionOverlays() {
+    auto source = loadInputActionsRuntimeSourceFromProject();
+    const auto &launch = GET_MODULE(EngineLaunchConfig);
+    if (launch.input_profile) {
+        source.selected_project_profile = launch.input_profile;
     }
-    throw std::runtime_error("unknown runtime free camera preset");
+    if (launch.input_action_overlays.empty()) {
+        return source;
+    }
+
+    auto application = applyInputActionOverlays(
+        source.authored_actions_json, launch.input_action_overlays,
+        [](std::string_view reference) {
+            return GET_MODULE(PathResolver).loadText(reference);
+        });
+    source.effective_actions_json =
+        std::move(application.effective_actions_json);
+    source.overlays = std::move(application.overlays);
+    return source;
 }
 
 class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::optional<InputActionMap> action_definitions;
     std::optional<InputActionMap> action_map;
     std::unordered_map<std::string, InputBindingProfile> profiles;
+    std::vector<InputBindingProfile> fixed_overlay_profiles;
     std::optional<std::string> active_profile;
     std::vector<std::string> action_set_stack;
     InputActionFrame current_frame;
@@ -104,54 +130,109 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         }
     }
 
-  public:
-    InputActionsRuntime() {
-        const auto &launch = GET_MODULE(EngineLaunchConfig);
-        std::optional<std::string> input_actions_json;
-        std::unordered_map<std::string, std::string> profile_jsons;
-        std::optional<std::string> selected;
-
-        if (launch.free_camera) {
-            if (launch.input_profile) {
-                throw std::runtime_error(
-                    "runtime free camera cannot be combined with an input profile override");
-            }
-            auto &resolver = GET_MODULE(PathResolver);
-            input_actions_json = resolver.loadText(freeCameraActionsResource);
-            profile_jsons.emplace(
-                freeCameraBlenderProfileName,
-                resolver.loadText(freeCameraBlenderProfileResource));
-            profile_jsons.emplace(
-                freeCameraUnityProfileName,
-                resolver.loadText(freeCameraUnityProfileResource));
-            selected = std::string{freeCameraProfileName(launch.free_camera->preset)};
-        } else {
-            auto &config = GET_MODULE(ProjectBasicConfig);
-            input_actions_json = config.inputActionsJson();
-            profile_jsons = config.inputProfileJsons();
-            selected = launch.input_profile ? launch.input_profile
-                                            : config.defaultInputProfile();
-        }
-
-        if (!input_actions_json) {
+    void rebuildActionMap(const InputBindingProfile *project_profile) {
+        if (project_profile == nullptr && fixed_overlay_profiles.empty()) {
+            action_map = action_definitions;
+            active_profile.reset();
+            frozen_generation = std::numeric_limits<std::uint64_t>::max();
             return;
         }
 
-        action_definitions = parseInputActionsString(*input_actions_json);
+        InputBindingProfile effective;
+        effective.name = project_profile != nullptr
+                             ? project_profile->name
+                             : "startup_input_action_overlays";
+        const auto append_bindings = [&effective](
+                                         const InputBindingProfile &profile) {
+            effective.bindings.insert(effective.bindings.end(),
+                                      profile.bindings.begin(),
+                                      profile.bindings.end());
+            effective.uses_gamepad =
+                effective.uses_gamepad || profile.uses_gamepad;
+        };
+        if (project_profile != nullptr) {
+            append_bindings(*project_profile);
+            active_profile = project_profile->name;
+        } else {
+            active_profile.reset();
+        }
+        for (const auto &profile : fixed_overlay_profiles) {
+            append_bindings(profile);
+        }
+        action_map = applyInputProfile(*action_definitions, effective);
+        frozen_generation = std::numeric_limits<std::uint64_t>::max();
+    }
+
+  public:
+    InputActionsRuntime() {
+        auto source =
+            loadInputActionsRuntimeSourceWithStartupActionOverlays();
+        if (!source.effective_actions_json) {
+            return;
+        }
+
+        action_definitions =
+            parseInputActionsString(*source.effective_actions_json);
         action_map = action_definitions;
-        for (const auto &[name, profile_json] : profile_jsons) {
-            auto profile = parseInputProfileString(profile_json, *action_definitions);
-            if (profile.name != name) {
-                throw std::runtime_error("input profile key '" + name + "' does not match document name '" +
-                                         profile.name + "'");
+
+        std::optional<InputActionMap> authored_definitions;
+        if (!source.overlays.empty() && source.authored_actions_json) {
+            authored_definitions =
+                parseInputActionsString(*source.authored_actions_json);
+        }
+        if (source.authored_actions_json) {
+            const auto &project_definitions = authored_definitions
+                                                  ? *authored_definitions
+                                                  : *action_definitions;
+            for (const auto &[name, profile_json] :
+                 source.project_profile_jsons) {
+                auto profile =
+                    parseInputProfileString(profile_json, project_definitions);
+                if (profile.name != name) {
+                    throw std::runtime_error(
+                        "input profile key '" + name +
+                        "' does not match document name '" + profile.name +
+                        "'");
+                }
+                profiles.emplace(name, std::move(profile));
             }
-            profiles.emplace(name, std::move(profile));
         }
-        if (selected) {
-            selectProfile(*selected);
+
+        for (const auto &overlay : source.overlays) {
+            const auto overlay_definitions =
+                parseInputActionsString(overlay.actions_json);
+            if (overlay.profile_json) {
+                try {
+                    fixed_overlay_profiles.push_back(
+                        parseInputProfileString(*overlay.profile_json,
+                                                overlay_definitions));
+                } catch (const std::exception &error) {
+                    throw std::runtime_error(
+                        "input action overlay '" + overlay.reference +
+                        "' profile is invalid: " + error.what());
+                }
+            }
         }
-        if (!action_map->actionSets().empty()) {
-            action_set_stack.push_back(action_map->actionSets().front().name);
+
+        if (source.authored_actions_json) {
+            const auto &project_definitions = authored_definitions
+                                                  ? *authored_definitions
+                                                  : *action_definitions;
+            if (!project_definitions.actionSets().empty()) {
+                action_set_stack.push_back(
+                    project_definitions.actionSets().front().name);
+            }
+        }
+        for (const auto &overlay : source.overlays) {
+            action_set_stack.insert(action_set_stack.end(),
+                                    overlay.action_set_names.begin(),
+                                    overlay.action_set_names.end());
+        }
+
+        if (source.selected_project_profile) {
+            selectProfile(*source.selected_project_profile);
+        } else {
+            rebuildActionMap(nullptr);
         }
     }
 
@@ -164,9 +245,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         if (it == profiles.end()) {
             throw std::runtime_error("unknown input profile: " + std::string{name});
         }
-        action_map = applyInputProfile(*action_definitions, it->second);
-        active_profile = it->first;
-        frozen_generation = std::numeric_limits<std::uint64_t>::max();
+        rebuildActionMap(&it->second);
     }
 
     bool pollsGamepad() const noexcept {
