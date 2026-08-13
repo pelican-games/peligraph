@@ -120,18 +120,6 @@ else()
   catch_discover_tests(${target_name} ${discovery_arguments})
 endif()
 
-# Catch2 3.11 randomizes --list-tests with a fresh random_device seed. Reorder
-# the generated commands to the pre-WP293 compatibility sequence so relinking
-# and combining translation units cannot change ctest names or order.
-string(SHA1 discovery_args_hash "     ")
-string(SUBSTRING ${discovery_args_hash} 0 7 discovery_args_hash)
-add_custom_command(TARGET ${target_name} POST_BUILD
-  COMMAND ${CMAKE_COMMAND}
-    -DTEST_FILE=${CMAKE_CURRENT_BINARY_DIR}/${target_name}-${discovery_args_hash}_tests.cmake
-    -DORDER_FILE=${CMAKE_CURRENT_SOURCE_DIR}/ctest_discovery_order.txt
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/reorder_discovered_tests.cmake
-  VERBATIM
-)
 endfunction()
 
 function(pelican_copy_test_shaderc_runtime source_target)
