@@ -30,9 +30,14 @@ v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP1
 ```sh
 cmake . -B build -DCMAKE_PREFIX_PATH=<Qt install path> -DPELICAN_WITH_SPIRV_LINK=ON
 cmake --build ./build --config Debug
-ctest --test-dir ./build -C Debug --output-on-failure
+ctest --test-dir ./build -C Debug -j4 --output-on-failure
 ```
 
+- **`-j4` を省かないこと。**直列 674 秒に対し `-j4` で 346 秒(実測、失敗 0)。
+  それ以上上げても伸びないのは `pelican_golden_gpu` の resource lock が
+  27 件の GPU テストを直列化して臨界経路になっているため。
+  **`-j64` では 12 件が失敗し GPU が 10 回 SEGFAULT した**ので、全数は `-j4`〜`-j8` に留めること。
+  内周で速く回したいときは `-LE gpu -j16`(1016 件が約 9 秒)。
 - Qt 不要の作業は `-DSKIP_DEVSTUDIO=ON`。ただし `src/devstudio/` を触る WP では OFF にして両方確かめること
 - **`-DPELICAN_WITH_SPIRV_LINK=ON` を省かないこと。** この option の既定は OFF で
   ([`ci.md`](ci.md) §「experimental SPIR-V linker」)、省くと SPIR-V リンカのテスト 5 件が

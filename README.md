@@ -43,8 +43,14 @@ cmake --build ./build --target run_studio
 ## Test
 
 ```sh
-ctest --test-dir ./build
+ctest --test-dir ./build -j4
 ```
+
+`-j` is not optional in practice. Serially the suite takes 674 s; at `-j4` it
+takes 346 s, and it stops improving there because the `pelican_golden_gpu`
+resource lock serialises 27 GPU tests into the critical path. Do not raise it
+far above that for the full suite - `-j64` produced GPU segfaults. For the
+CPU-only tier, `-LE gpu -j16` runs 1016 tests in about 9 s.
 
 Python is not required by the default engine build or by production
 `BUILD_TESTING=OFF` builds with the experimental linker left disabled.
