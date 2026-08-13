@@ -156,6 +156,7 @@ TEST_CASE("shader library resolves shader stem project format fixtures", "[shade
         DYNAMIC_SECTION(file) {
             const auto scenario = readJson(fixtureRoot() / file);
             if (scenario.value("mode", std::string{}) != "shader_stem") {
+                SUCCEED("mode owned by another fixture test");
                 continue;
             }
 

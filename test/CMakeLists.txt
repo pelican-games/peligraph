@@ -99,7 +99,8 @@ if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
   return()
 endif()
 set(discovery_properties)
-set(discovery_arguments)
+# A discovered case with zero assertions must not be reported as passing.
+set(discovery_arguments EXTRA_ARGS -w NoAssertions)
 if(PELICAN_TEST_QT)
   list(APPEND discovery_arguments
     DL_PATHS "$<TARGET_FILE_DIR:Qt6::Core>")
@@ -1522,17 +1523,23 @@ add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 
+set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
+    "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
+
 add_test(
     NAME project_catalog_headless_smoke
     COMMAND ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
-        -DPROJECTS_DIR=${CMAKE_SOURCE_DIR}/projects
+        -DPROJECTS_DIR=${PELICAN_TEST_PROJECTS_DIR}
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
 )
 set_tests_properties(project_catalog_headless_smoke PROPERTIES
-    TIMEOUT 600 RESOURCE_LOCK pelican_gpu LABELS gpu)
+    TIMEOUT 600
+    RESOURCE_LOCK pelican_gpu
+    LABELS gpu
+    SKIP_REGULAR_EXPRESSION PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR)
 
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test GROUP core_diagnostics pelican_core)

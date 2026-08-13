@@ -1,11 +1,15 @@
+if(NOT DEFINED PROJECTS_DIR OR "${PROJECTS_DIR}" STREQUAL "")
+    message(STATUS
+        "PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR: "
+        "configure PELICAN_TEST_PROJECTS_DIR to select a smoke-test corpus")
+    return()
+endif()
+
 if(NOT DEFINED PLAYER)
     message(FATAL_ERROR "PLAYER is required")
 endif()
 if(NOT DEFINED PNG_NONUNIFORM_CHECK)
     message(FATAL_ERROR "PNG_NONUNIFORM_CHECK is required")
-endif()
-if(NOT DEFINED PROJECTS_DIR)
-    message(FATAL_ERROR "PROJECTS_DIR is required")
 endif()
 if(NOT DEFINED OUT_DIR)
     message(FATAL_ERROR "OUT_DIR is required")

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -177,11 +178,45 @@ TEST_CASE("PathResolver project format fixtures", "[pathresolver]") {
                     REQUIRE_FALSE(message.empty());
                     requireErrorKind(message, entry.at("error_kind").get<std::string>());
                 }
+            } else {
+                SUCCEED("mode owned by another fixture test");
             }
         }
     }
 
     resolverForTest().resetForTesting();
+}
+
+// Four tests share test/fixtures/project_format and each handles the modes it
+// owns, falling through the rest. That arrangement is only honest while every
+// mode present is owned by someone: a fixture whose mode is misspelled, or a
+// new mode nobody wired up, would otherwise fall through all four and be
+// reported as four passes. This is the assertion that makes the fall-throughs
+// above safe, so it must list every owner.
+TEST_CASE("project format fixture modes are all covered", "[pathresolver][project-format]") {
+    const auto expectations = readJson(fixtureRoot() / "expectations.json");
+    const std::set<std::string> owned{
+        "resolve_project",  // PathResolver project format fixtures
+        "load_text",        // PathResolver project format fixtures
+        "scene_format",     // Scene format fixtures accept only v1 documents
+        "project_config",   // ProjectBasicConfig loads project.json fixtures
+        "shader_stem",      // shader library resolves shader stem project format fixtures
+    };
+
+    std::set<std::string> seen;
+    for (const auto &entry : expectations) {
+        const auto file = entry.at("file").get<std::string>();
+        const auto scenario = readJson(fixtureRoot() / file);
+        const auto mode = scenario.value("mode", std::string{});
+        INFO("fixture " << file);
+        REQUIRE_FALSE(mode.empty());
+        REQUIRE(owned.contains(mode));
+        seen.insert(mode);
+    }
+
+    // The converse: an owner listed here with no fixture left to exercise it
+    // means the coverage claim above has quietly stopped meaning anything.
+    REQUIRE(seen == owned);
 }
 
 TEST_CASE("PathResolver resolves engine resources before setup", "[pathresolver]") {

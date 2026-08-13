@@ -200,6 +200,8 @@ TEST_CASE("ProjectBasicConfig loads project.json fixtures", "[project-format]") 
                         REQUIRE(ignored_message.empty());
                     }
                 }
+            } else {
+                SUCCEED("mode owned by another fixture test");
             }
         }
     }

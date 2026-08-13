@@ -82,13 +82,19 @@ CPU gate と同じ exact SKIP policy を `test/ci/gpu_skip_allowlist.txt` に対
 判定ロジックは `test/ci/skip_policy.py` に両 gate 共通で置き、self-test は
 `test/ci/test_skip_policy.py`(`python -m unittest test_skip_policy`)。
 
+`project_catalog_headless_smoke` の corpus は clone / worktree の外に置き、configure 時に
+`-DPELICAN_TEST_PROJECTS_DIR=<projects>` で指定する。未指定時は理由
+`PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR` を持つ skip になり、その CTest 名だけを
+GPU allowlist で許可する。entry を外したまま未指定 gate を走らせると unexpected skip として失敗する。
+
 **`ctest` が緑でも gate は落ちうる。** それがこの gate の存在理由である。2026-07-31 の実行では
 `ctest` が「122 件中 0 失敗」と報告した一方、gate は 4 件の非許可 skip を検出して FAIL した
 (詳細は `gpu_skip_allowlist.txt` のコメントと WP241)。skip されたテストは赤くならないので、
 落ちたテストより見つけにくい。
 
 WP241 はこの4件を allowlist に加えず修正した。2026-08-01 の再実行は GPU 125/125、
-非許可 skip 0、`SKIP exact policy: PASS`。allowlist は引き続き空である。
+非許可 skip 0、`SKIP exact policy: PASS`。現在の allowlist entry は上記 project catalog の
+外部 corpus 未指定だけであり、WP241 で除いた例外 catch は戻していない。
 
 GPU の無い機械で走らせると大半が skip して gate は落ちる。これは意図どおりで、
 上の「fail-on-no-GPU」の実体である。その場合は「no Vulkan device」の診断行が先頭に出る。

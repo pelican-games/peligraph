@@ -1,8 +1,9 @@
 # Exact CTest names only. Every Skipped/Not Run result outside this list fails the
 # GPU gate, and a listed name that never appears fails it too, so the list cannot rot.
 #
-# Deliberately empty. No `gpu`-labelled test currently has a legitimate reason to
-# skip on a machine that has a Vulkan device.
+# The project catalog corpus is intentionally external to a clone/worktree. Its
+# smoke test has a named skip until PELICAN_TEST_PROJECTS_DIR designates that corpus.
+project_catalog_headless_smoke
 #
 # WP241 removed broad exception-to-SKIP handlers and fixed the four failures they
 # hid. The 2026-08-01 GPU gate ran 125 tests with zero observed skips. A test may

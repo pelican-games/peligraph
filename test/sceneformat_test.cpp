@@ -227,6 +227,12 @@ TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
         DYNAMIC_SECTION(file) {
             const auto scenario = readJson(fixtureRoot() / file);
             if (scenario.value("mode", std::string{}) != "scene_format") {
+                // Another fixture test owns this mode. Say so with an
+                // assertion: a silent fall-through reports "passed" for a
+                // fixture nobody looked at, which is what -w NoAssertions is
+                // here to stop. "project format fixture modes are all covered"
+                // is what proves someone does look at it.
+                SUCCEED("mode owned by another fixture test");
                 continue;
             }
 
