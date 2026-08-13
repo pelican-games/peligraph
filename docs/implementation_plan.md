@@ -3412,6 +3412,83 @@ user 層(マシンごとの好み。「自分は `gpu_timing` も出したい」
 
 依存: WP287(マージ済み)。見積: 中。
 
+### WP290: 入力アクションのオーバーレイ
+
+**目的**: 道具が宣言する入力アクション集合を、**プロジェクトの集合と並べて**有効化できるようにする。
+WP289 の写しであり、同じ原則の入力側への適用である。
+
+#### 現状は二者択一で、その代償を握り潰しで払っている
+
+`src/core/userpublic/userinput.cpp:114-134` は
+
+```cpp
+if (launch.free_camera) { ...engine のアクション集合... }
+else                    { ...project のアクション集合... }
+```
+
+**厳密な either/or** である。`--free-camera` を使うとプロジェクトのアクションが丸ごと消える。
+帰結が 2 つある。
+
+- `--free-camera` と `--input-profile` の併用が硬いエラーになっている(`userinput.cpp:115-118`)
+- `src/core/userpublic/cameracontrollersystem.cpp:183` が
+  **例外メッセージの前方一致で「不明なアクション」を握り潰している**
+
+```cpp
+bool isUnknownActionError(const std::runtime_error &error) {
+    const std::string message = error.what();
+    return message.rfind("unknown input action:", 0) == 0;
+}
+```
+
+`CameraControllerSystem` は 2 系統の名前(`look`/`pan`/`zoom`/`move` と `pelican_view_*`)を問い合わせ、
+どちらか一方は必ず存在しないため毎回投げ、それを文字列比較で飲み込んでいる。
+`projects/example` では毎フレーム 9 件が投げられて捨てられている。
+**fail-fast が文字列比較で沈黙に変換されている。**
+
+#### 方針: WP289 と同じ形
+
+エディタの変形キー(G/R/S)も `--free-camera` も、**道具が宣言する開発時の入力**である。
+プロジェクトが宣言するゲームの入力とは別物であり、**プロジェクト形式を変える必要はない。**
+
+`EngineLaunchConfig`(`src/core/launchconfig.hpp:57-60`)には既に
+`render_feature_overlays` があり、コメントが原則を述べている ——
+「Tool-declared startup inputs. These are deliberately absent from ProjectBasicConfig,
+so project loading cannot opt into or persist them.」**その隣に置くこと。**
+
+#### 実装範囲
+
+1. `EngineLaunchConfig` に入力アクションのオーバーレイを足すこと。
+   公開 CLI 面から与えられること(D0。devstudio 専用にしないこと)。
+   `ProjectBasicConfig` に対応するフィールドを**作らないこと** —— WP289 と同じ構造条件。
+2. アクション集合を**合成**すること。オーバーレイとプロジェクトの集合が並存すること。
+   名前の衝突をどう扱うか決めて、名前付きの硬いエラーにすること。黙って一方を優先しないこと。
+3. `--free-camera` を置換ではなくオーバーレイとして表現し直すこと。
+   `--input-profile` との併用禁止を**消せるなら消すこと**。消せない理由があれば書くこと。
+4. **`isUnknownActionError` と 3 つの `optional*` ラッパを削除すること。**
+   不明なアクションを硬いエラーに戻すこと。これが本 WP の主目的である。
+
+#### 範囲外
+
+G/R/S そのもの(WP286)。実行時の再割り当てと user 層への永続化。
+`src/project/` への宣言層の移設。
+
+#### 受け入れ条件
+
+- オーバーレイとプロジェクトのアクション集合が**同時に**有効であること。
+  `projects/example` を `--free-camera` 付きで起動して、
+  プロジェクトの `move` / `jump` と `pelican_view_*` の**両方**が引けることを検証すること
+- **`isUnknownActionError` がリポジトリに存在しないこと。**grep して 0 件を示すこと
+- 不明なアクション名の問い合わせが**硬いエラーになる**こと(握り潰されないこと)
+- 名前の衝突が名前付きの硬いエラーになること
+- **`ProjectBasicConfig` にオーバーレイのフィールドが無いこと。**
+  プロジェクトが保存・再読み込みでオーバーレイを知らないこと
+- オーバーレイ無しの挙動が今日と同一であること。既存 golden が 1 枚も動かないこと
+- `--record-input` / `--replay` がオーバーレイ有りでも成立すること
+- `ctest` 全数が緑、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: WP289(マージ済み)。**WP286 の前提。**見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
