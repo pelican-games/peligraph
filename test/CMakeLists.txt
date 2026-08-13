@@ -11,6 +11,9 @@ if(MSVC AND PELICAN_LEAN_TEST_ARTIFACTS)
   # A separate linker PDB and incremental-link database for every test
   # duplicates pelican_core's Debug symbols hundreds of times. Keep Debug
   # code generation and assertions, but make routine test artifacts lean.
+  # This remains complementary to the link-closure grouping below: grouping
+  # removes repeated linked code, while this removes per-binary linker state
+  # from each executable that remains.
   # Disable PELICAN_LEAN_TEST_ARTIFACTS when an individual test needs to be
   # debugged with full linker symbols.
   add_link_options(
@@ -25,16 +28,71 @@ if(MSVC AND PELICAN_LEAN_TEST_ARTIFACTS)
 endif()
 
 function(pelican_define_test source_name)
-cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU;QT;RUNTIME_SHADER" "" "" ${ARGN})
-set(target_name pelican_test_${source_name})
-add_executable(${target_name} ${source_name}.cpp)
-set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
-target_include_directories(${target_name} PRIVATE ${Vulkan_INCLUDE_DIRS})
-target_compile_definitions(${target_name} PRIVATE
+cmake_parse_arguments(PELICAN_TEST
+  "GOLDEN;GPU;QT;RUNTIME_SHADER" "GROUP" "" ${ARGN})
+set(source_target pelican_test_${source_name})
+set(target_name ${source_target})
+set(is_new_executable TRUE)
+
+if(PELICAN_TEST_GROUP)
+  # The configured target graph has 157 Catch executables: 127 sources fit 21
+  # groups and 30 remain singletons. Its largest exact closure class contains
+  # 108 regular plus 14 GPU sources; discovery/runtime properties and
+  # contiguous registration-order runs split that class into smaller groups.
+  # Tests share a binary only when their exact transitive link closure and
+  # discovery properties match.
+  # Keep one object target per source so source-specific definitions,
+  # dependencies, and the developer's compile-only inner loop remain local.
+  set(target_name pelican_test_group_${PELICAN_TEST_GROUP})
+  add_library(${source_target} OBJECT ${source_name}.cpp)
+else()
+  add_executable(${source_target} ${source_name}.cpp)
+endif()
+
+set_target_properties(${source_target} PROPERTIES CXX_STANDARD 20)
+target_include_directories(${source_target} PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_compile_definitions(${source_target} PRIVATE
     "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
 )
-target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
+if(PELICAN_TEST_GROUP)
+  target_link_libraries(${source_target} PRIVATE Catch2::Catch2 nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
+  set(discovery_signature
+    "${PELICAN_TEST_GOLDEN};${PELICAN_TEST_GPU};${PELICAN_TEST_QT};${PELICAN_TEST_RUNTIME_SHADER}")
+  if(TARGET ${target_name})
+    set(is_new_executable FALSE)
+    get_target_property(existing_signature ${target_name}
+      PELICAN_TEST_DISCOVERY_SIGNATURE)
+    if(NOT existing_signature STREQUAL discovery_signature)
+      message(FATAL_ERROR
+        "Test group ${PELICAN_TEST_GROUP} mixes discovery properties: "
+        "${existing_signature} vs ${discovery_signature}")
+    endif()
+  else()
+    add_executable(${target_name})
+    set_target_properties(${target_name} PROPERTIES
+      CXX_STANDARD 20
+      LINKER_LANGUAGE CXX
+      PELICAN_TEST_DISCOVERY_SIGNATURE "${discovery_signature}"
+    )
+    target_link_libraries(${target_name} PRIVATE
+      Catch2::Catch2WithMain nlohmann_json)
+  endif()
+  target_link_libraries(${target_name} PRIVATE ${source_target})
+  set_property(TARGET ${target_name} APPEND PROPERTY
+    PELICAN_TEST_GROUP_SOURCES ${source_name})
+  set_property(TARGET ${source_target} PROPERTY
+    PELICAN_TEST_EXECUTABLE_TARGET ${target_name})
+else()
+  target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
+    ${PELICAN_TEST_UNPARSED_ARGUMENTS})
+  set_property(TARGET ${source_target} PROPERTY
+    PELICAN_TEST_EXECUTABLE_TARGET ${target_name})
+endif()
+
+if(NOT is_new_executable)
+  return()
+endif()
 if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
   # These executables remain compile-checked, but their cases require source
   # variants that dist-bake does not produce yet (design_build_tiers.md §4).
@@ -61,6 +119,34 @@ if(discovery_properties)
 else()
   catch_discover_tests(${target_name} ${discovery_arguments})
 endif()
+
+# Catch2 3.11 randomizes --list-tests with a fresh random_device seed. Reorder
+# the generated commands to the pre-WP293 compatibility sequence so relinking
+# and combining translation units cannot change ctest names or order.
+string(SHA1 discovery_args_hash "     ")
+string(SUBSTRING ${discovery_args_hash} 0 7 discovery_args_hash)
+add_custom_command(TARGET ${target_name} POST_BUILD
+  COMMAND ${CMAKE_COMMAND}
+    -DTEST_FILE=${CMAKE_CURRENT_BINARY_DIR}/${target_name}-${discovery_args_hash}_tests.cmake
+    -DORDER_FILE=${CMAKE_CURRENT_SOURCE_DIR}/ctest_discovery_order.txt
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/reorder_discovered_tests.cmake
+  VERBATIM
+)
+endfunction()
+
+function(pelican_copy_test_shaderc_runtime source_target)
+  get_target_property(executable_target ${source_target}
+    PELICAN_TEST_EXECUTABLE_TARGET)
+  if(NOT executable_target)
+    set(executable_target ${source_target})
+  endif()
+  get_target_property(copy_configured ${executable_target}
+    PELICAN_TEST_SHADERC_RUNTIME_COPY_CONFIGURED)
+  if(NOT copy_configured)
+    pelican_copy_shaderc_runtime(${executable_target})
+    set_property(TARGET ${executable_target} PROPERTY
+      PELICAN_TEST_SHADERC_RUNTIME_COPY_CONFIGURED TRUE)
+  endif()
 endfunction()
 
 add_test(
@@ -456,25 +542,25 @@ target_compile_definitions(pelican_test_vrm_expression_preview_writer PRIVATE
 )
 
 # register tests
-pelican_define_test(module_container_test pelican_core)
+pelican_define_test(module_container_test GROUP core_foundation pelican_core)
 target_compile_definitions(pelican_test_module_container_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(log_test pelican_core)
-pelican_define_test(deletionqueue_test pelican_core)
-pelican_define_test(lifetime_teardown_test pelican_core)
-pelican_define_test(deterministicrng_test pelican_core)
-pelican_define_test(enginetime_test pelican_core)
-pelican_define_test(skeletalanimation_test pelican_core glm)
-pelican_define_test(vrmsemantic_test pelican_core tinygltf)
+pelican_define_test(log_test GROUP core_foundation pelican_core)
+pelican_define_test(deletionqueue_test GROUP core_foundation pelican_core)
+pelican_define_test(lifetime_teardown_test GROUP core_foundation pelican_core)
+pelican_define_test(deterministicrng_test GROUP core_foundation pelican_core)
+pelican_define_test(enginetime_test GROUP core_foundation pelican_core)
+pelican_define_test(skeletalanimation_test GROUP core_foundation pelican_core glm)
+pelican_define_test(vrmsemantic_test GROUP core_foundation pelican_core tinygltf)
 target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(vrmadecoder_test pelican_core tinygltf picosha2)
-pelican_define_test(vrmaretarget_test pelican_core glm)
-pelican_define_test(animation_probe_test pelican_core glm)
-pelican_define_test(animation_jobs_test pelican_core glm)
-pelican_define_test(animgraph_test pelican_core glm)
+pelican_define_test(vrmadecoder_test GROUP core_foundation pelican_core tinygltf picosha2)
+pelican_define_test(vrmaretarget_test GROUP core_foundation pelican_core glm)
+pelican_define_test(animation_probe_test GROUP core_foundation pelican_core glm)
+pelican_define_test(animation_jobs_test GROUP core_foundation pelican_core glm)
+pelican_define_test(animgraph_test GROUP core_foundation pelican_core glm)
 pelican_define_test(vrmasource_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator
                     VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE
@@ -515,14 +601,14 @@ if(WIN32)
     PELICAN_VRM_APPLICATION_EVALUATOR_DLL="$<TARGET_FILE:pelican_vrm_application_public_evaluator>"
   )
 endif()
-pelican_define_test(ecs_lifecycle_test pelican_core)
-pelican_define_test(ecs_migration_test pelican_core)
-pelican_define_test(ecs_scheduler_test pelican_core)
-pelican_define_test(registration_lifetime_test pelican_core)
-pelican_define_test(eventlayer_test pelican_core)
-pelican_define_test(eventpayloadschema_test pelican_core)
-pelican_define_test(structfieldschema_test pelican_core)
-pelican_define_test(behaviorarena_test pelican_core)
+pelican_define_test(ecs_lifecycle_test GROUP ecs_editor pelican_core)
+pelican_define_test(ecs_migration_test GROUP ecs_editor pelican_core)
+pelican_define_test(ecs_scheduler_test GROUP ecs_editor pelican_core)
+pelican_define_test(registration_lifetime_test GROUP ecs_editor pelican_core)
+pelican_define_test(eventlayer_test GROUP ecs_editor pelican_core)
+pelican_define_test(eventpayloadschema_test GROUP ecs_editor pelican_core)
+pelican_define_test(structfieldschema_test GROUP ecs_editor pelican_core)
+pelican_define_test(behaviorarena_test GROUP ecs_editor pelican_core)
 
 add_executable(pelican_test_behavior_determinism_probe behavior_determinism_probe.cpp)
 set_target_properties(pelican_test_behavior_determinism_probe PROPERTIES CXX_STANDARD 20)
@@ -537,19 +623,19 @@ add_test(
     -DPROBE=$<TARGET_FILE:pelican_test_behavior_determinism_probe>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_determinism.cmake
 )
-pelican_define_test(componentcodec_test pelican_core glm)
-pelican_define_test(editorprojectiontransaction_test pelican_core glm
+pelican_define_test(componentcodec_test GROUP ecs_editor pelican_core glm)
+pelican_define_test(editorprojectiontransaction_test GROUP ecs_editor pelican_core glm
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(editorpreviewprojection_test pelican_core glm)
-pelican_define_test(editorpreview_test pelican_core glm)
+pelican_define_test(editorpreviewprojection_test GROUP ecs_editor pelican_core glm)
+pelican_define_test(editorpreview_test GROUP ecs_editor pelican_core glm)
 target_compile_definitions(pelican_test_componentcodec_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(editorcommandservice_test pelican_core glm picosha2)
+pelican_define_test(editorcommandservice_test GROUP ecs_editor pelican_core glm picosha2)
 target_compile_definitions(pelican_test_editorcommandservice_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(editorjournal_test pelican_core glm)
+pelican_define_test(editorjournal_test GROUP ecs_editor pelican_core glm)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})
@@ -651,9 +737,10 @@ set(pelican_golden_test_sources
     golden_framegraph_test
 )
 foreach(golden_test_source IN LISTS pelican_golden_test_sources)
-    pelican_define_test(${golden_test_source} GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)
+    pelican_define_test(${golden_test_source} GROUP golden_runtime
+        GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)
     if(PELICAN_RUNTIME_SHADER_COMPILER AND COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_${golden_test_source})
+        pelican_copy_test_shaderc_runtime(pelican_test_${golden_test_source})
     endif()
 endforeach()
 pelican_define_test(gltf_fragment_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -662,17 +749,19 @@ target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
 )
 pelican_define_test(gltfimage_test pelican_core tinygltf)
 pelican_define_test(modelhotreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(drawqueuebuilder_test pelican_core)
-pelican_define_test(accelerationstructurepolicy_test pelican_core
+pelican_define_test(drawqueuebuilder_test GROUP renderer_registry pelican_core)
+pelican_define_test(accelerationstructurepolicy_test GROUP renderer_registry pelican_core
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(renderpolicyregistry_test pelican_core)
-pelican_define_test(passimplementationregistry_test pelican_core)
-pelican_define_test(subgraphreplacementregistry_test pelican_core)
-pelican_define_test(graphtransformregistry_test pelican_core)
-pelican_define_test(renderstrategyregistry_test pelican_core)
+pelican_define_test(renderpolicyregistry_test GROUP renderer_registry pelican_core)
+pelican_define_test(passimplementationregistry_test GROUP renderer_registry pelican_core)
+pelican_define_test(subgraphreplacementregistry_test GROUP renderer_registry pelican_core)
+pelican_define_test(graphtransformregistry_test GROUP renderer_registry pelican_core)
+pelican_define_test(renderstrategyregistry_test GROUP renderer_registry pelican_core)
 pelican_define_test(modelinstance_slotmap_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(skeletal_gltf_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(morph_gltf_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(skeletal_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
+                    pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(morph_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
+                    pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(vrmfirstperson_test pelican_core glm)
 pelican_define_test(vrm_xr_demo_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_vrm_xr_demo_test PRIVATE
@@ -685,7 +774,8 @@ pelican_define_test(gltf_scene_extract_test GPU pelican_core VulkanMemoryAllocat
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
 )
-pelican_define_test(headless_render_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(headless_render_test GROUP headless_gpu GPU pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -701,10 +791,10 @@ target_sources(pelican_test_headless_render_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_headless_render_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_headless_render_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_headless_render_test)
     endif()
 endif()
-pelican_define_test(multiview_execution_test GPU pelican_core VulkanMemoryAllocator
+pelican_define_test(multiview_execution_test GROUP headless_gpu GPU pelican_core VulkanMemoryAllocator
                     VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_multiview_execution_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -712,19 +802,19 @@ target_compile_definitions(pelican_test_multiview_execution_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_multiview_execution_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_multiview_execution_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_multiview_execution_test)
     endif()
 endif()
-pelican_define_test(gamesystem_test pelican_core)
-pelican_define_test(lightpolicy_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gamesystem_test GROUP view_temporal pelican_core)
+pelican_define_test(lightpolicy_test GROUP view_temporal pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_gamesystem_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(camera_test pelican_core glm)
-pelican_define_test(temporal_test pelican_core glm)
-pelican_define_test(projectionjitter_test pelican_core glm)
-pelican_define_test(viewfamily_test pelican_core glm)
-pelican_define_test(taa_resolve_test pelican_core glm)
+pelican_define_test(camera_test GROUP view_temporal pelican_core glm)
+pelican_define_test(temporal_test GROUP view_temporal pelican_core glm)
+pelican_define_test(projectionjitter_test GROUP view_temporal pelican_core glm)
+pelican_define_test(viewfamily_test GROUP view_temporal pelican_core glm)
+pelican_define_test(taa_resolve_test GROUP view_temporal pelican_core glm)
 target_compile_definitions(pelican_test_taa_resolve_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
@@ -734,7 +824,7 @@ target_compile_definitions(pelican_test_projectionjitter_test PRIVATE
 target_compile_definitions(pelican_test_temporal_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(color_pipeline_test pelican_core glm)
+pelican_define_test(color_pipeline_test GROUP view_temporal pelican_core glm)
 pelican_define_test(rpc_color_contract_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})
 target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE
@@ -743,61 +833,61 @@ target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_rpc_color_contract_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_rpc_color_contract_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_rpc_color_contract_test)
     endif()
 endif()
 if(PELICAN_WITH_EXR)
-pelican_define_test(imageloader_test pelican_core tinyexr)
+pelican_define_test(imageloader_test GROUP core_assets_input pelican_core tinyexr)
 target_compile_definitions(pelican_test_imageloader_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 endif()
-pelican_define_test(inputstate_test pelican_core)
+pelican_define_test(inputstate_test GROUP core_assets_input pelican_core)
 pelican_define_test(xractivation_test quill)
 if(PELICAN_WITH_OPENXR)
-pelican_define_test(xrdiscovery_test pelican_core pelican_openxr)
+pelican_define_test(xrdiscovery_test GROUP core_xr_tools pelican_core pelican_openxr)
 if(PELICAN_WITH_RPC)
 # This source also verifies the RPC get_status projection, whose implementation
 # is intentionally absent from a PELICAN_WITH_RPC=OFF build.
-pelican_define_test(xrsession_test pelican_core pelican_openxr)
+pelican_define_test(xrsession_test GROUP core_xr_tools pelican_core pelican_openxr)
 endif()
-pelican_define_test(xraction_test pelican_core pelican_openxr)
-pelican_define_test(xrcompositiontarget_test pelican_core pelican_openxr
+pelican_define_test(xraction_test GROUP core_xr_tools pelican_core pelican_openxr)
+pelican_define_test(xrcompositiontarget_test GROUP core_xr_tools pelican_core pelican_openxr
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(xrviewspace_test pelican_core pelican_openxr
+pelican_define_test(xrviewspace_test GROUP core_xr_tools pelican_core pelican_openxr
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(xrfeaturepolicy_test pelican_core pelican_openxr)
+pelican_define_test(xrfeaturepolicy_test GROUP core_xr_tools pelican_core pelican_openxr)
 endif()
-pelican_define_test(inputsequence_test pelican_core)
+pelican_define_test(inputsequence_test GROUP core_xr_tools pelican_core)
 if(PELICAN_WITH_IMGUI)
-pelican_define_test(imgui_isolation_test pelican_core)
-pelican_define_test(planviewer_test pelican_core)
-pelican_define_test(assetbrowser_test pelican_core glm)
+pelican_define_test(imgui_isolation_test GROUP core_xr_tools pelican_core)
+pelican_define_test(planviewer_test GROUP core_xr_tools pelican_core)
+pelican_define_test(assetbrowser_test GROUP core_xr_tools pelican_core glm)
 target_compile_definitions(pelican_test_assetbrowser_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(inspector_test pelican_core glm)
-pelican_define_test(compiledplanviewer_test pelican_core glm)
+pelican_define_test(inspector_test GROUP core_xr_tools pelican_core glm)
+pelican_define_test(compiledplanviewer_test GROUP core_xr_tools pelican_core glm)
 endif()
 if(PELICAN_WITH_RPC)
 pelican_define_test(jsonrpc_test pelican_project)
-pelican_define_test(windowedrpchost_test pelican_core)
+pelican_define_test(windowedrpchost_test GROUP runtime_services pelican_core)
 endif()
 if(PELICAN_WITH_RENDERDOC)
-pelican_define_test(renderdoccapture_test pelican_core)
+pelican_define_test(renderdoccapture_test GROUP runtime_services pelican_core)
 endif()
-pelican_define_test(pathresolver_test pelican_core)
+pelican_define_test(pathresolver_test GROUP runtime_services pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(PELICAN_WITH_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
-pelican_define_test(physquery_test pelican_core)
-pelican_define_test(physworld_test pelican_core glm)
-pelican_define_test(platformer_controller_test pelican_core)
+pelican_define_test(physquery_test GROUP runtime_services pelican_core)
+pelican_define_test(physworld_test GROUP runtime_services pelican_core glm)
+pelican_define_test(platformer_controller_test GROUP runtime_services pelican_core)
 endif()
 if(PELICAN_WITH_PHYSICS)
-pelican_define_test(physicsservice_test pelican_core glm)
+pelican_define_test(physicsservice_test GROUP runtime_services pelican_core glm)
 target_compile_definitions(pelican_test_physicsservice_test PRIVATE
     PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
     PELICAN_WITH_JOLT_PHYSICS=$<BOOL:${PELICAN_WITH_JOLT_PHYSICS}>
@@ -822,41 +912,44 @@ target_compile_definitions(pelican_test_physics_off_feature_probe PRIVATE
 )
 add_test(NAME physics_off_feature_probe COMMAND pelican_test_physics_off_feature_probe)
 
-pelican_define_test(projectconfig_test pelican_core glm)
+pelican_define_test(projectconfig_test GROUP runtime_services pelican_core glm)
 target_compile_definitions(pelican_test_projectconfig_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(renderingpass_helpers_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(sceneformat_test pelican_core glm)
+pelican_define_test(renderingpass_helpers_test GROUP runtime_services pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(sceneformat_test GROUP runtime_services pelican_core glm)
 target_compile_definitions(pelican_test_sceneformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(PELICAN_WITH_SEQPLAYER)
-pelican_define_test(seqplayer_test pelican_core glm)
+pelican_define_test(seqplayer_test GROUP runtime_services pelican_core glm)
 endif()
 if(PELICAN_WITH_VAT)
-pelican_define_test(vatformat_test pelican_core glm)
+pelican_define_test(vatformat_test GROUP runtime_services pelican_core glm)
 endif()
 pelican_define_test(shader_compile_test pelican_target_environment spirv-reflect-static stb)
 pelican_define_test(parallel_prepare_test)
-pelican_define_test(shader_cache_test RUNTIME_SHADER pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_cache_test GROUP shader_cache_runtime RUNTIME_SHADER
+                    pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_cache_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_cache_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_shader_cache_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_shader_cache_test)
     endif()
 endif()
-pelican_define_test(shader_cache_wp254_test RUNTIME_SHADER pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_cache_wp254_test GROUP shader_cache_runtime RUNTIME_SHADER
+                    pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_cache_wp254_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_cache_wp254_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_shader_cache_wp254_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_shader_cache_wp254_test)
     endif()
 endif()
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE
@@ -865,10 +958,11 @@ target_compile_definitions(pelican_test_shader_compile_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_compile_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_shader_compile_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_shader_compile_test)
     endif()
 endif()
-pelican_define_test(shader_compiler_reflection_test pelican_core pelican_target_environment spirv-reflect-static glm)
+pelican_define_test(shader_compiler_reflection_test GROUP shader_tools pelican_core
+                    pelican_target_environment spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_compiler_reflection_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -876,10 +970,10 @@ target_compile_definitions(pelican_test_shader_compiler_reflection_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_compiler_reflection_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_shader_compiler_reflection_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_shader_compiler_reflection_test)
     endif()
 endif()
-pelican_define_test(surfacecompiler_test pelican_core spirv-reflect-static glm)
+pelican_define_test(surfacecompiler_test GROUP shader_tools pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_surfacecompiler_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
@@ -888,11 +982,11 @@ target_compile_definitions(pelican_test_surfacecompiler_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_surfacecompiler_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_surfacecompiler_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_surfacecompiler_test)
     endif()
 endif()
 if(PELICAN_WITH_SPIRV_LINK)
-    pelican_define_test(spvlink_test pelican_core spirv-reflect-static glm)
+    pelican_define_test(spvlink_test GROUP shader_tools pelican_core spirv-reflect-static glm)
     target_compile_definitions(pelican_test_spvlink_test PRIVATE
         PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
         PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -900,11 +994,11 @@ if(PELICAN_WITH_SPIRV_LINK)
     if(PELICAN_RUNTIME_SHADER_COMPILER)
         target_link_libraries(pelican_test_spvlink_test PRIVATE pelican_shaderc)
         if(COMMAND pelican_copy_shaderc_runtime)
-            pelican_copy_shaderc_runtime(pelican_test_spvlink_test)
+            pelican_copy_test_shaderc_runtime(pelican_test_spvlink_test)
         endif()
     endif()
 else()
-    pelican_define_test(spvlink_disabled_test pelican_core)
+    pelican_define_test(spvlink_disabled_test GROUP shader_tools pelican_core)
 endif()
 if(PELICAN_WITH_SPIRV_LINK)
     find_program(PELICAN_SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)
@@ -960,7 +1054,7 @@ if(PELICAN_WITH_SPIRV_LINK AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_spvlink_golden.cmake
     )
 endif()
-pelican_define_test(shader_library_test pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_library_test GROUP shader_tools pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_library_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -968,15 +1062,16 @@ target_compile_definitions(pelican_test_shader_library_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_library_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_shader_library_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_shader_library_test)
     endif()
 endif()
 pelican_define_test(vulkan_headless_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_vulkan_headless_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
-pelican_define_test(vulkan_device_feature_policy_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(shaderbindingtable_test pelican_core)
+pelican_define_test(vulkan_device_feature_policy_test GROUP vulkan_policy pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(shaderbindingtable_test GROUP vulkan_policy pelican_core)
 pelican_define_test(atlas_descriptor_pool_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_atlas_descriptor_pool_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
@@ -1234,10 +1329,10 @@ add_test(
 )
 set_tests_properties(compute_buffer_headless_player PROPERTIES LABELS gpu)
 
-pelican_define_test(importmanifest_test pelican_project)
-pelican_define_test(importrules_test pelican_project)
-pelican_define_test(assetdataformat_test pelican_project)
-pelican_define_test(projectformat_test pelican_project)
+pelican_define_test(importmanifest_test GROUP project_formats pelican_project)
+pelican_define_test(importrules_test GROUP project_formats pelican_project)
+pelican_define_test(assetdataformat_test GROUP project_formats pelican_project)
+pelican_define_test(projectformat_test GROUP project_formats pelican_project)
 target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -1257,18 +1352,18 @@ target_compile_definitions(pelican_test_project_library_boundary PRIVATE
 target_link_libraries(pelican_test_project_library_boundary PRIVATE pelican_project)
 add_test(NAME project_library_boundary COMMAND pelican_test_project_library_boundary)
 
-pelican_define_test(materialformat_test pelican_project)
+pelican_define_test(materialformat_test GROUP project_formats pelican_project)
 target_compile_definitions(pelican_test_materialformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(materiallowering_test pelican_project)
-pelican_define_test(rasterpass_test pelican_project)
+pelican_define_test(materiallowering_test GROUP project_formats pelican_project)
+pelican_define_test(rasterpass_test GROUP project_formats pelican_project)
 target_compile_definitions(pelican_test_materiallowering_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(materialbinding_test pelican_core)
+pelican_define_test(materialbinding_test GROUP render_planning_core pelican_core)
 
 add_test(
     NAME devcli_dump_lowered_material
@@ -1325,51 +1420,55 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_rules_import.cmake
 )
 
-pelican_define_test(frameplanner_test pelican_core)
+pelican_define_test(frameplanner_test GROUP render_planning_core pelican_core)
 target_compile_definitions(pelican_test_frameplanner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(frameexecutionplan_test pelican_core)
+pelican_define_test(frameexecutionplan_test GROUP render_planning_core pelican_core)
 
-pelican_define_test(renderpipelinetransaction_test pelican_core)
-pelican_define_test(logicalrendergraph_test pelican_core)
-pelican_define_test(targetplanning_test pelican_project)
-pelican_define_test(targetrenderplanning_test pelican_project)
-pelican_define_test(samplecountplanning_test pelican_project)
-pelican_define_test(graphvariantpolicy_test pelican_project)
-pelican_define_test(gpudrawtiming_test pelican_project)
+pelican_define_test(renderpipelinetransaction_test GROUP render_planning_core pelican_core)
+pelican_define_test(logicalrendergraph_test GROUP render_planning_core pelican_core)
+pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
+pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
+pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)
+pelican_define_test(graphvariantpolicy_test GROUP project_planning pelican_project)
+pelican_define_test(gpudrawtiming_test GROUP project_planning pelican_project)
 target_compile_definitions(pelican_test_gpudrawtiming_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(featurecompose_test pelican_core)
+pelican_define_test(featurecompose_test GROUP render_pipeline pelican_core)
 target_compile_definitions(pelican_test_featurecompose_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(renderpipeline_resolve_test pelican_core)
-pelican_define_test(rendercompilerprogram_test pelican_core)
-pelican_define_test(vulkannativescopeexecutor_test pelican_core)
-pelican_define_test(renderingsamplecount_test pelican_core)
+pelican_define_test(renderpipeline_resolve_test GROUP render_pipeline pelican_core)
+pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
+pelican_define_test(vulkannativescopeexecutor_test GROUP render_pipeline pelican_core)
+pelican_define_test(renderingsamplecount_test GROUP render_pipeline pelican_core)
 
-pelican_define_test(shader_defines_test pelican_core)
+pelican_define_test(shader_defines_test GROUP render_pipeline pelican_core)
 target_compile_definitions(pelican_test_shader_defines_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_defines_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_shader_defines_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_shader_defines_test)
     endif()
 endif()
 
-pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(gizmo_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(debugtext_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(debugdraw_test GROUP render_pipeline pelican_core glm
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gizmo_test GROUP render_pipeline pelican_core glm
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(debugtext_test GROUP render_pipeline pelican_core glm
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugtext_ui_compat_test GPU pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(debugutils_test pelican_core)
-pelican_define_test(rendertiming_test pelican_core)
-pelican_define_test(memorydiagnostics_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(debugutils_test GROUP core_diagnostics pelican_core)
+pelican_define_test(rendertiming_test GROUP core_diagnostics pelican_core)
+pelican_define_test(memorydiagnostics_test GROUP core_diagnostics pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_rendertiming_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
@@ -1395,7 +1494,7 @@ add_test(
 )
 set_tests_properties(frame_plan_dump_headless_player PROPERTIES LABELS gpu)
 
-pelican_define_test(inputactions_test pelican_core)
+pelican_define_test(inputactions_test GROUP core_diagnostics pelican_core)
 target_compile_definitions(pelican_test_inputactions_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
@@ -1448,14 +1547,14 @@ set_tests_properties(project_catalog_headless_smoke PROPERTIES
     TIMEOUT 600 RESOURCE_LOCK pelican_gpu LABELS gpu)
 
 if(PELICAN_WITH_AUDIO)
-pelican_define_test(audio_test pelican_core)
+pelican_define_test(audio_test GROUP core_diagnostics pelican_core)
 endif()
 
 add_executable(pelican_test_audio_disabled_probe audio_disabled_probe.cpp)
 set_target_properties(pelican_test_audio_disabled_probe PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_audio_disabled_probe PRIVATE pelican_core)
 
-pelican_define_test(persistence_test pelican_core)
+pelican_define_test(persistence_test GROUP core_diagnostics pelican_core)
 pelican_define_test(assetsmanifest_test pelican_project)
 pelican_define_test(assetsverification_test pelican_core)
 
@@ -1469,26 +1568,26 @@ add_test(
 )
 set_tests_properties(devcli_assets_command PROPERTIES LABELS gpu)
 
-pelican_define_test(surfaceformat_test pelican_project)
+pelican_define_test(surfaceformat_test GROUP project_surface pelican_project)
 target_compile_definitions(pelican_test_surfaceformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(openpbrmapping_test pelican_project)
+pelican_define_test(openpbrmapping_test GROUP project_surface pelican_project)
 target_compile_definitions(pelican_test_openpbrmapping_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(framephase_test pelican_core)
+pelican_define_test(framephase_test GROUP frame_lifecycle pelican_core)
 
-pelican_define_test(filewatcher_test pelican_core)
+pelican_define_test(filewatcher_test GROUP frame_lifecycle pelican_core)
 target_link_libraries(pelican_test_filewatcher_test PRIVATE picosha2)
 
-pelican_define_test(reloadtransaction_test pelican_core)
-pelican_define_test(submissionlifetime_test pelican_core)
-pelican_define_test(outputcompilefacts_test pelican_core)
-pelican_define_test(frametarget_test pelican_core)
-pelican_define_test(swapchainrecovery_test pelican_core)
+pelican_define_test(reloadtransaction_test GROUP frame_lifecycle pelican_core)
+pelican_define_test(submissionlifetime_test GROUP frame_lifecycle pelican_core)
+pelican_define_test(outputcompilefacts_test GROUP frame_lifecycle pelican_core)
+pelican_define_test(frametarget_test GROUP frame_lifecycle pelican_core)
+pelican_define_test(swapchainrecovery_test GROUP frame_lifecycle pelican_core)
 if(WIN32)
     add_test(
         NAME wsi_fault_window_player
@@ -1516,16 +1615,17 @@ target_compile_definitions(pelican_test_materialvaluesreload_test PRIVATE
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_materialvaluesreload_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_materialvaluesreload_test)
+        pelican_copy_test_shaderc_runtime(pelican_test_materialvaluesreload_test)
     endif()
 endif()
 
-pelican_define_test(ui_foundation_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(ui_foundation_test GROUP ui_foundation pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_ui_foundation_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(sprite_foundation_test pelican_core)
+pelican_define_test(sprite_foundation_test GROUP ui_foundation pelican_core)
 
 # UI semantic fixture coverage gate (design_ui_2d_foundation.md v8 §7).
 # Dependency-free node script; skipped when node is unavailable.
