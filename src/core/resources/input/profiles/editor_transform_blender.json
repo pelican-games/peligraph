@@ -1,0 +1,17 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "editor_transform_blender",
+  "bindings": [
+    {"action": "gizmo.translate", "binding": "kbd:g"},
+    {"action": "gizmo.rotate", "binding": "kbd:r"},
+    {"action": "gizmo.scale", "binding": "kbd:s"},
+    {"action": "gizmo.axis_x", "binding": "kbd:x"},
+    {"action": "gizmo.axis_y", "binding": "kbd:y"},
+    {"action": "gizmo.axis_z", "binding": "kbd:z"},
+    {"action": "gizmo.confirm", "binding": "mouse:left"},
+    {"action": "gizmo.confirm", "binding": "kbd:enter"},
+    {"action": "gizmo.cancel", "binding": "mouse:right"},
+    {"action": "gizmo.cancel", "binding": "kbd:escape"}
+  ]
+}

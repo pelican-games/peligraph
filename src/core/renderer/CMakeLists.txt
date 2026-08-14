@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     spriterenderer.cpp
     debugdraw.cpp
     gizmo.cpp
+    modaltransform.cpp
     debugtext.cpp
     drawqueuebuilder.cpp
     accelerationstructure.cpp

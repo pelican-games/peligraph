@@ -430,6 +430,74 @@ TEST_CASE("startup input action overlay accepts only its strict v1 envelope",
             "non-empty string actions reference"));
 }
 
+TEST_CASE("Editor transform presets add named actions while grab disables their bindings",
+          "[input-actions][overlay][modal][negative-contrast][wp286]") {
+    struct Observation {
+        bool translate_pressed = false;
+        std::size_t translate_bindings = 0;
+        std::vector<std::string> action_sets;
+    };
+    const auto observe = [](EditorTransformInputPreset preset) {
+        ensureLogger();
+        Sandbox sandbox;
+        writeText(sandbox.root / "input" / "actions.json",
+                  readText(fixtureRoot() / "valid" /
+                           "gameplay_menu.json"));
+        writeText(sandbox.root / "input" / "keyboard.json",
+                  readText(fixtureRoot() / "valid" / "keyboard.json"));
+        const auto project = nlohmann::json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "editor-transform-input-overlay"},
+            {"engine_min_version", "0.1.0"},
+            {"basic_config",
+             {{"input_actions_json", "input/actions.json"},
+              {"input_profiles",
+               {{"keyboard", "input/keyboard.json"}}},
+              {"input_profile", "keyboard"}}},
+        };
+        const auto project_bytes = project.dump();
+        writeText(sandbox.root / "project.json", project_bytes);
+
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(sandbox.root, false);
+        GET_MODULE(ProjectSource).setProjectData(project_bytes);
+        GET_MODULE(EngineLaunchConfig).input_action_overlays.emplace_back(
+            editorTransformInputActionOverlayReference(preset));
+
+        REQUIRE(Actions::isConfigured());
+        const auto *map = internal::inputActionMap();
+        REQUIRE(map != nullptr);
+        const auto *translate = map->findAction("gizmo.translate");
+        REQUIRE(translate != nullptr);
+        auto &input = GET_MODULE(InputState);
+        input.queueEvent(InputEvent::button(KeyCode::G, true));
+        input.beginFrame();
+        return Observation{
+            .translate_pressed = Actions::isPressed("gizmo.translate"),
+            .translate_bindings = translate->bindings.size(),
+            .action_sets = Actions::actionSetStack(),
+        };
+    };
+
+    REQUIRE(defaultEditorTransformInputPreset ==
+            EditorTransformInputPreset::Grab);
+    REQUIRE(std::string{editorTransformInputPresetName(
+                defaultEditorTransformInputPreset)} == "grab");
+    const Observation blender =
+        observe(EditorTransformInputPreset::Blender);
+    const Observation grab = observe(EditorTransformInputPreset::Grab);
+    REQUIRE(blender.action_sets.back() == "gizmo_modal");
+    REQUIRE(grab.action_sets.back() == "gizmo_modal");
+    REQUIRE(blender.translate_bindings == 1);
+    REQUIRE(grab.translate_bindings == 0);
+    REQUIRE(blender.translate_pressed);
+    REQUIRE_FALSE(grab.translate_pressed);
+    // Rule 10: identical physical input produces a distinct result when the
+    // binding preset is the handle-only negative control.
+    REQUIRE(blender.translate_pressed != grab.translate_pressed);
+}
+
 TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicConfig", "[input-actions]") {
     ensureLogger();
     Sandbox sandbox;

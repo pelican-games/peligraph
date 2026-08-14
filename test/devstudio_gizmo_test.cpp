@@ -90,6 +90,52 @@ Json queryResult(GizmoMode mode, std::string_view handle,
     };
 }
 
+Json modalResult(std::string_view phase, std::uint64_t revision,
+                 std::optional<std::uint64_t> operation_id,
+                 bool enabled, std::array<double, 3> translation,
+                 std::optional<GizmoMode> mode = GizmoMode::Translate,
+                 std::optional<std::string_view> axis = "x",
+                 bool expose_bindings = true) {
+    Json result{
+        {"contract", 1},
+        {"enabled", enabled},
+        {"revision", revision},
+        {"phase", phase},
+        {"operation_id", nullptr},
+        {"selection", nullptr},
+        {"mode", nullptr},
+        {"axis", nullptr},
+        {"delta",
+         {{"translation",
+           {translation[0], translation[1], translation[2]}},
+          {"rotation", {0.0, 0.0, 0.0, 1.0}},
+          {"scale_exponent", {0.0, 0.0, 0.0}}}},
+        {"reason", nullptr},
+        {"bindings",
+         {{"translate", nullptr},
+          {"rotate", nullptr},
+          {"scale", nullptr}}},
+    };
+    if (operation_id) {
+        result["operation_id"] = *operation_id;
+        result["selection"] =
+            Json{{"kind", "declaration"},
+                 {"scene_id", Selection.scene_id},
+                 {"declaration_index", Selection.declaration_index}};
+        result["reason"] = "test";
+    }
+    if (mode) {
+        result["mode"] = std::string{PelicanStudio::gizmoModeName(*mode)};
+    }
+    if (axis) result["axis"] = std::string{*axis};
+    if (expose_bindings) {
+        result["bindings"]["translate"] = "G";
+        result["bindings"]["rotate"] = "R";
+        result["bindings"]["scale"] = "S";
+    }
+    return result;
+}
+
 void openModel(GizmoModel &model) {
     model.setSelection(Selection);
     model.startSession();
@@ -330,4 +376,126 @@ TEST_CASE("Devstudio gizmo aborts its preview when mode changes during a drag",
     REQUIRE_FALSE(actions.front().commit);
     REQUIRE_FALSE(model.gestureActive());
     REQUIRE(takeRpc(model, "set_gizmo").params.at("mode") == "rotate");
+}
+
+TEST_CASE("Devstudio adapts engine modal state to one preview lease and RPC toolbar labels",
+          "[devstudio][gizmo][modal][rpc][negative-contrast][wp286]") {
+    GizmoModel enabled;
+    openModel(enabled);
+    enabled.pollModalTransform(transformBinding());
+    const auto active_poll = takeRpc(enabled, "get_modal_transform");
+    enabled.receiveRpcResult(
+        active_poll.request_id,
+        modalResult("active", 3, 42, true, {0.25, 0.0, 0.0})
+            .dump());
+    const auto begin = takeEdit(enabled, GizmoEditActionKind::Begin);
+    REQUIRE(begin.gesture_id == 42);
+    REQUIRE(begin.field_key == "41:transform:0:/pos");
+    REQUIRE(std::string{enabled.bindingDisplay(GizmoMode::Translate)} == "G");
+    REQUIRE(std::string{enabled.bindingDisplay(GizmoMode::Rotate)} == "R");
+    REQUIRE(std::string{enabled.bindingDisplay(GizmoMode::Scale)} == "S");
+    enabled.confirmEditStarted(begin.gesture_id, true);
+    const auto first_preview =
+        takeEdit(enabled, GizmoEditActionKind::Preview);
+    REQUIRE(first_preview.value == Json::array({1.25, 2.0, 3.0}));
+
+    enabled.pollModalTransform(transformBinding());
+    const auto confirmed_poll = takeRpc(enabled, "get_modal_transform");
+    enabled.receiveRpcResult(
+        confirmed_poll.request_id,
+        modalResult("confirmed", 4, 42, true, {0.5, 0.0, 0.0})
+            .dump());
+    const auto committed = enabled.takeEditActions();
+    REQUIRE(committed.size() == 2);
+    REQUIRE(committed[0].kind == GizmoEditActionKind::Preview);
+    REQUIRE(committed[0].value == Json::array({1.5, 2.0, 3.0}));
+    REQUIRE(committed[1].kind == GizmoEditActionKind::Finish);
+    REQUIRE(committed[1].commit);
+    REQUIRE_FALSE(enabled.gestureActive());
+    const auto acknowledgement = takeRpc(enabled, "ack_modal_transform");
+    REQUIRE(acknowledgement.params.at("operation_id") == 42);
+    REQUIRE(acknowledgement.params.at("revision") == 4);
+
+    GizmoModel disabled;
+    openModel(disabled);
+    disabled.pollModalTransform(transformBinding());
+    const auto disabled_poll = takeRpc(disabled, "get_modal_transform");
+    disabled.receiveRpcResult(
+        disabled_poll.request_id,
+        modalResult("idle", 1, std::nullopt, false,
+                    {0.0, 0.0, 0.0}, std::nullopt, std::nullopt, false)
+            .dump());
+    const auto disabled_edits = disabled.takeEditActions();
+    REQUIRE(disabled_edits.empty());
+    REQUIRE_FALSE(disabled.gestureActive());
+    REQUIRE(disabled.bindingDisplay(GizmoMode::Translate).empty());
+    // Rule 10: the same Studio binding snapshot produces authoring actions
+    // only when the engine reports the modal action overlay as effective.
+    REQUIRE(committed.size() != disabled_edits.size());
+}
+
+TEST_CASE("Devstudio modal cancellation and confirmation finish the same lease differently",
+          "[devstudio][gizmo][modal][cancel][negative-contrast][wp286]") {
+    const auto terminalCommit = [](std::string_view terminal_phase) {
+        GizmoModel model;
+        openModel(model);
+        model.pollModalTransform(transformBinding());
+        auto poll = takeRpc(model, "get_modal_transform");
+        model.receiveRpcResult(
+            poll.request_id,
+            modalResult("active", 10, 7, true, {0.4, 0.0, 0.0})
+                .dump());
+        const auto begin = takeEdit(model, GizmoEditActionKind::Begin);
+        model.confirmEditStarted(begin.gesture_id, true);
+        REQUIRE(takeEdit(model, GizmoEditActionKind::Preview).value ==
+                Json::array({1.4, 2.0, 3.0}));
+
+        model.pollModalTransform(transformBinding());
+        poll = takeRpc(model, "get_modal_transform");
+        model.receiveRpcResult(
+            poll.request_id,
+            modalResult(terminal_phase, 11, 7, true,
+                        {0.4, 0.0, 0.0})
+                .dump());
+        const auto finish = takeEdit(model, GizmoEditActionKind::Finish);
+        REQUIRE(finish.gesture_id == begin.gesture_id);
+        (void)takeRpc(model, "ack_modal_transform");
+        return finish.commit;
+    };
+
+    const bool confirmed = terminalCommit("confirmed");
+    const bool cancelled = terminalCommit("cancelled");
+    REQUIRE(confirmed);
+    REQUIRE_FALSE(cancelled);
+    REQUIRE(confirmed != cancelled);
+}
+
+TEST_CASE("Devstudio refuses modal begin while the Inspector edit lease is busy",
+          "[devstudio][gizmo][modal][inspector][negative-contrast][wp286]") {
+    const auto beginWithInspector = [](bool inspector_accepts) {
+        GizmoModel model;
+        openModel(model);
+        model.pollModalTransform(transformBinding());
+        const auto poll = takeRpc(model, "get_modal_transform");
+        model.receiveRpcResult(
+            poll.request_id,
+            modalResult("active", 20, 8, true, {0.2, 0.0, 0.0})
+                .dump());
+        const auto begin = takeEdit(model, GizmoEditActionKind::Begin);
+        model.confirmEditStarted(begin.gesture_id, inspector_accepts);
+        const auto edits = model.takeEditActions();
+        const auto requests = model.takeRpcRequests();
+        return std::pair{edits, requests};
+    };
+
+    const auto [accepted_edits, accepted_requests] =
+        beginWithInspector(true);
+    const auto [busy_edits, busy_requests] = beginWithInspector(false);
+    REQUIRE(accepted_edits.size() == 1);
+    REQUIRE(accepted_edits.front().kind == GizmoEditActionKind::Preview);
+    REQUIRE(accepted_requests.empty());
+    REQUIRE(busy_edits.empty());
+    REQUIRE(busy_requests.size() == 1);
+    REQUIRE(busy_requests.front().method == "cancel_modal_transform");
+    REQUIRE(accepted_edits.size() != busy_edits.size());
 }

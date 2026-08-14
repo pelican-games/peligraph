@@ -14,6 +14,25 @@ inline constexpr std::string_view freeCameraBlenderInputActionOverlayReference =
 inline constexpr std::string_view freeCameraUnityInputActionOverlayReference =
     "engine://input/overlays/free_camera_unity.json";
 
+enum class EditorTransformInputPreset {
+    Blender,
+    Grab,
+};
+
+inline constexpr EditorTransformInputPreset defaultEditorTransformInputPreset =
+    EditorTransformInputPreset::Grab;
+inline constexpr std::string_view
+    editorTransformBlenderInputActionOverlayReference =
+        "engine://input/overlays/editor_transform_blender.json";
+inline constexpr std::string_view
+    editorTransformGrabInputActionOverlayReference =
+        "engine://input/overlays/editor_transform_grab.json";
+
+std::string_view editorTransformInputPresetName(
+    EditorTransformInputPreset preset) noexcept;
+std::string_view editorTransformInputActionOverlayReference(
+    EditorTransformInputPreset preset) noexcept;
+
 using InputActionOverlayLoader =
     std::function<std::string(std::string_view reference)>;
 

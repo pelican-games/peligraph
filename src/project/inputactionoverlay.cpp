@@ -171,6 +171,26 @@ std::vector<std::string> collectNames(
 
 } // namespace
 
+std::string_view editorTransformInputPresetName(
+    EditorTransformInputPreset preset) noexcept {
+    switch (preset) {
+    case EditorTransformInputPreset::Blender: return "blender";
+    case EditorTransformInputPreset::Grab: return "grab";
+    }
+    return "blender";
+}
+
+std::string_view editorTransformInputActionOverlayReference(
+    EditorTransformInputPreset preset) noexcept {
+    switch (preset) {
+    case EditorTransformInputPreset::Blender:
+        return editorTransformBlenderInputActionOverlayReference;
+    case EditorTransformInputPreset::Grab:
+        return editorTransformGrabInputActionOverlayReference;
+    }
+    return editorTransformBlenderInputActionOverlayReference;
+}
+
 InputActionOverlayApplication applyInputActionOverlays(
     const std::optional<std::string> &authored_actions_json,
     std::span<const std::string> overlay_references,

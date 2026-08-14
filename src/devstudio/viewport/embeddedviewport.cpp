@@ -152,6 +152,7 @@ QStringList studioPlayerArguments(QStringList configured,
                                   const QString &project_root) {
     QStringList additional;
     additional.reserve(configured.size());
+    bool has_editor_transform_preset = false;
     for (qsizetype index = 0; index < configured.size(); ++index) {
         const QString argument = configured.at(index);
         if (argument == QStringLiteral("--rpc")) {
@@ -175,6 +176,10 @@ QStringList studioPlayerArguments(QStringList configured,
         if (argument.startsWith(QStringLiteral("--feature-overlay="))) {
             continue;
         }
+        if (argument == QStringLiteral("--editor-transform") ||
+            argument.startsWith(QStringLiteral("--editor-transform="))) {
+            has_editor_transform_preset = true;
+        }
         additional.push_back(argument);
     }
 
@@ -190,6 +195,9 @@ QStringList studioPlayerArguments(QStringList configured,
             overlay_reference.data(),
             static_cast<qsizetype>(overlay_reference.size())),
     };
+    if (!has_editor_transform_preset) {
+        arguments.push_back(QStringLiteral("--editor-transform"));
+    }
     arguments.append(additional);
     return arguments;
 }

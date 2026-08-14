@@ -1,4 +1,5 @@
 #include "../src/core/renderer/gizmo.hpp"
+#include "../src/core/renderer/modaltransform.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -294,6 +295,188 @@ TEST_CASE("gizmo rejects a camera-facing degenerate axis for dragging",
         REQUIRE(std::isfinite(segment.drag->direction.x));
         REQUIRE(std::isfinite(segment.drag->direction.y));
         REQUIRE(std::isfinite(segment.drag->value_per_logical_pixel));
+    }
+}
+
+TEST_CASE("modal axis movement reuses the exact rendered handle projection",
+          "[gizmo][modal][axis][negative-contrast][headless][wp286]") {
+    constexpr vk::Extent2D extent{640, 640};
+    const auto geometry = buildGizmoGeometry(
+        GizmoMode::translate, {0.0f, 0.0f, 0.0f},
+        cameraViewProjection({0.0f, 0.0f, -4.0f}, glm::vec3{0.0f},
+                             {0.0f, 1.0f, 0.0f}),
+        extent, 1.0f);
+    const auto &segment = longestSegment(
+        geometry, GizmoHandle::translate_x);
+    const auto midpoint =
+        (segment.from.pixel + segment.to.pixel) * 0.5f;
+    const auto hit = hitTestGizmoDrag(geometry, midpoint);
+    const auto named_axis = gizmoDragProjectionForAxis(
+        geometry, GizmoMode::translate, GizmoAxis::x);
+    REQUIRE(hit.has_value());
+    REQUIRE(named_axis.has_value());
+    REQUIRE(hit->handle == GizmoHandle::translate_x);
+    REQUIRE(named_axis->direction.x ==
+            Catch::Approx(hit->drag.direction.x));
+    REQUIRE(named_axis->direction.y ==
+            Catch::Approx(hit->drag.direction.y));
+    REQUIRE(named_axis->value_per_logical_pixel ==
+            Catch::Approx(hit->drag.value_per_logical_pixel));
+
+    const GizmoSelection selection = GizmoDeclarationSelection{
+        .scene_id = "default_scene", .declaration_index = 1};
+    ModalTransformController modal;
+    modal.update({.enabled = true,
+                  .mode_pressed = GizmoMode::translate,
+                  .selection = selection});
+    modal.update({.enabled = true,
+                  .axis_pressed = GizmoAxis::x,
+                  .selection = selection,
+                  .axis_projection = named_axis});
+    constexpr float logical_pixels = 37.0f;
+    const glm::vec2 pointer_delta =
+        named_axis->direction * logical_pixels;
+    modal.update({.enabled = true,
+                  .pointer_delta_logical = pointer_delta,
+                  .selection = selection});
+    modal.update({.enabled = true,
+                  .confirm_pressed = true,
+                  .selection = selection});
+
+    const float handle_change =
+        glm::dot(pointer_delta, hit->drag.direction) *
+        hit->drag.value_per_logical_pixel;
+    const auto transformed = modal.snapshot();
+    REQUIRE(transformed.phase == ModalTransformPhase::confirmed);
+    REQUIRE(transformed.delta.translation.x ==
+            Catch::Approx(handle_change).margin(1.0e-6f));
+    REQUIRE(transformed.delta.translation.y == Catch::Approx(0.0f));
+    REQUIRE(transformed.delta.translation.z == Catch::Approx(0.0f));
+
+    // Rule 10 negative contrast: the identical action/axis/pointer sequence
+    // with the editor action overlay disabled must remain idle and differ.
+    ModalTransformController disabled;
+    disabled.update({.enabled = false,
+                     .mode_pressed = GizmoMode::translate,
+                     .selection = selection});
+    disabled.update({.enabled = false,
+                     .axis_pressed = GizmoAxis::x,
+                     .selection = selection,
+                     .axis_projection = named_axis});
+    disabled.update({.enabled = false,
+                     .pointer_delta_logical = pointer_delta,
+                     .selection = selection});
+    disabled.update({.enabled = false,
+                     .confirm_pressed = true,
+                     .selection = selection});
+    REQUIRE(disabled.snapshot().phase == ModalTransformPhase::idle);
+    REQUIRE(disabled.snapshot().delta.translation.x == 0.0f);
+    REQUIRE(disabled.snapshot().delta.translation.x !=
+            transformed.delta.translation.x);
+}
+
+TEST_CASE("unconstrained modal translation follows the current camera plane",
+          "[gizmo][modal][view-plane][negative-contrast][headless][wp286]") {
+    constexpr vk::Extent2D extent{640, 640};
+    const auto first = buildGizmoViewPlaneDragProjection(
+        glm::vec3{0.0f},
+        cameraViewProjection({0.0f, 0.0f, -4.0f}, glm::vec3{0.0f},
+                             {0.0f, 1.0f, 0.0f}),
+        {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, extent, 1.0f);
+    const auto orbited = buildGizmoViewPlaneDragProjection(
+        glm::vec3{0.0f},
+        cameraViewProjection({4.0f, 0.0f, 0.0f}, glm::vec3{0.0f},
+                             {0.0f, 1.0f, 0.0f}),
+        {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, extent, 1.0f);
+    REQUIRE(first.has_value());
+    REQUIRE(orbited.has_value());
+    const GizmoSelection selection = GizmoDeclarationSelection{
+        .scene_id = "default_scene", .declaration_index = 1};
+    const glm::vec2 pointer{19.0f, 7.0f};
+
+    const auto run = [&](const GizmoViewPlaneDragProjection &second_basis) {
+        ModalTransformController controller;
+        controller.update({.enabled = true,
+                           .mode_pressed = GizmoMode::translate,
+                           .selection = selection,
+                           .view_plane_projection = *first});
+        controller.update({.enabled = true,
+                           .pointer_delta_logical = pointer,
+                           .selection = selection,
+                           .view_plane_projection = *first});
+        controller.update({.enabled = true,
+                           .pointer_delta_logical = pointer,
+                           .selection = selection,
+                           .view_plane_projection = second_basis});
+        return controller.snapshot().delta.translation;
+    };
+    const glm::vec3 camera_following = run(*orbited);
+    const glm::vec3 frozen_camera = run(*first);
+    const glm::vec3 expected =
+        first->world_per_logical_pixel_x * pointer.x +
+        first->world_per_logical_pixel_y * pointer.y +
+        orbited->world_per_logical_pixel_x * pointer.x +
+        orbited->world_per_logical_pixel_y * pointer.y;
+    REQUIRE(camera_following.x == Catch::Approx(expected.x));
+    REQUIRE(camera_following.y == Catch::Approx(expected.y));
+    REQUIRE(camera_following.z == Catch::Approx(expected.z));
+    // Negative contrast is the same operation with camera following removed.
+    REQUIRE(glm::length(camera_following - frozen_camera) > 1.0e-4f);
+}
+
+TEST_CASE("modal transform cancellation triggers share one terminal state and acknowledgement",
+          "[gizmo][modal][cancel][negative-contrast][headless][wp286]") {
+    const GizmoSelection selection = GizmoDeclarationSelection{
+        .scene_id = "default_scene", .declaration_index = 1};
+    const GizmoSelection other_selection = GizmoDeclarationSelection{
+        .scene_id = "default_scene", .declaration_index = 2};
+    const auto enter = [&] {
+        ModalTransformController controller;
+        controller.update({.enabled = true,
+                           .mode_pressed = GizmoMode::translate,
+                           .selection = selection});
+        REQUIRE(controller.snapshot().phase ==
+                ModalTransformPhase::active);
+        return controller;
+    };
+    const auto terminalFor = [&](std::string_view trigger) {
+        auto controller = enter();
+        if (trigger == "escape") {
+            controller.update({.enabled = true,
+                               .cancel_pressed = true,
+                               .selection = selection});
+        } else if (trigger == "mode") {
+            controller.update({.enabled = true,
+                               .mode_pressed = GizmoMode::rotate,
+                               .selection = selection});
+        } else if (trigger == "selection") {
+            controller.update({.enabled = true,
+                               .selection = other_selection});
+        } else if (trigger == "actions_disabled") {
+            controller.update({.enabled = false,
+                               .selection = selection});
+        } else if (trigger == "player_stop") {
+            controller.requestCancel("player_stopped");
+        } else if (trigger == "control") {
+            controller.update({.enabled = true,
+                               .selection = selection});
+        }
+        return controller;
+    };
+
+    const auto control = terminalFor("control").snapshot();
+    REQUIRE(control.phase == ModalTransformPhase::active);
+    for (const auto trigger : {"escape", "mode", "selection",
+                               "actions_disabled", "player_stop"}) {
+        CAPTURE(trigger);
+        auto controller = terminalFor(trigger);
+        const auto terminal = controller.snapshot();
+        REQUIRE(terminal.phase == ModalTransformPhase::cancelled);
+        REQUIRE(terminal.phase != control.phase);
+        REQUIRE_FALSE(terminal.reason.empty());
+        REQUIRE(controller.acknowledge(terminal.operation_id,
+                                       terminal.revision));
+        REQUIRE(controller.snapshot().phase == ModalTransformPhase::idle);
     }
 }
 

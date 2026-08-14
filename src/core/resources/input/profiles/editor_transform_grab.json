@@ -1,0 +1,6 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "editor_transform_grab",
+  "bindings": []
+}

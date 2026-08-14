@@ -15,6 +15,7 @@
 #include <optional>
 
 class QDockWidget;
+class QAction;
 class QLabel;
 class QListWidget;
 class QMenu;
@@ -22,6 +23,7 @@ class QPlainTextEdit;
 class QString;
 class QTreeWidget;
 class QTreeWidgetItem;
+class QTimer;
 
 namespace PelicanStudio {
 
@@ -58,9 +60,12 @@ class MainWindow : public QMainWindow {
     std::optional<ProjectOutlinerModel> project_model_;
     SelectionModel selection_model_;
     GizmoModel gizmo_model_;
+    std::array<QAction *, 3> gizmo_mode_actions_{};
+    QTimer *modal_transform_timer_ = nullptr;
     QHash<qint64, ViewportPickToken> pending_pick_tokens_;
     QHash<qint64, quint64> pending_gizmo_requests_;
     std::uint64_t presented_gizmo_notice_revision_ = 0;
+    std::uint64_t presented_gizmo_binding_revision_ = 0;
 
     void createWorkspace();
     void createMenus();
@@ -80,6 +85,7 @@ class MainWindow : public QMainWindow {
     void failGizmoRpc(qint64 request_id, const QString &message);
     void dispatchGizmoModel();
     void setGizmoMode(GizmoMode mode);
+    void updateGizmoToolbar();
     void presentGizmoNotice();
     void refreshSelectionViews();
     void presentPickingFailure(const QString &message);

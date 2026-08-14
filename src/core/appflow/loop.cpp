@@ -24,6 +24,7 @@
 #endif
 #include "../renderer/debugtext.hpp"
 #include "../renderer/camera.hpp"
+#include "../renderer/modaltransform.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../startup.hpp"
@@ -262,6 +263,9 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
 #endif
     (void)GET_MODULE(DeterministicRng);
     (void)GET_MODULE(DebugText);
+    // The built-in modal transform system reads this on every frame. Keep its
+    // state in the engine graph and construct it before creation is frozen.
+    (void)GET_MODULE(ModalTransformState);
     (void)GET_MODULE(Persistence);
 #if PELICAN_WITH_AUDIO
     (void)GET_MODULE(Audio);

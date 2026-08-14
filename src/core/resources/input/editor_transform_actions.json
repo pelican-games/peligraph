@@ -1,0 +1,19 @@
+{
+  "schema": "pelican.input_actions",
+  "version": 1,
+  "action_sets": [
+    {
+      "name": "gizmo_modal",
+      "actions": [
+        {"name": "gizmo.translate", "type": "button"},
+        {"name": "gizmo.rotate", "type": "button"},
+        {"name": "gizmo.scale", "type": "button"},
+        {"name": "gizmo.axis_x", "type": "button"},
+        {"name": "gizmo.axis_y", "type": "button"},
+        {"name": "gizmo.axis_z", "type": "button"},
+        {"name": "gizmo.confirm", "type": "button"},
+        {"name": "gizmo.cancel", "type": "button"}
+      ]
+    }
+  ]
+}

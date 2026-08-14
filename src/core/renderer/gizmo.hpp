@@ -90,6 +90,15 @@ struct GizmoDragProjection {
     float value_per_logical_pixel = 0.0f;
 };
 
+// Camera-resolved basis for unconstrained translation. Each vector is the
+// world-space displacement caused by one logical pointer pixel on the matching
+// screen axis. The basis is deliberately produced next to GizmoGeometry so no
+// editor client needs to reproduce projection math.
+struct GizmoViewPlaneDragProjection {
+    glm::vec3 world_per_logical_pixel_x{0.0f};
+    glm::vec3 world_per_logical_pixel_y{0.0f};
+};
+
 struct GizmoSegment {
     GizmoHandle handle = GizmoHandle::translate_x;
     GizmoProjectedVertex from;
@@ -121,6 +130,7 @@ struct GizmoHit {
 std::string_view gizmoModeName(GizmoMode mode) noexcept;
 std::optional<GizmoMode> gizmoModeFromName(std::string_view name) noexcept;
 std::string_view gizmoAxisName(GizmoAxis axis) noexcept;
+std::optional<GizmoAxis> gizmoAxisFromName(std::string_view name) noexcept;
 GizmoAxis gizmoHandleAxis(GizmoHandle handle) noexcept;
 std::string_view gizmoHandleName(GizmoHandle handle) noexcept;
 
@@ -135,6 +145,18 @@ std::optional<GizmoHandle> hitTestGizmo(const GizmoGeometry &geometry,
                                         glm::vec2 pixel) noexcept;
 std::optional<GizmoHit> hitTestGizmoDrag(const GizmoGeometry &geometry,
                                         glm::vec2 pixel) noexcept;
+// Returns the exact projection already attached to the rendered handle for
+// the requested axis, without requiring a hit-test coordinate.
+std::optional<GizmoDragProjection>
+gizmoDragProjectionForAxis(const GizmoGeometry &geometry,
+                           GizmoMode mode, GizmoAxis axis) noexcept;
+std::optional<GizmoViewPlaneDragProjection>
+buildGizmoViewPlaneDragProjection(glm::vec3 world_position,
+                                  const glm::mat4 &view_projection,
+                                  glm::vec3 camera_direction,
+                                  glm::vec3 camera_up,
+                                  vk::Extent2D extent,
+                                  float content_scale) noexcept;
 
 // Declaration selections retain the authoring-document/SceneLoader route.
 // Runtime selections are process-local GameObjectIds and resolve directly in

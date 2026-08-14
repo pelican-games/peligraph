@@ -411,6 +411,13 @@ std::string_view gizmoAxisName(GizmoAxis axis) noexcept {
     return "x";
 }
 
+std::optional<GizmoAxis> gizmoAxisFromName(std::string_view name) noexcept {
+    if (name == "x") return GizmoAxis::x;
+    if (name == "y") return GizmoAxis::y;
+    if (name == "z") return GizmoAxis::z;
+    return std::nullopt;
+}
+
 GizmoAxis gizmoHandleAxis(GizmoHandle handle) noexcept {
     switch (handle) {
     case GizmoHandle::translate_x:
@@ -523,6 +530,87 @@ std::optional<GizmoHit> hitTestGizmoDrag(const GizmoGeometry &geometry,
         .handle = segment->handle,
         .drag = *segment->drag,
     };
+}
+
+std::optional<GizmoDragProjection>
+gizmoDragProjectionForAxis(const GizmoGeometry &geometry,
+                           GizmoMode mode, GizmoAxis axis) noexcept {
+    const auto handle =
+        handleFor(mode, static_cast<std::size_t>(axis));
+    const auto segment = std::find_if(
+        geometry.segments.begin(), geometry.segments.end(),
+        [handle](const GizmoSegment &candidate) {
+            return candidate.handle == handle && candidate.drag.has_value();
+        });
+    if (segment == geometry.segments.end()) return std::nullopt;
+    return segment->drag;
+}
+
+std::optional<GizmoViewPlaneDragProjection>
+buildGizmoViewPlaneDragProjection(glm::vec3 world_position,
+                                  const glm::mat4 &view_projection,
+                                  glm::vec3 camera_direction,
+                                  glm::vec3 camera_up,
+                                  vk::Extent2D extent,
+                                  float content_scale) noexcept {
+    if (extent.width == 0 || extent.height == 0 ||
+        !finite(world_position) || !finite(camera_direction) ||
+        !finite(camera_up)) {
+        return std::nullopt;
+    }
+
+    const auto direction_length = glm::length(camera_direction);
+    if (!std::isfinite(direction_length) ||
+        direction_length <= minimum_projected_derivative) {
+        return std::nullopt;
+    }
+    const auto direction = camera_direction / direction_length;
+    auto right = glm::cross(camera_up, direction);
+    const auto right_length = glm::length(right);
+    if (!std::isfinite(right_length) ||
+        right_length <= minimum_projected_derivative) {
+        return std::nullopt;
+    }
+    right /= right_length;
+    auto up = glm::cross(direction, right);
+    const auto up_length = glm::length(up);
+    if (!std::isfinite(up_length) ||
+        up_length <= minimum_projected_derivative) {
+        return std::nullopt;
+    }
+    up /= up_length;
+
+    const auto right_pixels = projectedPixelDerivative(
+        world_position, right, view_projection, extent);
+    const auto up_pixels = projectedPixelDerivative(
+        world_position, up, view_projection, extent);
+    if (!right_pixels || !up_pixels) return std::nullopt;
+
+    const auto determinant = right_pixels->x * up_pixels->y -
+                             up_pixels->x * right_pixels->y;
+    if (!std::isfinite(determinant) ||
+        std::abs(determinant) <= minimum_projected_derivative) {
+        return std::nullopt;
+    }
+    const auto scale =
+        std::isfinite(content_scale) && content_scale > 0.0f
+            ? std::clamp(content_scale, 0.5f, 4.0f)
+            : 1.0f;
+    const auto right_for_x = up_pixels->y * scale / determinant;
+    const auto up_for_x = -right_pixels->y * scale / determinant;
+    const auto right_for_y = -up_pixels->x * scale / determinant;
+    const auto up_for_y = right_pixels->x * scale / determinant;
+    const GizmoViewPlaneDragProjection result{
+        .world_per_logical_pixel_x =
+            right * right_for_x + up * up_for_x,
+        .world_per_logical_pixel_y =
+            right * right_for_y + up * up_for_y,
+    };
+    if (!finite(result.world_per_logical_pixel_x) ||
+        !finite(result.world_per_logical_pixel_y)) {
+        return std::nullopt;
+    }
+    return result;
 }
 
 std::optional<GizmoTargetTransform> resolveGizmoTargetTransform(

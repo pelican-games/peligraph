@@ -1,0 +1,7 @@
+{
+  "schema": "pelican.input_action_overlay",
+  "version": 1,
+  "name": "editor_transform_grab",
+  "actions": "engine://input/editor_transform_actions.json",
+  "profile": "engine://input/profiles/editor_transform_grab.json"
+}

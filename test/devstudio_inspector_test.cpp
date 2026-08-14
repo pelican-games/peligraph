@@ -284,50 +284,61 @@ Json gizmoEditedPosition() {
              {"mode", "translate"}}
             .dump());
 
-    gizmo.pointerPressed(
-        {100, 100},
-        GizmoTransformBinding{
-            .selection = selection,
-            .position = GizmoEditableField{
-                .field_key = "1:transform:0:/pos",
-                .value = Json::array({1.0, 2.0, 3.0})},
-        });
-    const auto query = takeGizmoRpc(gizmo, "query_gizmo_handle");
-    gizmo.receiveRpcResult(
-        query.request_id,
-        Json{{"contract", 2},
-             {"selection",
-              {{"kind", "declaration"},
-               {"scene_id", "main"},
-               {"declaration_index", 0}}},
-             {"mode", "translate"},
-             {"coordinate", {{"x", 100}, {"y", 100}}},
-             {"extent", {{"width", 640}, {"height", 480}}},
-             {"content_scale", 1.0},
-             {"grab_radius_pixels", 10.0},
-             {"handle",
-              {{"id", "translate_x"},
-               {"axis", "x"},
-               {"drag_direction", {{"x", 1.0}, {"y", 0.0}}},
-               {"value_per_logical_pixel", 0.25}}}}
-            .dump());
+    const GizmoTransformBinding binding{
+        .selection = selection,
+        .position = GizmoEditableField{
+            .field_key = "1:transform:0:/pos",
+            .value = Json::array({1.0, 2.0, 3.0})},
+    };
+    const auto modal_state = [](std::string_view phase,
+                                std::uint64_t revision) {
+        return Json{
+            {"contract", 1},
+            {"enabled", true},
+            {"revision", revision},
+            {"phase", phase},
+            {"operation_id", 11},
+            {"selection",
+             {{"kind", "declaration"},
+              {"scene_id", "main"},
+              {"declaration_index", 0}}},
+            {"mode", "translate"},
+            {"axis", "x"},
+            {"delta",
+             {{"translation", {3.0, 0.0, 0.0}},
+              {"rotation", {0.0, 0.0, 0.0, 1.0}},
+              {"scale_exponent", {0.0, 0.0, 0.0}}}},
+            {"reason", "test"},
+            {"bindings",
+             {{"translate", nullptr},
+              {"rotate", nullptr},
+              {"scale", nullptr}}},
+        };
+    };
+    gizmo.pollModalTransform(binding);
+    auto poll = takeGizmoRpc(gizmo, "get_modal_transform");
+    gizmo.receiveRpcResult(poll.request_id,
+                           modal_state("active", 2).dump());
     auto actions = gizmo.takeEditActions();
     REQUIRE(actions.size() == 1);
     REQUIRE(actions.front().kind == GizmoEditActionKind::Begin);
     gizmo.confirmEditStarted(actions.front().gesture_id, true);
 
-    gizmo.pointerMoved({112, 100});
     actions = gizmo.takeEditActions();
     REQUIRE(actions.size() == 1);
     REQUIRE(actions.front().kind == GizmoEditActionKind::Preview);
     const Json edited = actions.front().value;
     REQUIRE(edited == Json::array({4.0, 2.0, 3.0}));
 
-    gizmo.pointerReleased({112, 100});
+    gizmo.pollModalTransform(binding);
+    poll = takeGizmoRpc(gizmo, "get_modal_transform");
+    gizmo.receiveRpcResult(poll.request_id,
+                           modal_state("confirmed", 3).dump());
     actions = gizmo.takeEditActions();
     REQUIRE(actions.size() == 1);
     REQUIRE(actions.front().kind == GizmoEditActionKind::Finish);
     REQUIRE(actions.front().commit);
+    (void)takeGizmoRpc(gizmo, "ack_modal_transform");
     return edited;
 }
 
@@ -654,14 +665,15 @@ TEST_CASE("Devstudio aborts the live lease after a terminal preview failure",
     REQUIRE(harness.take("scene_tree").method == "scene_tree");
 }
 
-TEST_CASE("Devstudio undo uses the editor session revision after a gizmo-style preview",
-          "[devstudio][inspector][gizmo][undo][wp266][wp275]") {
+TEST_CASE("Devstudio undo uses the editor session revision after a modal gizmo preview",
+          "[devstudio][inspector][gizmo][modal][undo][negative-contrast][wp266][wp286]") {
     InspectorHarness harness;
     harness.open();
-    harness.commitGizmoStylePosition(3.0);
+    const Json modal_position = gizmoEditedPosition();
+    harness.commitGizmoStylePosition(modal_position.at(0).get<double>());
 
     REQUIRE(harness.field("transform", "pos").value ==
-            Json::array({3.0, 2.0, 3.0}));
+            modal_position);
 
     harness.model.undo();
     const auto undo = harness.take("undo");
@@ -671,6 +683,21 @@ TEST_CASE("Devstudio undo uses the editor session revision after a gizmo-style p
 
     REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
     REQUIRE(harness.take("scene_tree").method == "scene_tree");
+
+    InspectorHarness no_modal_commit;
+    no_modal_commit.open();
+    no_modal_commit.model.undo();
+    const auto no_commit_requests =
+        no_modal_commit.model.takeRpcRequests();
+    REQUIRE(no_commit_requests.size() == 1);
+    REQUIRE(no_commit_requests.front().method == "undo");
+    REQUIRE(no_commit_requests.front().params ==
+            Json{{"actor_id", 9}, {"base_revision", 1}});
+    REQUIRE(no_commit_requests.front().params != undo.params);
+    REQUIRE(no_modal_commit.field("transform", "pos").value ==
+            Json::array({1.0, 2.0, 3.0}));
+    REQUIRE(no_modal_commit.field("transform", "pos").value !=
+            modal_position);
 }
 
 TEST_CASE("Devstudio save scene RPC is serialized only while idle",
@@ -702,8 +729,8 @@ TEST_CASE("Devstudio save scene RPC is serialized only while idle",
     REQUIRE(harness.model.canSave());
 }
 
-TEST_CASE("Devstudio gizmo commit survives save and a fresh authoring reload",
-          "[devstudio][inspector][gizmo][save][reload][wp276]") {
+TEST_CASE("Devstudio modal gizmo commit survives save and a fresh authoring reload",
+          "[devstudio][inspector][gizmo][modal][save][reload][negative-contrast][wp286]") {
     Pelican::setupLogger(true);
     PersistenceProject project_dir;
     const Json source{
@@ -725,13 +752,20 @@ TEST_CASE("Devstudio gizmo commit survives save and a fresh authoring reload",
     const Json project{
         {"schema", "pelican.project"},
         {"version", 1},
-        {"name", "WP276 persistence"},
+        {"name", "WP286 persistence"},
         {"engine_min_version", "0.1.0"},
         {"basic_config",
          {{"default_scene_id", "main"},
           {"scene_data_json", "scene.json"}}},
     };
     const Json edited_position = gizmoEditedPosition();
+    REQUIRE(source.at("scenes")
+                .at("main")
+                .at("objects")
+                .at(0)
+                .at("components")
+                .at(0)
+                .at("pos") != edited_position);
 
     {
         Pelican::FastModuleContainer modules;

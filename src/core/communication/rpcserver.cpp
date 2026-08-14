@@ -25,6 +25,7 @@
 #include "../light/lightcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
+#include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
 #if PELICAN_WITH_OPENXR
@@ -38,6 +39,7 @@
 #include "../renderer/spritescene.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/gizmo.hpp"
+#include "../renderer/modaltransform.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
@@ -52,6 +54,7 @@
 #include "../watch/reloadservice.hpp"
 
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
@@ -335,6 +338,7 @@ struct EngineRpcModules {
     SpriteScene *sprite_scene;
     Renderer &renderer;
     Gizmo *gizmo;
+    ModalTransformState &modal_transform;
     Window *window;
     RenderingPassContainer &rendering_passes;
     SeqPlayer &seq_player;
@@ -365,6 +369,7 @@ EngineRpcModules resolveEngineRpcModules() {
         FastModuleContainer::tryGet<SpriteScene>(),
         GET_MODULE(Renderer),
         FastModuleContainer::tryGet<Gizmo>(),
+        GET_MODULE(ModalTransformState),
         FastModuleContainer::tryGet<Window>(),
         GET_MODULE(RenderingPassContainer),
         GET_MODULE(SeqPlayer),
@@ -592,6 +597,75 @@ nlohmann::json gizmoSelectionJson(const GizmoSelection &selection) {
         {"object_id",
          {{"index", runtime.object_id.index},
           {"generation", runtime.object_id.generation}}},
+    };
+}
+
+nlohmann::json modalTransformBindingDisplay(std::string_view action_name) {
+    const auto *map = internal::inputActionMap();
+    const auto *action = map != nullptr ? map->findAction(action_name) : nullptr;
+    if (action == nullptr) return nullptr;
+    const auto binding = std::find_if(
+        action->bindings.begin(), action->bindings.end(),
+        [](const InputActionBinding &candidate) {
+            return candidate.text.starts_with("kbd:");
+        });
+    if (binding == action->bindings.end()) return nullptr;
+
+    std::string control = binding->text.substr(4);
+    const auto separator = control.rfind('+');
+    if (separator != std::string::npos) {
+        control = control.substr(separator + 1);
+    }
+    if (control.size() == 1) {
+        control.front() = static_cast<char>(std::toupper(
+            static_cast<unsigned char>(control.front())));
+    } else if (control == "enter") {
+        control = "Enter";
+    } else if (control == "escape") {
+        control = "Esc";
+    }
+    return control;
+}
+
+nlohmann::json modalTransformSnapshotJson(
+    const ModalTransformSnapshot &snapshot) {
+    nlohmann::json selection = nullptr;
+    if (snapshot.selection) {
+        selection = gizmoSelectionJson(*snapshot.selection);
+    }
+    nlohmann::json mode = nullptr;
+    if (snapshot.mode) mode = gizmoModeName(*snapshot.mode);
+    nlohmann::json axis = nullptr;
+    if (snapshot.axis) axis = gizmoAxisName(*snapshot.axis);
+    nlohmann::json operation_id = nullptr;
+    if (snapshot.operation_id != 0) operation_id = snapshot.operation_id;
+    nlohmann::json reason = nullptr;
+    if (!snapshot.reason.empty()) reason = snapshot.reason;
+    return {
+        {"contract", 1},
+        {"enabled", snapshot.enabled},
+        {"revision", snapshot.revision},
+        {"phase", modalTransformPhaseName(snapshot.phase)},
+        {"operation_id", std::move(operation_id)},
+        {"selection", std::move(selection)},
+        {"mode", std::move(mode)},
+        {"axis", std::move(axis)},
+        {"delta",
+         {{"translation",
+           {snapshot.delta.translation.x, snapshot.delta.translation.y,
+            snapshot.delta.translation.z}},
+          {"rotation",
+           {snapshot.delta.rotation.x, snapshot.delta.rotation.y,
+            snapshot.delta.rotation.z, snapshot.delta.rotation.w}},
+          {"scale_exponent",
+           {snapshot.delta.scale_exponent.x,
+            snapshot.delta.scale_exponent.y,
+            snapshot.delta.scale_exponent.z}}}},
+        {"reason", std::move(reason)},
+        {"bindings",
+         {{"translate", modalTransformBindingDisplay(modalTranslateAction)},
+          {"rotate", modalTransformBindingDisplay(modalRotateAction)},
+          {"scale", modalTransformBindingDisplay(modalScaleAction)}}},
     };
 }
 
@@ -1492,6 +1566,151 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
              request ? gizmoSelectionJson(request->selection)
                      : nlohmann::json(nullptr)},
             {"mode", gizmoModeName(mode)},
+        };
+    });
+
+    server.setHandler("query_gizmo_drag_basis",
+                      [&modules](const nlohmann::json &params) {
+        constexpr auto method = "query_gizmo_drag_basis";
+        requireGizmoFeature(modules, method);
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 3 || !object.contains("selection") ||
+            !object.contains("mode") || !object.contains("axis")) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "query_gizmo_drag_basis params must contain exactly 'selection', 'mode', and 'axis'");
+        }
+        const auto selection =
+            parseGizmoSelection(object.at("selection"), method);
+        const auto mode = parseGizmoMode(object, method);
+        const auto target = requireGizmoTarget(selection, modules, method);
+        const auto extent = modules.render_target.getExtent();
+        const auto content_scale =
+            modules.window != nullptr
+                ? gizmoContentScale(extent, modules.window->logicalExtent())
+                : 1.0f;
+
+        nlohmann::json basis = nullptr;
+        if (object.at("axis").is_null()) {
+            if (mode != GizmoMode::translate) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "query_gizmo_drag_basis null axis is supported only for translate mode");
+            }
+            const auto projection = buildGizmoViewPlaneDragProjection(
+                target->position, modules.camera.getVPMatrix(),
+                modules.camera.getDir(), modules.camera.getUp(), extent,
+                content_scale);
+            if (projection) {
+                basis = {
+                    {"kind", "view_plane"},
+                    {"world_per_logical_pixel_x",
+                     {projection->world_per_logical_pixel_x.x,
+                      projection->world_per_logical_pixel_x.y,
+                      projection->world_per_logical_pixel_x.z}},
+                    {"world_per_logical_pixel_y",
+                     {projection->world_per_logical_pixel_y.x,
+                      projection->world_per_logical_pixel_y.y,
+                      projection->world_per_logical_pixel_y.z}},
+                };
+            }
+        } else {
+            if (!object.at("axis").is_string()) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "query_gizmo_drag_basis axis must be 'x', 'y', 'z', or null");
+            }
+            const auto axis_name = object.at("axis").get<std::string>();
+            const auto axis = gizmoAxisFromName(axis_name);
+            if (!axis) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "query_gizmo_drag_basis axis must be 'x', 'y', 'z', or null");
+            }
+            const auto geometry = buildGizmoGeometry(
+                mode, target->position, modules.camera.getVPMatrix(), extent,
+                content_scale);
+            const auto projection = gizmoDragProjectionForAxis(
+                geometry, mode, *axis);
+            if (projection) {
+                basis = {
+                    {"kind", "axis"},
+                    {"axis", gizmoAxisName(*axis)},
+                    {"drag_direction",
+                     {{"x", projection->direction.x},
+                      {"y", projection->direction.y}}},
+                    {"value_per_logical_pixel",
+                     projection->value_per_logical_pixel},
+                };
+            }
+        }
+        return nlohmann::json{
+            {"contract", 1},
+            {"selection", gizmoSelectionJson(selection)},
+            {"mode", gizmoModeName(mode)},
+            {"axis", object.at("axis")},
+            {"extent", {{"width", extent.width}, {"height", extent.height}}},
+            {"content_scale", content_scale},
+            {"basis", std::move(basis)},
+        };
+    });
+
+    server.setHandler("get_modal_transform",
+                      [&modules](const nlohmann::json &params) {
+        const auto &object = requireObjectParams(params,
+                                                 "get_modal_transform");
+        if (!object.empty()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "get_modal_transform params must be empty");
+        }
+        return modalTransformSnapshotJson(modules.modal_transform.snapshot());
+    });
+
+    server.setHandler("cancel_modal_transform",
+                      [&modules](const nlohmann::json &params) {
+        const auto &object = requireObjectParams(params,
+                                                 "cancel_modal_transform");
+        if (object.size() > 1 ||
+            (object.size() == 1 && !object.contains("reason"))) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "cancel_modal_transform accepts only optional 'reason'");
+        }
+        std::string reason = "studio_cancel";
+        if (object.contains("reason")) {
+            if (!object.at("reason").is_string() ||
+                object.at("reason").get_ref<const std::string &>().empty()) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "cancel_modal_transform reason must be a non-empty string");
+            }
+            reason = object.at("reason").get<std::string>();
+        }
+        modules.modal_transform.requestCancel(std::move(reason));
+        return modalTransformSnapshotJson(modules.modal_transform.snapshot());
+    });
+
+    server.setHandler("ack_modal_transform",
+                      [&modules](const nlohmann::json &params) {
+        const auto &object = requireObjectParams(params,
+                                                 "ack_modal_transform");
+        if (object.size() != 2 || !object.contains("operation_id") ||
+            !object.contains("revision")) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "ack_modal_transform requires exactly 'operation_id' and 'revision'");
+        }
+        const auto operation_id = requireUnsignedIntegerParam(
+            object, "operation_id", "ack_modal_transform");
+        const auto revision = requireUnsignedIntegerParam(
+            object, "revision", "ack_modal_transform");
+        const bool acknowledged = modules.modal_transform.acknowledge(
+            operation_id, revision);
+        return nlohmann::json{
+            {"acknowledged", acknowledged},
+            {"state",
+             modalTransformSnapshotJson(modules.modal_transform.snapshot())},
         };
     });
 

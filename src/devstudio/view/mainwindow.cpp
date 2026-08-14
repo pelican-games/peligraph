@@ -32,6 +32,7 @@
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
 
@@ -209,10 +210,12 @@ void MainWindow::createWorkspace() {
             [this] {
                 pending_gizmo_requests_.clear();
                 gizmo_model_.startSession();
+                modal_transform_timer_->start();
                 dispatchGizmoModel();
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
+                modal_transform_timer_->stop();
                 pending_gizmo_requests_.clear();
                 gizmo_model_.stopSession();
                 dispatchGizmoModel();
@@ -225,6 +228,13 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QString &message) {
                 failGizmoRpc(request_id, message);
             });
+    modal_transform_timer_ = new QTimer(this);
+    modal_transform_timer_->setInterval(16);
+    connect(modal_transform_timer_, &QTimer::timeout, this, [this] {
+        gizmo_model_.pollModalTransform(
+            inspector_->gizmoTransformBinding());
+        dispatchGizmoModel();
+    });
 }
 
 void MainWindow::createMenus() {
@@ -282,14 +292,16 @@ void MainWindow::createMenus() {
                 [this, mode] { setGizmoMode(mode); });
         return action;
     };
-    QAction *translate = add_mode(
+    gizmo_mode_actions_[0] = add_mode(
         tr("Move"), GizmoMode::Translate,
         tr("Move the selection along one world axis"));
-    add_mode(tr("Rotate"), GizmoMode::Rotate,
-             tr("Rotate the selection around one world axis"));
-    add_mode(tr("Scale"), GizmoMode::Scale,
-             tr("Scale the selection along one axis"));
-    translate->setChecked(true);
+    gizmo_mode_actions_[1] = add_mode(
+        tr("Rotate"), GizmoMode::Rotate,
+        tr("Rotate the selection around one world axis"));
+    gizmo_mode_actions_[2] = add_mode(
+        tr("Scale"), GizmoMode::Scale,
+        tr("Scale the selection along one axis"));
+    gizmo_mode_actions_[0]->setChecked(true);
 }
 
 void MainWindow::chooseProject() {
@@ -538,6 +550,7 @@ void MainWindow::dispatchGizmoModel() {
         if (!progressed) break;
     }
     presentGizmoNotice();
+    updateGizmoToolbar();
 }
 
 void MainWindow::setGizmoMode(GizmoMode mode) {
@@ -549,6 +562,39 @@ void MainWindow::setGizmoMode(GizmoMode mode) {
                                    static_cast<qsizetype>(
                                        gizmoModeName(mode).size()))),
         2500);
+}
+
+void MainWindow::updateGizmoToolbar() {
+    const auto revision = gizmo_model_.bindingRevision();
+    const bool mode_changed = std::none_of(
+        gizmo_mode_actions_.begin(), gizmo_mode_actions_.end(),
+        [this](const QAction *action) {
+            return action != nullptr && action->isChecked() &&
+                   action == gizmo_mode_actions_[
+                                 static_cast<std::size_t>(gizmo_model_.mode())];
+        });
+    if (presented_gizmo_binding_revision_ == revision && !mode_changed) {
+        return;
+    }
+    presented_gizmo_binding_revision_ = revision;
+    constexpr std::array modes{
+        GizmoMode::Translate, GizmoMode::Rotate, GizmoMode::Scale};
+    const std::array labels{tr("Move"), tr("Rotate"), tr("Scale")};
+    for (std::size_t index = 0; index < modes.size(); ++index) {
+        QAction *action = gizmo_mode_actions_[index];
+        if (action == nullptr) continue;
+        const auto display = gizmo_model_.bindingDisplay(modes[index]);
+        action->setText(
+            display.empty()
+                ? labels[index]
+                : tr("%1 (%2)")
+                      .arg(labels[index],
+                           QString::fromUtf8(
+                               display.data(),
+                               static_cast<qsizetype>(display.size()))));
+        const QSignalBlocker blocker{action};
+        action->setChecked(gizmo_model_.mode() == modes[index]);
+    }
 }
 
 void MainWindow::presentGizmoNotice() {

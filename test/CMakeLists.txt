@@ -1149,6 +1149,17 @@ set_tests_properties(free_camera_runtime_overlay_player PROPERTIES
 )
 
 if(PELICAN_WITH_RPC)
+    add_test(
+        NAME modal_transform_record_replay_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/modal_transform_record_replay
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_modal_transform_record_replay.cmake
+    )
+    set_tests_properties(modal_transform_record_replay_player PROPERTIES
+        TIMEOUT 180 LABELS gpu RESOURCE_LOCK pelican_gpu)
     add_executable(
         pelican_test_vrm_xr_demo_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp

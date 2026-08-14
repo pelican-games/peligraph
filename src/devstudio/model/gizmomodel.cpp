@@ -19,6 +19,9 @@ constexpr double DragThresholdLogicalPixels = 1.5;
 enum class RequestKind : std::uint8_t {
     SetDisplay,
     QueryHandle,
+    PollModal,
+    CancelModal,
+    AcknowledgeModal,
 };
 
 struct Handle {
@@ -142,6 +145,64 @@ Json rotatedValue(const Json &baseline, GizmoAxis axis, double scalar) {
     return Json::array({result[0], result[1], result[2], result[3]});
 }
 
+Json translatedByDelta(const Json &baseline, const Json &translation) {
+    Json result = baseline;
+    for (std::size_t index = 0; index < 3; ++index) {
+        result[index] = baseline[index].get<double>() +
+                        translation[index].get<double>();
+    }
+    return result;
+}
+
+Json scaledByExponent(const Json &baseline, const Json &exponents) {
+    Json result = baseline;
+    for (std::size_t index = 0; index < 3; ++index) {
+        const double original = baseline[index].get<double>();
+        const double exponent = std::clamp(
+            exponents[index].get<double>(), -8.0, 8.0);
+        result[index] =
+            std::abs(original) > 1.0e-12 ? original * std::exp(exponent)
+                                        : std::expm1(exponent);
+    }
+    return result;
+}
+
+Json rotatedByDelta(const Json &baseline, const Json &delta) {
+    const std::array<double, 4> lhs{
+        delta[0].get<double>(), delta[1].get<double>(),
+        delta[2].get<double>(), delta[3].get<double>()};
+    const std::array<double, 4> rhs{
+        baseline[0].get<double>(), baseline[1].get<double>(),
+        baseline[2].get<double>(), baseline[3].get<double>()};
+    std::array<double, 4> result{
+        lhs[3] * rhs[0] + lhs[0] * rhs[3] + lhs[1] * rhs[2] -
+            lhs[2] * rhs[1],
+        lhs[3] * rhs[1] - lhs[0] * rhs[2] + lhs[1] * rhs[3] +
+            lhs[2] * rhs[0],
+        lhs[3] * rhs[2] + lhs[0] * rhs[1] - lhs[1] * rhs[0] +
+            lhs[2] * rhs[3],
+        lhs[3] * rhs[3] - lhs[0] * rhs[0] - lhs[1] * rhs[1] -
+            lhs[2] * rhs[2],
+    };
+    const double norm = std::sqrt(
+        result[0] * result[0] + result[1] * result[1] +
+        result[2] * result[2] + result[3] * result[3]);
+    if (!std::isfinite(norm) ||
+        norm <= std::numeric_limits<double>::epsilon()) {
+        throw std::runtime_error(
+            "modal gizmo rotation produced an invalid quaternion");
+    }
+    for (double &component : result) component /= norm;
+    return Json::array({result[0], result[1], result[2], result[3]});
+}
+
+std::optional<GizmoMode> modeFromName(std::string_view name) noexcept {
+    if (name == "translate") return GizmoMode::Translate;
+    if (name == "rotate") return GizmoMode::Rotate;
+    if (name == "scale") return GizmoMode::Scale;
+    return std::nullopt;
+}
+
 const GizmoEditableField *fieldFor(const GizmoTransformBinding &binding,
                                    GizmoMode mode) noexcept {
     const std::optional<GizmoEditableField> *field = nullptr;
@@ -193,6 +254,7 @@ struct GizmoModel::Impl {
     struct RequestState {
         RequestKind kind = RequestKind::SetDisplay;
         std::uint64_t generation = 0;
+        std::optional<GizmoTransformBinding> modal_binding;
     };
 
     struct PendingHit {
@@ -225,6 +287,25 @@ struct GizmoModel::Impl {
         bool changed = false;
     };
 
+    enum class ModalDisposition : std::uint8_t {
+        Active,
+        Confirmed,
+        Cancelled,
+    };
+
+    struct ModalGesture {
+        std::uint64_t operation_id = 0;
+        std::uint64_t state_revision = 0;
+        GizmoMode mode = GizmoMode::Translate;
+        GizmoEditableField field;
+        Json baseline;
+        Json last_value;
+        Json delta;
+        EditStage stage = EditStage::BeginRequested;
+        ModalDisposition disposition = ModalDisposition::Active;
+        bool changed = false;
+    };
+
     bool connected = false;
     GizmoMode mode = GizmoMode::Translate;
     std::optional<OutlinerObjectKey> selection;
@@ -235,10 +316,13 @@ struct GizmoModel::Impl {
     std::unordered_map<std::uint64_t, RequestState> requests;
     std::optional<PendingHit> pending_hit;
     std::optional<ActiveGesture> active;
+    std::optional<ModalGesture> modal_active;
     std::vector<GizmoEditAction> edit_actions;
     std::vector<GizmoPixelPosition> fallback_picks;
     GizmoNotice notice;
     std::uint64_t notice_revision = 0;
+    std::array<std::string, 3> binding_displays;
+    std::uint64_t binding_revision = 0;
 
     void setNotice(GizmoNoticeKind kind, std::string message) {
         GizmoNotice next{.kind = kind, .message = std::move(message)};
@@ -272,7 +356,25 @@ struct GizmoModel::Impl {
                .generation = generation});
     }
 
-    void cancelInteraction() {
+    void queueModalCancel(std::string reason) {
+        if (!connected) return;
+        queue("cancel_modal_transform",
+              Json{{"reason", std::move(reason)}},
+              {.kind = RequestKind::CancelModal,
+               .generation = generation});
+    }
+
+    void queueModalAcknowledgement(std::uint64_t operation_id,
+                                   std::uint64_t state_revision) {
+        if (!connected) return;
+        queue("ack_modal_transform",
+              Json{{"operation_id", operation_id},
+                   {"revision", state_revision}},
+              {.kind = RequestKind::AcknowledgeModal,
+               .generation = generation});
+    }
+
+    void cancelInteraction(bool notify_modal = true) {
         ++generation;
         pending_hit.reset();
         if (active && active->stage == EditStage::Editing) {
@@ -283,6 +385,21 @@ struct GizmoModel::Impl {
                  .commit = false});
         }
         active.reset();
+        if (modal_active) {
+            if (modal_active->stage == EditStage::Editing) {
+                edit_actions.push_back(
+                    {.kind = GizmoEditActionKind::Finish,
+                     .gesture_id = modal_active->operation_id,
+                     .field_key = modal_active->field.field_key,
+                     .commit = false});
+            }
+            const auto operation_id = modal_active->operation_id;
+            modal_active.reset();
+            if (notify_modal) {
+                queueModalCancel("studio_interaction_changed:" +
+                                 std::to_string(operation_id));
+            }
+        }
     }
 
     Json valueFor(const ActiveGesture &gesture) const {
@@ -303,6 +420,22 @@ struct GizmoModel::Impl {
         case GizmoMode::Scale:
             return scaledValue(gesture.baseline, gesture.handle.axis,
                                scalar);
+        }
+        return gesture.baseline;
+    }
+
+    Json valueFor(const ModalGesture &gesture) const {
+        switch (gesture.mode) {
+        case GizmoMode::Translate:
+            return translatedByDelta(
+                gesture.baseline, gesture.delta.at("translation"));
+        case GizmoMode::Rotate:
+            return rotatedByDelta(
+                gesture.baseline, gesture.delta.at("rotation"));
+        case GizmoMode::Scale:
+            return scaledByExponent(
+                gesture.baseline,
+                gesture.delta.at("scale_exponent"));
         }
         return gesture.baseline;
     }
@@ -339,6 +472,43 @@ struct GizmoModel::Impl {
              .field_key = active->field.field_key,
              .commit = active->changed});
         active.reset();
+    }
+
+    void previewModalCurrent() {
+        if (!modal_active ||
+            modal_active->stage != EditStage::Editing ||
+            modal_active->disposition == ModalDisposition::Cancelled) {
+            return;
+        }
+        const Json value = valueFor(*modal_active);
+        modal_active->changed = value != modal_active->baseline;
+        if (value == modal_active->last_value) return;
+        modal_active->last_value = value;
+        edit_actions.push_back(
+            {.kind = GizmoEditActionKind::Preview,
+             .gesture_id = modal_active->operation_id,
+             .field_key = modal_active->field.field_key,
+             .value = value});
+    }
+
+    void finishModal() {
+        if (!modal_active ||
+            modal_active->stage != EditStage::Editing ||
+            modal_active->disposition == ModalDisposition::Active) {
+            return;
+        }
+        previewModalCurrent();
+        const ModalGesture completed = *modal_active;
+        edit_actions.push_back(
+            {.kind = GizmoEditActionKind::Finish,
+             .gesture_id = completed.operation_id,
+             .field_key = completed.field.field_key,
+             .commit = completed.disposition ==
+                           ModalDisposition::Confirmed &&
+                       completed.changed});
+        modal_active.reset();
+        queueModalAcknowledgement(completed.operation_id,
+                                  completed.state_revision);
     }
 
     void failPendingHit(std::string message, bool fallback) {
@@ -478,6 +648,228 @@ struct GizmoModel::Impl {
         setNotice(GizmoNoticeKind::None, {});
     }
 
+    void handleModalResult(const RequestState &request,
+                           const Json &result) {
+        const auto invalid = [&](std::string message) {
+            cancelInteraction(false);
+            queueModalCancel("invalid_modal_response");
+            setNotice(GizmoNoticeKind::Error,
+                      "Invalid get_modal_transform response: " +
+                          std::move(message));
+        };
+        if (!result.is_object()) {
+            invalid("result must be an object");
+            return;
+        }
+        const auto contract = result.find("contract");
+        const auto enabled_value = result.find("enabled");
+        const auto revision_value = result.find("revision");
+        const auto phase_value = result.find("phase");
+        const auto operation_value = result.find("operation_id");
+        const auto selection_value = result.find("selection");
+        const auto mode_value = result.find("mode");
+        const auto axis_value = result.find("axis");
+        const auto delta_value = result.find("delta");
+        const auto reason_value = result.find("reason");
+        const auto bindings_value = result.find("bindings");
+        if (contract == result.end() || unsignedInteger(*contract) != 1 ||
+            enabled_value == result.end() || !enabled_value->is_boolean() ||
+            revision_value == result.end() ||
+            !unsignedInteger(*revision_value) ||
+            phase_value == result.end() || !phase_value->is_string() ||
+            operation_value == result.end() ||
+            (!operation_value->is_null() &&
+             !unsignedInteger(*operation_value)) ||
+            selection_value == result.end() || mode_value == result.end() ||
+            axis_value == result.end() || delta_value == result.end() ||
+            reason_value == result.end() ||
+            (!reason_value->is_null() && !reason_value->is_string()) ||
+            bindings_value == result.end()) {
+            invalid("required fields have invalid types");
+            return;
+        }
+
+        std::array<std::string, 3> displays;
+        if (!bindings_value->is_object()) {
+            invalid("bindings must be an object");
+            return;
+        }
+        constexpr std::array binding_names{"translate", "rotate", "scale"};
+        for (std::size_t index = 0; index < binding_names.size(); ++index) {
+            const auto binding = bindings_value->find(binding_names[index]);
+            if (binding == bindings_value->end() ||
+                (!binding->is_null() && !binding->is_string())) {
+                invalid("bindings must contain string or null mode displays");
+                return;
+            }
+            if (binding->is_string()) {
+                displays[index] = binding->get<std::string>();
+            }
+        }
+
+        if (!delta_value->is_object()) {
+            invalid("delta must be an object");
+            return;
+        }
+        const auto translation = delta_value->find("translation");
+        const auto rotation = delta_value->find("rotation");
+        const auto scale_exponent = delta_value->find("scale_exponent");
+        if (translation == delta_value->end() ||
+            !validVector(*translation, 3) || rotation == delta_value->end() ||
+            !validVector(*rotation, 4) ||
+            scale_exponent == delta_value->end() ||
+            !validVector(*scale_exponent, 3)) {
+            invalid("delta vectors are invalid");
+            return;
+        }
+
+        enum class Phase : std::uint8_t {
+            Idle,
+            Active,
+            Confirmed,
+            Cancelled,
+        };
+        const auto phase = [&]() -> std::optional<Phase> {
+            const auto &name = phase_value->get_ref<const std::string &>();
+            if (name == "idle") return Phase::Idle;
+            if (name == "active") return Phase::Active;
+            if (name == "confirmed") return Phase::Confirmed;
+            if (name == "cancelled") return Phase::Cancelled;
+            return std::nullopt;
+        }();
+        if (!phase) {
+            invalid("phase is unknown");
+            return;
+        }
+        const std::uint64_t revision = *unsignedInteger(*revision_value);
+        const std::uint64_t operation_id = operation_value->is_null()
+                                               ? 0
+                                               : *unsignedInteger(
+                                                     *operation_value);
+        if (*phase == Phase::Idle) {
+            if (operation_id != 0 || !selection_value->is_null() ||
+                !mode_value->is_null() || !axis_value->is_null()) {
+                invalid("idle state contains an operation");
+                return;
+            }
+        } else if (operation_id == 0 || !selection ||
+                   !resultSelectionMatches(*selection_value, *selection)) {
+            invalid("operation selection does not match Studio selection");
+            return;
+        }
+
+        std::optional<GizmoMode> result_mode;
+        if (!mode_value->is_null()) {
+            if (!mode_value->is_string()) {
+                invalid("mode must be a string or null");
+                return;
+            }
+            result_mode = modeFromName(
+                mode_value->get_ref<const std::string &>());
+            if (!result_mode) {
+                invalid("mode is unknown");
+                return;
+            }
+        }
+        if ((*phase == Phase::Idle) != !result_mode) {
+            invalid("mode is inconsistent with phase");
+            return;
+        }
+        if (!axis_value->is_null()) {
+            if (!axis_value->is_string()) {
+                invalid("axis must be a string or null");
+                return;
+            }
+            const auto &axis = axis_value->get_ref<const std::string &>();
+            if (axis != "x" && axis != "y" && axis != "z") {
+                invalid("axis is unknown");
+                return;
+            }
+        }
+
+        if (binding_displays != displays) {
+            binding_displays = std::move(displays);
+            ++binding_revision;
+        }
+        setNotice(GizmoNoticeKind::None, {});
+        if (*phase == Phase::Idle) return;
+
+        const auto disposition =
+            *phase == Phase::Active
+                ? ModalDisposition::Active
+                : (*phase == Phase::Confirmed
+                       ? ModalDisposition::Confirmed
+                       : ModalDisposition::Cancelled);
+        if (disposition == ModalDisposition::Cancelled &&
+            (!modal_active ||
+             modal_active->operation_id != operation_id)) {
+            queueModalAcknowledgement(operation_id, revision);
+            return;
+        }
+
+        if (modal_active && modal_active->operation_id != operation_id) {
+            invalid("operation changed before the previous edit completed");
+            return;
+        }
+        if (!modal_active) {
+            // Engine modal input owns the pointer while active. Any handle hit
+            // queued by the confirming click is superseded here.
+            cancelInteraction(false);
+            if (!request.modal_binding ||
+                request.modal_binding->selection != *selection) {
+                if (disposition == ModalDisposition::Active) {
+                    queueModalCancel("studio_transform_binding_unavailable");
+                } else {
+                    queueModalAcknowledgement(operation_id, revision);
+                }
+                setNotice(
+                    GizmoNoticeKind::Error,
+                    "The Inspector transform is not ready for modal editing.");
+                return;
+            }
+            const GizmoEditableField *field =
+                fieldFor(*request.modal_binding, *result_mode);
+            if (field == nullptr || !validField(*field, *result_mode)) {
+                if (disposition == ModalDisposition::Active) {
+                    queueModalCancel("studio_transform_field_unavailable");
+                } else {
+                    queueModalAcknowledgement(operation_id, revision);
+                }
+                setNotice(
+                    GizmoNoticeKind::Error,
+                    "The selected transform field is not authored or editable.");
+                return;
+            }
+            mode = *result_mode;
+            modal_active = ModalGesture{
+                .operation_id = operation_id,
+                .state_revision = revision,
+                .mode = *result_mode,
+                .field = *field,
+                .baseline = field->value,
+                .last_value = field->value,
+                .delta = *delta_value,
+                .stage = EditStage::BeginRequested,
+                .disposition = disposition,
+            };
+            edit_actions.push_back(
+                {.kind = GizmoEditActionKind::Begin,
+                 .gesture_id = operation_id,
+                 .field_key = field->field_key});
+            return;
+        }
+
+        if (modal_active->mode != *result_mode ||
+            revision < modal_active->state_revision) {
+            return;
+        }
+        modal_active->state_revision = revision;
+        modal_active->delta = *delta_value;
+        modal_active->disposition = disposition;
+        previewModalCurrent();
+        finishModal();
+    }
+
     bool acceptsResponse(std::uint64_t request_id,
                          const RequestState &state) const noexcept {
         if (state.generation != generation) return false;
@@ -499,7 +891,7 @@ void GizmoModel::startSession() {
 }
 
 void GizmoModel::stopSession() {
-    impl_->cancelInteraction();
+    impl_->cancelInteraction(false);
     impl_->connected = false;
     impl_->requests.clear();
     impl_->outgoing.clear();
@@ -524,6 +916,7 @@ void GizmoModel::pointerPressed(
     GizmoPixelPosition position,
     std::optional<GizmoTransformBinding> transform_binding) {
     if (position.x < 0 || position.y < 0) return;
+    if (impl_->modal_active) return;
     impl_->cancelInteraction();
     if (!impl_->selection || !impl_->connected) {
         impl_->fallback_picks.push_back(position);
@@ -551,6 +944,21 @@ void GizmoModel::pointerPressed(
         .current = position,
         .binding = std::move(transform_binding),
     };
+}
+
+void GizmoModel::pollModalTransform(
+    std::optional<GizmoTransformBinding> transform_binding) {
+    if (!impl_->connected) return;
+    const bool already_pending = std::any_of(
+        impl_->requests.begin(), impl_->requests.end(),
+        [](const auto &entry) {
+            return entry.second.kind == RequestKind::PollModal;
+        });
+    if (already_pending) return;
+    impl_->queue("get_modal_transform", Json::object(),
+                 {.kind = RequestKind::PollModal,
+                  .generation = impl_->generation,
+                  .modal_binding = std::move(transform_binding)});
 }
 
 void GizmoModel::pointerMoved(GizmoPixelPosition position) {
@@ -598,9 +1006,15 @@ void GizmoModel::receiveRpcResult(std::uint64_t request_id,
                     std::string{error.what()},
                 true);
         } else {
+            const std::string_view method =
+                state.kind == RequestKind::SetDisplay
+                    ? "set_gizmo"
+                    : (state.kind == RequestKind::PollModal
+                           ? "get_modal_transform"
+                           : "modal transform control");
             impl_->setNotice(
                 GizmoNoticeKind::Error,
-                "set_gizmo returned invalid JSON: " +
+                std::string{method} + " returned invalid JSON: " +
                     std::string{error.what()});
         }
         return;
@@ -616,7 +1030,17 @@ void GizmoModel::receiveRpcResult(std::uint64_t request_id,
         impl_->setNotice(GizmoNoticeKind::None, {});
         return;
     }
-    impl_->handleQueryResult(request_id, result);
+    if (state.kind == RequestKind::QueryHandle) {
+        impl_->handleQueryResult(request_id, result);
+        return;
+    }
+    if (state.kind == RequestKind::PollModal) {
+        impl_->handleModalResult(state, result);
+        return;
+    }
+    // Cancellation and acknowledgement are followed by the next poll. Their
+    // response shapes intentionally remain private to the transport adapter.
+    impl_->setNotice(GizmoNoticeKind::None, {});
 }
 
 void GizmoModel::receiveRpcFailure(std::uint64_t request_id,
@@ -631,8 +1055,13 @@ void GizmoModel::receiveRpcFailure(std::uint64_t request_id,
         impl_->failPendingHit("Gizmo handle query failed: " + message, true);
         return;
     }
-    impl_->setNotice(GizmoNoticeKind::Error,
-                     "Gizmo display failed: " + message);
+    const std::string context =
+        state.kind == RequestKind::SetDisplay
+            ? "Gizmo display failed: "
+            : (state.kind == RequestKind::PollModal
+                   ? "Modal transform polling failed: "
+                   : "Modal transform control failed: ");
+    impl_->setNotice(GizmoNoticeKind::Error, context + message);
 }
 
 std::vector<GizmoEditAction> GizmoModel::takeEditActions() {
@@ -645,23 +1074,49 @@ std::vector<GizmoPixelPosition> GizmoModel::takeFallbackPicks() {
 
 void GizmoModel::confirmEditStarted(std::uint64_t gesture_id, bool accepted,
                                     std::string message) {
-    if (!impl_->active || impl_->active->gesture_id != gesture_id ||
-        impl_->active->stage != Impl::EditStage::BeginRequested) {
+    if (impl_->active && impl_->active->gesture_id == gesture_id &&
+        impl_->active->stage == Impl::EditStage::BeginRequested) {
+        if (!accepted) {
+            impl_->active.reset();
+            if (message.empty()) {
+                message =
+                    "Finish the active Inspector edit before using the gizmo.";
+            }
+            impl_->setNotice(GizmoNoticeKind::Error, std::move(message));
+            return;
+        }
+        impl_->active->stage = Impl::EditStage::Editing;
+        impl_->previewCurrent();
+        if (impl_->active && !impl_->active->button_down) {
+            impl_->finishActive();
+        }
+        return;
+    }
+    if (!impl_->modal_active ||
+        impl_->modal_active->operation_id != gesture_id ||
+        impl_->modal_active->stage != Impl::EditStage::BeginRequested) {
         return;
     }
     if (!accepted) {
-        impl_->active.reset();
+        const auto operation_id = impl_->modal_active->operation_id;
+        const auto revision = impl_->modal_active->state_revision;
+        const auto disposition = impl_->modal_active->disposition;
+        impl_->modal_active.reset();
+        if (disposition == Impl::ModalDisposition::Active) {
+            impl_->queueModalCancel("studio_inspector_edit_busy");
+        } else {
+            impl_->queueModalAcknowledgement(operation_id, revision);
+        }
         if (message.empty()) {
-            message = "Finish the active Inspector edit before using the gizmo.";
+            message =
+                "Finish the active Inspector edit before using the gizmo.";
         }
         impl_->setNotice(GizmoNoticeKind::Error, std::move(message));
         return;
     }
-    impl_->active->stage = Impl::EditStage::Editing;
-    impl_->previewCurrent();
-    if (impl_->active && !impl_->active->button_down) {
-        impl_->finishActive();
-    }
+    impl_->modal_active->stage = Impl::EditStage::Editing;
+    impl_->previewModalCurrent();
+    impl_->finishModal();
 }
 
 void GizmoModel::cancelActiveEdit(std::string message) {
@@ -685,8 +1140,22 @@ std::uint64_t GizmoModel::noticeRevision() const noexcept {
     return impl_->notice_revision;
 }
 
+std::string_view GizmoModel::bindingDisplay(GizmoMode mode) const noexcept {
+    switch (mode) {
+    case GizmoMode::Translate: return impl_->binding_displays[0];
+    case GizmoMode::Rotate: return impl_->binding_displays[1];
+    case GizmoMode::Scale: return impl_->binding_displays[2];
+    }
+    return {};
+}
+
+std::uint64_t GizmoModel::bindingRevision() const noexcept {
+    return impl_->binding_revision;
+}
+
 bool GizmoModel::gestureActive() const noexcept {
-    return impl_->pending_hit.has_value() || impl_->active.has_value();
+    return impl_->pending_hit.has_value() || impl_->active.has_value() ||
+           impl_->modal_active.has_value();
 }
 
 } // namespace PelicanStudio

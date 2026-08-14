@@ -135,7 +135,7 @@ bool isIdentifier(std::string_view value) {
         const bool is_digit = ch >= '0' && ch <= '9';
         const bool is_upper = ch >= 'A' && ch <= 'Z';
         const bool is_lower = ch >= 'a' && ch <= 'z';
-        if (!is_digit && !is_upper && !is_lower && ch != '_') {
+        if (!is_digit && !is_upper && !is_lower && ch != '_' && ch != '.') {
             return false;
         }
     }
@@ -144,7 +144,9 @@ bool isIdentifier(std::string_view value) {
 
 void requireIdentifier(std::string_view value, std::string_view kind) {
     if (!isIdentifier(value)) {
-        throw std::runtime_error(std::string{kind} + " must match [a-zA-Z0-9_]: " + std::string{value});
+        throw std::runtime_error(std::string{kind} +
+                                 " must match [a-zA-Z0-9_.]: " +
+                                 std::string{value});
     }
 }
 

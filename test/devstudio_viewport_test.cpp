@@ -119,8 +119,8 @@ TEST_CASE("Engine log keeps a bounded UTF-8 tail on line boundaries",
     REQUIRE(single_line_log.text() == QStringLiteral("34567890"));
 }
 
-TEST_CASE("Studio player arguments force the public editor feature overlay",
-          "[devstudio][viewport][feature-overlay][wp289]") {
+TEST_CASE("Studio player arguments force public editor feature and input overlays",
+          "[devstudio][viewport][feature-overlay][input-overlay][negative-contrast][wp289][wp286]") {
     const auto arguments = studioPlayerArguments(
         {QStringLiteral("--rpc"), QStringLiteral("--project"),
          QStringLiteral("stale-project"),
@@ -138,8 +138,19 @@ TEST_CASE("Studio player arguments force the public editor feature overlay",
                         QStringLiteral("--project"),
                         QStringLiteral("C:/projects/example"),
                         QStringLiteral("--feature-overlay"), expected_overlay,
+                        QStringLiteral("--editor-transform"),
                         QStringLiteral("--frames"), QStringLiteral("5")});
     REQUIRE(arguments.count(QStringLiteral("--feature-overlay")) == 1);
+    REQUIRE(arguments.count(QStringLiteral("--editor-transform")) == 1);
+
+    const auto handle_only = studioPlayerArguments(
+        {QStringLiteral("--editor-transform=grab")},
+        QStringLiteral("C:/projects/example"));
+    REQUIRE(handle_only.contains(
+        QStringLiteral("--editor-transform=grab")));
+    REQUIRE_FALSE(handle_only.contains(
+        QStringLiteral("--editor-transform")));
+    REQUIRE(handle_only != arguments);
 }
 
 TEST_CASE("Continuous embedded viewport resizes stay frozen and apply only the trailing extent",

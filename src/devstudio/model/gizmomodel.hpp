@@ -79,9 +79,9 @@ struct GizmoNotice {
     std::string message;
 };
 
-// Qt-independent controller for the public gizmo RPC surface. The model owns
-// only editor interaction state. The engine remains stateless between the one
-// hit query on pointer press and the eventual authoring preview operations.
+// Qt-independent controller for the public gizmo RPC surface. Handle dragging
+// remains local interaction state; modal transform mode/axis/delta state is
+// polled from the engine and is adapted onto the same authoring preview lease.
 class GizmoModel {
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -103,6 +103,8 @@ class GizmoModel {
         std::optional<GizmoTransformBinding> transform_binding);
     void pointerMoved(GizmoPixelPosition position);
     void pointerReleased(GizmoPixelPosition position);
+    void pollModalTransform(
+        std::optional<GizmoTransformBinding> transform_binding);
 
     std::vector<GizmoRpcRequest> takeRpcRequests();
     void receiveRpcResult(std::uint64_t request_id,
@@ -119,6 +121,8 @@ class GizmoModel {
     const std::optional<OutlinerObjectKey> &selection() const noexcept;
     const GizmoNotice &notice() const noexcept;
     std::uint64_t noticeRevision() const noexcept;
+    std::string_view bindingDisplay(GizmoMode mode) const noexcept;
+    std::uint64_t bindingRevision() const noexcept;
     bool gestureActive() const noexcept;
 };
 

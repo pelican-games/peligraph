@@ -108,6 +108,18 @@ Pelican::EngineLaunchFreeCameraPreset parseFreeCameraPreset(const std::string &v
     throw std::runtime_error("--free-camera must be one of: blender, unity");
 }
 
+Pelican::EditorTransformInputPreset
+parseEditorTransformInputPreset(const std::string &value) {
+    if (value == "blender") {
+        return Pelican::EditorTransformInputPreset::Blender;
+    }
+    if (value == "grab") {
+        return Pelican::EditorTransformInputPreset::Grab;
+    }
+    throw std::runtime_error(
+        "--editor-transform must be one of: blender, grab");
+}
+
 std::string_view freeCameraInputActionOverlayReference(
     Pelican::EngineLaunchFreeCameraPreset preset) {
     switch (preset) {
@@ -306,6 +318,12 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("name")
         .help("override the project's active input binding profile");
+    program.add_argument("--editor-transform")
+        .nargs(argparse::nargs_pattern::optional)
+        .default_value(std::string{Pelican::editorTransformInputPresetName(
+            Pelican::defaultEditorTransformInputPreset)})
+        .metavar("blender|grab")
+        .help("enable runtime editor transform actions; grab keeps only handle dragging");
     program.add_argument("--free-camera")
         .nargs(argparse::nargs_pattern::optional)
         .default_value(std::string{"blender"})
@@ -428,6 +446,12 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             };
             config.input_action_overlays.emplace_back(
                 freeCameraInputActionOverlayReference(preset));
+        }
+        if (program.is_used("--editor-transform")) {
+            const auto preset = parseEditorTransformInputPreset(
+                program.get<std::string>("--editor-transform"));
+            config.input_action_overlays.emplace_back(
+                Pelican::editorTransformInputActionOverlayReference(preset));
         }
         const auto camera_bake_output = program.get<std::string>("--bake-camera-output");
         if (!camera_bake_output.empty()) {
