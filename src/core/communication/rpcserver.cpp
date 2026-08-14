@@ -1148,6 +1148,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         const auto startup = modules.startup_metrics.snapshot();
         const auto module_graph = FastModuleContainer::graphSnapshot();
         const auto &debug_utils = modules.vulkan.getDebugUtils().getStatus();
+        const auto &vulkan_validation =
+            modules.vulkan.getVulkanValidationStatus();
         const auto renderdoc = modules.renderdoc_capture.status();
         const auto *render_timing = FastModuleContainer::tryGet<RenderTiming>();
         auto gpu_timing = render_timing != nullptr
@@ -1186,6 +1188,13 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                              {"capabilities", {{"object_name", debug_utils.object_name},
                                                {"command_label", debug_utils.command_label},
                                                {"queue_label", debug_utils.queue_label}}}}},
+            {"vulkan_validation",
+             {{"layer", vulkan_validation.layer},
+              {"available", vulkan_validation.available},
+              {"enabled", vulkan_validation.enabled},
+              {"synchronization",
+               vulkan_validation.synchronization_validation},
+              {"reason", vulkan_validation.reason}}},
             {"gpu_timing", std::move(gpu_timing)},
             {"memory", std::move(memory)},
             {"window_output",

@@ -1993,8 +1993,37 @@ preview graph の合成規則(すべて起動時に検証されます):
 |---|---|---|
 | フレームメトリクスログ / `get_status.memory` / `get_status.xr.timing` | 常設(何もしない) | ログ・rpc・ImGui |
 | GPU タイミング | rendering config の features に `engine://features/gpu_timing.json` を 1 行 | ログ・`get_status.gpu_timing`・ImGui |
+| Vulkan validation + synchronization validation | `--vulkan-validation=off\|on`。未指定は `_DEBUG` だけ ON | validation メッセージ・`get_status.vulkan_validation` |
 | Vulkan のデバッグ名とコマンドラベル | 起動フラグ `--gpu-labels`(既定 OFF) | RenderDoc / NSight / validation メッセージ |
 | RenderDoc キャプチャ | RenderDoc の Launch Application から player を起動(注入) | F11 / rpc `capture_gpu` → `.rdc` |
+
+### `--vulkan-validation` — 最適化ビルドで検証する(✅WP297)
+
+検証レイヤはビルド種別へ固定されていません。引数を省略した場合だけ従来の既定、すなわち
+`_DEBUG` で ON、それ以外で OFF です。`--vulkan-validation=on` はどの構成でも
+`VK_LAYER_KHRONOS_validation` と
+synchronization validation を有効にし、`--vulkan-validation=off` はどの構成でも両方を
+無効にします。同期検証を別スイッチにしなかったのは、従来の `_DEBUG` 挙動を保ち、最も価値が高く
+最も高価な検査を落とした「一部だけの validation on」を作らないためです。
+
+状態は起動引数ではなく、生成に成功した Vulkan instance の状態を
+`get_status.vulkan_validation` で確認します:
+
+```json
+"vulkan_validation": {
+  "layer": "VK_LAYER_KHRONOS_validation",
+  "available": true,
+  "enabled": true,
+  "synchronization": true,
+  "reason": "enabled_by_launch_option"
+}
+```
+
+`reason` は `enabled_by_debug_build_default` / `disabled_by_non_debug_build_default` /
+`enabled_by_launch_option` / `disabled_by_launch_option` のいずれかです。明示 ON または
+`_DEBUG` 既定で層が導入されていなければ、黙って無効化せず
+`pelican.vulkan.validation_layer_unavailable@1` と `VK_LAYER_KHRONOS_validation` を含む
+hard error で終了します。
 
 ### `--gpu-labels` — ラベルの読み方(✅WP139)
 
@@ -2019,7 +2048,7 @@ frame/<logical-frame>/graph/<flat|xr>/view/<index>/node/<ordinal>:<kind>:<name>
 
 - ⚠ `queue_label: true` は「関数が解決できた」という意味だけで、**submit 境界に queue label は出ません**(呼び出し側が未実装)。バッファ / パイプライン / テクスチャ / サンプラの網羅命名も 📐 です。
 - ラベルの ON / OFF で**最終 RGBA8 は byte 一致**します(golden 全ケースで検証済み)。無効時はラベル文字列の組み立て自体を行いません。
-- validation layer は `--gpu-labels` では有効になりません(`_DEBUG` 構成のみ)。ただし `--gpu-labels` を付けると validation メッセージにも同じ論理名が出ます。
+- validation layer は `--gpu-labels` では有効になりません。`--vulkan-validation=on` または `_DEBUG` 既定で別に選択します。ただし両方を有効にすると validation メッセージにも同じ論理名が出ます。
 
 ### RenderDoc キャプチャ(✅WP140)
 

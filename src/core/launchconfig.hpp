@@ -14,6 +14,12 @@ namespace Pelican {
 
 enum class XrMode { off, auto_mode, on };
 
+enum class VulkanValidationMode {
+    build_default,
+    disabled,
+    enabled,
+};
+
 struct EngineLaunchCameraOverride {
     std::array<float, 3> position{0.0f, 0.0f, 0.0f};
     std::array<float, 3> target{0.0f, 0.0f, 0.0f};
@@ -55,6 +61,8 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool strict_assets = false;
     bool dump_frame_plan = false;
     bool gpu_labels = false;
+    VulkanValidationMode vulkan_validation =
+        VulkanValidationMode::build_default;
     // Tool-declared startup inputs. These are deliberately absent from
     // ProjectBasicConfig, so project loading cannot opt into or persist them.
     std::vector<std::string> render_feature_overlays;

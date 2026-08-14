@@ -1538,6 +1538,30 @@ set_target_properties(pelican_test_studio_player_arguments PROPERTIES
 target_link_libraries(pelican_test_studio_player_arguments PRIVATE
     nlohmann_json)
 
+if(MSVC)
+    set(pelican_validation_build_default "$<CONFIG:Debug>")
+else()
+    # _DEBUG is an MSVC convention. Preserve the engine's existing exact
+    # preprocessor default on other toolchains instead of assuming that a
+    # configuration named Debug defines it.
+    set(pelican_validation_build_default 0)
+endif()
+add_test(
+    NAME vulkan_validation_runtime_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
+        -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
+        -DEXPECT_DEFAULT_ENABLED=${pelican_validation_build_default}
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vulkan_validation_runtime
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vulkan_validation_runtime.cmake
+)
+set_tests_properties(vulkan_validation_runtime_player PROPERTIES
+    TIMEOUT 600
+    RESOURCE_LOCK pelican_gpu
+    LABELS gpu
+    SKIP_REGULAR_EXPRESSION PELICAN_VULKAN_VALIDATION_RUNTIME_SKIP_NO_DEVICE)
+
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
@@ -1729,6 +1753,7 @@ set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
     frame_plan_dump_headless_player
     devcli_project_init_command
     animgraph_demo_preset_headless_player
+    vulkan_validation_runtime_player
     project_catalog_headless_smoke
     devcli_assets_command
     wsi_fault_window_player

@@ -98,6 +98,18 @@ Pelican::XrMode parseXrMode(const std::string &value) {
     throw std::runtime_error("--xr must be one of: off, auto, on");
 }
 
+Pelican::VulkanValidationMode
+parseVulkanValidationMode(const std::string &value) {
+    if (value == "off") {
+        return Pelican::VulkanValidationMode::disabled;
+    }
+    if (value == "on") {
+        return Pelican::VulkanValidationMode::enabled;
+    }
+    throw std::runtime_error(
+        "--vulkan-validation must be one of: off, on");
+}
+
 Pelican::EngineLaunchFreeCameraPreset parseFreeCameraPreset(const std::string &value) {
     if (value == "blender") {
         return Pelican::EngineLaunchFreeCameraPreset::Blender;
@@ -276,6 +288,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--dump-frame-plan").flag().help("dump the resolved frame plan JSON to stderr");
     program.add_argument("--gpu-labels").flag().help("enable Vulkan debug object names and command labels");
+    program.add_argument("--vulkan-validation")
+        .metavar("off|on")
+        .help("select Vulkan validation and synchronization validation; "
+              "absence keeps the _DEBUG build default");
     program.add_argument("--project")
         .default_value(std::string{})
         .metavar("dir|project.json")
@@ -415,6 +431,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         }
         config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
         config.gpu_labels = program.get<bool>("--gpu-labels");
+        if (program.is_used("--vulkan-validation")) {
+            config.vulkan_validation = parseVulkanValidationMode(
+                program.get<std::string>("--vulkan-validation"));
+        }
 
         config.fps = program.get<double>("--fps");
         if (config.fps <= 0.0) {

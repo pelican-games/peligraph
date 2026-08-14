@@ -9,6 +9,7 @@
 #include "memorydiagnostics.hpp"
 #include "raytracingpipelinedispatch.hpp"
 #include "runtimecapabilities.hpp"
+#include "vulkanvalidation.hpp"
 #include "windowsurface.hpp"
 #include <cstdint>
 #include <memory>
@@ -45,6 +46,7 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::UniqueCommandPool graphic_cmd_pool, compute_cmd_pool;
     vma::UniqueAllocator allocator;
     DebugUtilsDispatch debug_utils;
+    VulkanValidationStatus vulkan_validation;
     bool memory_budget_enabled = false;
     VulkanRuntimeCapabilities runtime_capabilities;
     std::vector<std::string>
@@ -99,6 +101,9 @@ DECLARE_MODULE(VulkanManageCore) {
     std::optional<vk::Queue> createdQueue(
         std::uint32_t family) const noexcept;
     const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
+    const VulkanValidationStatus &getVulkanValidationStatus() const noexcept {
+        return vulkan_validation;
+    }
     const VulkanRuntimeCapabilities &getRuntimeCapabilities() const noexcept {
         return runtime_capabilities;
     }

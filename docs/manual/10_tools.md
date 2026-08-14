@@ -38,6 +38,8 @@
 | `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
 | `--fps <f>` | 60.0 | ヘッドレス固定ステップのレート(dt = 1/fps) |
 | `--dump-frame-plan` | off | 解決済みフレームプラン JSON を **stderr** へ出力([第6章](06_rendering.md)) |
+| `--gpu-labels` | off | Vulkan debug object 名と command label を有効化。validation layer の選択とは独立([第6章](06_rendering.md) §6.14) |
+| `--vulkan-validation <off\|on>` | `_DEBUG`: on / それ以外: off | Khronos validation layer と synchronization validation を一体で選択。要求時に `VK_LAYER_KHRONOS_validation` が無ければ名前付き hard error |
 | `--allow-absolute-paths` | off | CLI 由来のコンテンツ参照に限り絶対パスを許可。JSON 内の絶対パスは常に拒否 |
 | `--user-dir <dir>` | なし | `user://` ルートの差し替え |
 | `--ignore-engine-version` | off | `engine_min_version` 不適合を hard error → WARN に降格 |
@@ -69,6 +71,7 @@ pelican_player --headless --project mygame --replay s.jsonl \
 pelican_player --project mygame --free-camera                               # Blender 操作(既定)
 pelican_player --project mygame --free-camera unity                         # Unity 操作
 pelican_player --project mygame --input-profile gamepad --free-camera       # gamepad profile と Blender 視点操作を併用
+pelican_player --project mygame --vulkan-validation=on                      # 最適化ビルドでも validation + sync validation
 ```
 
 `--feature-overlay` が読む文書は、厳密な `pelican.render_feature_overlay` v1 envelope
@@ -117,7 +120,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, stores, input:{...}, reload:{...}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
@@ -496,7 +499,7 @@ override は次です:
 
 ```powershell
 $env:PELICAN_STUDIO_PLAYER = "C:/path/to/pelican_player.exe"
-$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--gpu-labels --free-camera"
+$env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--gpu-labels --vulkan-validation=on --free-camera"
 dist_debug/pelican_studio.exe
 ```
 

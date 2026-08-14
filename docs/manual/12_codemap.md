@@ -82,8 +82,8 @@ pelican2/
 
 デバッガでステップするならこの順に張ってください。
 
-1. **CLI パース** — [`parseLaunchConfig()`](../../src/player/main.cpp#L261) `parseLaunchConfig`。argparse で全引数を解釈し、[EngineLaunchConfig](../../src/core/launchconfig.hpp) に詰める。`--project` 省略時の暗黙探索は [`findExampleProjectNearExecutable()`](../../src/player/main.cpp#L200) `findExampleProjectNearExecutable`(exe の祖先から `projects/example/project.json` を探す)
-2. **コア生成** — [`main.cpp` 内](../../src/player/main.cpp#L516) `main` → `Pelican::PelicanCore pl{...}`([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp))。モジュールコンテナに LaunchConfig を書き込み、解析済み`ProjectEnvelope`を[PathResolver](../../src/core/loader/pathresolver.hpp)`.setup()`へ、raw JSONを[ProjectSource](../../src/core/loader/projectsrc.hpp)へ渡す
+1. **CLI パース** — [`parseLaunchConfig()`](../../src/player/main.cpp#L273) `parseLaunchConfig`。argparse で全引数を解釈し、[EngineLaunchConfig](../../src/core/launchconfig.hpp) に詰める。`--project` 省略時の暗黙探索は [`findExampleProjectNearExecutable()`](../../src/player/main.cpp#L212) `findExampleProjectNearExecutable`(exe の祖先から `projects/example/project.json` を探す)
+2. **コア生成** — [`main.cpp` 内](../../src/player/main.cpp#L536) `main` → `Pelican::PelicanCore pl{...}`([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp))。モジュールコンテナに LaunchConfig を書き込み、解析済み`ProjectEnvelope`を[PathResolver](../../src/core/loader/pathresolver.hpp)`.setup()`へ、raw JSONを[ProjectSource](../../src/core/loader/projectsrc.hpp)へ渡す
 3. **封筒検証と設定合成** — [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) がschema/version/engine minimum versionを検証し、[`projectBasicConfigSource()`](../../src/core/loader/basicconfig.cpp#L288) が結果を受けて CLI > project.json > [default_config.json](../../src/core/resources/default_config.json) の 3 段を合成
 4. **ループ開始** — `pl.run()` → [`loop.cpp` 内](../../src/core/appflow/loop.cpp#L342) `Loop::run`。ここがフレーム編成の唯一の場所で、通常 / headless / rpc の 3 経路に分岐する。ウィンドウモードで `--rpc` が付いた場合は `WindowedRpcHost` を生成し、フレーム境界(`processFrameBoundary()`)でのみリクエストを処理します([windowedrpchost.cpp](../../src/core/communication/windowedrpchost.cpp))
 5. **描画** — [renderer.cpp](../../src/core/vkcore/renderer.cpp) `executeRenderingPasses` → `executePlannedFrameGraph`。✅WP64 で一本化済み: 全構成が FramePlan 順で実行される。ノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)の dispatch も同ファイル
@@ -202,7 +202,7 @@ pelican2/
 
 | やりたいこと | 読む / 変える場所 | 参照章 |
 |---|---|---|
-| CLI 引数を足す | [`parseLaunchConfig()`](../../src/player/main.cpp#L261) + [launchconfig.hpp](../../src/core/launchconfig.hpp) | [第10章](10_tools.md) |
+| CLI 引数を足す | [`parseLaunchConfig()`](../../src/player/main.cpp#L273) + [launchconfig.hpp](../../src/core/launchconfig.hpp) | [第10章](10_tools.md) |
 | scene に書ける新コンポーネント | [loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) に codec 五つ組を足す(受理の正)+ [userpublic/components/](../../src/core/userpublic/components) のランタイム型 + ComponentInfo 登録 | [第4章](04_scene_ecs.md) |
 | オブジェクトに毎フレーム処理を付ける | プロジェクトの `code/` に `PELICAN_REGISTER_BEHAVIOR` + scene 側に `behavior` コンポーネント(エンジン側は触らない) | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) |
 | ポストエフェクトを足す | feature fragment JSON + stem シェーダ(エンジンコード不要のことが多い) | [第6章](06_rendering.md) |

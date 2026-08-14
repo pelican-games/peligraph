@@ -32,6 +32,14 @@ static std::vector<std::string> supportedInstanceExtensions() {
     return result;
 }
 
+static std::vector<std::string> supportedInstanceLayers() {
+    std::vector<std::string> result;
+    for (const auto &layer : vk::enumerateInstanceLayerProperties()) {
+        result.emplace_back(layer.layerName.data());
+    }
+    return result;
+}
+
 static bool supportsInstanceExtension(
     std::string_view name) {
     const auto supported = supportedInstanceExtensions();
@@ -59,8 +67,22 @@ static void appendUniqueInstanceExtension(
     }
 }
 
-static vk::UniqueInstance vulkanCreateInstance(
-    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
+static bool containsInstanceLayer(
+    const std::vector<const char *> &layers,
+    std::string_view name) {
+    return std::any_of(
+        layers.begin(), layers.end(),
+        [&](const char *layer) { return name == layer; });
+}
+
+struct VulkanInstanceState {
+    vk::UniqueInstance instance;
+    VulkanValidationStatus validation;
+};
+
+static VulkanInstanceState vulkanCreateInstance(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
+    const VulkanValidationSelection &validation_selection) {
     LOG_INFO(logger, "initializing vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -72,9 +94,9 @@ static vk::UniqueInstance vulkanCreateInstance(
 
     std::vector<const char *> layers, exts;
 
-#ifdef _DEBUG
-    layers.push_back("VK_LAYER_KHRONOS_validation");
-#endif
+    if (validation_selection.enabled) {
+        layers.push_back(vulkanValidationLayerName.data());
+    }
 
     if (!headless) {
         exts = GET_MODULE(Window).getRequiredVulkanInstanceExts();
@@ -92,13 +114,14 @@ static vk::UniqueInstance vulkanCreateInstance(
             VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
     }
     vk::InstanceCreateInfo create_info;
-#ifdef _DEBUG
     const vk::ValidationFeatureEnableEXT synchronization_validation =
         vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
     vk::ValidationFeaturesEXT validation_features;
-    validation_features.setEnabledValidationFeatures(synchronization_validation);
-    create_info.pNext = &validation_features;
-#endif
+    if (validation_selection.synchronization_validation) {
+        validation_features.setEnabledValidationFeatures(
+            synchronization_validation);
+        create_info.pNext = &validation_features;
+    }
 #ifdef __APPLE__
     create_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
     exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -108,7 +131,14 @@ static vk::UniqueInstance vulkanCreateInstance(
     create_info.setPEnabledExtensionNames(exts);
     create_info.setPEnabledLayerNames(layers);
 
-    return vk::createInstanceUnique(create_info);
+    auto instance = vk::createInstanceUnique(create_info);
+    return {
+        .instance = std::move(instance),
+        .validation = finalizeVulkanValidationStatus(
+            validation_selection,
+            containsInstanceLayer(layers, vulkanValidationLayerName),
+            create_info.pNext == &validation_features),
+    };
 }
 
 #if PELICAN_WITH_OPENXR
@@ -139,8 +169,9 @@ static std::vector<std::string> requiredXrInstanceExtensions(
     return result;
 }
 
-static vk::UniqueInstance xrCreateVulkanInstance(
-    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
+static VulkanInstanceState xrCreateVulkanInstance(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
+    const VulkanValidationSelection &validation_selection) {
     LOG_INFO(logger, "initializing OpenXR-selected vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -151,9 +182,9 @@ static vk::UniqueInstance xrCreateVulkanInstance(
     app_info.apiVersion = vulkan_api_version;
 
     std::vector<const char *> layers;
-#ifdef _DEBUG
-    layers.push_back("VK_LAYER_KHRONOS_validation");
-#endif
+    if (validation_selection.enabled) {
+        layers.push_back(vulkanValidationLayerName.data());
+    }
 
     const auto required_extensions =
         requiredXrInstanceExtensions(headless, debug_utils_selection);
@@ -166,13 +197,14 @@ static vk::UniqueInstance xrCreateVulkanInstance(
     const auto extension_names = vulkanExtensionNamePointers(required_extensions);
 
     vk::InstanceCreateInfo create_info;
-#ifdef _DEBUG
     const vk::ValidationFeatureEnableEXT synchronization_validation =
         vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
     vk::ValidationFeaturesEXT validation_features;
-    validation_features.setEnabledValidationFeatures(synchronization_validation);
-    create_info.pNext = &validation_features;
-#endif
+    if (validation_selection.synchronization_validation) {
+        validation_features.setEnabledValidationFeatures(
+            synchronization_validation);
+        create_info.pNext = &validation_features;
+    }
 #ifdef __APPLE__
     create_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
 #endif
@@ -183,7 +215,13 @@ static vk::UniqueInstance xrCreateVulkanInstance(
     const auto raw_instance = OpenXr::createVulkanInstance(
         vulkan_api_version, &vkGetInstanceProcAddr,
         *reinterpret_cast<const VkInstanceCreateInfo *>(&create_info));
-    return vk::UniqueInstance{vk::Instance{raw_instance}};
+    return {
+        .instance = vk::UniqueInstance{vk::Instance{raw_instance}},
+        .validation = finalizeVulkanValidationStatus(
+            validation_selection,
+            containsInstanceLayer(layers, vulkanValidationLayerName),
+            create_info.pNext == &validation_features),
+    };
 }
 #endif
 
@@ -712,14 +750,19 @@ struct VulkanBootstrapState {
     vk::UniqueDevice device;
     bool memory_budget_enabled = false;
     VulkanRuntimeCapabilities runtime_capabilities;
+    VulkanValidationStatus validation;
     std::vector<std::string>
         enabled_device_extensions;
 };
 
 static VulkanBootstrapState bootstrapFlatVulkan(
-    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
+    const VulkanValidationSelection &validation_selection) {
     VulkanBootstrapState result;
-    result.instance = vulkanCreateInstance(headless, debug_utils_selection);
+    auto instance = vulkanCreateInstance(
+        headless, debug_utils_selection, validation_selection);
+    result.instance = std::move(instance.instance);
+    result.validation = std::move(instance.validation);
     if (!headless) {
         result.window_surface =
             WindowSurfaceFactory{
@@ -746,9 +789,13 @@ static VulkanBootstrapState bootstrapFlatVulkan(
 
 #if PELICAN_WITH_OPENXR
 static VulkanBootstrapState bootstrapXrVulkan(
-    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
+    const VulkanValidationSelection &validation_selection) {
     VulkanBootstrapState result;
-    result.instance = xrCreateVulkanInstance(headless, debug_utils_selection);
+    auto instance = xrCreateVulkanInstance(
+        headless, debug_utils_selection, validation_selection);
+    result.instance = std::move(instance.instance);
+    result.validation = std::move(instance.validation);
     if (!headless) {
         result.window_surface =
             WindowSurfaceFactory{
@@ -791,22 +838,28 @@ VulkanManageCore::VulkanManageCore() {
     const bool headless = launch_config.headless;
     const auto debug_utils_selection = selectDebugUtilsExtension(
         launch_config.gpu_labels, supportedInstanceExtensions());
+    const auto validation_selection = selectVulkanValidation(
+        launch_config.vulkan_validation, supportedInstanceLayers());
     VulkanBootstrapState bootstrap;
 #if PELICAN_WITH_OPENXR
     if (launch_config.xr_active) {
         try {
-            bootstrap = bootstrapXrVulkan(headless, debug_utils_selection);
+            bootstrap = bootstrapXrVulkan(
+                headless, debug_utils_selection, validation_selection);
         } catch (const OpenXr::VulkanBootstrapError &error) {
             OpenXr::abandonDiscovery();
             const auto info = resolveXrBootstrapFailure(launch_config, error.what());
             LOG_INFO(logger, "{}", info);
-            bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
+            bootstrap = bootstrapFlatVulkan(
+                headless, debug_utils_selection, validation_selection);
         }
     } else {
-        bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
+        bootstrap = bootstrapFlatVulkan(
+            headless, debug_utils_selection, validation_selection);
     }
 #else
-    bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
+    bootstrap = bootstrapFlatVulkan(
+        headless, debug_utils_selection, validation_selection);
 #endif
     instance = std::move(bootstrap.instance);
     initial_window_surface =
@@ -816,6 +869,7 @@ VulkanManageCore::VulkanManageCore() {
     device = std::move(bootstrap.device);
     memory_budget_enabled = bootstrap.memory_budget_enabled;
     runtime_capabilities = bootstrap.runtime_capabilities;
+    vulkan_validation = std::move(bootstrap.validation);
     enabled_device_extensions =
         std::move(
             bootstrap.enabled_device_extensions);
@@ -955,6 +1009,13 @@ VulkanManageCore::VulkanManageCore() {
     const auto &debug_status = debug_utils.getStatus();
     LOG_INFO(logger, "Vulkan debug utils: available={}, enabled={}, reason={}",
              debug_status.available, debug_status.enabled, debug_status.reason);
+    LOG_INFO(logger,
+             "Vulkan validation: layer={}, available={}, enabled={}, "
+             "synchronization={}, reason={}",
+             vulkan_validation.layer, vulkan_validation.available,
+             vulkan_validation.enabled,
+             vulkan_validation.synchronization_validation,
+             vulkan_validation.reason);
     graphic_cmd_pool = createCommandPool(device.get(), queue_set.graphic_queue);
     compute_cmd_pool = createCommandPool(device.get(), queue_set.compute_queue);
     allocator = createAllocator(
