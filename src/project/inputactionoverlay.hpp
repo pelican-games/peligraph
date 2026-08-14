@@ -19,8 +19,13 @@ enum class EditorTransformInputPreset {
     Grab,
 };
 
+// A bare --editor-transform has to mean what the flag says it does. Grab binds
+// no key at all - editor_transform_grab.json is "bindings": [] - so defaulting
+// to it made the bare flag identical to omitting the flag, and the studio, which
+// passes it bare, shipped with G/R/S dead. Grab remains reachable by asking for
+// it, which is the only way a caller would ever want handle-dragging-only.
 inline constexpr EditorTransformInputPreset defaultEditorTransformInputPreset =
-    EditorTransformInputPreset::Grab;
+    EditorTransformInputPreset::Blender;
 inline constexpr std::string_view
     editorTransformBlenderInputActionOverlayReference =
         "engine://input/overlays/editor_transform_blender.json";

@@ -480,10 +480,15 @@ TEST_CASE("Editor transform presets add named actions while grab disables their 
         };
     };
 
+    // The default has to be the preset that binds something. Grab's profile is
+    // "bindings": [], so defaulting to it made a bare --editor-transform - the
+    // form the studio passes - identical to omitting the flag, and G/R/S were
+    // dead in the editor while this very assertion held. Pinning a default is
+    // only useful when the default is the one a caller would want.
     REQUIRE(defaultEditorTransformInputPreset ==
-            EditorTransformInputPreset::Grab);
+            EditorTransformInputPreset::Blender);
     REQUIRE(std::string{editorTransformInputPresetName(
-                defaultEditorTransformInputPreset)} == "grab");
+                defaultEditorTransformInputPreset)} == "blender");
     const Observation blender =
         observe(EditorTransformInputPreset::Blender);
     const Observation grab = observe(EditorTransformInputPreset::Grab);

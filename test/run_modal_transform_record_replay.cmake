@@ -131,6 +131,15 @@ run_player(replay "${replay_script}" replay_stdout
 run_player(disabled "${disabled_script}" disabled_stdout
     --replay "${recording}")
 
+# The studio passes --editor-transform with no value (embeddedviewport.cpp), and
+# every case above passes it with one. That seam shipped broken: the bare flag
+# resolved to the grab preset, whose profile binds nothing, so G/R/S were dead in
+# the editor while every test stayed green. Assert on the bindings the running
+# player resolved, not on the presence of the flag - a flag that is present and
+# binds nothing is exactly the failure this missed.
+run_player(bare "${replay_script}" bare_stdout
+    --replay "${recording}" --editor-transform)
+
 function(response_for_id stdout id output_var)
     string(REPLACE "\r\n" "\n" normalized "${stdout}")
     string(REPLACE "\r" "\n" normalized "${normalized}")
@@ -151,6 +160,31 @@ endfunction()
 response_for_id("${record_stdout}" 10 record_state)
 response_for_id("${replay_stdout}" 6 replay_state)
 response_for_id("${disabled_stdout}" 6 disabled_state)
+response_for_id("${bare_stdout}" 6 bare_state)
+
+# The bare flag must resolve to the same keys as the explicit preset.
+foreach(entry IN ITEMS "translate;G" "rotate;R" "scale;S")
+    list(GET entry 0 action)
+    list(GET entry 1 expected_key)
+    string(JSON bare_key ERROR_VARIABLE json_error
+        GET "${bare_state}" result bindings ${action})
+    if(json_error OR NOT bare_key STREQUAL "${expected_key}")
+        message(FATAL_ERROR
+            "a bare --editor-transform left gizmo.${action} bound to '${bare_key}' "
+            "instead of '${expected_key}'. The studio passes the flag this way, so "
+            "this is what the editor gets:\n${bare_state}")
+    endif()
+endforeach()
+# The bare run replays the same bytes as the explicit-preset run, so the two
+# must land in the same place. Comparing them rather than naming a phase keeps
+# this assertion honest if the recorded sequence is ever changed.
+string(JSON bare_phase GET "${bare_state}" result phase)
+string(JSON bare_compare_phase GET "${replay_state}" result phase)
+if(NOT bare_phase STREQUAL "${bare_compare_phase}")
+    message(FATAL_ERROR
+        "a bare --editor-transform reached phase '${bare_phase}' where the explicit "
+        "preset reached '${bare_compare_phase}':\n${bare_state}")
+endif()
 
 foreach(pair IN ITEMS
         "record_state;record" "replay_state;replay" "disabled_state;disabled")
