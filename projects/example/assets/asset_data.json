@@ -3,10 +3,6 @@
   "version": 1,
   "models": [
     {
-      "name": "alicia",
-      "path": "assets/models/AliciaSolid.vrm"
-    },
-    {
       "name": "DamagedHelmet",
       "path": "assets/models/DamagedHelmet.glb"
     },

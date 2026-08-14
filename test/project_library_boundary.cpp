@@ -79,8 +79,8 @@ int main() {
                 "pelican_project did not expose the expected scene list");
         }
         if (asset_names != std::vector<std::string>{
-                               "alicia", "DamagedHelmet", "sponza",
-                               "sotai", "character"}) {
+                               "DamagedHelmet", "sponza", "sotai",
+                               "character"}) {
             throw std::runtime_error(
                 "pelican_project did not expose the expected asset list");
         }

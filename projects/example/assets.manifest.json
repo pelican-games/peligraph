@@ -7,18 +7,13 @@
   "files": [
     {
       "file": "asset_data.json",
-      "size": 512,
-      "sha256": "c4332e2bfc500fa0cb00e4f5dd7a1b24c1d7092a398b49b1eaa2a9dd65c5665c"
+      "size": 421,
+      "sha256": "47cfc7c0a849429902db0f6effba9b6cd00943b3ce9bb22f8cb449c01ff2f98a"
     },
     {
       "file": "models/.gitkeep",
       "size": 2,
       "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
-    },
-    {
-      "file": "models/AliciaSolid.vrm",
-      "size": 7878712,
-      "sha256": "237bb02efadf8c13a114af91dd8e860173081457dee87017e51011c448d05dc2"
     },
     {
       "file": "models/DamagedHelmet.glb",

@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace Pelican::GltfInternal {
 namespace {
@@ -93,13 +94,13 @@ void decodeImagesInParallel(tinygltf::Model &model,
     for (std::size_t index = 0; index < encoded.size(); ++index) {
         if (encoded[index]) indices.push_back(index);
     }
-    const auto decoded = parallelPrepareOrdered<DecodedImage>(
+    auto decoded = parallelPrepareOrdered<DecodedImage>(
         indices.size(),
         [&](std::size_t slot) { return decodeImage(*encoded[indices[slot]]); },
         4);
     for (std::size_t slot = 0; slot < indices.size(); ++slot) {
         auto &image = model.images.at(indices[slot]);
-        image.image = decoded[slot].pixels;
+        image.image = std::move(decoded[slot].pixels);
         image.width = decoded[slot].width;
         image.height = decoded[slot].height;
         image.component = decoded[slot].component;

@@ -2,10 +2,15 @@
 
 ## 目的と境界
 
-`projects/example` の JSON、shader、game code は git 管理するが、6 個の
-GLB/VRM と 16 個の PNG（合計 22 file、81,153,913 byte）は管理しない。
+`projects/example` の JSON、shader、game code は git 管理するが、5 個の
+GLB と 16 個の PNG（合計 21 file、73,275,201 byte）は管理しない。
 これらは showcase 用であり、clean clone、CPU CI、build-unit smoke の入力ではない。
 実バイナリをこの repository や Git LFS へ追加してはならない。
+
+`AliciaSolid.vrm` は VRM 0.x の semantic を現行ランタイムが扱えず、scene と
+game code のどちらからも参照されていなかったため、WP296 で example の資産表と
+manifest から除外した。VRM 1.0 の表示例は自己完結した
+[`projects/vrm_xr_demo`](../projects/vrm_xr_demo/README.md) が担う。
 
 byte の正本は
 [`projects/example/assets.manifest.json`](../projects/example/assets.manifest.json) の
@@ -15,8 +20,8 @@ size と SHA-256 である。本ページは取得経路、権利、出所の正
 ## 取得・配置手順
 
 Pelican は任意 URL から asset を download する機能を持たない。作業者は、各行の
-権利を確認できる自分またはチームの管理 store から、manifest の 26 entry
-（22 binary と tracked text 4 file）を同じ相対構造で復元する。出所または
+権利を確認できる自分またはチームの管理 store から、manifest の 25 entry
+（21 binary と tracked text 4 file）を同じ相対構造で復元する。出所または
 ライセンスが「未記録」の byte を第三者へ再配布して取得手段にしてはならない。
 
 推奨は repository 外の store を使う方法である。
@@ -35,22 +40,21 @@ Pelican は任意 URL から asset を download する機能を持たない。�
    build\src\devcli\Debug\pelican_cli.exe assets verify --full --project projects/example
    ```
 
-4. `26 matched / 0 warning / 0 error` を確認してから example を起動する。
+4. `25 matched / 0 warning / 0 error` を確認してから example を起動する。
 
 `.pelican/local.json`、hash cache、binary は commit しない。意図的に byte を更新する
 場合は、取得 URL/管理番号、取得日、著作者、ライセンス名とライセンス本文または
 固定 URL、加工ツールと版を下表へ先に記録する。その後に
-`pelican_cli assets manifest --project projects/example` を実行し、22 file の
+`pelican_cli assets manifest --project projects/example` を実行し、21 file の
 size/SHA-256 差分をレビューする。権利情報が欠ける更新は受け入れない。
 
-## 22 file 台帳
+## 21 file 台帳
 
 「未記録」は public-domain や自由利用を意味しない。正確な upstream byte と権利の
 対応を repository から立証できないため、第三者への再配布を禁止する状態である。
 
 | file | size | SHA-256 | 出所・生成情報 | ライセンス / 配布判定 |
 |---|---:|---|---|---|
-| `models/AliciaSolid.vrm` | 7,878,712 | `237bb02efadf8c13a114af91dd8e860173081457dee87017e51011c448d05dc2` | embedded VRM meta: `© DWANGO Co., Ltd.`、`UniVRM-0.51.0`、[contact](https://3d.nicovideo.jp/alicia/) | embedded `licenseName=Other`、[permission/rule](https://3d.nicovideo.jp/alicia/rule.html)。規約を取得時に再確認し、bundle 外へ再配布しない |
 | `models/DamagedHelmet.glb` | 3,773,916 | `a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8` | embedded generator: Khronos Blender glTF 2.0 exporter。exact upstream URL/版は未記録 | 未記録、再配布不可 |
 | `models/Sotai_D.glb` | 9,149,820 | `a0fec93b3d82f7fbf4e32d16afcfb68cf54e25d6f3fbe18a8be00d142cd008a7` | embedded generator: Khronos glTF Blender I/O v4.2.83。source scene/author は未記録 | 未記録、再配布不可 |
 | `models/character.glb` | 3,416,852 | `b4c7a0f835da99c2a9ca86e9d6ff69a72450ea8b8e1ffdd8792e4031dfc7992e` | embedded generator: Khronos glTF Blender I/O v4.2.83。source scene/author は未記録 | 未記録、再配布不可 |
@@ -77,6 +81,6 @@ size/SHA-256 差分をレビューする。権利情報が欠ける更新は受�
 
 週次/手動の CI1 は、fresh checkout に ignored binary が 0 件であることを確認してから
 configure、build、`ctest -LE gpu` を実行する。project-code smoke は
-`test/fixtures/ground.glb` から一時 project を作るため、本台帳の 22 file を読まない。
+`test/fixtures/ground.glb` から一時 project を作るため、本台帳の 21 file を読まない。
 feature-OFF smoke も各 build directory 内に最小 fixture を生成する。この分離により、
 showcase store の有無や権利状態が CPU 回帰 gate の成否へ混入しない。
