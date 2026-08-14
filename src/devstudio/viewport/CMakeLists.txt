@@ -7,6 +7,8 @@ add_library(pelican_studio_viewport STATIC
     engineprocess.hpp
     nativewindowhost.cpp
     nativewindowhost.hpp
+    studioplayerarguments.cpp
+    studioplayerarguments.hpp
     viewportgeometry.cpp
     viewportgeometry.hpp
 )

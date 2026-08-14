@@ -60,6 +60,12 @@ function(pelican_game_sources)
         message(FATAL_ERROR "pelican_game_sources requires at least one source file")
     endif()
 
+    set(game_logic_target pelican_game_logic)
+    if(DEFINED PELICAN_GAME_LOGIC_TARGET_OVERRIDE AND
+       NOT "${PELICAN_GAME_LOGIC_TARGET_OVERRIDE}" STREQUAL "")
+        set(game_logic_target "${PELICAN_GAME_LOGIC_TARGET_OVERRIDE}")
+    endif()
+
     set(resolved_sources)
     foreach(source IN LISTS ARGN)
         if(IS_ABSOLUTE "${source}")
@@ -69,21 +75,24 @@ function(pelican_game_sources)
         endif()
     endforeach()
 
-    if(NOT TARGET pelican_game_logic)
-        add_library(pelican_game_logic SHARED gamelogic_entry.cpp)
-        set_target_properties(pelican_game_logic PROPERTIES
-            OUTPUT_NAME "pelican_game_logic"
+    if(NOT TARGET ${game_logic_target})
+        add_library(${game_logic_target} SHARED
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/gamelogic_entry.cpp")
+        set_target_properties(${game_logic_target} PROPERTIES
+            OUTPUT_NAME "${game_logic_target}"
         )
         # A game DLL imports the SDK surface exported by the running player.
         # This keeps the engine registries and module container single-owned.
-        pelican_configure_game_logic_target(pelican_game_logic)
-        target_compile_definitions(pelican_player PRIVATE
-            PELICAN_GAME_LOGIC_DLL_NAME="pelican_game_logic${CMAKE_SHARED_LIBRARY_SUFFIX}"
-        )
+        pelican_configure_game_logic_target(${game_logic_target})
+        if(game_logic_target STREQUAL "pelican_game_logic")
+            target_compile_definitions(pelican_player PRIVATE
+                PELICAN_GAME_LOGIC_DLL_NAME="pelican_game_logic${CMAKE_SHARED_LIBRARY_SUFFIX}"
+            )
+        endif()
     endif()
 
-    target_sources(pelican_game_logic PRIVATE ${resolved_sources})
-    target_include_directories(pelican_game_logic PRIVATE
+    target_sources(${game_logic_target} PRIVATE ${resolved_sources})
+    target_include_directories(${game_logic_target} PRIVATE
         "${PELICAN_PROJECT_ROOT}"
         "${PELICAN_PROJECT_CODE_DIR}"
     )

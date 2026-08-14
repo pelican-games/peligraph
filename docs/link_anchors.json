@@ -154,7 +154,7 @@
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/projectinit.cpp|`templateFiles()`": "const std::vector<TemplateFile> &templateFiles() {",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devstudio/CMakeLists.txt|`src/devstudio/CMakeLists.txt`": "include(view/ui_depended_setup.cmake)",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devstudio/main.cpp|`src/devstudio/main.cpp`": "int main(int argc, char *argv[]) {",
-    "docs/source-code-guide/01_architecture_and_build.md|../../src/player/CMakeLists.txt|`add_library(pelican_game_logic SHARED ...)`": "add_library(pelican_game_logic SHARED gamelogic_entry.cpp)",
+    "docs/source-code-guide/01_architecture_and_build.md|../../src/player/CMakeLists.txt|`add_library(pelican_game_logic SHARED ...)`": "add_library(${game_logic_target} SHARED",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/player/CMakeLists.txt|`pelican_configure_game_logic_target()`": "function(pelican_configure_game_logic_target target_name)",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/player/CMakeLists.txt|`pelican_game_sources()`": "function(pelican_game_sources)",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/player/CMakeLists.txt|`src/player/CMakeLists.txt`": "add_executable(pelican_player main.cpp)",

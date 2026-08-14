@@ -1530,6 +1530,14 @@ add_test(
 set_tests_properties(animgraph_demo_preset_headless_player PROPERTIES
     TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
 
+add_executable(pelican_test_studio_player_arguments
+    studio_player_arguments_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/viewport/studioplayerarguments.cpp)
+set_target_properties(pelican_test_studio_player_arguments PROPERTIES
+    CXX_STANDARD 20)
+target_link_libraries(pelican_test_studio_player_arguments PRIVATE
+    nlohmann_json)
+
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
@@ -1537,11 +1545,53 @@ target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
 
+function(pelican_add_catalog_game_logic project_dir target_stem output_var)
+    set(PELICAN_PROJECT_ROOT "${project_dir}")
+    set(PELICAN_PROJECT_CODE_DIR "${project_dir}/code")
+    set(PELICAN_GAME_LOGIC_TARGET_OVERRIDE
+        "pelican_catalog_${target_stem}_game_logic")
+    include("${PELICAN_PROJECT_CODE_DIR}/CMakeLists.txt")
+    set(${output_var} "${PELICAN_GAME_LOGIC_TARGET_OVERRIDE}" PARENT_SCOPE)
+endfunction()
+
+# A catalog project with code is run with that code, rather than with a
+# data-only generic player. Discovery still comes from project.json; this
+# configure-time pass only creates the DLL artifacts that compiled code needs.
+set(pelican_catalog_game_logic_targets)
+if(NOT "${PELICAN_TEST_PROJECTS_DIR}" STREQUAL "")
+    get_filename_component(pelican_catalog_projects_dir
+        "${PELICAN_TEST_PROJECTS_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    file(GLOB_RECURSE pelican_catalog_project_manifests
+        CONFIGURE_DEPENDS LIST_DIRECTORIES false
+        "${pelican_catalog_projects_dir}/*/project.json")
+    foreach(project_manifest IN LISTS pelican_catalog_project_manifests)
+        get_filename_component(project_dir "${project_manifest}" DIRECTORY)
+        if(EXISTS "${project_dir}/code/CMakeLists.txt")
+            file(RELATIVE_PATH project_relative
+                "${pelican_catalog_projects_dir}" "${project_dir}")
+            string(REGEX REPLACE "[^A-Za-z0-9_]" "_"
+                target_stem "${project_relative}")
+            pelican_add_catalog_game_logic(
+                "${project_dir}" "${target_stem}" game_logic_target)
+            list(APPEND pelican_catalog_game_logic_targets
+                "${game_logic_target}")
+        endif()
+    endforeach()
+endif()
+
+add_dependencies(pelican_test_png_nonuniform_check
+    pelican_test_studio_player_arguments
+    ${pelican_catalog_game_logic_targets})
+
 add_test(
     NAME project_catalog_headless_smoke
     COMMAND ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
+        -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
+        -DGAME_LOGIC_DIR=$<TARGET_FILE_DIR:pelican_test_png_nonuniform_check>
+        -DGAME_LOGIC_PREFIX=${CMAKE_SHARED_LIBRARY_PREFIX}
+        -DGAME_LOGIC_SUFFIX=${CMAKE_SHARED_LIBRARY_SUFFIX}
         -DPROJECTS_DIR=${PELICAN_TEST_PROJECTS_DIR}
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake

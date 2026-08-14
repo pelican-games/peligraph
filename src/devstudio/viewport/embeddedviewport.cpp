@@ -1,6 +1,6 @@
 #include "embeddedviewport.hpp"
+#include "studioplayerarguments.hpp"
 #include "../model/selection.hpp"
-#include "../../project/renderfeatureoverlay.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -19,6 +19,8 @@
 #include <QVBoxLayout>
 
 #include <functional>
+#include <string>
+#include <vector>
 
 namespace PelicanStudio {
 namespace {
@@ -150,55 +152,25 @@ QByteArray serializeJsonValue(const QJsonValue &value) {
 
 QStringList studioPlayerArguments(QStringList configured,
                                   const QString &project_root) {
-    QStringList additional;
-    additional.reserve(configured.size());
-    bool has_editor_transform_preset = false;
-    for (qsizetype index = 0; index < configured.size(); ++index) {
-        const QString argument = configured.at(index);
-        if (argument == QStringLiteral("--rpc")) {
-            continue;
-        }
-        if (argument == QStringLiteral("--project")) {
-            if (index + 1 < configured.size()) {
-                ++index;
-            }
-            continue;
-        }
-        if (argument.startsWith(QStringLiteral("--project="))) {
-            continue;
-        }
-        if (argument == QStringLiteral("--feature-overlay")) {
-            if (index + 1 < configured.size()) {
-                ++index;
-            }
-            continue;
-        }
-        if (argument.startsWith(QStringLiteral("--feature-overlay="))) {
-            continue;
-        }
-        if (argument == QStringLiteral("--editor-transform") ||
-            argument.startsWith(QStringLiteral("--editor-transform="))) {
-            has_editor_transform_preset = true;
-        }
-        additional.push_back(argument);
+    std::vector<std::string> configured_strings;
+    configured_strings.reserve(static_cast<std::size_t>(configured.size()));
+    for (const auto &argument : configured) {
+        const auto utf8 = argument.toUtf8();
+        configured_strings.emplace_back(utf8.constData(),
+                                        static_cast<std::size_t>(utf8.size()));
     }
 
-    const auto overlay_reference =
-        Pelican::editorFeatureOverlayReference;
-
-    QStringList arguments{
-        QStringLiteral("--rpc"),
-        QStringLiteral("--project"),
-        project_root,
-        QStringLiteral("--feature-overlay"),
-        QString::fromUtf8(
-            overlay_reference.data(),
-            static_cast<qsizetype>(overlay_reference.size())),
-    };
-    if (!has_editor_transform_preset) {
-        arguments.push_back(QStringLiteral("--editor-transform"));
+    const auto project_utf8 = project_root.toUtf8();
+    const auto generated = studioPlayerArgumentStrings(
+        std::move(configured_strings),
+        std::string{project_utf8.constData(),
+                    static_cast<std::size_t>(project_utf8.size())});
+    QStringList arguments;
+    arguments.reserve(static_cast<qsizetype>(generated.size()));
+    for (const auto &argument : generated) {
+        arguments.push_back(QString::fromUtf8(
+            argument.data(), static_cast<qsizetype>(argument.size())));
     }
-    arguments.append(additional);
     return arguments;
 }
 
