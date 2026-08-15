@@ -4099,6 +4099,67 @@ feature の来歴(WP300)。
 
 依存: なし。**新しい rpc は不要。エンジン変更もゼロ。**見積: 中。
 
+### WP300: feature の来歴を compose 時に刻む
+
+**目的**: 「このパスは誰が足したのか」に答える。
+**いまは推測しており、しかも間違いうる。**
+
+#### 現状:2 回目のコンパイルで推測している
+
+`buildRuntimeAnnotations`(`src/core/imgui/planviewer.cpp:161-287`)は
+`PathResolver` で生の設定を読み直し、`resolveRenderPipeline` を**もう一度**走らせて
+来歴を導出している。しかもその再実行は
+`RenderEnvironmentCapabilities{true, RenderPipelineGraphVariant::flat}`
+(`planviewer.cpp:179-180`)を**直書き**している。
+
+つまり `runtime_shader_compiler_enabled` を常に真とし、variant を常に `flat` とする。
+**XR/multiview の variant や `PELICAN_RUNTIME_SHADER_COMPILER=OFF` の構成では、
+実際にコンパイルされたものと食い違う。**
+来歴の表示が嘘をつきうる状態である。
+
+**本当の直し方は、実際の compose の最中に刻むことである。**
+`addFeaturePasses`(`src/project/featurecompose.cpp:1789-1817`)は
+`entry.at("pass")` をそのまま挿入し、ターゲットは `targets.push_back(target)`(`:1505-1523`)。
+**どちらも印を残さない。**
+
+**前例は既にあり、1 箇所だけ機能している。**
+surface contract には `provider_feature` / `provider_reference` が刻まれ
+(`featurecompose.cpp:2193`)、`:2525` と `:2536` で使われている。
+**同じ作法を pass と target に広げるだけである。**
+
+#### 実装範囲
+
+1. compose の最中に、パスとレンダーターゲット(およびバッファ)へ来歴を刻むこと。
+   `source` は少なくとも `project` / `feature:<name>` / `engine` を区別できること。
+   命名と形は `provider_feature` の前例に合わせること。**第二の流儀を作らないこと。**
+2. 刻んだ来歴を既存の `get_frame_plan` の応答に載せること。
+   **新しい rpc を作らないこと。**
+3. studio がそれを表示すること(WP299 の表示に足す)。
+4. **`buildRuntimeAnnotations` の再コンパイルを削除すること。**
+   刻んだ値があるなら、推測は冗長であり、かつ間違いうる。**残さないこと。**
+
+#### 受け入れ条件(§4 規約 10)
+
+- パスとターゲットの来歴が、**compose が実際に行ったこと**と一致すること。
+  feature を 1 つ足した前後で、増えたパスの `source` がその feature を指すこと
+- **推測が嘘をつく構成で、刻んだ値が正しいこと。**
+  `PELICAN_RUNTIME_SHADER_COMPILER=OFF` の構成で確認すること
+  —— 旧経路は `true` を直書きしているので、ここが両者の分かれ目である。
+  **これが本 WP の中心的な対照である**
+- `buildRuntimeAnnotations` の再コンパイル経路がリポジトリに残っていないこと
+- feature を使わないプロジェクトで、来歴が `project` / `engine` として正しく出ること
+- 既存 golden が 1 枚も動かないこと。
+  **来歴は診断であって描画に影響してはならない** —— 影響したらこの WP の失敗である
+- 新しい rpc を追加していないこと
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+#### 範囲外
+
+ノード図・辺・レイアウト。順序の根拠(`after`/`before` は線に乗っていない)。
+
+依存: **WP299**(studio の表示に足すため、そのマージ後に着手すること)。見積: 中〜大。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
