@@ -1598,7 +1598,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/model/project.hpp|`ProjectOutlinerModel`": "class ProjectOutlinerModel {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/ProjectEdit.qml|`ProjectEdit.qml`": "import QtQuick",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::MainWindow()`": "MainWindow::MainWindow() : layout_presets_(layoutPresetDirectory()) {",
-    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::populateOutliner()`": "populateOutliner();",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::populateOutliner()`": "void MainWindow::populateOutliner() {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.hpp|`MainWindow`": "class MainWindow : public QMainWindow {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/uimain.cpp|`uimain()`": "int uimain(int argc, char **argv) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/viewport/embeddedviewport.hpp|`EmbeddedViewport`": "class EmbeddedViewport final : public QWidget {",

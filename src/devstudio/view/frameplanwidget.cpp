@@ -218,6 +218,13 @@ struct FramePlanWidget::Impl {
             &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, &owner,
             [this](const QString &message) { showUnavailable(message); });
         QObject::connect(
+            &viewport, &EmbeddedViewport::engineProcessExitedWithFailure,
+            &owner, [this](const QString &fatal_error_line) {
+                if (!fatal_error_line.isEmpty()) {
+                    showEngineFailure(fatal_error_line);
+                }
+            });
+        QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
             [this](qint64 request_id, const QByteArray &result_json) {
                 receiveResult(request_id, result_json);
@@ -265,6 +272,15 @@ struct FramePlanWidget::Impl {
                                        "snapshot is still displayed.")
                                   .arg(message)
                             : owner.tr("Frame plan refresh failed: %1").arg(message));
+    }
+
+    void showEngineFailure(const QString &fatal_error_line) {
+        pending_request = 0;
+        model.reset();
+        clearTrees();
+        refresh->setEnabled(false);
+        status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        status->setText(fatal_error_line);
     }
 
     void requestRefresh() {

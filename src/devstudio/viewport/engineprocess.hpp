@@ -53,6 +53,7 @@ class EngineProcess final : public QObject {
     void processStopped(qint64 process_id, int exit_code, QProcess::ExitStatus exit_status);
     void processFailed(const QString &message);
     void outputReceived(const QString &output);
+    void standardErrorReceived(const QString &output);
     void rpcResultReceived(qint64 request_id, const QJsonValue &result);
     void rpcErrorReceived(qint64 request_id, int code,
                           const QString &message, const QJsonValue &data);

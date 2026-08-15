@@ -245,6 +245,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         applyEmbeddedWindowResizeDecision(resize_coalescer_.timerExpired(resize_elapsed_.elapsed()));
     });
     connect(&process_, &EngineProcess::processStarted, this, [this](qint64 process_id) {
+        engine_failure_model_.beginRun();
         rpc_ready_ = false;
         restart_button_->setEnabled(false);
         stop_button_->setEnabled(true);
@@ -279,6 +280,11 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                         .arg(exit_code));
                 emit engineRpcBecameUnavailable(
                     tr("The engine viewport process stopped."));
+                if (const auto failure =
+                        engine_failure_model_.finishRun(exit_code)) {
+                    emit engineProcessExitedWithFailure(
+                        failure->fatal_error_line);
+                }
                 if (restart_after_stop_ && !shutting_down_) {
                     restart_after_stop_ = false;
                     QTimer::singleShot(0, this,
@@ -304,6 +310,11 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     });
     connect(&process_, &EngineProcess::outputReceived,
             this, &EmbeddedViewport::engineOutputReceived);
+    connect(&process_, &EngineProcess::standardErrorReceived, this,
+            [this](const QString &output) {
+                engine_failure_model_.appendStandardError(output);
+                emit engineStandardErrorReceived(output);
+            });
     connect(&process_, &EngineProcess::rpcResultReceived, this,
             [this](qint64 request_id, const QJsonValue &result) {
                 if (!pending_pick_requests_.remove(request_id)) {

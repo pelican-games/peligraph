@@ -177,6 +177,32 @@ if(TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_frameplan_test pelican_studio_frame_plan)
 endif()
 
+if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
+  find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  pelican_define_test(devstudio_engine_failure_test QT GPU GOLDEN
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    Qt6::Core
+    Qt6::Widgets
+  )
+  target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp)
+  target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view)
+  set(pelican_wp298_example_project
+      "${CMAKE_SOURCE_DIR}/projects/example")
+  if(NOT "${PELICAN_TEST_PROJECTS_DIR}" STREQUAL "" AND
+     EXISTS "${PELICAN_TEST_PROJECTS_DIR}/example/project.json")
+    set(pelican_wp298_example_project
+        "${PELICAN_TEST_PROJECTS_DIR}/example")
+  endif()
+  target_compile_definitions(pelican_test_devstudio_engine_failure_test PRIVATE
+    PELICAN_WP298_PLAYER="$<TARGET_FILE:pelican_player>"
+    PELICAN_WP298_EXAMPLE_PROJECT="${pelican_wp298_example_project}"
+  )
+  add_dependencies(pelican_test_devstudio_engine_failure_test pelican_player)
+endif()
+
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   add_library(pelican_public_api_link_fixture SHARED
     fixtures/public_api_link/flipbook_client.cpp

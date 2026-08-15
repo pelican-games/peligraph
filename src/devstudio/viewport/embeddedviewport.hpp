@@ -1,5 +1,6 @@
 #pragma once
 
+#include "enginefailuremodel.hpp"
 #include "engineprocess.hpp"
 #include "nativewindowhost.hpp"
 #include "viewportgeometry.hpp"
@@ -46,6 +47,7 @@ class EmbeddedViewport final : public QWidget {
 
   signals:
     void engineOutputReceived(const QString &output);
+    void engineStandardErrorReceived(const QString &output);
     void viewportPointerPressed(const QPoint &pixel_position);
     void viewportPointerMoved(const QPoint &pixel_position);
     void viewportPointerReleased(const QPoint &pixel_position);
@@ -54,12 +56,14 @@ class EmbeddedViewport final : public QWidget {
     void pickObjectFailed(qint64 request_id, const QString &message);
     void engineRpcBecameAvailable();
     void engineRpcBecameUnavailable(const QString &message);
+    void engineProcessExitedWithFailure(const QString &fatal_error_line);
     void inspectorRpcSucceeded(qint64 request_id,
                                const QByteArray &result_json);
     void inspectorRpcFailed(qint64 request_id, const QString &message);
 
   private:
     EngineProcess process_;
+    EngineFailureModel engine_failure_model_;
     QWidget *native_host_ = nullptr;
     QLabel *status_ = nullptr;
     QLabel *picking_notice_ = nullptr;

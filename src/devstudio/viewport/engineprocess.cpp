@@ -324,7 +324,9 @@ void EngineProcess::drainStandardOutput(bool flush_partial_line) {
 void EngineProcess::drainStandardError() {
     const QByteArray bytes = process_.readAllStandardError();
     if (!bytes.isEmpty()) {
-        emit outputReceived(QString::fromLocal8Bit(bytes));
+        const QString output = QString::fromLocal8Bit(bytes);
+        emit standardErrorReceived(output);
+        emit outputReceived(output);
     }
 }
 

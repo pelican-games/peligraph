@@ -186,6 +186,11 @@ void MainWindow::createWorkspace() {
         frame_plan_);
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
+    connect(viewport_, &EmbeddedViewport::engineProcessExitedWithFailure, this,
+            [this](const QString &) {
+                docks_[EngineLogDock]->show();
+                docks_[EngineLogDock]->raise();
+            });
     connect(viewport_, &EmbeddedViewport::viewportPointerPressed, this,
             [this](const QPoint &pixel_position) {
                 beginViewportPointer(pixel_position);
