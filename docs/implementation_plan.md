@@ -3946,6 +3946,75 @@ Vulkan を書いている最中に速いビルドで検証を効かせられる�
 
 依存: なし。見積: 小。
 
+### WP298: 落ちた理由を studio に届ける
+
+**目的**: エンジンが落ちたとき、**エディタは何が起きたか一言も伝えない**。
+利用者は「編集 → 起動 → 死ぬ → 何も言われない → 勘で直す」を繰り返すことになる。
+
+#### 現状:メッセージは十分で、経路が繋がっていない
+
+エンジンの致命エラーは**必要な情報を全部持っている**。WP287 で名前を出すようにした:
+
+```
+material 'Alicia_face_mastuge' from asset '...AliciaSolid.vrm'
+requires route 'forward_transparent' with shader contract 'forward_scene_color_v1',
+but rendering config 'passes/main_rendering_config.json' has no compatible registered material pass
+```
+
+これが `src/core/userpublic/pelican_core.cpp:98` で `LOG_ERROR` される。
+
+ところが studio は `--rpc` でプレイヤーを起動するため、
+`src/core/log.cpp:50` が「stdout はプロトコル用に予約」と判断して**ログをファイルに送る**。
+そして **studio は `pelican.log` を一度も開かない**(`grep -rn "pelican.log" src/devstudio/` が 0 件、確認済み)。
+
+**一方 stderr は既に studio に届いている。**
+`src/devstudio/viewport/engineprocess.cpp:145` の `drainStandardError` が
+`outputReceived`(`:311`)経由で Engine Log ドックに流している。
+`--dump-frame-plan` も `std::cerr` を使っており(`src/core/appflow/loop.cpp:132`)、
+**stderr がデータ経路として既に使われている**ことも確認できる。
+
+**配管はある。繋がっていないだけである。**
+
+そして利用者が見るのは `src/devstudio/view/frameplanwidget.cpp:254` の
+
+> Frame plan unavailable: ... Start or restart pelican_player, then press Refresh.
+
+**「まだ再生していない」と「設定が壊れていて起動できない」が区別できない。**
+
+#### 実装範囲
+
+1. `src/core/log.cpp:46-58` で、`reserve_stdout_for_protocol` が真のとき
+   **ファイルシンクの代わりにではなく、並べて** stderr シンクを作ること。
+   **stdout には何も足さないこと** —— JSON-RPC の枠組みを壊す。
+2. **既定の挙動を減らさないこと。**ファイルシンクは残す。追加であって変更ではない。
+   非 rpc 実行と Release の経路が変わらないこと。
+3. studio 側で stderr の直近 N 行を保持し、**プレイヤーが非ゼロ終了したとき**に
+   Engine Log ドックを前面に出し、Frame Plan の案内文を
+   **最後の `Pelican fatal error` 行**で置き換えること。
+4. モデル層を view から分離し、headless にテストできること
+   (既存の devstudio テストと同じ作法)。
+
+#### 受け入れ条件(§4 規約 10 とその追記)
+
+- **`projects/example` を意図的に壊し**(マテリアルのルートに対応するパスを外すなど)、
+  **エンジンが出した文言そのものが studio 側に届くこと**を検証すること。
+  「シンクが構築された」ことの確認では条件を満たさない。
+  **走っている側が出した文字列**に対して主張すること
+- **正常起動時に、その表示が出ないこと。**対照として同じ確認を行うこと
+- 「まだ再生していない」と「起動に失敗した」が**表示上区別できる**こと
+- **stdout に 1 バイトも足していないこと。**rpc の往復が壊れていないことを確認すること
+- 既定のまま(旗なし)の挙動が変わっていないこと。
+  非 rpc 実行でファイルシンクが従来どおり働くこと
+- `ctest` 全数が緑(`-j4`)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
+
+#### 範囲外
+
+frame plan の表示内容そのもの(WP299)。feature の来歴(WP300)。
+**この WP は経路だけを繋ぐ。**
+
+依存: なし。**新しい rpc は不要。**見積: 小。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
