@@ -4015,6 +4015,90 @@ frame plan の表示内容そのもの(WP299)。feature の来歴(WP300)。
 
 依存: なし。**新しい rpc は不要。**見積: 小。
 
+### WP299: すでに線に乗っている「理由」を studio が読む
+
+**目的**: 「なぜこうコンパイルされたか」を**エンジンは既に書いて送っている**。
+studio が読んでいないだけである。**エンジンの変更はゼロ。**
+
+#### 現状:データは届いていて、モデル層が捨てている
+
+`get_frame_plan` の応答(`projects/example` で実測 **165 KB**)には既に入っている:
+
+| 内容 | 出所 |
+|---|---|
+| `physical_target_plan.decisions[]{id,subject,selected,detail}` | `src/project/targetrenderplanning.cpp:4123` |
+| `planning_opportunities.decisions[]` | `src/project/targetplanning.cpp:1036` |
+| `physical_target_plan.resources[].reason` | `targetrenderplanning.cpp:4019` |
+| `backend_selection` の候補別 `failures[]` / `diagnostics[]` | `targetplanning.cpp:704`, `:112` |
+| `material_filter.unmatched_include` / `unmatched_exclude` | `src/core/renderingpass/frameplanner.cpp:1836` |
+
+語彙は `PlanningDecision` / `PlanningDiagnostic` / `BackendConstraintFailure`
+(`src/project/targetplanning.hpp:230`, `:151`, `:204`)。
+**45 個の版付き ID が約 20 箇所で書かれている。**
+
+実際に叩いて確認した例:
+
+```
+pelican.plan.multiview_auto_gate@1
+  → "no measured device profile matched; optimize-by-default selects multiview"
+pelican.plan.backend_candidate_selected@1
+  → "lowest deterministic cost tuple"
+```
+
+**`grep -rc "decisions" src/devstudio/` は 0 件。**
+`buildFramePlanModel`(`src/devstudio/model/frameplanmodel.cpp:200-567`)は
+**厳格な許可リスト**であり、`physical_target_plan` に触れるのは `:380` と `:459` の 2 箇所だけ。
+**残りは黙って捨てられ、生 JSON の退避先も無い。**
+
+#### 実装範囲
+
+1. 決定を `subject` で束ねて見せること。`id` と `detail` の両方を出すこと
+   —— `id` は版付きで検索でき、`detail` は人が読む。
+2. 資源ごとの `reason` を詳細行に出すこと。
+3. マテリアルフィルタの `unmatched_include` / `unmatched_exclude` をパスの詳細に出すこと。
+   **「宣言したフィルタが何にも一致しなかった」は手で書いている人が最も踏む間違いである。**
+4. 却下されたバックエンド候補を、その `failures` とともに見せること。
+5. **既存の絞り込み欄の裏に、生 JSON の退避表示を置くこと。**
+   モデル化していない鍵が**黙って消えない**ようにすること。
+
+#### fixture は実際の応答を取り込むこと
+
+**手書きしないこと。**先例がある。
+
+`test/compiledplanviewer_test.cpp:36-44` はエンジンが**一度も出したことのない形**を手書きしている
+—— `view_count` を根に置き、`planning_opportunities` を配列にしている。
+実際の応答では `planning_opportunities` は**オブジェクト**であり、
+`view_count` は入れ子で 61 回現れる(両方とも実測で確認済み)。
+その結果 `buildCompiledPlanFacts` は 13 個の鍵のうち 8 個を誤った階層で読み、
+`buildCompiledPlanOpportunities` は**到達不能**である。**そしてテストは緑である。**
+
+**要求**: fixture は `--dump-frame-plan` あるいは `get_frame_plan` の
+**実出力を取り込んだもの**をリポジトリに置いて使うこと。
+大きい(165 KB)ので、必要なら区間を切り出してよいが、
+**形は実物と一致していること。**切り出したなら、その方法を書くこと。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **応答に含まれる決定が、モデルにすべて現れること。**
+  取り込んだ実 fixture の `decisions` を数え、モデル側の件数と一致することを主張すること
+- **モデル化していない鍵が黙って消えないこと。**
+  fixture に未知の鍵を足したとき、それが生 JSON の退避表示に現れることを検証すること。
+  これが本 WP の中心条件である —— 許可リストが黙って捨てるのが元の欠陥である
+- 決定が 1 件も無い応答で、決定の表示が**空になること**(捏造も異常終了もしないこと)。
+  規約 10 の対照である
+- モデル層が view から分離され、headless にテストされていること
+- **エンジン側の差分が無いこと。**`git diff --stat src/core/ src/project/` が空であることを示すこと
+- `ctest` 全数が緑(`-j4`)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
+
+#### 範囲外
+
+ノード図・辺・レイアウト。**まず読めることが先である。**
+順序の根拠(`after`/`before` は線に乗っていない —— `frameplanner.cpp:1719`)。
+feature の来歴(WP300)。
+
+依存: なし。**新しい rpc は不要。エンジン変更もゼロ。**見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
