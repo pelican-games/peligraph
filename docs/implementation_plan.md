@@ -4527,6 +4527,190 @@ studio に描画の基盤が無い。`QGraphicsScene` / `QGraphicsView` / `QGrap
 `pelican_core` にあり D0 の向こうなので、そのままでは届かない。
 **ローカル compile と compile 用 rpc のどちらが安いかは未計測。**
 
+## WP301〜303 の敵対レビューで出た追補(WP308〜WP311)
+
+2026-08-16、マージ済みの `2a86029` / `a22132b` / `d7bd6a5` に対して
+**別モデル(codex)による敵対レビュー**を掛けた。3 本すべてで実害のある指摘が出た。
+
+**共通する見落としの方向**: Claude 側の検証は「テストが噛むか」を**一箇所でしか確かめていなかった**。
+WP302 は reader を検査したが `draw()` を呼んでいない。
+WP301 はヘルパを無効化して落ちることは確かめたが、**本番の呼び出しを消す実験をしていない**。
+以後、否定対照の確認は**ヘルパの中身と呼び出し側の両方**で行うこと。
+
+### WP308: XR テストが OpenXR 無効ビルドを壊す
+
+**目的**: `-DPELICAN_WITH_OPENXR=OFF` でテストが落ちる状態を直す。
+
+#### 現状
+
+WP301 が足した `featurecompose_test.cpp` の XR ケースは
+`RenderPipelineGraphVariant::xr` を**無条件に**解決する
+(`grep -c PELICAN_WITH_OPENXR test/featurecompose_test.cpp` は **0**)。
+
+`PELICAN_WITH_OPENXR` は既定 ON のオプション(`CMakeLists.txt:53`)で、
+OFF では XR 経路が名前付きで throw する(`src/project/graphvariantpolicy.cpp` の
+`#if PELICAN_WITH_OPENXR` 分岐)。テスト対象は OpenXR の設定に関わらず登録される。
+
+**既存の XR テストは `#if PELICAN_WITH_OPENXR` で囲っている**
+(`test/graphvariantpolicy_test.cpp:86`)。作法が揃っていない。
+
+これは §4 規約 9 が狙っていた事故そのものである。
+統合時に確認したのは `PELICAN_RUNTIME_SHADER_COMPILER=OFF` だけだった。
+
+#### 実装範囲
+
+1. XR の肯定側を `#if PELICAN_WITH_OPENXR` で囲むこと。既存テストと同じ作法にすること。
+2. **OFF 側では、名前付きの unavailable エラーが出ることを検査すること。**
+   囲って消すだけにしないこと。
+
+#### 受け入れ条件(§4 規約 10)
+
+- `-DPELICAN_WITH_OPENXR=OFF` で `ctest` 全数が緑になること
+- **OFF 構成で「XR が使えない」ことが名前付きエラーとして検査されていること** —— これが対照
+- ON 構成の結果が変わらないこと
+- 他に同じガード漏れのあるテストが無いか確認し、あれば同時に塞ぐこと
+
+依存: なし。見積: 小。**最優先** —— 他の構成でビルドできない状態である。
+
+### WP309: 来歴同期の順序ハザードと、本番配線の未検査
+
+**目的**: WP301 の残件 2 つ。
+
+#### ① 本番の呼び出しを消してもテストが通る
+
+`detail::namespaceComputeTasks` の**呼び出し**
+(`src/core/renderingpass/vulkanrendercompilerprogram.cpp:506`)を削除しても、
+追加テストは通る。テストがヘルパを直接叩くためである
+(`test/featurecompose_test.cpp:475`)。
+
+ヘルパを `detail::` に出した理由(GPU なしで検査したい)が、
+そのまま**本番経路を検査しない原因**になっている。
+
+#### ② 改名順序による重複名の例外
+
+compute task `probe` があり、著作側に `probe#xr` という名前のパスがあって
+subgraph 置換で消える場合、stale な `probe#xr` が残ったまま `probe` が改名され、
+`synchronizeRenderPipelineProvenance`(`src/project/renderpipeline.cpp:1783`)が
+重複名で throw する。
+
+親コミットは subgraph 解決直後に同期して stale を先に掃除していた。
+**同梱設定では発火しない**ことは実査で確認済み(4 プロジェクトの active config は
+`compute_tasks` を持たず、core の 19 JSON に `#xr` を含む著作名は無い)。
+
+#### 実装範囲
+
+1. 本番経路を通るテストを足すこと。
+   実際の compiler / registration 経路から frame plan を取り、
+   **同じ TEST_CASE の中で feature の有効・無効を実行**して
+   XR ノードの `source` / `provider_feature` / `provider_ref` の差を検査すること。
+   実 resource loader は `test/featurecompose_test.cpp:94` にある。
+2. 改名前に一度同期して stale を落とすか、改名後に一意性を明示検証すること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`vulkanrendercompilerprogram.cpp:506` の呼び出しを削除すると落ちること。**
+  これが本 WP の中心的な対照である
+- 著作名 `<compute task 名>#xr` を持つ設定が、重複名 throw で死なないこと
+- flat と preview の来歴が変わらないこと
+
+依存: なし。見積: 中。
+
+### WP310: planning opportunities の「不明」を「不採用」と断定しない
+
+**目的**: WP302 の残件。**正当な入力で嘘を表示する**経路がある。
+
+#### ① parallel 候補を常に「不採用」と表示する
+
+producer は互いに到達不能なノード対を parallel 候補として出す
+(`src/project/targetplanning.cpp:897`、既存テスト `test/targetplanning_test.cpp:379` が
+`containsPair(optimized.parallel_candidates, "alpha", "beta")` を検査)。
+
+reader は「物理の parallel collection が存在しない」とコメントで認めながら
+全候補に `false` を置き、UI はそれを `[not adopted]` と表示する
+(`src/core/imgui/compiledplanviewer.cpp:232`, `:506`)。
+
+**正直だったのはコメントで、表示は断定していた。**
+`projects/example` は独立ノードが 0 なので出ないが、
+独立な作業があるグラフでは嘘になる。
+
+#### ② 採用判定が異常データを「不採用」に偽装する
+
+`alias_groups` が壊れていても例外にせず `false` を返す
+(`compiledplanviewer.cpp:71`)。
+**「一致しなかった」と「証拠を解釈できなかった」が 2 値に潰れている。**
+
+#### ③ 不正入力で無音消失する
+
+キー欠落・型不一致で空を返し、節ごと消える(`compiledplanviewer.cpp:210`, `:486`)。
+**今回直した欠陥と同じ型である。**
+しかも同じ payload を読む studio 側(`src/devstudio/model/frameplanmodel.cpp:547`)は
+非オブジェクトを**名前付き例外**で弾いており、**エラー方針が揃っていない**。
+
+#### 実装範囲
+
+1. 採用状態を 3 値にすること(`adopted` / `not_adopted` / `unknown`)。
+   parallel は `unknown` とし、UI は断定しない表示にすること。
+   **物理の schedule が公開されたときだけ採否を結合すること。**
+2. collection の解釈失敗を `no-match` と区別し、
+   現 schema で必須の collection が壊れていれば**名前付きエラー**にすること。
+3. studio 側とエラー方針を揃えること。**第二の流儀を作らないこと。**
+
+#### 受け入れ条件(§4 規約 10)
+
+- **独立ノードを持つグラフで、parallel 候補が「不採用」と断定されないこと。**
+  これが本 WP の中心的な対照である
+- 必須 collection を壊した入力が、名前付きエラーで失敗すること(無音で消えないこと)
+- fusion / parallel が**非空**のケースを検査すること
+  —— 現行テストは fixture が両方空のため、両 reader を未実装にしても通る
+- UI の表示を検査すること —— 現行テストは `draw()` を呼ばないため、
+  表示ブロックを丸ごと削除しても通る
+- 対照は fixture の手編集ではなく、**実際に profile を変えて compile した結果**で取ること
+
+依存: なし。見積: 中〜大。
+
+### WP311: pass フィールド所有権の検証を、全パーサ・全経路へ
+
+**目的**: WP303 は 2 つあるパーサの**片方しか塞いでいない**。
+
+#### 現状:未束縛 read エッジの経路は開いたままである
+
+`src/core/renderingpass/frameplanner.cpp:773-782` は
+`parseGpuDrawSourceFromJson` を**マテリアル判定なしで**呼び、
+`draw_source->commands` と `count` を `node.reads` に足す。
+
+WP303 が塞いだのは pass definition 側(`renderingpassvalidation.cpp`)だけで、
+**frame graph 側は塞いでいない**。同じ JSON を 2 つの独立したパーサが読む構造のため、
+片方だけでは足りない。
+
+さらに:
+
+- **pseudo-pass が検証を素通りする。** `canonical_anchor` と `snapshot_copy` は
+  `frameplanner.cpp:744` で早期 return する
+- **preview / data_only 経路が両フィールドを検証しない。**
+  `vulkanrendercompilerprogram.cpp:462` で GPU 側の全体検証(同 `:491`)より先に return する
+- frame graph 側は「Only material frame graph passes support material_variant」という
+  **独自の同種検証を持っている**。作法が二重化している
+
+#### 実装範囲
+
+1. `type` とフィールド所有権を検証する**共通関数を一つ**作り、
+   pseudo-pass の分岐より前、`data_only` の分岐より前に置くこと。
+   D0 を保てるなら `pelican_project` 層に置くこと。
+2. 既存の二重化した検証を、その共通関数に寄せること。**第二の流儀を残さないこと。**
+
+#### 受け入れ条件(§4 規約 10)
+
+- **非マテリアルの frame graph pass に `gpu_draw_source` を置いたとき、
+  read エッジが増えず、名前付きエラーで失敗すること。**
+  これが本 WP の中心的な対照である
+- `canonical_anchor` / `snapshot_copy` / preview の各経路でも同じく弾かれること
+- **マテリアルパスの肯定側で、`material_contract` の enum と
+  frame plan の read エッジと最終的な buffer ID を検査すること** ——
+  現行テストは文字列のコピーしか見ておらず、material 側で contract を捨てても通る
+- 出荷 68 JSON が従来どおり読めること(10/10 の `material_contract` は全て material 上)
+
+依存: なし。見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
