@@ -3,6 +3,7 @@
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -402,6 +403,148 @@ TEST_CASE(
         REQUIRE(find_named(with_feature.at("nodes"),
                            "embedded_artifact_seed") != nullptr);
     }
+}
+
+TEST_CASE(
+    "WP301 xr compute provenance survives variant namespacing",
+    "[render-feature][frame-plan][provenance][xr][wp301]") {
+    const auto resolve = [](RenderPipelineGraphVariant variant) {
+        return resolveRenderPipeline(
+            RenderPipelineRequest{
+                baseConfigWithFeature(
+                    "engine://features/compute_provenance_probe.json"),
+                "WP301 compute provenance variant contrast"},
+            RenderEnvironmentCapabilities{
+                false,
+                variant},
+            RenderPipelineResolveDependencies{
+                .load_feature_json = [](std::string_view ref) {
+                    REQUIRE(
+                        std::string{ref} ==
+                        "engine://features/compute_provenance_probe.json");
+                    return std::string{R"json({
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "compute_provenance_probe",
+  "runtime_shader_compiler": "optional",
+  "buffers": [
+    {
+      "name": "compute_provenance_buffer",
+      "size": 16,
+      "lifetime": "persistent"
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "compute_provenance_task",
+      "shader": "engine://shaders/compute/provenance_probe",
+      "writes": ["compute_provenance_buffer"],
+      "before": ["present"],
+      "dispatch": {"groups": [1, 1, 1]}
+    }
+  ]
+})json"};
+                },
+            });
+    };
+    struct VariantPlans {
+        nlohmann::json stale_provenance;
+        nlohmann::json synchronized_provenance;
+        nlohmann::json normalized_config;
+    };
+    const auto plan_variant = [&](RenderPipelineGraphVariant variant) {
+        const auto resolved = resolve(variant);
+        auto compiled = compileRenderPipeline(resolved);
+        const auto stale_compiled = compiled;
+        std::vector<ComputeTaskDefinition> tasks{
+            ComputeTaskDefinition{
+                .name =
+                    resolved.normalized_config
+                        .at("compute_tasks")
+                        .front()
+                        .at("name")
+                        .get<std::string>(),
+            },
+        };
+        auto graphs =
+            parseFrameGraphDefinitionsFromConfigJson(
+                resolved.normalized_config);
+        REQUIRE(tasks.size() == 1);
+        REQUIRE(graphs.size() == 1);
+
+        detail::namespaceComputeTasks(
+            tasks, graphs, resolved.normalized_config,
+            compiled);
+        const auto plan = planFrameGraph(graphs.front());
+        return VariantPlans{
+            .stale_provenance =
+                framePlanToJson(plan, &stale_compiled),
+            .synchronized_provenance =
+                framePlanToJson(plan, &compiled),
+            .normalized_config =
+                resolved.normalized_config,
+        };
+    };
+    const auto find_named = [](const nlohmann::json &entries,
+                               std::string_view name)
+        -> const nlohmann::json * {
+        const auto found = std::find_if(
+            entries.begin(), entries.end(),
+            [&](const auto &entry) {
+                return entry.value("name", std::string{}) ==
+                       name;
+            });
+        return found == entries.end() ? nullptr : &*found;
+    };
+
+    const auto flat = plan_variant(
+        RenderPipelineGraphVariant::flat);
+    REQUIRE(
+        flat.synchronized_provenance ==
+        flat.stale_provenance);
+    const auto *flat_compute = find_named(
+        flat.synchronized_provenance.at("nodes"),
+        "compute_provenance_task");
+    REQUIRE(flat_compute != nullptr);
+    REQUIRE(
+        flat_compute->at("source") ==
+        "feature:compute_provenance_probe");
+    REQUIRE(
+        flat_compute->at("provider_feature") ==
+        "compute_provenance_probe");
+
+    const auto xr = plan_variant(
+        RenderPipelineGraphVariant::xr);
+    REQUIRE(
+        xr.normalized_config.at("compute_tasks")
+            .front()
+            .at("name") ==
+        "compute_provenance_task");
+    const auto *stale_xr_compute = find_named(
+        xr.stale_provenance.at("nodes"),
+        "compute_provenance_task#xr");
+    REQUIRE(stale_xr_compute != nullptr);
+    REQUIRE_FALSE(stale_xr_compute->contains("source"));
+    REQUIRE_FALSE(
+        stale_xr_compute->contains("provider_feature"));
+
+    const auto *xr_compute = find_named(
+        xr.synchronized_provenance.at("nodes"),
+        "compute_provenance_task#xr");
+    REQUIRE(xr_compute != nullptr);
+    REQUIRE(
+        xr_compute->at("source") ==
+        "feature:compute_provenance_probe");
+    REQUIRE(
+        xr_compute->at("provider_feature") ==
+        "compute_provenance_probe");
+    REQUIRE(
+        xr_compute->at("provider_ref") ==
+        "engine://features/compute_provenance_probe.json");
+    REQUIRE(
+        find_named(
+            xr.synchronized_provenance.at("nodes"),
+            "compute_provenance_task") == nullptr);
 }
 
 TEST_CASE(

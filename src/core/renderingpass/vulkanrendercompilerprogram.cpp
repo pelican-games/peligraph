@@ -1,4 +1,4 @@
-#include "vulkanrendercompilerpackage.hpp"
+#include "vulkanrendercompilerprogramdetail.hpp"
 
 #include "computetask.hpp"
 #include "frameexecutionadapter.hpp"
@@ -246,15 +246,28 @@ frameExecutionPlansByName(
     return by_name;
 }
 
-void namespaceComputeTasks(
+} // namespace
+
+void detail::namespaceComputeTasks(
     std::vector<ComputeTaskDefinition> &tasks,
     std::vector<FrameGraphDefinition> &graphs,
-    std::string_view suffix) {
-    if (suffix.empty() || tasks.empty()) return;
+    const nlohmann::json &composed_config,
+    CompiledRenderPipeline &compiled_pipeline) {
+    const auto suffix =
+        compiled_pipeline.graph_variant_policy
+            .rendering_pass_name_suffix;
+    if (suffix.empty() || tasks.empty()) {
+        synchronizeRenderPipelineProvenance(
+            composed_config,
+            compiled_pipeline.pass_provenance,
+            compiled_pipeline.resource_provenance);
+        return;
+    }
     std::unordered_map<std::string, std::string>
         renamed;
     for (auto &task : tasks) {
-        auto next = task.name + std::string{suffix};
+        auto next =
+            task.name + std::string{suffix};
         renamed.emplace(task.name, next);
         task.name = std::move(next);
     }
@@ -279,7 +292,26 @@ void namespaceComputeTasks(
             }
         }
     }
+
+    auto provenance_config = composed_config;
+    for (auto &task :
+         provenance_config.at("compute_tasks")) {
+        auto name =
+            task.at("name").get<std::string>();
+        rename(name);
+        task["name"] = std::move(name);
+    }
+    for (auto &provenance :
+         compiled_pipeline.pass_provenance) {
+        rename(provenance.name);
+    }
+    synchronizeRenderPipelineProvenance(
+        provenance_config,
+        compiled_pipeline.pass_provenance,
+        compiled_pipeline.resource_provenance);
 }
+
+namespace {
 
 struct DefaultLogicalVariantCompilation {
     CompiledRenderPipeline compiled_pipeline;
@@ -399,10 +431,6 @@ compileDefaultLogicalVariant(
             input.subgraph_replacements);
     composed_config =
         std::move(resolved_subgraphs.config);
-    synchronizeRenderPipelineProvenance(
-        composed_config,
-        compiled_pipeline_value.pass_provenance,
-        compiled_pipeline_value.resource_provenance);
     compiled_pipeline_value.graph_transforms =
         resolved_transforms.selections;
     compiled_pipeline_value.render_strategy =
@@ -475,14 +503,14 @@ compileDefaultVulkanVariant(
     applyResolvedTaggedSubgraphSelections(
         graph_definitions,
         logical.subgraphs);
+    detail::namespaceComputeTasks(
+        compute_task_definitions,
+        graph_definitions,
+        logical.composed_config,
+        logical.compiled_pipeline);
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
             std::move(logical.compiled_pipeline));
-    namespaceComputeTasks(
-        compute_task_definitions,
-        graph_definitions,
-        compiled_pipeline->graph_variant_policy
-            .rendering_pass_name_suffix);
 
     auto physical =
         std::make_unique<

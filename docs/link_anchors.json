@@ -1214,6 +1214,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/vulkanrendercompilerprogram.cpp|`compileDefaultVulkanVariant()`|#1": "compileDefaultVulkanVariant(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/vulkanrendercompilerprogram.cpp|`validateVulkanPhysicalPackage()`": "void validateVulkanPhysicalPackage(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/vulkanrendercompilerprogram.cpp|provenance を刻む所": "compiled_pipeline_value.graph_transforms =",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/vulkanrendercompilerprogram.cpp|verification context を埋めるループ": ".verification_contexts) {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/vulkanrendercompilerprogram.cpp|フックを差す分岐": "resolve_dependencies.normalize_config =",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/vulkanrendercompilerprogram.cpp|呼び出し位置": "compileRenderPipeline(resolved);",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/resources/default.vert|`default.vert` 内": "mat4 model_matrix = pelicanObjects.objects[gl_BaseInstance].model;",
