@@ -486,6 +486,18 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             pass_def.name);
     }
     if (!pass_def.isMaterial() &&
+        pass_json.contains("material_contract")) {
+        throw std::runtime_error(
+            "Only material passes support material_contract: " +
+            pass_def.name);
+    }
+    if (!pass_def.isMaterial() &&
+        pass_json.contains("gpu_draw_source")) {
+        throw std::runtime_error(
+            "Only material passes support gpu_draw_source: " +
+            pass_def.name);
+    }
+    if (!pass_def.isMaterial() &&
         pass_json.contains("material_outputs")) {
         throw std::runtime_error(
             "Only material passes support material_outputs: " +

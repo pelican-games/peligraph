@@ -1776,6 +1776,92 @@ TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen pass
     REQUIRE(material_pass.isMaterial());
 }
 
+TEST_CASE(
+    "pass definition JSON parser keeps GPU draw sources material-only",
+    "[renderingpass][wp303]") {
+    const auto name_resolver =
+        RenderTargetNameResolver{
+            [](const std::string &name) {
+                if (name == "scene_color") {
+                    return GlobalRenderTargetId{0};
+                }
+                if (name == "scene_depth") {
+                    return GlobalRenderTargetId{1};
+                }
+                return noRenderTargetId();
+            }};
+    const auto metadata_resolver =
+        RenderTargetMetadataResolver{
+            [](GlobalRenderTargetId id) {
+                if (id == GlobalRenderTargetId{0}) {
+                    return RenderTargetMetadata{
+                        "scene_color",
+                        vk::ImageUsageFlagBits::eColorAttachment,
+                        vk::Format::eR16G16B16A16Sfloat,
+                        vk::Extent2D{1280, 720}};
+                }
+                if (id == GlobalRenderTargetId{1}) {
+                    return RenderTargetMetadata{
+                        "scene_depth",
+                        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                        vk::Format::eD32Sfloat,
+                        vk::Extent2D{1280, 720}};
+                }
+                throw std::runtime_error(
+                    "unexpected render target metadata lookup");
+            }};
+    const nlohmann::json gpu_draw_source{
+        {"commands", "visible_draws"},
+        {"count", "visible_draw_count"},
+        {"max_draw_count", 16},
+    };
+    const nlohmann::json fullscreen_json{
+        {"name", "post_process"},
+        {"type", "fullscreen"},
+        {"output", {{"color", "scene_color"}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "post_process"}}},
+        {"gpu_draw_source", gpu_draw_source},
+    };
+
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            fullscreen_json, name_resolver,
+            metadata_resolver),
+        "Only material passes support gpu_draw_source: post_process");
+
+    auto contract_on_fullscreen = fullscreen_json;
+    contract_on_fullscreen.erase("gpu_draw_source");
+    contract_on_fullscreen["material_contract"] =
+        "forward_opaque_v1";
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            contract_on_fullscreen, name_resolver,
+            metadata_resolver),
+        "Only material passes support material_contract: post_process");
+
+    const nlohmann::json material_json{
+        {"name", "gpu_geometry"},
+        {"type", "material"},
+        {"material_contract", "forward_opaque_v1"},
+        {"material_range", {{"start", 0}, {"count", 1}}},
+        {"gpu_draw_source", gpu_draw_source},
+        {"output", {{"color", "scene_color"}, {"depth", "scene_depth"}}},
+    };
+    const auto material_pass =
+        parsePassDefinitionFromJson(
+            material_json, name_resolver,
+            metadata_resolver);
+
+    REQUIRE(material_pass.isMaterial());
+    REQUIRE(material_pass.materialInfo().gpu_draw_source);
+    CHECK(material_pass.materialInfo().gpu_draw_source->commands ==
+          "visible_draws");
+    CHECK(material_pass.materialInfo().gpu_draw_source->count ==
+          "visible_draw_count");
+    CHECK(material_pass.materialInfo().gpu_draw_source->max_draw_count ==
+          16);
+}
+
 TEST_CASE("material pass selects an opaque named variant through an explicit bounded route",
           "[renderingpass][material-variant][wp206b]") {
     PassDefinition pass;
