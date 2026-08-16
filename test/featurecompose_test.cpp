@@ -774,10 +774,8 @@ TEST_CASE(
                              const nlohmann::json &config,
                              RenderPipelineGraphVariant
                                  variant,
-                             VulkanRenderCompilerDevicePlanningMode
-                                 device_planning_mode,
-                             vk::PhysicalDevice
-                                 physical_device = {}) {
+                             const VulkanRenderCompilerBackendContext
+                                 &backend) {
         PathResolver path_resolver;
         path_resolver.setup(fixtureRoot(), false);
         GraphTransformRegistry graph_registry;
@@ -799,10 +797,6 @@ TEST_CASE(
             strategy_registry.snapshot();
         auto subgraph_providers =
             subgraph_registry.snapshot();
-        VulkanRenderCompilerBackendContext backend;
-        backend.device_planning_mode =
-            device_planning_mode;
-        backend.physical_device = physical_device;
         const std::array requests{
             request(variant)};
         return runRenderCompilerProgram(
@@ -906,13 +900,69 @@ TEST_CASE(
                               node.at("kind") == node_kind;
                    }) == 1;
     };
+    const auto find_node = [](
+                               const nlohmann::json &plan,
+                               std::string_view name,
+                               std::string_view kind)
+        -> const nlohmann::json * {
+        const std::string node_name{name};
+        const std::string node_kind{kind};
+        const auto found = std::find_if(
+            plan.at("nodes").begin(),
+            plan.at("nodes").end(),
+            [&](const auto &node) {
+                return node.at("name") == node_name &&
+                       node.at("kind") == node_kind;
+            });
+        return found == plan.at("nodes").end()
+                   ? nullptr
+                   : &*found;
+    };
+    const auto provenance_count = [](
+                                      const auto &variant,
+                                      std::string_view name) {
+        return std::count_if(
+            variant.compiled_pipeline
+                ->pass_provenance.begin(),
+            variant.compiled_pipeline
+                ->pass_provenance.end(),
+            [&](const auto &provenance) {
+                return provenance.name == name;
+            });
+    };
+
+    const VulkanRenderCompilerBackendContext
+        default_backend;
+    REQUIRE(
+        default_backend.device_planning_mode ==
+        VulkanRenderCompilerDevicePlanningMode::
+            device_required);
+    const VulkanRenderCompilerBackendContext
+        compiler_only_backend{
+            vk::Format::eUndefined,
+            {},
+            {},
+            {},
+            {},
+            VulkanRenderCompilerDevicePlanningMode::
+                compiler_only};
+    const VulkanRenderCompilerBackendContext
+        compiler_only_with_device_backend{
+            vk::Format::eUndefined,
+            {},
+            vk::PhysicalDevice{
+                reinterpret_cast<VkPhysicalDevice>(
+                    std::uintptr_t{1})},
+            {},
+            {},
+            VulkanRenderCompilerDevicePlanningMode::
+                compiler_only};
 
     REQUIRE_THROWS_WITH(
         compile(
             wp309CompilerConfig(true),
             RenderPipelineGraphVariant::flat,
-            VulkanRenderCompilerDevicePlanningMode::
-                device_required),
+            default_backend),
         "Vulkan render compiler "
         "device_planning_mode=device_required "
         "requires physical_device");
@@ -920,11 +970,7 @@ TEST_CASE(
         compile(
             wp309CompilerConfig(true),
             RenderPipelineGraphVariant::flat,
-            VulkanRenderCompilerDevicePlanningMode::
-                compiler_only,
-            vk::PhysicalDevice{
-                reinterpret_cast<VkPhysicalDevice>(
-                    std::uintptr_t{1})}),
+            compiler_only_with_device_backend),
         "Vulkan render compiler "
         "device_planning_mode=compiler_only "
         "forbids physical_device");
@@ -932,8 +978,7 @@ TEST_CASE(
     const auto flat_with_feature = compile(
         wp309CompilerConfig(true),
         RenderPipelineGraphVariant::flat,
-        VulkanRenderCompilerDevicePlanningMode::
-            compiler_only);
+        compiler_only_backend);
     REQUIRE(flat_with_feature.variants.size() == 1);
     const auto &flat_variant =
         flat_with_feature.variants.front();
@@ -950,12 +995,24 @@ TEST_CASE(
         flat_plan, "resolved_probe_path", "render"));
     REQUIRE_FALSE(has_node(
         flat_plan, "probe#xr", "render"));
+    const auto *resolved_probe_path = find_node(
+        flat_plan, "resolved_probe_path", "render");
+    REQUIRE(resolved_probe_path != nullptr);
+    REQUIRE(
+        resolved_probe_path->value(
+            "source", std::string{}) == "engine");
+    REQUIRE(
+        provenance_count(
+            flat_variant,
+            "resolved_probe_path") == 1);
+    REQUIRE(
+        provenance_count(flat_variant, "probe#xr") ==
+        0);
 
     const auto flat_without_gate_feature = compile(
         wp309CompilerConfig(false),
         RenderPipelineGraphVariant::flat,
-        VulkanRenderCompilerDevicePlanningMode::
-            compiler_only);
+        compiler_only_backend);
     REQUIRE(
         flat_without_gate_feature.variants.size() ==
         1);
@@ -973,13 +1030,22 @@ TEST_CASE(
     REQUIRE(has_node(
         flat_without_gate_plan,
         "probe#xr", "render"));
+    const auto *authored_probe_path = find_node(
+        flat_without_gate_plan, "probe#xr", "render");
+    REQUIRE(authored_probe_path != nullptr);
+    REQUIRE(
+        authored_probe_path->value(
+            "source", std::string{}) == "project");
+    REQUIRE(
+        provenance_count(
+            flat_without_gate_variant,
+            "probe#xr") == 1);
 
 #if PELICAN_WITH_OPENXR
     const auto xr_with_feature = compile(
         wp309CompilerConfig(true),
         RenderPipelineGraphVariant::xr,
-        VulkanRenderCompilerDevicePlanningMode::
-            compiler_only);
+        compiler_only_backend);
     REQUIRE(xr_with_feature.variants.size() == 1);
     const auto &xr_variant =
         xr_with_feature.variants.front();
@@ -995,8 +1061,7 @@ TEST_CASE(
         compile(
             wp309CompilerConfig(false),
             RenderPipelineGraphVariant::xr,
-            VulkanRenderCompilerDevicePlanningMode::
-                compiler_only),
+            compiler_only_backend),
         "compute task variant name collision in graph "
         "'main#xr': probe#xr");
 #else
@@ -1004,8 +1069,7 @@ TEST_CASE(
         compile(
             wp309CompilerConfig(true),
             RenderPipelineGraphVariant::xr,
-            VulkanRenderCompilerDevicePlanningMode::
-                compiler_only),
+            compiler_only_backend),
         "XR graph variant is unavailable in this build");
 #endif
 }

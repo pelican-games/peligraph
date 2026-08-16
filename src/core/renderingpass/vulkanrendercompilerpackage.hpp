@@ -56,9 +56,7 @@ class VulkanRenderCompilerBackendContext final
         enabled_device_extensions;
     VulkanRuntimeCapabilities runtime_capabilities;
     VulkanRenderCompilerDevicePlanningMode
-        device_planning_mode =
-            VulkanRenderCompilerDevicePlanningMode::
-                device_required;
+        device_planning_mode;
 
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;
