@@ -4584,8 +4584,13 @@ OFF では XR 経路が名前付きで throw する
 1. 落ちている 5 件すべてを直すこと。XR の肯定側を `#if PELICAN_WITH_OPENXR` で囲み、
    **OFF 側では名前付きの unavailable エラーを検査すること。**
    囲って消すだけにしないこと。`graphvariantpolicy_test.cpp:86` と同じ作法にすること。
-2. 同じガード漏れが他に無いか棚卸しすること。
-   XR / multiview / view family / planar reflection に触れるテストを全て見ること。
+2. 既知のガード漏れ箇所は次の 4 つである(仕様レビューで特定済み)。
+   `test/viewfamily_test.cpp` の `:147-154` / `:182-189` / `:590-594` / `:854-858` が
+   ガード無しで XR policy を解決する。`viewfamily_test` は常時登録される
+   (`test/CMakeLists.txt:834`)。
+   これに加えて他に無いか棚卸しすること。
+   **`#if PELICAN_WITH_OPENXR` はテストから使える** ——
+   マクロは `pelican_core` から PUBLIC に伝播する(`src/core/CMakeLists.txt:7-15`)。
 3. **`PELICAN_WITH_OPENXR=OFF` を検証セットに入れること。**
    規約 9 の本文を「名指しされた 1 つ」ではなく
    「**触れた `#if` に対応する全てのフラグ**」と読めるように直すこと。
@@ -4629,25 +4634,56 @@ subgraph 置換で消える場合、stale な `probe#xr` が残ったまま `pro
 
 親コミットは subgraph 解決直後に同期して stale を先に掃除していた。
 **同梱設定では発火しない**ことは実査で確認済み(4 プロジェクトの active config は
-`compute_tasks` を持たず、core の 19 JSON に `#xr` を含む著作名は無い)。
+`compute_tasks` を持たず、`src/core/resources/features` の 18 JSON と
+`hybrid_v1.json` に `#xr` を含む著作名は無い。
+`src/core/resources` 全体は再帰で 32 JSON あり、残りは調べていない)。
 
 #### 実装範囲
 
-1. 本番経路を通るテストを足すこと。
-   実際の compiler / registration 経路から frame plan を取り、
-   **同じ TEST_CASE の中で feature の有効・無効を実行**して
-   XR ノードの `source` / `provider_feature` / `provider_ref` の差を検査すること。
-   実 resource loader は `test/featurecompose_test.cpp:94` にある。
+1. **コンパイラ段の本番経路を通るテストを足すこと。**
+   `runRenderCompilerProgram` に `RenderCompilerProgramArtifact::runtime_package` を要求し、
+   `compileDefaultVulkanVariant` を通すこと。既存の WP301 テストと同様、
+   既定構築の `VulkanRenderCompilerBackendContext` で足りる。
 2. 改名前に一度同期して stale を落とすか、改名後に一意性を明示検証すること。
+3. **XR を解決する箇所は `#if PELICAN_WITH_OPENXR` で囲み、
+   OFF 側で名前付き unavailable エラーを検査すること。**
+   囲わなければ WP308 が直した欠陥をそのまま再導入する。
+
+#### 実装範囲外(誤解を避けるため明記する)
+
+- **full registration を要求しない。**
+  `registerRenderingPassConfigVariantsData` は実 physical device から backend を構成し、
+  sample-count planning も device の feature / property を照会する
+  (`src/core/renderingpass/renderingpassconfigregistration.cpp:775-800`、
+  `src/core/renderingpass/renderingsamplecount.cpp:2161-2177`)。
+  GPU fixture が要るので本 WP の範囲ではない。
+- **`test/featurecompose_test.cpp:94` は本番 loader ではない。**
+  `engine://` を剥がして埋め込み資源を返すテスト用 callback である
+  (本番は `PathResolver::loadText`、`src/core/loader/pathresolver.cpp:92-97`)。
+  本 WP は実 loader を要求しない。
+- **preview を本番配線の否定対照に使わないこと。**
+  `data_only` は本番呼び出しより手前で return する
+  (`vulkanrendercompilerprogram.cpp:462-474`)ため、
+  呼び出し削除の変異を検出できない。preview は
+  `physical_package == nullptr` などの data-only 契約の独立した回帰条件として扱うこと。
 
 #### 受け入れ条件(§4 規約 10)
 
 - **`vulkanrendercompilerprogram.cpp:506` の呼び出しを削除すると落ちること。**
-  これが本 WP の中心的な対照である
-- 著作名 `<compute task 名>#xr` を持つ設定が、重複名 throw で死なないこと
-- flat と preview の来歴が変わらないこと
+  これが本 WP の中心的な対照である。
+  **ノード名または来歴の具体値が変わることで落ちること** ——
+  例外の有無だけで判定しないこと
+- **同じ TEST_CASE の中で feature を有効・無効の両方で実行すること。**
+  - 有効時: 最終的に `(main#xr, probe#xr)` の来歴が**ちょうど 1 件**存在し、
+    fixture で指定した `source` / `provider_feature` / `provider_ref` と**完全一致**すること
+  - 無効時: 著作側のパスが残り、同じ graph/name を含む**明示的な衝突エラー**になること
+- 著作名 `<compute task 名>#xr` を持つ設定が、重複名 throw で死なないこと。
+  **かつ、来歴が残っていること** —— stale と compute の来歴を両方捨てる実装は不合格である
+- flat の来歴が、**実際に解決された name / source / provider の値で完全一致**すること。
+  「変わらないこと」だけでは期待値が定義されない
+- `-DPELICAN_WITH_OPENXR=OFF` で `ctest` 全数が緑であること
 
-依存: なし。見積: 中。
+依存: **WP308**(ガードの作法が確定してから着手すること)。見積: 中。
 
 ### WP310: planning opportunities の「不明」を「不採用」と断定しない
 
