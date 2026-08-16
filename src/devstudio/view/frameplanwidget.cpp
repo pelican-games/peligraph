@@ -469,12 +469,19 @@ struct FramePlanWidget::Impl {
                                                    .arg(static_cast<qulonglong>(model->physical_plan.alias_candidates.size()))
                                              : owner.tr("physical unavailable (%1)")
                                                    .arg(text(model->physical_plan.unavailable_reason));
+        const QString execution_summary =
+            model->execution_plan.available()
+                ? owner.tr("%1 dependencies")
+                      .arg(static_cast<qulonglong>(model->dependencies.size()))
+                : owner.tr("execution unavailable (%1)")
+                      .arg(text(model->execution_plan.unavailable_reason));
         status->setStyleSheet(
-            model->physical_plan.available()
+            model->physical_plan.available() &&
+                    model->execution_plan.available()
                 ? QStringLiteral("color: #388e3c;")
                 : QStringLiteral("color: #b36b00;"));
         status->setText(
-            owner.tr("%1 | %2%3 passes/tasks (%4 compute), %5 dependencies, "
+            owner.tr("%1 | %2%3 passes/tasks (%4 compute), %5, "
                      "%6 resources, %7 barriers | %8 | %9 response | "
                      "refreshed %10. Snapshot updates "
                      "only when the engine connects or Refresh is pressed; it "
@@ -482,7 +489,7 @@ struct FramePlanWidget::Impl {
                 .arg(text(model->graph), generation)
                 .arg(static_cast<qulonglong>(model->nodes.size()))
                 .arg(static_cast<qulonglong>(compute_count))
-                .arg(static_cast<qulonglong>(model->dependencies.size()))
+                .arg(execution_summary)
                 .arg(static_cast<qulonglong>(model->resources.size()))
                 .arg(static_cast<qulonglong>(model->barriers.size()))
                 .arg(physical_summary, byteCount(model->response_bytes),
@@ -904,16 +911,25 @@ struct FramePlanWidget::Impl {
             }
         }
 
-        auto *dependency_group = groupItem(
-            state, owner.tr("Execution dependencies"),
-            model->dependencies.size());
-        for (const auto &dependency : model->dependencies) {
-            auto *item = new QTreeWidgetItem(dependency_group);
-            item->setText(0,
-                          QStringLiteral("%1 -> %2")
-                              .arg(text(dependency.from), text(dependency.to)));
-            item->setText(1, text(dependency.reason));
-            item->setText(2, text(dependency.resource));
+        if (!model->execution_plan.available()) {
+            auto *execution_state =
+                groupItem(state, owner.tr("Execution plan unavailable"));
+            execution_state->setText(
+                1, text(model->execution_plan.unavailable_reason_code));
+            execution_state->setText(
+                2, text(model->execution_plan.unavailable_reason));
+        } else {
+            auto *dependency_group = groupItem(
+                state, owner.tr("Execution dependencies"),
+                model->dependencies.size());
+            for (const auto &dependency : model->dependencies) {
+                auto *item = new QTreeWidgetItem(dependency_group);
+                item->setText(
+                    0, QStringLiteral("%1 -> %2")
+                           .arg(text(dependency.from), text(dependency.to)));
+                item->setText(1, text(dependency.reason));
+                item->setText(2, text(dependency.resource));
+            }
         }
 
         if (model->gpu_resource_arena) {

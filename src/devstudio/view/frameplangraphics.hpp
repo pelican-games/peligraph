@@ -36,6 +36,8 @@ inline constexpr int FramePlanLifetimeUsedRole = Qt::UserRole + 3079;
 inline constexpr int FramePlanLifetimeFirstRole = Qt::UserRole + 3080;
 inline constexpr int FramePlanLifetimeLastRole = Qt::UserRole + 3081;
 inline constexpr int FramePlanOpportunityKindRole = Qt::UserRole + 3082;
+inline constexpr int FramePlanLogicalStateRole = Qt::UserRole + 3083;
+inline constexpr int FramePlanReasonCodeRole = Qt::UserRole + 3084;
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";
@@ -51,6 +53,7 @@ inline constexpr auto FramePlanFusionOverlayItem = "fusion_overlay";
 inline constexpr auto FramePlanParallelOverlayItem = "parallel_overlay";
 inline constexpr auto FramePlanPhysicalEmptyItem = "physical_empty";
 inline constexpr auto FramePlanPhysicalSelectionItem = "physical_selection";
+inline constexpr auto FramePlanLogicalUnavailableItem = "logical_unavailable";
 
 class FramePlanGraphicsScene final : public QGraphicsScene {
   public:

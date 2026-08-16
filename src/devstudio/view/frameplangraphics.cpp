@@ -37,6 +37,8 @@ constexpr qreal PhysicalHeaderHeight = 118.0;
 constexpr qreal PhysicalResourceRowHeight = 36.0;
 constexpr qreal PhysicalResourceLabelWidth = 390.0;
 constexpr qreal PhysicalOpportunityLaneGap = 28.0;
+constexpr qreal LogicalUnavailableWidth = 640.0;
+constexpr qreal LogicalUnavailableHeight = 140.0;
 
 struct GroupDefinition {
     std::string key;
@@ -721,6 +723,9 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanPlanningProfile", QString{});
     setProperty("pelicanPlanningEndpoint", QString{});
     setProperty("pelicanCollapsedGroups", QStringList{});
+    setProperty("pelicanExecutionPlanState", QString{});
+    setProperty("pelicanExecutionPlanReasonCode", QString{});
+    setProperty("pelicanExecutionPlanReason", QString{});
     publishStateProperties();
 }
 
@@ -728,14 +733,16 @@ void FramePlanGraphicsScene::populate(const FramePlanModel &model,
                                       int group_minimum) {
     const auto retained_selection = selected_node_;
     const bool selection_survives =
-        retained_selection && retained_selection->graph == model.graph &&
+        model.execution_plan.available() && retained_selection &&
+        retained_selection->graph == model.graph &&
         std::any_of(model.nodes.begin(), model.nodes.end(),
                     [&](const FramePlanNode &node) {
                         return node.name == retained_selection->name;
                     });
     const auto retained_resource = selected_resource_;
     const bool resource_selection_survives =
-        retained_resource && retained_resource->graph == model.graph &&
+        model.execution_plan.available() && retained_resource &&
+        retained_resource->graph == model.graph &&
         std::any_of(model.resources.begin(), model.resources.end(),
                     [&](const FramePlanResource &resource) {
                         return resource.name == retained_resource->name &&
@@ -749,6 +756,65 @@ void FramePlanGraphicsScene::populate(const FramePlanModel &model,
     selected_resource_ = resource_selection_survives
                              ? retained_resource
                              : std::nullopt;
+
+    if (!model.execution_plan.available()) {
+        auto *panel = addRect(
+            QRectF{0.0, 0.0, LogicalUnavailableWidth,
+                   LogicalUnavailableHeight},
+            QPen{QColor{QStringLiteral("#d68a32")}, 1.8},
+            QBrush{QColor{QStringLiteral("#2b2118")}});
+        panel->setZValue(1.0);
+        annotateIdentity(*panel, FramePlanLogicalUnavailableItem, model.graph,
+                         model.execution_plan.unavailable_reason_code);
+        panel->setData(FramePlanLogicalStateRole,
+                       QStringLiteral("unavailable"));
+        panel->setData(FramePlanReasonCodeRole,
+                       qtext(model.execution_plan.unavailable_reason_code));
+        panel->setData(FramePlanReasonRole,
+                       qtext(model.execution_plan.unavailable_reason));
+        panel->setToolTip(qtext(model.execution_plan.unavailable_reason));
+
+        auto *title = new QGraphicsSimpleTextItem(
+            QStringLiteral("Logical graph unavailable"), panel);
+        QFont title_font = title->font();
+        title_font.setBold(true);
+        title_font.setPointSizeF(12.0);
+        title->setFont(title_font);
+        title->setBrush(QColor{QStringLiteral("#f6d09a")});
+        title->setPos(18.0, 18.0);
+        auto *reason = new QGraphicsSimpleTextItem(
+            qtext(model.execution_plan.unavailable_reason), panel);
+        reason->setBrush(QColor{QStringLiteral("#efb366")});
+        reason->setPos(18.0, 66.0);
+
+        setSceneRect(panel->sceneBoundingRect().adjusted(-30.0, -30.0, 30.0,
+                                                         30.0));
+        rebuilding_ = false;
+        setProperty("pelicanGraph", qtext(model.graph));
+        setProperty("pelicanNodeRecordCount", 0);
+        setProperty("pelicanDependencyRecordCount", 0);
+        setProperty("pelicanVisibleItemCount", 0);
+        setProperty("pelicanEdgeBundleCount", 0);
+        setProperty("pelicanResourceOverlayCount", 0);
+        setProperty("pelicanPhysicalResourceCount", 0);
+        setProperty("pelicanAdoptedAliasCount", 0);
+        setProperty("pelicanNotAdoptedAliasCount", 0);
+        setProperty("pelicanFusionCandidateCount", 0);
+        setProperty("pelicanParallelCandidateCount", 0);
+        setProperty("pelicanPhysicalExplicitEmptyCount", 0);
+        setProperty("pelicanPlanningProfile", QString{});
+        setProperty("pelicanPlanningEndpoint", QString{});
+        setProperty("pelicanCollapsedGroups", QStringList{});
+        setProperty("pelicanMinimumLabelSpacing", LabelGap);
+        setProperty("pelicanExecutionPlanState",
+                    QStringLiteral("unavailable"));
+        setProperty("pelicanExecutionPlanReasonCode",
+                    qtext(model.execution_plan.unavailable_reason_code));
+        setProperty("pelicanExecutionPlanReason",
+                    qtext(model.execution_plan.unavailable_reason));
+        publishStateProperties();
+        return;
+    }
 
     std::map<std::string, const FramePlanNode *, std::less<>> nodes;
     for (const auto &node : model.nodes) {
@@ -1023,6 +1089,9 @@ void FramePlanGraphicsScene::populate(const FramePlanModel &model,
                 qtext(model.physical_plan.planning_profile));
     setProperty("pelicanPlanningEndpoint",
                 qtext(model.physical_plan.planning_endpoint));
+    setProperty("pelicanExecutionPlanState", QStringLiteral("available"));
+    setProperty("pelicanExecutionPlanReasonCode", QString{});
+    setProperty("pelicanExecutionPlanReason", QString{});
     QStringList collapsed_names;
     for (const auto &group : collapsed_groups_) {
         collapsed_names.push_back(qtext(group));

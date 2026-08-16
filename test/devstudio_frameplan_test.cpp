@@ -1,4 +1,5 @@
 #include "frameplanmodel.hpp"
+#include "executionplanwire.hpp"
 #include "physicaltargetplanwire.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -323,6 +324,8 @@ TEST_CASE(
     const Json &physical = captured.at("physical_target_plan");
     const FramePlanModel model = buildFramePlanModel(captured.dump());
 
+    REQUIRE(model.execution_plan.available());
+    REQUIRE(model.execution_plan.unavailable_reason.empty());
     REQUIRE(model.physical_plan.available());
     REQUIRE(model.physical_plan.unavailable_reason.empty());
     REQUIRE(model.physical_plan.graph == model.graph);
@@ -424,6 +427,43 @@ TEST_CASE(
         REQUIRE(retained.contains(name));
         REQUIRE(retained.at(name) == value);
     }
+}
+
+TEST_CASE(
+    "Devstudio distinguishes a missing execution plan from an available zero-dependency plan",
+    "[devstudio][frame-plan][wp317][negative-contrast]") {
+    const Json captured = Json::parse(capturedResponse());
+
+    Json missing = captured;
+    missing.erase("execution_plan");
+    const FramePlanModel unavailable = buildFramePlanModel(missing.dump());
+    REQUIRE_FALSE(unavailable.execution_plan.available());
+    REQUIRE(unavailable.execution_plan.unavailable_reason_code ==
+            "execution_plan_missing");
+    REQUIRE_THAT(unavailable.execution_plan.unavailable_reason,
+                 ContainsSubstring("execution_plan was not published"));
+    REQUIRE(unavailable.dependencies.empty());
+
+    Json null_plan = captured;
+    null_plan["execution_plan"] = nullptr;
+    const FramePlanModel null_unavailable =
+        buildFramePlanModel(null_plan.dump());
+    REQUIRE_FALSE(null_unavailable.execution_plan.available());
+    REQUIRE(null_unavailable.execution_plan.unavailable_reason_code ==
+            unavailable.execution_plan.unavailable_reason_code);
+
+    Json zero_dependencies = captured;
+    zero_dependencies["execution_plan"]["dependencies"] = Json::array();
+    const FramePlanModel available =
+        buildFramePlanModel(zero_dependencies.dump());
+    REQUIRE(available.execution_plan.available());
+    REQUIRE(available.execution_plan.unavailable_reason.empty());
+    REQUIRE(available.dependencies.empty());
+
+    const auto shared_missing = Pelican::validateExecutionPlanWire(nullptr);
+    REQUIRE_FALSE(shared_missing.available());
+    REQUIRE(shared_missing.reason_code ==
+            unavailable.execution_plan.unavailable_reason_code);
 }
 
 TEST_CASE(
@@ -554,30 +594,53 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Execution plan nodes and dependencies reject unknown or duplicate references",
-    "[devstudio][frame-plan][wp305][validation]") {
+    "Execution plan wire conformance reports named unavailable results",
+    "[devstudio][frame-plan][wp305][wp317][validation]") {
     const Json captured = Json::parse(capturedResponse());
+
+    const auto unavailable_code = [&](Json input) {
+        const FramePlanModel model = buildFramePlanModel(input.dump());
+        REQUIRE_FALSE(model.execution_plan.available());
+        REQUIRE(model.dependencies.empty());
+        return model.execution_plan.unavailable_reason_code;
+    };
 
     SECTION("unknown execution node") {
         Json input = captured;
         input["execution_plan"]["nodes"][0]["name"] = "missing_node";
-        REQUIRE_THROWS_WITH(
-            buildFramePlanModel(input.dump()),
-            ContainsSubstring("execution_plan_missing_reference"));
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "execution_plan_missing_reference");
     }
     SECTION("duplicate execution node") {
         Json input = captured;
         input["execution_plan"]["nodes"][1]["name"] =
             input["execution_plan"]["nodes"][0]["name"];
-        REQUIRE_THROWS_WITH(buildFramePlanModel(input.dump()),
-                            ContainsSubstring("execution_plan_duplicate"));
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "execution_plan_duplicate");
     }
     SECTION("unknown dependency node") {
         Json input = captured;
         input["execution_plan"]["dependencies"][0]["to"] = "missing_node";
-        REQUIRE_THROWS_WITH(
-            buildFramePlanModel(input.dump()),
-            ContainsSubstring("execution_plan_missing_reference"));
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "execution_plan_missing_reference");
+    }
+    SECTION("schema") {
+        Json input = captured;
+        input["execution_plan"]["schema"] = "pelican.wrong";
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "execution_plan_schema_mismatch");
+    }
+    SECTION("version") {
+        Json input = captured;
+        input["execution_plan"]["schema_version"] = 2;
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "execution_plan_version_mismatch");
+    }
+    SECTION("graph") {
+        Json input = captured;
+        input["execution_plan"]["graph"] = "another_graph";
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "execution_plan_graph_mismatch");
     }
 }
 

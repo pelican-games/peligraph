@@ -1,5 +1,6 @@
 #include "frameplanmodel.hpp"
 
+#include "executionplanwire.hpp"
 #include "physicaltargetplanwire.hpp"
 
 #include <nlohmann/json.hpp>
@@ -606,61 +607,58 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         logical_resource_names.insert(barrier.resource);
     }
 
-    std::vector<std::string> execution_node_names;
-
+    std::vector<std::string> frame_node_names;
+    frame_node_names.reserve(model.nodes.size());
+    for (const auto &node : model.nodes) {
+        frame_node_names.push_back(node.name);
+    }
+    std::vector<std::string> logical_resource_context{
+        logical_resource_names.begin(), logical_resource_names.end()};
+    const Json *execution_plan_json = nullptr;
     if (const auto execution = root.find("execution_plan");
         execution != root.end() && !execution->is_null()) {
-        if (!execution->is_object()) {
-            throw invalid("execution_plan must be an object");
-        }
-        if (optionalStringField(*execution, "schema", "execution_plan") !=
-            "pelican.frame_execution_plan") {
-            throw invalid("execution_plan requires schema 'pelican.frame_execution_plan'");
-        }
-        const auto schema_version = execution->find("schema_version");
-        if (schema_version == execution->end() ||
-            unsignedInteger(*schema_version, "execution_plan.schema_version") != 1) {
-            throw invalid("execution_plan requires schema version 1");
-        }
-        if (requireStringField(*execution, "graph", "execution_plan") !=
-            model.graph) {
-            throw invalid(
-                "execution_plan_graph_mismatch: execution_plan graph does not "
-                "match the frame plan graph");
-        }
-        if (requireStringField(*execution, "fingerprint", "execution_plan")
-                .empty()) {
-            throw invalid(
-                "execution_plan_fingerprint_invalid: fingerprint must not be "
-                "empty");
-        }
-        requireArrayField(*execution, "bridges", "execution_plan");
-        requireArrayField(*execution, "endpoints", "execution_plan");
+        execution_plan_json = &*execution;
+    }
+    const auto execution_validation = Pelican::validateExecutionPlanWire(
+        execution_plan_json,
+        Pelican::ExecutionPlanWireContext{
+            .expected_graph = model.graph,
+            .frame_nodes = frame_node_names,
+            .logical_resources = logical_resource_context,
+        });
+
+    std::vector<std::string> execution_node_names = frame_node_names;
+    if (!execution_validation.available()) {
+        model.execution_plan.state = FramePlanExecutionPlanState::unavailable;
+        model.execution_plan.unavailable_reason_code =
+            execution_validation.reason_code;
+        model.execution_plan.unavailable_reason =
+            execution_validation.reason();
+    } else {
+        const Json &execution = *execution_plan_json;
+        model.execution_plan.state = FramePlanExecutionPlanState::available;
+        model.execution_plan.unavailable_reason_code.clear();
+        model.execution_plan.unavailable_reason.clear();
+        model.execution_plan.schema =
+            requireStringField(execution, "schema", "execution_plan");
+        model.execution_plan.schema_version =
+            requireSizeField(execution, "schema_version", "execution_plan");
+        model.execution_plan.graph =
+            requireStringField(execution, "graph", "execution_plan");
+        model.execution_plan.fingerprint =
+            requireStringField(execution, "fingerprint", "execution_plan");
+
         const auto &execution_nodes =
-            requireArrayField(*execution, "nodes", "execution_plan");
-        std::unordered_set<std::string> seen_execution_nodes;
+            requireArrayField(execution, "nodes", "execution_plan");
+        execution_node_names.clear();
         execution_node_names.reserve(execution_nodes.size());
         for (std::size_t index = 0; index < execution_nodes.size(); ++index) {
             const auto &value = execution_nodes.at(index);
             const std::string context =
                 "execution_plan.nodes[" + std::to_string(index) + "]";
-            if (!value.is_object()) {
-                throw invalid(context + " must be an object");
-            }
             const std::string name = requireStringField(value, "name", context);
-            if (!seen_execution_nodes.insert(name).second) {
-                throw invalid("execution_plan_duplicate: duplicate execution "
-                              "node '" +
-                              name + "'");
-            }
-            const auto destination = node_indices.find(name);
-            if (destination == node_indices.end()) {
-                throw invalid(
-                    "execution_plan_missing_reference: execution node '" +
-                    name + "' is absent from the frame plan nodes");
-            }
             execution_node_names.push_back(name);
-            auto &node = model.nodes[destination->second];
+            auto &node = model.nodes[node_indices.at(name)];
             node.semantic_dialect =
                 optionalStringField(value, "semantic_dialect", context);
             node.selected_implementation =
@@ -671,9 +669,6 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 stringArray(value, "required_capabilities", context);
             if (const auto uses = value.find("resource_uses");
                 uses != value.end()) {
-                if (!uses->is_array()) {
-                    throw invalid(context + ".resource_uses must be an array");
-                }
                 node.resource_uses.reserve(uses->size());
                 for (std::size_t use_index = 0; use_index < uses->size();
                      ++use_index) {
@@ -681,9 +676,6 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                     const std::string use_context =
                         context + ".resource_uses[" +
                         std::to_string(use_index) + "]";
-                    if (!use.is_object()) {
-                        throw invalid(use_context + " must be an object");
-                    }
                     node.resource_uses.push_back(FramePlanResourceUse{
                         .resource = requireStringField(use, "resource", use_context),
                         .epoch = optionalStringField(use, "epoch", use_context),
@@ -694,63 +686,20 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 }
             }
         }
-        if (seen_execution_nodes.size() != model.nodes.size()) {
-            const auto missing = std::find_if(
-                model.nodes.begin(), model.nodes.end(),
-                [&](const FramePlanNode &node) {
-                    return !seen_execution_nodes.contains(node.name);
-                });
-            throw invalid(
-                "execution_plan_missing_reference: frame node '" +
-                (missing == model.nodes.end() ? std::string{"?"}
-                                              : missing->name) +
-                "' is absent from execution_plan.nodes");
-        }
 
         const auto &dependencies =
-            requireArrayField(*execution, "dependencies", "execution_plan");
-        std::set<std::tuple<std::string, std::string, std::string, std::string>>
-            dependency_identities;
+            requireArrayField(execution, "dependencies", "execution_plan");
         model.dependencies.reserve(dependencies.size());
         for (std::size_t index = 0; index < dependencies.size(); ++index) {
             const auto context =
                 "execution_plan.dependencies[" + std::to_string(index) + "]";
             const auto &value = dependencies[index];
-            if (!value.is_object()) {
-                throw invalid(context + " must be an object");
-            }
-            FramePlanDependency dependency{
+            model.dependencies.push_back(FramePlanDependency{
                 .from = requireStringField(value, "from", context),
                 .to = requireStringField(value, "to", context),
                 .reason = requireStringField(value, "reason", context),
                 .resource = optionalStringField(value, "resource", context),
-            };
-            if (!seen_execution_nodes.contains(dependency.from) ||
-                !seen_execution_nodes.contains(dependency.to)) {
-                throw invalid(
-                    "execution_plan_missing_reference: dependency references "
-                    "an unknown execution node");
-            }
-            if (!dependency.resource.empty() &&
-                !logical_resource_names.contains(dependency.resource)) {
-                throw invalid(
-                    "execution_plan_missing_reference: dependency references "
-                    "unknown resource '" +
-                    dependency.resource + "'");
-            }
-            if (!dependency_identities
-                     .emplace(dependency.from, dependency.to,
-                              dependency.reason, dependency.resource)
-                     .second) {
-                throw invalid(
-                    "execution_plan_duplicate: duplicate dependency");
-            }
-            model.dependencies.push_back(std::move(dependency));
-        }
-    } else {
-        execution_node_names.reserve(model.nodes.size());
-        for (const auto &node : model.nodes) {
-            execution_node_names.push_back(node.name);
+            });
         }
     }
 
@@ -760,14 +709,12 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         physical != root.end() && !physical->is_null()) {
         physical_plan_json = &*physical;
     }
-    std::vector<std::string> physical_resource_context{
-        logical_resource_names.begin(), logical_resource_names.end()};
     const auto physical_validation = Pelican::validatePhysicalTargetPlanWire(
         physical_plan_json,
         Pelican::PhysicalTargetPlanWireContext{
             .expected_graph = model.graph,
             .execution_nodes = execution_node_names,
-            .logical_resources = std::move(physical_resource_context),
+            .logical_resources = std::move(logical_resource_context),
         });
     if (!physical_validation.available()) {
         model.physical_plan.state = FramePlanPhysicalPlanState::unavailable;

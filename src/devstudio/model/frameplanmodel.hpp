@@ -279,6 +279,29 @@ struct FramePlanWireSection {
     bool operator==(const FramePlanWireSection &) const = default;
 };
 
+enum class FramePlanExecutionPlanState {
+    unavailable,
+    available,
+};
+
+struct FramePlanExecutionPlan {
+    FramePlanExecutionPlanState state =
+        FramePlanExecutionPlanState::unavailable;
+    std::string unavailable_reason_code = "execution_plan_missing";
+    std::string unavailable_reason =
+        "execution_plan_missing: execution_plan was not published";
+    std::string schema;
+    std::size_t schema_version = 0;
+    std::string graph;
+    std::string fingerprint;
+
+    [[nodiscard]] bool available() const noexcept {
+        return state == FramePlanExecutionPlanState::available;
+    }
+
+    bool operator==(const FramePlanExecutionPlan &) const = default;
+};
+
 enum class FramePlanPhysicalPlanState {
     unavailable,
     available,
@@ -361,6 +384,7 @@ struct FramePlanModel {
     std::string selected_backend_candidate;
     std::vector<FramePlanBackendCandidate> backend_candidates;
     std::vector<FramePlanPlanningDiagnostic> backend_diagnostics;
+    FramePlanExecutionPlan execution_plan;
     FramePlanPhysicalPlan physical_plan;
     std::optional<FramePlanGpuResourceArena> gpu_resource_arena;
 

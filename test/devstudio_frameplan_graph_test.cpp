@@ -1106,6 +1106,78 @@ void requireNoReference(QGraphicsScene &value, std::string_view node,
 } // namespace
 
 TEST_CASE(
+    "WP317 missing execution plan is a named logical error rather than a valid zero-dependency graph",
+    "[devstudio][frame-plan][logical-graph][wp317][negative-contrast]") {
+    (void)application();
+    const Json zero_dependencies = independentOpportunityFramePlan(
+        Pelican::PlanningProfileKind::conservative_debug);
+    REQUIRE(zero_dependencies.at("execution_plan")
+                .at("dependencies")
+                .empty());
+    REQUIRE_FALSE(zero_dependencies.at("nodes").empty());
+
+    Json missing = zero_dependencies;
+    missing.erase("execution_plan");
+    REQUIRE(missing.at("nodes") == zero_dependencies.at("nodes"));
+    REQUIRE(missing.at("barriers") == zero_dependencies.at("barriers"));
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(missing.dump()));
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+
+    REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
+            QStringLiteral("unavailable"));
+    REQUIRE(logical.property("pelicanExecutionPlanReasonCode").toString() ==
+            QStringLiteral("execution_plan_missing"));
+    REQUIRE(logical.property("pelicanDependencyRecordCount").toULongLong() ==
+            0);
+    REQUIRE(itemsOfKind(logical, FramePlanNodeItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
+    const auto unavailable =
+        itemsOfKind(logical, FramePlanLogicalUnavailableItem);
+    REQUIRE(unavailable.size() == 1);
+    REQUIRE(unavailable.front()
+                ->data(FramePlanLogicalStateRole)
+                .toString() == QStringLiteral("unavailable"));
+    REQUIRE(unavailable.front()
+                ->data(FramePlanReasonCodeRole)
+                .toString() == QStringLiteral("execution_plan_missing"));
+    REQUIRE(unavailable.front()->toolTip().contains(
+        QStringLiteral("execution_plan was not published")));
+    auto *unavailable_panel =
+        dynamic_cast<QGraphicsRectItem *>(unavailable.front());
+    REQUIRE(unavailable_panel != nullptr);
+    const QRectF reserved_error_region =
+        unavailable_panel->sceneBoundingRect();
+    REQUIRE(reserved_error_region.width() >= 600.0);
+    REQUIRE(reserved_error_region.height() >= 120.0);
+    REQUIRE(logical.sceneRect().contains(reserved_error_region));
+
+    // Same production entry and widget; the only difference is the valid,
+    // compiler-published execution plan whose dependency array is truly empty.
+    widget.receiveResult(
+        QByteArray::fromStdString(zero_dependencies.dump()));
+    QApplication::processEvents();
+    REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
+            QStringLiteral("available"));
+    REQUIRE(logical.property("pelicanExecutionPlanReasonCode")
+                .toString()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanDependencyRecordCount").toULongLong() ==
+            0);
+    REQUIRE(itemsOfKind(logical, FramePlanLogicalUnavailableItem).empty());
+    const auto valid_nodes = itemsOfKind(logical, FramePlanNodeItem);
+    REQUIRE(valid_nodes.size() == zero_dependencies.at("nodes").size());
+    REQUIRE_FALSE(valid_nodes.empty());
+    REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
+    for (const QGraphicsItem *node : valid_nodes) {
+        REQUIRE(logical.sceneRect().contains(node->sceneBoundingRect()));
+    }
+}
+
+TEST_CASE(
     "WP306 logical graph exposes lost edges grouping identity and readable deterministic layout",
     "[devstudio][frame-plan][logical-graph][wp306]") {
     (void)application();
