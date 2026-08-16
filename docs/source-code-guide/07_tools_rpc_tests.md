@@ -660,7 +660,7 @@ cmake_parse_arguments(PELICAN_TEST
 | frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L190) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L20) |
 | shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L32)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L84) |
-| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L169) |
+| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L353) |
 | persistence の atomic save/path | [`persistence_test.cpp`](../../test/persistence_test.cpp#L81) |
 
 ### Golden image test
