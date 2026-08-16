@@ -1,12 +1,17 @@
 #include "frameplanmodel.hpp"
 
+#include "physicaltargetplanwire.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -71,6 +76,35 @@ bool requireBoolField(const Json &object, std::string_view field,
                       std::string{field} + "'");
     }
     return found->get<bool>();
+}
+
+std::optional<bool> optionalBoolField(const Json &object,
+                                      std::string_view field,
+                                      std::string_view context) {
+    const auto found = object.find(field);
+    if (found == object.end() || found->is_null()) {
+        return std::nullopt;
+    }
+    if (!found->is_boolean()) {
+        throw invalid(std::string{context} + " field '" +
+                      std::string{field} + "' must be a boolean");
+    }
+    return found->get<bool>();
+}
+
+double requireNumberField(const Json &object, std::string_view field,
+                          std::string_view context) {
+    const auto found = object.find(field);
+    if (found == object.end() || !found->is_number()) {
+        throw invalid(std::string{context} + " requires number field '" +
+                      std::string{field} + "'");
+    }
+    const auto value = found->get<double>();
+    if (!std::isfinite(value)) {
+        throw invalid(std::string{context} + "." + std::string{field} +
+                      " must be finite");
+    }
+    return value;
 }
 
 std::uint64_t unsignedInteger(const Json &value, std::string_view context) {
@@ -143,6 +177,95 @@ std::vector<std::string> stringArray(const Json &object,
                           " entries must be strings");
         }
         result.push_back(entry.get<std::string>());
+    }
+    return result;
+}
+
+FramePlanExtent parseExtent(const Json &value, std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    return FramePlanExtent{
+        .kind = requireStringField(value, "kind", context),
+        .scale_x = requireNumberField(value, "scale_x", context),
+        .scale_y = requireNumberField(value, "scale_y", context),
+        .width = requireSizeField(value, "width", context),
+        .height = requireSizeField(value, "height", context),
+    };
+}
+
+FramePlanLifetime parseLifetime(const Json &value, std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    FramePlanLifetime result;
+    result.used = requireBoolField(value, "used", context);
+    result.first_use = optionalSizeField(value, "first_use", context);
+    result.last_use = optionalSizeField(value, "last_use", context);
+    if (result.used && (!result.first_use || !result.last_use)) {
+        throw invalid(std::string{context} +
+                      " used lifetime requires first_use and last_use");
+    }
+    if (!result.used && (result.first_use || result.last_use)) {
+        throw invalid(std::string{context} +
+                      " unused lifetime must not publish use indices");
+    }
+    if (result.first_use && result.last_use &&
+        *result.first_use > *result.last_use) {
+        throw invalid(std::string{context} +
+                      " first_use must not exceed last_use");
+    }
+    return result;
+}
+
+bool collectionContainsPair(
+    const std::vector<FramePlanAliasGroup> &groups, std::string_view first,
+    std::string_view second) {
+    return std::any_of(
+        groups.begin(), groups.end(), [&](const FramePlanAliasGroup &group) {
+            const auto contains = [&](std::string_view name) {
+                return std::find(group.resources.begin(), group.resources.end(),
+                                 name) != group.resources.end();
+            };
+            return contains(first) && contains(second);
+        });
+}
+
+bool scopeContainsPair(const std::vector<FramePlanPhysicalScope> &scopes,
+                       std::string_view first, std::string_view second) {
+    return std::any_of(
+        scopes.begin(), scopes.end(), [&](const FramePlanPhysicalScope &scope) {
+            if (!scope.single_rendering_instance) {
+                return false;
+            }
+            const auto contains = [&](std::string_view name) {
+                return std::find(scope.nodes.begin(), scope.nodes.end(), name) !=
+                       scope.nodes.end();
+            };
+            return contains(first) && contains(second);
+        });
+}
+
+template <typename Adopted>
+std::vector<FramePlanOpportunityPair> parseOpportunityPairs(
+    const Json &report, std::string_view field, Adopted &&adopted) {
+    const auto &entries =
+        requireArrayField(report, field, "physical_target_plan.planning_opportunities");
+    std::vector<FramePlanOpportunityPair> result;
+    result.reserve(entries.size());
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto context =
+            "physical_target_plan.planning_opportunities." +
+            std::string{field} + "[" + std::to_string(index) + "]";
+        if (!entries[index].is_object()) {
+            throw invalid(context + " must be an object");
+        }
+        FramePlanOpportunityPair pair{
+            .first = requireStringField(entries[index], "first", context),
+            .second = requireStringField(entries[index], "second", context),
+        };
+        pair.adopted = adopted(pair.first, pair.second);
+        result.push_back(std::move(pair));
     }
     return result;
 }
@@ -472,6 +595,19 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         model.barriers.push_back(std::move(barrier));
     }
 
+    std::unordered_set<std::string> logical_resource_names;
+    for (const auto &node : model.nodes) {
+        logical_resource_names.insert(node.reads.begin(), node.reads.end());
+        logical_resource_names.insert(node.history_reads.begin(),
+                                      node.history_reads.end());
+        logical_resource_names.insert(node.writes.begin(), node.writes.end());
+    }
+    for (const auto &barrier : model.barriers) {
+        logical_resource_names.insert(barrier.resource);
+    }
+
+    std::vector<std::string> execution_node_names;
+
     if (const auto execution = root.find("execution_plan");
         execution != root.end() && !execution->is_null()) {
         if (!execution->is_object()) {
@@ -486,8 +622,24 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             unsignedInteger(*schema_version, "execution_plan.schema_version") != 1) {
             throw invalid("execution_plan requires schema version 1");
         }
+        if (requireStringField(*execution, "graph", "execution_plan") !=
+            model.graph) {
+            throw invalid(
+                "execution_plan_graph_mismatch: execution_plan graph does not "
+                "match the frame plan graph");
+        }
+        if (requireStringField(*execution, "fingerprint", "execution_plan")
+                .empty()) {
+            throw invalid(
+                "execution_plan_fingerprint_invalid: fingerprint must not be "
+                "empty");
+        }
+        requireArrayField(*execution, "bridges", "execution_plan");
+        requireArrayField(*execution, "endpoints", "execution_plan");
         const auto &execution_nodes =
             requireArrayField(*execution, "nodes", "execution_plan");
+        std::unordered_set<std::string> seen_execution_nodes;
+        execution_node_names.reserve(execution_nodes.size());
         for (std::size_t index = 0; index < execution_nodes.size(); ++index) {
             const auto &value = execution_nodes.at(index);
             const std::string context =
@@ -496,10 +648,18 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 throw invalid(context + " must be an object");
             }
             const std::string name = requireStringField(value, "name", context);
+            if (!seen_execution_nodes.insert(name).second) {
+                throw invalid("execution_plan_duplicate: duplicate execution "
+                              "node '" +
+                              name + "'");
+            }
             const auto destination = node_indices.find(name);
             if (destination == node_indices.end()) {
-                continue;
+                throw invalid(
+                    "execution_plan_missing_reference: execution node '" +
+                    name + "' is absent from the frame plan nodes");
             }
+            execution_node_names.push_back(name);
             auto &node = model.nodes[destination->second];
             node.semantic_dialect =
                 optionalStringField(value, "semantic_dialect", context);
@@ -534,43 +694,227 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 }
             }
         }
+        if (seen_execution_nodes.size() != model.nodes.size()) {
+            const auto missing = std::find_if(
+                model.nodes.begin(), model.nodes.end(),
+                [&](const FramePlanNode &node) {
+                    return !seen_execution_nodes.contains(node.name);
+                });
+            throw invalid(
+                "execution_plan_missing_reference: frame node '" +
+                (missing == model.nodes.end() ? std::string{"?"}
+                                              : missing->name) +
+                "' is absent from execution_plan.nodes");
+        }
+
+        const auto &dependencies =
+            requireArrayField(*execution, "dependencies", "execution_plan");
+        std::set<std::tuple<std::string, std::string, std::string, std::string>>
+            dependency_identities;
+        model.dependencies.reserve(dependencies.size());
+        for (std::size_t index = 0; index < dependencies.size(); ++index) {
+            const auto context =
+                "execution_plan.dependencies[" + std::to_string(index) + "]";
+            const auto &value = dependencies[index];
+            if (!value.is_object()) {
+                throw invalid(context + " must be an object");
+            }
+            FramePlanDependency dependency{
+                .from = requireStringField(value, "from", context),
+                .to = requireStringField(value, "to", context),
+                .reason = requireStringField(value, "reason", context),
+                .resource = optionalStringField(value, "resource", context),
+            };
+            if (!seen_execution_nodes.contains(dependency.from) ||
+                !seen_execution_nodes.contains(dependency.to)) {
+                throw invalid(
+                    "execution_plan_missing_reference: dependency references "
+                    "an unknown execution node");
+            }
+            if (!dependency.resource.empty() &&
+                !logical_resource_names.contains(dependency.resource)) {
+                throw invalid(
+                    "execution_plan_missing_reference: dependency references "
+                    "unknown resource '" +
+                    dependency.resource + "'");
+            }
+            if (!dependency_identities
+                     .emplace(dependency.from, dependency.to,
+                              dependency.reason, dependency.resource)
+                     .second) {
+                throw invalid(
+                    "execution_plan_duplicate: duplicate dependency");
+            }
+            model.dependencies.push_back(std::move(dependency));
+        }
+    } else {
+        execution_node_names.reserve(model.nodes.size());
+        for (const auto &node : model.nodes) {
+            execution_node_names.push_back(node.name);
+        }
     }
 
     std::unordered_map<std::string, std::size_t> decision_group_indices;
+    const Json *physical_plan_json = nullptr;
     if (const auto physical = root.find("physical_target_plan");
         physical != root.end() && !physical->is_null()) {
-        if (!physical->is_object()) {
-            throw invalid("physical_target_plan must be an object");
+        physical_plan_json = &*physical;
+    }
+    std::vector<std::string> physical_resource_context{
+        logical_resource_names.begin(), logical_resource_names.end()};
+    const auto physical_validation = Pelican::validatePhysicalTargetPlanWire(
+        physical_plan_json,
+        Pelican::PhysicalTargetPlanWireContext{
+            .expected_graph = model.graph,
+            .execution_nodes = execution_node_names,
+            .logical_resources = std::move(physical_resource_context),
+        });
+    if (!physical_validation.available()) {
+        model.physical_plan.state = FramePlanPhysicalPlanState::unavailable;
+        model.physical_plan.unavailable_reason_code =
+            physical_validation.reason_code;
+        model.physical_plan.unavailable_reason = physical_validation.reason();
+    } else {
+        const Json &physical = *physical_plan_json;
+        model.physical_plan.state = FramePlanPhysicalPlanState::available;
+        model.physical_plan.unavailable_reason_code.clear();
+        model.physical_plan.unavailable_reason.clear();
+        model.physical_plan.schema =
+            requireStringField(physical, "schema", "physical_target_plan");
+        model.physical_plan.version =
+            requireSizeField(physical, "version", "physical_target_plan");
+        model.physical_plan.graph =
+            requireStringField(physical, "graph", "physical_target_plan");
+        model.physical_plan.logical_graph_fingerprint = requireStringField(
+            physical, "logical_graph_fingerprint", "physical_target_plan");
+        model.physical_plan.automatic_plan_fingerprint = requireStringField(
+            physical, "automatic_plan_fingerprint", "physical_target_plan");
+        model.physical_plan.wire_sections.reserve(physical.size());
+        for (const auto &[name, value] : physical.items()) {
+            model.physical_plan.wire_sections.push_back(
+                FramePlanWireSection{.name = name, .json = value.dump()});
         }
-        appendDecisions(*physical, "physical_target_plan",
-                        model.decision_groups, decision_group_indices);
-        if (const auto opportunities =
-                physical->find("planning_opportunities");
-            opportunities != physical->end() && !opportunities->is_null()) {
-            if (!opportunities->is_object()) {
+
+        const auto &alias_groups =
+            requireArrayField(physical, "alias_groups", "physical_target_plan");
+        model.physical_plan.alias_groups.reserve(alias_groups.size());
+        for (std::size_t index = 0; index < alias_groups.size(); ++index) {
+            const auto context = "physical_target_plan.alias_groups[" +
+                                 std::to_string(index) + "]";
+            model.physical_plan.alias_groups.push_back(FramePlanAliasGroup{
+                .id = requireStringField(alias_groups[index], "id", context),
+                .resources = stringArray(alias_groups[index], "resources",
+                                         context, true),
+            });
+        }
+
+        const auto &scopes =
+            requireArrayField(physical, "scopes", "physical_target_plan");
+        model.physical_plan.scopes.reserve(scopes.size());
+        for (std::size_t index = 0; index < scopes.size(); ++index) {
+            const auto context = "physical_target_plan.scopes[" +
+                                 std::to_string(index) + "]";
+            const auto &value = scopes[index];
+            FramePlanPhysicalScope scope{
+                .id = requireStringField(value, "id", context),
+                .kind = requireStringField(value, "kind", context),
+                .nodes = stringArray(value, "nodes", context, true),
+                .single_rendering_instance = requireBoolField(
+                    value, "single_rendering_instance", context),
+                .local_reads =
+                    stringArray(value, "local_reads", context, true),
+                .regions = stringArray(value, "regions", context, true),
+                .view_execution =
+                    requireStringField(value, "view_execution", context),
+                .view_count = requireSizeField(value, "view_count", context),
+                .execution_count =
+                    requireSizeField(value, "execution_count", context),
+                .view_mask = requireSizeField(value, "view_mask", context),
+                .rasterization_samples = optionalSizeField(
+                    value, "rasterization_samples", context),
+            };
+            model.physical_plan.scopes.push_back(std::move(scope));
+        }
+
+        const auto &lowering = requireObjectField(
+            physical, "lowering_graph", "physical_target_plan");
+        const auto &lowering_nodes =
+            requireArrayField(lowering, "nodes", "lowering_graph");
+        model.physical_plan.lowering_nodes.reserve(lowering_nodes.size());
+        for (std::size_t index = 0; index < lowering_nodes.size(); ++index) {
+            const auto context =
+                "physical_target_plan.lowering_graph.nodes[" +
+                std::to_string(index) + "]";
+            const auto &value = lowering_nodes[index];
+            model.physical_plan.lowering_nodes.push_back(
+                FramePlanLoweringNode{
+                    .name = requireStringField(value, "name", context),
+                    .kind = requireStringField(value, "kind", context),
+                    .dialect = requireStringField(value, "dialect", context),
+                    .sources = stringArray(value, "sources", context, true),
+                    .regions = stringArray(value, "regions", context, true),
+                    .required_physical_features = stringArray(
+                        value, "required_physical_features", context, true),
+                });
+        }
+
+        if (const auto resolution = physical.find("resolution_plan");
+            resolution != physical.end() && !resolution->is_null()) {
+            if (!resolution->is_object()) {
                 throw invalid(
-                    "physical_target_plan.planning_opportunities must be an object");
+                    "physical_target_plan.resolution_plan must be an object");
             }
-            appendDecisions(*opportunities,
+            model.physical_plan.resolution_plan = FramePlanResolutionPlan{
+                .render_source_resource = requireStringField(
+                    *resolution, "render_source_resource", "resolution_plan"),
+                .render_extent = parseExtent(
+                    requireObjectField(*resolution, "render_extent",
+                                       "resolution_plan"),
+                    "resolution_plan.render_extent"),
+                .output_source_resource = requireStringField(
+                    *resolution, "output_source_resource", "resolution_plan"),
+                .output_extent = parseExtent(
+                    requireObjectField(*resolution, "output_extent",
+                                       "resolution_plan"),
+                    "resolution_plan.output_extent"),
+                .scene_resources = stringArray(
+                    *resolution, "scene_resources", "resolution_plan", true),
+            };
+        }
+
+        const auto &opportunities = requireObjectField(
+            physical, "planning_opportunities", "physical_target_plan");
+        model.physical_plan.planning_profile = requireStringField(
+            opportunities, "profile", "physical_target_plan.planning_opportunities");
+        model.physical_plan.alias_candidates = parseOpportunityPairs(
+            opportunities, "alias_candidates",
+            [&](std::string_view first, std::string_view second) {
+                return collectionContainsPair(model.physical_plan.alias_groups,
+                                              first, second);
+            });
+        model.physical_plan.fusion_candidates = parseOpportunityPairs(
+            opportunities, "fusion_candidates",
+            [&](std::string_view first, std::string_view second) {
+                return scopeContainsPair(model.physical_plan.scopes, first,
+                                         second);
+            });
+        model.physical_plan.parallel_candidates = parseOpportunityPairs(
+            opportunities, "parallel_candidates",
+            [](std::string_view, std::string_view) { return false; });
+
+        appendDecisions(physical, "physical_target_plan",
+                        model.decision_groups, decision_group_indices);
+        appendDecisions(opportunities,
                             "physical_target_plan.planning_opportunities",
                             model.decision_groups, decision_group_indices);
-        }
-        if (const auto backend = physical->find("backend_selection");
-            backend != physical->end() && !backend->is_null()) {
-            parseBackendSelection(*backend, model, decision_group_indices);
-        }
-        if (const auto lowering = physical->find("lowering_graph");
-            lowering != physical->end() && !lowering->is_null()) {
-            if (!lowering->is_object()) {
-                throw invalid(
-                    "physical_target_plan.lowering_graph must be an object");
-            }
-            appendDecisions(*lowering,
+        const auto &backend = requireObjectField(
+            physical, "backend_selection", "physical_target_plan");
+        parseBackendSelection(backend, model, decision_group_indices);
+        appendDecisions(lowering,
                             "physical_target_plan.lowering_graph",
                             model.decision_groups, decision_group_indices);
-        }
-        if (const auto attachments = physical->find("attachments");
-            attachments != physical->end()) {
+        if (const auto attachments = physical.find("attachments");
+            attachments != physical.end()) {
             if (!attachments->is_array()) {
                 throw invalid("physical_target_plan.attachments must be an array");
             }
@@ -585,10 +929,10 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 const std::string node_name =
                     requireStringField(value, "node", context);
                 const auto destination = node_indices.find(node_name);
-                // Physical-only scopes are deliberately outside this
-                // high-level model.
                 if (destination == node_indices.end()) {
-                    continue;
+                    throw invalid(
+                        "physical_plan_missing_reference: attachment node '" +
+                        node_name + "' is absent from frame plan nodes");
                 }
                 model.nodes[destination->second].attachments.push_back(
                     FramePlanAttachmentOps{
@@ -648,6 +992,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         if (!declarations->is_array()) {
             throw invalid("resources must be an array");
         }
+        std::unordered_set<std::string> declaration_names;
         for (std::size_t index = 0; index < declarations->size(); ++index) {
             const auto &value = declarations->at(index);
             const std::string context =
@@ -657,6 +1002,11 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             }
             const std::string name =
                 requireStringField(value, "name", context);
+            if (!declaration_names.insert(name).second) {
+                throw invalid("duplicate_resource: duplicate resource "
+                              "declaration '" +
+                              name + "'");
+            }
             auto &resource = resources[name];
             resource.name = name;
             resource.kind = optionalStringField(value, "kind", context);
@@ -671,51 +1021,221 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         }
     }
 
-    if (const auto physical = root.find("physical_target_plan");
-        physical != root.end() && physical->is_object()) {
-        if (const auto physical_resources = physical->find("resources");
-            physical_resources != physical->end()) {
-            if (!physical_resources->is_array()) {
-                throw invalid("physical_target_plan.resources must be an array");
+    if (model.physical_plan.available()) {
+        const Json &physical = *physical_plan_json;
+        const auto &physical_resources =
+            requireArrayField(physical, "resources", "physical_target_plan");
+        for (std::size_t index = 0; index < physical_resources.size(); ++index) {
+            const auto &value = physical_resources[index];
+            const std::string context = "physical_target_plan.resources[" +
+                                        std::to_string(index) + "]";
+            if (!value.is_object()) {
+                throw invalid(context + " must be an object");
             }
-            for (std::size_t index = 0; index < physical_resources->size();
-                 ++index) {
-                const auto &value = physical_resources->at(index);
-                const std::string context =
-                    "physical_target_plan.resources[" +
-                    std::to_string(index) + "]";
-                if (!value.is_object()) {
-                    throw invalid(context + " must be an object");
-                }
-                const std::string name =
-                    requireStringField(value, "logical_resource", context);
-                auto &resource = resources[name];
-                resource.name = name;
-                const std::string format =
-                    optionalStringField(value, "format", context);
-                if (!format.empty()) {
-                    resource.format = format;
-                }
-                resource.reason =
-                    optionalStringField(value, "reason", context);
-                resource.dimension =
-                    optionalStringField(value, "dimension", context);
-                if (const auto extent = value.find("extent");
-                    extent != value.end() && !extent->is_null()) {
-                    if (!extent->is_object()) {
-                        throw invalid(context + ".extent must be an object");
-                    }
-                    const auto width = optionalSizeField(
-                        *extent, "width", context + ".extent");
-                    const auto height = optionalSizeField(
-                        *extent, "height", context + ".extent");
-                    if (width && height && *width > 0 && *height > 0) {
-                        resource.width = width;
-                        resource.height = height;
-                    }
-                }
+            const std::string name =
+                requireStringField(value, "logical_resource", context);
+            auto &resource = resources[name];
+            resource.name = name;
+            resource.format = requireStringField(value, "format", context);
+            resource.pattern =
+                requireStringField(value, "pattern", context);
+            resource.representation =
+                requireStringField(value, "representation", context);
+            resource.widest_read =
+                requireStringField(value, "widest_read", context);
+            resource.lifetime = parseLifetime(
+                requireObjectField(value, "lifetime", context),
+                context + ".lifetime");
+            resource.stored = requireBoolField(value, "stored", context);
+            resource.aliasable =
+                requireBoolField(value, "aliasable", context);
+            resource.required_physical_features = stringArray(
+                value, "required_physical_features", context, true);
+            resource.reason = optionalStringField(value, "reason", context);
+            resource.view_layout =
+                requireStringField(value, "view_layout", context);
+            resource.array_layers =
+                requireSizeField(value, "array_layers", context);
+            resource.dimension =
+                requireStringField(value, "dimension", context);
+            const auto &mip_levels =
+                requireObjectField(value, "mip_levels", context);
+            resource.mip_level_mode = requireStringField(
+                mip_levels, "mode", context + ".mip_levels");
+            resource.mip_level_count = requireSizeField(
+                mip_levels, "count", context + ".mip_levels");
+            resource.rasterization_samples = optionalSizeField(
+                value, "rasterization_samples", context);
+            resource.resolve_required =
+                optionalBoolField(value, "resolve_required", context);
+            if (const auto extent = value.find("extent");
+                extent != value.end() && !extent->is_null()) {
+                resource.extent = parseExtent(*extent, context + ".extent");
             }
         }
+
+        // get_frame_plan does not publish the live swapchain extent as a
+        // separate field.  The fixed `display` target is therefore Studio's
+        // canonical output extent.  This mirrors the producer's truncating
+        // float-to-uint resolution rule for output_relative extents.
+        std::optional<std::pair<std::size_t, std::size_t>> output_extent;
+        if (const auto display = resources.find("display");
+            display != resources.end() && display->second.extent &&
+            display->second.extent->kind == "fixed") {
+            output_extent = std::pair{display->second.extent->width,
+                                      display->second.extent->height};
+        } else if (model.physical_plan.resolution_plan &&
+                   model.physical_plan.resolution_plan->output_extent.kind ==
+                       "fixed") {
+            const auto &extent =
+                model.physical_plan.resolution_plan->output_extent;
+            output_extent = std::pair{extent.width, extent.height};
+        }
+
+        bool requires_output_extent = false;
+        for (auto &[name, resource] : resources) {
+            (void)name;
+            if (!resource.extent) {
+                continue;
+            }
+            if (resource.extent->kind == "fixed") {
+                resource.width = resource.extent->width;
+                resource.height = resource.extent->height;
+                continue;
+            }
+            requires_output_extent = true;
+            if (!output_extent) {
+                continue;
+            }
+            resource.width = static_cast<std::size_t>(
+                static_cast<double>(output_extent->first) *
+                resource.extent->scale_x);
+            resource.height = static_cast<std::size_t>(
+                static_cast<double>(output_extent->second) *
+                resource.extent->scale_y);
+        }
+        if (requires_output_extent && !output_extent) {
+            model.physical_plan.state =
+                FramePlanPhysicalPlanState::unavailable;
+            model.physical_plan.unavailable_reason_code =
+                "physical_plan_output_extent_unavailable";
+            model.physical_plan.unavailable_reason =
+                "physical_plan_output_extent_unavailable: no fixed display "
+                "extent was published";
+        } else if (output_extent) {
+            model.physical_plan.output_width = output_extent->first;
+            model.physical_plan.output_height = output_extent->second;
+        }
+
+        for (const auto &group : model.physical_plan.alias_groups) {
+            for (const auto &name : group.resources) {
+                const auto resource = resources.find(name);
+                if (resource == resources.end()) {
+                    throw invalid(
+                        "physical_plan_missing_reference: alias group "
+                        "references unknown resource '" +
+                        name + "'");
+                }
+                resource->second.alias_group = group.id;
+            }
+        }
+    }
+
+    if (const auto arena = root.find("gpu_resource_arena");
+        arena != root.end() && !arena->is_null()) {
+        if (!arena->is_object()) {
+            throw invalid("gpu_resource_arena must be an object");
+        }
+        const auto generation = arena->find("runtime_generation");
+        if (generation == arena->end()) {
+            throw invalid(
+                "gpu_resource_arena requires integer field "
+                "'runtime_generation'");
+        }
+        FramePlanGpuResourceArena parsed_arena{
+            .runtime_generation = unsignedInteger(
+                *generation, "gpu_resource_arena.runtime_generation"),
+            .resource_count = requireSizeField(
+                *arena, "resource_count", "gpu_resource_arena"),
+        };
+        if (model.runtime_generation &&
+            parsed_arena.runtime_generation != *model.runtime_generation) {
+            throw invalid(
+                "gpu_resource_arena_generation_mismatch: arena generation "
+                "does not match frame plan generation");
+        }
+        const auto &arena_scopes =
+            requireArrayField(*arena, "scopes", "gpu_resource_arena");
+        std::unordered_set<std::string> owner_scopes;
+        std::size_t counted_resources = 0;
+        parsed_arena.scopes.reserve(arena_scopes.size());
+        for (std::size_t scope_index = 0; scope_index < arena_scopes.size();
+             ++scope_index) {
+            const auto context = "gpu_resource_arena.scopes[" +
+                                 std::to_string(scope_index) + "]";
+            const auto &value = arena_scopes[scope_index];
+            if (!value.is_object()) {
+                throw invalid(context + " must be an object");
+            }
+            FramePlanGpuResourceScope scope{
+                .owner_scope =
+                    requireStringField(value, "owner_scope", context),
+                .resource_lease_count = requireSizeField(
+                    value, "resource_lease_count", context),
+            };
+            if (!owner_scopes.insert(scope.owner_scope).second) {
+                throw invalid(
+                    "gpu_resource_arena_duplicate: duplicate owner scope '" +
+                    scope.owner_scope + "'");
+            }
+            const auto &arena_resources =
+                requireArrayField(value, "resources", context);
+            counted_resources += arena_resources.size();
+            scope.resources.reserve(arena_resources.size());
+            std::set<std::pair<std::string, std::uint64_t>> identities;
+            for (std::size_t resource_index = 0;
+                 resource_index < arena_resources.size(); ++resource_index) {
+                const auto resource_context =
+                    context + ".resources[" +
+                    std::to_string(resource_index) + "]";
+                const auto &resource = arena_resources[resource_index];
+                if (!resource.is_object()) {
+                    throw invalid(resource_context + " must be an object");
+                }
+                const auto handle = resource.find("handle");
+                if (handle == resource.end()) {
+                    throw invalid(resource_context +
+                                  " requires integer field 'handle'");
+                }
+                FramePlanGpuResource parsed_resource{
+                    .kind = requireStringField(resource, "kind",
+                                               resource_context),
+                    .handle = unsignedInteger(*handle,
+                                              resource_context + ".handle"),
+                    .name = requireStringField(resource, "name",
+                                               resource_context),
+                    .declared_bytes = requireSizeField(
+                        resource, "declared_bytes", resource_context),
+                };
+                if (!identities
+                         .emplace(parsed_resource.kind,
+                                  parsed_resource.handle)
+                         .second) {
+                    throw invalid(
+                        "gpu_resource_arena_duplicate: duplicate kind/handle "
+                        "identity in owner scope '" +
+                        scope.owner_scope + "'");
+                }
+                scope.resources.push_back(std::move(parsed_resource));
+            }
+            parsed_arena.scopes.push_back(std::move(scope));
+        }
+        if (counted_resources != parsed_arena.resource_count) {
+            throw invalid(
+                "gpu_resource_arena_count_mismatch: resource_count does not "
+                "match the published scope resources");
+        }
+        model.gpu_resource_arena = std::move(parsed_arena);
     }
 
     if (const auto contracts = root.find("surface_resource_contracts");

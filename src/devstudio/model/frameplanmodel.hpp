@@ -91,14 +91,56 @@ struct FramePlanBarrier {
     bool operator==(const FramePlanBarrier &) const = default;
 };
 
+struct FramePlanDependency {
+    std::string from;
+    std::string to;
+    std::string reason;
+    std::string resource;
+
+    bool operator==(const FramePlanDependency &) const = default;
+};
+
+struct FramePlanExtent {
+    std::string kind;
+    double scale_x = 1.0;
+    double scale_y = 1.0;
+    std::size_t width = 0;
+    std::size_t height = 0;
+
+    bool operator==(const FramePlanExtent &) const = default;
+};
+
+struct FramePlanLifetime {
+    bool used = false;
+    std::optional<std::size_t> first_use;
+    std::optional<std::size_t> last_use;
+
+    bool operator==(const FramePlanLifetime &) const = default;
+};
+
 struct FramePlanResource {
     std::string name;
     std::string kind;
     std::string source;
     std::string format = "unknown";
     std::string dimension;
+    std::optional<FramePlanExtent> extent;
     std::optional<std::size_t> width;
     std::optional<std::size_t> height;
+    std::string alias_group;
+    std::string pattern;
+    std::string representation;
+    std::string widest_read;
+    FramePlanLifetime lifetime;
+    bool stored = false;
+    bool aliasable = false;
+    std::vector<std::string> required_physical_features;
+    std::string view_layout;
+    std::size_t array_layers = 0;
+    std::string mip_level_mode;
+    std::size_t mip_level_count = 0;
+    std::optional<std::size_t> rasterization_samples;
+    std::optional<bool> resolve_required;
     std::string reason;
     std::vector<std::string> readers;
     std::vector<std::string> history_readers;
@@ -168,6 +210,129 @@ struct FramePlanBackendCandidate {
     bool operator==(const FramePlanBackendCandidate &) const = default;
 };
 
+struct FramePlanLoweringNode {
+    std::string name;
+    std::string kind;
+    std::string dialect;
+    std::vector<std::string> sources;
+    std::vector<std::string> regions;
+    std::vector<std::string> required_physical_features;
+
+    bool operator==(const FramePlanLoweringNode &) const = default;
+};
+
+struct FramePlanPhysicalScope {
+    std::string id;
+    std::string kind;
+    std::vector<std::string> nodes;
+    bool single_rendering_instance = false;
+    std::vector<std::string> local_reads;
+    std::vector<std::string> regions;
+    std::string view_execution;
+    std::size_t view_count = 0;
+    std::size_t execution_count = 0;
+    std::size_t view_mask = 0;
+    std::optional<std::size_t> rasterization_samples;
+
+    bool operator==(const FramePlanPhysicalScope &) const = default;
+};
+
+struct FramePlanAliasGroup {
+    std::string id;
+    std::vector<std::string> resources;
+
+    bool operator==(const FramePlanAliasGroup &) const = default;
+};
+
+struct FramePlanOpportunityPair {
+    std::string first;
+    std::string second;
+    bool adopted = false;
+
+    bool operator==(const FramePlanOpportunityPair &) const = default;
+};
+
+struct FramePlanResolutionPlan {
+    std::string render_source_resource;
+    FramePlanExtent render_extent;
+    std::string output_source_resource;
+    FramePlanExtent output_extent;
+    std::vector<std::string> scene_resources;
+
+    bool operator==(const FramePlanResolutionPlan &) const = default;
+};
+
+struct FramePlanWireSection {
+    std::string name;
+    std::string json;
+
+    bool operator==(const FramePlanWireSection &) const = default;
+};
+
+enum class FramePlanPhysicalPlanState {
+    unavailable,
+    available,
+};
+
+struct FramePlanPhysicalPlan {
+    FramePlanPhysicalPlanState state =
+        FramePlanPhysicalPlanState::unavailable;
+    std::string unavailable_reason_code = "physical_plan_missing";
+    std::string unavailable_reason =
+        "physical_plan_missing: physical_target_plan was not published";
+    std::string schema;
+    std::size_t version = 0;
+    std::string graph;
+    std::string logical_graph_fingerprint;
+    std::string automatic_plan_fingerprint;
+    std::string planning_profile;
+    std::optional<std::size_t> output_width;
+    std::optional<std::size_t> output_height;
+    std::vector<FramePlanLoweringNode> lowering_nodes;
+    std::vector<FramePlanPhysicalScope> scopes;
+    std::vector<FramePlanAliasGroup> alias_groups;
+    std::vector<FramePlanOpportunityPair> alias_candidates;
+    std::vector<FramePlanOpportunityPair> fusion_candidates;
+    std::vector<FramePlanOpportunityPair> parallel_candidates;
+    std::optional<FramePlanResolutionPlan> resolution_plan;
+    // Every top-level key/value from the current wire document is retained.
+    // Promoted fields above are convenient typed projections; this inventory
+    // makes key-set coverage mechanically checkable and prevents silent loss
+    // when the producer adds another current-version section.
+    std::vector<FramePlanWireSection> wire_sections;
+
+    [[nodiscard]] bool available() const noexcept {
+        return state == FramePlanPhysicalPlanState::available;
+    }
+
+    bool operator==(const FramePlanPhysicalPlan &) const = default;
+};
+
+struct FramePlanGpuResource {
+    std::string kind;
+    std::uint64_t handle = 0;
+    std::string name;
+    std::size_t declared_bytes = 0;
+
+    bool operator==(const FramePlanGpuResource &) const = default;
+};
+
+struct FramePlanGpuResourceScope {
+    std::string owner_scope;
+    std::size_t resource_lease_count = 0;
+    std::vector<FramePlanGpuResource> resources;
+
+    bool operator==(const FramePlanGpuResourceScope &) const = default;
+};
+
+struct FramePlanGpuResourceArena {
+    std::uint64_t runtime_generation = 0;
+    std::size_t resource_count = 0;
+    std::vector<FramePlanGpuResourceScope> scopes;
+
+    bool operator==(const FramePlanGpuResourceArena &) const = default;
+};
+
 struct FramePlanModel {
     std::string graph;
     std::optional<std::uint64_t> runtime_generation;
@@ -175,12 +340,15 @@ struct FramePlanModel {
     std::string raw_json;
     std::vector<FramePlanNode> nodes;
     std::vector<FramePlanBarrier> barriers;
+    std::vector<FramePlanDependency> dependencies;
     std::vector<FramePlanResource> resources;
     std::vector<FramePlanMaterialRoute> material_routes;
     std::vector<FramePlanDecisionGroup> decision_groups;
     std::string selected_backend_candidate;
     std::vector<FramePlanBackendCandidate> backend_candidates;
     std::vector<FramePlanPlanningDiagnostic> backend_diagnostics;
+    FramePlanPhysicalPlan physical_plan;
+    std::optional<FramePlanGpuResourceArena> gpu_resource_arena;
 
     bool operator==(const FramePlanModel &) const = default;
 };

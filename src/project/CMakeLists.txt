@@ -19,6 +19,7 @@ add_library(pelican_project
     materiallowering.cpp
     materialformat.cpp
     openpbrmapping.cpp
+    physicaltargetplanwire.cpp
     projectformat.cpp
     projectpathresolver.cpp
     rasterpass.cpp

@@ -1,4 +1,5 @@
 #include "frameplanmodel.hpp"
+#include "physicaltargetplanwire.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -121,6 +123,28 @@ bool hasDecision(const FramePlanModel &model, std::string_view id) {
                     return decision.id == id;
                 });
         });
+}
+
+std::size_t adoptedAliasCandidateCount(const FramePlanModel &model) {
+    return static_cast<std::size_t>(std::count_if(
+        model.physical_plan.alias_candidates.begin(),
+        model.physical_plan.alias_candidates.end(),
+        [](const FramePlanOpportunityPair &candidate) {
+            return candidate.adopted;
+        }));
+}
+
+const FramePlanOpportunityPair *findAliasCandidate(
+    const FramePlanModel &model, std::string_view first,
+    std::string_view second) {
+    const auto found = std::find_if(
+        model.physical_plan.alias_candidates.begin(),
+        model.physical_plan.alias_candidates.end(),
+        [&](const FramePlanOpportunityPair &candidate) {
+            return candidate.first == first && candidate.second == second;
+        });
+    return found == model.physical_plan.alias_candidates.end() ? nullptr
+                                                               : &*found;
 }
 
 } // namespace
@@ -290,6 +314,271 @@ TEST_CASE(
         [](const FramePlanBackendCandidate &candidate) {
             return !candidate.feasible || !candidate.failures.empty();
         }));
+}
+
+TEST_CASE(
+    "Devstudio retains the complete physical wire projection and resolves every captured target extent",
+    "[devstudio][frame-plan][wp305][physical-plan]") {
+    const Json captured = Json::parse(capturedResponse());
+    const Json &physical = captured.at("physical_target_plan");
+    const FramePlanModel model = buildFramePlanModel(captured.dump());
+
+    REQUIRE(model.physical_plan.available());
+    REQUIRE(model.physical_plan.unavailable_reason.empty());
+    REQUIRE(model.physical_plan.graph == model.graph);
+    REQUIRE(model.physical_plan.output_width == 160);
+    REQUIRE(model.physical_plan.output_height == 90);
+    REQUIRE(model.physical_plan.alias_groups.size() ==
+            physical.at("alias_groups").size());
+    REQUIRE(model.physical_plan.scopes.size() == physical.at("scopes").size());
+    for (std::size_t index = 0;
+         index < model.physical_plan.scopes.size(); ++index) {
+        REQUIRE(model.physical_plan.scopes[index].local_reads ==
+                physical.at("scopes")
+                    .at(index)
+                    .at("local_reads")
+                    .get<std::vector<std::string>>());
+    }
+    REQUIRE(model.physical_plan.lowering_nodes.size() ==
+            physical.at("lowering_graph").at("nodes").size());
+    REQUIRE(model.dependencies.size() ==
+            captured.at("execution_plan").at("dependencies").size());
+    REQUIRE(model.physical_plan.resolution_plan.has_value());
+    REQUIRE(model.physical_plan.resolution_plan->scene_resources ==
+            physical.at("resolution_plan")
+                .at("scene_resources")
+                .get<std::vector<std::string>>());
+
+    REQUIRE(model.gpu_resource_arena.has_value());
+    REQUIRE(model.gpu_resource_arena->resource_count == 89);
+    REQUIRE(model.gpu_resource_arena->scopes.size() ==
+            captured.at("gpu_resource_arena").at("scopes").size());
+    REQUIRE(model.gpu_resource_arena->scopes.front().resources.size() == 89);
+
+    const FramePlanResource *display = findResource(model, "display");
+    REQUIRE(display != nullptr);
+    REQUIRE(display->extent.has_value());
+    REQUIRE(display->extent->kind == "fixed");
+    REQUIRE(display->width == 160);
+    REQUIRE(display->height == 90);
+
+    std::size_t physical_target_count = 0;
+    std::size_t resolved_extent_count = 0;
+    for (const auto &published : physical.at("resources")) {
+        ++physical_target_count;
+        const std::string name =
+            published.at("logical_resource").get<std::string>();
+        const FramePlanResource *resource = findResource(model, name);
+        REQUIRE(resource != nullptr);
+        REQUIRE(resource->extent.has_value());
+        REQUIRE(resource->width.has_value());
+        REQUIRE(resource->height.has_value());
+        ++resolved_extent_count;
+
+        const Json &extent = published.at("extent");
+        REQUIRE(resource->extent->kind == extent.at("kind").get<std::string>());
+        REQUIRE(resource->extent->scale_x ==
+                extent.at("scale_x").get<double>());
+        REQUIRE(resource->extent->scale_y ==
+                extent.at("scale_y").get<double>());
+        const std::size_t expected_width =
+            resource->extent->kind == "fixed"
+                ? extent.at("width").get<std::size_t>()
+                : static_cast<std::size_t>(
+                      160.0 * extent.at("scale_x").get<double>());
+        const std::size_t expected_height =
+            resource->extent->kind == "fixed"
+                ? extent.at("height").get<std::size_t>()
+                : static_cast<std::size_t>(
+                      90.0 * extent.at("scale_y").get<double>());
+        REQUIRE(*resource->width == expected_width);
+        REQUIRE(*resource->height == expected_height);
+    }
+    REQUIRE(physical_target_count == 22);
+    REQUIRE(resolved_extent_count == 22);
+
+    REQUIRE(model.physical_plan.alias_groups.size() == 1);
+    REQUIRE(model.physical_plan.alias_candidates.size() == 2);
+    REQUIRE(adoptedAliasCandidateCount(model) == 1);
+    const auto *adopted = findAliasCandidate(
+        model, "Bloom_Threshold_RT", "g_emissive");
+    const auto *not_adopted = findAliasCandidate(
+        model, "Bloom_Threshold_RT", "gbuffer_albedo");
+    REQUIRE(adopted != nullptr);
+    REQUIRE(adopted->adopted);
+    REQUIRE(not_adopted != nullptr);
+    REQUIRE_FALSE(not_adopted->adopted);
+    REQUIRE(findResource(model, "Bloom_Threshold_RT")->alias_group ==
+            "alias:0");
+    REQUIRE(findResource(model, "g_emissive")->alias_group == "alias:0");
+    REQUIRE(findResource(model, "gbuffer_albedo")->alias_group.empty());
+
+    // Key-set conformance: every current producer section is retained with its
+    // exact value, while the WP305-promoted collections above are also typed.
+    std::map<std::string, Json, std::less<>> retained;
+    for (const auto &section : model.physical_plan.wire_sections) {
+        REQUIRE(retained.emplace(section.name, Json::parse(section.json)).second);
+    }
+    REQUIRE(retained.size() == physical.size());
+    for (const auto &[name, value] : physical.items()) {
+        REQUIRE(retained.contains(name));
+        REQUIRE(retained.at(name) == value);
+    }
+}
+
+TEST_CASE(
+    "Devstudio distinguishes a missing physical plan from an available zero-alias plan",
+    "[devstudio][frame-plan][wp305][negative-contrast]") {
+    const Json captured = Json::parse(capturedResponse());
+
+    Json missing = captured;
+    missing.erase("physical_target_plan");
+    const FramePlanModel unavailable = buildFramePlanModel(missing.dump());
+    REQUIRE_FALSE(unavailable.physical_plan.available());
+    REQUIRE(unavailable.physical_plan.unavailable_reason_code ==
+            "physical_plan_missing");
+    REQUIRE_THAT(unavailable.physical_plan.unavailable_reason,
+                 ContainsSubstring("physical_target_plan was not published"));
+
+    Json zero_alias = captured;
+    zero_alias["physical_target_plan"]["alias_groups"] = Json::array();
+    const FramePlanModel available = buildFramePlanModel(zero_alias.dump());
+    REQUIRE(available.physical_plan.available());
+    REQUIRE(available.physical_plan.unavailable_reason.empty());
+    REQUIRE(available.physical_plan.alias_groups.empty());
+    REQUIRE(available.physical_plan.alias_candidates.size() == 2);
+    REQUIRE(adoptedAliasCandidateCount(available) == 0);
+
+    const auto shared_missing =
+        Pelican::validatePhysicalTargetPlanWire(nullptr);
+    REQUIRE_FALSE(shared_missing.available());
+    REQUIRE(shared_missing.reason_code ==
+            unavailable.physical_plan.unavailable_reason_code);
+}
+
+TEST_CASE(
+    "Physical plan conformance rejects named mismatches duplicates and missing references",
+    "[devstudio][frame-plan][wp305][validation]") {
+    const Json captured = Json::parse(capturedResponse());
+
+    const auto unavailable_code = [&](Json input) {
+        const FramePlanModel model = buildFramePlanModel(input.dump());
+        REQUIRE_FALSE(model.physical_plan.available());
+        return model.physical_plan.unavailable_reason_code;
+    };
+
+    SECTION("schema") {
+        Json input = captured;
+        input["physical_target_plan"]["schema"] = "pelican.wrong";
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_schema_mismatch");
+    }
+    SECTION("version") {
+        Json input = captured;
+        input["physical_target_plan"]["version"] = 2;
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_version_mismatch");
+    }
+    SECTION("graph") {
+        Json input = captured;
+        input["physical_target_plan"]["graph"] = "another_graph";
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_graph_mismatch");
+    }
+    SECTION("fingerprint") {
+        Json input = captured;
+        input["physical_target_plan"]["ejectable_complete_physical_plan"]
+             ["logical_graph_fingerprint"] = "fnv1a64:0000000000000000";
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_fingerprint_mismatch");
+    }
+    SECTION("duplicate physical resource") {
+        Json input = captured;
+        input["physical_target_plan"]["resources"].push_back(
+            input["physical_target_plan"]["resources"].front());
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_duplicate");
+    }
+    SECTION("unknown attachment node") {
+        Json input = captured;
+        input["physical_target_plan"]["attachments"][0]["node"] =
+            "missing_node";
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_missing_reference");
+    }
+    SECTION("unknown scope local-read resource") {
+        Json input = captured;
+        input["physical_target_plan"]["scopes"][0]["local_reads"] =
+            Json::array({"missing_resource"});
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_missing_reference");
+    }
+    SECTION("alias membership conflict") {
+        Json input = captured;
+        input["physical_target_plan"]["alias_groups"].push_back(
+            Json{{"id", "alias:conflict"},
+                 {"resources",
+                  {"Bloom_Threshold_RT", "gbuffer_albedo"}}});
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_alias_membership_conflict");
+    }
+    SECTION("alias resource contract conflict") {
+        Json input = captured;
+        for (auto &resource :
+             input["physical_target_plan"]["resources"]) {
+            if (resource["logical_resource"] == "g_emissive") {
+                resource["format"] = "R8_UNORM";
+            }
+        }
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_alias_membership_conflict");
+    }
+    SECTION("alias lifetime conflict") {
+        Json input = captured;
+        Json lifetime;
+        for (const auto &resource :
+             input["physical_target_plan"]["resources"]) {
+            if (resource["logical_resource"] == "Bloom_Threshold_RT") {
+                lifetime = resource["lifetime"];
+            }
+        }
+        for (auto &resource :
+             input["physical_target_plan"]["resources"]) {
+            if (resource["logical_resource"] == "g_emissive") {
+                resource["lifetime"] = lifetime;
+            }
+        }
+        REQUIRE(unavailable_code(std::move(input)) ==
+                "physical_plan_alias_membership_conflict");
+    }
+}
+
+TEST_CASE(
+    "Execution plan nodes and dependencies reject unknown or duplicate references",
+    "[devstudio][frame-plan][wp305][validation]") {
+    const Json captured = Json::parse(capturedResponse());
+
+    SECTION("unknown execution node") {
+        Json input = captured;
+        input["execution_plan"]["nodes"][0]["name"] = "missing_node";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(input.dump()),
+            ContainsSubstring("execution_plan_missing_reference"));
+    }
+    SECTION("duplicate execution node") {
+        Json input = captured;
+        input["execution_plan"]["nodes"][1]["name"] =
+            input["execution_plan"]["nodes"][0]["name"];
+        REQUIRE_THROWS_WITH(buildFramePlanModel(input.dump()),
+                            ContainsSubstring("execution_plan_duplicate"));
+    }
+    SECTION("unknown dependency node") {
+        Json input = captured;
+        input["execution_plan"]["dependencies"][0]["to"] = "missing_node";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(input.dump()),
+            ContainsSubstring("execution_plan_missing_reference"));
+    }
 }
 
 TEST_CASE(

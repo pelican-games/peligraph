@@ -53,6 +53,7 @@ target_link_libraries(pelican_imgui PRIVATE
   quill
   glm
   nlohmann_json
+  pelican_project
   VulkanMemoryAllocator
   VulkanMemoryAllocator-Hpp
 )

@@ -170,4 +170,13 @@ TEST_CASE("Planning opportunities read the captured producer document and its em
     REQUIRE(candidateCount(conservative) == 0);
     REQUIRE(adoptedCount(conservative) == 0);
     REQUIRE(conservative.empty_state == "no candidates");
+
+    auto malformed_plan = optimized_plan;
+    malformed_plan["schema"] = "pelican.wrong";
+    const auto malformed = buildCompiledPlanOpportunities(malformed_plan);
+    REQUIRE_FALSE(malformed.available);
+    REQUIRE(malformed.alias_candidates.empty());
+    REQUIRE(malformed.empty_state.empty());
+    REQUIRE(malformed.unavailable_reason.find(
+                "physical_plan_schema_mismatch") != std::string::npos);
 }

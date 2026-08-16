@@ -88,20 +88,76 @@ class InspectorServiceAdapter {
                             InspectorPanelTrace &trace)
         : service_{service}, trace_{trace} {}
 
-    EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {});
-    EditorSceneRevisionResult getSceneRevision();
-    EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request);
-    nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
-    nlohmann::ordered_json edit(const nlohmann::json &params);
-    nlohmann::ordered_json undo(const nlohmann::json &params);
-    nlohmann::ordered_json redo(const nlohmann::json &params);
-    nlohmann::ordered_json openPreview(const nlohmann::json &params);
-    nlohmann::ordered_json updatePreview(const nlohmann::json &params);
-    nlohmann::ordered_json commitPreview(const nlohmann::json &params);
-    nlohmann::ordered_json abortPreview(const nlohmann::json &params);
-    nlohmann::ordered_json getEditResult(const nlohmann::json &params);
-    nlohmann::ordered_json getPreviewResult(const nlohmann::json &params);
-    SaveSceneResult saveScene();
+    EditorSceneTreeResult
+    sceneTree(const EditorSceneTreeRequest &request = {}) {
+        ++trace_.query_calls;
+        return service_.sceneTree(request);
+    }
+
+    EditorSceneRevisionResult getSceneRevision() {
+        ++trace_.query_calls;
+        return service_.getSceneRevision();
+    }
+
+    EditorObjectQueryResult
+    getComponents(const EditorGetComponentsRequest &request) {
+        ++trace_.query_calls;
+        return service_.getComponents(request);
+    }
+
+    nlohmann::ordered_json openEditorSession(const nlohmann::json &params) {
+        return service_.openEditorSession(params);
+    }
+
+    nlohmann::ordered_json edit(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.edit(params);
+    }
+
+    nlohmann::ordered_json undo(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.undo(params);
+    }
+
+    nlohmann::ordered_json redo(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.redo(params);
+    }
+
+    nlohmann::ordered_json openPreview(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.openPreview(params);
+    }
+
+    nlohmann::ordered_json updatePreview(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.updatePreview(params);
+    }
+
+    nlohmann::ordered_json commitPreview(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.commitPreview(params);
+    }
+
+    nlohmann::ordered_json abortPreview(const nlohmann::json &params) {
+        ++trace_.edit_enqueue_calls;
+        return service_.abortPreview(params);
+    }
+
+    nlohmann::ordered_json getEditResult(const nlohmann::json &params) {
+        ++trace_.query_calls;
+        return service_.getEditResult(params);
+    }
+
+    nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) {
+        ++trace_.query_calls;
+        return service_.getPreviewResult(params);
+    }
+
+    SaveSceneResult saveScene() {
+        ++trace_.save_calls;
+        return service_.saveScene();
+    }
 };
 
 bool invokeInspectorPanelCallback(const EngineLaunchConfig &config,

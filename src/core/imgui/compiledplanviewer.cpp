@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
+#include "physicaltargetplanwire.hpp"
 
 #include <imgui.h>
 
@@ -210,9 +211,17 @@ std::vector<CompiledPlanFact> buildCompiledPlanFacts(
 CompiledPlanOpportunities buildCompiledPlanOpportunities(
     const nlohmann::json &plan_json) {
     CompiledPlanOpportunities result;
-    if (!plan_json.is_object()) return result;
+    const auto validation = validatePhysicalTargetPlanWire(&plan_json);
+    if (!validation.available()) {
+        result.unavailable_reason = validation.reason();
+        return result;
+    }
     const auto it = plan_json.find("planning_opportunities");
-    if (it == plan_json.end() || !it->is_object()) return result;
+    if (it == plan_json.end() || !it->is_object()) {
+        result.unavailable_reason =
+            "physical_plan_missing_field: planning_opportunities is unavailable";
+        return result;
+    }
 
     const auto profile = it->find("profile");
     if (profile != it->end() && profile->is_string()) {
@@ -240,7 +249,9 @@ CompiledPlanOpportunities buildCompiledPlanOpportunities(
                               result.fusion_candidates) ||
         !readOpportunityPairs(*it, "parallel_candidates", not_adopted,
                               result.parallel_candidates)) {
-        return CompiledPlanOpportunities{};
+        result.unavailable_reason =
+            "physical_plan_type_error: planning opportunity pair is malformed";
+        return result;
     }
 
     result.available = true;
@@ -483,7 +494,12 @@ struct CompiledPlanViewer::Impl {
             }
             ImGui::EndTable();
         }
-        if (program.planning_opportunities.available &&
+        if (!program.planning_opportunities.available &&
+            !program.planning_opportunities.unavailable_reason.empty()) {
+            ImGui::TextColored(
+                {1.0f, 0.58f, 0.25f, 1.0f}, "physical plan unavailable: %s",
+                program.planning_opportunities.unavailable_reason.c_str());
+        } else if (program.planning_opportunities.available &&
             ImGui::CollapsingHeader("planning opportunities",
                                      ImGuiTreeNodeFlags_DefaultOpen)) {
             const auto &opportunities = program.planning_opportunities;

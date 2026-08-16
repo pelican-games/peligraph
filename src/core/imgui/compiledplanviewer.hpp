@@ -63,6 +63,7 @@ struct CompiledPlanOpportunityPair {
 // the physical plan actually adopted.
 struct CompiledPlanOpportunities {
     bool available = false;
+    std::string unavailable_reason;
     std::string profile;
     std::vector<CompiledPlanOpportunityPair> alias_candidates;
     std::vector<CompiledPlanOpportunityPair> fusion_candidates;

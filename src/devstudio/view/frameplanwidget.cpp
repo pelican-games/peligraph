@@ -40,6 +40,16 @@ QString joined(const std::vector<std::string> &values) {
     return result.join(QStringLiteral(", "));
 }
 
+QString authoredExtent(const FramePlanExtent &extent) {
+    return extent.kind == "output_relative"
+               ? QStringLiteral("output_relative %1 x %2")
+                     .arg(extent.scale_x, 0, 'g', 6)
+                     .arg(extent.scale_y, 0, 'g', 6)
+               : QStringLiteral("fixed %1 x %2")
+                     .arg(static_cast<qulonglong>(extent.width))
+                     .arg(static_cast<qulonglong>(extent.height));
+}
+
 QString byteCount(std::size_t bytes) {
     if (bytes >= 1024 * 1024) {
         return QStringLiteral("%1 MiB")
@@ -143,6 +153,7 @@ struct FramePlanWidget::Impl {
     QTabWidget *tabs = nullptr;
     QTreeWidget *passes = nullptr;
     QTreeWidget *resources = nullptr;
+    QTreeWidget *physical = nullptr;
     QTreeWidget *decisions = nullptr;
     QTreeWidget *backends = nullptr;
     QTreeWidget *barriers = nullptr;
@@ -189,6 +200,10 @@ struct FramePlanWidget::Impl {
             {owner.tr("Resource"), owner.tr("Format"), owner.tr("Writers"),
              owner.tr("Readers")},
             tabs);
+        physical = makeTree(
+            {owner.tr("Physical item"), owner.tr("Kind / state"),
+             owner.tr("Members / value"), owner.tr("Detail")},
+            tabs);
         decisions = makeTree(
             {owner.tr("Subject"), owner.tr("Decision id"),
              owner.tr("Selected"), owner.tr("Detail")},
@@ -212,6 +227,7 @@ struct FramePlanWidget::Impl {
         raw_json->setLineWrapMode(QPlainTextEdit::NoWrap);
         tabs->addTab(passes, owner.tr("Passes"));
         tabs->addTab(resources, owner.tr("Resources"));
+        tabs->addTab(physical, owner.tr("Physical plan"));
         tabs->addTab(decisions, owner.tr("Decisions"));
         tabs->addTab(backends, owner.tr("Backends"));
         tabs->addTab(barriers, owner.tr("Barriers"));
@@ -225,6 +241,7 @@ struct FramePlanWidget::Impl {
                          [this](const QString &needle) {
                              applyFilter(*passes, needle);
                              applyFilter(*resources, needle);
+                             applyFilter(*physical, needle);
                              applyFilter(*decisions, needle);
                              applyFilter(*backends, needle);
                              applyFilter(*barriers, needle);
@@ -270,6 +287,7 @@ struct FramePlanWidget::Impl {
     void clearTrees() {
         passes->clear();
         resources->clear();
+        physical->clear();
         decisions->clear();
         backends->clear();
         barriers->clear();
@@ -357,6 +375,7 @@ struct FramePlanWidget::Impl {
     void populate() {
         passes->clear();
         resources->clear();
+        physical->clear();
         decisions->clear();
         backends->clear();
         barriers->clear();
@@ -364,6 +383,7 @@ struct FramePlanWidget::Impl {
         raw_json->clear();
         populatePasses();
         populateResources();
+        populatePhysicalPlan();
         populateDecisions();
         populateBackends();
         populateBarriers();
@@ -373,6 +393,7 @@ struct FramePlanWidget::Impl {
         refresh->setEnabled(true);
         applyFilter(*passes, filter->text());
         applyFilter(*resources, filter->text());
+        applyFilter(*physical, filter->text());
         applyFilter(*decisions, filter->text());
         applyFilter(*backends, filter->text());
         applyFilter(*barriers, filter->text());
@@ -387,10 +408,19 @@ struct FramePlanWidget::Impl {
                                              .arg(static_cast<qulonglong>(
                                                  *model->runtime_generation))
                                        : QString{};
-        status->setStyleSheet(QStringLiteral("color: #388e3c;"));
+        const QString physical_summary = model->physical_plan.available()
+                                             ? owner.tr("physical available (%1 alias groups, %2 alias candidates)")
+                                                   .arg(static_cast<qulonglong>(model->physical_plan.alias_groups.size()))
+                                                   .arg(static_cast<qulonglong>(model->physical_plan.alias_candidates.size()))
+                                             : owner.tr("physical unavailable (%1)")
+                                                   .arg(text(model->physical_plan.unavailable_reason));
+        status->setStyleSheet(
+            model->physical_plan.available()
+                ? QStringLiteral("color: #388e3c;")
+                : QStringLiteral("color: #b36b00;"));
         status->setText(
             owner.tr("%1 | %2%3 passes/tasks (%4 compute), %5 resources, %6 "
-                     "barriers | %7 response | refreshed %8. Snapshot updates "
+                     "barriers | %7 | %8 response | refreshed %9. Snapshot updates "
                      "only when the engine connects or Refresh is pressed; it "
                      "is not polled per frame.")
                 .arg(text(model->graph), generation)
@@ -398,7 +428,7 @@ struct FramePlanWidget::Impl {
                 .arg(static_cast<qulonglong>(compute_count))
                 .arg(static_cast<qulonglong>(model->resources.size()))
                 .arg(static_cast<qulonglong>(model->barriers.size()))
-                .arg(byteCount(model->response_bytes),
+                .arg(physical_summary, byteCount(model->response_bytes),
                      QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
     }
 
@@ -639,12 +669,27 @@ struct FramePlanWidget::Impl {
             addFact(facts, owner.tr("Kind"), text(resource.kind));
             addFact(facts, owner.tr("Source"), text(resource.source));
             addFact(facts, owner.tr("Dimension"), text(resource.dimension));
+            addFact(facts, owner.tr("Alias group"),
+                    text(resource.alias_group));
             if (resource.width && resource.height) {
                 addFact(facts, owner.tr("Extent"),
                         QStringLiteral("%1 x %2")
                             .arg(static_cast<qulonglong>(*resource.width))
                             .arg(static_cast<qulonglong>(*resource.height)));
             }
+            if (resource.extent) {
+                addFact(facts, owner.tr("Authored extent"),
+                        authoredExtent(*resource.extent));
+            }
+            addFact(facts, owner.tr("Representation"),
+                    text(resource.representation));
+            addFact(facts, owner.tr("Widest read"),
+                    text(resource.widest_read));
+            addFact(facts, owner.tr("Aliasable"),
+                    resource.representation.empty()
+                        ? QString{}
+                        : (resource.aliasable ? owner.tr("yes")
+                                              : owner.tr("no")));
             addFact(facts, owner.tr("Reason"), text(resource.reason));
             addFact(facts, owner.tr("Provider feature"),
                     text(resource.provider_feature));
@@ -658,6 +703,179 @@ struct FramePlanWidget::Impl {
                     joined(resource.material_consumers));
             addFact(facts, owner.tr("Fullscreen consumers"),
                     joined(resource.fullscreen_consumers));
+        }
+    }
+
+    void populatePhysicalPlan() {
+        auto *state = new QTreeWidgetItem(physical);
+        QFont state_font = state->font(0);
+        state_font.setBold(true);
+        state->setFont(0, state_font);
+        state->setText(0, owner.tr("Physical target plan"));
+        if (!model->physical_plan.available()) {
+            state->setText(1, owner.tr("Unavailable"));
+            state->setText(2,
+                           text(model->physical_plan.unavailable_reason_code));
+            state->setText(3,
+                           text(model->physical_plan.unavailable_reason));
+        } else {
+            state->setText(1, owner.tr("Available"));
+            state->setText(2, text(model->physical_plan.planning_profile));
+            state->setText(
+                3, owner.tr("%1 alias groups, %2 alias candidates")
+                       .arg(static_cast<qulonglong>(
+                           model->physical_plan.alias_groups.size()))
+                       .arg(static_cast<qulonglong>(
+                           model->physical_plan.alias_candidates.size())));
+
+            addFact(state, owner.tr("Graph"),
+                    text(model->physical_plan.graph));
+            addFact(state, owner.tr("Logical fingerprint"),
+                    text(model->physical_plan.logical_graph_fingerprint));
+            addFact(state, owner.tr("Automatic fingerprint"),
+                    text(model->physical_plan.automatic_plan_fingerprint));
+            if (model->physical_plan.output_width &&
+                model->physical_plan.output_height) {
+                addFact(
+                    state, owner.tr("Canonical output extent"),
+                    QStringLiteral("%1 x %2")
+                        .arg(static_cast<qulonglong>(
+                            *model->physical_plan.output_width))
+                        .arg(static_cast<qulonglong>(
+                            *model->physical_plan.output_height)));
+            }
+
+            auto *aliases = groupItem(
+                state,
+                owner.tr("Alias groups (%1)")
+                    .arg(static_cast<qulonglong>(
+                        model->physical_plan.alias_groups.size())));
+            for (const auto &group : model->physical_plan.alias_groups) {
+                auto *item = new QTreeWidgetItem(aliases);
+                item->setText(0, text(group.id));
+                item->setText(1, owner.tr("Adopted"));
+                item->setText(2, joined(group.resources));
+            }
+
+            const auto add_candidates =
+                [&](const QString &label,
+                    const std::vector<FramePlanOpportunityPair> &candidates) {
+                    auto *group = groupItem(
+                        state,
+                        QStringLiteral("%1 (%2)")
+                            .arg(label)
+                            .arg(static_cast<qulonglong>(candidates.size())));
+                    for (const auto &candidate : candidates) {
+                        auto *item = new QTreeWidgetItem(group);
+                        item->setText(0, label);
+                        item->setText(1, candidate.adopted
+                                                 ? owner.tr("Adopted")
+                                                 : owner.tr("Not adopted"));
+                        item->setText(2,
+                                      QStringLiteral("%1 + %2")
+                                          .arg(text(candidate.first),
+                                               text(candidate.second)));
+                    }
+                };
+            add_candidates(owner.tr("Alias candidates"),
+                           model->physical_plan.alias_candidates);
+            add_candidates(owner.tr("Fusion candidates"),
+                           model->physical_plan.fusion_candidates);
+            add_candidates(owner.tr("Parallel candidates"),
+                           model->physical_plan.parallel_candidates);
+
+            auto *scope_group = groupItem(
+                state, owner.tr("Scopes"), model->physical_plan.scopes.size());
+            for (const auto &scope : model->physical_plan.scopes) {
+                auto *item = new QTreeWidgetItem(scope_group);
+                item->setText(0, text(scope.id));
+                item->setText(1, text(scope.kind));
+                item->setText(2, joined(scope.nodes));
+                item->setText(
+                    3, owner.tr("%1; %2 execution(s); %3 local reads")
+                           .arg(text(scope.view_execution))
+                           .arg(static_cast<qulonglong>(scope.execution_count))
+                           .arg(static_cast<qulonglong>(
+                               scope.local_reads.size())));
+            }
+
+            auto *lowering_group = groupItem(
+                state, owner.tr("Lowering nodes"),
+                model->physical_plan.lowering_nodes.size());
+            for (const auto &node : model->physical_plan.lowering_nodes) {
+                auto *item = new QTreeWidgetItem(lowering_group);
+                item->setText(0, text(node.name));
+                item->setText(1,
+                              QStringLiteral("%1 / %2")
+                                  .arg(text(node.kind), text(node.dialect)));
+                item->setText(2, joined(node.sources));
+                item->setText(3, joined(node.required_physical_features));
+            }
+
+            if (model->physical_plan.resolution_plan) {
+                const auto &resolution =
+                    *model->physical_plan.resolution_plan;
+                auto *resolution_group =
+                    groupItem(state, owner.tr("Resolution plan"));
+                addFact(resolution_group, owner.tr("Render source"),
+                        text(resolution.render_source_resource));
+                addFact(resolution_group, owner.tr("Render extent"),
+                        authoredExtent(resolution.render_extent));
+                addFact(resolution_group, owner.tr("Output source"),
+                        text(resolution.output_source_resource));
+                addFact(resolution_group, owner.tr("Output extent"),
+                        authoredExtent(resolution.output_extent));
+                addFact(resolution_group, owner.tr("Scene resources"),
+                        joined(resolution.scene_resources));
+            }
+
+            auto *wire_group = groupItem(
+                state, owner.tr("Retained wire sections"),
+                model->physical_plan.wire_sections.size());
+            for (const auto &section : model->physical_plan.wire_sections) {
+                auto *item = new QTreeWidgetItem(wire_group);
+                item->setText(0, text(section.name));
+                item->setText(2, byteCount(section.json.size()));
+            }
+        }
+
+        auto *dependency_group = groupItem(
+            state, owner.tr("Execution dependencies"),
+            model->dependencies.size());
+        for (const auto &dependency : model->dependencies) {
+            auto *item = new QTreeWidgetItem(dependency_group);
+            item->setText(0,
+                          QStringLiteral("%1 -> %2")
+                              .arg(text(dependency.from), text(dependency.to)));
+            item->setText(1, text(dependency.reason));
+            item->setText(2, text(dependency.resource));
+        }
+
+        if (model->gpu_resource_arena) {
+            auto *arena = groupItem(
+                state,
+                owner.tr("GPU resource arena (%1)")
+                    .arg(static_cast<qulonglong>(
+                        model->gpu_resource_arena->resource_count)));
+            for (const auto &scope : model->gpu_resource_arena->scopes) {
+                auto *scope_item = new QTreeWidgetItem(arena);
+                scope_item->setText(0, text(scope.owner_scope));
+                scope_item->setText(1, owner.tr("Owner scope"));
+                scope_item->setText(
+                    2, owner.tr("%1 resources / %2 leases")
+                           .arg(static_cast<qulonglong>(scope.resources.size()))
+                           .arg(static_cast<qulonglong>(
+                               scope.resource_lease_count)));
+                for (const auto &resource : scope.resources) {
+                    auto *item = new QTreeWidgetItem(scope_item);
+                    item->setText(0, text(resource.name));
+                    item->setText(1, text(resource.kind));
+                    item->setText(
+                        2, owner.tr("handle %1")
+                               .arg(static_cast<qulonglong>(resource.handle)));
+                    item->setText(3, byteCount(resource.declared_bytes));
+                }
+            }
         }
     }
 
