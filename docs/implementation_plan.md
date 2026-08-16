@@ -5067,6 +5067,70 @@ work#xr (feature:F)
 
 依存: 着手前に識別子の設計をやり直すこと。見積: 大。
 
+### WP315: studio の解像度解決が runtime と型で食い違う
+
+**目的**: WP305 が入れたサイズ表示は、**一般の正当な入力に対して runtime と違う値を出す。**
+
+#### 型が違う
+
+| | 式 | scale の型 |
+|---|---|---|
+| runtime | `static_cast<float>(w) * plan.scale_x`(`src/core/vkcore/renderer.cpp:558-563`) | `float`(`src/project/targetrenderplanning.hpp:65`) |
+| studio | `static_cast<double>(w) * scale_x`(`src/devstudio/model/frameplanmodel.cpp:1110`) | `double`(`src/devstudio/model/frameplanmodel.hpp:103`) |
+
+`extent_scale: 0.7`、出力幅 10 のとき:
+
+- runtime: `float` で乗算し積が `7.0f` に丸められてから整数化 → **7**
+- studio: `double` で `6.99999988079071` まで計算して切り捨て → **6**
+
+著作値は `float` に parse される(`src/core/renderingpass/rendertargetjsonparser.cpp:255`)。
+
+**studio 側のコメントは「producer の切り捨て規則を写している」と書いているが、写せていない。**
+
+#### テストがこれを検出できない
+
+`test/devstudio_frameplan_test.cpp:378` は**同じ double 式で期待値を再計算している**ため、
+実装を実装自身で検証している。runtime が実際に解決した値を見ていない。
+
+#### 出力の正本が違う
+
+producer の正本は `resolution_plan.output_source_resource` と実 runtime の output extent である
+(`src/core/renderingpass/renderingsamplecount.cpp:1135`、`src/core/vkcore/renderer.cpp:3279`。
+runtime は `resolveResolutionSourceExtent` で resource 名から解決し `"swapchain"` を特別扱いする)。
+studio はそれより先に名前 `"display"` をハードコードして採用する
+(`src/devstudio/model/frameplanmodel.cpp:1077`)。
+出荷 fixture では一致するが、custom / non-window plan で食い違う。
+
+#### 現在は発火しない
+
+出荷 4 プロジェクトの `extent_scale` は 1 と 2 の冪のみ(1・0.5・0.25・0.125・0.0625)で、
+いずれも 2 進で正確なため差が出ない。**WP305 の「22/22 正しい」は事実だが、
+それは入力がたまたま全て 2 進正確だったからである。**
+
+#### 実装範囲
+
+1. **runtime と studio が同じ解決規則を共有すること。**
+   `float` ベースの純粋な resolver を共有するか、
+   **producer が実際に解決した extent を wire に載せること**(後者が望ましい ——
+   規則を二箇所に持たない)。
+2. 出力の正本を `resolution_plan.output_source_resource` から取ること。
+   `"display"` のハードコードをやめること。
+3. 写せていないコメントを消すか、正しくすること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`extent_scale: 0.7` と出力 10×10 を含む入力で、
+  studio の値が runtime の解決値と一致すること。**
+  これが本 WP の中心的な対照である
+- **期待値を studio と同じ式で再計算しないこと。**
+  runtime 側が実際に解決した値と突き合わせること
+- 出荷 4 プロジェクトの 22 ターゲットが従来どおり正しいこと(退行しないこと)
+- `resolution_plan.output_source_resource` が `"display"` 以外を指す入力で正しいこと
+- `ctest` 全数が緑(`-j4`)、§0 の反転対象のうち触れたフラグを反転して緑、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小〜中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
