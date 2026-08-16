@@ -190,6 +190,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp)
+  target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp)
   target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view)
   set(pelican_wp298_example_project
@@ -204,6 +206,25 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_WP298_EXAMPLE_PROJECT="${pelican_wp298_example_project}"
   )
   add_dependencies(pelican_test_devstudio_engine_failure_test pelican_player)
+
+  pelican_define_test(devstudio_frameplan_graph_test QT
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_core
+    Qt6::Core
+    Qt6::Widgets
+  )
+  target_sources(pelican_test_devstudio_frameplan_graph_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
+  )
+  target_include_directories(pelican_test_devstudio_frameplan_graph_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view
+  )
+  target_compile_definitions(pelican_test_devstudio_frameplan_graph_test PRIVATE
+    PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
 endif()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)

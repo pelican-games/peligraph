@@ -3,6 +3,8 @@ target_sources(pelican_studio PRIVATE
     mainwindow.cpp
     frameplanwidget.cpp
     frameplanwidget.hpp
+    frameplangraphics.cpp
+    frameplangraphics.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
 )

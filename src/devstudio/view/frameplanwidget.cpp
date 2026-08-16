@@ -1,19 +1,24 @@
 #include "frameplanwidget.hpp"
 
+#include "frameplangraphics.hpp"
 #include "../model/frameplanmodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAbstractItemView>
 #include <QByteArray>
+#include <QColor>
 #include <QDateTime>
 #include <QFont>
+#include <QGraphicsView>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPainter>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -150,7 +155,10 @@ struct FramePlanWidget::Impl {
     QLabel *status = nullptr;
     QLineEdit *filter = nullptr;
     QPushButton *refresh = nullptr;
+    QSpinBox *group_minimum = nullptr;
     QTabWidget *tabs = nullptr;
+    QGraphicsView *logical = nullptr;
+    FramePlanGraphicsScene *logical_scene = nullptr;
     QTreeWidget *passes = nullptr;
     QTreeWidget *resources = nullptr;
     QTreeWidget *physical = nullptr;
@@ -182,6 +190,19 @@ struct FramePlanWidget::Impl {
         filter->setClearButtonEnabled(true);
         toolbar->addWidget(refresh);
         toolbar->addWidget(filter, 1);
+        auto *group_label = new QLabel(owner.tr("Collapse groups with at least"),
+                                       &owner);
+        group_minimum = new QSpinBox(&owner);
+        group_minimum->setObjectName(
+            QStringLiteral("pelican.framePlanGroupMinimum"));
+        group_minimum->setRange(1, 64);
+        group_minimum->setValue(14);
+        group_minimum->setSuffix(owner.tr(" nodes"));
+        group_minimum->setToolTip(owner.tr(
+            "Controls grouping granularity. Lower values collapse smaller "
+            "repeated/resource or feature structures."));
+        toolbar->addWidget(group_label);
+        toolbar->addWidget(group_minimum);
         layout->addLayout(toolbar);
 
         status = new QLabel(&owner);
@@ -192,6 +213,14 @@ struct FramePlanWidget::Impl {
 
         tabs = new QTabWidget(&owner);
         tabs->setObjectName(QStringLiteral("pelican.framePlanTabs"));
+        logical_scene = new FramePlanGraphicsScene(&owner);
+        logical = new QGraphicsView(logical_scene, tabs);
+        logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
+        logical->setRenderHint(QPainter::Antialiasing, true);
+        logical->setDragMode(QGraphicsView::ScrollHandDrag);
+        logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        logical->setResizeAnchor(QGraphicsView::AnchorViewCenter);
+        logical->setBackgroundBrush(QColor{QStringLiteral("#20262d")});
         passes = makeTree(
             {owner.tr("Order"), owner.tr("Pass / detail"), owner.tr("Kind"),
              owner.tr("Inputs"), owner.tr("Outputs")},
@@ -225,6 +254,7 @@ struct FramePlanWidget::Impl {
         raw_json->setObjectName(QStringLiteral("pelican.framePlanRawJson"));
         raw_json->setReadOnly(true);
         raw_json->setLineWrapMode(QPlainTextEdit::NoWrap);
+        tabs->addTab(logical, owner.tr("Logical graph"));
         tabs->addTab(passes, owner.tr("Passes"));
         tabs->addTab(resources, owner.tr("Resources"));
         tabs->addTab(physical, owner.tr("Physical plan"));
@@ -247,6 +277,14 @@ struct FramePlanWidget::Impl {
                              applyFilter(*barriers, needle);
                              applyFilter(*materials, needle);
                          });
+        QObject::connect(
+            group_minimum, qOverload<int>(&QSpinBox::valueChanged), &owner,
+            [this](int minimum) {
+                if (!model) {
+                    return;
+                }
+                logical_scene->populate(*model, minimum);
+            });
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable,
                          &owner, [this] {
                              pending_request = 0;
@@ -267,7 +305,7 @@ struct FramePlanWidget::Impl {
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
             [this](qint64 request_id, const QByteArray &result_json) {
-                receiveResult(request_id, result_json);
+                receiveRpcResult(request_id, result_json);
             });
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
@@ -285,6 +323,7 @@ struct FramePlanWidget::Impl {
     }
 
     void clearTrees() {
+        logical_scene->resetGraph();
         passes->clear();
         resources->clear();
         physical->clear();
@@ -348,11 +387,15 @@ struct FramePlanWidget::Impl {
         status->setText(owner.tr("Requesting the current frame plan..."));
     }
 
-    void receiveResult(qint64 request_id, const QByteArray &result_json) {
+    void receiveRpcResult(qint64 request_id, const QByteArray &result_json) {
         if (request_id != pending_request) {
             return;
         }
         pending_request = 0;
+        owner.receiveResult(result_json);
+    }
+
+    void consumeResult(const QByteArray &result_json) {
         try {
             FramePlanModel next = buildFramePlanModel(std::string_view{
                 result_json.constData(),
@@ -381,6 +424,7 @@ struct FramePlanWidget::Impl {
         barriers->clear();
         materials->clear();
         raw_json->clear();
+        logical_scene->populate(*model, group_minimum->value());
         populatePasses();
         populateResources();
         populatePhysicalPlan();
@@ -390,7 +434,7 @@ struct FramePlanWidget::Impl {
         populateMaterials();
         raw_json->setPlainText(text(model->raw_json));
         tabs->setEnabled(true);
-        refresh->setEnabled(true);
+        refresh->setEnabled(viewport.rpcReady());
         applyFilter(*passes, filter->text());
         applyFilter(*resources, filter->text());
         applyFilter(*physical, filter->text());
@@ -419,13 +463,15 @@ struct FramePlanWidget::Impl {
                 ? QStringLiteral("color: #388e3c;")
                 : QStringLiteral("color: #b36b00;"));
         status->setText(
-            owner.tr("%1 | %2%3 passes/tasks (%4 compute), %5 resources, %6 "
-                     "barriers | %7 | %8 response | refreshed %9. Snapshot updates "
+            owner.tr("%1 | %2%3 passes/tasks (%4 compute), %5 dependencies, "
+                     "%6 resources, %7 barriers | %8 | %9 response | "
+                     "refreshed %10. Snapshot updates "
                      "only when the engine connects or Refresh is pressed; it "
                      "is not polled per frame.")
                 .arg(text(model->graph), generation)
                 .arg(static_cast<qulonglong>(model->nodes.size()))
                 .arg(static_cast<qulonglong>(compute_count))
+                .arg(static_cast<qulonglong>(model->dependencies.size()))
                 .arg(static_cast<qulonglong>(model->resources.size()))
                 .arg(static_cast<qulonglong>(model->barriers.size()))
                 .arg(physical_summary, byteCount(model->response_bytes),
@@ -920,5 +966,9 @@ FramePlanWidget::FramePlanWidget(EmbeddedViewport *viewport, QWidget *parent)
 }
 
 FramePlanWidget::~FramePlanWidget() = default;
+
+void FramePlanWidget::receiveResult(const QByteArray &result_json) {
+    impl_->consumeResult(result_json);
+}
 
 } // namespace PelicanStudio

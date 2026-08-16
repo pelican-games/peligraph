@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -8,6 +9,15 @@
 #include <vector>
 
 namespace PelicanStudio {
+
+// Frame-plan node names are unique only inside one graph.  This pair is the
+// complete UI identity; it deliberately is not a persistent/stable id.
+struct FramePlanNodeKey {
+    std::string graph;
+    std::string name;
+
+    auto operator<=>(const FramePlanNodeKey &) const = default;
+};
 
 struct FramePlanAttachmentOps {
     std::string resource;
