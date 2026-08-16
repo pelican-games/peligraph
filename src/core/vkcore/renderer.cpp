@@ -44,6 +44,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
+#include "../../project/frameresolutionwire.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "deletionqueue.hpp"
 #include "core.hpp"
@@ -552,17 +553,12 @@ glm::vec4 resolutionVector(vk::Extent2D extent) {
 vk::Extent2D resolvePlannedExtent(
     const ResourceExtentPlan &plan,
     vk::Extent2D output_extent) {
-    if (plan.kind == ResourceExtentKind::fixed) {
-        return {plan.width, plan.height};
-    }
-    return {
-        static_cast<std::uint32_t>(
-            static_cast<float>(output_extent.width) *
-            plan.scale_x),
-        static_cast<std::uint32_t>(
-            static_cast<float>(output_extent.height) *
-            plan.scale_y),
-    };
+    const auto resolved = resolveResourceExtent(
+        plan, ResolvedResourceExtent{
+                  .width = output_extent.width,
+                  .height = output_extent.height,
+              });
+    return {resolved.width, resolved.height};
 }
 
 vk::Extent2D resolveResolutionSourceExtent(
@@ -664,6 +660,10 @@ FrameResolutionExtents resolveFrameResolutionExtents(
         resolveResolutionSourceExtent(
             plan.render_source_resource, frame_graph,
             render_targets, output_extent);
+    const auto resolved_output_extent =
+        resolveResolutionSourceExtent(
+            plan.output_source_resource, frame_graph,
+            render_targets, output_extent);
     const auto planned_render =
         resolvePlannedExtent(
             plan.render_extent, output_extent);
@@ -671,14 +671,13 @@ FrameResolutionExtents resolveFrameResolutionExtents(
         throw std::runtime_error(
             "Runtime render extent does not match the compiled resolution plan");
     }
-    if (plan.output_source_resource != "swapchain" ||
-        resolvePlannedExtent(
+    if (resolvePlannedExtent(
             plan.output_extent, output_extent) !=
-            output_extent) {
+        resolved_output_extent) {
         throw std::runtime_error(
             "Runtime output extent does not match the compiled resolution plan");
     }
-    return {render_extent, output_extent};
+    return {render_extent, resolved_output_extent};
 }
 
 FrameUniformData updateFrameResources(
@@ -3403,6 +3402,45 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     if (frame_graph->target_plan != nullptr) {
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);
+        if (frame_graph->target_plan->resolution_plan) {
+            const auto *render_targets =
+                FastModuleContainer::tryGet<
+                    RenderTargetContainer>();
+            if (render_targets == nullptr) {
+                throw std::runtime_error(
+                    "Current frame runtime resolution has no render target container");
+            }
+
+            std::optional<vk::Extent2D> runtime_output_extent;
+            if (generation->window_output != nullptr) {
+                runtime_output_extent =
+                    generation->window_output
+                        ->compile_facts.extent;
+            } else {
+                runtime_output_extent =
+                    internal_render_extent;
+            }
+            if (!runtime_output_extent) {
+                throw std::runtime_error(
+                    "Current frame runtime resolution has no output extent");
+            }
+
+            result["runtime_resolution"] =
+                frameRuntimeResolutionWireToJson(
+                    makeFrameRuntimeResolutionWire(
+                        *frame_graph->target_plan,
+                        [&](std::string_view resource) {
+                            const auto extent =
+                                resolveResolutionSourceExtent(
+                                    resource, *frame_graph,
+                                    *render_targets,
+                                    *runtime_output_extent);
+                            return ResolvedResourceExtent{
+                                .width = extent.width,
+                                .height = extent.height,
+                            };
+                        }));
+        }
     }
     if (frame_graph->native_scopes != nullptr) {
         nlohmann::json scopes =

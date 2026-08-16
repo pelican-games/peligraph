@@ -1,5 +1,6 @@
 #include "frameplanmodel.hpp"
 #include "executionplanwire.hpp"
+#include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -8,9 +9,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <ranges>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -27,7 +32,7 @@ namespace {
 
 using Json = nlohmann::json;
 
-std::string capturedResponse() {
+std::string capturedResponseText() {
     std::ifstream stream{PELICAN_TEST_FRAME_PLAN_FIXTURE, std::ios::binary};
     if (!stream) {
         throw std::runtime_error(
@@ -35,6 +40,90 @@ std::string capturedResponse() {
     }
     return std::string{std::istreambuf_iterator<char>{stream},
                        std::istreambuf_iterator<char>{}};
+}
+
+Pelican::ResourceExtentPlan extentPlanFromJson(const Json &extent) {
+    const auto kind = extent.at("kind").get<std::string>();
+    if (kind == "fixed") {
+        return Pelican::ResourceExtentPlan{
+            .kind = Pelican::ResourceExtentKind::fixed,
+            .width = extent.at("width").get<std::uint32_t>(),
+            .height = extent.at("height").get<std::uint32_t>(),
+        };
+    }
+    if (kind != "output_relative") {
+        throw std::runtime_error(
+            "captured physical resource has unknown extent kind");
+    }
+    return Pelican::ResourceExtentPlan{
+        .kind = Pelican::ResourceExtentKind::output_relative,
+        .scale_x = extent.at("scale_x").get<float>(),
+        .scale_y = extent.at("scale_y").get<float>(),
+    };
+}
+
+Pelican::FrameRuntimeResolutionWire capturedRuntimeResolution(
+    const Json &captured) {
+    const Json &physical = captured.at("physical_target_plan");
+    const Json &resolution = physical.at("resolution_plan");
+    constexpr Pelican::ResolvedResourceExtent output_extent{160, 90};
+
+    Pelican::FrameRuntimeResolutionWire result;
+    result.render_source_resource =
+        resolution.at("render_source_resource").get<std::string>();
+    result.output_source_resource =
+        resolution.at("output_source_resource").get<std::string>();
+
+    std::map<std::string, Pelican::ResolvedResourceExtent, std::less<>>
+        resolved_resources;
+    for (const auto &resource : physical.at("resources")) {
+        const auto name =
+            resource.at("logical_resource").get<std::string>();
+        const auto extent = Pelican::resolveResourceExtent(
+            extentPlanFromJson(resource.at("extent")), output_extent);
+        resolved_resources.emplace(name, extent);
+        result.resources.push_back({name, extent});
+    }
+    const auto resolve_source =
+        [&](std::string_view source) {
+            if (source == "swapchain") {
+                return output_extent;
+            }
+            const auto found = resolved_resources.find(source);
+            if (found == resolved_resources.end()) {
+                throw std::runtime_error(
+                    "captured resolution source has no runtime extent: " +
+                    std::string{source});
+            }
+            return found->second;
+        };
+    result.render_extent = resolve_source(result.render_source_resource);
+    result.output_extent = resolve_source(result.output_source_resource);
+    return result;
+}
+
+std::string capturedResponse() {
+    Json captured = Json::parse(capturedResponseText());
+    captured["runtime_resolution"] =
+        Pelican::frameRuntimeResolutionWireToJson(
+            capturedRuntimeResolution(captured));
+    return captured.dump();
+}
+
+std::filesystem::path sourceRoot() {
+    auto path = std::filesystem::path{PELICAN_TEST_FRAME_PLAN_FIXTURE};
+    for (int level = 0; level < 4; ++level) {
+        path = path.parent_path();
+    }
+    return path;
+}
+
+Json readJson(const std::filesystem::path &path) {
+    std::ifstream stream{path, std::ios::binary};
+    if (!stream) {
+        throw std::runtime_error("failed to open " + path.string());
+    }
+    return Json::parse(stream);
 }
 
 std::size_t decisionEntryCount(const Json &value) {
@@ -352,6 +441,17 @@ TEST_CASE(
                 .at("scene_resources")
                 .get<std::vector<std::string>>());
 
+    const auto runtime_resolution =
+        Pelican::frameRuntimeResolutionWireFromJson(
+            captured.at("runtime_resolution"));
+    std::map<std::string, Pelican::ResolvedResourceExtent, std::less<>>
+        runtime_extents;
+    for (const auto &resource : runtime_resolution.resources) {
+        REQUIRE(runtime_extents.emplace(
+                    resource.resource, resource.extent)
+                    .second);
+    }
+
     REQUIRE(model.gpu_resource_arena.has_value());
     REQUIRE(model.gpu_resource_arena->resource_count == 89);
     REQUIRE(model.gpu_resource_arena->scopes.size() ==
@@ -384,21 +484,14 @@ TEST_CASE(
                 extent.at("scale_x").get<double>());
         REQUIRE(resource->extent->scale_y ==
                 extent.at("scale_y").get<double>());
-        const std::size_t expected_width =
-            resource->extent->kind == "fixed"
-                ? extent.at("width").get<std::size_t>()
-                : static_cast<std::size_t>(
-                      160.0 * extent.at("scale_x").get<double>());
-        const std::size_t expected_height =
-            resource->extent->kind == "fixed"
-                ? extent.at("height").get<std::size_t>()
-                : static_cast<std::size_t>(
-                      90.0 * extent.at("scale_y").get<double>());
-        REQUIRE(*resource->width == expected_width);
-        REQUIRE(*resource->height == expected_height);
+        const auto runtime_extent = runtime_extents.find(name);
+        REQUIRE(runtime_extent != runtime_extents.end());
+        REQUIRE(*resource->width == runtime_extent->second.width);
+        REQUIRE(*resource->height == runtime_extent->second.height);
     }
     REQUIRE(physical_target_count == 22);
     REQUIRE(resolved_extent_count == 22);
+    REQUIRE(runtime_extents.size() == 22);
 
     REQUIRE(model.physical_plan.alias_groups.size() == 1);
     REQUIRE(model.physical_plan.alias_candidates.size() == 2);
@@ -464,6 +557,62 @@ TEST_CASE(
     REQUIRE_FALSE(shared_missing.available());
     REQUIRE(shared_missing.reason_code ==
             unavailable.execution_plan.unavailable_reason_code);
+}
+
+TEST_CASE(
+    "Shipping four-project target corpus remains 22 runtime-resolvable targets",
+    "[devstudio][frame-plan][wp315][shipping-regression]") {
+    const auto root = sourceRoot();
+    const Json animgraph = readJson(
+        root / "projects" / "animgraph_demo" / "passes" / "main.json");
+    REQUIRE(animgraph.at("pipeline").at("preset") ==
+            "engine://render_pipelines/hybrid_v1.json");
+
+    const Json hybrid = readJson(
+        root / "src" / "core" / "resources" / "render_pipelines" /
+        "hybrid_v1.json");
+    const std::array<Json, 4> target_documents{
+        hybrid.at("config"),
+        readJson(root / "projects" / "example" / "passes" /
+                 "main_rendering_config.json"),
+        readJson(root / "projects" / "sprite_demo" / "passes" /
+                 "main.json"),
+        readJson(root / "projects" / "vrm_xr_demo" / "passes" /
+                 "main.json"),
+    };
+
+    std::map<std::string, float, std::less<>> target_scales;
+    constexpr std::array allowed_scales{
+        1.0f, 0.5f, 0.25f, 0.125f, 0.0625f};
+    for (const auto &document : target_documents) {
+        for (const auto &target : document.at("render_targets")) {
+            const auto name = target.at("name").get<std::string>();
+            const auto scale = target.at("extent_scale").get<float>();
+            REQUIRE(std::ranges::find(allowed_scales, scale) !=
+                    allowed_scales.end());
+            const auto [found, inserted] =
+                target_scales.emplace(name, scale);
+            if (!inserted) {
+                REQUIRE(found->second == scale);
+            }
+        }
+    }
+    REQUIRE(target_scales.size() == 21);
+    REQUIRE(target_scales.emplace("swapchain", 1.0f).second);
+    REQUIRE(target_scales.size() == 22);
+
+    for (const auto &[name, scale] : target_scales) {
+        INFO("shipping target: " << name);
+        const auto extent = Pelican::resolveResourceExtent(
+            Pelican::ResourceExtentPlan{
+                .kind = Pelican::ResourceExtentKind::output_relative,
+                .scale_x = scale,
+                .scale_y = scale,
+            },
+            Pelican::ResolvedResourceExtent{160, 90});
+        REQUIRE(extent.width > 0);
+        REQUIRE(extent.height > 0);
+    }
 }
 
 TEST_CASE(

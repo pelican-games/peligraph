@@ -1,6 +1,7 @@
 #include "frameplanmodel.hpp"
 
 #include "executionplanwire.hpp"
+#include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
 
 #include <nlohmann/json.hpp>
@@ -983,6 +984,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         const Json &physical = *physical_plan_json;
         const auto &physical_resources =
             requireArrayField(physical, "resources", "physical_target_plan");
+        std::set<std::string, std::less<>> physical_extent_resources;
         for (std::size_t index = 0; index < physical_resources.size(); ++index) {
             const auto &value = physical_resources[index];
             const std::string context = "physical_target_plan.resources[" +
@@ -1029,60 +1031,104 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             if (const auto extent = value.find("extent");
                 extent != value.end() && !extent->is_null()) {
                 resource.extent = parseExtent(*extent, context + ".extent");
+                physical_extent_resources.insert(name);
             }
         }
 
-        // get_frame_plan does not publish the live swapchain extent as a
-        // separate field.  The fixed `display` target is therefore Studio's
-        // canonical output extent.  This mirrors the producer's truncating
-        // float-to-uint resolution rule for output_relative extents.
-        std::optional<std::pair<std::size_t, std::size_t>> output_extent;
-        if (const auto display = resources.find("display");
-            display != resources.end() && display->second.extent &&
-            display->second.extent->kind == "fixed") {
-            output_extent = std::pair{display->second.extent->width,
-                                      display->second.extent->height};
-        } else if (model.physical_plan.resolution_plan &&
-                   model.physical_plan.resolution_plan->output_extent.kind ==
-                       "fixed") {
-            const auto &extent =
-                model.physical_plan.resolution_plan->output_extent;
-            output_extent = std::pair{extent.width, extent.height};
-        }
+        if (model.physical_plan.resolution_plan) {
+            const auto runtime_resolution =
+                root.find("runtime_resolution");
+            if (runtime_resolution == root.end() ||
+                runtime_resolution->is_null()) {
+                model.physical_plan.state =
+                    FramePlanPhysicalPlanState::unavailable;
+                model.physical_plan.unavailable_reason_code =
+                    "physical_plan_runtime_resolution_missing";
+                model.physical_plan.unavailable_reason =
+                    "physical_plan_runtime_resolution_missing: producer did "
+                    "not publish runtime_resolution";
+            } else {
+                try {
+                    const auto resolved =
+                        Pelican::frameRuntimeResolutionWireFromJson(
+                            *runtime_resolution);
+                    const auto &compiled =
+                        *model.physical_plan.resolution_plan;
+                    if (resolved.render_source_resource !=
+                            compiled.render_source_resource ||
+                        resolved.output_source_resource !=
+                            compiled.output_source_resource) {
+                        throw std::runtime_error(
+                            "source resources do not match "
+                            "physical_target_plan.resolution_plan");
+                    }
 
-        bool requires_output_extent = false;
-        for (auto &[name, resource] : resources) {
-            (void)name;
-            if (!resource.extent) {
-                continue;
+                    std::map<std::string,
+                             Pelican::ResolvedResourceExtent,
+                             std::less<>> resolved_resources;
+                    for (const auto &entry : resolved.resources) {
+                        resolved_resources.emplace(
+                            entry.resource, entry.extent);
+                    }
+                    for (const auto &name : physical_extent_resources) {
+                        if (!resolved_resources.contains(name)) {
+                            throw std::runtime_error(
+                                "missing resolved extent for physical "
+                                "resource '" +
+                                name + "'");
+                        }
+                    }
+                    for (const auto &[name, extent] : resolved_resources) {
+                        (void)extent;
+                        if (!physical_extent_resources.contains(name)) {
+                            throw std::runtime_error(
+                                "published an extent for unknown physical "
+                                "resource '" +
+                                name + "'");
+                        }
+                    }
+
+                    const auto requireSourceExtent =
+                        [&](std::string_view source,
+                            Pelican::ResolvedResourceExtent extent,
+                            std::string_view role) {
+                            const auto found =
+                                resolved_resources.find(source);
+                            if (found != resolved_resources.end() &&
+                                found->second != extent) {
+                                throw std::runtime_error(
+                                    std::string{role} +
+                                    " source extent disagrees with resource '" +
+                                    std::string{source} + "'");
+                            }
+                        };
+                    requireSourceExtent(
+                        resolved.render_source_resource,
+                        resolved.render_extent, "render");
+                    requireSourceExtent(
+                        resolved.output_source_resource,
+                        resolved.output_extent, "output");
+
+                    for (const auto &[name, extent] :
+                         resolved_resources) {
+                        auto &resource = resources.at(name);
+                        resource.width = extent.width;
+                        resource.height = extent.height;
+                    }
+                    model.physical_plan.output_width =
+                        resolved.output_extent.width;
+                    model.physical_plan.output_height =
+                        resolved.output_extent.height;
+                } catch (const std::exception &error) {
+                    model.physical_plan.state =
+                        FramePlanPhysicalPlanState::unavailable;
+                    model.physical_plan.unavailable_reason_code =
+                        "physical_plan_runtime_resolution_invalid";
+                    model.physical_plan.unavailable_reason =
+                        "physical_plan_runtime_resolution_invalid: " +
+                        std::string{error.what()};
+                }
             }
-            if (resource.extent->kind == "fixed") {
-                resource.width = resource.extent->width;
-                resource.height = resource.extent->height;
-                continue;
-            }
-            requires_output_extent = true;
-            if (!output_extent) {
-                continue;
-            }
-            resource.width = static_cast<std::size_t>(
-                static_cast<double>(output_extent->first) *
-                resource.extent->scale_x);
-            resource.height = static_cast<std::size_t>(
-                static_cast<double>(output_extent->second) *
-                resource.extent->scale_y);
-        }
-        if (requires_output_extent && !output_extent) {
-            model.physical_plan.state =
-                FramePlanPhysicalPlanState::unavailable;
-            model.physical_plan.unavailable_reason_code =
-                "physical_plan_output_extent_unavailable";
-            model.physical_plan.unavailable_reason =
-                "physical_plan_output_extent_unavailable: no fixed display "
-                "extent was published";
-        } else if (output_extent) {
-            model.physical_plan.output_width = output_extent->first;
-            model.physical_plan.output_height = output_extent->second;
         }
 
         for (const auto &group : model.physical_plan.alias_groups) {

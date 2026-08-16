@@ -1,5 +1,6 @@
 #include "rendertargetcontainer.hpp"
 #include "renderingsamplecount.hpp"
+#include "../../project/targetrenderplanning.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -58,10 +59,23 @@ vk::ResolveModeFlagBits selectDepthResolveMode(
 
 vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale,
                                        std::optional<vk::Extent2D> fixed_extent) {
-    const vk::Extent2D extent = fixed_extent.value_or(vk::Extent2D{
-        static_cast<uint32_t>(base_extent.width * extent_scale),
-        static_cast<uint32_t>(base_extent.height * extent_scale),
-    });
+    const auto resolved = resolveResourceExtent(
+        fixed_extent
+            ? ResourceExtentPlan{
+                  .kind = ResourceExtentKind::fixed,
+                  .width = fixed_extent->width,
+                  .height = fixed_extent->height,
+              }
+            : ResourceExtentPlan{
+                  .kind = ResourceExtentKind::output_relative,
+                  .scale_x = extent_scale,
+                  .scale_y = extent_scale,
+              },
+        ResolvedResourceExtent{
+            .width = base_extent.width,
+            .height = base_extent.height,
+        });
+    const vk::Extent2D extent{resolved.width, resolved.height};
 
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Render target extent became zero-sized: " + name);

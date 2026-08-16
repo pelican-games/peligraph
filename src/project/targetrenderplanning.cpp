@@ -1524,6 +1524,20 @@ std::string_view resourceExtentKindName(
     throw std::runtime_error("unknown resource extent kind");
 }
 
+ResolvedResourceExtent resolveResourceExtent(
+    const ResourceExtentPlan &plan,
+    ResolvedResourceExtent output_extent) {
+    if (plan.kind == ResourceExtentKind::fixed) {
+        return {plan.width, plan.height};
+    }
+    return {
+        static_cast<std::uint32_t>(
+            static_cast<float>(output_extent.width) * plan.scale_x),
+        static_cast<std::uint32_t>(
+            static_cast<float>(output_extent.height) * plan.scale_y),
+    };
+}
+
 std::string_view targetIrDialectName(TargetIrDialect dialect) {
     switch (dialect) {
     case TargetIrDialect::logical: return "logical";

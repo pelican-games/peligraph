@@ -70,6 +70,20 @@ struct ResourceExtentPlan {
     bool operator==(const ResourceExtentPlan &) const = default;
 };
 
+struct ResolvedResourceExtent {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    bool operator==(const ResolvedResourceExtent &) const = default;
+};
+
+// This is the producer's sole float-to-integer extent rule. Runtime image
+// allocation and compiled-plan validation both call this resolver; wire
+// consumers receive the resulting integers and do not repeat the arithmetic.
+ResolvedResourceExtent resolveResourceExtent(
+    const ResourceExtentPlan &plan,
+    ResolvedResourceExtent output_extent);
+
 struct ResourcePatternBinding {
     std::string resource;
     ResourcePattern pattern;

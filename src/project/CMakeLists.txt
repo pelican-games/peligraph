@@ -5,6 +5,7 @@ add_library(pelican_project
     executionplanwire.cpp
     featurecompose.cpp
     featurejitter.cpp
+    frameresolutionwire.cpp
     graphvariantpolicy.cpp
     gpudrawtiming.cpp
     gltfmateriallowering.cpp

@@ -8,6 +8,7 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/project/executionplan.hpp"
+#include "../src/project/frameresolutionwire.hpp"
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -108,6 +109,37 @@ Pelican::RenderingTargetPlanDeviceFacts planningDeviceFacts() {
     };
 }
 
+Pelican::ResolvedResourceExtent resolveRuntimeExtent(
+    const Pelican::VulkanTargetPlan &plan,
+    Pelican::ResolvedResourceExtent output_extent,
+    std::string_view resource) {
+    if (resource == "swapchain") {
+        return output_extent;
+    }
+    const auto found = std::ranges::find(
+        plan.resources, resource,
+        &Pelican::VulkanPhysicalResourcePlan::logical_resource);
+    if (found == plan.resources.end() || !found->extent) {
+        throw std::runtime_error(
+            "runtime test resolver has no extent contract for " +
+            std::string{resource});
+    }
+    return Pelican::resolveResourceExtent(
+        *found->extent, output_extent);
+}
+
+void publishRuntimeResolution(
+    Json &wire, const Pelican::VulkanTargetPlan &plan,
+    Pelican::ResolvedResourceExtent output_extent) {
+    wire["runtime_resolution"] =
+        Pelican::frameRuntimeResolutionWireToJson(
+            Pelican::makeFrameRuntimeResolutionWire(
+                plan, [&](std::string_view resource) {
+                    return resolveRuntimeExtent(
+                        plan, output_extent, resource);
+                }));
+}
+
 Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
                        std::string_view label,
                        bool publish_physical_plan = true) {
@@ -156,6 +188,9 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     }
     wire["physical_target_plan"] =
         Pelican::vulkanTargetPlanToJson(*physical.plans.front());
+    publishRuntimeResolution(
+        wire, *physical.plans.front(),
+        Pelican::ResolvedResourceExtent{160, 90});
     return wire;
 }
 
@@ -293,6 +328,74 @@ Json independentOpportunityFramePlan(
     wire["execution_plan"] = Pelican::frameExecutionPlanToJson(execution);
     wire["physical_target_plan"] =
         Pelican::vulkanTargetPlanToJson(*compilation.plans.front());
+    publishRuntimeResolution(
+        wire, *compilation.plans.front(),
+        Pelican::ResolvedResourceExtent{32, 32});
+    return wire;
+}
+
+Json fractionalScaleFramePlan() {
+    const Json config{
+        {"render_targets",
+         Json::array(
+             {{{"name", "scaled_scene"},
+               {"extent_scale", 0.7},
+               {"format", "R8G8B8A8_UNORM"},
+               {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+              {{"name", "custom_output"},
+               {"extent_scale", 1.0},
+               {"width", 10},
+               {"height", 10},
+               {"format", "R8G8B8A8_UNORM"},
+               {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}})},
+        {"rendering_passes",
+         Json::array(
+             {{{"name", "fractional_scale"},
+               {"passes",
+                Json::array(
+                    {{{"name", "scene"},
+                      {"type", "fullscreen"},
+                      {"resolution_domain", "scene"},
+                      {"output",
+                       {{"color", "scaled_scene"}, {"depth", nullptr}}}},
+                     {{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"resolution_domain", "output"},
+                      {"input", Json::array({"scaled_scene"})},
+                      {"output",
+                       {{"color", "custom_output"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+    const auto graphs =
+        Pelican::parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto targets =
+        Pelican::parseRenderTargetDefinitionsFromJson(config);
+    const auto compilation = Pelican::compileRenderingTargetPlans(
+        graphs, targets, Pelican::compileSampleCountPolicy(config),
+        vk::Format::eB8G8R8A8Unorm, planningDeviceFacts());
+    if (graphs.size() != 1 || compilation.plans.size() != 1) {
+        throw std::runtime_error(
+            "fractional scale producer must compile one graph and one "
+            "physical plan");
+    }
+
+    const Pelican::FramePlan plan =
+        Pelican::planFrameGraph(graphs.front());
+    Json wire = Pelican::framePlanToJson(plan);
+    wire["execution_plan"] = Pelican::frameExecutionPlanToJson(
+        Pelican::compileFrameExecutionPlan(
+            graphs.front(), plan,
+            Pelican::ExecutionEndpoint{
+                .id = "device:0",
+                .endpoint_class =
+                    Pelican::ExecutionEndpointClass::device,
+                .backend = "vulkan",
+            }));
+    wire["physical_target_plan"] =
+        Pelican::vulkanTargetPlanToJson(*compilation.plans.front());
+    publishRuntimeResolution(
+        wire, *compilation.plans.front(),
+        Pelican::ResolvedResourceExtent{10, 10});
     return wire;
 }
 
@@ -1106,6 +1209,50 @@ void requireNoReference(QGraphicsScene &value, std::string_view node,
 } // namespace
 
 TEST_CASE(
+    "Studio consumes producer resolved fractional extents and a non-display output source",
+    "[devstudio][frame-plan][wp315][resolution][negative-contrast]") {
+    const Json wire = fractionalScaleFramePlan();
+    const auto runtime =
+        Pelican::frameRuntimeResolutionWireFromJson(
+            wire.at("runtime_resolution"));
+    REQUIRE(runtime.render_source_resource == "scaled_scene");
+    REQUIRE(runtime.output_source_resource == "custom_output");
+    REQUIRE(runtime.output_source_resource != "display");
+    REQUIRE((runtime.render_extent ==
+             Pelican::ResolvedResourceExtent{7, 7}));
+    REQUIRE((runtime.output_extent ==
+             Pelican::ResolvedResourceExtent{10, 10}));
+
+    const FramePlanModel model =
+        buildFramePlanModel(wire.dump());
+    REQUIRE(model.physical_plan.available());
+    REQUIRE(model.physical_plan.output_width ==
+            runtime.output_extent.width);
+    REQUIRE(model.physical_plan.output_height ==
+            runtime.output_extent.height);
+    const auto scaled = std::ranges::find(
+        model.resources, std::string{"scaled_scene"},
+        &FramePlanResource::name);
+    REQUIRE(scaled != model.resources.end());
+    REQUIRE(scaled->width == runtime.render_extent.width);
+    REQUIRE(scaled->height == runtime.render_extent.height);
+
+    Json without_runtime_resolution = wire;
+    without_runtime_resolution.erase("runtime_resolution");
+    const FramePlanModel unavailable =
+        buildFramePlanModel(without_runtime_resolution.dump());
+    REQUIRE_FALSE(unavailable.physical_plan.available());
+    REQUIRE(unavailable.physical_plan.unavailable_reason_code ==
+            "physical_plan_runtime_resolution_missing");
+    const auto unresolved = std::ranges::find(
+        unavailable.resources, std::string{"scaled_scene"},
+        &FramePlanResource::name);
+    REQUIRE(unresolved != unavailable.resources.end());
+    REQUIRE_FALSE(unresolved->width.has_value());
+    REQUIRE_FALSE(unresolved->height.has_value());
+}
+
+TEST_CASE(
     "WP317 missing execution plan is a named logical error rather than a valid zero-dependency graph",
     "[devstudio][frame-plan][logical-graph][wp317][negative-contrast]") {
     (void)application();
@@ -1285,8 +1432,10 @@ TEST_CASE(
     "WP307 production widget overlays every example physical resource and distinguishes reused from legal-not-adopted aliasing",
     "[devstudio][frame-plan][physical-overlay][wp307]") {
     (void)application();
-    const std::string captured = readText(PELICAN_TEST_FRAME_PLAN_FIXTURE);
-    const Json wire = Json::parse(captured);
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
+    const std::string captured = wire.dump();
     const Json &physical = wire.at("physical_target_plan");
     const Json &published_resources = physical.at("resources");
     const std::string endpoint = selectedPlanningEndpoint(physical);
