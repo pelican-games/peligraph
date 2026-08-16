@@ -4393,17 +4393,39 @@ studio のモデルが**捨てている**。塞ぐ。
    plan 全体の `alias_groups` 配列から**ターゲット→所属グループ**を引けるようにすること
    (studio 側の導出でよい。エンジンに新しい出力を足さないこと)。
 
+#### 「無い」と「壊れている」と「0 件」を区別すること
+
+現在のモデルは**黙って捨てる**:未知の execution ノードを `continue` し
+(`src/devstudio/model/frameplanmodel.cpp:475`)、未知の attachment ノードも捨て(`:585`)、
+physical plan の schema / version / graph の一致を検査しない(`:540`)。
+producer 側でも physical plan は**条件付き出力**である
+(`src/core/vkcore/renderer.cpp:3403`)。
+
+**このままだと、physical plan がそもそも無いときに
+「候補 0・エイリアス 0」と表示する実装が受け入れ条件を通ってしまう。**
+
+同じ wire を読む ImGui viewer も不正形式を空モデルへ落とす
+(`src/core/imgui/compiledplanviewer.cpp:210`)。
+**studio だけ三つ目の既定値流儀を増やさないこと** ——
+WP310 と合わせ、`pelican_project` に置ける共通の DTO / validator か、
+共通の適合コーパスを仕様化すること。
+
 #### 受け入れ条件(§4 規約 10)
 
 - `test/fixtures/devstudio/example_frame_plan.json` を入力に、
-  **22 ターゲット全部がサイズを持つこと**(現状 1/22)
+  **22 ターゲット全部がサイズを持つこと**(現状 1/22)。
+  出力 extent の正本を規定すること(`display` = 160×90 を正本とすれば
+  切り捨て規則を含め全 22 件を復元できる)
 - 採用されたエイリアス組と、不採用だった候補組の**両方**が読めること
-- **エイリアスが 1 件も無い構成(`conservative_debug` profile)で、
-  モデルが空グループを正しく表し、例外を投げないこと** ——
-  これが本 WP の対照である
+- **モデルの状態が最低でも `available(データ)` と `unavailable(理由)` に分かれること。**
+  physical plan の欠落を空の計画として扱わないこと。**これが本 WP の中心的な対照である**
+  —— 「エイリアス 0 件の構成」と「physical plan が無い構成」が
+  同じ表示になる実装は不合格
+- schema / version / graph / fingerprint の不整合、重複、参照先の欠落、
+  alias 所属の矛盾を**名前付きエラー**で弾くこと。黙って `continue` しないこと
 - 落としている項目が他に無いことを、fixture のキー集合との突き合わせで示すこと
-- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
-  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+- `ctest` 全数が緑(`-j4`)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
 
 依存: なし(WP304 と並行可。識別子が入ったら join をそちらへ寄せること)。見積: 中。
 
@@ -4433,16 +4455,42 @@ studio に描画の基盤が無い。`QGraphicsScene` / `QGraphicsView` / `QGrap
 5. **編集はまだ入れない。ただし選択とノード同一性は WP304 の識別子で持つこと** ——
    名前文字列で作ると編集を足すときに作り直しになる。
 
+#### purge の対照に `projects/example` を使わないこと
+
+**`projects/example` の feature は `engine://features/ui.json` の 1 つだけである。**
+bloom の 13 ノードは feature ではなく、プロジェクトに直接書かれた
+render target と pass である(`projects/example/passes/main_rendering_config.json`)。
+example で「feature を 1 つ切る」と消えるのは UI パスだけで、
+構造的に意味のある対照にならない。
+
+**purge の対照は `projects/animgraph_demo` で取ること** ——
+`hybrid_v1` preset に `shadow_directional` / `sky` などを重ねている。
+参考: `sprite_demo` は sprite feature のみ、`vrm_xr_demo` は `"features": []`。
+
 #### 受け入れ条件(§4 規約 10)
 
 - 実行順では現れない辺が現れること。
   `projects/example` で 5 本(スキップ 3・SSAO 分岐・`lit_color` 直行)
-- **feature を 1 つ切った構成で、消えたノードと消えた辺が実際に消えること** ——
-  purgeable が図の上で確認できること。これが本 WP の対照である
-- 30 ノードが人が読める形に畳めること
-- studio 単体で fixture から描けること(player の起動を要さないこと)
-- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
-  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+- **`animgraph_demo` の feature を 1 つ切った構成で、
+  消えるノードと辺を事前に完全列挙し、そのとおりに消えること。**
+  これが本 WP の中心的な対照である
+- **同一の widget を feature 有効 → 無効へ更新したとき、孤児が 0 であること** ——
+  ノード・辺・リソース重畳・選択状態・畳み状態のいずれも残らないこと。
+  新しい widget を作り直して描くのは対照にならない
+- **畳みを個数で固定すること。** 展開時 30 ノード。
+  畳み時は bloom 構成員 13 が 1 個のグループ項目になり、可視項目は 18。
+  境界を跨ぐ依存が欠落なく束ねられること。
+  **展開すると元のノードと辺の記録が完全に復元されること**
+- **決定性: 入力配列の順序を入れ替えても、座標・束ね順・色が一致すること**
+- **「読める」を機械判定可能にすること** —— ラベルの外接矩形が重ならないこと、
+  最小間隔を満たすこと。目視の主張を受け入れ条件にしないこと
+- **本番の配線を通すこと。** model や layout の helper を直接呼ぶのではなく、
+  `FramePlanWidget::receiveResult` → `populate`(`src/devstudio/view/frameplanwidget.cpp:312`)
+  を通して scene を検査すること
+- **`SKIP_DEVSTUDIO=ON` での緑は本 WP の証明に数えないこと**(studio を丸ごとビルドしない、
+  `CMakeLists.txt:485`)。studio 有効構成で機能テストを行うこと
+- `ctest` 全数が緑(`-j4`)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
 
 #### 範囲外
 
@@ -4490,14 +4538,31 @@ studio に描画の基盤が無い。`QGraphicsScene` / `QGraphicsView` / `QGrap
 #### 受け入れ条件(§4 規約 10)
 
 - `projects/example` で、統合 1 組・不採用候補 1 組が区別して見えること
-- **`conservative_debug` profile で、統合 0・候補 0 と表示され、
-  かつ profile が明示されること** ——
-  同じ論理グラフが違う物理結果を出すことが図の上で分かること。
-  これが本 WP の中心的な対照である
+- **列挙した表示項目を実値で照合すること。**
+  alias と profile だけを描く実装が通らないようにすること:
+  - 22 リソース**全件**の `reason` / `widest_read` / `aliasable` /
+    `representation` / `lifetime` を実値と照合する
+  - `reason` が「arbitrary read requires a materialized resource」なのは **16 件**
+  - `widest_read` が `same_pixel` なのは **1 件**のみ
+- **`parallel_candidates` / `fusion_candidates` が非ゼロになる実 producer 構成を
+  用意し、同じテストの中でゼロの構成と対比すること。**
+  `example` は両方 0 なので、**「未実装」と「正しく 0 表示」が区別できない**。
+  非空は既存データで作れる —— `alpha` / `beta` は optimized で両方に入り、
+  `conservative_debug` で両方空になる(`test/targetplanning_test.cpp:372`)
+- **profile の対照は fixture の手編集ではなく、
+  実際に profile を変えて compile した結果で取ること。**
+  手編集 fixture は不正形式入力のテストに限ること
+  (`test/fixtures/devstudio/README.md:3` は手編集を明記しているが、
+  それを本番配線の対照に使わないこと)
 - 理由が記録されていない項目を、推測で埋めないこと
+- **variant と構成を閉じること**: example flat の feature 有効 / 無効、
+  bloom を持たないプロジェクト、preview、XR ON、`PELICAN_WITH_OPENXR=OFF` の
+  unavailable、`PELICAN_RUNTIME_SHADER_COMPILER` の ON / OFF、
+  `PELICAN_WITH_IMGUI` の ON / OFF
+- **`SKIP_DEVSTUDIO=ON` での緑は本 WP の証明に数えないこと**
 - 既存 golden が 1 枚も動かないこと
-- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
-  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+- `ctest` 全数が緑(`-j4`)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
 
 依存: **WP306**。見積: 大。
 
