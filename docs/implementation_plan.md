@@ -4537,40 +4537,74 @@ WP302 は reader を検査したが `draw()` を呼んでいない。
 WP301 はヘルパを無効化して落ちることは確かめたが、**本番の呼び出しを消す実験をしていない**。
 以後、否定対照の確認は**ヘルパの中身と呼び出し側の両方**で行うこと。
 
-### WP308: XR テストが OpenXR 無効ビルドを壊す
+### WP308: OpenXR 無効ビルドが腐っている
 
-**目的**: `-DPELICAN_WITH_OPENXR=OFF` でテストが落ちる状態を直す。
+**目的**: `-DPELICAN_WITH_OPENXR=OFF` でテストが落ちる状態を直し、
+**その構成が二度と黙って腐らないようにする。**
 
-#### 現状
+#### 実測(2026-08-16、`C:/pb/noxr` で完全ビルド後に非 GPU 全数)
 
-WP301 が足した `featurecompose_test.cpp` の XR ケースは
-`RenderPipelineGraphVariant::xr` を**無条件に**解決する
-(`grep -c PELICAN_WITH_OPENXR test/featurecompose_test.cpp` は **0**)。
+```
+99% tests passed, 5 tests failed out of 953
+  321 - view family projection jitter is one shared modifier sample
+  334 - render view family collection separates main cardinality from secondary families
+  350 - render view family validates stable identities and graph cardinality
+  356 - planar reflection views preserve identity, clipping, and raster winding
+  847 - WP301 xr compute provenance survives variant namespacing
+```
 
-`PELICAN_WITH_OPENXR` は既定 ON のオプション(`CMakeLists.txt:53`)で、
-OFF では XR 経路が名前付きで throw する(`src/project/graphvariantpolicy.cpp` の
-`#if PELICAN_WITH_OPENXR` 分岐)。テスト対象は OpenXR の設定に関わらず登録される。
+**5 件のうち 4 件は今日より前から落ちていた。**
+321 / 334 / 350 / 356 はすべて `test/viewfamily_test.cpp` にあり、
+このファイルは WP301〜303 が**触っていない**
+(`git diff --name-only 65ea95c..HEAD` に現れない)。
+そして `grep -c PELICAN_WITH_OPENXR test/viewfamily_test.cpp` は **0**。
 
-**既存の XR テストは `#if PELICAN_WITH_OPENXR` で囲っている**
-(`test/graphvariantpolicy_test.cpp:86`)。作法が揃っていない。
+**つまり OpenXR OFF 構成は誰もビルドしておらず、腐っていた。**
+WP301 は既存の同型欠陥に 5 件目を足したにすぎない。
 
-これは §4 規約 9 が狙っていた事故そのものである。
-統合時に確認したのは `PELICAN_RUNTIME_SHADER_COMPILER=OFF` だけだった。
+#### なぜ規約 9 で捕まらなかったか
+
+規約 9 は「`#if` の中の識別子を触る WP は OFF 構成もビルドする」だが、
+本文が `PELICAN_RUNTIME_SHADER_COMPILER` を名指ししているため、
+**その 1 つだけを確認して済ませる運用**になっていた。
+WP301〜303 の統合時に確認したのも `PELICAN_RUNTIME_SHADER_COMPILER=OFF` だけである
+(そちらはビルド成功)。
+
+`PELICAN_WITH_OPENXR` は既定 ON のオプション(`CMakeLists.txt:53`)。
+OFF では XR 経路が名前付きで throw する
+(`src/project/graphvariantpolicy.cpp` の `#if PELICAN_WITH_OPENXR` 分岐)。
+テスト対象は OpenXR の設定に関わらず登録される。
+
+**正しい作法は既に存在する** —— `test/graphvariantpolicy_test.cpp:86` は
+`#if PELICAN_WITH_OPENXR` で囲み、OFF 側で unavailable エラーを検査している。
+揃っていないだけである。
 
 #### 実装範囲
 
-1. XR の肯定側を `#if PELICAN_WITH_OPENXR` で囲むこと。既存テストと同じ作法にすること。
-2. **OFF 側では、名前付きの unavailable エラーが出ることを検査すること。**
-   囲って消すだけにしないこと。
+1. 落ちている 5 件すべてを直すこと。XR の肯定側を `#if PELICAN_WITH_OPENXR` で囲み、
+   **OFF 側では名前付きの unavailable エラーを検査すること。**
+   囲って消すだけにしないこと。`graphvariantpolicy_test.cpp:86` と同じ作法にすること。
+2. 同じガード漏れが他に無いか棚卸しすること。
+   XR / multiview / view family / planar reflection に触れるテストを全て見ること。
+3. **`PELICAN_WITH_OPENXR=OFF` を検証セットに入れること。**
+   規約 9 の本文を「名指しされた 1 つ」ではなく
+   「**触れた `#if` に対応する全てのフラグ**」と読めるように直すこと。
+   最低限、OFF を回すべきフラグの一覧を §0 に置くこと。
 
 #### 受け入れ条件(§4 規約 10)
 
-- `-DPELICAN_WITH_OPENXR=OFF` で `ctest` 全数が緑になること
-- **OFF 構成で「XR が使えない」ことが名前付きエラーとして検査されていること** —— これが対照
-- ON 構成の結果が変わらないこと
-- 他に同じガード漏れのあるテストが無いか確認し、あれば同時に塞ぐこと
+- `-DPELICAN_WITH_OPENXR=OFF` で `ctest` 全数が緑になること(現状 5 件失敗)
+- **OFF 構成で「XR が使えない」ことが名前付きエラーとして検査されていること** ——
+  これが対照である。`#if` で囲って消すだけでは、OFF 側は何も主張していない
+- ON 構成の結果が変わらないこと(現状 1192/1192 緑)
+- 棚卸しの結果を報告すること。「他に無い」なら**何を調べたか**を述べること
 
-依存: なし。見積: 小。**最優先** —— 他の構成でビルドできない状態である。
+#### 範囲外
+
+`viewfamily_test.cpp` の 4 件が**なぜ**落ちるかの根本原因が
+ガード漏れ以外にある場合、それは別 WP とすること。本 WP はガードの作法を揃える。
+
+依存: なし。見積: 小〜中。**最優先** —— 出荷オプションの片側がビルドできない。
 
 ### WP309: 来歴同期の順序ハザードと、本番配線の未検査
 
