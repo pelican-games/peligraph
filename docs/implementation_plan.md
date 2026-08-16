@@ -4160,6 +4160,373 @@ surface contract には `provider_feature` / `provider_reference` が刻まれ
 
 依存: **WP299**(studio の表示に足すため、そのマージ後に着手すること)。見積: 中〜大。
 
+## 論理→物理の差分を見せる(WP301〜WP307)
+
+**目的**: レンダリングパスを組む者が、**自分が書いた論理構造に対して
+エンジンが何を統合し何を分けたままにしたか**を見られるようにする。
+
+**調査で判明した前提**: 差分の材料はエンジンが既に全部算出し、
+`get_frame_plan` の `physical_target_plan` に載せている。
+`alias_groups`(採用された統合)、`planning_opportunities.alias_candidates`
+(合法だが不採用だった組)、resource ごとの `lifetime{first_use,last_use}` /
+`aliasable` / `representation` / `reason`、`lowering_graph`(論理 30 ノード→物理)、
+128 件の decision。**エンジン側に新しい計算は要らない。**
+
+`projects/example` の実測: ターゲット 22 個、エイリアス候補 2 組、採用 1 組
+(`Bloom_Threshold_RT` ＋ `g_emissive`)、不採用 1 組
+(`Bloom_Threshold_RT` ＋ `gbuffer_albedo`)。
+22 個中 16 個が `reason: "arbitrary read requires a materialized resource"`、
+`widest_read` が `same_pixel` なのは 1 個のみ。
+`parallel_candidates` と `fusion_candidates` はいずれも 0。
+
+**差分の基準は論理層(composed config)であって、書かれた生の JSON ではない。**
+生ファイルを基準にすると、feature 合成・hdr 名による bloom 連鎖の再配置・
+scene/display ターゲットの format 上書き・engine が注入する anchor/display/snapshot・
+compute task の graph 数分の複製が、すべて利用者側のノイズとして現れる。
+
+### WP301: xr variant で compute ノードの来歴が消える
+
+**目的**: WP300 で入れた来歴表示が、xr variant で無音のまま無効化されている。直す。
+
+#### 現状
+
+`synchronizeRenderPipelineProvenance`(`src/core/renderingpass/vulkanrendercompilerprogram.cpp:402`)は
+`namespaceComputeTasks`(`:481`、実体 `:249`)**より前**に走る。
+`namespaceComputeTasks` は compute ノードの名前と `after`/`before` 参照すべてに
+variant 接尾辞(`#xr`)を付けて改名する。
+
+来歴は**名前をキーに join** される(`frameplanner.cpp:1740-1741`)ため、
+xr variant では join が外れ、**compute ノードの `source` / `provider_feature` が
+一つも出ない**。例外は投げられず、`engine` に無音で格下げされる。
+
+**WP300 の受け入れ条件は flat variant でしか確認していなかった。**
+
+#### 実装範囲
+
+1. 来歴の join が改名を跨いで成立すること。
+   同期を改名の後に移すか、名前以外のキーで join すること。
+   **どちらを採るかは WP304 の安定 ID と整合させること。第二の識別体系を作らないこと。**
+2. 直したことを、名前一致では落ちる構成で確認すること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **xr variant を有効にした構成で、compute ノードの `source` が
+  実際に compose が行ったことと一致すること。**
+  これが本 WP の中心的な対照である —— flat のみで確認して終えないこと
+- flat variant の来歴が WP300 の結果から変化しないこと
+- 既存 golden が 1 枚も動かないこと
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。
+
+### WP302: 到達不能な planning opportunities 表示と、実データを見ていないテスト
+
+**目的**: ImGui の planning opportunities 節は**一度も描画されたことがない**。
+そしてテストは通っている。テストが実データを見ていないためである。
+
+#### 現状
+
+`buildCompiledPlanOpportunities`(`src/core/imgui/compiledplanviewer.cpp:159-160`)は
+
+```
+const auto it = plan_json.find("planning_opportunities");
+if (it == plan_json.end() || !it->is_array()) return rows;
+```
+
+と**配列を要求する**。しかし producer が出すのは**オブジェクト**である
+(`test/fixtures/devstudio/example_frame_plan.json` の
+`physical_target_plan.planning_opportunities` は
+`alias_candidates` / `fusion_candidates` / `parallel_candidates` / `decisions` /
+`profile` / `node_order` / `seed` を持つオブジェクト)。
+
+したがって常に空を返し、`:413` の `!program.planning_opportunities.empty()` は
+常に偽となり、**節は描画されない**。
+既存テストは手書きの配列を食わせているため通る。
+
+これは §4 規約 10 の 2026-08-13 追記(**動いている側が実際に解決したものを検査せよ**)が
+狙っていた欠陥そのものである。
+
+#### 実装範囲
+
+1. reader を producer の実際の形に合わせること。
+   **producer を配列に変えて逃げないこと** —— alias/fusion/parallel の候補は
+   それぞれ意味が違い、平坦な文字列列では利用者に届かない。
+2. 少なくとも alias 候補・fusion 候補・parallel 候補の別と、
+   採用/不採用の別が読めること。
+3. **テストが実データを通ること。**
+   `test/fixtures/devstudio/example_frame_plan.json` を入力に使うこと。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **実 fixture を入力にしたとき、節が空でないこと**、かつ
+  候補が 2 組・採用 1 組として読めること。
+  手書き JSON でしか通らないテストを残さないこと
+- **候補が 0 件の構成(`conservative_debug` profile)で、節が
+  「候補なし」を明示すること** —— 空表示と未実装の区別がつくこと。
+  これが本 WP の対照である
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。
+
+### WP303: gpu_draw_source が非マテリアルパスで検証されない
+
+**目的**: 未束縛の read エッジが無音で作られる経路を塞ぐ。
+
+#### 現状
+
+`validatePassSpecificFields`(`src/core/renderingpass/renderingpassvalidation.cpp:472`)は
+`material_range` / `material_filter` / `material_variant` / `material_outputs` について
+「マテリアルパス以外では使えない」と名前付きで弾く。
+
+**`gpu_draw_source` はその一覧に無い。**
+`grep gpu_draw_source src/core/renderingpass/renderingpassvalidation.cpp` は 0 件、
+一方 `materialpassinfojsonparser.cpp` には 33 箇所ある。
+
+非マテリアルパスが `gpu_draw_source` を持つと、fail-fast されずに通り、
+束縛されない read エッジが残る。
+
+#### 実装範囲
+
+1. `gpu_draw_source` が非マテリアルパスに現れた場合を、既存 4 件と**同じ作法**で
+   名前付きに弾くこと。**第二の流儀を作らないこと。**
+2. 他に同じ穴が空いている `material*` 系フィールドが無いかを確認し、
+   あれば同時に塞ぐこと。
+
+#### 受け入れ条件(§4 規約 10)
+
+- 非マテリアルパスに `gpu_draw_source` を置いた設定が、
+  **パスの名前とフィールド名を含む**エラーで失敗すること
+- **マテリアルパスに置いた同じ `gpu_draw_source` は従来どおり通ること** ——
+  これが本 WP の対照である。弾きすぎていないこと
+- 既存 4 プロジェクトが従来どおり起動すること
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。
+
+### WP304: ノードとリソースに安定した識別子を与える
+
+**目的**: 差分が「改名」と「削除＋追加」を区別できるようにする。
+**そして編集機能が乗る土台を、無料で入れられるうちに入れる。**
+
+#### 現状:識別子は名前文字列しかない
+
+- `namespaceComputeTasks`(`vulkanrendercompilerprogram.cpp:249`)が
+  compute ノードと graph の名前を variant 接尾辞つきに**改名する**
+- `declaration_index` は**変換後**の config を指すので、
+  feature がパスを 1 つ挿入すると全部ずれる
+- 来歴は名前キーで join され、重複で throw し、改名で無音に `engine` へ落ちる(WP301)
+- frame graph と rendering pass の 2 つの独立したパースは、同じ名前文字列だけで
+  join され、不一致で throw する
+
+**改名を跨いで生存する識別子が、どの層にも無い。**
+
+#### なぜ今か:移行コストが現在ちょうどゼロ
+
+安定 ID は `TargetLoweringNode::source_nodes` の実質を変え、
+`appendTargetLoweringGraphFingerprint`(`src/project/vulkanphysicalfragment.cpp:701-702`)に
+畳み込まれているため、**既存の pin / fragment package を無効化する**。
+
+無効化する対象を数えた。`projects/` の 4 プロジェクト
+(`example` / `animgraph_demo` / `sprite_demo` / `vrm_xr_demo`)と
+`src/core/resources/` を通して、
+`vulkan_plan_pins` / `vulkan_physical_fragments` / `render_strategy` /
+`graph_transforms` / `subgraph_replacements` / `canonical_anchor` は
+**いずれも 0 件**。触れるのは自前のテスト 3 本
+(`headless_render_test.cpp` / `renderpipeline_resolve_test.cpp` /
+`renderstrategyregistry_test.cpp`)のみ。
+
+**この窓は、どれか 1 つのプロジェクトが pin package を書いた瞬間に閉じる。**
+
+#### 実装範囲
+
+1. compose の時点でノードとリソースに識別子を割り当て、
+   改名・variant 展開・2 つの独立パースを跨いで生存させること。
+   名前は**表示用として残す**こと(利用者は名前で認識している)。
+2. 識別子を `get_frame_plan` に載せること。**新しい rpc を作らないこと。**
+3. WP301 の来歴 join を、名前ではなくこの識別子で行うこと。
+4. fingerprint が変わることを受け入れ、影響するテスト 3 本を更新すること。
+   **黙って fingerprint を素通りさせないこと** —— 変わったことが検出されること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **xr variant で改名されたノードが、flat variant の同じノードと
+  同一の識別子を持つこと。** これが本 WP の中心的な対照である
+- feature を 1 つ挿入した前後で、既存ノードの識別子が変わらないこと
+  (`declaration_index` はずれる。**識別子はずれないこと**)
+- 既存 golden が 1 枚も動かないこと。**識別子は診断であって描画に影響しないこと**
+- 新しい rpc を追加していないこと
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+#### 範囲外
+
+編集・書き戻し・グラフ受け取り rpc。本 WP は識別子のみ。
+
+依存: なし(WP301 は本 WP の結論に合わせること)。見積: 中〜大。
+
+### WP305: studio が受け取っている情報の取りこぼしを塞ぐ
+
+**目的**: 差分ビューが必要とする情報は既に wire に載っているが、
+studio のモデルが**捨てている**。塞ぐ。
+
+#### 現状
+
+`buildFramePlanModel`(`src/devstudio/model/frameplanmodel.cpp:540-690`)は
+`physical_target_plan` の `decisions` / `planning_opportunities` /
+`lowering_graph`(の一部) / `attachments` / `resources` / `backend_selection` を
+既にパースしている。
+
+**捨てているもの**: `alias_groups`(`src/devstudio` 全体で `alias` は 0 ヒット)、
+`scopes`、`resolution_plan`、`lowering_graph.nodes`、
+`execution_plan.dependencies`、`gpu_resource_arena`。
+さらに相対 extent を落とすため、**22 個の実ターゲットのうち 21 個がサイズ未表示**になる。
+
+#### 実装範囲
+
+1. 上記を取り込むこと。**allowlist を広げるのであって、新しい rpc を作らないこと。**
+2. 相対 extent(`kind: output_relative`, `scale_x`, `scale_y`)を保持し、
+   出力解像度から実サイズを出せるようにすること。
+3. `RenderTargetDefinition::alias_group` は現在 JSON 出力を持たない。
+   plan 全体の `alias_groups` 配列から**ターゲット→所属グループ**を引けるようにすること
+   (studio 側の導出でよい。エンジンに新しい出力を足さないこと)。
+
+#### 受け入れ条件(§4 規約 10)
+
+- `test/fixtures/devstudio/example_frame_plan.json` を入力に、
+  **22 ターゲット全部がサイズを持つこと**(現状 1/22)
+- 採用されたエイリアス組と、不採用だった候補組の**両方**が読めること
+- **エイリアスが 1 件も無い構成(`conservative_debug` profile)で、
+  モデルが空グループを正しく表し、例外を投げないこと** ——
+  これが本 WP の対照である
+- 落としている項目が他に無いことを、fixture のキー集合との突き合わせで示すこと
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし(WP304 と並行可。識別子が入ったら join をそちらへ寄せること)。見積: 中。
+
+### WP306: 論理層をノードと辺で描く
+
+**目的**: 実行順に並べた表ではなく、**依存構造**を見せる。
+
+#### 現状
+
+studio に描画の基盤が無い。`QGraphicsScene` / `QGraphicsView` / `QGraphicsItem` /
+`paintEvent` / ドラッグ&ドロップ / QtSvg / QtCharts のいずれも `src/devstudio` に存在しない。
+**まっさらである。**
+
+現在の表示は実行順の線形リストで、**トポロジカルソートが消した辺が見えない**。
+`projects/example` では消えている辺が 5 本ある
+(bloom のスキップ接続 3 本、SSAO のダイヤモンド、`lit_color` の 17 ノード跨ぎ)。
+
+#### 実装範囲
+
+1. ノードと辺のキャンバス。論理層(30 ノード)を描くこと。
+2. WP300 の来歴で塗り分けること(project / feature / engine)。
+3. 頻出構造を畳めること。`projects/example` では bloom 連鎖が
+   30 ノード中 13 を占め、畳むと主鎖は 9 ノードになる。
+   **畳む粒度は利用者が変えられること。**
+4. anchor(reads/writes を持たない挿入点。example では 8 個)を、
+   通常ノードと区別して扱うこと。
+5. **編集はまだ入れない。ただし選択とノード同一性は WP304 の識別子で持つこと** ——
+   名前文字列で作ると編集を足すときに作り直しになる。
+
+#### 受け入れ条件(§4 規約 10)
+
+- 実行順では現れない辺が現れること。
+  `projects/example` で 5 本(スキップ 3・SSAO 分岐・`lit_color` 直行)
+- **feature を 1 つ切った構成で、消えたノードと消えた辺が実際に消えること** ——
+  purgeable が図の上で確認できること。これが本 WP の対照である
+- 30 ノードが人が読める形に畳めること
+- studio 単体で fixture から描けること(player の起動を要さないこと)
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+#### 範囲外
+
+編集・ノード位置の永続化・自動レイアウトの作り込み。物理層の差分(WP307)。
+
+依存: **WP304**(識別子)、**WP305**(取りこぼし)。見積: 大。
+
+### WP307: 何が統合され何が分けられたかを差分として重ねる
+
+**目的**: 本題。論理層に対して**エンジンが下した物理的判断**を重ねて見せる。
+
+#### 見せるべきもの(すべて既に wire にある)
+
+- **統合されたターゲット**: `alias_groups`。`example` では 1 組
+- **合法だったが不採用の候補**: `planning_opportunities.alias_candidates`。
+  `example` では 2 組中 1 組が不採用
+- **各リソースの理由**: `reason`(`example` では 22 個中 16 個が
+  「arbitrary read requires a materialized resource」)、
+  `widest_read`(`same_pixel` は 1 個のみ)、`aliasable`、`representation`
+- **生存区間**: `lifetime{first_use, last_use}`。エンジンが算出済み
+- **並列/融合の余地**: `parallel_candidates` / `fusion_candidates`
+  (`example` ではいずれも 0)
+
+#### エイリアスは書かれたグラフの性質ではない
+
+**同じ論理グラフでも、planning profile と実機の能力で結果が変わる。**
+`conservative_debug` は候補 0、`hazard_stress` は半分を捨て、
+`optimized`(既定)だけが統合する。scope fusion はさらに実機の
+`VK_KHR_dynamic_rendering_local_read` を要する。
+
+**したがって表示は、どの profile とどの endpoint の結果かを必ず併記すること。**
+併記しない差分は、機械が変われば嘘になる。
+
+#### 実装範囲
+
+1. 論理層の図(WP306)に、統合・分離・不採用候補を重ねること。
+2. リソースを選ぶと、そのリソースの `reason` / `lifetime` / `aliasable` /
+   `representation` が読めること。
+3. profile と endpoint を明示すること。
+4. 不採用の候補を、採用と区別して見せること。
+   **なぜ不採用だったかの理由は現在記録されていない**
+   (`deriveLegalAliasCandidates` は `continue` で捨て何も残さない)。
+   **理由が無いことを、あるかのように見せないこと。**
+
+#### 受け入れ条件(§4 規約 10)
+
+- `projects/example` で、統合 1 組・不採用候補 1 組が区別して見えること
+- **`conservative_debug` profile で、統合 0・候補 0 と表示され、
+  かつ profile が明示されること** ——
+  同じ論理グラフが違う物理結果を出すことが図の上で分かること。
+  これが本 WP の中心的な対照である
+- 理由が記録されていない項目を、推測で埋めないこと
+- 既存 golden が 1 枚も動かないこと
+- `ctest` 全数が緑(`-j4`)、両ビルド階層でビルドが通ること(§4 規約 9)、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: **WP306**。見積: 大。
+
+### 編集機能に向けて未着手のもの(WP308 以降・設計未確定)
+
+利用者は編集機能を入れる意思を明示している。可視化が乗った後に着手する。
+現時点で判明している**切れている 3 箇所**を記録する。
+
+1. **グラフを受け取る rpc が無い。** `get_frame_plan` は純粋な getter で、
+   送ったパラメータを無視する。`set_*` 系は存在しない。
+2. **論理グラフのシリアライザが無い。** `composeRenderFeatureConfig` は一方通行で、
+   どの IR からも編集可能な設定を書き戻せない。既存の直列化はすべて dump 専用。
+   物理層には往復路がある(`ejectable_physical_fragment` →
+   `vulkan_physical_fragments`)が、論理層には対応物が無い。
+3. **リロードが恒久的に無効。** `ReloadGate::configureFromLaunch`
+   (`src/core/watch/reloadgate.cpp:12`)が `rpc_ = config.rpc` とし、
+   `updateLocked`(`:27`)が `enabled = requested && !replay && !strict && !rpc`。
+   studio は常に `--rpc` で player を起動する
+   (`src/devstudio/viewport/studioplayerarguments.cpp:52`)ので、
+   **studio 配下の player はファイルを書いても拾わない**(reason: "rpc driver")。
+
+**有力な回避路**: `compileVulkanTargetPlan`(`src/project/targetrenderplanning.hpp:498`)と
+`makeTargetLoweringGraph`(`:155`)は `pelican_project` にあり、
+**studio が必ずリンクする側**である。studio がローカルで候補をコンパイルすれば、
+実機に反映せずに差分を出せる。**D0 に触れない。**
+ただし論理 IR 側(`frameplanner` / `vulkanrendercompilerprogram`)は
+`pelican_core` にあり D0 の向こうなので、そのままでは届かない。
+**ローカル compile と compile 用 rpc のどちらが安いかは未計測。**
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
