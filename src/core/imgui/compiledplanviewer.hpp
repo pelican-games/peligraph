@@ -52,6 +52,24 @@ struct CompiledPlanFact {
     std::string value;
 };
 
+struct CompiledPlanOpportunityPair {
+    std::string first;
+    std::string second;
+    bool adopted = false;
+};
+
+// The producer reports three semantically distinct kinds of opportunity.
+// Keep them separate so the viewer can show what was merely legal and what
+// the physical plan actually adopted.
+struct CompiledPlanOpportunities {
+    bool available = false;
+    std::string profile;
+    std::vector<CompiledPlanOpportunityPair> alias_candidates;
+    std::vector<CompiledPlanOpportunityPair> fusion_candidates;
+    std::vector<CompiledPlanOpportunityPair> parallel_candidates;
+    std::string empty_state;
+};
+
 // One published render program (one graph variant: flat / xr / preview ...).
 struct CompiledPlanProgram {
     std::string variant;
@@ -62,7 +80,7 @@ struct CompiledPlanProgram {
     std::vector<CompiledPlanNodeRow> nodes;
     std::vector<CompiledPlanBindingRow> bindings;
     std::vector<CompiledPlanRouteRow> routes;
-    std::vector<std::string> planning_opportunities;
+    CompiledPlanOpportunities planning_opportunities;
     nlohmann::ordered_json target_plan_json;
 };
 
@@ -78,7 +96,7 @@ struct CompiledPlanModel {
 // compiled without one).
 std::vector<CompiledPlanFact> buildCompiledPlanFacts(
     const nlohmann::json &plan_json);
-std::vector<std::string> buildCompiledPlanOpportunities(
+CompiledPlanOpportunities buildCompiledPlanOpportunities(
     const nlohmann::json &plan_json);
 
 // Snapshots the currently published runtime generation.

@@ -3,7 +3,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <fstream>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
+
+#ifndef PELICAN_TEST_FRAME_PLAN_FIXTURE
+#error "PELICAN_TEST_FRAME_PLAN_FIXTURE must name the captured get_frame_plan response"
+#endif
 
 using namespace Pelican;
 
@@ -23,6 +29,44 @@ bool hasFact(const std::vector<CompiledPlanFact> &facts, std::string_view key) {
         [&](const CompiledPlanFact &fact) { return fact.key == key; });
 }
 
+nlohmann::json capturedPhysicalTargetPlan() {
+    std::ifstream input{PELICAN_TEST_FRAME_PLAN_FIXTURE, std::ios::binary};
+    if (!input) {
+        throw std::runtime_error("failed to open captured frame-plan fixture");
+    }
+    return nlohmann::json::parse(input).at("physical_target_plan");
+}
+
+std::size_t candidateCount(const CompiledPlanOpportunities &opportunities) {
+    return opportunities.alias_candidates.size() +
+           opportunities.fusion_candidates.size() +
+           opportunities.parallel_candidates.size();
+}
+
+std::size_t adoptedCount(const CompiledPlanOpportunities &opportunities) {
+    const auto count_adopted = [](const auto &candidates) {
+        return static_cast<std::size_t>(std::count_if(
+            candidates.begin(), candidates.end(),
+            [](const auto &candidate) { return candidate.adopted; }));
+    };
+    return count_adopted(opportunities.alias_candidates) +
+           count_adopted(opportunities.fusion_candidates) +
+           count_adopted(opportunities.parallel_candidates);
+}
+
+const CompiledPlanOpportunityPair &findCandidate(
+    const std::vector<CompiledPlanOpportunityPair> &candidates,
+    std::string_view first, std::string_view second) {
+    const auto candidate = std::find_if(
+        candidates.begin(), candidates.end(), [&](const auto &row) {
+            return row.first == first && row.second == second;
+        });
+    if (candidate == candidates.end()) {
+        throw std::runtime_error("expected opportunity candidate was not found");
+    }
+    return *candidate;
+}
+
 } // namespace
 
 TEST_CASE("Compiled plan facts promote the decisions a person checks first",
@@ -40,7 +84,6 @@ TEST_CASE("Compiled plan facts promote the decisions a person checks first",
         {"mixed_execution", false},
         {"view_execution_plan", nlohmann::json::array({1, 2, 3})},
         {"required_physical_features", nlohmann::json::array({"multiview"})},
-        {"planning_opportunities", nlohmann::json::array()},
         {"ejectable_pin_package", nlohmann::json::object({{"pins", 1}})},
         {"ejectable_physical_fragment", nullptr},
     };
@@ -90,31 +133,41 @@ TEST_CASE("Compiled plan facts tolerate an unknown or partial plan document",
     }
 }
 
-TEST_CASE("Planning opportunities render as readable rows",
+TEST_CASE("Planning opportunities read the captured producer document and its empty control",
           "[imgui][compiled-plan]") {
-    SECTION("string entries pass through") {
-        const auto plan = nlohmann::json{
-            {"planning_opportunities",
-             nlohmann::json::array({"merge_scopes", "alias_depth"})}};
-        const auto rows = buildCompiledPlanOpportunities(plan);
-        REQUIRE(rows == std::vector<std::string>{"merge_scopes", "alias_depth"});
-    }
+    const auto optimized_plan = capturedPhysicalTargetPlan();
+    const auto optimized = buildCompiledPlanOpportunities(optimized_plan);
 
-    SECTION("object entries are flattened to key=value text") {
-        const auto plan = nlohmann::json{
-            {"planning_opportunities",
-             nlohmann::json::array({nlohmann::json{{"kind", "alias"},
-                                                  {"resource", "gbuffer_albedo"}}})}};
-        const auto rows = buildCompiledPlanOpportunities(plan);
-        REQUIRE(rows.size() == 1);
-        REQUIRE(rows[0].find("kind=alias") != std::string::npos);
-        REQUIRE(rows[0].find("resource=gbuffer_albedo") != std::string::npos);
-    }
+    REQUIRE(optimized.available);
+    REQUIRE(optimized.profile == "optimized");
+    REQUIRE(candidateCount(optimized) == 2);
+    REQUIRE(adoptedCount(optimized) == 1);
+    REQUIRE(optimized.alias_candidates.size() == 2);
+    REQUIRE(optimized.fusion_candidates.empty());
+    REQUIRE(optimized.parallel_candidates.empty());
+    REQUIRE(findCandidate(optimized.alias_candidates, "Bloom_Threshold_RT",
+                          "g_emissive")
+                .adopted);
+    REQUIRE_FALSE(findCandidate(optimized.alias_candidates, "Bloom_Threshold_RT",
+                                "gbuffer_albedo")
+                      .adopted);
+    REQUIRE(optimized.empty_state.empty());
 
-    SECTION("absent or malformed collections yield no rows") {
-        REQUIRE(buildCompiledPlanOpportunities(nlohmann::json::object()).empty());
-        REQUIRE(buildCompiledPlanOpportunities(
-                    nlohmann::json{{"planning_opportunities", 7}})
-                    .empty());
-    }
+    // The control keeps the captured producer shape but applies the profile's
+    // no-opportunity result at the same reader entry point.
+    auto conservative_plan = optimized_plan;
+    auto &report = conservative_plan.at("planning_opportunities");
+    report["profile"] = "conservative_debug";
+    report.at("alias_candidates").clear();
+    report.at("fusion_candidates").clear();
+    report.at("parallel_candidates").clear();
+    conservative_plan.at("alias_groups").clear();
+
+    const auto conservative =
+        buildCompiledPlanOpportunities(conservative_plan);
+    REQUIRE(conservative.available);
+    REQUIRE(conservative.profile == "conservative_debug");
+    REQUIRE(candidateCount(conservative) == 0);
+    REQUIRE(adoptedCount(conservative) == 0);
+    REQUIRE(conservative.empty_state == "no candidates");
 }

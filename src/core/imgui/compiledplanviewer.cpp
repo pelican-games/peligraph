@@ -68,6 +68,61 @@ bool containsCaseInsensitive(std::string_view haystack, std::string_view needle)
     return it != haystack.end();
 }
 
+bool collectionEntryContainsPair(const nlohmann::json &plan_json,
+                                 std::string_view collection_key,
+                                 std::string_view members_key,
+                                 std::string_view first,
+                                 std::string_view second,
+                                 bool require_single_rendering_instance = false) {
+    const auto collection = plan_json.find(std::string{collection_key});
+    if (collection == plan_json.end() || !collection->is_array()) return false;
+    for (const auto &entry : *collection) {
+        if (!entry.is_object()) continue;
+        if (require_single_rendering_instance &&
+            (!entry.contains("single_rendering_instance") ||
+             !entry["single_rendering_instance"].is_boolean() ||
+             !entry["single_rendering_instance"].get<bool>())) {
+            continue;
+        }
+        const auto members = entry.find(std::string{members_key});
+        if (members == entry.end() || !members->is_array()) continue;
+        const auto contains = [&](std::string_view name) {
+            return std::any_of(members->begin(), members->end(),
+                               [&](const nlohmann::json &member) {
+                                   return member.is_string() &&
+                                          member.get<std::string>() == name;
+                               });
+        };
+        if (contains(first) && contains(second)) return true;
+    }
+    return false;
+}
+
+template <typename Adopted>
+bool readOpportunityPairs(const nlohmann::json &report, std::string_view key,
+                          Adopted adopted,
+                          std::vector<CompiledPlanOpportunityPair> &result) {
+    const auto candidates = report.find(std::string{key});
+    if (candidates == report.end() || !candidates->is_array()) return false;
+    result.reserve(candidates->size());
+    for (const auto &candidate : *candidates) {
+        if (!candidate.is_object()) return false;
+        const auto first = candidate.find("first");
+        const auto second = candidate.find("second");
+        if (first == candidate.end() || second == candidate.end() ||
+            !first->is_string() || !second->is_string()) {
+            return false;
+        }
+        CompiledPlanOpportunityPair pair{
+            .first = first->get<std::string>(),
+            .second = second->get<std::string>(),
+        };
+        pair.adopted = adopted(pair.first, pair.second);
+        result.push_back(std::move(pair));
+    }
+    return true;
+}
+
 void drawJsonTree(const nlohmann::json &value, const std::string &label,
                   std::string_view filter) {
     if (value.is_object() || value.is_array()) {
@@ -152,30 +207,48 @@ std::vector<CompiledPlanFact> buildCompiledPlanFacts(
     return facts;
 }
 
-std::vector<std::string> buildCompiledPlanOpportunities(
+CompiledPlanOpportunities buildCompiledPlanOpportunities(
     const nlohmann::json &plan_json) {
-    std::vector<std::string> rows;
-    if (!plan_json.is_object()) return rows;
+    CompiledPlanOpportunities result;
+    if (!plan_json.is_object()) return result;
     const auto it = plan_json.find("planning_opportunities");
-    if (it == plan_json.end() || !it->is_array()) return rows;
-    rows.reserve(it->size());
-    for (const auto &entry : *it) {
-        if (entry.is_string()) {
-            rows.push_back(entry.get<std::string>());
-            continue;
-        }
-        if (entry.is_object()) {
-            std::string text;
-            for (const auto &field : entry.items()) {
-                if (!text.empty()) text += "  ";
-                text += field.key() + "=" + scalarText(field.value());
-            }
-            rows.push_back(text);
-            continue;
-        }
-        rows.push_back(scalarText(entry));
+    if (it == plan_json.end() || !it->is_object()) return result;
+
+    const auto profile = it->find("profile");
+    if (profile != it->end() && profile->is_string()) {
+        result.profile = profile->get<std::string>();
     }
-    return rows;
+
+    const auto alias_adopted = [&](std::string_view first,
+                                   std::string_view second) {
+        return collectionEntryContainsPair(plan_json, "alias_groups", "resources",
+                                           first, second);
+    };
+    const auto fusion_adopted = [&](std::string_view first,
+                                    std::string_view second) {
+        return collectionEntryContainsPair(plan_json, "scopes", "nodes", first,
+                                           second, true);
+    };
+    const auto not_adopted = [](std::string_view, std::string_view) {
+        // The current producer has no physical parallel-group collection;
+        // these rows are opportunities only.
+        return false;
+    };
+    if (!readOpportunityPairs(*it, "alias_candidates", alias_adopted,
+                              result.alias_candidates) ||
+        !readOpportunityPairs(*it, "fusion_candidates", fusion_adopted,
+                              result.fusion_candidates) ||
+        !readOpportunityPairs(*it, "parallel_candidates", not_adopted,
+                              result.parallel_candidates)) {
+        return CompiledPlanOpportunities{};
+    }
+
+    result.available = true;
+    if (result.alias_candidates.empty() && result.fusion_candidates.empty() &&
+        result.parallel_candidates.empty()) {
+        result.empty_state = "no candidates";
+    }
+    return result;
 }
 
 CompiledPlanModel buildCompiledPlanModel() {
@@ -410,12 +483,42 @@ struct CompiledPlanViewer::Impl {
             }
             ImGui::EndTable();
         }
-        if (!program.planning_opportunities.empty() &&
+        if (program.planning_opportunities.available &&
             ImGui::CollapsingHeader("planning opportunities",
-                                    ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (const auto &row : program.planning_opportunities) {
-                ImGui::BulletText("%s", row.c_str());
+                                     ImGuiTreeNodeFlags_DefaultOpen)) {
+            const auto &opportunities = program.planning_opportunities;
+            if (!opportunities.profile.empty()) {
+                ImGui::TextDisabled("profile %s", opportunities.profile.c_str());
             }
+            if (!opportunities.empty_state.empty()) {
+                ImGui::TextDisabled("%s", opportunities.empty_state.c_str());
+            }
+            const auto draw_candidates = [](
+                                             const char *label,
+                                             const std::vector<
+                                                 CompiledPlanOpportunityPair>
+                                                 &candidates) {
+                ImGui::TextDisabled("%s (%zu)", label, candidates.size());
+                ImGui::Indent();
+                if (candidates.empty()) {
+                    ImGui::TextDisabled("none");
+                } else {
+                    for (const auto &candidate : candidates) {
+                        ImGui::BulletText("[%s] %s + %s",
+                                          candidate.adopted ? "adopted"
+                                                            : "not adopted",
+                                          candidate.first.c_str(),
+                                          candidate.second.c_str());
+                    }
+                }
+                ImGui::Unindent();
+            };
+            draw_candidates("alias candidates",
+                            opportunities.alias_candidates);
+            draw_candidates("fusion candidates",
+                            opportunities.fusion_candidates);
+            draw_candidates("parallel candidates",
+                            opportunities.parallel_candidates);
         }
         ImGui::Dummy({0.0f, 6.0f});
         ImGui::SetNextItemWidth(-1.0f);
