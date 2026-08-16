@@ -41,6 +41,8 @@ struct RenderFeatureComposeResult {
     nlohmann::json material_routing;
     nlohmann::json draw_sort;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
+    std::vector<RenderPassProvenance> pass_provenance;
+    std::vector<RenderResourceProvenance> resource_provenance;
     bool used_features = false;
 };
 

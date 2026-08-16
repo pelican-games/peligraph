@@ -424,6 +424,11 @@ struct FramePlanWidget::Impl {
             item->setFont(1, font);
 
             auto *facts = groupItem(item, owner.tr("Plan facts"));
+            addFact(facts, owner.tr("Source"), text(node.source));
+            addFact(facts, owner.tr("Provider feature"),
+                    text(node.provider_feature));
+            addFact(facts, owner.tr("Provider ref"),
+                    text(node.provider_reference));
             addFact(facts, owner.tr("Level"),
                     QString::number(static_cast<qulonglong>(node.level)));
             addFact(facts, owner.tr("Declaration index"),
@@ -631,6 +636,8 @@ struct FramePlanWidget::Impl {
             item->setFont(0, font);
 
             auto *facts = groupItem(item, owner.tr("Resource facts"));
+            addFact(facts, owner.tr("Kind"), text(resource.kind));
+            addFact(facts, owner.tr("Source"), text(resource.source));
             addFact(facts, owner.tr("Dimension"), text(resource.dimension));
             if (resource.width && resource.height) {
                 addFact(facts, owner.tr("Extent"),

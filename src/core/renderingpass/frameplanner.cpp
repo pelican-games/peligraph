@@ -1715,6 +1715,16 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan) {
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
     const CompiledRenderPipeline *render_pipeline) {
+    std::unordered_map<std::string, const RenderPassProvenance *>
+        pass_provenance;
+    if (render_pipeline != nullptr) {
+        pass_provenance.reserve(
+            render_pipeline->pass_provenance.size());
+        for (const auto &entry :
+             render_pipeline->pass_provenance) {
+            pass_provenance.emplace(entry.name, &entry);
+        }
+    }
     auto nodes_json = nlohmann::json::array();
     for (const auto &node : plan.nodes) {
         auto node_json = nlohmann::json{
@@ -1727,6 +1737,22 @@ nlohmann::json framePlanToJson(
             {"reads_history", node.reads_history},
             {"writes", node.writes},
         };
+        if (const auto found = pass_provenance.find(node.name);
+            found != pass_provenance.end()) {
+            const auto &provenance = *found->second;
+            node_json["source"] =
+                renderPipelineProvenanceSourceName(
+                    provenance.source,
+                    provenance.provider_feature);
+            if (!provenance.provider_feature.empty()) {
+                node_json["provider_feature"] =
+                    provenance.provider_feature;
+            }
+            if (!provenance.provider_reference.empty()) {
+                node_json["provider_ref"] =
+                    provenance.provider_reference;
+            }
+        }
         if (node.kind == FramePlanNodeKind::snapshot_copy) {
             node_json["byte_size"] = node.byte_size;
             node_json["snapshot_after"] = node.snapshot_after;
@@ -1785,6 +1811,30 @@ nlohmann::json framePlanToJson(
             serializeCompiledRenderPipelineMetadata(*render_pipeline);
         for (auto field = metadata.begin(); field != metadata.end(); ++field) {
             result[field.key()] = field.value();
+        }
+        if (!render_pipeline->resource_provenance.empty()) {
+            auto resources = nlohmann::json::array();
+            for (const auto &provenance :
+                 render_pipeline->resource_provenance) {
+                auto resource = nlohmann::json{
+                    {"kind", provenance.kind},
+                    {"name", provenance.name},
+                    {"source",
+                     renderPipelineProvenanceSourceName(
+                         provenance.source,
+                         provenance.provider_feature)},
+                };
+                if (!provenance.provider_feature.empty()) {
+                    resource["provider_feature"] =
+                        provenance.provider_feature;
+                }
+                if (!provenance.provider_reference.empty()) {
+                    resource["provider_ref"] =
+                        provenance.provider_reference;
+                }
+                resources.push_back(std::move(resource));
+            }
+            result["resources"] = std::move(resources);
         }
     }
     return result;

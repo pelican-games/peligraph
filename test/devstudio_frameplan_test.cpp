@@ -167,6 +167,62 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Devstudio exposes captured compose-time provenance and invents none",
+    "[devstudio][frame-plan][wp300][provenance][negative-contrast]") {
+    const Json captured = Json::parse(capturedResponse());
+    const FramePlanModel model = buildFramePlanModel(captured.dump());
+
+    const FramePlanNode *project = findNode(model, "gbuffer_pass");
+    REQUIRE(project != nullptr);
+    REQUIRE(project->source == "project");
+    REQUIRE(project->provider_feature.empty());
+    REQUIRE(project->provider_reference.empty());
+
+    const FramePlanNode *feature = findNode(model, "pelican_ui");
+    REQUIRE(feature != nullptr);
+    REQUIRE(feature->source == "feature:ui");
+    REQUIRE(feature->provider_feature == "ui");
+    REQUIRE(feature->provider_reference ==
+            "engine://features/ui.json");
+
+    const FramePlanNode *engine = findNode(model, "output_transform");
+    REQUIRE(engine != nullptr);
+    REQUIRE(engine->source == "engine");
+
+    const FramePlanResource *project_target =
+        findResource(model, "gbuffer_albedo");
+    REQUIRE(project_target != nullptr);
+    REQUIRE(project_target->kind == "render_target");
+    REQUIRE(project_target->source == "project");
+    const FramePlanResource *engine_target =
+        findResource(model, "display");
+    REQUIRE(engine_target != nullptr);
+    REQUIRE(engine_target->source == "engine");
+
+    Json without_provenance = captured;
+    without_provenance.erase("resources");
+    for (auto &node : without_provenance["nodes"]) {
+        node.erase("source");
+        node.erase("provider_feature");
+        node.erase("provider_ref");
+    }
+    const FramePlanModel absent =
+        buildFramePlanModel(without_provenance.dump());
+    const FramePlanNode *absent_project =
+        findNode(absent, "gbuffer_pass");
+    const FramePlanNode *absent_feature =
+        findNode(absent, "pelican_ui");
+    const FramePlanResource *absent_target =
+        findResource(absent, "gbuffer_albedo");
+    REQUIRE(absent_project != nullptr);
+    REQUIRE(absent_feature != nullptr);
+    REQUIRE(absent_target != nullptr);
+    REQUIRE(absent_project->source.empty());
+    REQUIRE(absent_feature->source.empty());
+    REQUIRE(absent_target->source.empty());
+}
+
+TEST_CASE(
     "Devstudio exposes physical reasons and rejected backend failures from the captured response",
     "[devstudio][frame-plan][wp299][negative-contrast]") {
     const Json captured = Json::parse(capturedResponse());

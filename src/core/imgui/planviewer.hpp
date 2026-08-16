@@ -20,6 +20,7 @@ struct PlanViewerNode {
     std::vector<std::string> writes;
     std::string source;
     std::string feature;
+    std::string provider_reference;
     std::string anchor;
     std::string color_load_op;
     std::string color_store_op;
@@ -40,6 +41,10 @@ struct PlanViewerResource {
     std::string name;
     std::string format;
     std::string format_class;
+    std::string kind;
+    std::string source;
+    std::string feature;
+    std::string provider_reference;
     std::vector<std::string> readers;
     std::vector<std::string> writers;
 };
@@ -61,10 +66,9 @@ struct PlanViewerModel {
     std::vector<PlanViewerMaterial> materials;
 };
 
-// plan_json is the public pelican.frame_plan v1 contract. annotations only add
-// display metadata and never add, remove, or reorder plan nodes or edges.
+// plan_json is the public pelican.frame_plan v1 contract returned by
+// get_frame_plan. The viewer does not re-resolve authoring configuration.
 PlanViewerModel buildPlanViewerModel(const nlohmann::json &plan_json,
-                                     const nlohmann::json &annotations,
                                      std::span<const LoweredMaterial> materials = {});
 
 class PlanViewer {

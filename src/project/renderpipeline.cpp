@@ -1041,6 +1041,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.material_routing = std::move(composed.material_routing);
     result.draw_sort = std::move(composed.draw_sort);
     result.pipeline_preset = std::move(composed.pipeline_preset);
+    result.pass_provenance =
+        std::move(composed.pass_provenance);
+    result.resource_provenance =
+        std::move(composed.resource_provenance);
     result.used_features = composed.used_features;
     result.graph_variant_policy = graph_variant_policy;
     result.graph_variant_feature_decisions =
@@ -1750,6 +1754,154 @@ nlohmann::json serializeNumericValue(
 
 } // namespace
 
+std::string renderPipelineProvenanceSourceName(
+    RenderPipelineProvenanceSource source,
+    std::string_view provider_feature) {
+    switch (source) {
+    case RenderPipelineProvenanceSource::project:
+        return "project";
+    case RenderPipelineProvenanceSource::feature:
+        if (provider_feature.empty()) {
+            throw std::runtime_error(
+                "feature provenance requires provider_feature");
+        }
+        return "feature:" + std::string{provider_feature};
+    case RenderPipelineProvenanceSource::engine:
+        return "engine";
+    }
+    throw std::runtime_error("unknown render pipeline provenance source");
+}
+
+void synchronizeRenderPipelineProvenance(
+    const nlohmann::json &config,
+    std::vector<RenderPassProvenance> &passes,
+    std::vector<RenderResourceProvenance> &resources,
+    RenderPipelineProvenanceSource default_source) {
+    std::unordered_map<std::string, RenderPassProvenance>
+        known_passes;
+    known_passes.reserve(passes.size());
+    for (auto &pass : passes) {
+        if (pass.name.empty() ||
+            !known_passes.emplace(pass.name, std::move(pass)).second) {
+            throw std::runtime_error(
+                "render pass provenance has an empty or duplicate name");
+        }
+    }
+
+    std::vector<RenderPassProvenance> synchronized_passes;
+    std::unordered_set<std::string> seen_passes;
+    const auto append_pass = [&](const nlohmann::json &entry,
+                                 std::string_view context) {
+        const auto name = requireString(entry, "name", context);
+        if (!seen_passes.insert(name).second) return;
+        const auto found = known_passes.find(name);
+        if (found != known_passes.end()) {
+            synchronized_passes.push_back(found->second);
+        } else {
+            synchronized_passes.push_back(RenderPassProvenance{
+                .name = name,
+                .source = default_source,
+            });
+        }
+    };
+    if (const auto rendering_passes = config.find("rendering_passes");
+        rendering_passes != config.end()) {
+        if (!rendering_passes->is_array()) {
+            throw std::runtime_error("rendering_passes must be an array");
+        }
+        for (const auto &pass_set : *rendering_passes) {
+            if (!pass_set.is_object() ||
+                !pass_set.contains("passes") ||
+                !pass_set.at("passes").is_array()) {
+                throw std::runtime_error(
+                    "rendering pass requires passes array");
+            }
+            for (const auto &pass : pass_set.at("passes")) {
+                append_pass(pass, "render pass");
+            }
+        }
+    }
+    if (const auto compute_tasks = config.find("compute_tasks");
+        compute_tasks != config.end()) {
+        if (!compute_tasks->is_array()) {
+            throw std::runtime_error("compute_tasks must be an array");
+        }
+        for (const auto &task : *compute_tasks) {
+            append_pass(task, "compute task");
+        }
+    }
+    passes = std::move(synchronized_passes);
+
+    std::unordered_map<std::string, RenderResourceProvenance>
+        known_resources;
+    known_resources.reserve(resources.size());
+    for (auto &resource : resources) {
+        if (resource.name.empty() ||
+            !known_resources.emplace(resource.name, std::move(resource)).second) {
+            throw std::runtime_error(
+                "render resource provenance has an empty or duplicate name");
+        }
+    }
+
+    std::vector<RenderResourceProvenance> synchronized_resources;
+    std::unordered_set<std::string> seen_resources;
+    const auto append_resource = [&](std::string name,
+                                     std::string kind) {
+        if (name.empty() || !seen_resources.insert(name).second) {
+            if (name.empty()) {
+                throw std::runtime_error(
+                    "render resource provenance requires a name");
+            }
+            return;
+        }
+        const auto found = known_resources.find(name);
+        if (found != known_resources.end()) {
+            auto retained = found->second;
+            retained.kind = std::move(kind);
+            synchronized_resources.push_back(std::move(retained));
+        } else {
+            synchronized_resources.push_back(RenderResourceProvenance{
+                .name = std::move(name),
+                .kind = std::move(kind),
+                .source = default_source,
+            });
+        }
+    };
+    if (const auto render_targets = config.find("render_targets");
+        render_targets != config.end()) {
+        if (!render_targets->is_array()) {
+            throw std::runtime_error("render_targets must be an array");
+        }
+        for (const auto &target : *render_targets) {
+            append_resource(
+                requireString(target, "name", "render target"),
+                "render_target");
+        }
+    }
+    if (const auto buffers = config.find("buffers");
+        buffers != config.end()) {
+        if (!buffers->is_array()) {
+            throw std::runtime_error("buffers must be an array");
+        }
+        for (const auto &buffer : *buffers) {
+            if (buffer.is_string()) {
+                append_resource(buffer.get<std::string>(), "buffer");
+            } else if (buffer.is_object()) {
+                append_resource(
+                    requireString(buffer, "name", "buffer"),
+                    "buffer");
+            } else {
+                throw std::runtime_error(
+                    "buffers entries must be strings or objects");
+            }
+        }
+    }
+    if (seen_passes.contains("output_transform")) {
+        append_resource("swapchain", "frame_target");
+    }
+    resources = std::move(synchronized_resources);
+}
+
 CompiledRenderPipeline compileRenderPipeline(
     const ResolvedRenderPipeline &pipeline) {
     if (renderPipelineGraphVariantName(
@@ -1846,6 +1998,12 @@ CompiledRenderPipeline compileRenderPipeline(
     result.graph_variant_feature_decisions =
         pipeline.graph_variant_feature_decisions;
     result.diagnostics = pipeline.diagnostics;
+    result.pass_provenance = pipeline.pass_provenance;
+    result.resource_provenance = pipeline.resource_provenance;
+    synchronizeRenderPipelineProvenance(
+        pipeline.normalized_config,
+        result.pass_provenance,
+        result.resource_provenance);
     result.used_features = pipeline.used_features;
     return result;
 }

@@ -396,6 +396,11 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         FramePlanNode node;
         node.name = requireStringField(value, "name", context);
         node.kind = requireStringField(value, "kind", context);
+        node.source = optionalStringField(value, "source", context);
+        node.provider_feature =
+            optionalStringField(value, "provider_feature", context);
+        node.provider_reference =
+            optionalStringField(value, "provider_ref", context);
         node.declaration_index =
             requireSizeField(value, "declaration_index", context);
         node.order = requireSizeField(value, "order", context);
@@ -636,6 +641,34 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
     for (const auto &barrier : model.barriers) {
         auto &resource = resources[barrier.resource];
         resource.name = barrier.resource;
+    }
+
+    if (const auto declarations = root.find("resources");
+        declarations != root.end()) {
+        if (!declarations->is_array()) {
+            throw invalid("resources must be an array");
+        }
+        for (std::size_t index = 0; index < declarations->size(); ++index) {
+            const auto &value = declarations->at(index);
+            const std::string context =
+                "resources[" + std::to_string(index) + "]";
+            if (!value.is_object()) {
+                throw invalid(context + " must be an object");
+            }
+            const std::string name =
+                requireStringField(value, "name", context);
+            auto &resource = resources[name];
+            resource.name = name;
+            resource.kind = optionalStringField(value, "kind", context);
+            resource.source = optionalStringField(value, "source", context);
+            resource.provider_feature =
+                optionalStringField(value, "provider_feature", context);
+            resource.provider_reference =
+                optionalStringField(value, "provider_ref", context);
+            if (resource.kind == "buffer") {
+                resource.format = "buffer";
+            }
+        }
     }
 
     if (const auto physical = root.find("physical_target_plan");

@@ -44,6 +44,9 @@ struct FramePlanMaterialFilter {
 struct FramePlanNode {
     std::string name;
     std::string kind;
+    std::string source;
+    std::string provider_feature;
+    std::string provider_reference;
     std::size_t declaration_index = 0;
     std::size_t order = 0;
     std::size_t level = 0;
@@ -90,6 +93,8 @@ struct FramePlanBarrier {
 
 struct FramePlanResource {
     std::string name;
+    std::string kind;
+    std::string source;
     std::string format = "unknown";
     std::string dimension;
     std::optional<std::size_t> width;

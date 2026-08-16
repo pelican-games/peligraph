@@ -399,6 +399,10 @@ compileDefaultLogicalVariant(
             input.subgraph_replacements);
     composed_config =
         std::move(resolved_subgraphs.config);
+    synchronizeRenderPipelineProvenance(
+        composed_config,
+        compiled_pipeline_value.pass_provenance,
+        compiled_pipeline_value.resource_provenance);
     compiled_pipeline_value.graph_transforms =
         resolved_transforms.selections;
     compiled_pipeline_value.render_strategy =

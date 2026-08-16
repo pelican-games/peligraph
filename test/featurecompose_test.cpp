@@ -223,8 +223,185 @@ CompiledRenderPipeline compileComposition(
     resolved.sample_count_policy =
         compileSampleCountPolicy(composition.config);
     resolved.pipeline_preset = composition.pipeline_preset;
+    resolved.pass_provenance = composition.pass_provenance;
+    resolved.resource_provenance =
+        composition.resource_provenance;
     resolved.used_features = composition.used_features;
     return compileRenderPipeline(resolved);
+}
+
+TEST_CASE(
+    "WP300 get_frame_plan provenance follows the build compiler capability",
+    "[render-feature][frame-plan][provenance][wp300]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr bool build_runtime_shader_compiler_enabled = true;
+#else
+    constexpr bool build_runtime_shader_compiler_enabled = false;
+#endif
+    const auto make_config = [](bool feature_enabled) {
+        auto config = baseConfigWithFeature(
+            "engine://features/provenance_probe.json");
+        if (!feature_enabled) {
+            config["features"] = nlohmann::json::array();
+        }
+        return config;
+    };
+    const auto resolve = [&](bool feature_enabled,
+                             bool runtime_shader_compiler_enabled) {
+        return resolveRenderPipeline(
+            RenderPipelineRequest{
+                make_config(feature_enabled),
+                "WP300 provenance capability contrast"},
+            RenderEnvironmentCapabilities{
+                runtime_shader_compiler_enabled,
+                RenderPipelineGraphVariant::flat},
+            RenderPipelineResolveDependencies{
+                .load_feature_json = [](std::string_view ref) {
+                    REQUIRE(std::string{ref} ==
+                            "engine://features/provenance_probe.json");
+                    return std::string{R"json({
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "provenance_probe",
+  "runtime_shader_compiler": "optional",
+  "render_targets": [
+    {
+      "name": "provenance_target",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "buffers": [
+    {"name": "provenance_buffer", "size": 16}
+  ],
+  "passes": [
+    {
+      "insert": "end",
+      "pass": {
+        "name": "provenance_pass",
+        "type": "fullscreen",
+        "output": {"color": "provenance_target", "depth": null},
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://fullscreen"
+        }
+      }
+    }
+  ]
+})json"};
+                },
+                .resolve_render_strategy =
+                    [runtime_shader_compiler_enabled](
+                        const nlohmann::json &composed,
+                        const CompiledGraphVariantPolicy &) {
+                        auto resolved = composed;
+                        resolved["rendering_passes"][0]["passes"][0]
+                                ["name"] =
+                            runtime_shader_compiler_enabled
+                                ? "runtime_compiler_seed"
+                                : "embedded_artifact_seed";
+                        return resolved;
+                    },
+            });
+    };
+    const auto response = [](const ResolvedRenderPipeline &resolved) {
+        const auto graphs =
+            parseFrameGraphDefinitionsFromConfigJson(
+                resolved.normalized_config);
+        REQUIRE(graphs.size() == 1);
+        const auto compiled = compileRenderPipeline(resolved);
+        return framePlanToJson(
+            planFrameGraph(graphs.front()), &compiled);
+    };
+    const auto find_named = [](const nlohmann::json &entries,
+                               std::string_view name)
+        -> const nlohmann::json * {
+        const auto found = std::find_if(
+            entries.begin(), entries.end(),
+            [&](const auto &entry) {
+                return entry.value("name", std::string{}) == name;
+            });
+        return found == entries.end() ? nullptr : &*found;
+    };
+
+    // Both runs use the build's real capability. Removing the feature is the
+    // same-entry negative control required by the WP contract.
+    const auto without_feature = response(resolve(
+        false, build_runtime_shader_compiler_enabled));
+    const auto with_feature = response(resolve(
+        true, build_runtime_shader_compiler_enabled));
+    const auto *feature_pass =
+        find_named(with_feature.at("nodes"), "provenance_pass");
+    REQUIRE(feature_pass != nullptr);
+    REQUIRE(feature_pass->at("source") ==
+            "feature:provenance_probe");
+    REQUIRE(feature_pass->at("provider_feature") ==
+            "provenance_probe");
+    REQUIRE(feature_pass->at("provider_ref") ==
+            "engine://features/provenance_probe.json");
+    REQUIRE(find_named(without_feature.at("nodes"),
+                       "provenance_pass") == nullptr);
+
+    const auto *project_pass =
+        find_named(with_feature.at("nodes"), "present");
+    REQUIRE(project_pass != nullptr);
+    REQUIRE(project_pass->at("source") == "project");
+    const auto actual_seed =
+        build_runtime_shader_compiler_enabled
+            ? std::string_view{"runtime_compiler_seed"}
+            : std::string_view{"embedded_artifact_seed"};
+    const auto *engine_pass =
+        find_named(with_feature.at("nodes"), actual_seed);
+    REQUIRE(engine_pass != nullptr);
+    REQUIRE(engine_pass->at("source") == "engine");
+    const auto *without_project_pass =
+        find_named(without_feature.at("nodes"), "present");
+    REQUIRE(without_project_pass != nullptr);
+    REQUIRE(without_project_pass->at("source") == "project");
+    const auto *without_engine_pass =
+        find_named(without_feature.at("nodes"), actual_seed);
+    REQUIRE(without_engine_pass != nullptr);
+    REQUIRE(without_engine_pass->at("source") == "engine");
+
+    const auto *feature_target =
+        find_named(with_feature.at("resources"),
+                   "provenance_target");
+    REQUIRE(feature_target != nullptr);
+    REQUIRE(feature_target->at("source") ==
+            "feature:provenance_probe");
+    const auto *feature_buffer =
+        find_named(with_feature.at("resources"),
+                   "provenance_buffer");
+    REQUIRE(feature_buffer != nullptr);
+    REQUIRE(feature_buffer->at("kind") == "buffer");
+    REQUIRE(feature_buffer->at("source") ==
+            "feature:provenance_probe");
+    REQUIRE(find_named(without_feature.at("resources"),
+                       "provenance_target") == nullptr);
+    const auto *without_project_target =
+        find_named(without_feature.at("resources"), "lit_color");
+    REQUIRE(without_project_target != nullptr);
+    REQUIRE(without_project_target->at("source") == "project");
+    const auto *without_engine_target =
+        find_named(without_feature.at("resources"), "display");
+    REQUIRE(without_engine_target != nullptr);
+    REQUIRE(without_engine_target->at("source") == "engine");
+
+    // On the OFF build this makes the old inference path's false premise
+    // observable: a second resolve with compiler=true produces a different
+    // engine node and cannot truthfully annotate the actual frame plan.
+    const auto hard_coded_true = response(resolve(true, true));
+    REQUIRE(find_named(hard_coded_true.at("nodes"),
+                       "runtime_compiler_seed") != nullptr);
+    if constexpr (!build_runtime_shader_compiler_enabled) {
+        REQUIRE(find_named(hard_coded_true.at("nodes"),
+                           "embedded_artifact_seed") == nullptr);
+        REQUIRE(find_named(with_feature.at("nodes"),
+                           "runtime_compiler_seed") == nullptr);
+        REQUIRE(find_named(with_feature.at("nodes"),
+                           "embedded_artifact_seed") != nullptr);
+    }
 }
 
 TEST_CASE(

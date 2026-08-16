@@ -1,13 +1,7 @@
 #include "planviewer.hpp"
 
-#include "imguiruntime.hpp"
-#include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
-#include "../renderingpass/rendertargetjsonparser.hpp"
-#include "../renderingpass/renderstrategyregistry.hpp"
 #include "../vkcore/renderer.hpp"
-#include "../vkcore/rendertarget.hpp"
-#include "../../project/renderpipeline.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/surfaceformat.hpp"
 
@@ -15,7 +9,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -25,7 +18,6 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -92,199 +84,10 @@ bool contains(const std::vector<std::string> &values, std::string_view value) {
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-const nlohmann::json *objectEntry(const nlohmann::json &root, std::string_view group,
-                                  const std::string &name) {
-    if (!root.contains(group) || !root.at(group).is_object()) return nullptr;
-    const auto &entries = root.at(group);
-    const auto found = entries.find(name);
-    return found == entries.end() || !found->is_object() ? nullptr : &*found;
-}
-
 std::string readTextFile(const std::filesystem::path &path) {
     std::ifstream input{path, std::ios_base::binary};
     if (!input.is_open()) throw std::runtime_error("cannot read " + path.string());
     return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
-}
-
-void collectNamedNodes(const nlohmann::json &feature, const std::string &feature_name,
-                       std::unordered_map<std::string, std::string> &origins) {
-    if (feature.contains("passes") && feature.at("passes").is_array()) {
-        for (const auto &entry : feature.at("passes")) {
-            if (entry.is_object() && entry.contains("pass") && entry.at("pass").is_object()) {
-                const auto name = entry.at("pass").value("name", std::string{});
-                if (!name.empty()) origins[name] = feature_name;
-            }
-        }
-    }
-    if (feature.contains("compute_tasks") && feature.at("compute_tasks").is_array()) {
-        for (const auto &task : feature.at("compute_tasks")) {
-            const auto name = task.is_object() ? task.value("name", std::string{}) : std::string{};
-            if (!name.empty()) origins[name] = feature_name;
-        }
-    }
-}
-
-std::unordered_set<std::string> authoredNodeNames(const nlohmann::json &config) {
-    std::unordered_set<std::string> names;
-    if (config.contains("rendering_passes") && config.at("rendering_passes").is_array()) {
-        for (const auto &graph : config.at("rendering_passes")) {
-            if (!graph.is_object() || !graph.contains("passes") || !graph.at("passes").is_array()) continue;
-            for (const auto &pass : graph.at("passes")) {
-                const auto name = pass.is_object() ? pass.value("name", std::string{}) : std::string{};
-                if (!name.empty()) names.insert(name);
-            }
-        }
-    }
-    if (config.contains("compute_tasks") && config.at("compute_tasks").is_array()) {
-        for (const auto &task : config.at("compute_tasks")) {
-            const auto name = task.is_object() ? task.value("name", std::string{}) : std::string{};
-            if (!name.empty()) names.insert(name);
-        }
-    }
-    return names;
-}
-
-std::string normalizedOp(const nlohmann::json &pass, std::string_view key,
-                         std::string_view fallback) {
-    if (!pass.contains(key) || !pass.at(key).is_string()) return std::string{fallback};
-    auto value = pass.at(key).get<std::string>();
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-nlohmann::json buildRuntimeAnnotations() {
-    const auto raw = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).renderingConfigJson());
-    auto &resolver = GET_MODULE(PathResolver);
-    const auto authored = authoredNodeNames(raw);
-    std::unordered_map<std::string, std::string> feature_origins;
-
-    if (raw.contains("features") && raw.at("features").is_array()) {
-        for (const auto &ref_json : raw.at("features")) {
-            if (!ref_json.is_string()) continue;
-            const auto ref = ref_json.get<std::string>();
-            const auto feature = nlohmann::json::parse(resolver.loadText(ref));
-            const auto feature_name = feature.value("name", ref);
-            collectNamedNodes(feature, feature_name, feature_origins);
-        }
-    }
-
-    const auto swapchain_format = GET_MODULE(RenderTarget).getSwapchainFormat();
-    const auto target_extent = GET_MODULE(RenderTarget).getExtent();
-    const auto strategy_providers =
-        renderStrategyRegistry().snapshot();
-    auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{raw, "plan viewer annotations"},
-        RenderEnvironmentCapabilities{true,
-                                      RenderPipelineGraphVariant::flat},
-        RenderPipelineResolveDependencies{
-            .load_feature_json = [&resolver](std::string_view ref) {
-                return resolver.loadText(ref);
-            },
-            .load_pipeline_json = [&resolver](std::string_view ref) {
-                return resolver.loadText(ref);
-            },
-            .normalize_config = [swapchain_format, target_extent](
-                const nlohmann::json &config,
-                const std::vector<std::string> &feature_names) {
-                const bool hdr =
-                    std::find(feature_names.begin(), feature_names.end(),
-                              "hdr") != feature_names.end();
-                return resolveRenderTargetFormatClassesV2(
-                    config, swapchain_format, target_extent, hdr);
-            },
-            .resolve_render_strategy =
-                [&strategy_providers](
-                    const nlohmann::json &config,
-                    const CompiledGraphVariantPolicy
-                        &policy) {
-                    return resolveRenderStrategy(
-                               config, policy, true,
-                               strategy_providers)
-                        .config;
-                },
-        });
-    auto composed = std::move(resolved.normalized_config);
-    appendImGuiPassToCanonicalGraphs(composed);
-
-    nlohmann::json annotations{{"nodes", nlohmann::json::object()},
-                               {"resources", nlohmann::json::object()}};
-    if (composed.contains("render_targets") && composed.at("render_targets").is_array()) {
-        for (const auto &target : composed.at("render_targets")) {
-            if (!target.is_object()) continue;
-            const auto name = target.value("name", std::string{});
-            if (name.empty()) continue;
-            annotations["resources"][name] = {
-                {"format", target.value("format", std::string{"unknown"})},
-                {"format_class", target.value("format_class", std::string{"unknown"})},
-            };
-        }
-    }
-    if (composed.contains("buffers") && composed.at("buffers").is_array()) {
-        for (const auto &buffer : composed.at("buffers")) {
-            const auto name = buffer.is_string() ? buffer.get<std::string>()
-                                                 : buffer.value("name", std::string{});
-            if (!name.empty()) {
-                annotations["resources"][name] = {{"format", "buffer"},
-                                                   {"format_class", "buffer"}};
-            }
-        }
-    }
-    annotations["resources"]["swapchain"] = {
-        {"format", vk::to_string(GET_MODULE(RenderTarget).getSwapchainFormat())},
-        {"format_class", "display"},
-    };
-
-    if (composed.contains("rendering_passes") && composed.at("rendering_passes").is_array()) {
-        for (const auto &graph : composed.at("rendering_passes")) {
-            if (!graph.is_object() || !graph.contains("passes") || !graph.at("passes").is_array()) continue;
-            std::string active_anchor;
-            for (const auto &pass : graph.at("passes")) {
-                if (!pass.is_object()) continue;
-                const auto name = pass.value("name", std::string{});
-                const auto type = pass.value("type", std::string{"render"});
-                if (name.empty()) continue;
-                if (type == "canonical_anchor") {
-                    active_anchor = pass.value("anchor", std::string{});
-                }
-                const bool overlay = type == "ui" || type == "imgui";
-                auto source = authored.contains(name) ? std::string{"project"} : std::string{"engine"};
-                auto feature = std::string{};
-                if (const auto found = feature_origins.find(name); found != feature_origins.end()) {
-                    source = "feature";
-                    feature = found->second;
-                }
-                annotations["nodes"][name] = {
-                    {"type", type},
-                    {"source", source},
-                    {"feature", feature},
-                    {"anchor", type == "canonical_anchor" ? pass.value("anchor", std::string{})
-                                                            : active_anchor},
-                    {"color_load_op", normalizedOp(pass, "color_load_op", overlay ? "load" : "clear")},
-                    {"color_store_op", normalizedOp(pass, "color_store_op", "store")},
-                    {"depth_load_op", normalizedOp(pass, "depth_load_op", "clear")},
-                    {"depth_store_op", normalizedOp(pass, "depth_store_op", "dont_care")},
-                };
-            }
-        }
-    }
-    if (composed.contains("compute_tasks") && composed.at("compute_tasks").is_array()) {
-        for (const auto &task : composed.at("compute_tasks")) {
-            if (!task.is_object()) continue;
-            const auto name = task.value("name", std::string{});
-            if (name.empty()) continue;
-            auto source = authored.contains(name) ? std::string{"project"} : std::string{"engine"};
-            auto feature = std::string{};
-            if (const auto found = feature_origins.find(name); found != feature_origins.end()) {
-                source = "feature";
-                feature = found->second;
-            }
-            annotations["nodes"][name] = {{"type", "compute"}, {"source", source},
-                                           {"feature", feature}, {"anchor", "compute"}};
-        }
-    }
-    return annotations;
 }
 
 std::vector<LoweredMaterial> loadRuntimeMaterials() {
@@ -355,7 +158,7 @@ std::vector<LoweredMaterial> loadRuntimeMaterials() {
 ImU32 nodeColor(const PlanViewerNode &node) {
     if (node.kind == "snapshot_copy") return IM_COL32(232, 151, 52, 255);
     if (node.kind == "compute") return IM_COL32(147, 94, 214, 255);
-    if (node.source == "feature") return IM_COL32(57, 160, 118, 255);
+    if (node.source.starts_with("feature:")) return IM_COL32(57, 160, 118, 255);
     if (node.source == "engine" || node.kind == "anchor" || node.kind == "output_transform")
         return IM_COL32(72, 103, 142, 255);
     return IM_COL32(54, 126, 190, 255);
@@ -367,9 +170,9 @@ ImVec2 mul(ImVec2 a, float value) { return {a.x * value, a.y * value}; }
 
 } // namespace
 
-PlanViewerModel buildPlanViewerModel(const nlohmann::json &plan_json,
-                                     const nlohmann::json &annotations,
-                                     std::span<const LoweredMaterial> materials) {
+PlanViewerModel buildPlanViewerModel(
+    const nlohmann::json &plan_json,
+    std::span<const LoweredMaterial> materials) {
     if (!plan_json.is_object() || plan_json.value("schema", std::string{}) != "pelican.frame_plan" ||
         plan_json.value("version", 0) != 1) {
         throw std::runtime_error("plan viewer requires pelican.frame_plan version 1");
@@ -382,6 +185,32 @@ PlanViewerModel buildPlanViewerModel(const nlohmann::json &plan_json,
     PlanViewerModel model;
     model.graph = plan_json.value("graph", std::string{"frame_graph"});
     std::map<std::string, PlanViewerResource> resources;
+    if (const auto declared = plan_json.find("resources");
+        declared != plan_json.end()) {
+        if (!declared->is_array()) {
+            throw std::runtime_error(
+                "plan viewer resources must be an array");
+        }
+        for (const auto &entry : *declared) {
+            if (!entry.is_object()) {
+                throw std::runtime_error(
+                    "plan viewer resource must be an object");
+            }
+            const auto name = entry.at("name").get<std::string>();
+            auto &resource = resources[name];
+            resource.name = name;
+            resource.kind = entry.value("kind", std::string{});
+            resource.source = entry.value("source", std::string{"unknown"});
+            resource.feature =
+                entry.value("provider_feature", std::string{});
+            resource.provider_reference =
+                entry.value("provider_ref", std::string{});
+            if (resource.kind == "buffer") {
+                resource.format = "buffer";
+                resource.format_class = "buffer";
+            }
+        }
+    }
     std::unordered_set<std::string> node_names;
     for (const auto &node_json : plan_json.at("nodes")) {
         if (!node_json.is_object()) throw std::runtime_error("plan viewer node must be an object");
@@ -394,21 +223,28 @@ PlanViewerModel buildPlanViewerModel(const nlohmann::json &plan_json,
         node.writes = stringArray(node_json, "writes");
         node.snapshot_after = node_json.value("snapshot_after", std::string{});
         node.byte_size = node_json.value("byte_size", std::size_t{0});
+        node.source = node_json.value("source", std::string{"unknown"});
+        node.feature =
+            node_json.value("provider_feature", std::string{});
+        node.provider_reference =
+            node_json.value("provider_ref", std::string{});
+        node.color_load_op =
+            node_json.value("color_load_op", std::string{});
+        node.color_store_op =
+            node_json.value("color_store_op", std::string{});
+        node.depth_load_op =
+            node_json.value("depth_load_op", std::string{});
+        node.depth_store_op =
+            node_json.value("depth_store_op", std::string{});
+        if (node.kind == "anchor" &&
+            node.name.starts_with("__anchor_")) {
+            node.anchor = node.name.substr(
+                std::string_view{"__anchor_"}.size());
+        } else if (node.kind == "compute") {
+            node.anchor = "compute";
+        }
         if (!node_names.insert(node.name).second) {
             throw std::runtime_error("plan viewer duplicate node: " + node.name);
-        }
-        if (const auto *annotation = objectEntry(annotations, "nodes", node.name)) {
-            node.source = annotation->value("source", std::string{});
-            node.feature = annotation->value("feature", std::string{});
-            node.anchor = annotation->value("anchor", std::string{});
-            node.color_load_op = annotation->value("color_load_op", std::string{});
-            node.color_store_op = annotation->value("color_store_op", std::string{});
-            node.depth_load_op = annotation->value("depth_load_op", std::string{});
-            node.depth_store_op = annotation->value("depth_store_op", std::string{});
-        }
-        if (node.kind == "snapshot_copy") node.source = "snapshot";
-        if (node.source.empty()) {
-            node.source = node.kind == "anchor" || node.kind == "output_transform" ? "engine" : "project";
         }
         for (const auto &resource_name : node.reads) {
             auto &resource = resources[resource_name];
@@ -437,14 +273,74 @@ PlanViewerModel buildPlanViewerModel(const nlohmann::json &plan_json,
         model.edges.push_back(std::move(edge));
     }
 
-    for (auto &[name, resource] : resources) {
-        if (const auto *annotation = objectEntry(annotations, "resources", name)) {
-            resource.format = annotation->value("format", std::string{"unknown"});
-            resource.format_class = annotation->value("format_class", std::string{"unknown"});
-        } else {
-            resource.format = "unknown";
-            resource.format_class = "unknown";
+    if (const auto physical = plan_json.find("physical_target_plan");
+        physical != plan_json.end() && physical->is_object()) {
+        if (const auto attachments = physical->find("attachments");
+            attachments != physical->end()) {
+            if (!attachments->is_array()) {
+                throw std::runtime_error(
+                    "plan viewer physical attachments must be an array");
+            }
+            const auto merge_op = [](std::string &aggregate,
+                                     const std::string &value) {
+                if (aggregate.empty()) {
+                    aggregate = value;
+                } else if (aggregate != value) {
+                    aggregate = "mixed";
+                }
+            };
+            for (const auto &entry : *attachments) {
+                if (!entry.is_object()) {
+                    throw std::runtime_error(
+                        "plan viewer physical attachment must be an object");
+                }
+                const auto node_name =
+                    entry.at("node").get<std::string>();
+                const auto node = std::find_if(
+                    model.nodes.begin(), model.nodes.end(),
+                    [&](const PlanViewerNode &candidate) {
+                        return candidate.name == node_name;
+                    });
+                if (node == model.nodes.end()) continue;
+                const auto aspect =
+                    entry.at("aspect").get<std::string>();
+                const auto load_op =
+                    entry.at("load_op").get<std::string>();
+                const auto store_op =
+                    entry.at("store_op").get<std::string>();
+                if (aspect == "color") {
+                    merge_op(node->color_load_op, load_op);
+                    merge_op(node->color_store_op, store_op);
+                } else if (aspect == "depth") {
+                    merge_op(node->depth_load_op, load_op);
+                    merge_op(node->depth_store_op, store_op);
+                }
+            }
         }
+        if (const auto physical_resources = physical->find("resources");
+            physical_resources != physical->end() &&
+            physical_resources->is_array()) {
+            for (const auto &entry : *physical_resources) {
+                if (!entry.is_object()) continue;
+                const auto name = entry.value(
+                    "logical_resource", std::string{});
+                if (name.empty()) continue;
+                auto &resource = resources[name];
+                resource.name = name;
+                resource.format =
+                    entry.value("format", std::string{"unknown"});
+            }
+        }
+    }
+
+    for (auto &[name, resource] : resources) {
+        (void)name;
+        if (resource.format.empty()) resource.format = "unknown";
+        if (resource.format_class.empty()) {
+            resource.format_class =
+                resource.kind == "frame_target" ? "display" : "unknown";
+        }
+        if (resource.source.empty()) resource.source = "unknown";
         model.resources.push_back(std::move(resource));
     }
 
@@ -469,9 +365,9 @@ struct PlanViewer::Impl {
 
     void refresh() {
         try {
-            const auto annotations = buildRuntimeAnnotations();
             const auto materials = loadRuntimeMaterials();
-            model = buildPlanViewerModel(GET_MODULE(Renderer).currentFramePlanJson(), annotations, materials);
+            model = buildPlanViewerModel(
+                GET_MODULE(Renderer).currentFramePlanJson(), materials);
             error.clear();
             selected_node = selected_node < static_cast<int>(model.nodes.size()) ? selected_node : -1;
             selected_resource = selected_resource < static_cast<int>(model.resources.size()) ? selected_resource : -1;
@@ -639,7 +535,7 @@ struct PlanViewer::Impl {
                 draw->AddText(ImGui::GetFont(), std::max(9.0f, 12.0f * zoom),
                               add(min, {9.0f * zoom, 31.0f * zoom}), IM_COL32(224, 232, 239, 220),
                               subtitle.c_str());
-                const auto origin = node.feature.empty() ? node.source : "feature: " + node.feature;
+                const auto &origin = node.source;
                 draw->AddText(ImGui::GetFont(), std::max(8.0f, 11.0f * zoom),
                               add(min, {9.0f * zoom, 51.0f * zoom}), IM_COL32(219, 228, 235, 190),
                               origin.c_str());
@@ -658,6 +554,14 @@ struct PlanViewer::Impl {
             ImGui::TextWrapped("%s", resource.name.c_str());
             ImGui::Text("format: %s", resource.format.c_str());
             ImGui::Text("class: %s", resource.format_class.c_str());
+            ImGui::Text("origin: %s", resource.source.c_str());
+            if (!resource.feature.empty()) {
+                ImGui::Text("feature: %s", resource.feature.c_str());
+            }
+            if (!resource.provider_reference.empty()) {
+                ImGui::TextWrapped("provider: %s",
+                                   resource.provider_reference.c_str());
+            }
             ImGui::SeparatorText("writers");
             for (const auto &name : resource.writers) ImGui::BulletText("%s", name.c_str());
             ImGui::SeparatorText("readers");
@@ -686,6 +590,10 @@ struct PlanViewer::Impl {
         ImGui::Text("order / level: %zu / %zu", node.order, node.level);
         ImGui::Text("origin: %s", node.source.c_str());
         if (!node.feature.empty()) ImGui::Text("feature: %s", node.feature.c_str());
+        if (!node.provider_reference.empty()) {
+            ImGui::TextWrapped("provider: %s",
+                               node.provider_reference.c_str());
+        }
         if (!node.anchor.empty()) ImGui::Text("anchor: %s", node.anchor.c_str());
         if (node.kind == "snapshot_copy") {
             ImGui::SeparatorText("snapshot copy");

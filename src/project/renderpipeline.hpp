@@ -141,6 +141,47 @@ struct RenderPipelineDiagnostic {
     bool operator==(const RenderPipelineDiagnostic &) const = default;
 };
 
+enum class RenderPipelineProvenanceSource {
+    project,
+    feature,
+    engine,
+};
+
+struct RenderPassProvenance {
+    std::string name;
+    RenderPipelineProvenanceSource source =
+        RenderPipelineProvenanceSource::engine;
+    std::string provider_feature;
+    std::string provider_reference;
+
+    bool operator==(const RenderPassProvenance &) const = default;
+};
+
+struct RenderResourceProvenance {
+    std::string name;
+    std::string kind;
+    RenderPipelineProvenanceSource source =
+        RenderPipelineProvenanceSource::engine;
+    std::string provider_feature;
+    std::string provider_reference;
+
+    bool operator==(const RenderResourceProvenance &) const = default;
+};
+
+std::string renderPipelineProvenanceSourceName(
+    RenderPipelineProvenanceSource source,
+    std::string_view provider_feature = {});
+
+// Keeps compose-time ownership attached to the declarations which survived
+// later graph transforms, drops removed declarations, and marks declarations
+// introduced by the engine after feature composition.
+void synchronizeRenderPipelineProvenance(
+    const nlohmann::json &config,
+    std::vector<RenderPassProvenance> &passes,
+    std::vector<RenderResourceProvenance> &resources,
+    RenderPipelineProvenanceSource default_source =
+        RenderPipelineProvenanceSource::engine);
+
 // Every callback is a data transform or lookup. Callers snapshot mutable
 // environment values and expose lookup services explicitly instead of making
 // the resolver discover modules or containers. This keeps the resolver usable
@@ -183,6 +224,8 @@ struct ResolvedRenderPipeline {
     std::vector<GraphVariantFeatureDecision>
         graph_variant_feature_decisions;
     std::vector<RenderPipelineDiagnostic> diagnostics;
+    std::vector<RenderPassProvenance> pass_provenance;
+    std::vector<RenderResourceProvenance> resource_provenance;
     bool used_features = false;
 };
 
@@ -336,6 +379,8 @@ struct CompiledRenderPipeline {
     std::optional<RenderCompilerProgramSelection>
         render_compiler_program;
     std::vector<RenderPipelineDiagnostic> diagnostics;
+    std::vector<RenderPassProvenance> pass_provenance;
+    std::vector<RenderResourceProvenance> resource_provenance;
     bool used_features = false;
 };
 

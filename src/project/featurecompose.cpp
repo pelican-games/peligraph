@@ -1504,7 +1504,10 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
 }
 
 void addRenderTargets(nlohmann::json &config, const nlohmann::json &feature,
-                      std::unordered_set<std::string> &target_names) {
+                      std::unordered_set<std::string> &target_names,
+                      std::string_view provider_feature,
+                      std::string_view provider_reference,
+                      std::vector<RenderResourceProvenance> &provenance) {
     if (!feature.contains("render_targets")) {
         return;
     }
@@ -1520,11 +1523,21 @@ void addRenderTargets(nlohmann::json &config, const nlohmann::json &feature,
             throw std::runtime_error("Render feature render target name collides: " + name);
         }
         targets.push_back(target);
+        provenance.push_back(RenderResourceProvenance{
+            .name = name,
+            .kind = "render_target",
+            .source = RenderPipelineProvenanceSource::feature,
+            .provider_feature = std::string{provider_feature},
+            .provider_reference = std::string{provider_reference},
+        });
     }
 }
 
 void addBuffers(nlohmann::json &config, const nlohmann::json &feature,
-                std::unordered_set<std::string> &buffer_names) {
+                std::unordered_set<std::string> &buffer_names,
+                std::string_view provider_feature,
+                std::string_view provider_reference,
+                std::vector<RenderResourceProvenance> &provenance) {
     if (!feature.contains("buffers")) {
         return;
     }
@@ -1544,6 +1557,13 @@ void addBuffers(nlohmann::json &config, const nlohmann::json &feature,
             throw std::runtime_error("Render feature buffer name collides: " + name);
         }
         buffers.push_back(buffer);
+        provenance.push_back(RenderResourceProvenance{
+            .name = name,
+            .kind = "buffer",
+            .source = RenderPipelineProvenanceSource::feature,
+            .provider_feature = std::string{provider_feature},
+            .provider_reference = std::string{provider_reference},
+        });
     }
 }
 
@@ -1787,7 +1807,10 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
 }
 
 void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
-                      std::unordered_set<std::string> &pass_names) {
+                      std::unordered_set<std::string> &pass_names,
+                      std::string_view provider_feature,
+                      std::string_view provider_reference,
+                      std::vector<RenderPassProvenance> &provenance) {
     if (!feature.contains("passes")) {
         return;
     }
@@ -1813,6 +1836,12 @@ void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
         } else {
             insertPassByAnchor(config, insert, *pass_it);
         }
+        provenance.push_back(RenderPassProvenance{
+            .name = pass_name,
+            .source = RenderPipelineProvenanceSource::feature,
+            .provider_feature = std::string{provider_feature},
+            .provider_reference = std::string{provider_reference},
+        });
     }
 }
 
@@ -2492,7 +2521,10 @@ void resolveInheritedPassBindings(
 }
 
 void addFeatureComputeTasks(nlohmann::json &config, const nlohmann::json &feature,
-                            std::unordered_set<std::string> &task_names) {
+                            std::unordered_set<std::string> &task_names,
+                            std::string_view provider_feature,
+                            std::string_view provider_reference,
+                            std::vector<RenderPassProvenance> &provenance) {
     if (!feature.contains("compute_tasks")) {
         return;
     }
@@ -2507,6 +2539,12 @@ void addFeatureComputeTasks(nlohmann::json &config, const nlohmann::json &featur
             throw std::runtime_error("Render feature compute task name collides: " + task_name);
         }
         compute_tasks.push_back(task);
+        provenance.push_back(RenderPassProvenance{
+            .name = task_name,
+            .source = RenderPipelineProvenanceSource::feature,
+            .provider_feature = std::string{provider_feature},
+            .provider_reference = std::string{provider_reference},
+        });
     }
 }
 
@@ -2645,6 +2683,17 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                     ? dependencies.load_pipeline_json
                     : dependencies.load_feature_json);
     auto resolved_config = preset_resolution.config;
+    std::vector<RenderPassProvenance> pass_provenance;
+    std::vector<RenderResourceProvenance> resource_provenance;
+    const auto authored_source =
+        preset_resolution.preset &&
+                preset_resolution.preset->reference.rfind(
+                    "engine://", 0) == 0
+            ? RenderPipelineProvenanceSource::engine
+            : RenderPipelineProvenanceSource::project;
+    synchronizeRenderPipelineProvenance(
+        resolved_config, pass_provenance,
+        resource_provenance, authored_source);
     if (dependencies.transform_resolved_config) {
         resolved_config =
             dependencies.transform_resolved_config(
@@ -2728,12 +2777,24 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         const auto feature = bindFeatureParameters(loaded.feature, loaded.instance.parameters,
                                                    composed, loaded.name, resolved_parameters,
                                                    scalar_defines);
-        addRenderTargets(composed, feature, target_names);
-        addBuffers(composed, feature, buffer_names);
+        addRenderTargets(
+            composed, feature, target_names,
+            loaded.name, loaded.instance.ref,
+            resource_provenance);
+        addBuffers(
+            composed, feature, buffer_names,
+            loaded.name, loaded.instance.ref,
+            resource_provenance);
         applyRenderTargetOverrides(composed, feature);
-        addFeaturePasses(composed, feature, pass_names);
+        addFeaturePasses(
+            composed, feature, pass_names,
+            loaded.name, loaded.instance.ref,
+            pass_provenance);
         applyPassOverrides(composed, feature);
-        addFeatureComputeTasks(composed, feature, task_names);
+        addFeatureComputeTasks(
+            composed, feature, task_names,
+            loaded.name, loaded.instance.ref,
+            pass_provenance);
         appendRequiredCapabilities(
             composed, feature, loaded.name);
         applyLightingDataPlan(
@@ -2926,22 +2987,37 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                         integration_name);
                 }
             }
+            const auto integration_provider =
+                provider.name + "/" +
+                integration_name;
             addRenderTargets(
                 composed, fragment,
-                target_names);
+                target_names,
+                integration_provider,
+                provider.reference,
+                resource_provenance);
             addBuffers(
                 composed, fragment,
-                buffer_names);
+                buffer_names,
+                integration_provider,
+                provider.reference,
+                resource_provenance);
             applyRenderTargetOverrides(
                 composed, fragment);
             addFeaturePasses(
                 composed, fragment,
-                pass_names);
+                pass_names,
+                integration_provider,
+                provider.reference,
+                pass_provenance);
             applyPassOverrides(
                 composed, fragment);
             addFeatureComputeTasks(
                 composed, fragment,
-                task_names);
+                task_names,
+                integration_provider,
+                provider.reference,
+                pass_provenance);
             appendShaderDefines(
                 shader_defines, fragment,
                 "render feature integration '" +
@@ -2999,6 +3075,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         enforceCanonicalOrder(pass_set.at("passes"));
     }
     enforceTerminalAfterComputeTasks(composed);
+    synchronizeRenderPipelineProvenance(
+        composed, pass_provenance,
+        resource_provenance);
     auto material_routing = resolveMaterialRoutingTable(composed);
     auto draw_sort = composed.contains("draw_sort")
                          ? composed.at("draw_sort")
@@ -3015,6 +3094,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.material_routing = std::move(material_routing);
     result.draw_sort = std::move(draw_sort);
     result.pipeline_preset = preset_resolution.preset;
+    result.pass_provenance =
+        std::move(pass_provenance);
+    result.resource_provenance =
+        std::move(resource_provenance);
     result.used_features = !feature_instances.empty();
     return result;
 }
