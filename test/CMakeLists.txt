@@ -29,7 +29,7 @@ endif()
 
 function(pelican_define_test source_name)
 cmake_parse_arguments(PELICAN_TEST
-  "GOLDEN;GPU;QT;RUNTIME_SHADER" "GROUP" "" ${ARGN})
+  "GOLDEN;GPU;QT;QT_OFFSCREEN;RUNTIME_SHADER" "GROUP" "" ${ARGN})
 set(source_target pelican_test_${source_name})
 set(target_name ${source_target})
 set(is_new_executable TRUE)
@@ -58,7 +58,7 @@ if(PELICAN_TEST_GROUP)
   target_link_libraries(${source_target} PRIVATE Catch2::Catch2 nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
   set(discovery_signature
-    "${PELICAN_TEST_GOLDEN};${PELICAN_TEST_GPU};${PELICAN_TEST_QT};${PELICAN_TEST_RUNTIME_SHADER}")
+    "${PELICAN_TEST_GOLDEN};${PELICAN_TEST_GPU};${PELICAN_TEST_QT};${PELICAN_TEST_QT_OFFSCREEN};${PELICAN_TEST_RUNTIME_SHADER}")
   if(TARGET ${target_name})
     set(is_new_executable FALSE)
     get_target_property(existing_signature ${target_name}
@@ -104,6 +104,13 @@ set(discovery_arguments EXTRA_ARGS -w NoAssertions)
 if(PELICAN_TEST_QT)
   list(APPEND discovery_arguments
     DL_PATHS "$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
+if(PELICAN_TEST_QT_OFFSCREEN)
+  if(NOT PELICAN_TEST_QT)
+    message(FATAL_ERROR "QT_OFFSCREEN test ${source_name} must also specify QT")
+  endif()
+  list(APPEND discovery_properties
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 if(PELICAN_TEST_GOLDEN OR
    source_name STREQUAL "debugtext_ui_compat_test")
@@ -207,7 +214,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   add_dependencies(pelican_test_devstudio_engine_failure_test pelican_player)
 
-  pelican_define_test(devstudio_frameplan_graph_test QT
+  pelican_define_test(devstudio_frameplan_graph_test QT QT_OFFSCREEN
     pelican_studio_viewport
     pelican_studio_frame_plan
     pelican_core
@@ -225,6 +232,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
   )
 endif()
 

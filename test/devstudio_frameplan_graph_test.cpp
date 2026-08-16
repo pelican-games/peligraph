@@ -11,22 +11,32 @@
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <QApplication>
+#include <QBrush>
 #include <QByteArray>
+#include <QColor>
 #include <QGraphicsItem>
+#include <QGraphicsPathItem>
+#include <QGraphicsPolygonItem>
+#include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
+#include <QPainterPath>
+#include <QPen>
 #include <QSpinBox>
 #include <QStringList>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <ranges>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -449,62 +459,619 @@ std::string edgeSetText(const EdgeSet &edges) {
     return output.str();
 }
 
-struct ItemSnapshot {
-    QRectF bounds;
-    QPointF position;
-    QString color;
-    QStringList records;
-
-    bool operator==(const ItemSnapshot &) const = default;
+struct ExpectedNode {
+    std::string name;
+    std::string source;
+    bool anchor = false;
 };
 
-using SceneSnapshot = std::map<std::string, ItemSnapshot, std::less<>>;
+struct ExpectedDependency {
+    std::string from;
+    std::string to;
+    std::string reason;
+    std::string resource;
+};
 
-SceneSnapshot snapshot(QGraphicsScene &value) {
-    SceneSnapshot result;
-    for (QGraphicsItem *item : value.items()) {
-        const QString item_kind = kind(*item);
-        if (item_kind != QLatin1String{FramePlanNodeItem} &&
-            item_kind != QLatin1String{FramePlanGroupItem} &&
-            item_kind != QLatin1String{FramePlanEdgeItem}) {
-            continue;
+const std::vector<ExpectedNode> &expectedExpandedNodes() {
+    static const std::vector<ExpectedNode> expected{
+        {"gbuffer_pass", "project"},
+        {"ssao_pass", "project"},
+        {"ssao_blur_pass", "project"},
+        {"lighting_pass", "project"},
+        {"__snapshot_opaque_color", "project"},
+        {"__snapshot_opaque_depth", "project"},
+        {"forward_transparent", "project"},
+        {"__anchor_sprite", "engine", true},
+        {"__anchor_post_main", "engine", true},
+        {"__anchor_tonemap", "engine", true},
+        {"__anchor_post_ldr", "engine", true},
+        {"HighLuminanceExtraction", "project"},
+        {"HorizontalBlur_0", "project"},
+        {"VerticalBlur_0", "project"},
+        {"HorizontalBlur_1", "project"},
+        {"VerticalBlur_1", "project"},
+        {"HorizontalBlur_2", "project"},
+        {"VerticalBlur_2", "project"},
+        {"HorizontalBlur_3", "project"},
+        {"VerticalBlur_3", "project"},
+        {"UpsampleBlend_3", "project"},
+        {"UpsampleBlend_2", "project"},
+        {"UpsampleBlend_1", "project"},
+        {"FinalBloomComposite", "project"},
+        {"__anchor_pelican_ui", "engine", true},
+        {"pelican_ui", "feature:ui"},
+        {"__anchor_debug_draw", "engine", true},
+        {"__anchor_debug_text", "engine", true},
+        {"__anchor_imgui", "engine", true},
+        {"output_transform", "engine"},
+    };
+    return expected;
+}
+
+const StringSet &expectedBloomMembers() {
+    static const StringSet expected{
+        "FinalBloomComposite",      "HighLuminanceExtraction",
+        "HorizontalBlur_0",         "HorizontalBlur_1",
+        "HorizontalBlur_2",         "HorizontalBlur_3",
+        "UpsampleBlend_1",          "UpsampleBlend_2",
+        "UpsampleBlend_3",          "VerticalBlur_0",
+        "VerticalBlur_1",           "VerticalBlur_2",
+        "VerticalBlur_3",
+    };
+    return expected;
+}
+
+const std::vector<ExpectedDependency> &expectedExpandedDependencies() {
+    static const auto expected = [] {
+        constexpr std::string_view explicit_after =
+            "pelican.dependency.explicit_after@1";
+        constexpr std::string_view read_after_write =
+            "pelican.dependency.read_after_write@1";
+        constexpr std::string_view snapshot_after =
+            "pelican.dependency.snapshot_after@1";
+        std::vector<ExpectedDependency> result;
+        result.reserve(100);
+        const auto add = [&](std::string_view from, std::string_view to,
+                             std::string_view reason,
+                             std::string_view resource = {}) {
+            result.push_back(ExpectedDependency{
+                std::string{from}, std::string{to}, std::string{reason},
+                std::string{resource}});
+        };
+
+        add("__anchor_debug_draw", "__anchor_debug_text", explicit_after);
+        add("__anchor_debug_text", "__anchor_imgui", explicit_after);
+        add("__anchor_imgui", "output_transform", explicit_after);
+        add("__anchor_pelican_ui", "__anchor_debug_draw", explicit_after);
+        add("__anchor_pelican_ui", "pelican_ui", explicit_after);
+        add("__anchor_post_main", "__anchor_tonemap", explicit_after);
+        add("__anchor_sprite", "__anchor_post_main", explicit_after);
+        add("__anchor_tonemap", "__anchor_post_ldr", explicit_after);
+
+        add("__snapshot_opaque_color", "__anchor_sprite", explicit_after);
+        add("__snapshot_opaque_color", "__snapshot_opaque_depth",
+            explicit_after);
+        add("__snapshot_opaque_color", "forward_transparent",
+            read_after_write, "opaque_color");
+        add("__snapshot_opaque_depth", "__anchor_sprite", explicit_after);
+        add("__snapshot_opaque_depth", "forward_transparent",
+            explicit_after);
+        add("__snapshot_opaque_depth", "forward_transparent",
+            read_after_write, "opaque_depth");
+        add("forward_transparent", "__anchor_sprite", explicit_after);
+        add("forward_transparent", "FinalBloomComposite", read_after_write,
+            "lit_color");
+        add("forward_transparent", "HighLuminanceExtraction",
+            read_after_write, "lit_color");
+
+        add("gbuffer_pass", "__anchor_sprite", explicit_after);
+        add("gbuffer_pass", "__snapshot_opaque_depth", read_after_write,
+            "offscreen_depth");
+        add("gbuffer_pass", "forward_transparent", read_after_write,
+            "offscreen_depth");
+        for (const std::string_view resource :
+             {std::string_view{"g_emissive"},
+              std::string_view{"gbuffer_albedo"},
+              std::string_view{"gbuffer_material"},
+              std::string_view{"gbuffer_normal"},
+              std::string_view{"gbuffer_worldpos"}}) {
+            add("gbuffer_pass", "lighting_pass", read_after_write, resource);
         }
-        std::string identity = item_kind.toStdString() + "|" +
-                               item->data(FramePlanNameRole)
-                                   .toString()
-                                   .toStdString();
-        result.emplace(
-            std::move(identity),
-            ItemSnapshot{
-                .bounds = item->sceneBoundingRect(),
-                .position = item->scenePos(),
-                .color = item->data(FramePlanColorRole).toString(),
-                .records =
-                    item->data(FramePlanEdgeRecordsRole).toStringList(),
-            });
+        add("gbuffer_pass", "ssao_pass", explicit_after);
+        add("gbuffer_pass", "ssao_pass", read_after_write,
+            "gbuffer_normal");
+        add("gbuffer_pass", "ssao_pass", read_after_write,
+            "gbuffer_worldpos");
+
+        add("lighting_pass", "__anchor_sprite", explicit_after);
+        add("lighting_pass", "__snapshot_opaque_color", explicit_after);
+        add("lighting_pass", "__snapshot_opaque_color", read_after_write,
+            "lit_color");
+        add("lighting_pass", "__snapshot_opaque_color", snapshot_after);
+        add("lighting_pass", "__snapshot_opaque_depth", snapshot_after);
+        add("lighting_pass", "forward_transparent", read_after_write,
+            "lit_color");
+        add("pelican_ui", "__anchor_debug_draw", explicit_after);
+        add("pelican_ui", "output_transform", read_after_write, "display");
+        add("ssao_blur_pass", "__anchor_sprite", explicit_after);
+        add("ssao_blur_pass", "lighting_pass", explicit_after);
+        add("ssao_blur_pass", "lighting_pass", read_after_write,
+            "ssao_blur");
+        add("ssao_pass", "__anchor_sprite", explicit_after);
+        add("ssao_pass", "ssao_blur_pass", explicit_after);
+        add("ssao_pass", "ssao_blur_pass", read_after_write,
+            "ssao_output");
+
+        constexpr std::array bloom_members{
+            std::string_view{"FinalBloomComposite"},
+            std::string_view{"HighLuminanceExtraction"},
+            std::string_view{"HorizontalBlur_0"},
+            std::string_view{"HorizontalBlur_1"},
+            std::string_view{"HorizontalBlur_2"},
+            std::string_view{"HorizontalBlur_3"},
+            std::string_view{"UpsampleBlend_1"},
+            std::string_view{"UpsampleBlend_2"},
+            std::string_view{"UpsampleBlend_3"},
+            std::string_view{"VerticalBlur_0"},
+            std::string_view{"VerticalBlur_1"},
+            std::string_view{"VerticalBlur_2"},
+            std::string_view{"VerticalBlur_3"},
+        };
+        for (const auto member : bloom_members) {
+            add("__anchor_post_ldr", member, explicit_after);
+        }
+        add("__anchor_post_ldr", "__anchor_pelican_ui", explicit_after);
+
+        add("HighLuminanceExtraction", "HorizontalBlur_0",
+            explicit_after);
+        add("HighLuminanceExtraction", "HorizontalBlur_0",
+            read_after_write, "Bloom_Threshold_RT");
+        add("HighLuminanceExtraction", "__anchor_pelican_ui",
+            explicit_after);
+        for (int index = 0; index != 3; ++index) {
+            const std::string horizontal =
+                "HorizontalBlur_" + std::to_string(index);
+            const std::string vertical =
+                "VerticalBlur_" + std::to_string(index);
+            const std::string upsample =
+                "UpsampleBlend_" + std::to_string(index + 1);
+            const std::string resource =
+                "Bloom_Downsample_H_" + std::to_string(index) + "_RT";
+            add(horizontal, vertical, explicit_after);
+            add(horizontal, vertical, read_after_write, resource);
+            add(horizontal, upsample, read_after_write, resource);
+            add(horizontal, "__anchor_pelican_ui", explicit_after);
+        }
+        add("HorizontalBlur_3", "VerticalBlur_3", explicit_after);
+        add("HorizontalBlur_3", "VerticalBlur_3", read_after_write,
+            "Bloom_Downsample_H_3_RT");
+        add("HorizontalBlur_3", "__anchor_pelican_ui", explicit_after);
+
+        for (int index = 0; index != 3; ++index) {
+            const std::string vertical =
+                "VerticalBlur_" + std::to_string(index);
+            const std::string horizontal =
+                "HorizontalBlur_" + std::to_string(index + 1);
+            const std::string upsample =
+                "UpsampleBlend_" + std::to_string(index + 1);
+            const std::string resource =
+                "Bloom_Upsample_V_" + std::to_string(index) + "_RT";
+            add(vertical, horizontal, explicit_after);
+            add(vertical, horizontal, read_after_write, resource);
+            add(vertical, upsample, read_after_write, resource);
+            add(vertical, "__anchor_pelican_ui", explicit_after);
+        }
+        add("VerticalBlur_3", "UpsampleBlend_3", explicit_after);
+        add("VerticalBlur_3", "UpsampleBlend_3", read_after_write,
+            "Bloom_Upsample_V_3_RT");
+        add("VerticalBlur_3", "__anchor_pelican_ui", explicit_after);
+
+        for (int index = 3; index != 0; --index) {
+            const std::string from =
+                "UpsampleBlend_" + std::to_string(index);
+            const std::string to =
+                index == 1
+                    ? std::string{"FinalBloomComposite"}
+                    : "UpsampleBlend_" + std::to_string(index - 1);
+            const std::string resource =
+                "Bloom_Downsample_H_" + std::to_string(index - 1) +
+                "_RT";
+            add(from, to, explicit_after);
+            add(from, to, read_after_write, resource);
+            add(from, "__anchor_pelican_ui", explicit_after);
+        }
+        add("FinalBloomComposite", "__anchor_pelican_ui", explicit_after);
+        add("FinalBloomComposite", "pelican_ui", read_after_write,
+            "display");
+
+        if (result.size() != 100) {
+            throw std::logic_error(
+                "independent WP316 dependency expectation must contain 100 records");
+        }
+        return result;
+    }();
+    return expected;
+}
+
+std::string expectedRecordIdentity(const ExpectedDependency &dependency) {
+    constexpr char separator = '\x1f';
+    return dependency.from + separator + dependency.to + separator +
+           dependency.reason + separator + dependency.resource;
+}
+
+QStringList expectedStrings(const std::vector<std::string> &values) {
+    QStringList result;
+    for (const auto &value : values) {
+        result.push_back(QString::fromStdString(value));
     }
     return result;
 }
 
+using ExpectedBundles =
+    std::map<EdgePair, std::vector<ExpectedDependency>, std::less<>>;
+
+ExpectedBundles expectedExpandedBundles() {
+    auto dependencies = expectedExpandedDependencies();
+    std::ranges::sort(
+        dependencies, {}, [](const ExpectedDependency &dependency) {
+            return std::tie(dependency.from, dependency.to,
+                            dependency.reason, dependency.resource);
+        });
+    ExpectedBundles result;
+    for (const auto &dependency : dependencies) {
+        result[{dependency.from, dependency.to}].push_back(dependency);
+    }
+    return result;
+}
+
+QString expectedDependencyLabel(
+    const std::vector<ExpectedDependency> &dependencies) {
+    std::set<std::string, std::less<>> resources;
+    std::set<std::string, std::less<>> reasons;
+    for (const auto &dependency : dependencies) {
+        if (!dependency.resource.empty()) {
+            resources.insert(dependency.resource);
+        }
+        reasons.insert(dependency.reason);
+    }
+    QStringList parts;
+    for (const auto &resource : resources) {
+        parts.push_back(QString::fromStdString(resource));
+    }
+    if (parts.empty()) {
+        for (const auto &reason : reasons) {
+            const auto marker = reason.rfind('.');
+            const auto version = reason.rfind('@');
+            parts.push_back(QString::fromStdString(reason.substr(
+                marker == std::string::npos ? 0 : marker + 1,
+                version == std::string::npos
+                    ? std::string::npos
+                    : version - (marker == std::string::npos ? 0
+                                                              : marker + 1))));
+        }
+    }
+    QString result = parts.join(QStringLiteral(", "));
+    if (dependencies.size() > 1) {
+        result += QStringLiteral("  x%1").arg(dependencies.size());
+    }
+    return result;
+}
+
+std::vector<QGraphicsItem *> itemsWithEndpoints(QGraphicsScene &value,
+                                                 const char *item_kind,
+                                                 std::string_view from,
+                                                 std::string_view to) {
+    std::vector<QGraphicsItem *> result;
+    const QString expected_from = QString::fromUtf8(
+        from.data(), static_cast<qsizetype>(from.size()));
+    const QString expected_to =
+        QString::fromUtf8(to.data(), static_cast<qsizetype>(to.size()));
+    for (QGraphicsItem *item : itemsOfKind(value, item_kind)) {
+        if (item->data(FramePlanFromNameRole).toString() == expected_from &&
+            item->data(FramePlanToNameRole).toString() == expected_to) {
+            result.push_back(item);
+        }
+    }
+    return result;
+}
+
+QGraphicsItem *singleItemWithEndpoints(QGraphicsScene &value,
+                                       const char *item_kind,
+                                       std::string_view from,
+                                       std::string_view to) {
+    const auto matches = itemsWithEndpoints(value, item_kind, from, to);
+    REQUIRE(matches.size() == 1);
+    return matches.front();
+}
+
+QGraphicsItem *nodeLabelItem(QGraphicsScene &value, std::string_view name) {
+    const QString expected = QString::fromUtf8(
+        name.data(), static_cast<qsizetype>(name.size()));
+    std::vector<QGraphicsItem *> matches;
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanNodeLabelItem)) {
+        if (item->data(FramePlanNameRole).toString() == expected) {
+            matches.push_back(item);
+        }
+    }
+    REQUIRE(matches.size() == 1);
+    return matches.front();
+}
+
+QColor expectedNodeColor(std::string_view source) {
+    if (source == "project") {
+        return QColor{QStringLiteral("#3978a8")};
+    }
+    if (source.starts_with("feature:")) {
+        return QColor{QStringLiteral("#c47b25")};
+    }
+    return QColor{QStringLiteral("#66717e")};
+}
+
+QPainterPath expectedNodePath(bool anchor) {
+    QPainterPath path;
+    if (anchor) {
+        QPolygonF diamond;
+        diamond << QPointF{18.0, 16.0} << QPointF{34.0, 32.0}
+                << QPointF{18.0, 48.0} << QPointF{2.0, 32.0};
+        path.addPolygon(diamond);
+        path.closeSubpath();
+    } else {
+        path.addRoundedRect(QRectF{0.0, 0.0, 240.0, 64.0}, 9.0, 9.0);
+    }
+    return path;
+}
+
+std::map<std::string, QPointF, std::less<>> expandedNodePositions() {
+    std::map<std::string, QPointF, std::less<>> result;
+    qreal x = 0.0;
+    for (const auto &node : expectedExpandedNodes()) {
+        result.emplace(node.name, QPointF{x, 0.0});
+        x += 320.0;
+    }
+    return result;
+}
+
+std::map<std::string, QPointF, std::less<>>
+sceneNodePositions(QGraphicsScene &value) {
+    std::map<std::string, QPointF, std::less<>> result;
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanNodeItem)) {
+        result.emplace(item->data(FramePlanNameRole).toString().toStdString(),
+                       item->scenePos());
+    }
+    return result;
+}
+
+void requireExpectedExpandedScene(QGraphicsScene &value) {
+    constexpr auto graph = "main_render";
+    const auto &expected_nodes = expectedExpandedNodes();
+    const auto expected_positions = expandedNodePositions();
+    const auto expected_bundles = expectedExpandedBundles();
+
+    REQUIRE(itemsOfKind(value, FramePlanNodeItem).size() ==
+            expected_nodes.size());
+    REQUIRE(itemsOfKind(value, FramePlanNodeLabelItem).size() ==
+            expected_nodes.size());
+    REQUIRE(itemsOfKind(value, FramePlanGroupItem).empty());
+    REQUIRE(itemsOfKind(value, FramePlanGroupLabelItem).empty());
+    for (const auto &expected : expected_nodes) {
+        QGraphicsItem *item = nodeItem(value, expected.name);
+        REQUIRE(item != nullptr);
+        auto *path_item = dynamic_cast<QGraphicsPathItem *>(item);
+        REQUIRE(path_item != nullptr);
+        REQUIRE(item->isVisible());
+        REQUIRE(item->scenePos() == expected_positions.at(expected.name));
+        REQUIRE(item->data(FramePlanGraphRole).toString() ==
+                QLatin1String{graph});
+        REQUIRE(item->data(FramePlanNameRole).toString() ==
+                QString::fromStdString(expected.name));
+        REQUIRE(item->data(FramePlanSourceRole).toString() ==
+                QString::fromStdString(expected.source));
+        const QColor fill = expectedNodeColor(expected.source);
+        REQUIRE(item->data(FramePlanColorRole).toString() ==
+                fill.name(QColor::HexRgb));
+        REQUIRE(item->data(FramePlanAnchorRole).toBool() == expected.anchor);
+        REQUIRE(item->data(FramePlanMembersRole).toStringList() ==
+                QStringList{QString::fromStdString(expected.name)});
+        REQUIRE(item->data(FramePlanInternalEdgeRecordsRole)
+                    .toStringList()
+                    .empty());
+        REQUIRE(path_item->path() == expectedNodePath(expected.anchor));
+        REQUIRE(path_item->brush() == QBrush{fill});
+        QPen expected_pen{expected.anchor
+                              ? QColor{QStringLiteral("#d8e3ec")}
+                              : QColor{QStringLiteral("#edf2f6")}};
+        expected_pen.setWidthF(1.3);
+        if (expected.anchor) {
+            expected_pen.setStyle(Qt::DashLine);
+        }
+        REQUIRE(path_item->pen() == expected_pen);
+
+        QGraphicsItem *label_item = nodeLabelItem(value, expected.name);
+        auto *label =
+            dynamic_cast<QGraphicsSimpleTextItem *>(label_item);
+        REQUIRE(label != nullptr);
+        REQUIRE(label->parentItem() == item);
+        REQUIRE(label->isVisible());
+        REQUIRE(label->text() == QString::fromStdString(expected.name));
+        REQUIRE(label->brush() ==
+                QBrush{QColor{QStringLiteral("#f7f9fb")}});
+        REQUIRE(label->font().bold());
+        REQUIRE(label->data(FramePlanGraphRole).toString() ==
+                QLatin1String{graph});
+        REQUIRE(label->data(FramePlanNameRole).toString() ==
+                QString::fromStdString(expected.name));
+    }
+
+    REQUIRE(itemsOfKind(value, FramePlanEdgeItem).size() ==
+            expected_bundles.size());
+    REQUIRE(itemsOfKind(value, FramePlanEdgeArrowItem).size() ==
+            expected_bundles.size());
+    REQUIRE(itemsOfKind(value, FramePlanEdgeLabelItem).size() ==
+            expected_bundles.size());
+    const QPen edge_pen = [] {
+        QPen result{QColor{QStringLiteral("#748394")}};
+        result.setWidthF(1.35);
+        return result;
+    }();
+    const QPen arrow_pen{QColor{QStringLiteral("#748394")}};
+    const QBrush arrow_brush{QColor{QStringLiteral("#748394")}};
+    const QPen label_pen{QColor{QStringLiteral("#9aa7b4")}};
+    const QBrush label_brush{QColor{QStringLiteral("#f5f7f9")}};
+    std::size_t lane = 0;
+    StringSet expected_records;
+    for (const auto &[endpoints, dependencies] : expected_bundles) {
+        const auto &[from, to] = endpoints;
+        INFO("expected logical edge: " << from << " -> " << to);
+        QGraphicsItem *item = singleItemWithEndpoints(
+            value, FramePlanEdgeItem, from, to);
+        auto *path_item = dynamic_cast<QGraphicsPathItem *>(item);
+        REQUIRE(path_item != nullptr);
+        REQUIRE(item->isVisible());
+        const QString identity = QString::fromStdString(from + "->" + to);
+        REQUIRE(item->data(FramePlanGraphRole).toString() ==
+                QLatin1String{graph});
+        REQUIRE(item->data(FramePlanNameRole).toString() == identity);
+        REQUIRE(item->data(FramePlanFromNameRole).toString() ==
+                QString::fromStdString(from));
+        REQUIRE(item->data(FramePlanToNameRole).toString() ==
+                QString::fromStdString(to));
+
+        std::vector<std::string> identities;
+        std::set<std::string, std::less<>> resources;
+        for (const auto &dependency : dependencies) {
+            identities.push_back(expectedRecordIdentity(dependency));
+            expected_records.insert(identities.back());
+            if (!dependency.resource.empty()) {
+                resources.insert(dependency.resource);
+            }
+        }
+        const std::vector<std::string> resource_values{resources.begin(),
+                                                       resources.end()};
+        REQUIRE(item->data(FramePlanEdgeRecordsRole).toStringList() ==
+                expectedStrings(identities));
+        REQUIRE(item->data(FramePlanResourcesRole).toStringList() ==
+                expectedStrings(resource_values));
+
+        const QPointF from_position = expected_positions.at(from);
+        const QPointF to_position = expected_positions.at(to);
+        const QPointF start{from_position.x() + 240.0, 32.0};
+        const QPointF tip{to_position.x(), 32.0};
+        const qreal left_turn = start.x() + 18.0;
+        const qreal right_turn = tip.x() - 18.0;
+        const qreal lane_y = 134.0 + static_cast<qreal>(lane) * 34.0;
+        QPainterPath expected_path{start};
+        expected_path.lineTo(left_turn, start.y());
+        expected_path.lineTo(left_turn, lane_y);
+        expected_path.lineTo(right_turn, lane_y);
+        expected_path.lineTo(right_turn, tip.y());
+        expected_path.lineTo(tip);
+        REQUIRE(path_item->path() == expected_path);
+        REQUIRE(path_item->pen() == edge_pen);
+        REQUIRE(path_item->brush().style() == Qt::NoBrush);
+
+        QGraphicsItem *arrow_item = singleItemWithEndpoints(
+            value, FramePlanEdgeArrowItem, from, to);
+        auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(arrow_item);
+        REQUIRE(arrow != nullptr);
+        REQUIRE(arrow->isVisible());
+        QPolygonF expected_arrow;
+        expected_arrow << tip << QPointF{tip.x() - 10.0, tip.y() - 5.0}
+                       << QPointF{tip.x() - 10.0, tip.y() + 5.0};
+        REQUIRE(arrow->polygon() == expected_arrow);
+        REQUIRE(arrow->pen() == arrow_pen);
+        REQUIRE(arrow->brush() == arrow_brush);
+        REQUIRE(arrow->data(FramePlanGraphRole).toString() ==
+                QLatin1String{graph});
+        REQUIRE(arrow->data(FramePlanNameRole).toString() == identity);
+        REQUIRE(arrow->data(FramePlanFromNameRole).toString() ==
+                QString::fromStdString(from));
+        REQUIRE(arrow->data(FramePlanToNameRole).toString() ==
+                QString::fromStdString(to));
+
+        QGraphicsItem *label_item = singleItemWithEndpoints(
+            value, FramePlanEdgeLabelItem, from, to);
+        auto *label_box = dynamic_cast<QGraphicsRectItem *>(label_item);
+        REQUIRE(label_box != nullptr);
+        REQUIRE(label_box->isVisible());
+        REQUIRE(label_box->rect().topLeft() == QPointF{});
+        REQUIRE(label_box->rect().height() == 24.0);
+        REQUIRE(label_box->scenePos().y() == lane_y - 12.0);
+        REQUIRE(label_box->scenePos().x() +
+                    label_box->rect().width() / 2.0 ==
+                (left_turn + right_turn) / 2.0);
+        REQUIRE(label_box->pen() == label_pen);
+        REQUIRE(label_box->brush() == label_brush);
+        REQUIRE(label_box->data(FramePlanGraphRole).toString() ==
+                QLatin1String{graph});
+        REQUIRE(label_box->data(FramePlanNameRole).toString() == identity);
+        REQUIRE(label_box->data(FramePlanFromNameRole).toString() ==
+                QString::fromStdString(from));
+        REQUIRE(label_box->data(FramePlanToNameRole).toString() ==
+                QString::fromStdString(to));
+        REQUIRE(label_box->data(FramePlanEdgeRecordsRole).toStringList() ==
+                expectedStrings(identities));
+        REQUIRE(label_box->data(FramePlanResourcesRole).toStringList() ==
+                expectedStrings(resource_values));
+        REQUIRE(label_box->childItems().size() == 1);
+        auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(
+            label_box->childItems().front());
+        REQUIRE(label != nullptr);
+        REQUIRE(label->isVisible());
+        REQUIRE(label->text() == expectedDependencyLabel(dependencies));
+        REQUIRE(label->brush() ==
+                QBrush{QColor{QStringLiteral("#263441")}});
+        ++lane;
+    }
+    REQUIRE(sceneDependencyRecords(value) == expected_records);
+}
+
 void requireReadableLabels(QGraphicsScene &value) {
-    std::vector<QRectF> labels;
+    // Compare reserved layout regions, not glyph bounds. Glyph metrics vary
+    // between native Windows and the offscreen QPA even for the same family.
+    std::vector<QRectF> reserved_regions;
     for (QGraphicsItem *item : value.items()) {
         const QString item_kind = kind(*item);
         if (item_kind == QLatin1String{FramePlanNodeLabelItem} ||
-            item_kind == QLatin1String{FramePlanGroupLabelItem} ||
-            item_kind == QLatin1String{FramePlanEdgeLabelItem}) {
-            labels.push_back(item->sceneBoundingRect());
+            item_kind == QLatin1String{FramePlanGroupLabelItem}) {
+            auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(item);
+            REQUIRE(label != nullptr);
+            REQUIRE_FALSE(label->text().isEmpty());
+            REQUIRE(label->parentItem() != nullptr);
+            const bool group =
+                item_kind == QLatin1String{FramePlanGroupLabelItem};
+            reserved_regions.emplace_back(
+                label->parentItem()->scenePos(),
+                QSizeF{group ? 260.0 : 240.0, group ? 76.0 : 64.0});
+        } else if (item_kind == QLatin1String{FramePlanEdgeLabelItem}) {
+            auto *label_box = dynamic_cast<QGraphicsRectItem *>(item);
+            REQUIRE(label_box != nullptr);
+            REQUIRE(label_box->childItems().size() == 1);
+            auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(
+                label_box->childItems().front());
+            REQUIRE(label != nullptr);
+            REQUIRE_FALSE(label->text().isEmpty());
+            // The production box width follows QFontMetricsF.  Use a fixed,
+            // conservative per-code-unit envelope around its lane center so
+            // QPA font metrics cannot change the overlap conclusion.
+            const QPointF center =
+                label_box->mapToScene(label_box->rect().center());
+            const qreal fixed_width = std::max<qreal>(
+                56.0, 14.0 + 12.0 * static_cast<qreal>(label->text().size()));
+            QRectF fixed_region{0.0, 0.0, fixed_width, 24.0};
+            fixed_region.moveCenter(center);
+            reserved_regions.push_back(fixed_region);
         }
     }
-    REQUIRE_FALSE(labels.empty());
+    REQUIRE_FALSE(reserved_regions.empty());
     const qreal minimum =
         value.property("pelicanMinimumLabelSpacing").toReal();
     REQUIRE(minimum >= 8.0);
-    for (std::size_t left = 0; left < labels.size(); ++left) {
-        for (std::size_t right = left + 1; right < labels.size(); ++right) {
-            const QRectF padded = labels[left].adjusted(
+    for (std::size_t left = 0; left < reserved_regions.size(); ++left) {
+        for (std::size_t right = left + 1;
+             right < reserved_regions.size(); ++right) {
+            const QRectF padded = reserved_regions[left].adjusted(
                 -minimum, -minimum, minimum, minimum);
-            REQUIRE_FALSE(padded.intersects(labels[right]));
+            REQUIRE_FALSE(padded.intersects(reserved_regions[right]));
         }
     }
 }
@@ -543,7 +1110,6 @@ TEST_CASE(
     "[devstudio][frame-plan][logical-graph][wp306]") {
     (void)application();
     const std::string captured = readText(PELICAN_TEST_FRAME_PLAN_FIXTURE);
-    const Json captured_json = Json::parse(captured);
 
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
@@ -559,57 +1125,10 @@ TEST_CASE(
                           [](const QGraphicsItem *item) {
                               return item->data(FramePlanAnchorRole).toBool();
                           }) == 8);
-
-    const std::vector<EdgePair> lost_edges{
-        {"VerticalBlur_0", "UpsampleBlend_1"},
-        {"VerticalBlur_1", "UpsampleBlend_2"},
-        {"VerticalBlur_2", "UpsampleBlend_3"},
-        {"gbuffer_pass", "lighting_pass"},
-        {"forward_transparent", "FinalBloomComposite"},
-    };
-    for (const auto &[from, to] : lost_edges) {
-        INFO("lost topological edge: " << from << " -> " << to);
-        REQUIRE(edgeItem(logical, from, to) != nullptr);
-    }
-
-    const auto project = nodeItem(logical, "gbuffer_pass");
-    const auto feature = nodeItem(logical, "pelican_ui");
-    const auto engine = nodeItem(logical, "output_transform");
-    REQUIRE(project != nullptr);
-    REQUIRE(feature != nullptr);
-    REQUIRE(engine != nullptr);
-    REQUIRE(project->data(FramePlanGraphRole).toString() ==
-            QStringLiteral("main_render"));
-    REQUIRE(project->data(FramePlanSourceRole).toString() ==
-            QStringLiteral("project"));
-    REQUIRE(feature->data(FramePlanSourceRole).toString() ==
-            QStringLiteral("feature:ui"));
-    REQUIRE(engine->data(FramePlanSourceRole).toString() ==
-            QStringLiteral("engine"));
-    REQUIRE(project->data(FramePlanColorRole) !=
-            feature->data(FramePlanColorRole));
-    REQUIRE(feature->data(FramePlanColorRole) !=
-            engine->data(FramePlanColorRole));
-    REQUIRE(project->data(FramePlanColorRole) !=
-            engine->data(FramePlanColorRole));
+    requireExpectedExpandedScene(logical);
     requireReadableLabels(logical);
+    const auto ordered_positions = sceneNodePositions(logical);
 
-    const SceneSnapshot ordered = snapshot(logical);
-    Json shuffled = captured_json;
-    std::reverse(shuffled["nodes"].begin(), shuffled["nodes"].end());
-    std::reverse(shuffled["barriers"].begin(), shuffled["barriers"].end());
-    std::reverse(shuffled["resources"].begin(), shuffled["resources"].end());
-    std::reverse(shuffled["execution_plan"]["nodes"].begin(),
-                 shuffled["execution_plan"]["nodes"].end());
-    std::reverse(shuffled["execution_plan"]["dependencies"].begin(),
-                 shuffled["execution_plan"]["dependencies"].end());
-    widget.receiveResult(QByteArray::fromStdString(shuffled.dump()));
-    QApplication::processEvents();
-    REQUIRE(snapshot(logical) == ordered);
-
-    const StringSet expanded_records = sceneDependencyRecords(logical);
-    REQUIRE(expanded_records.size() ==
-            captured_json.at("execution_plan").at("dependencies").size());
     QSpinBox &minimum = groupMinimum(widget);
     minimum.setValue(13);
     QApplication::processEvents();
@@ -617,25 +1136,77 @@ TEST_CASE(
     REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() == 17);
     const auto groups = itemsOfKind(logical, FramePlanGroupItem);
     REQUIRE(groups.size() == 1);
-    REQUIRE(groups.front()->data(FramePlanMembersRole).toStringList().size() ==
-            13);
-    REQUIRE(groups.front()
-                ->data(FramePlanMembersRole)
-                .toStringList()
-                .contains(QStringLiteral("HighLuminanceExtraction")));
-    REQUIRE(groups.front()
-                ->data(FramePlanMembersRole)
-                .toStringList()
-                .contains(QStringLiteral("FinalBloomComposite")));
-    REQUIRE(sceneDependencyRecords(logical) == expanded_records);
+    auto *group = dynamic_cast<QGraphicsPathItem *>(groups.front());
+    REQUIRE(group != nullptr);
+    const StringSet actual_members =
+        strings(group->data(FramePlanMembersRole));
+    REQUIRE(actual_members.size() == 13);
+    StringSet one_wrong_member = expectedBloomMembers();
+    one_wrong_member.erase("HorizontalBlur_2");
+    one_wrong_member.insert("lighting_pass");
+    REQUIRE(actual_members != one_wrong_member);
+    REQUIRE(actual_members == expectedBloomMembers());
+    REQUIRE(group->isVisible());
+    REQUIRE(group->data(FramePlanGraphRole).toString() ==
+            QStringLiteral("main_render"));
+    REQUIRE(group->data(FramePlanNameRole).toString() ==
+            QStringLiteral("group:resource-family:Bloom"));
+    REQUIRE(group->data(FramePlanSourceRole).toString() ==
+            QStringLiteral("project"));
+    REQUIRE_FALSE(group->data(FramePlanAnchorRole).toBool());
+    QPainterPath expected_group_path;
+    expected_group_path.addRoundedRect(
+        QRectF{0.0, 0.0, 260.0, 76.0}, 13.0, 13.0);
+    REQUIRE(group->path() == expected_group_path);
+    REQUIRE(group->brush() ==
+            QBrush{QColor{QStringLiteral("#7653a6")}});
+    QPen expected_group_pen{QColor{QStringLiteral("#edf2f6")}};
+    expected_group_pen.setWidthF(2.0);
+    REQUIRE(group->pen() == expected_group_pen);
+    const auto group_labels = itemsOfKind(logical, FramePlanGroupLabelItem);
+    REQUIRE(group_labels.size() == 1);
+    auto *group_label = dynamic_cast<QGraphicsSimpleTextItem *>(
+        group_labels.front());
+    REQUIRE(group_label != nullptr);
+    REQUIRE(group_label->parentItem() == group);
+    REQUIRE(group_label->isVisible());
+    REQUIRE(group_label->text() ==
+            QStringLiteral("Bloom structure\n13 nodes"));
+    REQUIRE(group_label->brush() ==
+            QBrush{QColor{QStringLiteral("#f7f9fb")}});
+    REQUIRE(group_label->font().bold());
+    REQUIRE(group_label->data(FramePlanGraphRole).toString() ==
+            QStringLiteral("main_render"));
+    REQUIRE(group_label->data(FramePlanNameRole).toString() ==
+            QStringLiteral("group:resource-family:Bloom"));
+
+    StringSet expected_records;
+    for (const auto &dependency : expectedExpandedDependencies()) {
+        expected_records.insert(expectedRecordIdentity(dependency));
+    }
+    REQUIRE(sceneDependencyRecords(logical) == expected_records);
     requireReadableLabels(logical);
 
     minimum.setValue(14);
     QApplication::processEvents();
     REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() == 30);
     REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
-    REQUIRE(sceneDependencyRecords(logical) == expanded_records);
-    REQUIRE(snapshot(logical) == ordered);
+    requireExpectedExpandedScene(logical);
+    requireReadableLabels(logical);
+
+    // buildFramePlanModel() has already applied its order-field sort here.
+    // Reverse that view-independent result itself, then feed the reordered
+    // input directly to the layout boundary.
+    FramePlanModel reordered = buildFramePlanModel(captured);
+    std::reverse(reordered.nodes.begin(), reordered.nodes.end());
+    std::reverse(reordered.dependencies.begin(), reordered.dependencies.end());
+    auto *graphics = dynamic_cast<FramePlanGraphicsScene *>(&logical);
+    REQUIRE(graphics != nullptr);
+    graphics->populate(reordered, 14);
+    QApplication::processEvents();
+    REQUIRE(sceneNodePositions(logical) == ordered_positions);
+    requireExpectedExpandedScene(logical);
+    requireReadableLabels(logical);
 }
 
 TEST_CASE(
@@ -979,29 +1550,90 @@ TEST_CASE(
     "WP306 animgraph feature purge updates one widget without node edge overlay selection or fold orphans",
     "[devstudio][frame-plan][logical-graph][purge][wp306]") {
     (void)application();
-#if !PELICAN_RUNTIME_SHADER_COMPILER
-    const Json base = animgraphFramePlan(false);
-    EmbeddedViewport off_viewport;
-    FramePlanWidget off_widget{&off_viewport};
-    off_widget.receiveResult(QByteArray::fromStdString(base.dump()));
-    QApplication::processEvents();
-    QGraphicsScene &off_logical = scene(off_widget);
-    REQUIRE(sceneEdges(off_logical) == wireEdges(base));
-    REQUIRE(off_logical.property("pelicanPhysicalResourceCount")
-                .toULongLong() ==
-            base.at("physical_target_plan").at("resources").size());
-    REQUIRE(off_logical.property("pelicanPlanningEndpoint").toString() ==
-            QStringLiteral("device:0"));
-    return;
-#endif
-    const Json enabled = animgraphFramePlan(true);
-    const Json disabled = animgraphFramePlan(false);
+    const auto variant_case = GENERATE(table<
+        Pelican::RenderPipelineGraphVariant, std::string, bool>({
+        {Pelican::RenderPipelineGraphVariant::flat, "flat", true},
+        {Pelican::RenderPipelineGraphVariant::preview, "preview", false},
+        {Pelican::RenderPipelineGraphVariant::xr, "xr", true},
+    }));
+    const auto &[variant, variant_name, publishes_physical_plan] =
+        variant_case;
+    CAPTURE(variant_name, PELICAN_RUNTIME_SHADER_COMPILER);
 
-    for (const auto &resource :
-         enabled.at("physical_target_plan").at("resources")) {
-        REQUIRE_FALSE(resource.at("logical_resource")
-                          .get<std::string>()
-                          .starts_with("Bloom_"));
+#if !PELICAN_WITH_OPENXR
+    if (variant == Pelican::RenderPipelineGraphVariant::xr) {
+        for (const bool feature_enabled : {false, true}) {
+            try {
+                (void)animgraphFramePlan(feature_enabled, variant);
+                FAIL("XR production variant unexpectedly compiled without OpenXR");
+            } catch (const std::runtime_error &error) {
+                REQUIRE(std::string_view{error.what()}.find(
+                            "XR graph variant is unavailable in this build") !=
+                        std::string_view::npos);
+            }
+        }
+        return;
+    }
+#endif
+
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    {
+        const Json enabled = animgraphFramePlan(true, variant);
+        const Json disabled = animgraphFramePlan(false, variant);
+        REQUIRE(wireNodeNames(enabled) == wireNodeNames(disabled));
+        REQUIRE(wireEdges(enabled) == wireEdges(disabled));
+        REQUIRE_FALSE(wireNodeNames(enabled).contains("shadow_depth"));
+
+        EmbeddedViewport off_viewport;
+        FramePlanWidget off_widget{&off_viewport};
+        groupMinimum(off_widget).setValue(64);
+        off_widget.receiveResult(QByteArray::fromStdString(disabled.dump()));
+        QApplication::processEvents();
+        QGraphicsScene &off_logical = scene(off_widget);
+        REQUIRE(sceneEdges(off_logical) == wireEdges(disabled));
+        REQUIRE(off_logical.property("pelicanGraph").toString() ==
+                QString::fromStdString(
+                    disabled.at("graph").get<std::string>()));
+        if (publishes_physical_plan) {
+            REQUIRE(disabled.contains("physical_target_plan"));
+            REQUIRE(off_logical.property("pelicanPhysicalResourceCount")
+                        .toULongLong() ==
+                    disabled.at("physical_target_plan")
+                        .at("resources")
+                        .size());
+            REQUIRE(off_logical.property("pelicanPlanningEndpoint")
+                        .toString() == QStringLiteral("device:0"));
+        } else {
+            REQUIRE_FALSE(disabled.contains("physical_target_plan"));
+            REQUIRE(off_logical.property("pelicanPhysicalResourceCount")
+                        .toULongLong() == 0);
+            const auto context =
+                itemsOfKind(off_logical, FramePlanPhysicalContextItem);
+            REQUIRE(context.size() == 1);
+            REQUIRE(context.front()
+                        ->data(FramePlanPhysicalStateRole)
+                        .toString() == QStringLiteral("unavailable"));
+        }
+        requireNoReference(off_logical, "shadow_depth", "shadow_map");
+        requireReadableLabels(off_logical);
+        return;
+    }
+#endif
+    const Json enabled = animgraphFramePlan(true, variant);
+    const Json disabled = animgraphFramePlan(false, variant);
+
+    if (publishes_physical_plan) {
+        REQUIRE(enabled.contains("physical_target_plan"));
+        REQUIRE(disabled.contains("physical_target_plan"));
+        for (const auto &resource :
+             enabled.at("physical_target_plan").at("resources")) {
+            REQUIRE_FALSE(resource.at("logical_resource")
+                              .get<std::string>()
+                              .starts_with("Bloom_"));
+        }
+    } else {
+        REQUIRE_FALSE(enabled.contains("physical_target_plan"));
+        REQUIRE_FALSE(disabled.contains("physical_target_plan"));
     }
 
     const StringSet removed_nodes =
@@ -1029,12 +1661,18 @@ TEST_CASE(
     QApplication::processEvents();
     QGraphicsScene &logical = scene(widget);
     REQUIRE(sceneEdges(logical) == wireEdges(enabled));
-    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
-            enabled.at("physical_target_plan").at("resources").size());
-    REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
-            QStringLiteral("optimized"));
-    REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
-            QStringLiteral("device:0"));
+    if (publishes_physical_plan) {
+        REQUIRE(logical.property("pelicanPhysicalResourceCount")
+                    .toULongLong() ==
+                enabled.at("physical_target_plan").at("resources").size());
+        REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
+                QStringLiteral("optimized"));
+        REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
+                QStringLiteral("device:0"));
+    } else {
+        REQUIRE(logical.property("pelicanPhysicalResourceCount")
+                    .toULongLong() == 0);
+    }
 
     QGraphicsItem *shadow = nodeItem(logical, "shadow_depth");
     REQUIRE(shadow != nullptr);
@@ -1068,8 +1706,14 @@ TEST_CASE(
                                  "feature:shadow_directional"));
                          }));
     requireNoReference(logical, "shadow_depth", "shadow_map");
-    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
-            disabled.at("physical_target_plan").at("resources").size());
+    if (publishes_physical_plan) {
+        REQUIRE(logical.property("pelicanPhysicalResourceCount")
+                    .toULongLong() ==
+                disabled.at("physical_target_plan").at("resources").size());
+    } else {
+        REQUIRE(logical.property("pelicanPhysicalResourceCount")
+                    .toULongLong() == 0);
+    }
 
     minimum.setValue(64);
     QApplication::processEvents();
