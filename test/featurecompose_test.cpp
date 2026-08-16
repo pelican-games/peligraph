@@ -513,6 +513,7 @@ TEST_CASE(
         flat_compute->at("provider_feature") ==
         "compute_provenance_probe");
 
+#if PELICAN_WITH_OPENXR
     const auto xr = plan_variant(
         RenderPipelineGraphVariant::xr);
     REQUIRE(
@@ -545,6 +546,11 @@ TEST_CASE(
         find_named(
             xr.synchronized_provenance.at("nodes"),
             "compute_provenance_task") == nullptr);
+#else
+    REQUIRE_THROWS_WITH(
+        resolve(RenderPipelineGraphVariant::xr),
+        "XR graph variant is unavailable in this build");
+#endif
 }
 
 TEST_CASE(

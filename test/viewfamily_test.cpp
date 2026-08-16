@@ -147,6 +147,7 @@ TEST_CASE(
 TEST_CASE(
     "render view family validates stable identities and graph cardinality",
     "[view-family][contract]") {
+#if PELICAN_WITH_OPENXR
     const auto xr_policy =
         compileGraphVariantPolicy({
             .variant =
@@ -177,11 +178,20 @@ TEST_CASE(
         validateRenderViewFamily(
             family, xr_policy),
         "render graph variant 'xr' requires 2 views in family '$main'");
+#else
+    REQUIRE_THROWS_WITH(
+        compileGraphVariantPolicy({
+            .variant =
+                RenderPipelineGraphVariant::xr,
+        }),
+        "XR graph variant is unavailable in this build");
+#endif
 }
 
 TEST_CASE(
     "render view family collection separates main cardinality from secondary families",
     "[view-family][collection][secondary]") {
+#if PELICAN_WITH_OPENXR
     const auto xr_policy =
         compileGraphVariantPolicy({
             .variant =
@@ -248,6 +258,14 @@ TEST_CASE(
             missing_main, xr_policy),
         Catch::Matchers::ContainsSubstring(
             "do not provide family '$main'"));
+#else
+    REQUIRE_THROWS_WITH(
+        compileGraphVariantPolicy({
+            .variant =
+                RenderPipelineGraphVariant::xr,
+        }),
+        "XR graph variant is unavailable in this build");
+#endif
 }
 
 TEST_CASE(
@@ -587,6 +605,7 @@ TEST_CASE(
             .clip_plane->offset ==
         Catch::Approx(-1.0f));
 
+#if PELICAN_WITH_OPENXR
     const auto policy =
         compileGraphVariantPolicy({
             .variant =
@@ -601,6 +620,14 @@ TEST_CASE(
     REQUIRE_NOTHROW(
         validateRenderViewFamilies(
             families, policy));
+#else
+    REQUIRE_THROWS_WITH(
+        compileGraphVariantPolicy({
+            .variant =
+                RenderPipelineGraphVariant::xr,
+        }),
+        "XR graph variant is unavailable in this build");
+#endif
 
     REQUIRE_THROWS_AS(
         buildPlanarReflectionViewFamily(
@@ -851,6 +878,7 @@ TEST_CASE(
         snapshots[0].jitter_ndc.y ==
         Catch::Approx(-1.0f / 300.0f));
 
+#if PELICAN_WITH_OPENXR
     const auto xr_policy =
         compileGraphVariantPolicy({
             .variant =
@@ -861,6 +889,14 @@ TEST_CASE(
             history, family, modifiers,
             xr_policy, 1, 200, 100, true),
         "render graph variant 'xr' forbids projection jitter for family '$main'");
+#else
+    REQUIRE_THROWS_WITH(
+        compileGraphVariantPolicy({
+            .variant =
+                RenderPipelineGraphVariant::xr,
+        }),
+        "XR graph variant is unavailable in this build");
+#endif
 }
 
 TEST_CASE(

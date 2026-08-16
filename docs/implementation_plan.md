@@ -45,6 +45,16 @@ ctest --test-dir ./build -C Debug -j4 --output-on-failure
   CI で初めて割れる。実例として WP249 はこの指定が無い手順で検証され、
   ctest 総数が統合ブランチより 5 件少ない構成のまま緑と報告された(実害は無かったが、
   それは偶然である)
+- **機能フラグの検証セット(§4 規則 9)**: WP で触れた `#if` / CMake `if()` に対応する
+  **全てのフラグを、それぞれ反転した構成で実際にビルド・テストすること。**
+  一つの OFF 構成を別のフラグの対照として代用しない。現在の共通 ON 構成から
+  OFF を回す対象は `PELICAN_RUNTIME_SHADER_COMPILER`、`PELICAN_WITH_SPIRV_LINK`、
+  `PELICAN_WITH_AUDIO`、`PELICAN_WITH_VAT`、`PELICAN_WITH_EXR`、`PELICAN_WITH_RPC`、
+  `PELICAN_WITH_SEQPLAYER`、`PELICAN_WITH_IMGUI`、`PELICAN_WITH_PHYSICS`、
+  `PELICAN_WITH_OPENXR`、`PELICAN_WITH_RENDERDOC`、
+  `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`、`PELICAN_WITH_BUILTIN_PHYSICS`。
+  既定 OFF の `PELICAN_WITH_JOLT_PHYSICS` に触れた場合は ON 構成を対照にする。
+  フラグを追加したらこの一覧も同じ WP で更新する
 
 - 完了条件は常に「ビルド成功 + 全テストグリーン + `git diff --check` クリーン + **文書参照が緑**」
 - **新しく書く主張には §4 規約 10(否定対照)を適用すること。**
@@ -5880,7 +5890,8 @@ cascade、複数mirror、将来のsecondary providerも同じ経路を使える�
    `build/wp254-uv-install/` へ uv を入れ、その worktree だけ削除できずに残った。
    ツールが要るなら worktree の外か、OS の一時領域を使うこと。
 
-9. **(2026-08-09 追加)`#if` で囲まれた識別子に触れる WP は、その構成を実際にビルドすること。**
+9. **(2026-08-09 追加)`#if` で囲まれた識別子に触れる WP は、対応する全ての
+   機能フラグについて反転構成を実際にビルドすること。**
    エンジン開発の既定は機能フラグが軒並み ON なので、OFF 構成のコンパイルエラーは
    手元でもテスト行列でも**表に出ない**。実例として WP281 が
    `gltf.cpp` の `vat_deformed` を `#if PELICAN_WITH_VAT` の外で代入し、
@@ -5888,9 +5899,12 @@ cascade、複数mirror、将来のsecondary providerも同じ経路を使える�
    `pelican_cli dist-config` は VAT 資産の無いプロジェクトに OFF を出すため、
    該当する配布ビルドが全滅する状態だった。CI でも手元でも緑のまま。
 
-   **WP の受け入れ条件に、触れた機能フラグの OFF 構成を明記すること。**
+   **WP の受け入れ条件に、触れた `#if` に対応する全ての機能フラグと、その反転構成を
+   一つずつ明記すること。** 複数のフラグに触れたなら、一つだけを OFF にして済ませない。
+   対象一覧は §0「機能フラグの検証セット」を正とし、フラグを追加した WP は一覧も更新する。
    これは指示書を書く側の責任である。WP278 は
-   `PELICAN_RUNTIME_SHADER_COMPILER` の両構成を明示的に要求して防げていた。
+   `PELICAN_RUNTIME_SHADER_COMPILER` の両構成を明示的に要求して防げていたが、
+   WP301〜303 は同時に触れた `PELICAN_WITH_OPENXR` を列挙せず、欠陥を見逃した。
 
    OFF 構成を新しいビルドディレクトリで構成するときに二つ詰まる。両方あらかじめ避けること。
 
