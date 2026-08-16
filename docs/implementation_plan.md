@@ -4897,6 +4897,81 @@ WP303 が塞いだのは pass definition 側(`renderingpassvalidation.cpp`)だ�
 
 依存: なし。見積: 中〜大。
 
+### WP312: 機能フラグの検証セットを、宣言から生成されるものにする
+
+**目的**: WP308 が §0 に置いたフラグ一覧は**手書きの写しであり、既に破綻している**。
+宣言を正とし、文書とスモーク行列をそこから検査または生成する。
+
+#### WP308 は自分が書いた規約に違反した
+
+WP308 が `#if PELICAN_WITH_OPENXR` を入れた `test/viewfamily_test.cpp:608` は、
+`#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`(`:438`)の**内側**にある。
+新規約「触れた `#if` に対応する全フラグを反転」に従えば
+`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` も反転すべきだったが、していない。
+**規約を書いた WP がその場で守れなかった。**手書き運用では守れない証拠である。
+
+#### スモークが単独反転になっていない
+
+- 共有ヘルパ `configure_and_build` が**全構成で** `PELICAN_WITH_SPIRV_LINK=OFF` を強制する
+  (`test/run_build_units_smoke.cmake:63`)
+- Standard Render Algorithms の OFF スモークは**さらに** `PELICAN_WITH_OPENXR=OFF` も渡す
+  (`test/run_build_units_smoke.cmake:559`)
+
+したがって正当な構成である
+`STANDARD_RENDER_ALGORITHMS=OFF` × `OPENXR=ON` × `SPIRV_LINK=ON` は
+**一度も建っていない**。OpenXR 側のコードが purge された standard algorithm の
+シンボルを参照する事故は、現行スモークの OpenXR-OFF と Standard-OFF を**両方通過できる**。
+規約が防ごうとしている事故と同型である。
+
+#### 規約 9 の本文が CMake gate を対象にしていない
+
+§0 は `#if` と CMake `if()` の両方を対象と書いたが、規約 9 の本体は `#if` しか述べていない。
+実在する `if(NOT SKIP_DEVSTUDIO)`(`CMakeLists.txt:486`)がその隙間に落ちる。
+**`SKIP_DEVSTUDIO` は 14 フラグの一覧にも入っていない。**
+
+#### 「一つずつ反転」が成立しないフラグがある
+
+`PELICAN_WITH_JOLT_PHYSICS` を ON にすると、CMake が
+`PELICAN_WITH_BUILTIN_PHYSICS=OFF` を強制する(`CMakeLists.txt:72-76`)。
+Jolt の対照は**必ず 2 フラグ動く**。規約の「一つずつ」と一致しない。
+
+さらに Jolt の既定 OFF が CMake と台帳 §0 の**二箇所**に書かれた。
+**WP308 の変更自身が「既定値の所在は一箇所」に違反している。**
+
+#### 実装範囲
+
+1. **機械可読な feature registry を正とすること。**
+   名前・基準値・対照値・依存関係(強制される他フラグ)を宣言し、
+   台帳の一覧とスモーク行列をそこから検査または生成すること。
+   **手書きの写しを残さないこと。**
+2. スモークを単独反転にすること。共有ヘルパから `SPIRV_LINK=OFF` の強制を外し、
+   Standard OFF から `OPENXR=OFF` を外す。SPIR-V linker の OFF は専用行にする。
+3. 規約 9 の本文を「`#if`、CMake `if()`、generator expression、
+   条件付き source / target / dependency のいずれかに属する変更」と明記すること。
+   `SKIP_DEVSTUDIO` を基準 OFF・対照 ON として一覧に含めること。
+4. Jolt のように対照が複数フラグを動かすものは、registry に依存関係として宣言し、
+   規約の「一つずつ」の例外であることが**文書ではなく宣言から**分かるようにすること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`STANDARD_RENDER_ALGORITHMS=OFF` × `OPENXR=ON` × `SPIRV_LINK=ON` が建ち、
+  テストが緑であること。** 現在このマスは一度も建っていない
+- **台帳の一覧を故意に 1 つ削る / 1 つ増やす / 既定値を書き換えると、
+  検査が名前付きエラーで落ちること。** これが本 WP の中心的な対照である
+  —— 一覧が宣言と食い違ったまま緑になる状態を残さないこと
+- スモークの各行が、対象フラグ以外を共通 ON 構成から動かしていないこと。
+  動かすものは registry の依存関係として宣言されていること
+- Jolt の既定値が 1 箇所にしか書かれていないこと
+- `ctest` 全数が緑(`-j4`)、`git diff --check` クリーン、
+  `uv run tools/doclink.py check` が通ること
+
+#### 範囲外
+
+全 14 フラグ × 全組合せの網羅。**単独反転が成立することと、
+一覧が宣言から検査されること**までが本 WP である。
+
+依存: なし。見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
