@@ -4734,7 +4734,15 @@ reader は「物理の parallel collection が存在しない」とコメント�
   —— 現行テストは fixture が両方空のため、両 reader を未実装にしても通る
 - UI の表示を検査すること —— 現行テストは `draw()` を呼ばないため、
   表示ブロックを丸ごと削除しても通る
-- 対照は fixture の手編集ではなく、**実際に profile を変えて compile した結果**で取ること
+- 対照は fixture の手編集ではなく、**実際に profile を変えて compile した結果**で取ること。
+  非空の対照は既存データで作れる —— `alpha` / `beta` は optimized で fusion と parallel の
+  両方に入り、`conservative_debug` では両方空になる(`test/targetplanning_test.cpp:372`)
+- **`PELICAN_WITH_IMGUI=OFF` でビルドが通ること。**
+  `compiledplanviewer_test` は `PELICAN_WITH_IMGUI=ON` のときしか登録されず
+  (`test/CMakeLists.txt:880`)、配布構成は IMGUI を強制 OFF にする
+  (`src/devcli/distconfig.cpp:882`)。
+  **動作テストは IMGUI ON で、ビルドゲートは OFF で**取ること
+- `SKIP_DEVSTUDIO=ON` でビルドが通ること(studio は丸ごと外れる、`CMakeLists.txt:485`)
 
 依存: なし。見積: 中〜大。
 
@@ -4768,18 +4776,51 @@ WP303 が塞いだのは pass definition 側(`renderingpassvalidation.cpp`)だ�
    D0 を保てるなら `pelican_project` 層に置くこと。
 2. 既存の二重化した検証を、その共通関数に寄せること。**第二の流儀を残さないこと。**
 
+#### 所有権の表を仕様の正とすること
+
+現在の `validatePassSpecificFields` は material 系だけで 10 項目を見ており、
+さらに fullscreen / raster / shader / push-constant 系の検査もある
+(`src/core/renderingpass/renderingpassvalidation.cpp:472` 以降)。
+`gpu_draw_source` と `material_contract` の 2 つだけを直しても二重化は消えない。
+
+**pass type と、その type が所有する field の完全な表を本節に列挙し、
+それを唯一の source of truth とすること。**
+有効な type の集合は `PELICAN_WITH_IMGUI` で変わる
+(`src/core/renderingpass/renderingpassjsonhelpers.cpp:127`)。
+また `pelican_project` は現在 `PELICAN_WITH_OPENXR` しか compile definition を持たない
+(`src/project/CMakeLists.txt:42`)ので、
+共通 validator をそこへ置くならビルド能力を**入力として明示的に渡すこと**。
+
 #### 受け入れ条件(§4 規約 10)
 
 - **非マテリアルの frame graph pass に `gpu_draw_source` を置いたとき、
-  read エッジが増えず、名前付きエラーで失敗すること。**
-  これが本 WP の中心的な対照である
-- `canonical_anchor` / `snapshot_copy` / preview の各経路でも同じく弾かれること
-- **マテリアルパスの肯定側で、`material_contract` の enum と
-  frame plan の read エッジと最終的な buffer ID を検査すること** ——
-  現行テストは文字列のコピーしか見ておらず、material 側で contract を捨てても通る
-- 出荷 68 JSON が従来どおり読めること(10/10 の `material_contract` は全て material 上)
+  名前付きエラーで失敗すること。** これが本 WP の中心的な対照である
+  —— 観測は「名前付き例外が出ること」「provider が呼ばれていないこと」
+  「generation が公開されていないこと」で行う。
+  **「read エッジが増えないこと」を条件にしないこと** ——
+  `parseFrameGraphDefinitionFromJson` は値を返すので、
+  例外時に検査できる `FrameGraphDefinition` は存在しない(`frameplanner.hpp:163`)
+- `canonical_anchor` / `snapshot_copy` / preview の各経路でも同じく弾かれること。
+  standalone preview は `resolveRenderPipeline` と `compileRenderPipeline` しか呼ばない
+  (`src/core/renderingpass/previewgraph.cpp:90`)ので、別経路として明示的に通すこと
+- **肯定側は同じ production compile の中で、material ノードの `reads` に
+  正確な commands / count 名が入り、最終 ID が対応する `buffer_bindings` と
+  一致することを検査すること**
+- 表に挙げた各 field について、所有する type の肯定例と
+  所有しない type の否定例を**同一の parameterized test** で実行すること。
+  `type` の欠落・非文字列・未知の値も含めること
+- **出荷コーパスは肯定対照にならない。** `gpu_draw_source` は出荷 JSON に **0 件**である
+  (`git grep -l gpu_draw_source -- projects/* src/core/resources/*` は空)。
+  肯定側には専用の production fixture を用意すること
+- 出荷設定が従来どおり読めることは、**固定件数ではなく**
+  4 プロジェクトの production resolve / startup と、
+  built-in の pipeline / feature を動的に列挙して確認すること
+  (tracked JSON は projects/ 48・src/core/resources/ 30 だが、この数は増減する。
+  `material_contract` は 10 件で全て `type == material` 上)
+- `PELICAN_WITH_IMGUI` の ON / OFF、`PELICAN_RUNTIME_SHADER_COMPILER` の ON / OFF で
+  成立すること
 
-依存: なし。見積: 中。
+依存: なし。見積: 中〜大。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
