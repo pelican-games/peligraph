@@ -4972,6 +4972,101 @@ Jolt の対照は**必ず 2 フラグ動く**。規約の「一つずつ」と�
 
 依存: なし。見積: 中。
 
+### WP313: WP309 の変異対照が片方の構成でしか噛まない
+
+**目的**: WP309 の中心的対照を、OpenXR ON / OFF の両方で成立させる。
+あわせて WP309 が作った既定値の二重定義を潰す。
+
+#### ① 対照が OpenXR ON でしか噛まない
+
+WP309 の変異対照は「`vulkanrendercompilerprogram.cpp` の
+`detail::namespaceComputeTasks` 呼び出しを消すとテストが落ちる」である。
+これは `probe#xr` の具体値検査で成立しているが、**OpenXR ON でしか成立しない**。
+
+- OFF では XR 分岐が namespacing より前に
+  `"XR graph variant is unavailable in this build"` で落ちる
+  (`test/featurecompose_test.cpp:1002`、`src/project/graphvariantpolicy.cpp:498`)
+- flat の gate 無効側は compute 名が `probe` のままなので、呼び出しを消しても通る
+
+**WP301 と同じ「一箇所でしか噛まない」形の再発である。**
+
+**直し方**: flat の gate 有効側で、実際に解決された経路の `source == engine` と
+来歴の件数を検査し、stale な `probe#xr` 来歴が**存在しない**ことも主張する。
+gate 無効側では著作パス `probe#xr` の `source == project` を対照に置く。
+これで ON / OFF 双方で呼び出し削除が落ちる。
+
+#### ② `device_required` の既定値が二箇所にある
+
+同じ既定値が constructor の省略引数(`vulkanrendercompilerpackage.hpp:39`)と
+member initializer(`:58`)の**両方**に書かれている。
+本番登録は第 6 引数を省略するので constructor 側に依存し
+(`src/core/renderingpass/renderingpassconfigregistration.cpp:779`)、
+追加テストは構築後に上書きするので**両者のドリフトを検出しない**
+(`test/featurecompose_test.cpp:802`)。
+
+**「既定値の所在は一箇所」違反であり、
+WP309 の差し戻し指示(明示宣言にせよ)が作り込んだものである。**
+
+**直し方**: member initializer の既定値を削除し、constructor 引数を唯一の正本にする。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`PELICAN_WITH_OPENXR` の ON と OFF の双方で、
+  `namespaceComputeTasks` の本番呼び出しを削除するとテストが落ちること。**
+  これが本 WP の中心的な対照である。落ちたときのメッセージを両構成について報告すること
+- 既定値が 1 箇所にしか書かれていないこと。
+  **constructor 引数と member initializer が食い違ったときに検出できること**
+- 本番の挙動が変わらないこと(既定は `device_required`、本番は device 経路)
+- `ctest` 全数が緑(`-j4`)、§0 の反転対象のうち触れたフラグを反転して緑、
+  `git diff --check` クリーン、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。
+
+### WP314: graph transform を跨ぐと feature 来歴が無音で engine に落ちる(潜在)
+
+**目的**: 記録する。**現時点では出荷設定から到達しない。**
+
+#### 経路
+
+1. feature `F` が compute task `work#xr` を宣言する
+2. XR variant の graph transform が、その task の名前だけを `work` に変更する
+3. namespacing が `work` を `work#xr` に戻す
+
+来歴はこう壊れる:
+
+```
+work#xr (feature:F)
+  → transform 後の task は work
+  → 一回目の同期が旧 work#xr を stale として削除し work (engine) を生成
+  → namespacing 後は work#xr (engine)
+```
+
+この変換は現在の graph-transform 契約で**許可されている**。
+構造比較は `compute_tasks` を除外し、protected node も anchor / output transform に限られる
+(`src/core/renderingpass/graphtransformregistry.cpp:463` / `:530` / `:1543`)。
+
+原因は、変換より前に作った来歴を**名前だけで**同期し、未知名を無条件に `engine` へ落とすこと
+(`src/core/renderingpass/vulkanrendercompilerprogram.cpp:256`、
+`src/project/renderpipeline.cpp:1797`)。
+来歴には kind も安定 ID も改名 lineage も無い(`src/project/renderpipeline.hpp:150`)。
+
+**最終フレームプランで `source: "engine"` となり `provider_feature` / `provider_ref` が消える。
+例外にもならないので fail-fast 原則にも反する。**
+
+#### なぜ今は着手しないか
+
+`graph_transforms` / `subgraph_replacements` / `render_strategy` は
+**出荷 80 JSON に 0 件**である(4 projects の 48 と `src/core/resources` の 32 を実査)。
+到達経路が存在しない。
+
+**ただし旧名と最終名だけを推測して保護する修正では不十分である** ——
+それは WP309 が除去した stale `probe#xr` を再び保持してしまう。
+正しい直し方はノードの安定 ID か、graph transform が返す明示的な rename / lineage map であり、
+どちらも WP304 の設計検証が不合格にした領域と重なる。
+**graph transform を実際に使う WP が現れたとき、その WP の前提条件として着手すること。**
+
+依存: 着手前に識別子の設計をやり直すこと。見積: 大。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
