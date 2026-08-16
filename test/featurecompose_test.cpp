@@ -2,13 +2,20 @@
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/core/renderingpass/renderstrategyregistry.hpp"
+#include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -162,6 +169,183 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
     } else {
         FAIL("unknown render feature error_kind: " << error_kind);
     }
+}
+
+inline constexpr std::string_view
+    wp309ComputeFeatureRef =
+        "valid/wp309_compute_provenance.json";
+inline constexpr std::string_view
+    wp309GateFeatureRef =
+        "valid/wp309_subgraph_gate.json";
+inline constexpr std::string_view
+    wp309SubgraphProvider =
+        "fixture.wp309.subgraph";
+
+struct Wp309SubgraphProviderState {
+    std::string implementation =
+        "fixture.wp309.subgraph@1";
+    std::string replacement;
+};
+
+RenderSubgraph::Status resolveWp309Subgraph(
+    void *context,
+    const RenderSubgraph::ResolveRegionInputV1 *input,
+    RenderSubgraph::RegionReplacementV1 *output) noexcept {
+    if (context == nullptr || input == nullptr ||
+        output == nullptr ||
+        input->authored_subgraph_json_utf8 == nullptr) {
+        return RenderSubgraph::Status::invalid_argument;
+    }
+    try {
+        auto &state =
+            *static_cast<Wp309SubgraphProviderState *>(
+                context);
+        auto replacement = nlohmann::json::parse(
+            input->authored_subgraph_json_utf8,
+            input->authored_subgraph_json_utf8 +
+                input->authored_subgraph_json_size);
+        if (!replacement.is_array() ||
+            replacement.size() != 1 ||
+            !replacement.front().contains("input") ||
+            !replacement.front().at("input").is_array()) {
+            return RenderSubgraph::Status::invalid_argument;
+        }
+        const auto &inputs =
+            replacement.front().at("input");
+        const auto gate_enabled = std::find(
+                                      inputs.begin(),
+                                      inputs.end(),
+                                      "gate_marker") !=
+                                  inputs.end();
+        if (gate_enabled) {
+            replacement.front()["name"] =
+                "resolved_probe_path";
+        }
+        state.replacement = replacement.dump();
+        *output = RenderSubgraph::descriptor<
+            RenderSubgraph::RegionReplacementV1>();
+        output->implementation_id_utf8 =
+            state.implementation.data();
+        output->implementation_id_size =
+            static_cast<std::uint32_t>(
+                state.implementation.size());
+        output->subgraph_json_utf8 =
+            state.replacement.data();
+        output->subgraph_json_size =
+            static_cast<std::uint32_t>(
+                state.replacement.size());
+        return RenderSubgraph::Status::ok;
+    } catch (...) {
+        return RenderSubgraph::Status::provider_error;
+    }
+}
+
+RenderSubgraph::ProviderV1 wp309Provider(
+    Wp309SubgraphProviderState &state) {
+    auto provider = RenderSubgraph::descriptor<
+        RenderSubgraph::ProviderV1>();
+    provider.capability_bits =
+        RenderSubgraph::builtinProviderCapabilitiesV1;
+    provider.name_utf8 = wp309SubgraphProvider.data();
+    provider.name_size =
+        static_cast<std::uint32_t>(
+            wp309SubgraphProvider.size());
+    provider.context = &state;
+    provider.resolve_region = resolveWp309Subgraph;
+    return provider;
+}
+
+nlohmann::json wp309CompilerConfig(
+    bool gate_feature_enabled) {
+    auto config = nlohmann::json::parse(R"json({
+  "features": [],
+  "buffers": [
+    {
+      "name": "probe_buffer",
+      "size": 16,
+      "lifetime": "persistent"
+    }
+  ],
+  "render_targets": [
+    {
+      "name": "scene_in",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gate_marker",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "scene_out",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "region_replacements": [
+        {
+          "region": "region.wp309.probe",
+          "provider": "fixture.wp309.subgraph"
+        }
+      ],
+      "passes": [
+        {
+          "name": "prepare_scene",
+          "type": "fullscreen",
+          "output": {"color": "scene_in", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://scene_present"
+          }
+        },
+        {
+          "name": "prepare_gate",
+          "type": "fullscreen",
+          "output": {"color": "gate_marker", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://scene_present"
+          }
+        },
+        {
+          "name": "probe#xr",
+          "type": "fullscreen",
+          "regions": ["region.wp309.probe"],
+          "input": ["scene_in"],
+          "output": {"color": "scene_out", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://scene_present"
+          }
+        },
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "input": ["scene_out"],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://scene_present"
+          }
+        }
+      ]
+    }
+  ]
+})json");
+    config["features"].push_back(
+        wp309ComputeFeatureRef);
+    if (gate_feature_enabled) {
+        config["features"].push_back(
+            wp309GateFeatureRef);
+    }
+    return config;
 }
 
 } // namespace
@@ -549,6 +733,279 @@ TEST_CASE(
 #else
     REQUIRE_THROWS_WITH(
         resolve(RenderPipelineGraphVariant::xr),
+        "XR graph variant is unavailable in this build");
+#endif
+}
+
+TEST_CASE(
+    "WP309 runtime compiler preserves compute provenance after subgraph replacement",
+    "[render-feature][render-compiler][provenance][xr][wp309]") {
+    const auto request = [](
+                             RenderPipelineGraphVariant
+                                 variant) {
+        return RenderCompilerProgramVariantRequest{
+            .graph_variant = variant,
+            .artifact =
+                RenderCompilerProgramArtifact::
+                    runtime_package,
+            .compose_runtime_config =
+                [](nlohmann::json &config) {
+                    auto &targets =
+                        config.at("render_targets");
+                    const auto display = std::find_if(
+                        targets.begin(), targets.end(),
+                        [](const auto &target) {
+                            return target.value(
+                                       "name",
+                                       std::string{}) ==
+                                   "display";
+                        });
+                    if (display == targets.end()) {
+                        throw std::runtime_error(
+                            "WP309 fixture lacks canonical "
+                            "display target");
+                    }
+                    (*display)["width"] = 1;
+                    (*display)["height"] = 1;
+                },
+        };
+    };
+    const auto compile = [&request](
+                             const nlohmann::json &config,
+                             RenderPipelineGraphVariant
+                                 variant,
+                             VulkanRenderCompilerDevicePlanningMode
+                                 device_planning_mode,
+                             vk::PhysicalDevice
+                                 physical_device = {}) {
+        PathResolver path_resolver;
+        path_resolver.setup(fixtureRoot(), false);
+        GraphTransformRegistry graph_registry;
+        RenderStrategyRegistry strategy_registry;
+        SubgraphReplacementRegistry
+            subgraph_registry;
+        Wp309SubgraphProviderState provider_state;
+        RenderSubgraph::ProviderHandleV1 handle{};
+        REQUIRE(
+            subgraph_registry.registerProvider(
+                wp309Provider(provider_state),
+                internal::engineRegistrationOwner,
+                handle) ==
+            RenderSubgraph::Status::ok);
+
+        auto graph_providers =
+            graph_registry.snapshot();
+        auto strategy_providers =
+            strategy_registry.snapshot();
+        auto subgraph_providers =
+            subgraph_registry.snapshot();
+        VulkanRenderCompilerBackendContext backend;
+        backend.device_planning_mode =
+            device_planning_mode;
+        backend.physical_device = physical_device;
+        const std::array requests{
+            request(variant)};
+        return runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(),
+            RenderCompilerProgramInput{
+                .rendering_config = config,
+                .source_name =
+                    "WP309 production compiler fixture",
+                .path_resolver = path_resolver,
+                .runtime_shader_compiler_enabled =
+                    false,
+                .graph_transforms =
+                    graph_providers,
+                .render_strategies =
+                    strategy_providers,
+                .subgraph_replacements =
+                    subgraph_providers,
+                .backend_context = backend,
+                .variants = requests,
+            });
+    };
+    const auto require_compute_provenance = [](
+                                                const auto
+                                                    &variant,
+                                                std::string_view
+                                                    graph,
+                                                std::string_view
+                                                    name) {
+        const std::string graph_name{graph};
+        const std::string node_name{name};
+        REQUIRE(variant.physical_package != nullptr);
+        REQUIRE(
+            variant.compute_task_definitions.size() ==
+            1);
+        REQUIRE(
+            variant.compute_task_definitions.front()
+                .name == node_name);
+        REQUIRE(variant.frame_plans.size() == 1);
+        const auto plan = framePlanToJson(
+            variant.frame_plans.at(graph_name),
+            variant.compiled_pipeline.get());
+        REQUIRE(plan.at("graph") == graph_name);
+
+        const nlohmann::json *node = nullptr;
+        std::size_t node_count = 0;
+        for (const auto &candidate :
+             plan.at("nodes")) {
+            if (candidate.at("name") == node_name) {
+                node = &candidate;
+                ++node_count;
+            }
+        }
+        REQUIRE(node_count == 1);
+        REQUIRE(node != nullptr);
+        REQUIRE(node->at("kind") == "compute");
+        REQUIRE(
+            node->at("source") ==
+            "feature:wp309_compute_provenance");
+        REQUIRE(
+            node->at("provider_feature") ==
+            "wp309_compute_provenance");
+        REQUIRE(
+            node->at("provider_ref") ==
+            std::string{wp309ComputeFeatureRef});
+
+        const RenderPassProvenance *provenance =
+            nullptr;
+        std::size_t provenance_count = 0;
+        for (const auto &candidate :
+             variant.compiled_pipeline
+                 ->pass_provenance) {
+            if (candidate.name == name) {
+                provenance = &candidate;
+                ++provenance_count;
+            }
+        }
+        REQUIRE(provenance_count == 1);
+        REQUIRE(provenance != nullptr);
+        REQUIRE(
+            provenance->source ==
+            RenderPipelineProvenanceSource::feature);
+        REQUIRE(
+            provenance->provider_feature ==
+            "wp309_compute_provenance");
+        REQUIRE(
+            provenance->provider_reference ==
+            std::string{wp309ComputeFeatureRef});
+        return plan;
+    };
+    const auto has_node = [](
+                              const nlohmann::json &plan,
+                              std::string_view name,
+                              std::string_view kind) {
+        const std::string node_name{name};
+        const std::string node_kind{kind};
+        return std::count_if(
+                   plan.at("nodes").begin(),
+                   plan.at("nodes").end(),
+                   [&](const auto &node) {
+                       return node.at("name") == node_name &&
+                              node.at("kind") == node_kind;
+                   }) == 1;
+    };
+
+    REQUIRE_THROWS_WITH(
+        compile(
+            wp309CompilerConfig(true),
+            RenderPipelineGraphVariant::flat,
+            VulkanRenderCompilerDevicePlanningMode::
+                device_required),
+        "Vulkan render compiler "
+        "device_planning_mode=device_required "
+        "requires physical_device");
+    REQUIRE_THROWS_WITH(
+        compile(
+            wp309CompilerConfig(true),
+            RenderPipelineGraphVariant::flat,
+            VulkanRenderCompilerDevicePlanningMode::
+                compiler_only,
+            vk::PhysicalDevice{
+                reinterpret_cast<VkPhysicalDevice>(
+                    std::uintptr_t{1})}),
+        "Vulkan render compiler "
+        "device_planning_mode=compiler_only "
+        "forbids physical_device");
+
+    const auto flat_with_feature = compile(
+        wp309CompilerConfig(true),
+        RenderPipelineGraphVariant::flat,
+        VulkanRenderCompilerDevicePlanningMode::
+            compiler_only);
+    REQUIRE(flat_with_feature.variants.size() == 1);
+    const auto &flat_variant =
+        flat_with_feature.variants.front();
+    REQUIRE(
+        flat_variant.compiled_pipeline
+            ->feature_names ==
+        std::vector<std::string>{
+            "wp309_compute_provenance",
+            "wp309_subgraph_gate"});
+    const auto flat_plan =
+        require_compute_provenance(
+            flat_variant, "main", "probe");
+    REQUIRE(has_node(
+        flat_plan, "resolved_probe_path", "render"));
+    REQUIRE_FALSE(has_node(
+        flat_plan, "probe#xr", "render"));
+
+    const auto flat_without_gate_feature = compile(
+        wp309CompilerConfig(false),
+        RenderPipelineGraphVariant::flat,
+        VulkanRenderCompilerDevicePlanningMode::
+            compiler_only);
+    REQUIRE(
+        flat_without_gate_feature.variants.size() ==
+        1);
+    const auto &flat_without_gate_variant =
+        flat_without_gate_feature.variants.front();
+    REQUIRE(
+        flat_without_gate_variant.compiled_pipeline
+            ->feature_names ==
+        std::vector<std::string>{
+            "wp309_compute_provenance"});
+    const auto flat_without_gate_plan =
+        require_compute_provenance(
+            flat_without_gate_variant,
+            "main", "probe");
+    REQUIRE(has_node(
+        flat_without_gate_plan,
+        "probe#xr", "render"));
+
+#if PELICAN_WITH_OPENXR
+    const auto xr_with_feature = compile(
+        wp309CompilerConfig(true),
+        RenderPipelineGraphVariant::xr,
+        VulkanRenderCompilerDevicePlanningMode::
+            compiler_only);
+    REQUIRE(xr_with_feature.variants.size() == 1);
+    const auto &xr_variant =
+        xr_with_feature.variants.front();
+    const auto xr_plan =
+        require_compute_provenance(
+            xr_variant, "main#xr", "probe#xr");
+    REQUIRE(has_node(
+        xr_plan, "resolved_probe_path", "render"));
+    REQUIRE_FALSE(has_node(
+        xr_plan, "probe", "compute"));
+
+    REQUIRE_THROWS_WITH(
+        compile(
+            wp309CompilerConfig(false),
+            RenderPipelineGraphVariant::xr,
+            VulkanRenderCompilerDevicePlanningMode::
+                compiler_only),
+        "compute task variant name collision in graph "
+        "'main#xr': probe#xr");
+#else
+    REQUIRE_THROWS_WITH(
+        compile(
+            wp309CompilerConfig(true),
+            RenderPipelineGraphVariant::xr,
+            VulkanRenderCompilerDevicePlanningMode::
+                compiler_only),
         "XR graph variant is unavailable in this build");
 #endif
 }

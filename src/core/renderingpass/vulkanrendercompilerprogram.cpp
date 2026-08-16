@@ -253,23 +253,54 @@ void detail::namespaceComputeTasks(
     std::vector<FrameGraphDefinition> &graphs,
     const nlohmann::json &composed_config,
     CompiledRenderPipeline &compiled_pipeline) {
+    synchronizeRenderPipelineProvenance(
+        composed_config,
+        compiled_pipeline.pass_provenance,
+        compiled_pipeline.resource_provenance);
     const auto suffix =
         compiled_pipeline.graph_variant_policy
             .rendering_pass_name_suffix;
     if (suffix.empty() || tasks.empty()) {
-        synchronizeRenderPipelineProvenance(
-            composed_config,
-            compiled_pipeline.pass_provenance,
-            compiled_pipeline.resource_provenance);
         return;
     }
     std::unordered_map<std::string, std::string>
         renamed;
-    for (auto &task : tasks) {
+    for (const auto &task : tasks) {
         auto next =
             task.name + std::string{suffix};
-        renamed.emplace(task.name, next);
-        task.name = std::move(next);
+        if (!renamed.emplace(task.name, std::move(next))
+                 .second) {
+            throw std::runtime_error(
+                "duplicate compute task before variant "
+                "namespacing: " +
+                task.name);
+        }
+    }
+    for (const auto &graph : graphs) {
+        std::unordered_set<std::string> final_names;
+        final_names.reserve(graph.nodes.size());
+        for (const auto &node : graph.nodes) {
+            auto final_name = node.name;
+            if (node.kind ==
+                FramePlanNodeKind::compute) {
+                if (const auto found =
+                        renamed.find(node.name);
+                    found != renamed.end()) {
+                    final_name = found->second;
+                }
+            }
+            if (!final_names
+                     .insert(final_name)
+                     .second) {
+                throw std::runtime_error(
+                    "compute task variant name collision in "
+                    "graph '" +
+                    graph.name + "': " + final_name);
+            }
+        }
+    }
+    for (auto &task : tasks) {
+        task.name = renamed.at(task.name);
     }
     const auto rename =
         [&renamed](std::string &name) {
@@ -323,6 +354,35 @@ struct DefaultLogicalVariantCompilation {
     std::vector<ResolvedTaggedSubgraphGraph>
         subgraphs;
 };
+
+void validateVulkanDevicePlanningContext(
+    const VulkanRenderCompilerBackendContext
+        &backend) {
+    switch (backend.device_planning_mode) {
+    case VulkanRenderCompilerDevicePlanningMode::
+        device_required:
+        if (!backend.physical_device) {
+            throw std::runtime_error(
+                "Vulkan render compiler "
+                "device_planning_mode=device_required "
+                "requires physical_device");
+        }
+        return;
+    case VulkanRenderCompilerDevicePlanningMode::
+        compiler_only:
+        if (backend.physical_device) {
+            throw std::runtime_error(
+                "Vulkan render compiler "
+                "device_planning_mode=compiler_only "
+                "forbids physical_device");
+        }
+        return;
+    default:
+        throw std::runtime_error(
+            "Vulkan render compiler backend context has "
+            "unknown device_planning_mode");
+    }
+}
 
 DefaultLogicalVariantCompilation
 compileDefaultLogicalVariant(
@@ -515,28 +575,49 @@ compileDefaultVulkanVariant(
     auto physical =
         std::make_unique<
             VulkanRenderCompilerPhysicalPackage>();
-    physical->target_plan_compilation =
-        compileRenderingTargetPlansForVulkanDevice(
-            graph_definitions,
-            render_target_definitions,
-            compiled_pipeline->sample_count_policy,
-            backend.output_format,
-            backend.physical_device,
-            backend.runtime_capabilities,
-            targetViewExecutionRequest(
-                *compiled_pipeline,
-                logical.composed_config,
+    auto view_execution = targetViewExecutionRequest(
+        *compiled_pipeline,
+        logical.composed_config,
+        graph_definitions,
+        compute_task_definitions,
+        request.enable_multiview_runtime);
+    auto external_depth_export =
+        request.enable_external_depth_export
+            ? std::optional{
+                  VulkanExternalDepthExportRequest{}}
+            : std::nullopt;
+    if (backend.device_planning_mode ==
+        VulkanRenderCompilerDevicePlanningMode::
+            device_required) {
+        physical->target_plan_compilation =
+            compileRenderingTargetPlansForVulkanDevice(
                 graph_definitions,
-                compute_task_definitions,
-                request.enable_multiview_runtime),
-            request.enable_external_depth_export
-                ? std::optional{
-                      VulkanExternalDepthExportRequest{}}
-                : std::nullopt,
-            compiled_pipeline->target_planning,
-            compiled_pipeline->vulkan_plan_pins,
-            compiled_pipeline
-                ->vulkan_physical_fragments);
+                render_target_definitions,
+                compiled_pipeline->sample_count_policy,
+                backend.output_format,
+                backend.physical_device,
+                backend.runtime_capabilities,
+                std::move(view_execution),
+                std::move(external_depth_export),
+                compiled_pipeline->target_planning,
+                compiled_pipeline->vulkan_plan_pins,
+                compiled_pipeline
+                    ->vulkan_physical_fragments);
+    } else {
+        physical->target_plan_compilation =
+            compileRenderingTargetPlans(
+                graph_definitions,
+                render_target_definitions,
+                compiled_pipeline->sample_count_policy,
+                backend.output_format,
+                RenderingTargetPlanDeviceFacts{},
+                std::move(view_execution),
+                std::move(external_depth_export),
+                compiled_pipeline->target_planning,
+                compiled_pipeline->vulkan_plan_pins,
+                compiled_pipeline
+                    ->vulkan_physical_fragments);
+    }
     for (auto &verification :
          physical->target_plan_compilation
              .verification_contexts) {
@@ -606,6 +687,7 @@ class DefaultVulkanRenderCompilerProgram final
         const auto &backend =
             requireVulkanRenderCompilerBackendContext(
                 input.backend_context);
+        validateVulkanDevicePlanningContext(backend);
         RenderCompilerProgramOutput output;
         output.variants.reserve(
             input.variants.size());

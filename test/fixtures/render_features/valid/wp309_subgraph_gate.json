@@ -1,0 +1,11 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "wp309_subgraph_gate",
+  "runtime_shader_compiler": "optional",
+  "pass_overrides": {
+    "probe#xr": {
+      "input": ["gate_marker"]
+    }
+  }
+}

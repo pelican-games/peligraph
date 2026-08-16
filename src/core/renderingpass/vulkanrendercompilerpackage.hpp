@@ -5,6 +5,7 @@
 #include "rendertargetdefinition.hpp"
 #include "../../project/vulkancompletephysicalplan.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -18,6 +19,12 @@ namespace Pelican {
 inline constexpr std::string_view
     vulkanRenderCompilerBackend = "vulkan";
 
+enum class VulkanRenderCompilerDevicePlanningMode
+    : std::uint8_t {
+    device_required,
+    compiler_only,
+};
+
 class VulkanRenderCompilerBackendContext final
     : public RenderCompilerBackendContext {
   public:
@@ -28,13 +35,18 @@ class VulkanRenderCompilerBackendContext final
         vk::PhysicalDevice physical_device = {},
         std::vector<std::string>
             enabled_device_extensions = {},
-        VulkanRuntimeCapabilities runtime_capabilities = {})
+        VulkanRuntimeCapabilities runtime_capabilities = {},
+        VulkanRenderCompilerDevicePlanningMode
+            device_planning_mode =
+                VulkanRenderCompilerDevicePlanningMode::
+                    device_required)
         : output_format{output_format},
           output_extent{output_extent},
           physical_device{physical_device},
           enabled_device_extensions{
               std::move(enabled_device_extensions)},
-          runtime_capabilities{runtime_capabilities} {}
+          runtime_capabilities{runtime_capabilities},
+          device_planning_mode{device_planning_mode} {}
 
     vk::Format output_format =
         vk::Format::eUndefined;
@@ -43,6 +55,10 @@ class VulkanRenderCompilerBackendContext final
     std::vector<std::string>
         enabled_device_extensions;
     VulkanRuntimeCapabilities runtime_capabilities;
+    VulkanRenderCompilerDevicePlanningMode
+        device_planning_mode =
+            VulkanRenderCompilerDevicePlanningMode::
+                device_required;
 
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;

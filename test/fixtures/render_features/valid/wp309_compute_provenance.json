@@ -1,0 +1,15 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "wp309_compute_provenance",
+  "runtime_shader_compiler": "optional",
+  "compute_tasks": [
+    {
+      "name": "probe",
+      "shader": "engine://shaders/compute/wp309_probe",
+      "writes": ["probe_buffer"],
+      "before": ["present"],
+      "dispatch": {"groups": [1, 1, 1]}
+    }
+  ]
+}
