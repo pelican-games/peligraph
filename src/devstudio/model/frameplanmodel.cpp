@@ -63,6 +63,16 @@ std::string optionalStringField(const Json &object, std::string_view field,
     return found->get<std::string>();
 }
 
+bool requireBoolField(const Json &object, std::string_view field,
+                      std::string_view context) {
+    const auto found = object.find(field);
+    if (found == object.end() || !found->is_boolean()) {
+        throw invalid(std::string{context} + " requires boolean field '" +
+                      std::string{field} + "'");
+    }
+    return found->get<bool>();
+}
+
 std::uint64_t unsignedInteger(const Json &value, std::string_view context) {
     if (value.is_number_unsigned()) {
         return value.get<std::uint64_t>();
@@ -185,6 +195,10 @@ FramePlanMaterialFilter parseMaterialFilter(const Json &value,
     FramePlanMaterialFilter result;
     result.include = stringArray(value, "include", context);
     result.exclude = stringArray(value, "exclude", context);
+    result.unmatched_include =
+        stringArray(value, "unmatched_include", context);
+    result.unmatched_exclude =
+        stringArray(value, "unmatched_exclude", context);
     result.filter_id = optionalStringField(value, "filter_id", context);
     result.resolution_state =
         optionalStringField(value, "resolution_state", context);
@@ -193,6 +207,145 @@ FramePlanMaterialFilter parseMaterialFilter(const Json &value,
     result.resolved_draw_count =
         optionalSizeField(value, "resolved_draw_count", context);
     return result;
+}
+
+FramePlanDecision parseDecision(const Json &value, std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    return FramePlanDecision{
+        .id = requireStringField(value, "id", context),
+        .subject = requireStringField(value, "subject", context),
+        .selected = requireStringField(value, "selected", context),
+        .detail = requireStringField(value, "detail", context),
+    };
+}
+
+void appendDecisions(
+    const Json &container, std::string_view context,
+    std::vector<FramePlanDecisionGroup> &groups,
+    std::unordered_map<std::string, std::size_t> &group_indices) {
+    const auto decisions = container.find("decisions");
+    if (decisions == container.end()) {
+        return;
+    }
+    if (!decisions->is_array()) {
+        throw invalid(std::string{context} + ".decisions must be an array");
+    }
+    for (std::size_t index = 0; index < decisions->size(); ++index) {
+        FramePlanDecision decision = parseDecision(
+            decisions->at(index), std::string{context} + ".decisions[" +
+                                      std::to_string(index) + "]");
+        auto found = group_indices.find(decision.subject);
+        if (found == group_indices.end()) {
+            const std::size_t group_index = groups.size();
+            found = group_indices.emplace(decision.subject, group_index).first;
+            groups.push_back(FramePlanDecisionGroup{
+                .subject = decision.subject,
+            });
+        }
+        groups[found->second].decisions.push_back(std::move(decision));
+    }
+}
+
+FramePlanBackendFailure parseBackendFailure(const Json &value,
+                                            std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    return FramePlanBackendFailure{
+        .id = requireStringField(value, "id", context),
+        .subject = requireStringField(value, "subject", context),
+        .detail = requireStringField(value, "detail", context),
+    };
+}
+
+FramePlanPlanningDiagnostic parsePlanningDiagnostic(
+    const Json &value, std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    return FramePlanPlanningDiagnostic{
+        .id = requireStringField(value, "id", context),
+        .severity = requireStringField(value, "severity", context),
+        .subject = requireStringField(value, "subject", context),
+        .detail = requireStringField(value, "detail", context),
+    };
+}
+
+template <typename Entry, typename Parser>
+std::vector<Entry> parseOptionalArray(const Json &object,
+                                      std::string_view field,
+                                      std::string_view context,
+                                      Parser &&parser) {
+    const auto found = object.find(field);
+    if (found == object.end()) {
+        return {};
+    }
+    if (!found->is_array()) {
+        throw invalid(std::string{context} + "." + std::string{field} +
+                      " must be an array");
+    }
+    std::vector<Entry> result;
+    result.reserve(found->size());
+    for (std::size_t index = 0; index < found->size(); ++index) {
+        result.push_back(parser(
+            found->at(index), std::string{context} + "." +
+                                  std::string{field} + "[" +
+                                  std::to_string(index) + "]"));
+    }
+    return result;
+}
+
+void parseBackendSelection(
+    const Json &selection, FramePlanModel &model,
+    std::unordered_map<std::string, std::size_t> &decision_group_indices) {
+    if (!selection.is_object()) {
+        throw invalid("physical_target_plan.backend_selection must be an object");
+    }
+    constexpr std::string_view context =
+        "physical_target_plan.backend_selection";
+    model.selected_backend_candidate =
+        optionalStringField(selection, "selected_candidate", context);
+    model.backend_diagnostics =
+        parseOptionalArray<FramePlanPlanningDiagnostic>(
+            selection, "diagnostics", context, parsePlanningDiagnostic);
+    appendDecisions(selection, context, model.decision_groups,
+                    decision_group_indices);
+
+    const auto candidates = selection.find("candidates");
+    if (candidates == selection.end()) {
+        return;
+    }
+    if (!candidates->is_array()) {
+        throw invalid("physical_target_plan.backend_selection.candidates must be an array");
+    }
+    model.backend_candidates.reserve(candidates->size());
+    for (std::size_t index = 0; index < candidates->size(); ++index) {
+        const auto &value = candidates->at(index);
+        const std::string candidate_context =
+            std::string{context} + ".candidates[" +
+            std::to_string(index) + "]";
+        if (!value.is_object()) {
+            throw invalid(candidate_context + " must be an object");
+        }
+        FramePlanBackendCandidate candidate;
+        candidate.candidate =
+            requireStringField(value, "candidate", candidate_context);
+        candidate.endpoint =
+            optionalStringField(value, "endpoint", candidate_context);
+        candidate.feasible =
+            requireBoolField(value, "feasible", candidate_context);
+        candidate.selected =
+            candidate.candidate == model.selected_backend_candidate;
+        candidate.failures = parseOptionalArray<FramePlanBackendFailure>(
+            value, "failures", candidate_context, parseBackendFailure);
+        candidate.diagnostics =
+            parseOptionalArray<FramePlanPlanningDiagnostic>(
+                value, "diagnostics", candidate_context,
+                parsePlanningDiagnostic);
+        model.backend_candidates.push_back(std::move(candidate));
+    }
 }
 
 } // namespace
@@ -218,6 +371,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
 
     FramePlanModel model;
     model.response_bytes = response_json.size();
+    model.raw_json = root.dump(2);
     model.graph = requireStringField(root, "graph", "root");
     if (model.graph.empty()) {
         throw invalid("graph must not be empty");
@@ -377,10 +531,38 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         }
     }
 
+    std::unordered_map<std::string, std::size_t> decision_group_indices;
     if (const auto physical = root.find("physical_target_plan");
         physical != root.end() && !physical->is_null()) {
         if (!physical->is_object()) {
             throw invalid("physical_target_plan must be an object");
+        }
+        appendDecisions(*physical, "physical_target_plan",
+                        model.decision_groups, decision_group_indices);
+        if (const auto opportunities =
+                physical->find("planning_opportunities");
+            opportunities != physical->end() && !opportunities->is_null()) {
+            if (!opportunities->is_object()) {
+                throw invalid(
+                    "physical_target_plan.planning_opportunities must be an object");
+            }
+            appendDecisions(*opportunities,
+                            "physical_target_plan.planning_opportunities",
+                            model.decision_groups, decision_group_indices);
+        }
+        if (const auto backend = physical->find("backend_selection");
+            backend != physical->end() && !backend->is_null()) {
+            parseBackendSelection(*backend, model, decision_group_indices);
+        }
+        if (const auto lowering = physical->find("lowering_graph");
+            lowering != physical->end() && !lowering->is_null()) {
+            if (!lowering->is_object()) {
+                throw invalid(
+                    "physical_target_plan.lowering_graph must be an object");
+            }
+            appendDecisions(*lowering,
+                            "physical_target_plan.lowering_graph",
+                            model.decision_groups, decision_group_indices);
         }
         if (const auto attachments = physical->find("attachments");
             attachments != physical->end()) {
@@ -481,6 +663,8 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 if (!format.empty()) {
                     resource.format = format;
                 }
+                resource.reason =
+                    optionalStringField(value, "reason", context);
                 resource.dimension =
                     optionalStringField(value, "dimension", context);
                 if (const auto extent = value.find("extent");

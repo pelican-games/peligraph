@@ -31,6 +31,8 @@ struct FramePlanResourceUse {
 struct FramePlanMaterialFilter {
     std::vector<std::string> include;
     std::vector<std::string> exclude;
+    std::vector<std::string> unmatched_include;
+    std::vector<std::string> unmatched_exclude;
     std::string filter_id;
     std::string resolution_state;
     std::string resolution_provenance;
@@ -92,6 +94,7 @@ struct FramePlanResource {
     std::string dimension;
     std::optional<std::size_t> width;
     std::optional<std::size_t> height;
+    std::string reason;
     std::vector<std::string> readers;
     std::vector<std::string> history_readers;
     std::vector<std::string> writers;
@@ -116,14 +119,63 @@ struct FramePlanMaterialRoute {
     bool operator==(const FramePlanMaterialRoute &) const = default;
 };
 
+struct FramePlanDecision {
+    std::string id;
+    std::string subject;
+    std::string selected;
+    std::string detail;
+
+    bool operator==(const FramePlanDecision &) const = default;
+};
+
+struct FramePlanDecisionGroup {
+    std::string subject;
+    std::vector<FramePlanDecision> decisions;
+
+    bool operator==(const FramePlanDecisionGroup &) const = default;
+};
+
+struct FramePlanBackendFailure {
+    std::string id;
+    std::string subject;
+    std::string detail;
+
+    bool operator==(const FramePlanBackendFailure &) const = default;
+};
+
+struct FramePlanPlanningDiagnostic {
+    std::string id;
+    std::string severity;
+    std::string subject;
+    std::string detail;
+
+    bool operator==(const FramePlanPlanningDiagnostic &) const = default;
+};
+
+struct FramePlanBackendCandidate {
+    std::string candidate;
+    std::string endpoint;
+    bool feasible = false;
+    bool selected = false;
+    std::vector<FramePlanBackendFailure> failures;
+    std::vector<FramePlanPlanningDiagnostic> diagnostics;
+
+    bool operator==(const FramePlanBackendCandidate &) const = default;
+};
+
 struct FramePlanModel {
     std::string graph;
     std::optional<std::uint64_t> runtime_generation;
     std::size_t response_bytes = 0;
+    std::string raw_json;
     std::vector<FramePlanNode> nodes;
     std::vector<FramePlanBarrier> barriers;
     std::vector<FramePlanResource> resources;
     std::vector<FramePlanMaterialRoute> material_routes;
+    std::vector<FramePlanDecisionGroup> decision_groups;
+    std::string selected_backend_candidate;
+    std::vector<FramePlanBackendCandidate> backend_candidates;
+    std::vector<FramePlanPlanningDiagnostic> backend_diagnostics;
 
     bool operator==(const FramePlanModel &) const = default;
 };

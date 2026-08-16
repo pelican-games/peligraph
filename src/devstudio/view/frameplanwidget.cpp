@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTreeWidget>
@@ -142,8 +143,11 @@ struct FramePlanWidget::Impl {
     QTabWidget *tabs = nullptr;
     QTreeWidget *passes = nullptr;
     QTreeWidget *resources = nullptr;
+    QTreeWidget *decisions = nullptr;
+    QTreeWidget *backends = nullptr;
     QTreeWidget *barriers = nullptr;
     QTreeWidget *materials = nullptr;
+    QPlainTextEdit *raw_json = nullptr;
     std::optional<FramePlanModel> model;
     qint64 pending_request = 0;
 
@@ -162,7 +166,8 @@ struct FramePlanWidget::Impl {
             "the trees would stall the editor."));
         filter = new QLineEdit(&owner);
         filter->setObjectName(QStringLiteral("pelican.framePlanFilter"));
-        filter->setPlaceholderText(owner.tr("Filter passes, resources, or barriers"));
+        filter->setPlaceholderText(owner.tr(
+            "Filter passes, resources, decisions, backends, or barriers"));
         filter->setClearButtonEnabled(true);
         toolbar->addWidget(refresh);
         toolbar->addWidget(filter, 1);
@@ -184,6 +189,15 @@ struct FramePlanWidget::Impl {
             {owner.tr("Resource"), owner.tr("Format"), owner.tr("Writers"),
              owner.tr("Readers")},
             tabs);
+        decisions = makeTree(
+            {owner.tr("Subject"), owner.tr("Decision id"),
+             owner.tr("Selected"), owner.tr("Detail")},
+            tabs);
+        backends = makeTree(
+            {owner.tr("Candidate"), owner.tr("Status"),
+             owner.tr("Endpoint / subject"),
+             owner.tr("Failure / diagnostic id"), owner.tr("Detail")},
+            tabs);
         barriers = makeTree(
             {owner.tr("#"), owner.tr("From"), owner.tr("To"),
              owner.tr("Resource"), owner.tr("Hazard")},
@@ -192,10 +206,17 @@ struct FramePlanWidget::Impl {
             {owner.tr("Route"), owner.tr("Target pass"), owner.tr("Phase"),
              owner.tr("Contract"), owner.tr("Shader contract")},
             tabs);
+        raw_json = new QPlainTextEdit(tabs);
+        raw_json->setObjectName(QStringLiteral("pelican.framePlanRawJson"));
+        raw_json->setReadOnly(true);
+        raw_json->setLineWrapMode(QPlainTextEdit::NoWrap);
         tabs->addTab(passes, owner.tr("Passes"));
         tabs->addTab(resources, owner.tr("Resources"));
+        tabs->addTab(decisions, owner.tr("Decisions"));
+        tabs->addTab(backends, owner.tr("Backends"));
         tabs->addTab(barriers, owner.tr("Barriers"));
         tabs->addTab(materials, owner.tr("Materials"));
+        tabs->addTab(raw_json, owner.tr("Raw JSON"));
         layout->addWidget(tabs, 1);
 
         QObject::connect(refresh, &QPushButton::clicked, &owner,
@@ -204,6 +225,8 @@ struct FramePlanWidget::Impl {
                          [this](const QString &needle) {
                              applyFilter(*passes, needle);
                              applyFilter(*resources, needle);
+                             applyFilter(*decisions, needle);
+                             applyFilter(*backends, needle);
                              applyFilter(*barriers, needle);
                              applyFilter(*materials, needle);
                          });
@@ -247,8 +270,11 @@ struct FramePlanWidget::Impl {
     void clearTrees() {
         passes->clear();
         resources->clear();
+        decisions->clear();
+        backends->clear();
         barriers->clear();
         materials->clear();
+        raw_json->clear();
         tabs->setEnabled(false);
     }
 
@@ -331,16 +357,24 @@ struct FramePlanWidget::Impl {
     void populate() {
         passes->clear();
         resources->clear();
+        decisions->clear();
+        backends->clear();
         barriers->clear();
         materials->clear();
+        raw_json->clear();
         populatePasses();
         populateResources();
+        populateDecisions();
+        populateBackends();
         populateBarriers();
         populateMaterials();
+        raw_json->setPlainText(text(model->raw_json));
         tabs->setEnabled(true);
         refresh->setEnabled(true);
         applyFilter(*passes, filter->text());
         applyFilter(*resources, filter->text());
+        applyFilter(*decisions, filter->text());
+        applyFilter(*backends, filter->text());
         applyFilter(*barriers, filter->text());
         applyFilter(*materials, filter->text());
 
@@ -495,6 +529,10 @@ struct FramePlanWidget::Impl {
                         joined(node.material_filter->include));
                 addFact(material_filter, owner.tr("Exclude"),
                         joined(node.material_filter->exclude));
+                addFact(material_filter, owner.tr("Unmatched include"),
+                        joined(node.material_filter->unmatched_include));
+                addFact(material_filter, owner.tr("Unmatched exclude"),
+                        joined(node.material_filter->unmatched_exclude));
                 addFact(material_filter, owner.tr("Filter id"),
                         text(node.material_filter->filter_id));
                 addFact(material_filter, owner.tr("Resolution"),
@@ -507,6 +545,72 @@ struct FramePlanWidget::Impl {
             }
         }
         passes->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    }
+
+    void populateDecisions() {
+        for (const auto &group : model->decision_groups) {
+            auto *subject = new QTreeWidgetItem(decisions);
+            subject->setText(
+                0, QStringLiteral("%1 (%2)")
+                       .arg(group.subject.empty() ? owner.tr("No subject")
+                                                  : text(group.subject))
+                       .arg(static_cast<qulonglong>(group.decisions.size())));
+            QFont font = subject->font(0);
+            font.setBold(true);
+            subject->setFont(0, font);
+            for (const auto &decision : group.decisions) {
+                auto *item = new QTreeWidgetItem(subject);
+                item->setText(1, text(decision.id));
+                item->setText(2, text(decision.selected));
+                item->setText(3, text(decision.detail));
+            }
+        }
+    }
+
+    void populateBackends() {
+        if (!model->backend_diagnostics.empty()) {
+            auto *selection = new QTreeWidgetItem(backends);
+            selection->setText(0, owner.tr("Selection diagnostics"));
+            QFont font = selection->font(0);
+            font.setBold(true);
+            selection->setFont(0, font);
+            for (const auto &diagnostic : model->backend_diagnostics) {
+                auto *item = new QTreeWidgetItem(selection);
+                item->setText(1, text(diagnostic.severity));
+                item->setText(2, text(diagnostic.subject));
+                item->setText(3, text(diagnostic.id));
+                item->setText(4, text(diagnostic.detail));
+            }
+        }
+
+        for (const auto &candidate : model->backend_candidates) {
+            auto *candidate_item = new QTreeWidgetItem(backends);
+            candidate_item->setText(0, text(candidate.candidate));
+            candidate_item->setText(
+                1, candidate.selected
+                       ? owner.tr("Selected")
+                       : (candidate.feasible ? owner.tr("Feasible")
+                                             : owner.tr("Rejected")));
+            candidate_item->setText(2, text(candidate.endpoint));
+            QFont font = candidate_item->font(0);
+            font.setBold(true);
+            candidate_item->setFont(0, font);
+
+            for (const auto &failure : candidate.failures) {
+                auto *item = new QTreeWidgetItem(candidate_item);
+                item->setText(1, owner.tr("Failure"));
+                item->setText(2, text(failure.subject));
+                item->setText(3, text(failure.id));
+                item->setText(4, text(failure.detail));
+            }
+            for (const auto &diagnostic : candidate.diagnostics) {
+                auto *item = new QTreeWidgetItem(candidate_item);
+                item->setText(1, text(diagnostic.severity));
+                item->setText(2, text(diagnostic.subject));
+                item->setText(3, text(diagnostic.id));
+                item->setText(4, text(diagnostic.detail));
+            }
+        }
     }
 
     void populateResources() {
@@ -534,6 +638,7 @@ struct FramePlanWidget::Impl {
                             .arg(static_cast<qulonglong>(*resource.width))
                             .arg(static_cast<qulonglong>(*resource.height)));
             }
+            addFact(facts, owner.tr("Reason"), text(resource.reason));
             addFact(facts, owner.tr("Provider feature"),
                     text(resource.provider_feature));
             addFact(facts, owner.tr("Provider ref"),

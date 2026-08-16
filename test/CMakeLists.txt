@@ -175,6 +175,9 @@ endif()
 
 if(TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_frameplan_test pelican_studio_frame_plan)
+  target_compile_definitions(pelican_test_devstudio_frameplan_test PRIVATE
+    PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
+  )
 endif()
 
 if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
