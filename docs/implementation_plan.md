@@ -5131,6 +5131,116 @@ studio はそれより先に名前 `"display"` をハードコードして採用
 
 依存: なし。見積: 小〜中。
 
+### WP316: WP306 のテストが headless Qt で落ち、主張を証明していない
+
+**目的**: WP306 が入れた 2 ケースは **`QT_QPA_PLATFORM=offscreen` で失敗する。**
+あわせて、それらが主張していることを実際に証明する形に直す。
+
+#### 実測(2026-08-17)
+
+同じ Debug バイナリで:
+
+| 構成 | 結果 |
+|---|---|
+| ネイティブ Windows QPA | 2/2 緑、9873 assertions、exit 0 |
+| `QT_QPA_PLATFORM=offscreen` | **2 ケースとも失敗**、exit 42 |
+
+失敗箇所は `requireReadableLabels()` の重なり判定
+(`test/devstudio_frameplan_graph_test.cpp:311`)。
+**ラベル重なり判定がフォント計測に依存しており、プラットフォームで変わる。**
+`ctest` は既定でネイティブ QPA を使うため緑に見えていた。**headless では落ちる。**
+
+#### テストが主張を証明していない箇所
+
+**① 畳みの中身を検査していない。** 13 メンバーについて検査しているのは
+「個数 13」と先頭・末尾の 2 名だけ(`:420`)。**別の 11 ノードを誤って畳んでも通る。**
+
+**② 再展開の比較が自己スナップショットである。**
+初期 scene の `bounds` / `position` / 色 / 辺レコードを撮り、
+展開後の同じ自己スナップショットと比べている(`:256`)。
+wire の dependency tuple とは**件数しか比較していない**。
+brush / pen / path、可視性、graph / source / anchor、矢印、ラベル文字列は範囲外で、
+再展開後に `requireReadableLabels()` も走らない。
+**再展開時だけ矢印やラベルを失う実装、常に同じ誤ったレコードを保持する実装が通る。**
+
+**③ 決定性の検査がレイアウトに届いていない。**
+テストは nodes を reverse する(`:401`)が、
+`buildFramePlanModel()` が `order` で直ちに再ソートする
+(`src/devstudio/model/frameplanmodel.cpp:564`)。
+barriers / resources / execution nodes は座標計算に使われない。
+**座標決定性の主張は検査されていない。**
+(dependency の reverse は bundle 順の検査としては噛んでいる。)
+
+**④ flat / compiler-ON しか通していない。**
+動的入力は `runtime_shader_compiler_enabled=true` と `graph_variant=flat` を固定している(`:93`)。
+テストに `RUNTIME_SHADER` 条件が無いので、**compiler-OFF ビルドでも ON 相当の入力を作って緑になれる。**
+xr / preview も未実行。
+
+#### 実装範囲
+
+1. **`QT_QPA_PLATFORM=offscreen` で緑にすること。**
+   フォント計測に依存しない判定にするか、テストが使うフォントを固定すること。
+   **プラットフォーム差で結論が変わる「読める」の判定を残さないこと。**
+2. 畳みの全 13 メンバーを名指しで検査すること。
+3. 再展開の比較を、**wire から独立に構築した期待値**と行うこと。
+   path / brush / pen / 文字列 / 可視性 / role を前後で比較し、
+   再展開後にもラベル判定を走らせること。
+4. 決定性の検査が**レイアウト計算に実際に届く入力**で行われること。
+5. flat / preview / xr と compiler ON / OFF をパラメータ化すること。
+   OFF で非対応なら、期待する名前付き拒否まで検査すること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`QT_QPA_PLATFORM=offscreen` と未設定の両方で緑であること。**
+  これが本 WP の中心的な対照である。両方の結果を報告すること
+- 畳む対象を 1 ノード取り違えた実装が落ちること
+- 再展開で矢印またはラベルを失う実装が落ちること
+- **ノードの入力順を変えたときに、レイアウトが実際に同じ座標を出すこと**
+  —— `order` による再ソートより後の入力で検査すること
+- `ctest` 全数が緑(`-j4`)、§0 の反転対象のうち触れたフラグを反転して緑、
+  `uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 中。**優先** —— headless で落ちるテストが入っている。
+
+### WP317: execution_plan の欠落を「依存 0 件」として黙って描く
+
+**目的**: WP305 が physical plan について直した型の欠陥が、
+`execution_plan` に残っている。
+
+#### 現状
+
+`execution_plan` が無い / null のとき、パーサは dependency を空のまま正常終了し
+(`src/devstudio/model/frameplanmodel.cpp:611`、`:750`)、
+scene はその空配列をそのまま描く(`src/devstudio/view/frameplangraphics.cpp:344`)。
+
+結果、**30 ノード・0 辺の「依存の無い正常なグラフ」に見える。**
+
+runtime の現行 publisher は必ず execution plan を付ける
+(`src/core/vkcore/renderer.cpp:3270`)ので、欠落は**契約異常**である。
+それでも UI は異常だと言わない。
+
+**WP305 は同じ形の欠陥を physical plan について
+`available(データ)` / `unavailable(理由)` に分けて直した。
+`execution_plan` は分けられていない。**
+
+#### 実装範囲
+
+1. execution plan の有無をモデルに保持し、
+   論理グラフでは**名前付きの unavailable / error** にすること。
+2. barrier だけの縮退表示を用意するなら、**不完全表示であることを明示すること。**
+3. WP305 が `pelican_project` に置いた共通 wire DTO の作法に揃えること。
+   **第三の流儀を作らないこと。**
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`execution_plan` を除いた入力が、依存 0 件の正常なグラフとして描かれないこと。**
+  これが本 WP の中心的な対照である
+- 依存が**本当に 0 件**の正当な入力とは別の表示になること
+- 既存の正常な入力で表示が変わらないこと
+- `ctest` 全数が緑(`-j4`)、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
