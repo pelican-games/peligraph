@@ -55,6 +55,15 @@ QString authoredExtent(const FramePlanExtent &extent) {
                      .arg(static_cast<qulonglong>(extent.height));
 }
 
+QString lifetimeLabel(const FramePlanLifetime &lifetime) {
+    if (!lifetime.used) {
+        return QStringLiteral("unused");
+    }
+    return QStringLiteral("[%1, %2]")
+        .arg(static_cast<qulonglong>(*lifetime.first_use))
+        .arg(static_cast<qulonglong>(*lifetime.last_use));
+}
+
 QString byteCount(std::size_t bytes) {
     if (bytes >= 1024 * 1024) {
         return QStringLiteral("%1 MiB")
@@ -453,7 +462,9 @@ struct FramePlanWidget::Impl {
                                                  *model->runtime_generation))
                                        : QString{};
         const QString physical_summary = model->physical_plan.available()
-                                             ? owner.tr("physical available (%1 alias groups, %2 alias candidates)")
+                                             ? owner.tr("physical available (profile %1, endpoint %2; %3 alias groups, %4 alias candidates)")
+                                                   .arg(text(model->physical_plan.planning_profile),
+                                                        text(model->physical_plan.planning_endpoint))
                                                    .arg(static_cast<qulonglong>(model->physical_plan.alias_groups.size()))
                                                    .arg(static_cast<qulonglong>(model->physical_plan.alias_candidates.size()))
                                              : owner.tr("physical unavailable (%1)")
@@ -736,6 +747,10 @@ struct FramePlanWidget::Impl {
                         ? QString{}
                         : (resource.aliasable ? owner.tr("yes")
                                               : owner.tr("no")));
+            if (!resource.representation.empty()) {
+                addFact(facts, owner.tr("Lifetime"),
+                        lifetimeLabel(resource.lifetime));
+            }
             addFact(facts, owner.tr("Reason"), text(resource.reason));
             addFact(facts, owner.tr("Provider feature"),
                     text(resource.provider_feature));
@@ -780,6 +795,10 @@ struct FramePlanWidget::Impl {
                     text(model->physical_plan.logical_graph_fingerprint));
             addFact(state, owner.tr("Automatic fingerprint"),
                     text(model->physical_plan.automatic_plan_fingerprint));
+            addFact(state, owner.tr("Planning profile"),
+                    text(model->physical_plan.planning_profile));
+            addFact(state, owner.tr("Planning endpoint"),
+                    text(model->physical_plan.planning_endpoint));
             if (model->physical_plan.output_width &&
                 model->physical_plan.output_height) {
                 addFact(

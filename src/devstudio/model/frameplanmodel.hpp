@@ -296,6 +296,10 @@ struct FramePlanPhysicalPlan {
     std::string logical_graph_fingerprint;
     std::string automatic_plan_fingerprint;
     std::string planning_profile;
+    // Endpoint of the selected backend candidate.  Planning decisions are
+    // only meaningful together with both this device-facing identity and the
+    // profile above; neither is a property of the authored logical graph.
+    std::string planning_endpoint;
     std::optional<std::size_t> output_width;
     std::optional<std::size_t> output_height;
     std::vector<FramePlanLoweringNode> lowering_nodes;

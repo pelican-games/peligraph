@@ -224,6 +224,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_compile_definitions(pelican_test_devstudio_frameplan_graph_test PRIVATE
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
   )
 endif()
 
@@ -1003,7 +1004,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_test_shaderc_runtime(pelican_test_shader_compile_test)
     endif()
 endif()
-pelican_define_test(shader_compiler_reflection_test GROUP shader_tools pelican_core
+pelican_define_test(shader_compiler_reflection_test GROUP shader_tools RUNTIME_SHADER pelican_core
                     pelican_target_environment spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_compiler_reflection_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -1015,7 +1016,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_test_shaderc_runtime(pelican_test_shader_compiler_reflection_test)
     endif()
 endif()
-pelican_define_test(surfacecompiler_test GROUP shader_tools pelican_core spirv-reflect-static glm)
+pelican_define_test(surfacecompiler_test GROUP shader_tools RUNTIME_SHADER pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_surfacecompiler_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
@@ -1028,7 +1029,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 if(PELICAN_WITH_SPIRV_LINK)
-    pelican_define_test(spvlink_test GROUP shader_tools pelican_core spirv-reflect-static glm)
+    pelican_define_test(spvlink_test GROUP shader_tools RUNTIME_SHADER pelican_core spirv-reflect-static glm)
     target_compile_definitions(pelican_test_spvlink_test PRIVATE
         PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
         PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -1040,7 +1041,7 @@ if(PELICAN_WITH_SPIRV_LINK)
         endif()
     endif()
 else()
-    pelican_define_test(spvlink_disabled_test GROUP shader_tools pelican_core)
+    pelican_define_test(spvlink_disabled_test GROUP shader_tools RUNTIME_SHADER pelican_core)
 endif()
 if(PELICAN_WITH_SPIRV_LINK)
     find_program(PELICAN_SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)
@@ -1096,7 +1097,7 @@ if(PELICAN_WITH_SPIRV_LINK AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_spvlink_golden.cmake
     )
 endif()
-pelican_define_test(shader_library_test GROUP shader_tools pelican_core spirv-reflect-static glm)
+pelican_define_test(shader_library_test GROUP shader_tools RUNTIME_SHADER pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_library_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

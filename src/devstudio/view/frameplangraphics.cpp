@@ -32,6 +32,11 @@ constexpr qreal HorizontalGap = 80.0;
 constexpr qreal LabelGap = 10.0;
 constexpr qreal EdgeLaneGap = 34.0;
 constexpr qreal EdgeLabelHeight = 24.0;
+constexpr qreal PhysicalPanelGap = 74.0;
+constexpr qreal PhysicalHeaderHeight = 118.0;
+constexpr qreal PhysicalResourceRowHeight = 36.0;
+constexpr qreal PhysicalResourceLabelWidth = 390.0;
+constexpr qreal PhysicalOpportunityLaneGap = 28.0;
 
 struct GroupDefinition {
     std::string key;
@@ -57,6 +62,15 @@ struct DependencyRecord {
     std::string to;
     std::string reason;
     std::string resource;
+};
+
+struct PhysicalOverlaySummary {
+    std::size_t resource_count = 0;
+    std::size_t adopted_alias_count = 0;
+    std::size_t not_adopted_alias_count = 0;
+    std::size_t fusion_count = 0;
+    std::size_t parallel_count = 0;
+    std::size_t explicit_empty_count = 0;
 };
 
 using EntityPair = std::pair<std::string, std::string>;
@@ -241,6 +255,439 @@ void addArrow(QGraphicsScene &scene, const QPointF &tip,
     item->setData(FramePlanToNameRole, qtext(endpoints.second));
 }
 
+QString lifetimeText(const FramePlanLifetime &lifetime) {
+    if (!lifetime.used) {
+        return QStringLiteral("unused");
+    }
+    return QStringLiteral("[%1, %2]")
+        .arg(static_cast<qulonglong>(*lifetime.first_use))
+        .arg(static_cast<qulonglong>(*lifetime.last_use));
+}
+
+void annotatePhysicalContext(QGraphicsItem &item,
+                             const FramePlanModel &model) {
+    item.setData(FramePlanProfileRole,
+                 qtext(model.physical_plan.planning_profile));
+    item.setData(FramePlanEndpointRole,
+                 qtext(model.physical_plan.planning_endpoint));
+}
+
+void annotatePhysicalResource(QGraphicsItem &item,
+                              const FramePlanModel &model,
+                              const FramePlanResource &resource) {
+    annotateIdentity(item, FramePlanResourceLifetimeItem, model.graph,
+                     resource.name);
+    annotatePhysicalContext(item, model);
+    item.setData(FramePlanReasonRole, qtext(resource.reason));
+    item.setData(FramePlanWidestReadRole, qtext(resource.widest_read));
+    item.setData(FramePlanAliasableRole, resource.aliasable);
+    item.setData(FramePlanRepresentationRole,
+                 qtext(resource.representation));
+    item.setData(FramePlanLifetimeUsedRole, resource.lifetime.used);
+    if (resource.lifetime.first_use) {
+        item.setData(FramePlanLifetimeFirstRole,
+                     static_cast<qulonglong>(
+                         *resource.lifetime.first_use));
+    }
+    if (resource.lifetime.last_use) {
+        item.setData(FramePlanLifetimeLastRole,
+                     static_cast<qulonglong>(
+                         *resource.lifetime.last_use));
+    }
+    item.setData(
+        FramePlanPhysicalStateRole,
+        resource.alias_group.empty()
+            ? QStringLiteral("separate")
+            : QStringLiteral("reused:%1")
+                  .arg(qtext(resource.alias_group)));
+}
+
+QString physicalResourceToolTip(const FramePlanResource &resource) {
+    return QStringLiteral(
+               "%1\nrepresentation: %2\nwidest read: %3\naliasable: "
+               "%4\nlifetime: %5\nreason: %6")
+        .arg(qtext(resource.name), qtext(resource.representation),
+             qtext(resource.widest_read),
+             resource.aliasable ? QStringLiteral("yes")
+                                : QStringLiteral("no"),
+             lifetimeText(resource.lifetime), qtext(resource.reason));
+}
+
+PhysicalOverlaySummary addPhysicalOverlay(
+    QGraphicsScene &scene, const FramePlanModel &model,
+    const std::map<std::string, VisibleEntity, std::less<>> &entities,
+    const std::map<std::string, std::string, std::less<>> &entity_for_node,
+    qreal logical_bottom,
+    const std::optional<FramePlanNodeKey> &selected_resource) {
+    PhysicalOverlaySummary summary;
+    summary.fusion_count = model.physical_plan.fusion_candidates.size();
+    summary.parallel_count = model.physical_plan.parallel_candidates.size();
+    summary.adopted_alias_count = model.physical_plan.alias_groups.size();
+    summary.not_adopted_alias_count =
+        static_cast<std::size_t>(std::count_if(
+            model.physical_plan.alias_candidates.begin(),
+            model.physical_plan.alias_candidates.end(),
+            [](const FramePlanOpportunityPair &candidate) {
+                return !candidate.adopted;
+            }));
+
+    qreal logical_right = 640.0;
+    for (const auto &[name, entity] : entities) {
+        (void)name;
+        logical_right = std::max(logical_right, entity.geometry.right());
+    }
+    const qreal panel_left = -PhysicalResourceLabelWidth;
+    const qreal panel_width = logical_right - panel_left;
+    const qreal header_y = logical_bottom + PhysicalPanelGap;
+
+    auto *context = scene.addRect(
+        QRectF{panel_left, header_y, panel_width, PhysicalHeaderHeight},
+        QPen{QColor{QStringLiteral("#6e7b88")}, 1.4},
+        QBrush{QColor{QStringLiteral("#182129")}});
+    context->setZValue(1.0);
+    annotateIdentity(*context, FramePlanPhysicalContextItem, model.graph,
+                     "physical_planning_context");
+    annotatePhysicalContext(*context, model);
+
+    const QString profile = model.physical_plan.planning_profile.empty()
+                                ? QStringLiteral("not published")
+                                : qtext(model.physical_plan.planning_profile);
+    const QString endpoint = model.physical_plan.planning_endpoint.empty()
+                                 ? QStringLiteral("not published")
+                                 : qtext(model.physical_plan.planning_endpoint);
+    auto *title = new QGraphicsSimpleTextItem(context);
+    QFont title_font = title->font();
+    title_font.setBold(true);
+    title_font.setPointSizeF(10.5);
+    title->setFont(title_font);
+    title->setBrush(QColor{QStringLiteral("#f1f5f8")});
+    title->setPos(panel_left + 12.0, header_y + 8.0);
+
+    if (!model.physical_plan.available()) {
+        context->setData(FramePlanPhysicalStateRole,
+                         QStringLiteral("unavailable"));
+        title->setText(QStringLiteral("Physical planning unavailable"));
+        auto *reason = new QGraphicsSimpleTextItem(
+            qtext(model.physical_plan.unavailable_reason), context);
+        reason->setBrush(QColor{QStringLiteral("#efb366")});
+        reason->setPos(panel_left + 12.0, header_y + 39.0);
+        context->setToolTip(qtext(model.physical_plan.unavailable_reason));
+        return summary;
+    }
+
+    context->setData(FramePlanPhysicalStateRole,
+                     QStringLiteral("available"));
+    title->setText(
+        QStringLiteral("Physical planning  |  profile: %1  |  endpoint: %2")
+            .arg(profile, endpoint));
+    auto *counts = new QGraphicsSimpleTextItem(
+        QStringLiteral(
+            "Reused alias groups: %1  |  legal alias candidates not adopted: "
+            "%2  |  fusion candidates: %3  |  parallel candidates: %4")
+            .arg(static_cast<qulonglong>(summary.adopted_alias_count))
+            .arg(static_cast<qulonglong>(summary.not_adopted_alias_count))
+            .arg(static_cast<qulonglong>(summary.fusion_count))
+            .arg(static_cast<qulonglong>(summary.parallel_count)),
+        context);
+    counts->setBrush(QColor{QStringLiteral("#b9c6d1")});
+    counts->setPos(panel_left + 12.0, header_y + 42.0);
+    auto *selection = new QGraphicsSimpleTextItem(
+        QStringLiteral("Select a physical resource to inspect its planning facts."),
+        context);
+    selection->setBrush(QColor{QStringLiteral("#d7e2ea")});
+    selection->setPos(panel_left + 12.0, header_y + 69.0);
+    annotateIdentity(*selection, FramePlanPhysicalSelectionItem, model.graph,
+                     "selected_physical_resource");
+    annotatePhysicalContext(*selection, model);
+    context->setToolTip(
+        QStringLiteral("These physical decisions were produced for profile "
+                       "'%1' on endpoint '%2'.")
+            .arg(profile, endpoint));
+
+    const auto add_empty_marker = [&](std::string_view opportunity,
+                                      qreal right_offset) {
+        const qreal marker_x = logical_right - right_offset;
+        const qreal marker_y = header_y + PhysicalHeaderHeight + 8.0;
+        auto *marker = scene.addRect(
+            QRectF{marker_x, marker_y, 172.0, 26.0},
+            QPen{QColor{QStringLiteral("#647482")}, 1.0, Qt::DashLine},
+            QBrush{QColor{QStringLiteral("#182129")}});
+        marker->setZValue(1.2);
+        annotateIdentity(*marker, FramePlanPhysicalEmptyItem, model.graph,
+                         std::string{opportunity} + ":empty");
+        annotatePhysicalContext(*marker, model);
+        marker->setData(FramePlanOpportunityKindRole,
+                        qtext(std::string{opportunity}));
+        marker->setData(FramePlanPhysicalStateRole,
+                        QStringLiteral("reported_empty"));
+        marker->setToolTip(
+            QStringLiteral("%1 candidates: 0 (reported by the engine)")
+                .arg(qtext(std::string{opportunity})));
+        auto *label = new QGraphicsSimpleTextItem(
+            QStringLiteral("%1: 0 (reported)")
+                .arg(qtext(std::string{opportunity})),
+            marker);
+        label->setBrush(QColor{QStringLiteral("#b9c6d1")});
+        label->setPos(marker_x + 8.0, marker_y + 4.0);
+        ++summary.explicit_empty_count;
+    };
+    if (summary.fusion_count == 0) {
+        add_empty_marker("fusion", 364.0);
+    }
+    if (summary.parallel_count == 0) {
+        add_empty_marker("parallel", 182.0);
+    }
+
+    std::size_t opportunity_lane = 0;
+    const auto add_node_opportunities =
+        [&](const std::vector<FramePlanOpportunityPair> &opportunities,
+            const char *item_kind, std::string_view opportunity_kind,
+            const QColor &color, Qt::PenStyle style) {
+            for (const auto &candidate : opportunities) {
+                const auto first_mapping =
+                    entity_for_node.find(candidate.first);
+                const auto second_mapping =
+                    entity_for_node.find(candidate.second);
+                if (first_mapping == entity_for_node.end() ||
+                    second_mapping == entity_for_node.end()) {
+                    continue;
+                }
+                const auto &first = entities.at(first_mapping->second);
+                const auto &second = entities.at(second_mapping->second);
+                const qreal lane_y =
+                    -48.0 - static_cast<qreal>(opportunity_lane++) *
+                                PhysicalOpportunityLaneGap;
+                QPainterPath path;
+                if (first.key == second.key) {
+                    path.addEllipse(
+                        QRectF{first.geometry.center().x() - 20.0, lane_y,
+                               40.0, 20.0});
+                } else {
+                    const QPointF start{first.geometry.center().x(),
+                                        first.geometry.top()};
+                    const QPointF end{second.geometry.center().x(),
+                                      second.geometry.top()};
+                    path.moveTo(start);
+                    path.lineTo(start.x(), lane_y);
+                    path.lineTo(end.x(), lane_y);
+                    path.lineTo(end);
+                }
+                auto *item = scene.addPath(path);
+                QPen pen{color};
+                pen.setWidthF(2.2);
+                pen.setStyle(style);
+                item->setPen(pen);
+                item->setBrush(Qt::NoBrush);
+                item->setZValue(1.1);
+                annotateIdentity(
+                    *item, item_kind, model.graph,
+                    candidate.first + "+" + candidate.second);
+                annotatePhysicalContext(*item, model);
+                item->setData(FramePlanMembersRole,
+                              qlist({candidate.first, candidate.second}));
+                item->setData(FramePlanOpportunityKindRole,
+                              qtext(std::string{opportunity_kind}));
+                item->setData(
+                    FramePlanPhysicalStateRole,
+                    opportunity_kind == "fusion" && candidate.adopted
+                        ? QStringLiteral("adopted")
+                        : QStringLiteral("candidate"));
+                item->setToolTip(
+                    QStringLiteral("%1 opportunity: %2 + %3")
+                        .arg(qtext(std::string{opportunity_kind}),
+                             qtext(candidate.first), qtext(candidate.second)));
+            }
+        };
+    add_node_opportunities(model.physical_plan.fusion_candidates,
+                           FramePlanFusionOverlayItem, "fusion",
+                           QColor{QStringLiteral("#c087ff")}, Qt::DashLine);
+    add_node_opportunities(model.physical_plan.parallel_candidates,
+                           FramePlanParallelOverlayItem, "parallel",
+                           QColor{QStringLiteral("#55cbd3")}, Qt::DotLine);
+
+    std::set<std::string, std::less<>> not_adopted_members;
+    for (const auto &candidate : model.physical_plan.alias_candidates) {
+        if (!candidate.adopted) {
+            not_adopted_members.insert(candidate.first);
+            not_adopted_members.insert(candidate.second);
+        }
+    }
+
+    std::vector<const FramePlanResource *> physical_resources;
+    for (const auto &resource : model.resources) {
+        if (!resource.representation.empty()) {
+            physical_resources.push_back(&resource);
+        }
+    }
+    std::ranges::sort(physical_resources, {},
+                      [](const FramePlanResource *resource) {
+                          return resource->name;
+                      });
+    summary.resource_count = physical_resources.size();
+
+    const qreal resources_y =
+        header_y + PhysicalHeaderHeight +
+        (summary.explicit_empty_count == 0 ? 18.0 : 48.0);
+    std::map<std::string, qreal, std::less<>> row_centers;
+    const auto lifetime_x = [&](std::size_t use_index, bool end) {
+        if (use_index < model.physical_plan.lowering_nodes.size()) {
+            const auto mapping = entity_for_node.find(
+                model.physical_plan.lowering_nodes[use_index].name);
+            if (mapping != entity_for_node.end()) {
+                const auto &geometry = entities.at(mapping->second).geometry;
+                return end ? geometry.right() : geometry.left();
+            }
+        }
+        const qreal fraction =
+            model.physical_plan.lowering_nodes.empty()
+                ? 0.0
+                : static_cast<qreal>(use_index) /
+                      static_cast<qreal>(
+                          model.physical_plan.lowering_nodes.size());
+        return fraction * logical_right;
+    };
+
+    for (std::size_t index = 0; index < physical_resources.size(); ++index) {
+        const FramePlanResource &resource = *physical_resources[index];
+        const qreal row_y =
+            resources_y + static_cast<qreal>(index) *
+                              PhysicalResourceRowHeight;
+        const QColor row_color =
+            index % 2 == 0 ? QColor{QStringLiteral("#232c34")}
+                           : QColor{QStringLiteral("#1e272f")};
+        QColor outline{QStringLiteral("#52616e")};
+        if (!resource.alias_group.empty()) {
+            outline = QColor{QStringLiteral("#4fbc78")};
+        } else if (not_adopted_members.contains(resource.name)) {
+            outline = QColor{QStringLiteral("#e3a84c")};
+        }
+        auto *row = scene.addRect(
+            QRectF{panel_left, row_y, panel_width,
+                   PhysicalResourceRowHeight - 2.0},
+            QPen{outline, resource.alias_group.empty() ? 0.8 : 1.8},
+            QBrush{row_color});
+        row->setZValue(0.8);
+        row->setFlag(QGraphicsItem::ItemIsSelectable, true);
+        annotatePhysicalResource(*row, model, resource);
+        row->setToolTip(physicalResourceToolTip(resource));
+
+        auto *name = new QGraphicsSimpleTextItem(qtext(resource.name), row);
+        QFont name_font = name->font();
+        name_font.setBold(true);
+        name->setFont(name_font);
+        name->setBrush(QColor{QStringLiteral("#edf3f7")});
+        name->setPos(panel_left + 9.0, row_y + 7.0);
+
+        auto *details = new QGraphicsSimpleTextItem(
+            QStringLiteral("%1 | %2 | aliasable %3 | lifetime %4")
+                .arg(qtext(resource.representation),
+                     qtext(resource.widest_read),
+                     resource.aliasable ? QStringLiteral("yes")
+                                        : QStringLiteral("no"),
+                     lifetimeText(resource.lifetime)),
+            row);
+        QFont detail_font = details->font();
+        detail_font.setPointSizeF(8.0);
+        details->setFont(detail_font);
+        details->setBrush(QColor{QStringLiteral("#aebbc6")});
+        details->setPos(panel_left + 174.0, row_y + 8.0);
+
+        if (resource.lifetime.used) {
+            const qreal left =
+                lifetime_x(*resource.lifetime.first_use, false);
+            const qreal right =
+                std::max(left + 8.0,
+                         lifetime_x(*resource.lifetime.last_use, true));
+            const QColor bar_color =
+                !resource.alias_group.empty()
+                    ? QColor{QStringLiteral("#4fbc78")}
+                    : not_adopted_members.contains(resource.name)
+                          ? QColor{QStringLiteral("#e3a84c")}
+                          : QColor{QStringLiteral("#71889a")};
+            auto *bar = new QGraphicsRectItem(
+                QRectF{left, row_y + PhysicalResourceRowHeight - 9.0,
+                       right - left, 4.0},
+                row);
+            bar->setPen(Qt::NoPen);
+            bar->setBrush(bar_color);
+        }
+
+        row_centers.emplace(
+            resource.name,
+            row_y + (PhysicalResourceRowHeight - 2.0) / 2.0);
+        if (selected_resource &&
+            selected_resource->name == resource.name) {
+            row->setSelected(true);
+        }
+    }
+
+    const auto add_alias_connector =
+        [&](const std::vector<std::string> &members, const std::string &name,
+            QString state, const QColor &color, Qt::PenStyle style,
+            qreal x_offset, QString tool_tip) {
+            std::vector<qreal> rows;
+            for (const auto &member : members) {
+                if (const auto row = row_centers.find(member);
+                    row != row_centers.end()) {
+                    rows.push_back(row->second);
+                }
+            }
+            if (rows.size() < 2) {
+                return;
+            }
+            std::ranges::sort(rows);
+            const qreal connector_x = -x_offset;
+            QPainterPath path;
+            path.moveTo(connector_x, rows.front());
+            path.lineTo(connector_x, rows.back());
+            for (const qreal row : rows) {
+                path.moveTo(connector_x, row);
+                path.lineTo(connector_x + 16.0, row);
+            }
+            auto *connector = scene.addPath(path);
+            QPen pen{color};
+            pen.setWidthF(3.0);
+            pen.setStyle(style);
+            connector->setPen(pen);
+            connector->setBrush(Qt::NoBrush);
+            connector->setZValue(1.5);
+            annotateIdentity(*connector, FramePlanAliasOverlayItem,
+                             model.graph, name);
+            annotatePhysicalContext(*connector, model);
+            connector->setData(FramePlanMembersRole, qlist(members));
+            connector->setData(FramePlanOpportunityKindRole,
+                               QStringLiteral("alias"));
+            connector->setData(FramePlanPhysicalStateRole,
+                               std::move(state));
+            connector->setToolTip(std::move(tool_tip));
+        };
+    for (const auto &group : model.physical_plan.alias_groups) {
+        add_alias_connector(
+            group.resources, group.id, QStringLiteral("adopted"),
+            QColor{QStringLiteral("#4fbc78")}, Qt::SolidLine, 18.0,
+            QStringLiteral("Reused allocation %1: %2")
+                .arg(qtext(group.id),
+                     qlist(group.resources).join(QStringLiteral(" + "))));
+    }
+    for (const auto &candidate : model.physical_plan.alias_candidates) {
+        if (candidate.adopted) {
+            continue;
+        }
+        const std::vector<std::string> members{candidate.first,
+                                                candidate.second};
+        add_alias_connector(
+            members, "not_adopted:" + candidate.first + "+" + candidate.second,
+            QStringLiteral("not_adopted"),
+            QColor{QStringLiteral("#e3a84c")}, Qt::DashLine, 46.0,
+            QStringLiteral(
+                "Legal alias candidate, not adopted: %1 + %2\nNo selection "
+                "reason was published by the engine.")
+                .arg(qtext(candidate.first), qtext(candidate.second)));
+    }
+
+    return summary;
+}
+
 } // namespace
 
 FramePlanGraphicsScene::FramePlanGraphicsScene(QObject *parent)
@@ -255,6 +702,7 @@ void FramePlanGraphicsScene::resetGraph() {
     rebuilding_ = true;
     clear();
     selected_node_.reset();
+    selected_resource_.reset();
     collapsed_groups_.clear();
     setSceneRect({});
     rebuilding_ = false;
@@ -264,6 +712,14 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanVisibleItemCount", 0);
     setProperty("pelicanEdgeBundleCount", 0);
     setProperty("pelicanResourceOverlayCount", 0);
+    setProperty("pelicanPhysicalResourceCount", 0);
+    setProperty("pelicanAdoptedAliasCount", 0);
+    setProperty("pelicanNotAdoptedAliasCount", 0);
+    setProperty("pelicanFusionCandidateCount", 0);
+    setProperty("pelicanParallelCandidateCount", 0);
+    setProperty("pelicanPhysicalExplicitEmptyCount", 0);
+    setProperty("pelicanPlanningProfile", QString{});
+    setProperty("pelicanPlanningEndpoint", QString{});
     setProperty("pelicanCollapsedGroups", QStringList{});
     publishStateProperties();
 }
@@ -277,11 +733,22 @@ void FramePlanGraphicsScene::populate(const FramePlanModel &model,
                     [&](const FramePlanNode &node) {
                         return node.name == retained_selection->name;
                     });
+    const auto retained_resource = selected_resource_;
+    const bool resource_selection_survives =
+        retained_resource && retained_resource->graph == model.graph &&
+        std::any_of(model.resources.begin(), model.resources.end(),
+                    [&](const FramePlanResource &resource) {
+                        return resource.name == retained_resource->name &&
+                               !resource.representation.empty();
+                    });
 
     rebuilding_ = true;
     clear();
     collapsed_groups_.clear();
     selected_node_ = selection_survives ? retained_selection : std::nullopt;
+    selected_resource_ = resource_selection_survives
+                             ? retained_resource
+                             : std::nullopt;
 
     std::map<std::string, const FramePlanNode *, std::less<>> nodes;
     for (const auto &node : model.nodes) {
@@ -506,6 +973,15 @@ void FramePlanGraphicsScene::populate(const FramePlanModel &model,
                       (EdgeLabelHeight - text_bounds.height()) / 2.0);
     }
 
+    const qreal logical_bottom =
+        lane == 0
+            ? max_node_bottom
+            : first_lane + static_cast<qreal>(lane - 1) * EdgeLaneGap +
+                  EdgeLabelHeight;
+    const PhysicalOverlaySummary physical_overlay = addPhysicalOverlay(
+        *this, model, entities, entity_for_node, logical_bottom,
+        selected_resource_);
+
     if (selected_node_) {
         const auto entity = entities.find(selected_node_->name);
         if (entity != entities.end() && !entity->second.group) {
@@ -528,6 +1004,25 @@ void FramePlanGraphicsScene::populate(const FramePlanModel &model,
                 static_cast<qulonglong>(bundles.size()));
     setProperty("pelicanResourceOverlayCount",
                 static_cast<qulonglong>(resource_overlay_count));
+    setProperty("pelicanPhysicalResourceCount",
+                static_cast<qulonglong>(physical_overlay.resource_count));
+    setProperty("pelicanAdoptedAliasCount",
+                static_cast<qulonglong>(
+                    physical_overlay.adopted_alias_count));
+    setProperty("pelicanNotAdoptedAliasCount",
+                static_cast<qulonglong>(
+                    physical_overlay.not_adopted_alias_count));
+    setProperty("pelicanFusionCandidateCount",
+                static_cast<qulonglong>(physical_overlay.fusion_count));
+    setProperty("pelicanParallelCandidateCount",
+                static_cast<qulonglong>(physical_overlay.parallel_count));
+    setProperty("pelicanPhysicalExplicitEmptyCount",
+                static_cast<qulonglong>(
+                    physical_overlay.explicit_empty_count));
+    setProperty("pelicanPlanningProfile",
+                qtext(model.physical_plan.planning_profile));
+    setProperty("pelicanPlanningEndpoint",
+                qtext(model.physical_plan.planning_endpoint));
     QStringList collapsed_names;
     for (const auto &group : collapsed_groups_) {
         collapsed_names.push_back(qtext(group));
@@ -542,6 +1037,19 @@ void FramePlanGraphicsScene::recordSelection() {
         return;
     }
     selected_node_.reset();
+    selected_resource_.reset();
+    for (QGraphicsItem *item : selectedItems()) {
+        if (itemKind(*item) !=
+            QLatin1String{FramePlanResourceLifetimeItem}) {
+            continue;
+        }
+        selected_resource_ = FramePlanNodeKey{
+            item->data(FramePlanGraphRole).toString().toStdString(),
+            item->data(FramePlanNameRole).toString().toStdString(),
+        };
+        publishStateProperties();
+        return;
+    }
     for (QGraphicsItem *item : selectedItems()) {
         if (itemKind(*item) != QLatin1String{FramePlanNodeItem}) {
             continue;
@@ -560,6 +1068,82 @@ void FramePlanGraphicsScene::publishStateProperties() {
                 selected_node_ ? qtext(selected_node_->graph) : QString{});
     setProperty("pelicanSelectedNode",
                 selected_node_ ? qtext(selected_node_->name) : QString{});
+    setProperty("pelicanSelectedResource",
+                selected_resource_ ? qtext(selected_resource_->name)
+                                   : QString{});
+
+    QGraphicsItem *resource_item = nullptr;
+    if (selected_resource_) {
+        for (QGraphicsItem *item : items()) {
+            if (itemKind(*item) ==
+                    QLatin1String{FramePlanResourceLifetimeItem} &&
+                item->data(FramePlanNameRole).toString() ==
+                    qtext(selected_resource_->name)) {
+                resource_item = item;
+                break;
+            }
+        }
+    }
+    setProperty("pelicanSelectedResourceReason",
+                resource_item
+                    ? resource_item->data(FramePlanReasonRole).toString()
+                    : QString{});
+    setProperty("pelicanSelectedResourceWidestRead",
+                resource_item
+                    ? resource_item->data(FramePlanWidestReadRole).toString()
+                    : QString{});
+    setProperty("pelicanSelectedResourceAliasable",
+                resource_item
+                    ? resource_item->data(FramePlanAliasableRole)
+                    : QVariant{});
+    setProperty("pelicanSelectedResourceRepresentation",
+                resource_item
+                    ? resource_item->data(FramePlanRepresentationRole)
+                          .toString()
+                    : QString{});
+    QString lifetime;
+    if (resource_item) {
+        lifetime = resource_item->data(FramePlanLifetimeUsedRole).toBool()
+                       ? QStringLiteral("[%1, %2]")
+                             .arg(resource_item
+                                      ->data(FramePlanLifetimeFirstRole)
+                                      .toULongLong())
+                             .arg(resource_item
+                                      ->data(FramePlanLifetimeLastRole)
+                                      .toULongLong())
+                       : QStringLiteral("unused");
+    }
+    setProperty("pelicanSelectedResourceLifetime", lifetime);
+
+    QString selection_summary =
+        QStringLiteral("Select a physical resource to inspect its planning facts.");
+    if (resource_item) {
+        selection_summary =
+            QStringLiteral(
+                "Selected %1 | representation: %2 | widest read: %3 | "
+                "aliasable: %4 | lifetime: %5\nreason: %6")
+                .arg(resource_item->data(FramePlanNameRole).toString(),
+                     resource_item->data(FramePlanRepresentationRole)
+                         .toString(),
+                     resource_item->data(FramePlanWidestReadRole).toString(),
+                     resource_item->data(FramePlanAliasableRole).toBool()
+                         ? QStringLiteral("yes")
+                         : QStringLiteral("no"),
+                     lifetime,
+                     resource_item->data(FramePlanReasonRole).toString());
+    }
+    for (QGraphicsItem *item : items()) {
+        if (itemKind(*item) !=
+            QLatin1String{FramePlanPhysicalSelectionItem}) {
+            continue;
+        }
+        if (auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(item)) {
+            label->setText(selection_summary);
+            setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0,
+                                                      30.0));
+        }
+        break;
+    }
 }
 
 } // namespace PelicanStudio

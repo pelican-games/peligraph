@@ -910,6 +910,17 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         const auto &backend = requireObjectField(
             physical, "backend_selection", "physical_target_plan");
         parseBackendSelection(backend, model, decision_group_indices);
+        const auto selected_backend = std::find_if(
+            model.backend_candidates.begin(), model.backend_candidates.end(),
+            [](const FramePlanBackendCandidate &candidate) {
+                return candidate.selected;
+            });
+        if (selected_backend == model.backend_candidates.end()) {
+            throw invalid(
+                "physical_plan_missing_reference: selected backend candidate "
+                "is absent from backend_selection.candidates");
+        }
+        model.physical_plan.planning_endpoint = selected_backend->endpoint;
         appendDecisions(lowering,
                             "physical_target_plan.lowering_graph",
                             model.decision_groups, decision_group_indices);
