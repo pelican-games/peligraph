@@ -15,6 +15,21 @@ enum class PhysicalTargetPlanWireState {
     available,
 };
 
+enum class PlanningOpportunityAdoption {
+    adopted,
+    not_adopted,
+    unknown,
+};
+
+struct PlanningOpportunityWirePair {
+    std::string first;
+    std::string second;
+    PlanningOpportunityAdoption adoption =
+        PlanningOpportunityAdoption::unknown;
+
+    bool operator==(const PlanningOpportunityWirePair &) const = default;
+};
+
 struct PhysicalTargetPlanWireContext {
     std::string expected_graph;
     std::vector<std::string> execution_nodes;
@@ -40,6 +55,32 @@ struct PhysicalTargetPlanWireValidation {
 // become unavailable with a stable, named reason code shared by Studio and the
 // in-engine ImGui viewer.
 PhysicalTargetPlanWireValidation validatePhysicalTargetPlanWire(
+    const nlohmann::json *document,
+    const PhysicalTargetPlanWireContext &context = {});
+
+// Strict projection of planning_opportunities from a validated physical plan.
+// Alias groups and fused scopes are physical adoption evidence.  The current
+// wire publishes no physical parallel schedule, so parallel candidates remain
+// unknown instead of being reported as not adopted.
+struct PlanningOpportunitiesWire {
+    PhysicalTargetPlanWireState state =
+        PhysicalTargetPlanWireState::unavailable;
+    std::string reason_code;
+    std::string detail;
+    std::string profile;
+    std::vector<PlanningOpportunityWirePair> alias_candidates;
+    std::vector<PlanningOpportunityWirePair> fusion_candidates;
+    std::vector<PlanningOpportunityWirePair> parallel_candidates;
+
+    [[nodiscard]] bool available() const noexcept {
+        return state == PhysicalTargetPlanWireState::available;
+    }
+    [[nodiscard]] std::string reason() const;
+
+    bool operator==(const PlanningOpportunitiesWire &) const = default;
+};
+
+PlanningOpportunitiesWire readPlanningOpportunitiesWire(
     const nlohmann::json *document,
     const PhysicalTargetPlanWireContext &context = {});
 

@@ -69,59 +69,13 @@ bool containsCaseInsensitive(std::string_view haystack, std::string_view needle)
     return it != haystack.end();
 }
 
-bool collectionEntryContainsPair(const nlohmann::json &plan_json,
-                                 std::string_view collection_key,
-                                 std::string_view members_key,
-                                 std::string_view first,
-                                 std::string_view second,
-                                 bool require_single_rendering_instance = false) {
-    const auto collection = plan_json.find(std::string{collection_key});
-    if (collection == plan_json.end() || !collection->is_array()) return false;
-    for (const auto &entry : *collection) {
-        if (!entry.is_object()) continue;
-        if (require_single_rendering_instance &&
-            (!entry.contains("single_rendering_instance") ||
-             !entry["single_rendering_instance"].is_boolean() ||
-             !entry["single_rendering_instance"].get<bool>())) {
-            continue;
-        }
-        const auto members = entry.find(std::string{members_key});
-        if (members == entry.end() || !members->is_array()) continue;
-        const auto contains = [&](std::string_view name) {
-            return std::any_of(members->begin(), members->end(),
-                               [&](const nlohmann::json &member) {
-                                   return member.is_string() &&
-                                          member.get<std::string>() == name;
-                               });
-        };
-        if (contains(first) && contains(second)) return true;
+const char *adoptionLabel(PlanningOpportunityAdoption adoption) {
+    switch (adoption) {
+    case PlanningOpportunityAdoption::adopted: return "adopted";
+    case PlanningOpportunityAdoption::not_adopted: return "not adopted";
+    case PlanningOpportunityAdoption::unknown: return "unknown";
     }
-    return false;
-}
-
-template <typename Adopted>
-bool readOpportunityPairs(const nlohmann::json &report, std::string_view key,
-                          Adopted adopted,
-                          std::vector<CompiledPlanOpportunityPair> &result) {
-    const auto candidates = report.find(std::string{key});
-    if (candidates == report.end() || !candidates->is_array()) return false;
-    result.reserve(candidates->size());
-    for (const auto &candidate : *candidates) {
-        if (!candidate.is_object()) return false;
-        const auto first = candidate.find("first");
-        const auto second = candidate.find("second");
-        if (first == candidate.end() || second == candidate.end() ||
-            !first->is_string() || !second->is_string()) {
-            return false;
-        }
-        CompiledPlanOpportunityPair pair{
-            .first = first->get<std::string>(),
-            .second = second->get<std::string>(),
-        };
-        pair.adopted = adopted(pair.first, pair.second);
-        result.push_back(std::move(pair));
-    }
-    return true;
+    return "unknown";
 }
 
 void drawJsonTree(const nlohmann::json &value, const std::string &label,
@@ -211,50 +165,31 @@ std::vector<CompiledPlanFact> buildCompiledPlanFacts(
 CompiledPlanOpportunities buildCompiledPlanOpportunities(
     const nlohmann::json &plan_json) {
     CompiledPlanOpportunities result;
-    const auto validation = validatePhysicalTargetPlanWire(&plan_json);
-    if (!validation.available()) {
-        result.unavailable_reason = validation.reason();
-        return result;
-    }
-    const auto it = plan_json.find("planning_opportunities");
-    if (it == plan_json.end() || !it->is_object()) {
-        result.unavailable_reason =
-            "physical_plan_missing_field: planning_opportunities is unavailable";
+    const auto wire = readPlanningOpportunitiesWire(&plan_json);
+    if (!wire.available()) {
+        result.unavailable_reason_code = wire.reason_code;
+        result.unavailable_reason = wire.reason();
         return result;
     }
 
-    const auto profile = it->find("profile");
-    if (profile != it->end() && profile->is_string()) {
-        result.profile = profile->get<std::string>();
-    }
-
-    const auto alias_adopted = [&](std::string_view first,
-                                   std::string_view second) {
-        return collectionEntryContainsPair(plan_json, "alias_groups", "resources",
-                                           first, second);
+    const auto project = [](const auto &candidates) {
+        std::vector<CompiledPlanOpportunityPair> projected;
+        projected.reserve(candidates.size());
+        for (const auto &candidate : candidates) {
+            projected.push_back({
+                .first = candidate.first,
+                .second = candidate.second,
+                .adoption = candidate.adoption,
+            });
+        }
+        return projected;
     };
-    const auto fusion_adopted = [&](std::string_view first,
-                                    std::string_view second) {
-        return collectionEntryContainsPair(plan_json, "scopes", "nodes", first,
-                                           second, true);
-    };
-    const auto not_adopted = [](std::string_view, std::string_view) {
-        // The current producer has no physical parallel-group collection;
-        // these rows are opportunities only.
-        return false;
-    };
-    if (!readOpportunityPairs(*it, "alias_candidates", alias_adopted,
-                              result.alias_candidates) ||
-        !readOpportunityPairs(*it, "fusion_candidates", fusion_adopted,
-                              result.fusion_candidates) ||
-        !readOpportunityPairs(*it, "parallel_candidates", not_adopted,
-                              result.parallel_candidates)) {
-        result.unavailable_reason =
-            "physical_plan_type_error: planning opportunity pair is malformed";
-        return result;
-    }
 
     result.available = true;
+    result.profile = wire.profile;
+    result.alias_candidates = project(wire.alias_candidates);
+    result.fusion_candidates = project(wire.fusion_candidates);
+    result.parallel_candidates = project(wire.parallel_candidates);
     if (result.alias_candidates.empty() && result.fusion_candidates.empty() &&
         result.parallel_candidates.empty()) {
         result.empty_state = "no candidates";
@@ -509,11 +444,10 @@ struct CompiledPlanViewer::Impl {
             if (!opportunities.empty_state.empty()) {
                 ImGui::TextDisabled("%s", opportunities.empty_state.c_str());
             }
-            const auto draw_candidates = [](
-                                             const char *label,
-                                             const std::vector<
-                                                 CompiledPlanOpportunityPair>
-                                                 &candidates) {
+            const auto draw_candidates =
+                [](const char *label,
+                   const std::vector<CompiledPlanOpportunityPair>
+                       &candidates) {
                 ImGui::TextDisabled("%s (%zu)", label, candidates.size());
                 ImGui::Indent();
                 if (candidates.empty()) {
@@ -521,8 +455,7 @@ struct CompiledPlanViewer::Impl {
                 } else {
                     for (const auto &candidate : candidates) {
                         ImGui::BulletText("[%s] %s + %s",
-                                          candidate.adopted ? "adopted"
-                                                            : "not adopted",
+                                          adoptionLabel(candidate.adoption),
                                           candidate.first.c_str(),
                                           candidate.second.c_str());
                     }
@@ -548,6 +481,11 @@ struct CompiledPlanViewer::Impl {
 };
 
 CompiledPlanViewer::CompiledPlanViewer() : impl{std::make_unique<Impl>()} {}
+CompiledPlanViewer::CompiledPlanViewer(CompiledPlanModel model)
+    : impl{std::make_unique<Impl>()} {
+    impl->model = std::move(model);
+    impl->initialized = true;
+}
 CompiledPlanViewer::~CompiledPlanViewer() = default;
 
 void CompiledPlanViewer::draw(bool *open) {

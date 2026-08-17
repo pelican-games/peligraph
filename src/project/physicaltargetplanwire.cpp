@@ -788,4 +788,132 @@ PhysicalTargetPlanWireValidation validatePhysicalTargetPlanWire(
     }
 }
 
+std::string PlanningOpportunitiesWire::reason() const {
+    if (reason_code.empty()) {
+        return detail;
+    }
+    if (detail.empty()) {
+        return reason_code;
+    }
+    return reason_code + ": " + detail;
+}
+
+PlanningOpportunitiesWire readPlanningOpportunitiesWire(
+    const nlohmann::json *document,
+    const PhysicalTargetPlanWireContext &context) {
+    const auto validation = validatePhysicalTargetPlanWire(document, context);
+    if (!validation.available()) {
+        return {
+            .state = PhysicalTargetPlanWireState::unavailable,
+            .reason_code = validation.reason_code,
+            .detail = validation.detail,
+        };
+    }
+
+    try {
+        const auto &plan = *document;
+        const auto &report = requireObject(
+            plan, "planning_opportunities", "physical_target_plan");
+
+        const auto collection_contains_pair =
+            [&plan](std::string_view collection_key,
+                    std::string_view members_key, std::string_view first,
+                    std::string_view second, bool require_single_instance) {
+            const auto &collection = requireArray(
+                plan, collection_key, "physical_target_plan");
+            for (std::size_t index = 0; index < collection.size(); ++index) {
+                const auto entry_context =
+                    "physical_target_plan." + std::string{collection_key} +
+                    "[" + std::to_string(index) + "]";
+                const auto &entry = collection[index];
+                if (!entry.is_object()) {
+                    fail("physical_plan_type_error",
+                         entry_context + " must be an object");
+                }
+                if (require_single_instance &&
+                    !requireBool(entry, "single_rendering_instance",
+                                 entry_context)) {
+                    continue;
+                }
+                const auto members = requireStringArray(
+                    entry, members_key, entry_context);
+                const auto contains = [&](std::string_view name) {
+                    return std::find(members.begin(), members.end(), name) !=
+                           members.end();
+                };
+                if (contains(first) && contains(second)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const auto read_pairs = [&](std::string_view key, auto &&adoption) {
+            const auto &entries = requireArray(
+                report, key, "planning_opportunities");
+            std::vector<PlanningOpportunityWirePair> pairs;
+            pairs.reserve(entries.size());
+            for (std::size_t index = 0; index < entries.size(); ++index) {
+                const auto entry_context =
+                    "planning_opportunities." + std::string{key} + "[" +
+                    std::to_string(index) + "]";
+                if (!entries[index].is_object()) {
+                    fail("physical_plan_type_error",
+                         entry_context + " must be an object");
+                }
+                PlanningOpportunityWirePair pair{
+                    .first = requireString(entries[index], "first",
+                                           entry_context),
+                    .second = requireString(entries[index], "second",
+                                            entry_context),
+                };
+                pair.adoption = adoption(pair.first, pair.second);
+                pairs.push_back(std::move(pair));
+            }
+            return pairs;
+        };
+
+        PlanningOpportunitiesWire result{
+            .state = PhysicalTargetPlanWireState::available,
+            .profile = requireString(report, "profile",
+                                     "planning_opportunities"),
+        };
+        result.alias_candidates = read_pairs(
+            "alias_candidates", [&](std::string_view first,
+                                    std::string_view second) {
+                return collection_contains_pair(
+                           "alias_groups", "resources", first, second, false)
+                           ? PlanningOpportunityAdoption::adopted
+                           : PlanningOpportunityAdoption::not_adopted;
+            });
+        result.fusion_candidates = read_pairs(
+            "fusion_candidates", [&](std::string_view first,
+                                     std::string_view second) {
+                return collection_contains_pair(
+                           "scopes", "nodes", first, second, true)
+                           ? PlanningOpportunityAdoption::adopted
+                           : PlanningOpportunityAdoption::not_adopted;
+            });
+        result.parallel_candidates = read_pairs(
+            "parallel_candidates", [](std::string_view, std::string_view) {
+                // No validated physical schedule is present in v1.  A legal
+                // opportunity alone is not evidence of either adoption state.
+                return PlanningOpportunityAdoption::unknown;
+            });
+        return result;
+    } catch (const ValidationFailure &failure) {
+        return {
+            .state = PhysicalTargetPlanWireState::unavailable,
+            .reason_code = failure.code,
+            .detail = failure.message,
+        };
+    } catch (const std::exception &error) {
+        return {
+            .state = PhysicalTargetPlanWireState::unavailable,
+            .reason_code = "physical_plan_malformed",
+            .detail = error.what(),
+        };
+    }
+}
+
 } // namespace Pelican

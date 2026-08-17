@@ -915,9 +915,11 @@ target_compile_definitions(pelican_test_assetbrowser_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(inspector_test GROUP core_xr_tools pelican_core glm)
-pelican_define_test(compiledplanviewer_test GROUP core_xr_tools pelican_core glm)
-target_compile_definitions(pelican_test_compiledplanviewer_test PRIVATE
-  PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
+pelican_define_test(compiledplanviewer_test GROUP core_xr_tools
+  pelican_core pelican_project glm)
+FetchContent_GetProperties(imgui_vendor)
+target_include_directories(pelican_test_compiledplanviewer_test PRIVATE
+  ${imgui_vendor_SOURCE_DIR}
 )
 endif()
 if(PELICAN_WITH_RPC)

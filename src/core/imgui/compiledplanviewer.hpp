@@ -1,5 +1,7 @@
 #pragma once
 
+#include "physicaltargetplanwire.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -55,7 +57,7 @@ struct CompiledPlanFact {
 struct CompiledPlanOpportunityPair {
     std::string first;
     std::string second;
-    bool adopted = false;
+    PlanningOpportunityAdoption adoption = PlanningOpportunityAdoption::unknown;
 };
 
 // The producer reports three semantically distinct kinds of opportunity.
@@ -63,6 +65,7 @@ struct CompiledPlanOpportunityPair {
 // the physical plan actually adopted.
 struct CompiledPlanOpportunities {
     bool available = false;
+    std::string unavailable_reason_code;
     std::string unavailable_reason;
     std::string profile;
     std::vector<CompiledPlanOpportunityPair> alias_candidates;
@@ -109,6 +112,7 @@ class CompiledPlanViewer {
 
   public:
     CompiledPlanViewer();
+    explicit CompiledPlanViewer(CompiledPlanModel model);
     ~CompiledPlanViewer();
     void draw(bool *open);
 };
