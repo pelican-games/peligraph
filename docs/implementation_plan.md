@@ -5261,6 +5261,93 @@ runtime の現行 publisher は必ず execution plan を付ける
 
 依存: なし。見積: 小。
 
+## 編集側の設計 — 確定した条件と、3 回失敗した原因(2026-08-17)
+
+読む側(WP305〜307)は完成した。編集側は**設計を 3 回回して 3 回とも不合格**である。
+着手する前に、ここに書いてある条件と失敗原因を読むこと。
+
+### 利用者が決めた条件(設計の必須要件)
+
+1. **手書きは最小差分であること。**全体ダンプにしない。
+   物理層の作法(eject 結果は全部入りだが、手書きは変更する分だけに減らせる)に倣う。
+   **規約ではなく形式で強制すること** —— `pelican.render_feature` は compose 経路で唯一、
+   閉じたキー集合もサイズ上限も持たない文書なので、それを流用すると最小性が保証されない。
+2. **最後にコンパイルが通った全体を派生物として保持する。
+   複数世代を利用者が指定して保持できること。**
+   大きさは実測済み: `ejectable_complete_physical_plan` が 27 KB
+   (著作ファイル 12 KB の 2.3 倍)、`ejectable_physical_fragment` 7 KB、
+   `ejectable_pin_package` 209 B。git に何世代か置いても問題にならない。
+3. **保持したものを黙って入力にしないこと。**
+   入力にする道はあってよいが、`vulkan_plan_pins` と同じく
+   **fingerprint で古さを検出して名前付きで落ちること。**
+4. **デバッグ出力の切り替えは、グラフ編集と同じ「反映」問題として扱うこと。
+   別の機構を作らないこと。**
+   デバッグ表示は既に feature 文書として存在し(`debug_draw` / `debug_text` /
+   `gpu_timing` / `gizmo` / `picking`)、`--feature-overlay` で積める
+   (`render_feature_overlays` は `std::vector`、`launchconfig.hpp:68`)。
+   ただし **`EngineLaunchConfig` から読むので起動時にしか効かない**。
+   再起動なしで切り替えるのは、編集の反映と同じ問題である。
+
+### 私(Claude)が誤った前提を「再設計禁止」として渡していた
+
+3 回の設計ワークフローすべてに、次を `SETTLED, do not redesign` として渡した:
+
+> 合成後の設定は書き戻せない
+
+**全体を丸ごと戻す場合には事実である。**しかしそこから
+「**原文への限定的な書き戻しも不可能**」と一般化したのは誤りで、
+その一般化を検証禁止として渡したため、**Claude 側のレビュアは誰もそれを疑えなかった。**
+
+codex に見せた瞬間に指摘された:
+
+> 「合成済み全体をそのまま authoring input に戻す」直接 round-trip は一般には成立しない。
+> **壊したのは、この事実から「原文への限定書き戻しも全て不可能」とする一般化である。**
+
+**次の設計では、この前提を検証対象として渡すこと。**
+
+### 設計レビューを Claude だけで完結させないこと
+
+3 回とも Workflow で 4〜5 レンズを当て、毎回「全レンズ FATAL」を得ていた。
+**しかし codex には一度も見せていなかった。**
+仕様とコードでは codex が毎回 Claude 側の見落としを出していたのに、設計だけ同一モデル内だった。
+
+codex が出した、Claude 側の誰も問わなかった観点:
+
+> **利用者の 4 要求を表にして照合する。**
+
+その結果、勝ち残った案は 4 要求すべて未達で、
+提案された v1 は実質「`--feature-overlay` を繰り返し指定可能にする」だけだった。
+**Claude 側のレンズは機構を攻撃したが、「この v1 は要求を 1 つでも満たすのか」を誰も問わなかった。**
+
+要求 3 への指摘が象徴的である —— 保持物が存在しないのに
+「入力にしていない」と主張するのは、満たしているのではなく**空虚**。
+
+### 有力な材料(調査で判明、未活用)
+
+- **`ReloadService::applyRuntimeNow`(`src/core/watch/reloadservice.cpp:172`)は
+  ReloadGate を見ない。**`reload_game_logic`(`rpcserver.cpp:1116`)が
+  「RPC が参加者を名指し → `applyRuntimeNow` → `committed`/`error` を見て名前付きで返す」
+  という全パターンを既に実演している。**反映の道は在る。呼び出し元が無いだけである。**
+- `applyRenderFeatureOverlays`(`src/project/renderfeatureoverlay.cpp:119`)は
+  著作 JSON と lowering の間の**唯一の注入点**で、boot と reload の両方で呼ばれ、
+  厳格な envelope 検証とローダ注入の継ぎ目を既に持つ。
+- 物理層のファイル取り込み口(`renderpipeline.cpp:461-477`)と
+  `input_config_fingerprint`(`logicalrendergraph.cpp:533`)が、
+  論理層 override の前例と上流アンカーとして使える。
+
+### 出荷プロジェクトの実測(設計の前提として)
+
+| プロジェクト | preset | feature | 著作 target | 著作 pass |
+|---|---|---:|---:|---:|
+| example | — | 1 | 20 | 20 |
+| animgraph_demo | hybrid_v1 | 3 | **0** | **0** |
+| sprite_demo | — | 1 | 7 | 3 |
+| vrm_xr_demo | — | 0 | 7 | 3 |
+
+**「プロジェクトファイルに全レンダリングパスが残る」は既に成り立っていない。**
+4 つ中 3 つがそうで、`animgraph_demo` は 1 行も書いていない。
+`example` だけが全部書いている外れ値である。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
