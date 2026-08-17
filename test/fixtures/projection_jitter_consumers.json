@@ -246,19 +246,13 @@
       "needles": ["glm::vec2 current_jitter_ndc", "glm::vec2 previous_jitter_ndc"]
     },
     {
-      "source": "src/core/renderingpass/fullscreenpassinfojsonparser.cpp",
-      "consumer": "legacy_fullscreen_config",
-      "role": "deprecated projection declaration diagnostic",
-      "needles": ["use push_constants: projection_view"]
-    },
-    {
       "source": "src/core/renderingpass/renderingpassjsonhelpers.cpp",
       "consumer": "legacy_fullscreen_config",
       "role": "legacy projection_view parser",
       "needles": ["if (data_str == \"projection_view\")"]
     },
     {
-      "source": "src/core/renderingpass/renderingpassvalidation.cpp",
+      "source": "src/project/passfieldownership.cpp",
       "consumer": "legacy_fullscreen_config",
       "role": "deprecated projection declaration validation",
       "needles": ["use push_constants: projection_view"]

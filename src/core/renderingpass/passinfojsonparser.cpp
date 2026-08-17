@@ -4,18 +4,19 @@
 #include "fullscreenpassinfojsonparser.hpp"
 #include "genericrasterpassinfojsonparser.hpp"
 #include "gizmopassinfojsonparser.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <stdexcept>
 
 namespace Pelican {
 
 void parsePassTypeFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {
-    const auto pass_type =
-        parseStringField(pass_json, "type", "pass: " + pass_def.name);
+    const auto pass_type = validatePassFieldOwnership(
+        pass_json, buildPassFieldOwnershipCapabilities());
     pass_def.pass_info = makePassInfo(pass_type);
     pass_def.resolution_domain =
         parseRenderResolutionDomain(
-            pass_json, pass_type, pass_def.name);
+            pass_json, renderPassTypeName(pass_type), pass_def.name);
 
     if (pass_def.isUi()
 #if PELICAN_WITH_IMGUI

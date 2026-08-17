@@ -1,4 +1,5 @@
 #include "frameplanner.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/imagesubresourcejson.hpp"
@@ -692,8 +693,10 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         parseOptionalRegionTags(
             pass_json, "Frame graph pass '" + node.name + "'");
 
-    const auto type = pass_json.value("type", std::string{});
-    if (type == "material") {
+    const auto type = validatePassFieldOwnership(
+        pass_json, buildPassFieldOwnershipCapabilities(),
+        "frame graph pass");
+    if (type == RenderPassType::material) {
         node.material_filter =
             parseMaterialDrawTagFilterFromJson(
                 pass_json,
@@ -728,24 +731,12 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
                     "material_filter.include");
             }
         }
-    } else if (pass_json.contains(
-                   "material_filter")) {
-        throw std::runtime_error(
-            "Only material frame graph passes support "
-            "material_filter: " +
-            node.name);
-    } else if (pass_json.contains(
-                   "material_variant")) {
-        throw std::runtime_error(
-            "Only material frame graph passes support "
-            "material_variant: " +
-            node.name);
     }
-    if (type == "canonical_anchor") {
+    if (type == RenderPassType::canonical_anchor) {
         node.kind = FramePlanNodeKind::anchor;
         return node;
     }
-    if (type == "snapshot_copy") {
+    if (type == RenderPassType::snapshot_copy) {
         node.kind = FramePlanNodeKind::snapshot_copy;
         node.reads = {requireString(pass_json, "source", "snapshot copy")};
         node.writes = {requireString(pass_json, "destination", "snapshot copy")};
@@ -780,19 +771,23 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         appendUnique(
             node.reads, draw_source->count);
     }
-    node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
-                                            : FramePlanNodeKind::render;
-    if (type == "raster") {
+    node.kind = type == RenderPassType::output_transform
+                    ? FramePlanNodeKind::output_transform
+                    : FramePlanNodeKind::render;
+    if (type == RenderPassType::raster) {
         node.semantic_dialect =
             "pelican.logical.raster@1";
         node.execution_implementation =
             "pelican.execution.generic_raster_direct@1";
     }
     node.raster_geometry =
-        type == "material" || type == "shadow_depth" ||
-        type == "velocity" || type == "picking" ||
-        type == "raster";
-    if (type == "fullscreen" || type == "raster") {
+        type == RenderPassType::material ||
+        type == RenderPassType::shadow_depth ||
+        type == RenderPassType::velocity ||
+        type == RenderPassType::picking ||
+        type == RenderPassType::raster;
+    if (type == RenderPassType::fullscreen ||
+        type == RenderPassType::raster) {
         for (const auto &resource : node.reads) {
             appendUnique(
                 node.local_read_shader_inputs,
@@ -801,9 +796,10 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     node.resolution_domain =
         parseRenderResolutionDomain(
-            pass_json, type, node.name);
+            pass_json, renderPassTypeName(type), node.name);
     const bool overlay_pass =
-        type == "ui" || type == "imgui";
+        type == RenderPassType::ui ||
+        type == RenderPassType::imgui;
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
     const auto depth_outputs = parseOutputDepth(output);

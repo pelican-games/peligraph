@@ -1149,6 +1149,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`addDataEdge()`": "void addDataEdge(PlannerEdges &planner_edges, size_t from, size_t to, const std::string &resource,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`buildEdges()`": "PlannerEdges buildEdges(const FrameGraphDefinition &definition,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`buildEdges()`|#1": "PlannerEdges buildEdges(const FrameGraphDefinition &definition,",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`color_load_op` の read 追加": "if (pass.color_load_op == vk::AttachmentLoadOp::eLoad) {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`computeLevels()`": "std::vector<size_t> computeLevels(size_t node_count, const PlannerEdges &planner_edges,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`computeLevels()`|#1": "std::vector<size_t> computeLevels(size_t node_count, const PlannerEdges &planner_edges,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`frameplanner.cpp` 内": "for (const auto &resource : node.reads) {",

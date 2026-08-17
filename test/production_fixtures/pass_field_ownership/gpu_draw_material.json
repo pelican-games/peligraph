@@ -1,0 +1,73 @@
+{
+  "buffers": [
+    {
+      "name": "candidate_draws",
+      "size": 40,
+      "host_source": "scene_draw_commands_v1",
+      "command_layout": "indexed_draw"
+    },
+    {
+      "name": "visible_draws",
+      "size": 40,
+      "command_layout": "indexed_draw"
+    },
+    {
+      "name": "visible_draw_count",
+      "size": 4,
+      "command_layout": "draw_count"
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "build_visible_draws",
+      "shader": "shaders/build_visible_draws",
+      "reads": ["candidate_draws"],
+      "writes": ["visible_draws", "visible_draw_count"],
+      "before": ["gpu_geometry"],
+      "dispatch": {"groups": [1, 1, 1]}
+    }
+  ],
+  "render_targets": [
+    {
+      "name": "lit_color",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "scene_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "gpu_geometry",
+          "type": "material",
+          "material_contract": "forward_opaque_v1",
+          "material_range": {"start": 0, "count": 1},
+          "gpu_draw_source": {
+            "commands": "visible_draws",
+            "count": "visible_draw_count",
+            "max_draw_count": 2
+          },
+          "output": {"color": "lit_color", "depth": "scene_depth"}
+        },
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "input": ["lit_color"],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://scene_present"
+          }
+        }
+      ]
+    }
+  ]
+}

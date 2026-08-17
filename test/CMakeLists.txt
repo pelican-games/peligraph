@@ -1494,6 +1494,12 @@ pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
 pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)
 pelican_define_test(graphvariantpolicy_test GROUP project_planning pelican_project)
+pelican_define_test(passfieldownership_test GROUP project_planning pelican_project)
+target_compile_definitions(pelican_test_passfieldownership_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(gpudrawtiming_test GROUP project_planning pelican_project)
 target_compile_definitions(pelican_test_gpudrawtiming_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -1507,6 +1513,9 @@ target_compile_definitions(pelican_test_featurecompose_test PRIVATE
 
 pelican_define_test(renderpipeline_resolve_test GROUP render_pipeline pelican_core)
 pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
+target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(vulkannativescopeexecutor_test GROUP render_pipeline pelican_core)
 pelican_define_test(renderingsamplecount_test GROUP render_pipeline pelican_core)
 

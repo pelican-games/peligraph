@@ -1284,7 +1284,51 @@ TEST_CASE(
     REQUIRE_THROWS_WITH(
         parseFrameGraphDefinitionFromJson(invalid),
         Catch::Matchers::ContainsSubstring(
-            "Only material frame graph passes"));
+            "Pass 'present' type 'fullscreen' does not own field "
+            "'material_filter'"));
+}
+
+TEST_CASE(
+    "WP311 frame graph rejects GPU draw ownership before render and pseudo branches",
+    "[frameplanner][wp311][pass-field-ownership]") {
+    const auto gpu_draw_source = nlohmann::json{
+        {"commands", "visible_draws"},
+        {"count", "visible_draw_count"},
+        {"max_draw_count", 2},
+    };
+    const auto require_rejected = [&](nlohmann::json pass) {
+        const auto name = pass.at("name").get<std::string>();
+        pass["gpu_draw_source"] = gpu_draw_source;
+        const nlohmann::json graph{
+            {"name", "ownership_negative"},
+            {"passes", nlohmann::json::array({std::move(pass)})},
+        };
+        REQUIRE_THROWS_WITH(
+            parseFrameGraphDefinitionFromJson(graph),
+            Catch::Matchers::ContainsSubstring(
+                "Pass '" + name + "'") &&
+                Catch::Matchers::ContainsSubstring(
+                    "does not own field 'gpu_draw_source'"));
+    };
+
+    require_rejected({
+        {"name", "fullscreen_gpu_draw"},
+        {"type", "fullscreen"},
+        {"output", { {"color", "scene"}, {"depth", nullptr} }},
+    });
+    require_rejected({
+        {"name", "anchor_gpu_draw"},
+        {"type", "canonical_anchor"},
+        {"anchor", "post_main"},
+    });
+    require_rejected({
+        {"name", "snapshot_gpu_draw"},
+        {"type", "snapshot_copy"},
+        {"source", "scene"},
+        {"destination", "snapshot"},
+        {"snapshot", "snapshot"},
+        {"snapshot_after", "scene"},
+    });
 }
 
 TEST_CASE(
@@ -1321,9 +1365,7 @@ TEST_CASE(
 TEST_CASE(
     "frame graph preserves per-aspect attachment operations",
     "[frameplanner][attachment-operations]") {
-    const auto graph =
-        parseFrameGraphDefinitionFromJson(
-            nlohmann::json::parse(R"json({
+    auto authored = nlohmann::json::parse(R"json({
       "name":"attachment_operations",
       "passes":[
         {"name":"explicit","type":"material",
@@ -1333,11 +1375,18 @@ TEST_CASE(
          "depth_store_op":"store",
          "output":{"color":["first","second"],"depth":"depth"}},
         {"name":"ui","type":"ui",
-         "output":{"color":"first","depth":null}},
-        {"name":"imgui","type":"imgui",
-         "output":{"color":"second","depth":null}}
+         "output":{"color":"first","depth":null}}
       ]
-    })json"));
+    })json");
+#if PELICAN_WITH_IMGUI
+    authored["passes"].push_back({
+        {"name", "imgui"},
+        {"type", "imgui"},
+        {"output", {{"color", "second"}, {"depth", nullptr}}},
+    });
+#endif
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(authored);
 
     REQUIRE(graph.nodes.at(0).attachments.size() == 3);
     REQUIRE((
@@ -1371,9 +1420,11 @@ TEST_CASE(
     REQUIRE(
         graph.nodes.at(1).attachments.front().load_op ==
         FrameGraphAttachmentLoadOp::load);
+#if PELICAN_WITH_IMGUI
     REQUIRE(
         graph.nodes.at(2).attachments.front().load_op ==
         FrameGraphAttachmentLoadOp::load);
+#endif
 
     auto malformed = nlohmann::json::parse(R"json({
       "name":"bad_attachment_op",

@@ -4,6 +4,7 @@
 #include "frameexecutionadapter.hpp"
 #include "graphtransformregistry.hpp"
 #include "materialpassinfojsonparser.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "renderstrategyregistry.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "subgraphreplacementregistry.hpp"
@@ -448,8 +449,11 @@ compileDefaultLogicalVariant(
             input.rendering_config,
             input.source_name},
         RenderEnvironmentCapabilities{
-            input.runtime_shader_compiler_enabled,
-            request.graph_variant,
+            .runtime_shader_compiler_enabled =
+                input.runtime_shader_compiler_enabled,
+            .graph_variant = request.graph_variant,
+            .pass_field_ownership =
+                buildPassFieldOwnershipCapabilities(),
         },
         resolve_dependencies);
     auto compiled_pipeline_value =

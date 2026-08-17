@@ -1,4 +1,5 @@
 #include "renderingpassjsonhelpers.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "../../project/logicalrendergraph.hpp"
 #include <algorithm>
 #include <array>
@@ -124,46 +125,52 @@ vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_str
     return flags;
 }
 
-PassInfo makePassInfo(const std::string &type_str) {
-    if (type_str == "material") {
+PassInfo makePassInfo(RenderPassType type) {
+    switch (type) {
+    case RenderPassType::material:
         return MaterialPassInfo{};
-    }
-    if (type_str == "fullscreen") {
+    case RenderPassType::fullscreen:
         return FullscreenPassInfo{};
-    }
-    if (type_str == "raster") {
+    case RenderPassType::raster:
         return GenericRasterPassInfo{};
-    }
-    if (type_str == "output_transform") {
+    case RenderPassType::output_transform:
         return FullscreenPassInfo{};
-    }
-    if (type_str == "debug_draw") {
+    case RenderPassType::debug_draw:
         return DebugDrawPassInfo{};
-    }
-    if (type_str == "gizmo") {
+    case RenderPassType::gizmo:
         return GizmoPassInfo{};
-    }
-    if (type_str == "debug_text") {
+    case RenderPassType::debug_text:
         return DebugTextPassInfo{};
-    }
-    if (type_str == "shadow_depth") {
+    case RenderPassType::shadow_depth:
         return ShadowDepthPassInfo{};
-    }
-    if (type_str == "velocity") {
+    case RenderPassType::velocity:
         return VelocityPassInfo{};
-    }
-    if (type_str == "picking") {
+    case RenderPassType::picking:
         return PickingPassInfo{};
-    }
-    if (type_str == "ui") {
+    case RenderPassType::ui:
         return UiPassInfo{};
-    }
+    case RenderPassType::imgui:
 #if PELICAN_WITH_IMGUI
-    if (type_str == "imgui") {
         return ImGuiPassInfo{};
-    }
+#else
+        break;
 #endif
-    throw std::runtime_error("Unknown pass type: " + type_str);
+    case RenderPassType::canonical_anchor:
+    case RenderPassType::snapshot_copy:
+        break;
+    }
+    throw std::runtime_error(
+        "Pass type cannot be materialized as a rendering pass: " +
+        std::string{renderPassTypeName(type)});
+}
+
+PassInfo makePassInfo(const std::string &type_str) {
+    const nlohmann::json pass{
+        {"name", type_str},
+        {"type", type_str},
+    };
+    return makePassInfo(validatePassFieldOwnership(
+        pass, buildPassFieldOwnershipCapabilities()));
 }
 
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str) {

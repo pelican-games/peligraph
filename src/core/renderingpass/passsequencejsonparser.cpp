@@ -1,5 +1,6 @@
 #include "passsequencejsonparser.hpp"
 #include "passdefinitionjsonparser.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpassvalidation.hpp"
 #include "rendertargetmetadataresolver.hpp"
@@ -34,11 +35,12 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
 
-        const auto type = pass_json.value("type", std::string{});
-        if (type == "canonical_anchor") {
+        const auto type = validatePassFieldOwnership(
+            pass_json, buildPassFieldOwnershipCapabilities());
+        if (type == RenderPassType::canonical_anchor) {
             continue;
         }
-        if (type == "snapshot_copy") {
+        if (type == RenderPassType::snapshot_copy) {
             const auto source_name = parseStringField(pass_json, "source", "snapshot copy: " + pass_name);
             const auto destination_name = parseStringField(pass_json, "destination",
                                                            "snapshot copy: " + pass_name);

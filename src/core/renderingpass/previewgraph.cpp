@@ -1,5 +1,6 @@
 #include "previewgraph.hpp"
 
+#include "passfieldownershipcapabilities.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderstrategyregistry.hpp"
 #include "../../project/renderpipeline.hpp"
@@ -100,8 +101,13 @@ PreviewGraphProgram precompilePreviewGraph(
     auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{base, "preview graph"},
         RenderEnvironmentCapabilities{
-            runtime_shader_compiler_enabled,
-            RenderPipelineGraphVariant::preview},
+            .runtime_shader_compiler_enabled =
+                runtime_shader_compiler_enabled,
+            .graph_variant =
+                RenderPipelineGraphVariant::preview,
+            .pass_field_ownership =
+                buildPassFieldOwnershipCapabilities(),
+        },
         RenderPipelineResolveDependencies{
             .load_feature_json = load_feature_json,
             .load_pipeline_json = load_feature_json,

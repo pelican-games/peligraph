@@ -1,4 +1,5 @@
 #include "fullscreenpassinfojsonparser.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <set>
 #include <span>
@@ -126,6 +127,12 @@ std::vector<FullscreenInputSampling> parseInputSampling(
 
 FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_json,
                                                    const std::string &pass_name) {
+    auto ownership_pass = pass_json;
+    ownership_pass["name"] = pass_name;
+    ownership_pass["type"] = "fullscreen";
+    (void)validatePassFieldOwnership(
+        ownership_pass, buildPassFieldOwnershipCapabilities());
+
     FullscreenPassInfo fullscreen_info;
     const auto authored_inputs =
         parseAuthoredInputs(pass_json, pass_name);
@@ -174,12 +181,6 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
     }
     fullscreen_info.input_sampling =
         parseInputSampling(pass_json, pass_name);
-
-    if (pass_json.contains("needs_projection_matrix")) {
-        throw std::runtime_error(
-            "Fullscreen pass needs_projection_matrix is deprecated; use push_constants: projection_view: " +
-            pass_name);
-    }
 
     if (pass_json.contains("push_constants")) {
         if (!pass_json.at("push_constants").is_string()) {

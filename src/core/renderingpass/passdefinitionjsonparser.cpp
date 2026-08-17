@@ -18,12 +18,6 @@ void parsePassImplementationProvider(
     if (!pass_json.contains("implementation")) {
         return;
     }
-    if (!pass_def.isFullscreen()) {
-        throw std::runtime_error(
-            "Pass implementation providers currently support fullscreen "
-            "passes only: " +
-            pass_def.name);
-    }
     const auto &implementation =
         pass_json.at("implementation");
     if (!implementation.is_object() ||
@@ -74,7 +68,6 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
 
     parsePassOutputTargetsFromJson(pass_def, rt_resolver, pass_json);
     validatePassOutputs(pass_def);
-    validatePassSpecificFields(pass_def, pass_json);
 
     parseMaterialPassInfoFromJson(pass_def, pass_json);
 

@@ -1,5 +1,6 @@
 #include "../src/core/renderingpass/previewgraph.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderpipeline.hpp"
@@ -159,6 +160,18 @@ Json weightedOutputStates() {
              {"write_mask", "r"},
          }},
     };
+}
+
+void publishGenerationProbe(
+    FrameGraphRuntimeContainer &runtime,
+    std::shared_ptr<const CompiledRenderPipeline> pipeline) {
+    CompiledRenderingPass rendering_pass;
+    rendering_pass.name = "wp311_publication_probe";
+    FramePlan frame_plan;
+    frame_plan.name = rendering_pass.name;
+    runtime.registerExecutionPlan(
+        RenderingPassId{0}, rendering_pass,
+        std::move(frame_plan), std::move(pipeline));
 }
 
 } // namespace
@@ -925,6 +938,64 @@ TEST_CASE("WP180 resolve failure cannot publish partial registration state",
     REQUIRE(authored == authored_before);
     REQUIRE(registration.render_targets == before_targets);
     REQUIRE(registration.passes == before_passes);
+}
+
+TEST_CASE(
+    "WP311 resolve and standalone preview reject pass ownership before providers and publication",
+    "[wp311][render-pipeline][preview][pass-field-ownership]") {
+    auto authored = baseConfig();
+    auto &pass = authored["rendering_passes"][0]["passes"][0];
+    pass["type"] = "fullscreen";
+    pass["gpu_draw_source"] = {
+        {"commands", "visible_draws"},
+        {"count", "visible_draw_count"},
+        {"max_draw_count", 2},
+    };
+    std::size_t provider_calls = 0;
+    FrameGraphRuntimeContainer runtime;
+    FrameGraphRuntimeContainer publication_control;
+    publishGenerationProbe(
+        publication_control,
+        std::make_shared<CompiledRenderPipeline>());
+    REQUIRE(publication_control.activeGeneration() == 1);
+    const auto resolve_then_publish = [&] {
+        const auto resolved = resolveRenderPipeline(
+            RenderPipelineRequest{
+                authored, "WP311 preview ownership fixture"},
+            RenderEnvironmentCapabilities{},
+            RenderPipelineResolveDependencies{
+                .resolve_render_strategy =
+                    [&](const Json &config,
+                        const CompiledGraphVariantPolicy &) {
+                        ++provider_calls;
+                        return config;
+                    },
+            });
+        publishGenerationProbe(
+            runtime,
+            std::make_shared<CompiledRenderPipeline>(
+                compileRenderPipeline(resolved)));
+    };
+
+    REQUIRE_THROWS_WITH(
+        resolve_then_publish(),
+        Catch::Matchers::ContainsSubstring(
+            "Pass 'scene' type 'fullscreen' does not own field "
+            "'gpu_draw_source'"));
+    CHECK(provider_calls == 0);
+    CHECK(runtime.activeGeneration() == 0);
+
+    REQUIRE_THROWS_WITH(
+        precompilePreviewGraph(
+            authored.dump(),
+            [](std::string_view) -> std::string {
+                throw std::runtime_error(
+                    "standalone preview loader must not be called");
+            },
+            false),
+        Catch::Matchers::ContainsSubstring(
+            "Pass 'scene' type 'fullscreen' does not own field "
+            "'gpu_draw_source'"));
 }
 
 TEST_CASE("WP180 preview precompile resolves presets through the shared boundary",

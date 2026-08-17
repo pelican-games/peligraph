@@ -1,5 +1,6 @@
 #include "renderpipeline.hpp"
 #include "featurecompose.hpp"
+#include "passfieldownership.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,28 @@ namespace {
 
 constexpr std::string_view preset_schema = "pelican.render_pipeline";
 constexpr int supported_preset_version = 1;
+
+void validatePassFieldOwnershipInConfig(
+    const nlohmann::json &config,
+    PassFieldOwnershipCapabilities capabilities,
+    std::string_view context) {
+    const auto pass_sets = config.find("rendering_passes");
+    if (pass_sets == config.end() || !pass_sets->is_array()) {
+        return;
+    }
+    for (const auto &pass_set : *pass_sets) {
+        if (!pass_set.is_object()) {
+            continue;
+        }
+        const auto passes = pass_set.find("passes");
+        if (passes == pass_set.end() || !passes->is_array()) {
+            continue;
+        }
+        for (const auto &pass : *passes) {
+            validatePassFieldOwnership(pass, capabilities, context);
+        }
+    }
+}
 
 void requireOnlyKeys(const nlohmann::json &object,
                      std::initializer_list<std::string_view> allowed,
@@ -983,6 +1006,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
         throw std::runtime_error("Rendering config must be an object: " +
                                  request.source_name);
     }
+    validatePassFieldOwnershipInConfig(
+        request.authored_config,
+        capabilities.pass_field_ownership,
+        request.source_name);
 
     const auto graph_variant_policy = compileGraphVariantPolicy(
         GraphVariantPolicyRequest{capabilities.graph_variant},
@@ -1014,8 +1041,12 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 return include;
             },
             dependencies.load_pipeline_json,
-            [&dependencies, &graph_variant_policy](
+            [&dependencies, &graph_variant_policy,
+             &capabilities, &request](
                 const nlohmann::json &config) {
+                validatePassFieldOwnershipInConfig(
+                    config, capabilities.pass_field_ownership,
+                    request.source_name);
                 if (dependencies.resolve_render_strategy) {
                     return dependencies.resolve_render_strategy(
                         config, graph_variant_policy);
@@ -1027,6 +1058,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 return config;
             },
         });
+
+    validatePassFieldOwnershipInConfig(
+        composed.config, capabilities.pass_field_ownership,
+        request.source_name);
 
     ResolvedRenderPipeline result;
     result.normalized_config = std::move(composed.config);
@@ -1059,6 +1094,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
     if (dependencies.transform_config) {
         dependencies.transform_config(result.normalized_config);
     }
+    validatePassFieldOwnershipInConfig(
+        result.normalized_config,
+        capabilities.pass_field_ownership,
+        request.source_name);
     validateGraphVariantConfig(
         result.graph_variant_policy, result.normalized_config);
     if (dependencies.validate_config) {

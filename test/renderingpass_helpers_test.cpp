@@ -1571,7 +1571,7 @@ TEST_CASE(
         validateGpuDrawSourceBufferContracts(
             wrong_pass, buffers),
         Catch::Matchers::ContainsSubstring(
-            "Only material passes"));
+            "does not own field 'material_range'"));
 
     auto invalid_host_source = config;
     invalid_host_source["buffers"][0]
@@ -1827,7 +1827,8 @@ TEST_CASE(
         parsePassDefinitionFromJson(
             fullscreen_json, name_resolver,
             metadata_resolver),
-        "Only material passes support gpu_draw_source: post_process");
+        "Pass 'post_process' type 'fullscreen' does not own field "
+        "'gpu_draw_source'");
 
     auto contract_on_fullscreen = fullscreen_json;
     contract_on_fullscreen.erase("gpu_draw_source");
@@ -1837,7 +1838,8 @@ TEST_CASE(
         parsePassDefinitionFromJson(
             contract_on_fullscreen, name_resolver,
             metadata_resolver),
-        "Only material passes support material_contract: post_process");
+        "Pass 'post_process' type 'fullscreen' does not own field "
+        "'material_contract'");
 
     const nlohmann::json material_json{
         {"name", "gpu_geometry"},
@@ -2248,7 +2250,7 @@ TEST_CASE(
             material_json, name_resolver,
             metadata_resolver),
         Catch::Matchers::ContainsSubstring(
-            "fullscreen passes only"));
+            "does not own field 'implementation'"));
 
     auto malformed = nlohmann::json{
         {"name", "fullscreen"},

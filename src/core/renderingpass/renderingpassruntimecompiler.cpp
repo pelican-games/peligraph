@@ -25,6 +25,73 @@
 
 namespace Pelican {
 
+void pinGpuDrawSourceBufferBindings(
+    PassDefinition &pass,
+    const std::function<FrameGraphBufferId(std::string_view)>
+        &resolve_buffer,
+    const std::function<const FrameGraphBufferDefinition &(
+        FrameGraphBufferId)> &resolve_definition) {
+    if (!pass.isMaterial() ||
+        !pass.materialInfo().gpu_draw_source) {
+        return;
+    }
+    auto &draw_source = *pass.materialInfo().gpu_draw_source;
+    draw_source.commands_id =
+        resolve_buffer(draw_source.commands);
+    draw_source.count_id =
+        resolve_buffer(draw_source.count);
+    if (draw_source.layout ==
+        GpuDrawSourceLayout::draw_queue_segments_v1) {
+        draw_source.segments_id =
+            resolve_buffer(draw_source.segments);
+    }
+    if (!isValidFrameGraphBufferId(draw_source.commands_id) ||
+        !isValidFrameGraphBufferId(draw_source.count_id) ||
+        (draw_source.layout ==
+             GpuDrawSourceLayout::draw_queue_segments_v1 &&
+         !isValidFrameGraphBufferId(draw_source.segments_id))) {
+        throw std::runtime_error(
+            "material pass '" + pass.name +
+            "' gpu_draw_source buffer is absent from the active GPU "
+            "generation");
+    }
+    const auto &commands =
+        resolve_definition(draw_source.commands_id);
+    const auto &count =
+        resolve_definition(draw_source.count_id);
+    if (commands.command_layout !=
+            FrameGraphBufferCommandLayout::indexed_draw ||
+        count.command_layout !=
+            FrameGraphBufferCommandLayout::draw_count) {
+        throw std::runtime_error(
+            "material pass '" + pass.name +
+            "' gpu_draw_source runtime command layout changed");
+    }
+    if (draw_source.layout ==
+        GpuDrawSourceLayout::draw_queue_segments_v1) {
+        const auto &segments =
+            resolve_definition(draw_source.segments_id);
+        if (segments.host_source !=
+            FrameGraphHostBufferSource::scene_draw_segments_v1) {
+            throw std::runtime_error(
+                "material pass '" + pass.name +
+                "' gpu_draw_source runtime segment layout changed");
+        }
+    }
+    const auto command_bytes =
+        static_cast<vk::DeviceSize>(draw_source.max_draw_count) *
+        frameGraphIndexedDrawCommandBytes;
+    if (draw_source.command_offset > commands.size ||
+        commands.size - draw_source.command_offset < command_bytes ||
+        draw_source.count_offset > count.size ||
+        count.size - draw_source.count_offset <
+            frameGraphDrawCountBytes) {
+        throw std::runtime_error(
+            "material pass '" + pass.name +
+            "' gpu_draw_source runtime range is invalid");
+    }
+}
+
 namespace {
 
 struct FullscreenRuntimeDependencies {
@@ -389,9 +456,7 @@ PassDefinition applyPhysicalPassContract(
                     resource.buffer);
             }
         }
-        if (auto &draw_source =
-                result.materialInfo()
-                    .gpu_draw_source) {
+        if (result.materialInfo().gpu_draw_source) {
             if (frame_graph_resources == nullptr) {
                 throw std::runtime_error(
                     "material pass '" +
@@ -399,93 +464,16 @@ PassDefinition applyPhysicalPassContract(
                     "' gpu_draw_source requires frame-graph buffer "
                     "runtime dependencies");
             }
-            draw_source->commands_id =
-                frame_graph_resources
-                    ->getBufferIdByName(
-                        draw_source->commands);
-            draw_source->count_id =
-                frame_graph_resources
-                    ->getBufferIdByName(
-                        draw_source->count);
-            if (draw_source->layout ==
-                GpuDrawSourceLayout::
-                    draw_queue_segments_v1) {
-                draw_source->segments_id =
-                    frame_graph_resources
-                        ->getBufferIdByName(
-                            draw_source
-                                ->segments);
-            }
-            if (!isValidFrameGraphBufferId(
-                    draw_source->commands_id) ||
-                !isValidFrameGraphBufferId(
-                    draw_source->count_id) ||
-                (draw_source->layout ==
-                     GpuDrawSourceLayout::
-                         draw_queue_segments_v1 &&
-                 !isValidFrameGraphBufferId(
-                     draw_source
-                         ->segments_id))) {
-                throw std::runtime_error(
-                    "material pass '" +
-                    result.name +
-                    "' gpu_draw_source buffer is absent from the active "
-                    "GPU generation");
-            }
-            const auto &commands =
-                frame_graph_resources->definition(
-                    draw_source->commands_id);
-            const auto &count =
-                frame_graph_resources->definition(
-                    draw_source->count_id);
-            if (commands.command_layout !=
-                    FrameGraphBufferCommandLayout::
-                        indexed_draw ||
-                count.command_layout !=
-                    FrameGraphBufferCommandLayout::
-                        draw_count) {
-                throw std::runtime_error(
-                    "material pass '" +
-                    result.name +
-                    "' gpu_draw_source runtime command layout changed");
-            }
-            if (draw_source->layout ==
-                GpuDrawSourceLayout::
-                    draw_queue_segments_v1) {
-                const auto &segments =
-                    frame_graph_resources
-                        ->definition(
-                            draw_source
-                                ->segments_id);
-                if (segments.host_source !=
-                    FrameGraphHostBufferSource::
-                        scene_draw_segments_v1) {
-                    throw std::runtime_error(
-                        "material pass '" +
-                        result.name +
-                        "' gpu_draw_source runtime segment layout changed");
-                }
-            }
-            const auto command_bytes =
-                static_cast<vk::DeviceSize>(
-                    draw_source
-                        ->max_draw_count) *
-                frameGraphIndexedDrawCommandBytes;
-            if (draw_source->command_offset >
-                    commands.size ||
-                commands.size -
-                        draw_source->command_offset <
-                    command_bytes ||
-                draw_source->count_offset >
-                    count.size ||
-                count.size -
-                        draw_source->count_offset <
-                    frameGraphDrawCountBytes) {
-                throw std::runtime_error(
-                    "material pass '" +
-                    result.name +
-                    "' gpu_draw_source runtime range is invalid");
-            }
+            pinGpuDrawSourceBufferBindings(
+                result,
+                [frame_graph_resources](std::string_view name) {
+                    return frame_graph_resources
+                        ->getBufferIdByName(name);
+                },
+                [frame_graph_resources](FrameGraphBufferId id)
+                    -> const FrameGraphBufferDefinition & {
+                    return frame_graph_resources->definition(id);
+                });
         }
     }
     if (plan == nullptr ||

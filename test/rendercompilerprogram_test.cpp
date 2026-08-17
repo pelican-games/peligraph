@@ -1,16 +1,48 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
+#include "../src/core/renderingpass/renderingpassdefinitionjsonparser.hpp"
+#include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
+#include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
+#include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
 namespace Pelican {
 namespace {
+
+nlohmann::json readJsonFixture(
+    const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        throw std::runtime_error(
+            "failed to open JSON fixture: " + path.string());
+    }
+    return nlohmann::json::parse(file);
+}
+
+void publishGenerationProbe(
+    FrameGraphRuntimeContainer &runtime) {
+    CompiledRenderingPass rendering_pass;
+    rendering_pass.name = "wp311_publication_probe";
+    FramePlan frame_plan;
+    frame_plan.name = rendering_pass.name;
+    runtime.registerExecutionPlan(
+        RenderingPassId{0}, rendering_pass,
+        std::move(frame_plan),
+        std::make_shared<CompiledRenderPipeline>());
+}
 
 enum class NativeProgramFault {
     none,
@@ -241,6 +273,191 @@ TEST_CASE(
         preview.compiled_pipeline
             ->render_compiler_program->name ==
         "test.native");
+}
+
+TEST_CASE(
+    "WP311 data-only production compiler rejects non-material GPU draw ownership before publication",
+    "[wp311][render-compiler][data-only][pass-field-ownership]") {
+    ProgramInputFixture fixture;
+    fixture.config = {
+        {"render_targets", nlohmann::json::array()},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {
+                 {"name", "preview_graph"},
+                 {"passes",
+                  nlohmann::json::array({
+                      {
+                          {"name", "preview_fullscreen"},
+                          {"type", "fullscreen"},
+                          {"gpu_draw_source",
+                           {{"commands", "visible_draws"},
+                            {"count", "visible_draw_count"},
+                            {"max_draw_count", 2}}},
+                          {"output",
+                           {{"color", "swapchain"},
+                            {"depth", nullptr}}},
+                      },
+                  })},
+             },
+         })},
+    };
+    fixture.backend_context =
+        VulkanRenderCompilerBackendContext{
+            vk::Format::eB8G8R8A8Srgb,
+            vk::Extent2D{64, 64}, {}, {}, {},
+            VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {
+        RenderCompilerProgramVariantRequest{
+            .graph_variant =
+                RenderPipelineGraphVariant::preview,
+            .artifact =
+                RenderCompilerProgramArtifact::data_only,
+        },
+    };
+    FrameGraphRuntimeContainer runtime;
+    FrameGraphRuntimeContainer publication_control;
+    publishGenerationProbe(publication_control);
+    REQUIRE(publication_control.activeGeneration() == 1);
+
+    const auto compile_then_publish = [&] {
+        (void)runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(),
+            fixture.input());
+        publishGenerationProbe(runtime);
+    };
+
+    REQUIRE_THROWS_WITH(
+        compile_then_publish(),
+        Catch::Matchers::ContainsSubstring(
+            "Pass 'preview_fullscreen' type 'fullscreen' does not own "
+            "field 'gpu_draw_source'"));
+    CHECK(runtime.activeGeneration() == 0);
+}
+
+TEST_CASE(
+    "WP311 production compiler retains GPU draw reads and pins final buffer IDs",
+    "[wp311][render-compiler][gpu-draw][pass-field-ownership]") {
+    ProgramInputFixture fixture;
+    fixture.config = readJsonFixture(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+    fixture.backend_context =
+        VulkanRenderCompilerBackendContext{
+            vk::Format::eB8G8R8A8Srgb,
+            vk::Extent2D{64, 64}, {}, {}, {},
+            VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {
+        RenderCompilerProgramVariantRequest{
+            .graph_variant = RenderPipelineGraphVariant::flat,
+        },
+    };
+
+    auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), fixture.input());
+    REQUIRE(output.variants.size() == 1);
+    auto &variant = output.variants.front();
+    REQUIRE(variant.frame_plans.contains("main"));
+    const auto &nodes = variant.frame_plans.at("main").nodes;
+    const auto node = std::find_if(
+        nodes.begin(), nodes.end(), [](const auto &candidate) {
+            return candidate.name == "gpu_geometry";
+        });
+    REQUIRE(node != nodes.end());
+    CHECK(node->reads == std::vector<std::string>{
+                             "visible_draws",
+                             "visible_draw_count"});
+
+    CompiledFrameGraphExecution execution;
+    std::unordered_map<FrameGraphBufferId, std::size_t,
+                       FrameGraphBufferId::Hash>
+        definition_indices;
+    for (std::size_t index = 0;
+         index < variant.buffer_definitions.size(); ++index) {
+        const auto id =
+            FrameGraphBufferId{static_cast<int>(index + 10)};
+        execution.buffer_bindings.emplace(
+            variant.buffer_definitions[index].name, id);
+        definition_indices.emplace(id, index);
+    }
+
+    const RenderTargetNameResolver target_names{
+        [](const std::string &name) {
+            if (name == "swapchain") {
+                return swapchainRenderTargetId();
+            }
+            if (name == "lit_color") {
+                return GlobalRenderTargetId{0};
+            }
+            if (name == "scene_depth") {
+                return GlobalRenderTargetId{1};
+            }
+            return name == "display" ? GlobalRenderTargetId{2}
+                                     : noRenderTargetId();
+        }};
+    const RenderTargetMetadataResolver target_metadata{
+        [](GlobalRenderTargetId id) -> RenderTargetMetadata {
+            if (id == GlobalRenderTargetId{0}) {
+                return {
+                    "lit_color",
+                    vk::ImageUsageFlagBits::eColorAttachment |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eR16G16B16A16Sfloat,
+                    vk::Extent2D{64, 64},
+                };
+            }
+            if (id == GlobalRenderTargetId{1}) {
+                return {
+                    "scene_depth",
+                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                    vk::Format::eD32Sfloat,
+                    vk::Extent2D{64, 64},
+                };
+            }
+            if (id == GlobalRenderTargetId{2}) {
+                return {
+                    "display",
+                    vk::ImageUsageFlagBits::eColorAttachment |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eB8G8R8A8Srgb,
+                    vk::Extent2D{64, 64},
+                };
+            }
+            throw std::runtime_error(
+                "WP311 fixture target is unknown");
+        }};
+    auto rendering_pass = parseRenderingPassDefinitionFromJson(
+        variant.normalized_config.at("rendering_passes").at(0),
+        target_names, target_metadata, variant.buffer_names);
+    const auto material = std::find_if(
+        rendering_pass.passes.begin(),
+        rendering_pass.passes.end(),
+        [](const auto &pass) {
+            return pass.name == "gpu_geometry";
+        });
+    REQUIRE(material != rendering_pass.passes.end());
+    auto &material_pass = *material;
+    pinGpuDrawSourceBufferBindings(
+        material_pass,
+        [&](std::string_view name) {
+            const auto found = execution.buffer_bindings.find(
+                std::string{name});
+            return found == execution.buffer_bindings.end()
+                       ? noFrameGraphBufferId()
+                       : found->second;
+        },
+        [&](FrameGraphBufferId id)
+            -> const FrameGraphBufferDefinition & {
+            return variant.buffer_definitions.at(
+                definition_indices.at(id));
+        });
+    REQUIRE(material_pass.materialInfo().gpu_draw_source);
+    const auto &source =
+        *material_pass.materialInfo().gpu_draw_source;
+    CHECK(source.commands_id ==
+          execution.buffer_bindings.at(source.commands));
+    CHECK(source.count_id ==
+          execution.buffer_bindings.at(source.count));
 }
 
 TEST_CASE(

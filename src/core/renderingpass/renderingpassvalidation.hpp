@@ -28,7 +28,6 @@ vk::SampleCountFlagBits resolvePassOutputSamples(
     const RenderTargetMetadataResolver &rt_metadata);
 void validateMaterialPassAttachments(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata);
 void validatePassOutputs(const PassDefinition &pass_def);
-void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::json &pass_json);
 void validatePassInputsProduced(const PassDefinition &pass_def,
                                 const ProducedRenderTargetSet &produced_targets,
                                 const RenderTargetMetadataResolver &rt_metadata);

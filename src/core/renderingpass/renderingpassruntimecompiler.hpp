@@ -1,8 +1,10 @@
 #pragma once
 
+#include "framegraphbufferdefinition.hpp"
 #include "renderingpass.hpp"
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -20,6 +22,16 @@ class ShadowDepthPassContainer;
 class VelocityPassContainer;
 class ShaderLibrary;
 struct VulkanTargetPlan;
+
+// Pins a parsed material GPU draw source to the immutable buffer binding set
+// that will be published with its frame-graph execution. The production
+// runtime adapter and CPU compiler tests share this final-ID boundary.
+void pinGpuDrawSourceBufferBindings(
+    PassDefinition &pass,
+    const std::function<FrameGraphBufferId(std::string_view)>
+        &resolve_buffer,
+    const std::function<const FrameGraphBufferDefinition &(
+        FrameGraphBufferId)> &resolve_definition);
 
 struct RenderingPassRuntimeDependencies {
     RenderTarget *render_target = nullptr;

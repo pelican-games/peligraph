@@ -5,6 +5,7 @@
 #include "logicalrendergraph.hpp"
 #include "materialscreeninput.hpp"
 #include "materialoutput.hpp"
+#include "passfieldownership.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 #include "targetrenderplanning.hpp"
@@ -124,6 +125,7 @@ struct RenderEnvironmentCapabilities {
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;
     GraphVariantPolicyCapabilities graph_variant_capabilities;
+    PassFieldOwnershipCapabilities pass_field_ownership;
 };
 
 enum class RenderPipelineDiagnosticKind {

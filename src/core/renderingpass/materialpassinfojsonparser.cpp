@@ -1,4 +1,5 @@
 #include "materialpassinfojsonparser.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "computetask.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetmetadataresolver.hpp"
@@ -409,15 +410,10 @@ void validateGpuDrawSourceBufferContracts(
                 !pass.contains("gpu_draw_source")) {
                 continue;
             }
+            validatePassFieldOwnership(
+                pass, buildPassFieldOwnershipCapabilities());
             const auto name = parseStringField(
                 pass, "name", "material pass");
-            if (pass.value(
-                    "type", std::string{}) !=
-                "material") {
-                throw std::runtime_error(
-                    "Only material passes support gpu_draw_source: " +
-                    name);
-            }
             const auto source =
                 parseGpuDrawSourceFromJson(
                     pass,
@@ -679,11 +675,6 @@ void parseNamedMaterialPassInputsFromJson(
     const RenderTargetMetadataResolver &rt_metadata) {
     const auto field = std::string{field_name};
     if (!pass_json.contains(field)) return;
-    if (!pass_def.isMaterial()) {
-        throw std::runtime_error(
-            "Only material passes support " + field + ": " +
-            pass_def.name);
-    }
     if (pass_json.contains("input")) {
         throw std::runtime_error(
             "Material pass " + field +
@@ -752,11 +743,6 @@ void parseMaterialPassScreenInputsFromJson(
     if (!pass_json.contains("screen_inputs")) {
         return;
     }
-    if (!pass_def.isMaterial()) {
-        throw std::runtime_error(
-            "Only material passes support screen_inputs: " +
-            pass_def.name);
-    }
     parseNamedMaterialPassInputsFromJson(
         pass_def, pass_json, "screen_inputs",
         "Material screen input",
@@ -771,11 +757,6 @@ void parseMaterialPassSurfaceResourcesFromJson(
     const RenderTargetMetadataResolver &rt_metadata) {
     if (!pass_json.contains("surface_resources")) {
         return;
-    }
-    if (!pass_def.isMaterial()) {
-        throw std::runtime_error(
-            "Only material passes support surface_resources: " +
-            pass_def.name);
     }
     parseNamedMaterialPassInputsFromJson(
         pass_def, pass_json, "surface_resources",
@@ -801,11 +782,6 @@ void parseMaterialPassResourcesFromJson(
     const std::unordered_set<std::string> &buffer_names) {
     if (!pass_json.contains("material_resources")) {
         return;
-    }
-    if (!pass_def.isMaterial()) {
-        throw std::runtime_error(
-            "Only material passes support material_resources: " +
-            pass_def.name);
     }
     if (pass_json.contains("input")) {
         throw std::runtime_error(

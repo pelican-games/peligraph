@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include "../../project/passfieldownership.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
@@ -13,6 +14,7 @@ vk::Format stringToFormat(const std::string &format_str);
 std::string formatToString(vk::Format format);
 vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs);
 PassInfo makePassInfo(const std::string &type_str);
+PassInfo makePassInfo(RenderPassType type);
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);
 std::string_view renderResolutionDomainName(
     RenderResolutionDomain domain);
