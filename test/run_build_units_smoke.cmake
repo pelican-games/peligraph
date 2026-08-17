@@ -1,17 +1,20 @@
-# Build-unit OFF smoke.
+# Build-unit feature-contrast smoke.
 #
 # Run from the repository root:
 #   cmake -DPELICAN_BUILD_UNIT_SMOKE_CONFIG=Debug -P test/run_build_units_smoke.cmake
 #
 # This script intentionally is not registered with ctest. It configures and
-# builds separate single-OFF build directories, then verifies that the
-# corresponding input fails with "This binary was built with PELICAN_WITH_X=OFF".
+# builds a separate directory for every registry contrast. Every row starts
+# from the registry baseline and may change only its target plus dependencies
+# declared by that registry.
 
 if(NOT DEFINED PELICAN_BUILD_UNIT_SMOKE_CONFIG)
     set(PELICAN_BUILD_UNIT_SMOKE_CONFIG Debug)
 endif()
 
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+include("${SOURCE_DIR}/cmake/pelican_feature_registry.cmake")
+pelican_verify_feature_ledger("${SOURCE_DIR}/docs/implementation_plan.md")
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-unit-smoke-artifacts")
 
 if(WIN32)
@@ -48,7 +51,24 @@ function(run_process label expected_success)
 endfunction()
 
 function(configure_and_build label option_name out_build_dir)
-    set(build_dir "${SOURCE_DIR}/build-off-${label}")
+    if(ARGC GREATER 3)
+        message(FATAL_ERROR
+            "pelican.feature_registry.smoke_manual_override@1: ${option_name}")
+    endif()
+
+    pelican_feature_contrast_arguments("${option_name}" feature_arguments)
+    set(forwarded_arguments)
+    if(DEFINED CMAKE_PREFIX_PATH AND NOT "${CMAKE_PREFIX_PATH}" STREQUAL "")
+        list(APPEND forwarded_arguments
+            "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
+    endif()
+    if(DEFINED Python3_EXECUTABLE AND
+       NOT "${Python3_EXECUTABLE}" STREQUAL "")
+        list(APPEND forwarded_arguments
+            "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}")
+    endif()
+
+    set(build_dir "${SOURCE_DIR}/build-feature-${label}")
     file(REMOVE_RECURSE "${build_dir}")
 
     run_process(
@@ -57,14 +77,11 @@ function(configure_and_build label option_name out_build_dir)
         "${CMAKE_COMMAND}"
             -S "${SOURCE_DIR}"
             -B "${build_dir}"
-            -DSKIP_DEVSTUDIO=ON
             -DBUILD_TESTING=ON
             -DPELICAN_PYTHON_TESTS=OFF
-            -DPELICAN_WITH_SPIRV_LINK=OFF
-            -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE
-            "-D${option_name}=OFF"
             "-DCMAKE_BUILD_TYPE=${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
-            ${ARGN}
+            ${feature_arguments}
+            ${forwarded_arguments}
     )
 
     run_process(
@@ -478,6 +495,95 @@ function(write_physics_project root)
     file(WRITE "${root}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 endfunction()
 
+function(verify_spirv_link_absent build_dir)
+    foreach(path IN ITEMS
+            "${build_dir}/_deps/spirv_tools-src"
+            "${build_dir}/_deps/spirv_tools-build"
+            "${build_dir}/_deps/spirv_tools-subbuild")
+        if(EXISTS "${path}")
+            message(FATAL_ERROR
+                "PELICAN_WITH_SPIRV_LINK=OFF unexpectedly configured SPIRV-Tools: ${path}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES
+           "src[/\\\\]core[/\\\\]shader[/\\\\]spvlink[.]cpp|src[/\\\\]spvlink[/\\\\]main[.]cpp|SPIRV-Tools-link")
+            message(FATAL_ERROR
+                "PELICAN_WITH_SPIRV_LINK=OFF retained linker input: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "^pelican-spv-link([.]exe)?$")
+            message(FATAL_ERROR
+                "PELICAN_WITH_SPIRV_LINK=OFF emitted linker executable: ${artifact}")
+        endif()
+    endforeach()
+endfunction()
+
+function(verify_devstudio_absent build_dir)
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "src[/\\\\]devstudio[/\\\\]")
+            message(FATAL_ERROR
+                "SKIP_DEVSTUDIO=ON retained a Studio source: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "^pelican_studio([.](exe|lib|a))?$")
+            message(FATAL_ERROR
+                "SKIP_DEVSTUDIO=ON emitted a Studio artifact: ${artifact}")
+        endif()
+    endforeach()
+endfunction()
+
+function(run_runtime_shader_compiler_smoke)
+    configure_and_build(
+        "runtime_shader_compiler"
+        "PELICAN_RUNTIME_SHADER_COMPILER"
+        runtime_shader_compiler_build_dir)
+    clean_successful_build("${runtime_shader_compiler_build_dir}")
+endfunction()
+
+function(run_spirv_link_smoke)
+    configure_and_build(
+        "spirv_link"
+        "PELICAN_WITH_SPIRV_LINK"
+        spirv_link_build_dir)
+    verify_spirv_link_absent("${spirv_link_build_dir}")
+    clean_successful_build("${spirv_link_build_dir}")
+endfunction()
+
+function(run_skip_devstudio_smoke)
+    configure_and_build(
+        "skip_devstudio"
+        "SKIP_DEVSTUDIO"
+        skip_devstudio_build_dir)
+    verify_devstudio_absent("${skip_devstudio_build_dir}")
+    clean_successful_build("${skip_devstudio_build_dir}")
+endfunction()
+
 function(run_openxr_smoke)
     configure_and_build("openxr" "PELICAN_WITH_OPENXR" openxr_build_dir)
     verify_openxr_absent("${openxr_build_dir}")
@@ -556,7 +662,6 @@ function(run_standard_render_algorithms_smoke)
         "standard_render_algorithms"
         "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS"
         standard_render_algorithms_build_dir
-        -DPELICAN_WITH_OPENXR=OFF
     )
     verify_standard_render_algorithms_absent(
         "${standard_render_algorithms_build_dir}")
@@ -584,14 +689,6 @@ function(run_standard_render_algorithms_smoke)
     )
     clean_successful_build("${standard_render_algorithms_build_dir}")
 endfunction()
-
-if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
-    message(STATUS "build-unit OFF smoke fixture parsed successfully")
-    return()
-endif()
-
-file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
-file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
 
 function(run_audio_smoke)
     configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
@@ -672,10 +769,11 @@ function(run_imgui_smoke)
     clean_successful_build("${imgui_build_dir}")
 endfunction()
 
-function(run_physics_smoke)
-    configure_and_build("physics_provider_only" "PELICAN_WITH_BUILTIN_PHYSICS" physics_provider_build_dir
-        "-DPELICAN_WITH_PHYSICS=ON"
-        "-DPELICAN_WITH_JOLT_PHYSICS=OFF")
+function(run_builtin_physics_smoke)
+    configure_and_build(
+        "physics_provider_only"
+        "PELICAN_WITH_BUILTIN_PHYSICS"
+        physics_provider_build_dir)
     verify_builtin_physics_absent("${physics_provider_build_dir}")
     verify_jolt_physics_absent("${physics_provider_build_dir}" "provider-only physics")
     find_built_executable("${physics_provider_build_dir}" "pelican_test_physicsservice_test" physics_provider_test)
@@ -690,7 +788,9 @@ function(run_physics_smoke)
             -R "^physics_provider_game_dll_e2e$"
     )
     clean_successful_build("${physics_provider_build_dir}")
+endfunction()
 
+function(run_physics_smoke)
     configure_and_build("physics" "PELICAN_WITH_PHYSICS" physics_build_dir)
     verify_physics_absent("${physics_build_dir}")
     verify_jolt_physics_absent("${physics_build_dir}" "PELICAN_WITH_PHYSICS=OFF")
@@ -705,10 +805,13 @@ function(run_physics_smoke)
         "${physics_player}" --headless --project "${physics_project}" --frames 1 --size 64x64
     )
     clean_successful_build("${physics_build_dir}")
+endfunction()
 
-    configure_and_build("physics_jolt" "PELICAN_WITH_BUILTIN_PHYSICS" physics_jolt_build_dir
-        "-DPELICAN_WITH_PHYSICS=ON"
-        "-DPELICAN_WITH_JOLT_PHYSICS=ON")
+function(run_jolt_physics_smoke)
+    configure_and_build(
+        "physics_jolt"
+        "PELICAN_WITH_JOLT_PHYSICS"
+        physics_jolt_build_dir)
     verify_builtin_physics_absent("${physics_jolt_build_dir}")
     find_built_executable("${physics_jolt_build_dir}" "pelican_test_physicsservice_test" physics_jolt_test)
     run_process("physics_jolt_service" TRUE "${physics_jolt_test}")
@@ -726,45 +829,104 @@ function(run_physics_smoke)
     clean_successful_build("${physics_jolt_build_dir}")
 endfunction()
 
-if(DEFINED PELICAN_BUILD_UNIT_SMOKE_ONLY)
-    string(TOLOWER "${PELICAN_BUILD_UNIT_SMOKE_ONLY}" smoke_only)
-    if(smoke_only STREQUAL "audio")
-        run_audio_smoke()
-    elseif(smoke_only STREQUAL "vat")
-        run_vat_smoke()
-    elseif(smoke_only STREQUAL "exr")
-        run_exr_smoke()
-    elseif(smoke_only STREQUAL "rpc")
-        run_rpc_smoke()
-    elseif(smoke_only STREQUAL "seqplayer")
-        run_seqplayer_smoke()
-    elseif(smoke_only STREQUAL "imgui")
-        run_imgui_smoke()
-    elseif(smoke_only STREQUAL "physics")
-        run_physics_smoke()
-    elseif(smoke_only STREQUAL "openxr")
-        run_openxr_smoke()
-    elseif(smoke_only STREQUAL "renderdoc")
-        run_renderdoc_smoke()
-    elseif(smoke_only STREQUAL "standard-render-algorithms")
-        run_standard_render_algorithms_smoke()
-    else()
-        message(FATAL_ERROR "unsupported PELICAN_BUILD_UNIT_SMOKE_ONLY: ${PELICAN_BUILD_UNIT_SMOKE_ONLY}")
+function(run_registered_feature_smoke feature_name)
+    set(dry_run FALSE)
+    if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
+        set(dry_run TRUE)
     endif()
-    string(TOUPPER "${smoke_only}" smoke_only_upper)
-    message(STATUS "single-OFF smoke passed for ${smoke_only_upper}")
+
+    if(feature_name STREQUAL "PELICAN_RUNTIME_SHADER_COMPILER")
+        if(NOT dry_run)
+            run_runtime_shader_compiler_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_SPIRV_LINK")
+        if(NOT dry_run)
+            run_spirv_link_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_AUDIO")
+        if(NOT dry_run)
+            run_audio_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_VAT")
+        if(NOT dry_run)
+            run_vat_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_EXR")
+        if(NOT dry_run)
+            run_exr_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_RPC")
+        if(NOT dry_run)
+            run_rpc_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_SEQPLAYER")
+        if(NOT dry_run)
+            run_seqplayer_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_IMGUI")
+        if(NOT dry_run)
+            run_imgui_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_PHYSICS")
+        if(NOT dry_run)
+            run_physics_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_OPENXR")
+        if(NOT dry_run)
+            run_openxr_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_RENDERDOC")
+        if(NOT dry_run)
+            run_renderdoc_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS")
+        if(NOT dry_run)
+            run_standard_render_algorithms_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_JOLT_PHYSICS")
+        if(NOT dry_run)
+            run_jolt_physics_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_BUILTIN_PHYSICS")
+        if(NOT dry_run)
+            run_builtin_physics_smoke()
+        endif()
+    elseif(feature_name STREQUAL "SKIP_DEVSTUDIO")
+        if(NOT dry_run)
+            run_skip_devstudio_smoke()
+        endif()
+    else()
+        message(FATAL_ERROR
+            "pelican.feature_registry.smoke_handler_missing@1: ${feature_name}")
+    endif()
+endfunction()
+
+if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
+    foreach(feature_name IN LISTS PELICAN_FEATURE_REGISTRY_NAMES)
+        pelican_feature_contrast_arguments("${feature_name}" contrast_arguments)
+        run_registered_feature_smoke("${feature_name}")
+        message(STATUS
+            "validated registry smoke row: ${feature_name} "
+            "(${PELICAN_FEATURE_${feature_name}_SMOKE_ID})")
+    endforeach()
+    message(STATUS "build-unit feature contrast matrix parsed successfully")
     return()
 endif()
 
-run_audio_smoke()
-run_vat_smoke()
-run_exr_smoke()
-run_rpc_smoke()
-run_seqplayer_smoke()
-run_imgui_smoke()
-run_physics_smoke()
-run_openxr_smoke()
-run_renderdoc_smoke()
-run_standard_render_algorithms_smoke()
+file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
+file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
 
-message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, PHYSICS, OPENXR, RENDERDOC, and STANDARD_RENDER_ALGORITHMS; provider-only and Jolt physics also passed")
+if(DEFINED PELICAN_BUILD_UNIT_SMOKE_ONLY)
+    string(TOLOWER "${PELICAN_BUILD_UNIT_SMOKE_ONLY}" smoke_only)
+    pelican_feature_from_smoke_id("${smoke_only}" selected_feature)
+    run_registered_feature_smoke("${selected_feature}")
+    message(STATUS
+        "feature contrast smoke passed for ${selected_feature} (${smoke_only})")
+    return()
+endif()
+
+foreach(feature_name IN LISTS PELICAN_FEATURE_REGISTRY_NAMES)
+    run_registered_feature_smoke("${feature_name}")
+endforeach()
+
+message(STATUS "build-unit feature contrast smoke passed for the registry matrix")

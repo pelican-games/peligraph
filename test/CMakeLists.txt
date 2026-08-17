@@ -153,6 +153,24 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devstudio_boundary_negative.cmake
 )
 
+add_test(
+  NAME feature_registry_ledger_contract
+  COMMAND ${CMAKE_COMMAND}
+    -P ${CMAKE_SOURCE_DIR}/cmake/verify_feature_registry.cmake
+)
+add_test(
+  NAME feature_registry_smoke_matrix_contract
+  COMMAND ${CMAKE_COMMAND}
+    -DPELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY=ON
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_build_units_smoke.cmake
+)
+add_test(
+  NAME feature_registry_mutation_contract
+  COMMAND ${CMAKE_COMMAND}
+    -DPELICAN_MUTATION_DIR=${CMAKE_CURRENT_BINARY_DIR}/feature_registry_mutations
+    -P ${CMAKE_SOURCE_DIR}/cmake/test_feature_registry_mutations.cmake
+)
+
 if(TARGET pelican_studio_layout)
   # Qt imported targets are directory-scoped; make the layout library and
   # compatibility test dependencies visible in this sibling directory.

@@ -13,8 +13,31 @@ permissions:
   contents: read
 
 jobs:
+  feature-smoke-matrix:
+    name: Generate registry feature matrix
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.registry.outputs.matrix }}
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      - name: Generate matrix from feature registry
+        id: registry
+        shell: pwsh
+        run: |
+          cmake `
+            "-DPELICAN_FEATURE_SMOKE_MATRIX_OUTPUT=feature-smoke-matrix.json" `
+            -P cmake/emit_feature_smoke_matrix.cmake
+          $matrix = Get-Content -Raw feature-smoke-matrix.json
+          "matrix=$matrix" >> $env:GITHUB_OUTPUT
+
   configuration-smoke:
     name: ${{ matrix.name }}
+    needs: feature-smoke-matrix
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -22,41 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix:
-        include:
-          - name: PELICAN_WITH_AUDIO=OFF
-            id: audio
-            kind: build-unit
-          - name: PELICAN_WITH_VAT=OFF
-            id: vat
-            kind: build-unit
-          - name: PELICAN_WITH_EXR=OFF
-            id: exr
-            kind: build-unit
-          - name: PELICAN_WITH_RPC=OFF
-            id: rpc
-            kind: build-unit
-          - name: PELICAN_WITH_SEQPLAYER=OFF
-            id: seqplayer
-            kind: build-unit
-          - name: PELICAN_WITH_IMGUI=OFF
-            id: imgui
-            kind: build-unit
-          - name: PELICAN_WITH_PHYSICS=OFF / provider variants
-            id: physics
-            kind: build-unit
-          - name: PELICAN_WITH_OPENXR=OFF
-            id: openxr
-            kind: build-unit
-          - name: PELICAN_WITH_RENDERDOC=OFF
-            id: renderdoc
-            kind: build-unit
-          - name: PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF
-            id: standard-render-algorithms
-            kind: build-unit
-          - name: PELICAN_PROJECT project-code smoke
-            id: project-code
-            kind: project-code
+      matrix: ${{ fromJSON(needs.feature-smoke-matrix.outputs.matrix) }}
 
     steps:
       - name: Check out sources
@@ -71,18 +60,34 @@ jobs:
           version: 1.4.309.0
           cache: true
 
+      - name: Set up Python
+        if: matrix.kind == 'build-unit'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt
+        if: matrix.kind == 'build-unit'
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.10.3"
+          arch: win64_msvc2022_64
+          cache: true
+
       - name: Prepare logs
         shell: pwsh
         run: New-Item -ItemType Directory -Force "ci-artifacts/${{ matrix.id }}" | Out-Null
 
-      - name: Run single feature-OFF smoke
+      - name: Run single feature contrast smoke
         if: matrix.kind == 'build-unit'
         shell: pwsh
         run: |
+          $python = (Get-Command python).Source
           cmake `
             "-DPELICAN_BUILD_UNIT_SMOKE_ONLY=${{ matrix.id }}" `
             -DPELICAN_BUILD_UNIT_SMOKE_CONFIG=Debug `
             -DPELICAN_BUILD_UNIT_SMOKE_CLEAN_BUILDS=ON `
+            "-DPython3_EXECUTABLE=$python" `
             -P test/run_build_units_smoke.cmake 2>&1 |
             Tee-Object -FilePath "ci-artifacts/${{ matrix.id }}/smoke.log"
           $result = $LASTEXITCODE
@@ -108,8 +113,8 @@ jobs:
           retention-days: 14
           path: |
             ci-artifacts/${{ matrix.id }}/
-            build-off-*/CMakeFiles/CMakeConfigureLog.yaml
-            build-off-*/Testing/Temporary/LastTest.log
+            build-feature-*/CMakeFiles/CMakeConfigureLog.yaml
+            build-feature-*/Testing/Temporary/LastTest.log
             build-project-example/CMakeFiles/CMakeConfigureLog.yaml
             build-project-example/Testing/Temporary/LastTest.log
 

@@ -48,7 +48,7 @@ flowchart TD
 
 ### `pelican_core`
 
-宣言は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L1) です。公開includeディレクトリに [`src/core/userpublic`](../../src/core/userpublic) と [`src/core`](../../src/core) を追加します。`userpublic`、`ecs`、`handle.hpp`、`physquery.hpp` の公開ヘッダを `dist*/lib/include` へコピーするPOST_BUILD処理は、[`PELICAN_AUTO_STAGE_SDK`](../../CMakeLists.txt#L86)（既定 **OFF**）がONのときだけ登録されます（[`pelican_copy_headers()`](../../src/core/CMakeLists.txt#L136)）。既定でOFFなのは、Debugの `pelican_core` アーカイブが約1 GiBあり、通常の再リンクごとにコピーすると書き込み量が跳ね上がるためです。`dist*/lib/include` が空でも異常ではありません。
+宣言は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L1) です。公開includeディレクトリに [`src/core/userpublic`](../../src/core/userpublic) と [`src/core`](../../src/core) を追加します。`userpublic`、`ecs`、`handle.hpp`、`physquery.hpp` の公開ヘッダを `dist*/lib/include` へコピーするPOST_BUILD処理は、[`PELICAN_AUTO_STAGE_SDK`](../../CMakeLists.txt#L52)（既定 **OFF**）がONのときだけ登録されます（[`pelican_copy_headers()`](../../src/core/CMakeLists.txt#L136)）。既定でOFFなのは、Debugの `pelican_core` アーカイブが約1 GiBあり、通常の再リンクごとにコピーすると書き込み量が跳ね上がるためです。`dist*/lib/include` が空でも異常ではありません。
 
 ### `pelican_player`
 
@@ -103,7 +103,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 トップレベルの [`cmake_minimum_required(VERSION 3.13)`](../../CMakeLists.txt#L1) は多くのポリシーを未設定のまま残し、CMake 4.x は未設定をOLDとして解決します。その結果「CIの古いCMakeでは通るが、手元の新しいCMakeではconfigureが落ちる」種類の破綻が2系統あります。CMP0118はトップレベル1箇所の宣言で固定できますが、CMP0169はトップレベルに閉じず、`FetchContent_Populate()` を直接呼ぶ箇所ごとに戻す形（サブディレクトリの `src/core/imgui/CMakeLists.txt` を含む）です。原因は同じなので、片方を触るときはもう片方も見ます。
 
 - [`cmake_policy(SET CMP0118 NEW)`](../../CMakeLists.txt#L10) — ファイル冒頭、`project()` より前に置いています。battery::embedは `embed.hpp` の生成を `cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL ...)` でトップレベルディレクトリへ遅延させ、そのスコープから `file(GENERATE)` で書きます。一方それを `target_sources` で消費するのは [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) が作る `pelican_resources` で、`b_embed()` は `src/core/resources` のディレクトリスコープで走ります。CMP0118がOLDだと `GENERATED` プロパティがディレクトリ境界を越えないため、generate段階で `battery/embed.hpp` が「存在しないsource file」として拒否されます。
-- `CMP0169`（`FetchContent_Populate` の単独呼び出しの禁止）— こちらはNEWにできないので、必要な箇所ごとに `cmake_policy(PUSH)` / `SET ... OLD` / `POP` で囲んでOLDへ戻しています。`FetchContent_MakeAvailable()` を使わず、展開だけしてターゲットの作り方を自分で決めている依存が対象で、トップレベルのminiaudio・[`FetchContent_Populate(picosha2)`](../../CMakeLists.txt#L187)・SPIRV-Headers・tinyexr・JoltPhysicsの5箇所に、`PELICAN_WITH_IMGUI` がONのときだけ通る [`FetchContent_Populate(imgui_vendor)`](../../src/core/imgui/CMakeLists.txt#L14) を加えた6箇所に同じ定型が並びます。`FetchContent_Populate()` を直接呼ぶ場所を増やすたびに同じ定型が要る、という形です。
+- `CMP0169`（`FetchContent_Populate` の単独呼び出しの禁止）— こちらはNEWにできないので、必要な箇所ごとに `cmake_policy(PUSH)` / `SET ... OLD` / `POP` で囲んでOLDへ戻しています。`FetchContent_MakeAvailable()` を使わず、展開だけしてターゲットの作り方を自分で決めている依存が対象で、トップレベルのminiaudio・[`FetchContent_Populate(picosha2)`](../../CMakeLists.txt#L179)・SPIRV-Headers・tinyexr・JoltPhysicsの5箇所に、`PELICAN_WITH_IMGUI` がONのときだけ通る [`FetchContent_Populate(imgui_vendor)`](../../src/core/imgui/CMakeLists.txt#L14) を加えた6箇所に同じ定型が並びます。`FetchContent_Populate()` を直接呼ぶ場所を増やすたびに同じ定型が要る、という形です。
 
 ## 1.3 `src/core` の責務地図
 
@@ -195,7 +195,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 ## 1.6 ビルド機能フラグ
 
-トップレベルの定義は [`option(PELICAN_RUNTIME_SHADER_COMPILER ...)` 以下のoption群](../../CMakeLists.txt#L42) です。
+機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。
 
 | フラグ | ON時 | OFF時の動作 |
 |---|---|---|
@@ -214,14 +214,14 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 このほか `PELICAN_AUTO_STAGE_SDK`（既定OFF、`dist*` へのSDK staging）と `PELICAN_LEAN_TEST_ARTIFACTS`（既定ON、テスト実行ファイルのPDB削減）は機能ではなくビルド成果物の量を決めるoptionです。
 
-物理providerの選択だけは `option()` ではなく `cmake_dependent_option()` で、`PELICAN_WITH_PHYSICS` がONのときにだけ現れます（[`cmake_dependent_option(PELICAN_WITH_JOLT_PHYSICS ...)`](../../CMakeLists.txt#L60)）。
+物理providerの選択だけはregistryの `DEPENDENT_OPTION` で、`PELICAN_WITH_PHYSICS` がONのときにだけ現れます（[`NAME PELICAN_WITH_JOLT_PHYSICS`](../../cmake/pelican_feature_registry.cmake#L188)）。
 
 | フラグ | 既定 | ON時 |
 |---|---|---|
 | `PELICAN_WITH_JOLT_PHYSICS` | OFF | optionalのJolt query providerを使う |
 | `PELICAN_WITH_BUILTIN_PHYSICS` | ON | Pelican内蔵のsphere/box/capsule query providerを使う |
 
-両方ONならJoltを優先し、内蔵providerは強制的にOFFへ戻されます（[`if(PELICAN_WITH_JOLT_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)`](../../CMakeLists.txt#L74)）。この2つだけはPUBLICではなく [`target_compile_definitions(pelican_core PRIVATE ...)`](../../src/core/CMakeLists.txt#L19) のPRIVATE compile definitionです。
+両方ONならJoltを優先し、内蔵providerはregistryの連動宣言に従って強制的にOFFへ戻されます（[`FORCES_ON_CONTRAST PELICAN_WITH_BUILTIN_PHYSICS=OFF`](../../cmake/pelican_feature_registry.cmake#L194)）。この2つだけはPUBLICではなく [`target_compile_definitions(pelican_core PRIVATE ...)`](../../src/core/CMakeLists.txt#L19) のPRIVATE compile definitionです。
 
 機能OFF時にヘッダのAPI形状を消すのではなく、できる限り同じ入口を保ち、明示的な「このバイナリでは無効」エラーへ寄せています。共通例外は [`BuildFeatureDisabledError`](../../src/core/build_features.hpp#L20) です。
 
@@ -240,9 +240,9 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2283)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |
 | miniaudio | 音声backend |
-| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L304)、`PELICAN_WITH_OPENXR` 時） |
-| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L454)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
-| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L201)） |
+| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L270)、`PELICAN_WITH_OPENXR` 時） |
+| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L420)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
+| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L167)） |
 | Dear ImGui | 開発者UI（`PELICAN_WITH_IMGUI` 時） |
 | battery::embed | shaderのSPIR-VとengineリソースJSON（`render_pipelines/`、`features/`、`surfaces/` など）をバイナリへ埋め込む。入口は [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) で、以降に並ぶ `b_embed()` の一覧が `engine://` で引ける資源の全量。ビルドフラグで消えうる資源の扱いは2通りに分かれます。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` 側は [`PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS`](../../src/core/resources/CMakeLists.txt#L121) に積まれて `pelican_optional_engine_resources.inc` として生成されますが、[`embed_shader(vat.vert)`](../../src/core/resources/CMakeLists.txt#L33) だけはこの一覧に載らず、[`engineResource()`](../../src/core/loader/engineresources.cpp#L151) 側の `#if PELICAN_WITH_VAT` と対で書かれています。書き込み量削減のため [`cmake/patch_battery_embed_low_write.cmake`](../../cmake/patch_battery_embed_low_write.cmake) を `PATCH_COMMAND` で当てており、CMP0118のpinもこの依存のため |
 | picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`target_link_libraries(pelican_core PRIVATE picosha2)`](../../src/core/CMakeLists.txt#L104)） |
@@ -251,7 +251,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | Catch2 | 単体テスト |
 | Qt6/QML | Pelican Studio |
 
-外部依存のバージョンはトップレベルの `GIT_TAG` 群（先頭は [`GIT_TAG v10.2.0`](../../CMakeLists.txt#L108)）に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
+外部依存のバージョンはトップレベルの `GIT_TAG` 群（先頭は [`GIT_TAG v10.2.0`](../../CMakeLists.txt#L74)）に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
 
 ## 1.8 読解用のビルド
 
@@ -312,7 +312,7 @@ cmake --build build --target pelican_player
 | ワークフロー | 起動条件 | 見ているもの |
 |---|---|---|
 | [`.github/workflows/cpu-gate.yml`](../../.github/workflows/cpu-gate.yml) | 毎PR + ブランチpush | 既定構成でconfigure/build、GPU不要のCTestを厳密なSKIPポリシー付きで実行 |
-| [`.github/workflows/configuration-smoke.yml`](../../.github/workflows/configuration-smoke.yml) | 週次（`cron: "17 16 * * 6"`）と `workflow_dispatch` のみ | 機能フラグOFFビルドと、クリーンcloneからの通し確認 |
+| [`.github/workflows/configuration-smoke.yml`](../../.github/workflows/configuration-smoke.yml) | 週次（`cron: "17 16 * * 6"`）と `workflow_dispatch` のみ | 機能フラグ対照ビルドと、クリーンcloneからの通し確認 |
 
 CPU gateは、ビルドの前にCIポリシー自体を検証する2ステップを持ちます。
 
@@ -323,12 +323,12 @@ CPU gateは、ビルドの前にCIポリシー自体を検証する2ステップ
 
 同じ `run_gate()` の上に [`test/ci/run_gpu_gate.py`](../../test/ci/run_gpu_gate.py) が乗っており、違いはラベル選択（`-L gpu` か `-LE gpu` か）とallowlistだけです。ただしこちらはGitHub Actionsのワークフローからは呼ばれておらず、Vulkan deviceのある機械で手で実行する位置づけです。[`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) は意図的に空で、その理由と運用は [`docs/ci.md`](../ci.md) にあります。
 
-configuration smokeは2つのjobからなります。
+configuration smokeはregistry matrix生成、対照build、clean-cloneの3 jobからなります。
 
-- **機能フラグOFFのmatrix**: `PELICAN_WITH_AUDIO` / `VAT` / `EXR` / `RPC` / `SEQPLAYER` / `IMGUI` / `PHYSICS`（provider variantを含む）/ `OPENXR` / `RENDERDOC` / `STANDARD_RENDER_ALGORITHMS` を1つずつOFFにしたビルドと、`PELICAN_PROJECT` を使うproject-code smoke。ドライバは [`test/run_build_units_smoke.cmake`](../../test/run_build_units_smoke.cmake) と [`test/run_project_code_smoke.cmake`](../../test/run_project_code_smoke.cmake) です。build-unit側はC++ probeを残して`PELICAN_PYTHON_TESTS=OFF`、project-code側は`BUILD_TESTING=OFF`で、どちらも`CMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE`によりPython探索の再混入を検出します。`fail-fast: false` で、自動リトライはありません。
+- **機能フラグの対照matrix**: [`cmake/pelican_feature_registry.cmake`](../../cmake/pelican_feature_registry.cmake) の全行を、共通基準から対象だけ（宣言済み連動を除く）動かしてビルドします。CI matrix自体もregistryから生成されます。ドライバは [`test/run_build_units_smoke.cmake`](../../test/run_build_units_smoke.cmake) と [`test/run_project_code_smoke.cmake`](../../test/run_project_code_smoke.cmake) です。build-unit側はQtとSPIR-V linker用Pythonを用意してC++ probeを残しつつ`PELICAN_PYTHON_TESTS=OFF`、project-code側は`BUILD_TESTING=OFF`かつPython探索禁止です。`fail-fast: false` で、自動リトライはありません。
 - **clean-clone job**: 新規checkoutに重いexample assetが混ざっていないことを確認したうえで、ポリシーチェッカ → golden inventory → configure → build → `run_cpu_gate.py` を順に流します。
 
-> **設計決定:** 機能フラグOFFビルドはPRゲートに入れず週次にしています。ビルド構成の組み合わせ爆発をPRの待ち時間へ持ち込まず、それでも「OFFビルドが静かに壊れたまま放置される」状態は防ぐ、という配分です。CIの運用ルールは [`docs/ci.md`](../ci.md) が正です。
+> **設計決定:** 機能フラグ対照ビルドはPRゲートに入れず週次にしています。ビルド構成の組み合わせ爆発をPRの待ち時間へ持ち込まず、それでも「対照ビルドが静かに壊れたまま放置される」状態は防ぐ、という配分です。CIの運用ルールは [`docs/ci.md`](../ci.md) が正です。
 
 ## 1.10 命名とファイルの読み方
 

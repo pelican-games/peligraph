@@ -34,48 +34,14 @@ endif()
 include(FetchContent)
 include(CMakeDependentOption)
 include(cmake/pelican_target_environment.cmake)
+include(cmake/pelican_feature_registry.cmake)
 
 # variable definition
 set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 set(PELICAN_LIB_DIR ${PELICAN_INSTALL_DIR}/lib/bin)
 set(PELICAN_INCLUDE_DIR ${PELICAN_INSTALL_DIR}/lib/include)
-option(PELICAN_RUNTIME_SHADER_COMPILER "Enable runtime GLSL shader compilation with shaderc" ON)
-option(PELICAN_WITH_SPIRV_LINK
-  "Enable the experimental pinned SPIRV-Tools linker backend"
-  OFF)
-option(PELICAN_WITH_AUDIO "Enable WAV sound-effect playback with miniaudio" ON)
-option(PELICAN_WITH_VAT "Enable pelican.vat GLB playback support" ON)
-option(PELICAN_WITH_EXR "Enable EXR texture loading with tinyexr" ON)
-option(PELICAN_WITH_RPC "Enable stdio JSON-RPC control server" ON)
-option(PELICAN_WITH_SEQPLAYER "Enable transform sequence playback" ON)
-option(PELICAN_WITH_IMGUI "Enable the interactive engine developer UI" ON)
-option(PELICAN_WITH_PHYSICS "Enable the physics query service and collider world" ON)
-option(PELICAN_WITH_OPENXR "Enable the private OpenXR runtime unit" ON)
-option(PELICAN_WITH_RENDERDOC "Enable passive RenderDoc in-application capture integration" ON)
-option(
-  PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
-  "Build Pelican's replaceable standard render algorithm package"
-  ON
-)
-cmake_dependent_option(
-  PELICAN_WITH_JOLT_PHYSICS
-  "Enable the optional Jolt query provider"
-  OFF
-  "PELICAN_WITH_PHYSICS"
-  OFF
-)
-cmake_dependent_option(
-  PELICAN_WITH_BUILTIN_PHYSICS
-  "Enable Pelican's built-in sphere/box/capsule query provider"
-  ON
-  "PELICAN_WITH_PHYSICS"
-  OFF
-)
-if(PELICAN_WITH_JOLT_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
-  message(STATUS "Jolt physics selected; disabling Pelican's built-in query provider")
-  set(PELICAN_WITH_BUILTIN_PHYSICS OFF CACHE BOOL
-      "Enable Pelican's built-in sphere/box/capsule query provider" FORCE)
-endif()
+pelican_declare_feature_options()
+pelican_verify_feature_ledger("${CMAKE_SOURCE_DIR}/docs/implementation_plan.md")
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
 option(
   PELICAN_LEAN_TEST_ARTIFACTS

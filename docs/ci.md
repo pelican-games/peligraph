@@ -152,8 +152,9 @@ configure/build/CTestログ、CTest JUnit、SKIP policy 結果、`LastTest.log`�
 
 構成 matrix は Windows/MSVC Debug で次を独立 runner に分ける。
 
-- `PELICAN_WITH_AUDIO/VAT/EXR/RPC/SEQPLAYER/IMGUI/OPENXR/RENDERDOC/STANDARD_RENDER_ALGORITHMS=OFF`
-- `PELICAN_WITH_PHYSICS=OFF` と built-in/Jolt provider の排他構成
+- [`cmake/pelican_feature_registry.cmake`](../cmake/pelican_feature_registry.cmake) が生成する
+  全 feature contrast。各行は registry の共通基準から対象だけを対照値へ動かし、
+  Jolt 等で連動する値も registry 宣言に限定する
 - `PELICAN_PROJECT=projects/example` の project-code build と、tracked fixture だけで作る
   一時 project の headless smoke
 
@@ -162,9 +163,11 @@ build-unit entry は同じ `test/run_build_units_smoke.cmake` に
 ほかの構成の一次結果を隠さない。自動 retry はない。各 entry の CMake 診断と smoke log は
 `configuration-smoke-<entry>-<run id>-<attempt>` artifact に14日保存する。
 build-unit nested configureはC++のOFF機能probeを使うため`BUILD_TESTING=ON`のまま
-`PELICAN_PYTHON_TESTS=OFF`、project-code nested configureは`BUILD_TESTING=OFF`である。
-どちらも`PELICAN_WITH_SPIRV_LINK=OFF`かつ
-`CMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE`で、Python探索が再混入した場合も即失敗する。
+`PELICAN_PYTHON_TESTS=OFF`とする。基準の`PELICAN_WITH_SPIRV_LINK=ON`にはPython、
+基準の`SKIP_DEVSTUDIO=OFF`にはQtが必要なのでworkflowが両方を用意する。
+project-code nested configureは別の製品境界であり、従来どおり`BUILD_TESTING=OFF`、
+`SKIP_DEVSTUDIO=ON`、`PELICAN_WITH_SPIRV_LINK=OFF`、
+`CMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE`とする。
 
 clean-clone job は `actions/checkout` の clean checkout を使い、最初に
 `projects/example/assets` の ignored binary が 0 件であることを機械確認する。その後、
@@ -179,12 +182,14 @@ allowlist は作らない。失敗 artifact と retry なしの規律も CI0 と
 
 ## CI1 をローカルで再現する
 
-build-unit / project-code smokeはPython不要である。clean-cloneの完全なCPU gateだけは
-Python 3.12を用意する。
+build-unit smokeはQtとPython 3.12、project-code smokeはどちらも不要である。
+clean-cloneの完全なCPU gateにもPython 3.12を用意する。
 
 ```powershell
-# 10 entry を一括実行。個別実行は -DPELICAN_BUILD_UNIT_SMOKE_ONLY=audio 等を追加する。
+# registry の全対照を一括実行。個別実行は -DPELICAN_BUILD_UNIT_SMOKE_ONLY=audio 等を追加する。
 cmake -DPELICAN_BUILD_UNIT_SMOKE_CONFIG=Debug `
+  -DCMAKE_PREFIX_PATH=<Qt install path> `
+  -DPython3_EXECUTABLE=<Python 3.12 executable> `
   -P test/run_build_units_smoke.cmake
 
 cmake -DPELICAN_PROJECT_CODE_SMOKE_CONFIG=Debug `
