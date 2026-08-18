@@ -6055,6 +6055,130 @@ WP322 が運ぶのは**使用中の参照だけ**で、example では fragment 7
 
 依存: WP321a(マージ済み)。WP324 と並行してよい。見積: 大。
 
+### WP326: WP324 がエンジンの検証を 3 箇所で弱めた(最優先)
+
+**WP324(`0980ad6`)のマージ後の敵対レビューで確認。**
+`renderingpassvalidation.cpp` から 127 行を削って評価器へ委譲したが、**等価になっていない。**
+出荷中の宣言はすべて通る(23 JSON・63 パスを再パースして違反 0 件を確認済み)が、
+**以前は拒否されていた入力が受理されるようになった。**
+
+#### 後退 1: material の名前付き入力で現フレーム read/write が通る
+
+形の評価は **`screen_inputs` / `surface_resources` / `material_resources` を parse する前**に走る。
+これらは評価後に `input_targets` へ追加される。
+旧 `validatePassInputs` は**統合後の列**を検査していたので、同じターゲットを
+現フレームで読み書きする material パスを拒否していた。**いまは通る。**
+
+再現(出荷 example の `forward_transparent` を改変):
+`screen_inputs: {"opaque_color": "lit_color"}` と `output.color: ["lit_color"]`。
+`lit_color` は `COLOR_ATTACHMENT | SAMPLED` なので usage・format・contract 検査も通ってしまう。
+
+**直し方**: 正確な `pass_type` を保持したまま、**全入力ソースを parse した後**に観測を作ること。
+`PassDefinition` の解決済みターゲットと history メタデータから同じ評価器へ委譲すること。
+**旧 validator を復活させないこと**(権威が 2 つに戻る)。
+
+#### 後退 2: `swapchain` という名前の buffer で input 禁止を迂回できる
+
+旧コードは buffer 判定の**前**に `if (input.name == "swapchain") throw` を無条件で置いていた。
+新コードはそれを削り、拒否を評価器の `input.image` 条件に委ねている。
+**`buffer_names` に `"swapchain"` があると buffer 分岐が先に取り、誰も拒否しない。**
+buffer 定義側に予約名の検査は無い。
+
+**直し方**: `swapchain` を**全リソース種で予約名**にすること。
+加えて既定ポリシーの input 検査は、`image` かどうかに関係なく
+リテラル `"swapchain"` を拒否すること。
+
+#### 後退 3: `frameplanner` が評価器を一度も通らない —— WP303 と同型
+
+`frameplanner.cpp` の `evaluatePassShape` 呼び出しは **0 件**。
+同じ著作 JSON から独立に reads/writes を作り、
+**duplicate input を `appendUnique` で黙って 1 件に潰し**、
+型ごとの個数検査なしに出力を追加する。
+`Depth output target cannot be swapchain` だけは**独自に重複実装されている。**
+
+したがって 2 color + depth + duplicate input の fullscreen が、この経路では有効なプランになる。
+
+**直し方**: 著作パスの共通の事前検証を、**frameplanner と PassDefinition パーサの両方が
+必ず通る境界**に置くこと。**frameplanner の中に規則を書き写してはならない。**
+
+#### 受け入れ条件(§4 規約 10)
+
+- **後退 1〜3 それぞれについて、`0980ad6^`(WP324 前)が拒否し `0980ad6` が受理する
+  具体的な JSON を、テストの中で実際にパースして拒否されること。**
+  同じテストの中で、**正当な近傍**(`@history` を付けた material 入力、
+  `swapchain` でない buffer 名、正しい形の fullscreen)が受理されることを検査すること
+- **`frameplanner` 経路と `PassDefinition` パーサ経路の両方に、同じ不当な JSON を通し、
+  両方が同じ名前付き違反で拒否すること。**
+  **片方だけを検査する条件にしないこと** —— これが後退 3 の本体である
+- **`swapchain` が全リソース種で予約されていること。**
+  buffer として宣言する JSON が名前付きエラーになること。
+  同じテストで別名の buffer が通ること
+- **既定ポリシーの値が 1 箇所であること。**`frameplanner` の
+  `Depth output target cannot be swapchain` の重複実装を消すか、評価器へ委譲すること
+- 出荷 4 プロジェクトとエンジンの feature / pipeline がすべて通ること
+- `ctest` 全数が緑(`-j4`)、`uv run tools/doclink.py check` が通ること
+
+依存: WP324(マージ済み)。**WP325 と衝突しない**(core 側が中心)。見積: 中。**最優先。**
+
+### WP327: WP324 の studio 側の誤表示と寿命問題
+
+**WP324 のマージ後の敵対レビューで確認。**エンジンの検証とは別に、
+studio 側に誤表示が残り、注入したポリシーの寿命が保証されていない。
+
+#### 誤表示 —— リソース種を役割で分けていない
+
+**全 `resources[]` が input / color / depth の全 chooser に入る。**
+`Target names` 軸は存在しか見ず、形の評価器は color output の種を受け取らない。
+
+したがって次がすべて「妥当」と表示される。エンジンは拒否する。
+
+- **`buffer` を唯一の color output にする** → core は `Color render target not found`
+- 名前が `swapchain` でない `frame_target` を input / color にする
+- **buffer に `@history` を付ける** → core は `@history is supported only for render targets`
+- history 非対応の render target に `@history` を付ける
+
+**直し方**: 役割ごとに候補を分けること。
+color は `render_target` と名前が `swapchain` の `frame_target`、
+depth は `render_target`、input は `render_target` と `buffer`
+(`frame_target` は出すなら明示的に不当)。**buffer では history 操作を無効化すること。**
+render target の history 対応可否はフレームプランに出すか、
+少なくとも**専用の軸を「判定していない」にすること。**
+
+#### ポリシーの寿命
+
+`Impl` は注入ポリシーを `const &` のまま保持する。
+公開コンストラクタは temporary も受け取れるので、**構築後に dangling reference になる。**
+非 const 変数を渡して外から変更すると、**同じ下書きの表示が後から変わる**(決定性の破壊)。
+
+**直し方**: コンストラクタが `const PassShapePolicy &` を受けても、
+**`Impl` はポリシーを値として所有すること。**
+少なくとも rvalue オーバーロードを delete し、寿命を型で保証すること。
+
+#### `vrm_xr_demo` の実ファイル対照が規約 10 を満たしていない
+
+実ファイルから読んでいるが、**同じ TEST_CASE の中に効いていない側が無い。**
+実行時のフレームプランも使わず、リソース列を手で作って `swapchain` を手動追加している。
+
+**直し方**: 同じ実ファイル TEST_CASE の中で、実際に解決・合成した
+フレームプランをフォームへ渡し、その後に **swapchain-color を禁止した注入ポリシーを両側へ渡して
+core とフォームが共に不当になること**、および解決されたポリシー値を検査すること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **役割ごとの候補集合が、フレームプランの `kind` から導かれること。**
+  同じテストの中で、`buffer` / `render_target` / `frame_target(swapchain)` /
+  `frame_target(別名)` を含むプランを与え、**各 chooser の候補集合が役割ごとに異なること**を
+  検査すること。全 chooser が同じ集合になる実装は落ちること
+- **上記 4 つの誤表示それぞれについて、フォームが「妥当」と表示しないこと。**
+  同じテストで、それぞれの正当な近傍が妥当になること
+- **注入ポリシーを temporary で渡しても、構築後の表示が正しいこと。**
+  および、渡した変数を外から変更しても**表示が変わらないこと**(値所有の対照)
+- **`vrm_xr_demo` の TEST_CASE の中に、効いていない側があること。**
+  同じテストで注入ポリシーを変えて core とフォームが共に反転すること
+- `ctest` 全数が緑(`-j4`)
+
+依存: WP324(マージ済み)、WP325(テスト構造を変えるため後に回す)。見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
