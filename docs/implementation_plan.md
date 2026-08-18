@@ -5872,84 +5872,126 @@ WP322 が運ぶのは**使用中の参照だけ**で、example では fragment 7
 
 依存: なし。見積: 小〜中。
 
-### WP324: フォームが「妥当」と嘘をつく —— パスの形の権威を一箇所に置く
+### WP324: パスの形の権威を一箇所に置く —— フォームは甘すぎ、かつ厳しすぎる
 
 **WP321a のマージ後の敵対レビューで確認された欠陥。**
-フォームは、エンジンが**構造的に拒否する** JSON を「Target names: Valid」と表示する。
+フォームは、エンジンが**構造的に拒否する** JSON を「妥当」と表示し、
+同時に**出荷されている正しい形**を「不当」と表示する。
 
-#### 確認された誤表示(すべて実際に開いて確かめた)
+#### 甘すぎる(エンジンが拒否するのに妥当と出る)
 
-| フォームの表示 | エンジンの実際 |
+| フォーム | エンジンの実際 |
 |---|---|
-| `output.color` を 2 件以上 → **妥当** | `Fullscreen pass requires exactly one color output`(`renderingpassvalidation.cpp`) |
+| `output.color` 2 件以上 → **妥当** | `Fullscreen pass requires exactly one color output` |
 | `output.depth` を選べて → **妥当** | `Fullscreen pass does not support depth output` |
-| 同じターゲットを `input` と `output.color` に → **妥当** | `Pass cannot read and write the same color target` |
-| `input` に同じターゲットを 2 回 → **黙って 1 件に潰す** | `validateUniqueRenderTargets` が明示エラー |
-| `input` が空 → **不当** | エンジンは受理する(fullscreen に input 必須の規則は無い) |
+| 同じターゲットを `input` と `output.color` に(**現フレーム読み**)→ **妥当** | `Pass cannot read and write the same color target` |
+| `input` に同じターゲット 2 回 → **黙って 1 件に潰す** | `validateUniqueRenderTargets` が明示エラー |
 
-**これらは usage 適合の話ではない。純粋な構造である。**
-WP321a が「studio には判定できない」と宣言した 3 軸(usage 適合・生成順・シェーダー解決)
-のどれにも属さない。**D0 の向こう側だという言い訳が効かない。**
+#### 厳しすぎる(エンジンが受理し、出荷しているのに不当と出る)
 
-「妥当」と「判定していない」を分けた設計の意味が、ここで失われている。
+| フォーム | エンジンの実際 |
+|---|---|
+| `output.color` に `swapchain` → **不当**(`frame_target` を一律拒否) | **合法。**`allow_swapchain` 経路があり、**`projects/vrm_xr_demo` の `lighting_pass` が出荷している** |
+| `input` が空 → **不当** | **合法。**fullscreen に input 必須の規則は無く、`vrm_xr_demo` の入力なしパスが出荷されている |
 
-#### 追加で確認された欠陥
+#### 規則を誤解していた点(起票時の私の誤り。実装者は繰り返さないこと)
 
-- **`resources[].kind` の欠落を空文字に落としている。**`kind` を省いたフレームプランを与えると
-  `swapchain` が `frame_target` 検査を素通りする。**既定値に落とす経路であり fail-fast 違反。**
-  モデル側(`frameplanmodel.cpp`)も optional を空文字に落としている
-- **名前衝突の権威が実行時ノードだけ。**著作 config に在るがフレームプランから外れたパス名は
-  衝突していても妥当になる。著作 config に無いグラフ名も妥当になる。
-  `authored_passes` は構築済みなのに衝突検査が見ていない
-- **貼り付け位置が composed な実行時ノード数**になっている。著作 `passes[]` の要素数であるべき
-- **Refresh 失敗後に古い妥当表示が残る。**赤い文言だけ更新され、plan・binding・下書き・各軸は据え置き
+- **`@history` の読みは read/write 衝突から免除される。**
+  `renderingpassvalidation.cpp` に `if (pass_def.input_target_history[input_index]) continue;` があり、
+  **出荷 TAA が `input: [..., "taa_accum@history"], output: {color: "taa_accum"}` でこれに依存している。**
+  規則は「**同一ターゲットの現フレーム読みと書きの併用を禁止**、`@history` は許可」である
+- **`swapchain` は役割で決まる。**input は不可、depth output は不可、**color output は可。**
+  一律の `frame_target` 拒否は誤りである
+- **エラー文言を引いている既存テストは存在しない。**
+  4 つの文言を `git grep` して 0 件だった。文言維持を要求するなら互換性方針として書くこと
 
-#### 設計 —— 第二の流儀を作らないこと
+#### 実装場所 —— `validatePassOutputs` は使えない
 
-**studio に構造規則を写経してはならない。**エンジンが変わったとき黙って古くなる。
+**`validatePassOutputs` を共通入口にしてはならない。**3 つの理由を確認した。
+
+1. **正確な型が残っていない。**`PassDefinition` は `PassInfo` variant しか持たず、
+   `makePassInfo` で **`fullscreen` と `output_transform` がどちらも `FullscreenPassInfo` になる。**
+   型ごとの表を `PassDefinition` から引けない
+2. **input がまだ読まれていない。**パーサは output を読んだ直後、
+   input を読む前に `validatePassOutputs` を呼ぶ。
+   read/write 衝突と重複は後段の別関数にある
+3. 重複検査は `RenderTargetMetadataResolver` を使うが、`validatePassOutputs` の引数に無い
+
+#### 設計 —— 純粋な評価器を project 層に置く
 
 `src/project/passfieldownership.cpp` は既に **pelican_project** にあり、
-**core と studio の両方から引かれる型ごとの権威**である。ここを拡張する。
+`RenderPassType` もそこで定義され、**`pelican_core` は `pelican_project` を PRIVATE リンクしている**
+(`src/core/CMakeLists.txt`)。層の向きは成立する。
 
-型ごとの**形の規則**(color 出力の個数、depth 出力の可否、input と output の
-排他、input の一意性)を同じ表に載せ、**`renderingpassvalidation.cpp` の
-`validatePassOutputs` が同じ表を引くようにすること。**
+**core / Vulkan の型を一切含まない**次を project 層に置くこと。
 
-**規則の値を 2 箇所に書かないこと。**これが本 WP の中心である。
+- `PassShapePolicy` —— 型ごとの形の規則
+- `PassShapeObservation` —— **正確な `RenderPassType`**、color 名の列、depth 名、
+  input 名の列と各々の `@history` フラグ
+- `evaluatePassShape(policy, observation)` —— **名前付き違反**の列を返す
 
-#### 実装範囲
+呼ぶ場所:
 
-1. `pelican_project` に型ごとの形の権威を置く(既存の所有表の隣)。
-2. **`renderingpassvalidation.cpp` がその権威を引くようにする。**
-   エラー文言は現行を維持すること(既存テストが引いている)。
-3. フォームが同じ権威を引いて、上表 5 件を正しく判定する。
-   `input` 空は**不当にしない**。
-4. `resources[].kind` の欠落を**名前付きエラー**にする。空文字に落とさない。
-5. 名前衝突を「著作パス名 ∪ 実行時ノード名」で判定する。
-   グラフが著作 config に無ければ**軸を「判定していない」にする**(「衝突なし」と断定しない)。
-6. 貼り付け位置を著作 `passes[]` の要素数にする。著作側にグラフが無ければ位置を出さない。
-7. Refresh 失敗時に下書きの妥当表示を失効させる。
+- **core**: 正確な型が残っていて、input と output が揃っている**著作 JSON の段階**。
+  既存 validator の該当分岐は削除するか、この評価器へ委譲すること
+- **studio**: 同じ評価器
+
+**規則の値を 2 箇所に書かないこと。これが本 WP の中心である。**
+
+**グローバルな可変表を作ってはならない**(決定性を壊す)。
+`const PassShapePolicy &` を**明示的に注入**する形にし、
+本番は不変の既定を 1 つ、テストは別の不変ポリシーを**両側に渡す**こと。
+
+#### そのほか確認された欠陥
+
+- **`resources[].kind` の欠落を空文字に落としている。**`kind` を省いたプランで
+  `swapchain` が検査を素通りする。**fail-fast 違反。**
+  しかも**同じ潰し方が 2 箇所にある** —— `fullscreenpasswidget.cpp` と `frameplanmodel.cpp`。
+  **共有のデコーダに統合し、欠落 / null / 空 / 未知の 4 つをそれぞれ名前付きエラーにすること**
+- **名前衝突の権威が実行時ノードだけ。**`authored_passes` は構築済みなのに衝突検査が見ていない。
+  著作 config に無いグラフ名も妥当になる
+- **貼り付け位置が実行時ノードの `declaration_index` 最大値 + 1** になっている。
+  著作 `passes[]` の要素数であるべき。**fixture は著作 20 に対しノード 30・最大 index 29 なので、
+  現行実装のままでも素朴な列挙テストは通ってしまう** —— 値そのものを検査すること
+- **Refresh 失敗後に古い妥当表示が残る。**赤い文言だけ更新され、
+  plan・binding・下書き・各軸は据え置き
 
 #### 受け入れ条件(§4 規約 10)
 
-- **権威が一箇所であること。**同じテストの中で、権威表の fullscreen の
-  「color 出力ちょうど 1 件」という規則を変えると、
-  **`validatePassOutputs` の挙動とフォームの表示が両方変わること。**
-  片方だけ変わるなら写経が残っている
-- **上表 5 件それぞれについて、フォームの表示がエンジンの受理/拒否と一致すること。**
-  同じテストの中で、受理される下書きと拒否される下書きを両方作り、
-  **エンジン側の判定(`validatePassOutputs` を実際に呼ぶ)と突き合わせること。**
-  期待値をテストにリテラルで書かないこと
-- **`kind` を省いたフレームプランが名前付きエラーになること。**
-  同じテストで `kind` のある正常なプランが通ることを検査すること
-- **フレームプランから外れた著作パス名との衝突が検出されること。**
-  同じテストで、著作にも実行時にも無い名前が妥当になることを検査すること
-- **著作 config にグラフが無いとき、衝突軸が「判定していない」であること。**
-  「妥当」でないこと
-- **Refresh 失敗後に、直前まで妥当だった下書きが妥当と表示されないこと**
+- **権威が一箇所であること。**同じテストの中で、**既定と異なる不変ポリシーを両側に注入**し、
+  **core 側の判定と studio 側の表示が両方その注入に従うこと**を検査すること。
+  片方だけ既定のままなら写経が残っている。
+  **グローバル可変表による差し替えを使わないこと**
+- **形の判定が、エンジンの実挙動と全数一致すること。**同じテストの中で、
+  color 出力 0/1/2 件 × depth 有無 × input が output と重なる(現フレーム / `@history`)×
+  input 重複の有無 × `swapchain` を input / color output / depth output に置く、
+  の組み合わせを**生成**し、各々について
+  **フォームの表示とエンジンの受理/拒否が一致すること**を検査すること。
+  **期待値をテストにリテラルで書かないこと。**
+  テストは studio ではないので `pelican_core` を引いてよい
+- **`@history` の否定対照。**同じテストで、`taa_accum` を現フレーム読みして書くと不当、
+  `taa_accum@history` を読んで `taa_accum` を書くと妥当になること
+- **`swapchain` の役割別対照。**同じテストで、input は不当、depth output は不当、
+  **color output は妥当**になること。
+  **`projects/vrm_xr_demo` の `lighting_pass` を実ファイルから読んで駆動し、妥当になること**
+- **`input` 空が不当にならないこと。**同じテストで、入力を要求する形が別途不当になることを検査すること
+  (シェーダーが入力を要するかは「判定していない」軸に属する)
+- **`resources[].kind` の欠落 / null / 空 / 未知が、それぞれ名前付きエラーになること。**
+  同じテストで正常な `kind` が通ること。
+  **`FullscreenPassWidget` と `FramePlanModel` の両方の本番経路を通すこと**
+- **名前衝突を 3 ケースで検査すること**: 著作にのみ在る名前 / 実行時にのみ在る名前 /
+  どちらにも無い名前。前 2 つが不当、最後が妥当になること
+- **著作 config にグラフが無いとき、衝突軸が「判定していない」であること**(「妥当」でないこと)
+- **貼り付け位置の値が、著作 `passes[]` の要素数と一致すること。**
+  `example` では 20 であって 30 ではない
+- **Refresh 失敗後に、plan・binding・下書き・依存する各軸が個別に失効していること。**
+  「以前の妥当が妥当と表示されない」だけでは、下書きを隠して軸を据え置く実装が通る
+- **`SKIP_DEVSTUDIO=ON` でも権威のテストが登録されること。**
+  純粋な project 層のポリシーテストは studio ターゲットの有無に依存させないこと。
+  studio 統合テストだけを OFF 時に足すこと
 - `ctest` 全数が緑(`-j4`)、`uv run tools/doclink.py check` が通ること
 
-依存: WP321a(マージ済み)。見積: 中。
+依存: WP321a(マージ済み)。見積: 大。
 
 ### WP325: WP321a のテストの抜け道を塞ぐ
 
@@ -5958,50 +6000,60 @@ WP321a が「studio には判定できない」と宣言した 3 軸(usage 適�
 #### 確認された抜け道
 
 - **(A) の期待値が循環している。**`formOwnedKeysFromAuthority` は
-  **フォーム自身が付けた `pelicanPassField` プロパティ**を走査し、
-  権威表はフィルタにしか使っていない。
-  フォームが `input` を出すのをやめて対応する印も消せば、
-  **期待投影も一緒に縮むので通る。**`validatePassFieldOwnership` は
-  必須フィールドを検査しないため `{type}` だけでも通る
-- **(A)(D) の否定対照が偽物。**`unawarePartialForm` は widget を駆動せず空集合を返すだけの
-  テスト内関数、`falsely_all_checked` は取得した文字列の `"Not checked"` を
-  `"Valid"` に置換しただけ。**どちらも「動いていない側」を実行していない**(規約 10 違反)
-- **(F) の RPC 走査が空白 1 つで破れる。**`requestRpc (` と書けば `find("requestRpc(")` に当たらない。
+  **フォーム自身が付けた `pelicanPassField` プロパティ**を走査し、権威表はフィルタにしか使っていない。
+  フォームが `input` を出すのをやめて対応する印も消せば、**期待投影も一緒に縮むので通る。**
+  `validatePassFieldOwnership` は必須フィールドを検査しないため `{type}` だけでも通る。
+  **既存の所有表は `name` / `input` / `output` / `order` を意図的に含まないので、
+  そのままでは期待値の出所にならない**
+- **(A)(D) の否定対照が偽物。**`unawarePartialForm` は widget を駆動せず空集合を返すテスト内関数、
+  `falsely_all_checked` は取得した文字列の `"Not checked"` を `"Valid"` に置換しただけ。
+  **どちらも「動いていない側」を実行していない**(規約 10 違反)
+- **(F) の RPC 走査が空白 1 つで破れる。**`requestRpc (` と書けば当たらない。
   禁止語に `std::ofstream` / `fopen` / `QSettings` が無い。
   実行時の書き込み検査は `openProjectReadOnly()` を呼んでいないので、
   その経路に書き込みを足しても検出されない
 - **(G) の 2 プランがグラフ名を共有している。**束縛鍵から `graph` を落としても通る
 - **(E) は `#ifdef PELICAN_TEST_SOURCE_DIR` で迂回できる。**
   テストは `mainwindow.cpp` を独自ターゲットに直接コンパイルし、この定義を持つ。
-  production 側の参照を同じ `#ifdef` で囲めば、テストには widget が在り production には無い
-- **レイアウトプリセットのテストが 6 dock で止まっている。**7 番目を含まないので、
-  新 dock のタブ化を消しても、objectName を既存と衝突させても通る
+  **ターゲットの `SOURCES` プロパティ検査に落としても抜け道は復活する** ——
+  同じソースを production と test が別々にコンパイルすれば通ってしまう
+- **`MainWindow` を構築するだけでは本番配線の証明にならない。**
+  `openProjectReadOnly` の呼び出しを消しても、widget 直接テストは通る
+- **レイアウトプリセットのテストが 6 dock で止まっている。**7 番目を含まない
 
 #### 受け入れ条件(§4 規約 10)
 
 各項目について、**「その抜け道を実際に使う変異を作ると落ちること」を確かめること。**
 確かめていない項目は「確かめていない」と報告すること。
 
-- **(A) の期待鍵集合を、フォームから独立した権威から得ること。**
-  `pelicanPassField` プロパティを走査しないこと。
-  否定側は**同じ widget を著作コンテキスト無しで駆動**すること
+- **(A) の期待鍵集合を、project 層の純粋な関数から得ること。**
+  「fullscreen のフォームが投影する共通 + 型所有フィールド」を返す
+  **著作投影スキーマを project 層に定義する**(既存の所有表は `name` / `input` / `output` を含まないため)。
+  テストの期待 JSON はその関数から作り、**widget のプロパティ・子・ヘルパを参照しないこと**
+- **否定側を、同じ widget を著作コンテキスト無しで駆動する形にすること**
 - **(D) の否定対照を、同じ widget の別状態にすること。**文字列置換をやめること。
-  利用者に見える集約表示・コピー可否を含めて比較すること
-- **(F) を transport 境界の spy にすること。**ソース文字列走査をやめる。
-  widget には `EmbeddedViewport` の汎用能力を渡さず、
-  **`getFramePlan()` だけを持つ読み取り専用のゲートウェイ**を渡すこと。
-  書き込み検査は project を開く経路も実行すること
+  **利用者に見える集約表示とコピー可否**を含めて比較すること
+- **(F) をソース文字列走査ではなく、注入した capability の spy にすること。**
+  widget に `EmbeddedViewport` の汎用能力を渡さないこと。
+  RPC は非同期なので**同期の `getFramePlan()` 一本では足りない** ——
+  `ready` / `requestFramePlan` / `result` / `failure` だけを持つ**非同期の読み取り専用 capability**にすること。
+  `MainWindow` が `EmbeddedViewport` からアダプタを作り、
+  書き込みが要る widget は従来の capability を使い続けること
+- **書き込み検査で、project を開く本番経路を実行すること。**
+  Qt の writable location と作業ディレクトリをテスト用の一時領域に隔離し、
+  **project と全 writable root の前後を比較すること。**禁止語の列挙に依存しないこと
+- **本番配線を、production と test が同一のコンパイル済み `pelican_studio_view` ターゲットを
+  リンクする形で保証すること。`SOURCES` プロパティ検査への代替は認めない。**
+  加えて **`MainWindow` の本番の project-open 経路を操作し、
+  フォームに著作グラフとパスが実際に流入したことを検査すること**
 - **(G) に第 3 のプランを足すこと** —— resource 集合が同一でグラフ名だけ異なるもの。
   Refresh の実経路で与え、下書きが破棄されること
-- **(E) を CMake のテキスト走査ではなく、`MainWindow` を production とテストが
-  同じライブラリからリンクする形にすること。**それが大きすぎるなら、
-  ターゲットの実 `SOURCES` プロパティを検査すること
 - **レイアウトプリセットのテストを 7 dock にすること。**
   6 dock の状態を 7 dock の `MainWindow` に復元し、既存 dock の
   area / tab / visibility と、`View > Panels` の 7 件・objectName の一意性を検査すること
 - `ctest` 全数が緑(`-j4`)
 
-依存: WP321a(マージ済み)。WP324 と並行してよい。見積: 中。
+依存: WP321a(マージ済み)。WP324 と並行してよい。見積: 大。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
