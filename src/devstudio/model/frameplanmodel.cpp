@@ -1,4 +1,5 @@
 #include "frameplanmodel.hpp"
+#include "frameplanresourcekind.hpp"
 
 #include "executionplanwire.hpp"
 #include "frameresolutionwire.hpp"
@@ -968,7 +969,8 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             }
             auto &resource = resources[name];
             resource.name = name;
-            resource.kind = optionalStringField(value, "kind", context);
+            resource.kind = std::string{framePlanResourceKindName(
+                decodeFramePlanResourceKind(value, context))};
             resource.source = optionalStringField(value, "source", context);
             resource.provider_feature =
                 optionalStringField(value, "provider_feature", context);

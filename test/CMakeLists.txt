@@ -263,6 +263,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     pelican_studio_inspector_model
     pelican_studio_gizmo_model
     pelican_project
+    pelican_core
     Qt6::Core
     Qt6::Widgets
   )
@@ -1547,6 +1548,7 @@ target_compile_definitions(pelican_test_passfieldownership_test PRIVATE
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+pelican_define_test(passshapepolicy_test GROUP project_planning pelican_project)
 pelican_define_test(gpudrawtiming_test GROUP project_planning pelican_project)
 target_compile_definitions(pelican_test_gpudrawtiming_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

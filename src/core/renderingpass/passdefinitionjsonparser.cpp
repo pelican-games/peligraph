@@ -6,7 +6,9 @@
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
 #include "../userpublic/render/pass_implementation_abi_v1.hpp"
+#include "passshapepolicy.hpp"
 #include <stdexcept>
+#include <vector>
 
 namespace Pelican {
 
@@ -48,6 +50,7 @@ void parsePassImplementationProvider(
 PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
                                            const RenderTargetNameResolver &rt_resolver,
                                            const RenderTargetMetadataResolver &rt_metadata,
+                                           const PassShapePolicy &shape_policy,
                                            const std::unordered_set<std::string> &buffer_names) {
     if (!pass_json.is_object()) {
         throw std::runtime_error("passes entries must be objects");
@@ -56,7 +59,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     PassDefinition pass_def;
     pass_def.name = parseStringField(pass_json, "name", "pass");
     validateName(pass_def.name, "Pass");
-    parsePassTypeFromJson(pass_def, pass_json);
+    const auto pass_type = parsePassTypeFromJson(pass_def, pass_json);
     pass_def.region_tags =
         parseOptionalRegionTags(
             pass_json, "Pass '" + pass_def.name + "'");
@@ -66,8 +69,22 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
             "Pass '" + pass_def.name + "'");
     parsePassImplementationProvider(pass_def, pass_json);
 
+    const std::vector<std::string> non_image_inputs{
+        buffer_names.begin(), buffer_names.end()};
+    const auto shape_observation = passShapeObservationFromJson(
+        pass_type, pass_json, non_image_inputs);
+    const auto shape_violations =
+        evaluatePassShape(shape_policy, shape_observation);
+    if (!shape_violations.empty()) {
+        throw std::runtime_error(
+            "Pass shape violation '" +
+            std::string{passShapeViolationName(
+                shape_violations.front().kind)} +
+            "' in pass '" + pass_def.name + "': " +
+            passShapeViolationDescription(shape_violations.front()));
+    }
+
     parsePassOutputTargetsFromJson(pass_def, rt_resolver, pass_json);
-    validatePassOutputs(pass_def);
 
     parseMaterialPassInfoFromJson(pass_def, pass_json);
 
@@ -81,8 +98,6 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
         buffer_names);
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_metadata);
-    validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_metadata);
-    validateUniqueRenderTargets(pass_def.input_targets, "input", pass_def, rt_metadata);
     validatePassOutputExtents(pass_def, rt_metadata);
     pass_def.rasterization_samples =
         resolvePassOutputSamples(pass_def, rt_metadata);
@@ -107,6 +122,16 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     parseVelocityPassInfoIntoDefinition(pass_def, pass_json);
     parsePickingPassInfoIntoDefinition(pass_def, pass_json);
     return pass_def;
+}
+
+PassDefinition parsePassDefinitionFromJson(
+    const nlohmann::json &pass_json,
+    const RenderTargetNameResolver &rt_resolver,
+    const RenderTargetMetadataResolver &rt_metadata,
+    const std::unordered_set<std::string> &buffer_names) {
+    return parsePassDefinitionFromJson(
+        pass_json, rt_resolver, rt_metadata,
+        defaultPassShapePolicy(), buffer_names);
 }
 
 } // namespace Pelican

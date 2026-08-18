@@ -1,9 +1,15 @@
 #include "fullscreenpasswidget.hpp"
 #include "mainwindow.hpp"
+#include "../src/devstudio/model/frameplanmodel.hpp"
 
 #include "passfieldownership.hpp"
+#include "passshapepolicy.hpp"
+#include "renderingpass/passdefinitionjsonparser.hpp"
+#include "renderingpass/rendertargetmetadataresolver.hpp"
+#include "renderingpass/rendertargetnameresolver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +33,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <set>
 #include <stdexcept>
@@ -183,7 +190,14 @@ void driveFromDeclaration(FullscreenPassWidget &form,
                         "pelican.fullscreenPass.addInput",
                         input.get_ref<const std::string &>());
     }
-    for (const auto &color : declaration.at("output").at("color")) {
+    const auto &color = declaration.at("output").at("color");
+    if (color.is_array()) {
+        for (const auto &entry : color) {
+            chooseCandidate(form, "pelican.fullscreenPass.colorTarget",
+                            "pelican.fullscreenPass.addColor",
+                            entry.get_ref<const std::string &>());
+        }
+    } else if (!color.is_null()) {
         chooseCandidate(form, "pelican.fullscreenPass.colorTarget",
                         "pelican.fullscreenPass.addColor",
                         color.get_ref<const std::string &>());
@@ -309,6 +323,98 @@ QString axisText(const FullscreenPassWidget &form, const char *object_name) {
         throw std::runtime_error("validation axis is not a label");
     }
     return label->text();
+}
+
+StringSet shapeViolations(const FullscreenPassWidget &form) {
+    StringSet result;
+    for (const auto &name :
+         requiredWidget(form, "pelican.fullscreenPass.axis.passShape")
+             .property("pelicanPassShapeViolations")
+             .toStringList()) {
+        result.insert(name.toStdString());
+    }
+    return result;
+}
+
+void addInputReference(FullscreenPassWidget &form,
+                       std::string_view authored) {
+    const auto input =
+        Pelican::parsePassShapeInputReference(authored);
+    chooseCandidate(
+        form, "pelican.fullscreenPass.inputTarget",
+        input.history ? "pelican.fullscreenPass.addHistoryInput"
+                      : "pelican.fullscreenPass.addInput",
+        input.name);
+}
+
+void driveShapeDraft(FullscreenPassWidget &form,
+                     const std::vector<std::string> &inputs,
+                     const std::vector<std::string> &colors,
+                     const std::optional<std::string> &depth) {
+    required<QLineEdit>(form, "pelican.fullscreenPass.name")
+        .setText(QStringLiteral("shape_case"));
+    required<QLineEdit>(form, "pelican.fullscreenPass.shader.vertex")
+        .setText(QStringLiteral("engine://fullscreen"));
+    required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment")
+        .setText(QStringLiteral("engine://fullscreen"));
+    for (const auto &input : inputs) {
+        addInputReference(form, input);
+    }
+    for (const auto &color : colors) {
+        chooseCandidate(form, "pelican.fullscreenPass.colorTarget",
+                        "pelican.fullscreenPass.addColor", color);
+    }
+    setDepth(form, depth ? Json(*depth) : Json(nullptr));
+    QApplication::processEvents();
+}
+
+bool coreAcceptsShape(const Json &pass,
+                      const Pelican::PassShapePolicy &policy) {
+    static const std::vector<std::string> target_names{
+        "input_a", "output_a", "output_b", "depth_a", "taa_accum",
+    };
+    const Pelican::RenderTargetNameResolver names{
+        [](const std::string &name) {
+            const auto found = std::ranges::find(target_names, name);
+            return found == target_names.end()
+                       ? Pelican::noRenderTargetId()
+                       : Pelican::GlobalRenderTargetId{
+                             static_cast<int>(found - target_names.begin())};
+        }};
+    const Pelican::RenderTargetMetadataResolver metadata{
+        [](Pelican::GlobalRenderTargetId id) {
+            if (id.value < 0 ||
+                static_cast<std::size_t>(id.value) >=
+                    target_names.size()) {
+                throw std::runtime_error(
+                    "unexpected shape target metadata lookup");
+            }
+            return Pelican::RenderTargetMetadata{
+                .name = target_names[static_cast<std::size_t>(id.value)],
+                .usage = vk::ImageUsageFlagBits::eSampled |
+                         vk::ImageUsageFlagBits::eColorAttachment |
+                         vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                .format = vk::Format::eR8G8B8A8Unorm,
+                .extent = vk::Extent2D{16, 16},
+                .history = true,
+            };
+        }};
+    try {
+        (void)Pelican::parsePassDefinitionFromJson(
+            pass, names, metadata, policy);
+        return true;
+    } catch (const std::exception &) {
+        return false;
+    }
+}
+
+Json shapePlan() {
+    return minimalFramePlan(
+        "shape_graph",
+        Json::array({resource("input_a"), resource("output_a"),
+                     resource("output_b"), resource("depth_a"),
+                     resource("taa_accum"),
+                     resource("swapchain", "frame_target", "engine")}));
 }
 
 void driveMinimalDraft(FullscreenPassWidget &form, std::string_view name,
@@ -513,11 +619,11 @@ TEST_CASE(
                       "engine://fullscreen", "swapchain", "safe_output");
     REQUIRE(axisState(
                 *swapchain_form,
-                "pelican.fullscreenPass.axis.targetNames") == "invalid");
-    REQUIRE(axisText(
+                "pelican.fullscreenPass.axis.targetNames") == "valid");
+    REQUIRE(axisState(
                 *swapchain_form,
-                "pelican.fullscreenPass.axis.targetNames")
-                .contains(QStringLiteral("frame_target")));
+                "pelican.fullscreenPass.axis.passShape") == "invalid");
+    REQUIRE(shapeViolations(*swapchain_form).contains("swapchain_input"));
 
     const std::array unchecked_axes{
         "pelican.fullscreenPass.axis.targetUsage",
@@ -698,6 +804,445 @@ TEST_CASE(
                 .count() == 1);
     REQUIRE(axisState(
                 form, "pelican.fullscreenPass.axis.targetNames") == "valid");
+}
+
+TEST_CASE(
+    "WP324 generated fullscreen shapes exactly match core acceptance",
+    "[devstudio][fullscreen-pass][wp324][shape][exhaustive]") {
+    (void)application();
+    enum class SwapchainRole { none, input, color, depth };
+    const auto &policy = Pelican::defaultPassShapePolicy();
+
+    for (std::size_t color_count = 0; color_count <= 2; ++color_count) {
+        for (const bool has_depth : {false, true}) {
+            for (const int overlap : {0, 1, 2}) {
+                for (const bool duplicate_input : {false, true}) {
+                    for (const auto swapchain_role : {
+                             SwapchainRole::none, SwapchainRole::input,
+                             SwapchainRole::color, SwapchainRole::depth}) {
+                        if ((swapchain_role == SwapchainRole::color &&
+                             color_count == 0) ||
+                            (swapchain_role == SwapchainRole::depth &&
+                             !has_depth)) {
+                            continue;
+                        }
+
+                        std::vector<std::string> colors;
+                        if (color_count >= 1) colors.push_back("output_a");
+                        if (color_count >= 2) colors.push_back("output_b");
+                        if (swapchain_role == SwapchainRole::color) {
+                            colors.front() = "swapchain";
+                        }
+                        std::optional<std::string> depth =
+                            has_depth
+                                ? std::optional<std::string>{"depth_a"}
+                                : std::nullopt;
+                        if (swapchain_role == SwapchainRole::depth) {
+                            depth = "swapchain";
+                        }
+
+                        std::vector<std::string> inputs;
+                        if (overlap != 0) {
+                            const std::string overlapping =
+                                colors.empty() ? "output_a" : colors.front();
+                            inputs.push_back(
+                                overlap == 2
+                                    ? overlapping + "@history"
+                                    : overlapping);
+                        }
+                        if (duplicate_input) {
+                            inputs.push_back("input_a");
+                            inputs.push_back("input_a");
+                        }
+                        if (swapchain_role == SwapchainRole::input) {
+                            inputs.push_back("swapchain");
+                        }
+
+                        const Json authored{
+                            {"name", "shape_case"},
+                            {"type", "fullscreen"},
+                            {"input", inputs},
+                            {"output",
+                             {{"color", colors},
+                              {"depth", depth ? Json(*depth)
+                                              : Json(nullptr)}}},
+                            {"shader",
+                             {{"vertex", "engine://fullscreen"},
+                              {"fragment", "engine://fullscreen"}}},
+                        };
+                        const bool core_accepted =
+                            coreAcceptsShape(authored, policy);
+
+                        RefreshHarness refresh;
+                        FullscreenPassWidget form{refresh.driver(), policy};
+                        form.receiveResult(QByteArray::fromStdString(
+                            shapePlan().dump()));
+                        driveShapeDraft(form, inputs, colors, depth);
+                        const bool studio_accepted =
+                            axisState(
+                                form,
+                                "pelican.fullscreenPass.axis.passShape") ==
+                            "valid";
+
+                        INFO("color_count=" << color_count
+                             << " depth=" << has_depth
+                             << " overlap=" << overlap
+                             << " duplicate=" << duplicate_input
+                             << " swapchain_role="
+                             << static_cast<int>(swapchain_role));
+                        REQUIRE(studio_accepted == core_accepted);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE(
+    "WP324 one immutable injected policy controls both core and studio",
+    "[devstudio][fullscreen-pass][wp324][authority][negative-contrast]") {
+    (void)application();
+    const auto &production = Pelican::defaultPassShapePolicy();
+    const Pelican::PassShapePolicy requires_input = [&] {
+        auto policy = production;
+        policy.types[static_cast<std::size_t>(
+                         Pelican::RenderPassType::fullscreen)]
+            .minimum_inputs = 1;
+        return policy;
+    }();
+    REQUIRE(Pelican::passShapeTypePolicy(
+                production, Pelican::RenderPassType::fullscreen)
+                .minimum_inputs == 0);
+    REQUIRE(Pelican::passShapeTypePolicy(
+                requires_input, Pelican::RenderPassType::fullscreen)
+                .minimum_inputs == 1);
+
+    const Json authored{
+        {"name", "empty_input"},
+        {"type", "fullscreen"},
+        {"input", Json::array()},
+        {"output", {{"color", "output_a"}, {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fullscreen"}}},
+    };
+    REQUIRE(coreAcceptsShape(authored, production));
+    REQUIRE_FALSE(coreAcceptsShape(authored, requires_input));
+
+    RefreshHarness production_refresh;
+    FullscreenPassWidget production_form{production_refresh.driver(),
+                                         production};
+    production_form.receiveResult(
+        QByteArray::fromStdString(shapePlan().dump()));
+    driveShapeDraft(production_form, {}, {"output_a"}, std::nullopt);
+    REQUIRE(axisState(
+                production_form,
+                "pelican.fullscreenPass.axis.passShape") == "valid");
+
+    RefreshHarness injected_refresh;
+    FullscreenPassWidget injected_form{injected_refresh.driver(),
+                                       requires_input};
+    injected_form.receiveResult(
+        QByteArray::fromStdString(shapePlan().dump()));
+    driveShapeDraft(injected_form, {}, {"output_a"}, std::nullopt);
+    REQUIRE(axisState(
+                injected_form,
+                "pelican.fullscreenPass.axis.passShape") == "invalid");
+    REQUIRE(shapeViolations(injected_form).contains("input_count"));
+}
+
+TEST_CASE(
+    "WP324 history and swapchain roles have explicit opposite controls",
+    "[devstudio][fullscreen-pass][wp324][history][swapchain]") {
+    (void)application();
+    const auto &policy = Pelican::defaultPassShapePolicy();
+    const auto assess = [&](std::vector<std::string> inputs,
+                            std::vector<std::string> colors,
+                            std::optional<std::string> depth) {
+        const Json authored{
+            {"name", "role_case"},
+            {"type", "fullscreen"},
+            {"input", inputs},
+            {"output",
+             {{"color", colors},
+              {"depth", depth ? Json(*depth) : Json(nullptr)}}},
+            {"shader",
+             {{"vertex", "engine://fullscreen"},
+              {"fragment", "engine://fullscreen"}}},
+        };
+        RefreshHarness refresh;
+        FullscreenPassWidget form{refresh.driver(), policy};
+        form.receiveResult(
+            QByteArray::fromStdString(shapePlan().dump()));
+        driveShapeDraft(form, inputs, colors, depth);
+        const bool studio = axisState(
+                                form,
+                                "pelican.fullscreenPass.axis.passShape") ==
+                            "valid";
+        const bool core = coreAcceptsShape(authored, policy);
+        REQUIRE(studio == core);
+        return studio;
+    };
+
+    REQUIRE_FALSE(assess({"taa_accum"}, {"taa_accum"}, std::nullopt));
+    REQUIRE(assess({"taa_accum@history"}, {"taa_accum"}, std::nullopt));
+
+    REQUIRE_FALSE(assess({"swapchain"}, {"output_a"}, std::nullopt));
+    REQUIRE_FALSE(assess({}, {"output_a"}, "swapchain"));
+    REQUIRE(assess({}, {"swapchain"}, std::nullopt));
+}
+
+TEST_CASE(
+    "WP324 shipped vrm XR lighting pass drives the form as valid",
+    "[devstudio][fullscreen-pass][wp324][vrm-xr][real-file]") {
+    (void)application();
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const Json config = readJson(
+        root / "projects" / "vrm_xr_demo" / "passes" / "main.json");
+    const auto &graph = config.at("rendering_passes").at(0);
+    const Json &lighting = findPass(
+        config, graph.at("name").get<std::string>(), "lighting_pass");
+    Json resources = Json::array();
+    for (const auto &target : config.at("render_targets")) {
+        resources.push_back(resource(
+            target.at("name").get<std::string>()));
+    }
+    resources.push_back(resource("swapchain", "frame_target", "engine"));
+
+    RefreshHarness refresh;
+    FullscreenPassWidget form{refresh.driver()};
+    form.receiveAuthoringConfig(QByteArray::fromStdString(config.dump()));
+    form.receiveResult(QByteArray::fromStdString(
+        minimalFramePlan(
+            graph.at("name").get<std::string>(), resources)
+            .dump()));
+    driveFromDeclaration(form, lighting);
+
+    REQUIRE(outputJson(form).at("output").at("color") ==
+            Json::array({"swapchain"}));
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.passShape") == "valid");
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.targetNames") == "valid");
+}
+
+TEST_CASE(
+    "WP324 paste position comes from authored passes rather than runtime nodes",
+    "[devstudio][fullscreen-pass][wp324][position][real-file]") {
+    (void)application();
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const Json config = readJson(
+        root / "projects" / "example" / "passes" /
+        "main_rendering_config.json");
+    const Json plan = readJson(
+        root / "test" / "fixtures" / "devstudio" /
+        "example_frame_plan.json");
+    const std::size_t authored_count =
+        config.at("rendering_passes").at(0).at("passes").size();
+    REQUIRE(plan.at("nodes").size() != authored_count);
+
+    RefreshHarness refresh;
+    FullscreenPassWidget form{refresh.driver()};
+    form.receiveAuthoringConfig(QByteArray::fromStdString(config.dump()));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    auto &position = required<QSpinBox>(
+        form, "pelican.fullscreenPass.position");
+    REQUIRE(position.value() == static_cast<int>(authored_count));
+    REQUIRE(position.value() == 20);
+    REQUIRE(position.value() != static_cast<int>(plan.at("nodes").size()));
+}
+
+TEST_CASE(
+    "WP324 resource kind failures stay distinct through model and widget production paths",
+    "[devstudio][fullscreen-pass][wp324][resource-kind][fail-fast]") {
+    (void)application();
+    const std::array invalid_resources{
+        std::pair{std::string{"resource_kind_missing"},
+                  Json{{"name", "target"}, {"source", "project"}}},
+        std::pair{std::string{"resource_kind_null"},
+                  Json{{"name", "target"},
+                       {"kind", nullptr},
+                       {"source", "project"}}},
+        std::pair{std::string{"resource_kind_empty"},
+                  Json{{"name", "target"},
+                       {"kind", ""},
+                       {"source", "project"}}},
+        std::pair{std::string{"resource_kind_unknown"},
+                  Json{{"name", "target"},
+                       {"kind", "texture"},
+                       {"source", "project"}}},
+    };
+
+    for (const auto &[error_name, invalid_resource] : invalid_resources) {
+        const Json plan = minimalFramePlan(
+            "kind_graph", Json::array({invalid_resource}));
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            Catch::Matchers::ContainsSubstring(error_name));
+
+        RefreshHarness refresh;
+        FullscreenPassWidget form{refresh.driver()};
+        form.receiveResult(QByteArray::fromStdString(plan.dump()));
+        REQUIRE(required<QLabel>(
+                    form, "pelican.fullscreenPass.planStatus")
+                    .text()
+                    .contains(QString::fromStdString(error_name)));
+        REQUIRE(required<QComboBox>(
+                    form, "pelican.fullscreenPass.inputTarget")
+                    .count() == 0);
+        REQUIRE(required<QLabel>(
+                    form, "pelican.fullscreenPass.graph")
+                    .text() == QStringLiteral("(no frame plan)"));
+    }
+
+    const Json valid = minimalFramePlan(
+        "kind_graph", Json::array({resource("target")}));
+    REQUIRE_NOTHROW(buildFramePlanModel(valid.dump()));
+    RefreshHarness refresh;
+    FullscreenPassWidget form{refresh.driver()};
+    form.receiveResult(QByteArray::fromStdString(valid.dump()));
+    REQUIRE(comboNames(required<QComboBox>(
+                form, "pelican.fullscreenPass.inputTarget")) ==
+            StringSet{"target"});
+}
+
+TEST_CASE(
+    "WP324 collision axis joins authored and runtime names and requires an authored graph",
+    "[devstudio][fullscreen-pass][wp324][collision]") {
+    (void)application();
+    Json plan = minimalFramePlan("collision_graph", Json::array());
+    plan["nodes"] = Json::array({
+        {{"name", "runtime_only"},
+         {"kind", "render"},
+         {"declaration_index", 0},
+         {"order", 0},
+         {"level", 0},
+         {"reads", Json::array()},
+         {"writes", Json::array()}},
+    });
+    const Json authored{
+        {"rendering_passes",
+         Json::array({
+             {{"name", "collision_graph"},
+              {"passes", Json::array({Json{{"name", "authored_only"}}})}},
+         })},
+    };
+
+    RefreshHarness refresh;
+    FullscreenPassWidget form{refresh.driver()};
+    form.receiveAuthoringConfig(QByteArray::fromStdString(authored.dump()));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    auto &name = required<QLineEdit>(
+        form, "pelican.fullscreenPass.name");
+
+    name.setText(QStringLiteral("authored_only"));
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.nameCollision") ==
+            "invalid");
+    name.setText(QStringLiteral("runtime_only"));
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.nameCollision") ==
+            "invalid");
+    name.setText(QStringLiteral("absent_from_both"));
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.nameCollision") ==
+            "valid");
+
+    const Json other_graph{
+        {"rendering_passes",
+         Json::array({
+             {{"name", "other_graph"}, {"passes", Json::array()}},
+         })},
+    };
+    form.receiveAuthoringConfig(
+        QByteArray::fromStdString(other_graph.dump()));
+    name.setText(QStringLiteral("runtime_only"));
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.nameCollision") ==
+            "not_checked");
+    REQUIRE(axisText(
+                form, "pelican.fullscreenPass.axis.nameCollision")
+                .contains(QStringLiteral("no graph 'collision_graph'")));
+}
+
+TEST_CASE(
+    "WP324 refresh failure invalidates plan binding draft and each dependent axis",
+    "[devstudio][fullscreen-pass][wp324][refresh][failure]") {
+    (void)application();
+    RefreshHarness refresh;
+    FullscreenPassWidget form{refresh.driver()};
+    const Json authored{
+        {"rendering_passes",
+         Json::array({
+             {{"name", "refresh_graph"}, {"passes", Json::array()}},
+         })},
+    };
+    const Json plan = minimalFramePlan(
+        "refresh_graph",
+        Json::array({resource("input_a"), resource("output_a")}));
+    form.receiveAuthoringConfig(QByteArray::fromStdString(authored.dump()));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    driveShapeDraft(form, {"input_a"}, {"output_a"}, std::nullopt);
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.passShape") == "valid");
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.nameCollision") ==
+            "valid");
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.targetNames") == "valid");
+
+    auto &refresh_button = required<QPushButton>(
+        form, "pelican.fullscreenPass.refresh");
+    refresh_button.click();
+    REQUIRE(refresh.requests.size() == 1);
+    form.receiveRefreshFailure(refresh.requests.back(),
+                               QStringLiteral("synthetic failure"));
+
+    REQUIRE(required<QLabel>(
+                form, "pelican.fullscreenPass.graph")
+                .text() == QStringLiteral("(no frame plan)"));
+    REQUIRE(required<QComboBox>(
+                form, "pelican.fullscreenPass.inputTarget")
+                .count() == 0);
+    REQUIRE(required<QLineEdit>(
+                form, "pelican.fullscreenPass.name")
+                .text()
+                .isEmpty());
+    REQUIRE(required<QListWidget>(
+                form, "pelican.fullscreenPass.inputs")
+                .count() == 0);
+    REQUIRE(required<QListWidget>(
+                form, "pelican.fullscreenPass.colors")
+                .count() == 0);
+    REQUIRE(required<QSpinBox>(
+                form, "pelican.fullscreenPass.position")
+                .value() == 0);
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.passShape") ==
+            "invalid");
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.nameCollision") ==
+            "not_checked");
+    REQUIRE(axisState(
+                form, "pelican.fullscreenPass.axis.targetNames") ==
+            "not_checked");
+    REQUIRE(axisText(
+                form, "pelican.fullscreenPass.axis.targetUsage")
+                .contains(QStringLiteral("no frame plan")));
+    REQUIRE(axisText(
+                form, "pelican.fullscreenPass.axis.generationOrder")
+                .contains(QStringLiteral("no frame plan")));
+
+    auto &name_after_failure = required<QLineEdit>(
+        form, "pelican.fullscreenPass.name");
+    name_after_failure.setText(QStringLiteral("new_after_failure"));
+    const Json first_rebound_plan = minimalFramePlan(
+        "first_rebound_graph",
+        Json::array({resource("input_b"), resource("output_b")}));
+    form.receiveResult(
+        QByteArray::fromStdString(first_rebound_plan.dump()));
+    REQUIRE(name_after_failure.text() ==
+            QStringLiteral("new_after_failure"));
 }
 
 } // namespace PelicanStudio

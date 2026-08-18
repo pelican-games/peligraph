@@ -9,6 +9,14 @@ namespace Pelican {
 
 class RenderTargetMetadataResolver;
 class RenderTargetNameResolver;
+struct PassShapePolicy;
+
+PassDefinition parsePassDefinitionFromJson(
+    const nlohmann::json &pass_json,
+    const RenderTargetNameResolver &rt_resolver,
+    const RenderTargetMetadataResolver &rt_metadata,
+    const PassShapePolicy &shape_policy,
+    const std::unordered_set<std::string> &buffer_names = {});
 
 PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
                                            const RenderTargetNameResolver &rt_resolver,

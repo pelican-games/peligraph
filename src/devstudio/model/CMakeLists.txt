@@ -34,6 +34,8 @@ target_link_libraries(pelican_studio_gizmo_model PUBLIC
 add_library(pelican_studio_frame_plan STATIC
     frameplanmodel.cpp
     frameplanmodel.hpp
+    frameplanresourcekind.cpp
+    frameplanresourcekind.hpp
 )
 
 set_target_properties(pelican_studio_frame_plan PROPERTIES CXX_STANDARD 20)

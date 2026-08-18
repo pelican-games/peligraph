@@ -9,14 +9,6 @@
 namespace Pelican {
 
 void validatePassInputs(const PassDefinition &pass_def) {
-    if ((!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) &&
-        !pass_def.isFullscreen() &&
-        !pass_def.isGenericRaster() &&
-        !pass_def.isMaterial()) {
-        throw std::runtime_error(
-            "Only fullscreen, raster, and material passes support input targets: " +
-            pass_def.name);
-    }
     if (pass_def.isMaterial()) {
         if (!pass_def.input_buffers.empty()) {
             for (const auto &buffer :
@@ -53,21 +45,6 @@ void validatePassInputs(const PassDefinition &pass_def) {
     if (pass_def.input_target_history.size() != pass_def.input_targets.size()) {
         throw std::runtime_error("Pass input history metadata is inconsistent: " + pass_def.name);
     }
-    for (size_t input_index = 0; input_index < pass_def.input_targets.size(); ++input_index) {
-        const auto input_rt = pass_def.input_targets[input_index];
-        if (pass_def.input_target_history[input_index]) continue;
-        for (const auto &output_rt : pass_def.output_color) {
-            if (input_rt.value ==
-                output_rt.target.value) {
-                throw std::runtime_error("Pass cannot read and write the same color target: " + pass_def.name);
-            }
-        }
-
-        if (input_rt.value ==
-            pass_def.output_depth.target.value) {
-            throw std::runtime_error("Pass cannot read and write the same depth target: " + pass_def.name);
-        }
-    }
 }
 
 void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
@@ -94,6 +71,9 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
 
     for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
         const auto rt_id = pass_def.input_targets[i];
+        if (isSpecialRenderTarget(rt_id)) {
+            continue;
+        }
         const auto rt = rt_metadata.get(rt_id);
         const auto local_read =
             rt.storage_mode ==
@@ -115,53 +95,6 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
         if (pass_def.input_target_history.at(i) && !rt.history) {
             throw std::runtime_error("@history input requires a history render target: " + rt.name +
                                      " in pass: " + pass_def.name);
-        }
-    }
-}
-
-namespace {
-
-std::string renderTargetDisplayName(GlobalRenderTargetId rt_id, const RenderTargetMetadataResolver &rt_metadata) {
-    if (isSwapchainRenderTarget(rt_id)) {
-        return "swapchain";
-    }
-    return rt_metadata.get(rt_id).name;
-}
-
-} // namespace
-
-void validateUniqueRenderTargets(const std::vector<RasterAttachmentView> &targets,
-                                 const std::string &target_kind,
-                                 const PassDefinition &pass_def,
-                                 const RenderTargetMetadataResolver &rt_metadata) {
-    std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> seen_targets;
-    for (const auto &attachment : targets) {
-        if (!seen_targets
-                 .insert(attachment.target)
-                 .second) {
-            throw std::runtime_error("Pass has duplicate " + target_kind + " target: " +
-                                     renderTargetDisplayName(attachment.target, rt_metadata) + " in pass: " + pass_def.name);
-        }
-    }
-}
-
-void validateUniqueRenderTargets(
-    const std::vector<GlobalRenderTargetId> &targets,
-    const std::string &target_kind,
-    const PassDefinition &pass_def,
-    const RenderTargetMetadataResolver &rt_metadata) {
-    std::unordered_set<
-        GlobalRenderTargetId,
-        GlobalRenderTargetId::Hash>
-        seen_targets;
-    for (const auto target : targets) {
-        if (!seen_targets.insert(target).second) {
-            throw std::runtime_error(
-                "Pass has duplicate " + target_kind +
-                " target: " +
-                renderTargetDisplayName(
-                    target, rt_metadata) +
-                " in pass: " + pass_def.name);
         }
     }
 }
@@ -412,60 +345,6 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
     if (depth_rt.format != materialPassDepthAttachmentFormat) {
         throw std::runtime_error("Material pass depth output format mismatch: " + depth_rt.name +
                                  " in pass: " + pass_def.name);
-    }
-}
-
-void validatePassOutputs(const PassDefinition &pass_def) {
-    if (pass_def.output_color.empty() && !isConcreteRenderTarget(pass_def.output_depth)) {
-        throw std::runtime_error("Pass must output color or depth: " + pass_def.name);
-    }
-
-    if (pass_def.isFullscreen()) {
-        if (pass_def.output_color.size() != 1) {
-            throw std::runtime_error("Fullscreen pass requires exactly one color output: " + pass_def.name);
-        }
-        if (isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error("Fullscreen pass does not support depth output: " + pass_def.name);
-        }
-    }
-
-    if (pass_def.isShadowDepth()) {
-        if (!pass_def.output_color.empty()) {
-            throw std::runtime_error("Shadow depth pass does not support color output: " + pass_def.name);
-        }
-        if (!isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error("Shadow depth pass requires depth output: " + pass_def.name);
-        }
-    }
-
-    if (pass_def.isVelocity()) {
-        if (pass_def.output_color.size() != 1 || !isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error("Velocity pass requires one color and one depth output: " +
-                                     pass_def.name);
-        }
-    }
-
-    if (pass_def.isPicking()) {
-        if (pass_def.output_color.size() != 1 ||
-            !isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error(
-                "Picking pass requires one color and one depth output: " +
-                pass_def.name);
-        }
-    }
-
-    if (pass_def.isDebugDraw() || pass_def.isGizmo() ||
-        pass_def.isDebugText() || pass_def.isUi()
-#if PELICAN_WITH_IMGUI
-        || pass_def.isImGui()
-#endif
-    ) {
-        if (pass_def.output_color.size() != 1) {
-            throw std::runtime_error("Single-color pass requires exactly one color output: " + pass_def.name);
-        }
-        if (isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error("Single-color pass does not support depth output: " + pass_def.name);
-        }
     }
 }
 

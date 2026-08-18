@@ -2,6 +2,7 @@
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetnameresolver.hpp"
 #include "../../project/imagesubresourcejson.hpp"
+#include "passshapepolicy.hpp"
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -10,26 +11,6 @@
 namespace Pelican {
 
 namespace {
-
-struct InputReference {
-    std::string name;
-    bool history = false;
-};
-
-InputReference parseInputReference(const std::string &authored) {
-    constexpr std::string_view suffix = "@history";
-    if (authored.size() >= suffix.size() && authored.ends_with(suffix)) {
-        const auto name = authored.substr(0, authored.size() - suffix.size());
-        if (name.empty() || name.find('@') != std::string::npos) {
-            throw std::runtime_error("Invalid history input target: " + authored);
-        }
-        return {name, true};
-    }
-    if (authored.find('@') != std::string::npos) {
-        throw std::runtime_error("Unknown input target qualifier: " + authored);
-    }
-    return {authored, false};
-}
 
 GlobalRenderTargetId resolveRenderTarget(const RenderTargetNameResolver &rt_resolver, const std::string &name,
                                          const std::string &role) {
@@ -56,8 +37,7 @@ void validateRasterSubresource(
 RasterAttachmentView parseRasterAttachment(
     const RenderTargetNameResolver &rt_resolver,
     const nlohmann::json &encoded,
-    std::string_view role,
-    bool allow_swapchain) {
+    std::string_view role) {
     std::string name;
     std::optional<ImageSubresourceRange> subresource;
     if (encoded.is_string()) {
@@ -93,11 +73,6 @@ RasterAttachmentView parseRasterAttachment(
 
     validateName(name, std::string{role} + " output target");
     if (name == "swapchain") {
-        if (!allow_swapchain) {
-            throw std::runtime_error(
-                std::string{role} +
-                " output target cannot be swapchain");
-        }
         if (subresource) {
             throw std::runtime_error(
                 "Swapchain output cannot select a subresource");
@@ -158,7 +133,7 @@ parseColorOutputTargetsFromJson(
     for (const auto &encoded : color_output) {
         output_color.push_back(
             parseRasterAttachment(
-                rt_resolver, encoded, "Color", true));
+                rt_resolver, encoded, "Color"));
     }
     return output_color;
 }
@@ -170,7 +145,7 @@ RasterAttachmentView parseDepthOutputTargetFromJson(
         return RasterAttachmentView{noRenderTargetId()};
     }
     return parseRasterAttachment(
-        rt_resolver, depth_output, "Depth", false);
+        rt_resolver, depth_output, "Depth");
 }
 
 std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
@@ -187,12 +162,13 @@ std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNa
         if (!input_name_json.is_string()) {
             throw std::runtime_error("Input target must be a render target name");
         }
-        const auto input = parseInputReference(input_name_json.get<std::string>());
+        const auto input = parsePassShapeInputReference(
+            input_name_json.get_ref<const std::string &>());
         validateName(input.name, "Input target");
-        if (input.name == "swapchain") {
-            throw std::runtime_error("Input target cannot be swapchain");
-        }
-        input_targets.push_back(resolveRenderTarget(rt_resolver, input.name, "Input"));
+        input_targets.push_back(
+            input.name == "swapchain"
+                ? swapchainRenderTargetId()
+                : resolveRenderTarget(rt_resolver, input.name, "Input"));
     }
     return input_targets;
 }
@@ -211,11 +187,9 @@ void parseInputResourcesFromJson(PassDefinition &pass_def, const RenderTargetNam
         if (!input_name_json.is_string()) {
             throw std::runtime_error("Input target must be a render target or buffer name");
         }
-        const auto input = parseInputReference(input_name_json.get<std::string>());
+        const auto input = parsePassShapeInputReference(
+            input_name_json.get_ref<const std::string &>());
         validateName(input.name, "Input target");
-        if (input.name == "swapchain") {
-            throw std::runtime_error("Input target cannot be swapchain");
-        }
         if (buffer_names.find(input.name) != buffer_names.end()) {
             if (input.history) {
                 throw std::runtime_error("@history is supported only for render targets: " + input.name);
@@ -223,7 +197,10 @@ void parseInputResourcesFromJson(PassDefinition &pass_def, const RenderTargetNam
             pass_def.input_buffers.push_back(input.name);
             continue;
         }
-        pass_def.input_targets.push_back(resolveRenderTarget(rt_resolver, input.name, "Input"));
+        pass_def.input_targets.push_back(
+            input.name == "swapchain"
+                ? swapchainRenderTargetId()
+                : resolveRenderTarget(rt_resolver, input.name, "Input"));
         pass_def.input_target_history.push_back(input.history);
     }
 }

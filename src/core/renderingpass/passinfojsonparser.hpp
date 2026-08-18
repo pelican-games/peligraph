@@ -5,7 +5,10 @@
 
 namespace Pelican {
 
-void parsePassTypeFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json);
+enum class RenderPassType;
+
+RenderPassType parsePassTypeFromJson(
+    PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseFullscreenPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseGenericRasterPassInfoIntoDefinition(
     PassDefinition &pass_def,

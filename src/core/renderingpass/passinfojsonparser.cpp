@@ -10,7 +10,8 @@
 
 namespace Pelican {
 
-void parsePassTypeFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {
+RenderPassType parsePassTypeFromJson(
+    PassDefinition &pass_def, const nlohmann::json &pass_json) {
     const auto pass_type = validatePassFieldOwnership(
         pass_json, buildPassFieldOwnershipCapabilities());
     pass_def.pass_info = makePassInfo(pass_type);
@@ -25,6 +26,7 @@ void parsePassTypeFromJson(PassDefinition &pass_def, const nlohmann::json &pass_
     ) {
         pass_def.color_load_op = vk::AttachmentLoadOp::eLoad;
     }
+    return pass_type;
 }
 
 void parseFullscreenPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {

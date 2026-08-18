@@ -10,6 +10,10 @@
 class QByteArray;
 class QString;
 
+namespace Pelican {
+struct PassShapePolicy;
+}
+
 namespace PelicanStudio {
 
 class EmbeddedViewport;
@@ -26,8 +30,15 @@ class FullscreenPassWidget final : public QWidget {
   public:
     explicit FullscreenPassWidget(EmbeddedViewport *viewport,
                                   QWidget *parent = nullptr);
+    FullscreenPassWidget(EmbeddedViewport *viewport,
+                         const Pelican::PassShapePolicy &shape_policy,
+                         QWidget *parent = nullptr);
     explicit FullscreenPassWidget(FramePlanRefreshDriver refresh_driver,
                                   QWidget *parent = nullptr);
+    FullscreenPassWidget(
+        FramePlanRefreshDriver refresh_driver,
+        const Pelican::PassShapePolicy &shape_policy,
+        QWidget *parent = nullptr);
     ~FullscreenPassWidget() override;
 
     // These ingestion boundaries are shared by the production RPC/project
