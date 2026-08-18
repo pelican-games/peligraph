@@ -5554,6 +5554,71 @@ frame plan は宣言順、物理計画は辞書順 `[alpha, zeta]` になる。
 依存: **WP318**(scene とターゲット選択を共有しているため独立にできない。上記「所有権」)。見積: 中。
 
 
+### WP320: ノードをドラッグするとクラッシュする(WP318 の回帰・最優先)
+
+**目的**: WP318 が入れたドラッグが**実際に使うとスタックオーバーフローで落ちる。**
+
+#### 実測(2026-08-18、studio を起動して利用者が再現)
+
+```
+障害モジュール: Qt6Cored.dll
+例外コード: 0xc00000fd   ← STACK_OVERFLOW
+```
+
+`pelican_studio.exe` がノード移動中に落ちる。**無限再帰である。**
+
+#### 輪の場所
+
+`src/devstudio/view/frameplangraphics.cpp:799-809` の移動コールバックが
+
+```cpp
+session_node_positions_[key] = moved_position;
+rerouteConnectedBundles(*this, key.graph, key.name);
+setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+```
+
+を `ItemPositionHasChanged`(`:70`)から呼ぶ。
+
+**`setSceneRect` を移動ハンドラの中で呼ぶのが輪の起点である。**
+シーン矩形が変わるとビューのスクロールバーと変換が調整され、
+ビューは `AnchorUnderMouse`(`view/frameplanwidget.cpp:230`)なので
+**カーソル下のシーン座標がずれる**。ドラッグ中のアイテムはカーソルを追うので
+目標位置が変わり、再び動き、`ItemPositionHasChanged` が再発火する。
+
+`ItemSendsGeometryChanges` を立てているのはノードの 1 箇所だけ(`:825`)なので、
+ラベルや矢印の経由ではない。
+
+#### なぜテストが通ったか
+
+**テストは実ドラッグをビュー越しに通していない。**
+`test/devstudio_frameplan_graph_test.cpp` は `QGraphicsView` を取得しているが、
+`QTest::mouse*` も `sendEvent` も使わず、`ItemPositionHasChanged` を
+**プログラムから直接発火**させているだけである。
+ビューもスクロールバーもカーソルも関与しないので、フィードバックの輪が成立しない。
+
+**本セッションで繰り返し出ている「テストが本番経路を通らない」の再発である。**
+
+#### 実装範囲
+
+1. **移動ハンドラの中でシーン矩形を変えないこと。**
+   広げる必要があるなら、ドラッグ終了後か、キューに載せて遅延させること。
+   **再入ガードだけで済ませないこと** —— 輪の起点を断つこと。
+2. `rerouteConnectedBundles` が位置を書き戻していないことを確認すること。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`QTest` の実マウスイベントでビュー越しにドラッグし、落ちないこと。**
+  press → 複数回の move → release を実ビューに送ること。
+  これが本 WP の中心的な対照である —— **プログラムから `ItemPositionHasChanged` を
+  発火させる形では、この欠陥を検出できない**
+- 移動量、接続する辺・矢印・ラベルの追随は WP318 の検査を維持すること
+- **ドラッグでシーン矩形が伸び続けないこと。**
+  ドラッグ前後でシーン矩形が有限に収まること
+- `QT_QPA_PLATFORM=offscreen` で緑であること
+- `ctest` 全数が緑(`-j4`)、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。**最優先** —— 主要な新機能が実使用で落ちる。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
