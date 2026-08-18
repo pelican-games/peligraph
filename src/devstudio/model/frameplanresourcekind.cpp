@@ -45,15 +45,7 @@ FramePlanResourceKind decodeFramePlanResourceKind(
 }
 
 std::string_view framePlanResourceKindName(FramePlanResourceKind kind) {
-    switch (kind) {
-    case FramePlanResourceKind::render_target:
-        return "render_target";
-    case FramePlanResourceKind::frame_target:
-        return "frame_target";
-    case FramePlanResourceKind::buffer:
-        return "buffer";
-    }
-    throw std::runtime_error("Unknown frame plan resource kind");
+    return Pelican::passShapeResourceKindName(kind);
 }
 
 } // namespace PelicanStudio

@@ -150,6 +150,45 @@ const PassShapePolicy &defaultPassShapePolicy() {
     return policy;
 }
 
+std::string_view passShapeResourceKindName(PassShapeResourceKind kind) {
+    switch (kind) {
+    case PassShapeResourceKind::render_target:
+        return "render_target";
+    case PassShapeResourceKind::frame_target:
+        return "frame_target";
+    case PassShapeResourceKind::buffer:
+        return "buffer";
+    }
+    throw std::runtime_error("Unknown pass-shape resource kind");
+}
+
+bool passShapeResourceSupportsRole(PassShapeResourceKind kind,
+                                   std::string_view name,
+                                   PassShapeResourceRole role) {
+    switch (kind) {
+    case PassShapeResourceKind::render_target:
+        return true;
+    case PassShapeResourceKind::frame_target:
+        return role == PassShapeResourceRole::color_output &&
+               name == "swapchain";
+    case PassShapeResourceKind::buffer:
+        return role == PassShapeResourceRole::input;
+    }
+    throw std::runtime_error("Unknown pass-shape resource kind");
+}
+
+PassShapeHistorySupport passShapeResourceHistorySupport(
+    PassShapeResourceKind kind) {
+    switch (kind) {
+    case PassShapeResourceKind::render_target:
+        return PassShapeHistorySupport::not_published;
+    case PassShapeResourceKind::frame_target:
+    case PassShapeResourceKind::buffer:
+        return PassShapeHistorySupport::unsupported;
+    }
+    throw std::runtime_error("Unknown pass-shape resource kind");
+}
+
 const PassShapeTypePolicy &passShapeTypePolicy(
     const PassShapePolicy &policy, RenderPassType type) {
     const auto index = typeIndex(type);

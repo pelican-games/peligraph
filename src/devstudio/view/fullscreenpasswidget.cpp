@@ -118,16 +118,25 @@ QStringList stringList(const std::set<std::string, std::less<>> &values) {
 } // namespace
 
 struct FullscreenPassWidget::Impl {
+    using ResourceKinds =
+        std::map<std::string, Pelican::PassShapeResourceKind, std::less<>>;
+
     struct PlanBinding {
         std::string graph;
-        std::vector<std::string> resource_names;
+        ResourceKinds resources;
 
         bool operator==(const PlanBinding &) const = default;
     };
 
+    struct ResourceReference {
+        std::string name;
+        Pelican::PassShapeResourceRole role;
+        bool history = false;
+    };
+
     FullscreenPassWidget &owner;
     FramePlanReadCapability frame_plan;
-    const Pelican::PassShapePolicy &shape_policy;
+    Pelican::PassShapePolicy shape_policy;
     QPushButton *refresh = nullptr;
     QLabel *plan_status = nullptr;
     QLabel *authoring_status = nullptr;
@@ -153,6 +162,7 @@ struct FullscreenPassWidget::Impl {
     QLabel *name_collision = nullptr;
     QLabel *target_names = nullptr;
     QLabel *pass_shape = nullptr;
+    QLabel *history_support = nullptr;
     QLabel *target_usage = nullptr;
     QLabel *generation_order = nullptr;
     QLabel *shader_resolution = nullptr;
@@ -162,7 +172,7 @@ struct FullscreenPassWidget::Impl {
     QPushButton *copy_json = nullptr;
     std::optional<FramePlanModel> plan;
     std::optional<PlanBinding> binding;
-    std::map<std::string, std::string, std::less<>> resource_kinds;
+    ResourceKinds resource_kinds;
     std::map<std::string,
              std::map<std::string, Json, std::less<>>, std::less<>>
         authored_passes;
@@ -290,6 +300,7 @@ struct FullscreenPassWidget::Impl {
             owner.tr("Add history input"), targets);
         add_history_input->setObjectName(
             QStringLiteral("pelican.fullscreenPass.addHistoryInput"));
+        add_history_input->setEnabled(false);
         inputs = new QListWidget(targets);
         inputs->setObjectName(
             QStringLiteral("pelican.fullscreenPass.inputs"));
@@ -362,6 +373,8 @@ struct FullscreenPassWidget::Impl {
             "pelican.fullscreenPass.axis.targetNames");
         pass_shape = make_axis(
             "pelican.fullscreenPass.axis.passShape");
+        history_support = make_axis(
+            "pelican.fullscreenPass.axis.historySupport");
         target_usage = make_axis(
             "pelican.fullscreenPass.axis.targetUsage");
         generation_order = make_axis(
@@ -410,6 +423,9 @@ struct FullscreenPassWidget::Impl {
                          [this] { updateDraft(); });
         QObject::connect(depth, &QComboBox::currentTextChanged, &owner,
                          [this] { updateDraft(); });
+        QObject::connect(
+            input_candidate, qOverload<int>(&QComboBox::currentIndexChanged),
+            &owner, [this](int) { updateHistoryInputEnabled(); });
         QObject::connect(clear_depth, &QPushButton::clicked, &owner,
                          [this] {
                              depth->setCurrentIndex(-1);
@@ -498,16 +514,29 @@ struct FullscreenPassWidget::Impl {
                           .arg(axis, state_text, detail));
     }
 
-    std::vector<std::string> referencedTargets() const {
-        std::vector<std::string> result;
+    std::vector<ResourceReference> referencedResources() const {
+        std::vector<ResourceReference> result;
         for (const auto &authored : selectedSequence(*inputs)) {
-            result.push_back(
-                Pelican::parsePassShapeInputReference(authored).name);
+            const auto input =
+                Pelican::parsePassShapeInputReference(authored);
+            result.push_back(ResourceReference{
+                .name = input.name,
+                .role = Pelican::PassShapeResourceRole::input,
+                .history = input.history,
+            });
         }
         const auto color_names = selectedSequence(*colors);
-        result.insert(result.end(), color_names.begin(), color_names.end());
+        for (const auto &color : color_names) {
+            result.push_back(ResourceReference{
+                .name = color,
+                .role = Pelican::PassShapeResourceRole::color_output,
+            });
+        }
         if (depth->currentIndex() >= 0) {
-            result.push_back(depth->currentText().toStdString());
+            result.push_back(ResourceReference{
+                .name = depth->currentText().toStdString(),
+                .role = Pelican::PassShapeResourceRole::depth_output,
+            });
         }
         return result;
     }
@@ -567,6 +596,8 @@ struct FullscreenPassWidget::Impl {
                       owner.tr("Same-graph name collision")},
             std::pair{target_names, owner.tr("Target names")},
             std::pair{pass_shape, owner.tr("Pass shape")},
+            std::pair{history_support,
+                      owner.tr("History input support")},
             std::pair{target_usage,
                       owner.tr("Target usage compatibility")},
             std::pair{generation_order,
@@ -671,7 +702,7 @@ struct FullscreenPassWidget::Impl {
         try {
             std::vector<std::string> non_image_inputs;
             for (const auto &[resource_name, kind] : resource_kinds) {
-                if (kind == "buffer") {
+                if (kind == Pelican::PassShapeResourceKind::buffer) {
                     non_image_inputs.push_back(resource_name);
                 }
             }
@@ -743,12 +774,17 @@ struct FullscreenPassWidget::Impl {
             setAxis(*target_names, owner.tr("Target names"), "not_checked",
                     owner.tr("no frame plan is loaded."));
         } else {
-            const auto references = referencedTargets();
+            const auto references = referencedResources();
             std::vector<std::string> invalid_names;
             for (const auto &reference : references) {
-                const auto found = resource_kinds.find(reference);
+                const auto found = resource_kinds.find(reference.name);
                 if (found == resource_kinds.end()) {
-                    invalid_names.push_back(reference);
+                    invalid_names.push_back(reference.name);
+                    continue;
+                }
+                if (!Pelican::passShapeResourceSupportsRole(
+                        found->second, reference.name, reference.role)) {
+                    invalid_names.push_back(reference.name);
                 }
             }
             if (references.empty()) {
@@ -757,12 +793,51 @@ struct FullscreenPassWidget::Impl {
                         owner.tr("no target names are selected."));
             } else if (!invalid_names.empty()) {
                 setAxis(*target_names, owner.tr("Target names"), "invalid",
-                        owner.tr("unknown resources: %1")
+                        owner.tr("unknown or role-incompatible resources: %1")
                             .arg(text(invalid_names.front())));
             } else {
                 setAxis(*target_names, owner.tr("Target names"), "valid",
-                        owner.tr("every selected name exists in this frame "
-                                 "plan's resources[]."));
+                        owner.tr("every selected name and role is compatible "
+                                 "with this frame plan's resources[].kind."));
+            }
+        }
+
+        if (!plan) {
+            setAxis(*history_support, owner.tr("History input support"),
+                    "not_checked", owner.tr("no frame plan is loaded."));
+        } else {
+            const auto references = referencedResources();
+            const auto history = std::ranges::find(
+                references, true, &ResourceReference::history);
+            if (history == references.end()) {
+                setAxis(*history_support,
+                        owner.tr("History input support"), "valid",
+                        owner.tr("no @history input is selected."));
+            } else {
+                const auto unsupported = std::ranges::find_if(
+                    references, [this](const ResourceReference &reference) {
+                        if (!reference.history) {
+                            return false;
+                        }
+                        const auto found =
+                            resource_kinds.find(reference.name);
+                        return found != resource_kinds.end() &&
+                               Pelican::passShapeResourceHistorySupport(
+                                   found->second) ==
+                                   Pelican::PassShapeHistorySupport::unsupported;
+                    });
+                if (unsupported != references.end()) {
+                    setAxis(*history_support,
+                            owner.tr("History input support"), "invalid",
+                            owner.tr("'%1' cannot be read with @history for "
+                                     "its published resource kind.")
+                                .arg(text(unsupported->name)));
+                } else {
+                    setAxis(*history_support,
+                            owner.tr("History input support"), "not_checked",
+                            owner.tr("the frame plan does not publish whether "
+                                     "render targets support history."));
+                }
             }
         }
 
@@ -796,6 +871,45 @@ struct FullscreenPassWidget::Impl {
         sequence.addItem(selected);
         candidate.setCurrentIndex(-1);
         updateDraft();
+    }
+
+    void updateHistoryInputEnabled() {
+        if (input_candidate->currentIndex() < 0) {
+            add_history_input->setEnabled(false);
+            return;
+        }
+        const auto name = input_candidate->currentText().toStdString();
+        const auto found = resource_kinds.find(name);
+        add_history_input->setEnabled(
+            found != resource_kinds.end() &&
+            Pelican::passShapeResourceHistorySupport(found->second) !=
+                Pelican::PassShapeHistorySupport::unsupported);
+    }
+
+    std::vector<std::string> candidatesForRole(
+        Pelican::PassShapeResourceRole role) const {
+        std::vector<std::string> result;
+        for (const auto &[name, kind] : resource_kinds) {
+            if (Pelican::passShapeResourceSupportsRole(kind, name, role)) {
+                result.push_back(name);
+            }
+        }
+        return result;
+    }
+
+    void populateRoleCandidates() {
+        populateCandidates(
+            *input_candidate,
+            candidatesForRole(Pelican::PassShapeResourceRole::input));
+        populateCandidates(
+            *color_candidate,
+            candidatesForRole(
+                Pelican::PassShapeResourceRole::color_output));
+        populateCandidates(
+            *depth,
+            candidatesForRole(
+                Pelican::PassShapeResourceRole::depth_output));
+        updateHistoryInputEnabled();
     }
 
     void removeSelected(QListWidget &sequence) {
@@ -836,9 +950,7 @@ struct FullscreenPassWidget::Impl {
         plan.reset();
         binding.reset();
         resource_kinds.clear();
-        populateCandidates(*input_candidate, {});
-        populateCandidates(*color_candidate, {});
-        populateCandidates(*depth, {});
+        populateRoleCandidates();
         clearDraft();
         configurePosition();
         updateDraft();
@@ -855,9 +967,7 @@ struct FullscreenPassWidget::Impl {
                 throw std::runtime_error(
                     "frame plan response requires resources[] for this form");
             }
-            std::map<std::string, std::string, std::less<>> next_kinds;
-            std::vector<std::string> resource_names;
-            resource_names.reserve(resources->size());
+            ResourceKinds next_kinds;
             for (std::size_t index = 0; index < resources->size(); ++index) {
                 const auto &resource = resources->at(index);
                 if (!resource.is_object() || !resource.contains("name") ||
@@ -869,22 +979,15 @@ struct FullscreenPassWidget::Impl {
                     resource.at("name").get<std::string>();
                 const std::string context =
                     "resources[" + std::to_string(index) + "]";
-                const std::string kind{
-                    framePlanResourceKindName(
-                        decodeFramePlanResourceKind(resource, context))};
-                resource_names.push_back(resource_name);
+                const auto kind =
+                    decodeFramePlanResourceKind(resource, context);
                 next_kinds.insert_or_assign(resource_name, kind);
             }
             FramePlanModel next = buildFramePlanModel(response);
             PlanBinding next_binding{
                 .graph = next.graph,
-                .resource_names = std::move(resource_names),
+                .resources = next_kinds,
             };
-            std::ranges::sort(next_binding.resource_names);
-            next_binding.resource_names.erase(
-                std::unique(next_binding.resource_names.begin(),
-                            next_binding.resource_names.end()),
-                next_binding.resource_names.end());
             const bool changed = binding && *binding != next_binding;
             const QString previous_depth = depth->currentText();
 
@@ -894,11 +997,7 @@ struct FullscreenPassWidget::Impl {
             if (changed) {
                 clearDraft();
             }
-            populateCandidates(*input_candidate,
-                               next_binding.resource_names);
-            populateCandidates(*color_candidate,
-                               next_binding.resource_names);
-            populateCandidates(*depth, next_binding.resource_names);
+            populateRoleCandidates();
             if (!changed && !previous_depth.isEmpty()) {
                 depth->setCurrentIndex(
                     depth->findText(previous_depth, Qt::MatchExactly));
@@ -917,7 +1016,7 @@ struct FullscreenPassWidget::Impl {
                                "binding key.")
                           .arg(text(plan->graph))
                           .arg(static_cast<qulonglong>(
-                              next_binding.resource_names.size())));
+                              next_binding.resources.size())));
             updateDraft();
         } catch (const std::exception &error) {
             invalidateFramePlanContext();

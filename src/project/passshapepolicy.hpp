@@ -41,6 +41,38 @@ struct PassShapePolicy {
     bool operator==(const PassShapePolicy &) const = default;
 };
 
+// Resource-role compatibility is part of the same pass-shape authority as
+// the input/output cardinality rules above.  A frame plan publishes only the
+// resource kind; consumers must not invent additional capabilities.
+enum class PassShapeResourceKind {
+    render_target,
+    frame_target,
+    buffer,
+};
+
+enum class PassShapeResourceRole {
+    input,
+    color_output,
+    depth_output,
+};
+
+enum class PassShapeHistorySupport {
+    unsupported,
+    not_published,
+};
+
+std::string_view passShapeResourceKindName(PassShapeResourceKind kind);
+
+bool passShapeResourceSupportsRole(PassShapeResourceKind kind,
+                                   std::string_view name,
+                                   PassShapeResourceRole role);
+
+// Current pelican.frame_plan v1 does not publish the authored render-target
+// history flag.  Therefore render-target history support is explicitly
+// unknown, while non-image resources are structurally unsupported.
+PassShapeHistorySupport passShapeResourceHistorySupport(
+    PassShapeResourceKind kind);
+
 struct PassShapeInputObservation {
     std::string name;
     bool history;

@@ -1,15 +1,13 @@
 #pragma once
 
+#include "passshapepolicy.hpp"
+
 #include <nlohmann/json_fwd.hpp>
 #include <string_view>
 
 namespace PelicanStudio {
 
-enum class FramePlanResourceKind {
-    render_target,
-    frame_target,
-    buffer,
-};
+using FramePlanResourceKind = Pelican::PassShapeResourceKind;
 
 FramePlanResourceKind decodeFramePlanResourceKind(
     const nlohmann::json &resource, std::string_view context);

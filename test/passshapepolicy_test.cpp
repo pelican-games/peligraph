@@ -106,4 +106,43 @@ TEST_CASE(
     CHECK_FALSE(observation.inputs[1].image);
 }
 
+TEST_CASE(
+    "WP327 pass-shape authority separates frame-plan resource roles and history knowledge",
+    "[wp327][pass-shape][project][resource-role][negative-contrast]") {
+    using Kind = PassShapeResourceKind;
+    using Role = PassShapeResourceRole;
+
+    for (const auto role : {Role::input, Role::color_output,
+                            Role::depth_output}) {
+        REQUIRE(passShapeResourceSupportsRole(
+            Kind::render_target, "image", role));
+    }
+
+    REQUIRE(passShapeResourceSupportsRole(
+        Kind::buffer, "storage", Role::input));
+    REQUIRE_FALSE(passShapeResourceSupportsRole(
+        Kind::buffer, "storage", Role::color_output));
+    REQUIRE_FALSE(passShapeResourceSupportsRole(
+        Kind::buffer, "storage", Role::depth_output));
+
+    REQUIRE(passShapeResourceSupportsRole(
+        Kind::frame_target, "swapchain", Role::color_output));
+    REQUIRE_FALSE(passShapeResourceSupportsRole(
+        Kind::frame_target, "swapchain", Role::input));
+    REQUIRE_FALSE(passShapeResourceSupportsRole(
+        Kind::frame_target, "swapchain", Role::depth_output));
+    for (const auto role : {Role::input, Role::color_output,
+                            Role::depth_output}) {
+        REQUIRE_FALSE(passShapeResourceSupportsRole(
+            Kind::frame_target, "alternate_frame", role));
+    }
+
+    REQUIRE(passShapeResourceHistorySupport(Kind::render_target) ==
+            PassShapeHistorySupport::not_published);
+    REQUIRE(passShapeResourceHistorySupport(Kind::buffer) ==
+            PassShapeHistorySupport::unsupported);
+    REQUIRE(passShapeResourceHistorySupport(Kind::frame_target) ==
+            PassShapeHistorySupport::unsupported);
+}
+
 } // namespace Pelican
