@@ -169,7 +169,7 @@ command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L34) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L8) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L35) を表示します。
 
 現実装は full editor ではありませんが、Widgets の editor shell として起動します。
 
@@ -191,13 +191,15 @@ flowchart LR
     LogBuffer --> LogDock["Engine Log dock"]
     Rpc --> PlanModel["FramePlanModel / compact projection"]
     PlanModel --> PlanDock["Frame Plan dock"]
+    Rpc --> PassForm["FullscreenPassWidget / draft-only JSON"]
+    PassForm --> Draft["form-owned projection / no write or apply"]
     Window --> Docks["QDockWidget panels"]
     Window --> Layout["LayoutPresetManager"]
     Layout --> Files["versioned named presets"]
 ```
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L107) は Project / Outliner /
-Inspector / Output / Engine Log / Frame Plan の6パネルを stable object name を持つ dock として作ります。パネルは
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L108) は Project / Outliner /
+Inspector / Output / Engine Log / Frame Plan / Fullscreen Pass JSON の7パネルを stable object name を持つ dock として作ります。パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
@@ -233,6 +235,12 @@ attachment load/store、material route、backend 非依存 execution facts へ�
 `physical_target_plan.attachments/resources` から昇格しますが、native scope、alias、physical decision
 など Compiled Plan Viewer 相当の低レベル情報は UI へ出しません。
 
+[`FullscreenPassWidget`](../../src/devstudio/view/fullscreenpasswidget.hpp#L22) は `fullscreen` 型に固定した
+下書きフォームです。対象候補は `get_frame_plan` の `resources[]` から作り、フィールド所有、同一 graph
+の名前衝突、target 名／`frame_target` を Studio 単独で検査します。target usage、input の生成順、shader
+stem 解決は軸名付きの `Not checked` として残します。出力はフォームが表現した部分 JSON と、読み取り専用の
+著作宣言から求めた omitted keys だけです。project を書かず、engine へ送る RPC は `get_frame_plan` だけです。
+
 [`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp) はその model を Passes / Resources /
 Barriers / Materials の tree に投影します。初期状態は順序、名前、種別、入力、出力の pass 行だけで、
 attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
@@ -264,7 +272,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L336) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L342) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L62) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -601,7 +609,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1895) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1921) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

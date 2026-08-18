@@ -254,6 +254,31 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
   )
+
+  pelican_define_test(devstudio_fullscreen_pass_test QT QT_OFFSCREEN
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    Qt6::Core
+    Qt6::Widgets
+  )
+  target_sources(pelican_test_devstudio_fullscreen_pass_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasswidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/mainwindow.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/inspectorwidget.cpp
+  )
+  target_include_directories(pelican_test_devstudio_fullscreen_pass_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view
+  )
+  target_compile_definitions(pelican_test_devstudio_fullscreen_pass_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
 endif()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)

@@ -29,6 +29,7 @@ namespace PelicanStudio {
 
 class EmbeddedViewport;
 class FramePlanWidget;
+class FullscreenPassWidget;
 class InspectorWidget;
 
 class MainWindow : public QMainWindow {
@@ -43,6 +44,7 @@ class MainWindow : public QMainWindow {
         OutputDock,
         EngineLogDock,
         FramePlanDock,
+        FullscreenPassDock,
         DockCount,
     };
 
@@ -53,6 +55,7 @@ class MainWindow : public QMainWindow {
     EmbeddedViewport *viewport_ = nullptr;
     InspectorWidget *inspector_ = nullptr;
     FramePlanWidget *frame_plan_ = nullptr;
+    FullscreenPassWidget *fullscreen_pass_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;
     QPlainTextEdit *engine_log_ = nullptr;

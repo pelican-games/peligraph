@@ -5,6 +5,8 @@ target_sources(pelican_studio PRIVATE
     frameplanwidget.hpp
     frameplangraphics.cpp
     frameplangraphics.hpp
+    fullscreenpasswidget.cpp
+    fullscreenpasswidget.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
 )

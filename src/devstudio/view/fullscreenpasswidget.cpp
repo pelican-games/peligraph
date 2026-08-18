@@ -1,0 +1,983 @@
+#include "fullscreenpasswidget.hpp"
+
+#include "../model/frameplanmodel.hpp"
+#include "../viewport/embeddedviewport.hpp"
+
+#include "passfieldownership.hpp"
+#include "projectformat.hpp"
+#include "projectpathresolver.hpp"
+
+#include <nlohmann/json.hpp>
+
+#include <QAbstractItemView>
+#include <QByteArray>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QSpinBox>
+#include <QStringList>
+#include <QVBoxLayout>
+#include <QVariant>
+
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <optional>
+#include <ranges>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace PelicanStudio {
+namespace {
+
+using Json = nlohmann::json;
+
+QString text(std::string_view value) {
+    return QString::fromUtf8(value.data(),
+                             static_cast<qsizetype>(value.size()));
+}
+
+std::string readTextFile(const std::filesystem::path &path,
+                         std::string_view label) {
+    std::ifstream stream{path, std::ios::binary};
+    if (!stream) {
+        throw std::runtime_error("could not open " + std::string{label} +
+                                 ": " + path.string());
+    }
+    std::string contents{std::istreambuf_iterator<char>{stream},
+                         std::istreambuf_iterator<char>{}};
+    if (stream.bad()) {
+        throw std::runtime_error("could not read " + std::string{label} +
+                                 ": " + path.string());
+    }
+    return contents;
+}
+
+const Pelican::PassFieldOwnershipEntry &fullscreenOwnership() {
+    const auto table = Pelican::passFieldOwnershipTable();
+    const auto found = std::ranges::find(
+        table, Pelican::RenderPassType::fullscreen,
+        &Pelican::PassFieldOwnershipEntry::type);
+    if (found == table.end()) {
+        throw std::runtime_error(
+            "passFieldOwnershipTable has no fullscreen entry");
+    }
+    return *found;
+}
+
+bool fullscreenOwns(std::string_view field) {
+    const auto &entry = fullscreenOwnership();
+    return std::ranges::find(entry.fields, field) != entry.fields.end();
+}
+
+FramePlanRefreshDriver viewportRefreshDriver(EmbeddedViewport *viewport) {
+    if (viewport == nullptr) {
+        throw std::invalid_argument(
+            "FullscreenPassWidget requires an embedded viewport");
+    }
+    return FramePlanRefreshDriver{
+        .ready = [viewport] { return viewport->rpcReady(); },
+        .request = [viewport](QString *error) {
+            return viewport->requestRpc(QStringLiteral("get_frame_plan"),
+                                        QJsonObject{}, error);
+        },
+    };
+}
+
+void markPassField(QWidget &widget, const char *field) {
+    widget.setProperty("pelicanPassField", QString::fromLatin1(field));
+}
+
+std::vector<std::string> selectedSequence(const QListWidget &list) {
+    std::vector<std::string> result;
+    result.reserve(static_cast<std::size_t>(list.count()));
+    for (int index = 0; index < list.count(); ++index) {
+        result.push_back(list.item(index)->text().toStdString());
+    }
+    return result;
+}
+
+void populateCandidates(QComboBox &combo,
+                        const std::vector<std::string> &names) {
+    const QSignalBlocker blocker{&combo};
+    combo.clear();
+    for (const auto &name : names) {
+        combo.addItem(text(name));
+    }
+    combo.setCurrentIndex(-1);
+}
+
+QStringList stringList(const std::set<std::string, std::less<>> &values) {
+    QStringList result;
+    result.reserve(static_cast<qsizetype>(values.size()));
+    for (const auto &value : values) {
+        result.push_back(text(value));
+    }
+    return result;
+}
+
+} // namespace
+
+struct FullscreenPassWidget::Impl {
+    struct PlanBinding {
+        std::string graph;
+        std::vector<std::string> resource_names;
+
+        bool operator==(const PlanBinding &) const = default;
+    };
+
+    FullscreenPassWidget &owner;
+    FramePlanRefreshDriver refresh_driver;
+    QPushButton *refresh = nullptr;
+    QLabel *plan_status = nullptr;
+    QLabel *authoring_status = nullptr;
+    QLabel *graph = nullptr;
+    QLabel *type = nullptr;
+    QSpinBox *position = nullptr;
+    QLabel *location = nullptr;
+    QLineEdit *name = nullptr;
+    QLineEdit *vertex_shader = nullptr;
+    QLineEdit *fragment_shader = nullptr;
+    QComboBox *input_candidate = nullptr;
+    QPushButton *add_input = nullptr;
+    QListWidget *inputs = nullptr;
+    QPushButton *remove_input = nullptr;
+    QComboBox *color_candidate = nullptr;
+    QPushButton *add_color = nullptr;
+    QListWidget *colors = nullptr;
+    QPushButton *remove_color = nullptr;
+    QComboBox *depth = nullptr;
+    QPushButton *clear_depth = nullptr;
+    QLabel *field_ownership = nullptr;
+    QLabel *name_collision = nullptr;
+    QLabel *target_names = nullptr;
+    QLabel *target_usage = nullptr;
+    QLabel *generation_order = nullptr;
+    QLabel *shader_resolution = nullptr;
+    QLabel *omitted = nullptr;
+    QPlainTextEdit *json = nullptr;
+    std::optional<FramePlanModel> plan;
+    std::optional<PlanBinding> binding;
+    std::map<std::string, std::string, std::less<>> resource_kinds;
+    std::map<std::string,
+             std::map<std::string, Json, std::less<>>, std::less<>>
+        authored_passes;
+    bool authoring_available = false;
+    bool updating = false;
+    qint64 pending_request = 0;
+
+    Impl(FullscreenPassWidget &widget, FramePlanRefreshDriver driver)
+        : owner{widget}, refresh_driver{std::move(driver)} {
+        if (!refresh_driver.ready || !refresh_driver.request) {
+            throw std::invalid_argument(
+                "FullscreenPassWidget requires a complete refresh driver");
+        }
+
+        auto *layout = new QVBoxLayout(&owner);
+        layout->setContentsMargins(6, 6, 6, 6);
+        layout->setSpacing(6);
+
+        auto *toolbar = new QHBoxLayout;
+        refresh = new QPushButton(owner.tr("Refresh frame plan"), &owner);
+        refresh->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.refresh"));
+        refresh->setToolTip(owner.tr(
+            "Fetches get_frame_plan. This form never sends an edit or save "
+            "request."));
+        plan_status = new QLabel(&owner);
+        plan_status->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.planStatus"));
+        plan_status->setWordWrap(true);
+        toolbar->addWidget(refresh);
+        toolbar->addWidget(plan_status, 1);
+        layout->addLayout(toolbar);
+
+        auto *scope = new QLabel(
+            owner.tr("Draft only: the JSON below is not written to the "
+                     "project and is not applied to the engine."),
+            &owner);
+        scope->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.scopeNotice"));
+        scope->setWordWrap(true);
+        scope->setStyleSheet(QStringLiteral("color: #b36b00;"));
+        layout->addWidget(scope);
+
+        authoring_status = new QLabel(
+            owner.tr("No read-only authoring declaration is loaded."),
+            &owner);
+        authoring_status->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.authoringStatus"));
+        authoring_status->setWordWrap(true);
+        layout->addWidget(authoring_status);
+
+        auto *form = new QFormLayout;
+        graph = new QLabel(owner.tr("(no frame plan)"), &owner);
+        graph->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.graph"));
+        form->addRow(owner.tr("Target graph"), graph);
+
+        type = new QLabel(
+            text(Pelican::renderPassTypeName(
+                Pelican::RenderPassType::fullscreen)),
+            &owner);
+        type->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.type"));
+        markPassField(*type, "type");
+        form->addRow(owner.tr("Type (fixed)"), type);
+
+        position = new QSpinBox(&owner);
+        position->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.position"));
+        position->setRange(0, 0);
+        form->addRow(owner.tr("Expected passes[] position"), position);
+
+        location = new QLabel(&owner);
+        location->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.location"));
+        location->setWordWrap(true);
+        form->addRow(owner.tr("Paste destination"), location);
+
+        name = new QLineEdit(&owner);
+        name->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.name"));
+        markPassField(*name, "name");
+        form->addRow(owner.tr("Pass name"), name);
+
+        vertex_shader = new QLineEdit(&owner);
+        vertex_shader->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.shader.vertex"));
+        vertex_shader->setPlaceholderText(
+            owner.tr("for example engine://fullscreen"));
+        markPassField(*vertex_shader, "shader");
+        form->addRow(owner.tr("Vertex shader stem"), vertex_shader);
+
+        fragment_shader = new QLineEdit(&owner);
+        fragment_shader->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.shader.fragment"));
+        fragment_shader->setPlaceholderText(
+            owner.tr("enter a stem; assets are not enumerated here"));
+        markPassField(*fragment_shader, "shader");
+        form->addRow(owner.tr("Fragment shader stem"), fragment_shader);
+        layout->addLayout(form);
+
+        auto *targets = new QGroupBox(owner.tr("Frame-plan targets"), &owner);
+        targets->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.targets"));
+        auto *target_layout = new QGridLayout(targets);
+        target_layout->addWidget(new QLabel(owner.tr("Input sequence"), targets),
+                                 0, 0);
+        target_layout->addWidget(new QLabel(owner.tr("Color outputs"), targets),
+                                 0, 1);
+        target_layout->addWidget(new QLabel(owner.tr("Depth output"), targets),
+                                 0, 2);
+
+        input_candidate = new QComboBox(targets);
+        input_candidate->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.inputTarget"));
+        input_candidate->setInsertPolicy(QComboBox::NoInsert);
+        input_candidate->setPlaceholderText(owner.tr("Choose a resource"));
+        add_input = new QPushButton(owner.tr("Add input"), targets);
+        add_input->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.addInput"));
+        inputs = new QListWidget(targets);
+        inputs->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.inputs"));
+        inputs->setSelectionMode(QAbstractItemView::SingleSelection);
+        inputs->setMaximumHeight(96);
+        markPassField(*inputs, "input");
+        remove_input = new QPushButton(owner.tr("Remove selected"), targets);
+        remove_input->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.removeInput"));
+
+        color_candidate = new QComboBox(targets);
+        color_candidate->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.colorTarget"));
+        color_candidate->setInsertPolicy(QComboBox::NoInsert);
+        color_candidate->setPlaceholderText(owner.tr("Choose a resource"));
+        add_color = new QPushButton(owner.tr("Add color"), targets);
+        add_color->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.addColor"));
+        colors = new QListWidget(targets);
+        colors->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.colors"));
+        colors->setSelectionMode(QAbstractItemView::SingleSelection);
+        colors->setMaximumHeight(96);
+        markPassField(*colors, "output");
+        remove_color = new QPushButton(owner.tr("Remove selected"), targets);
+        remove_color->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.removeColor"));
+
+        depth = new QComboBox(targets);
+        depth->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.depthTarget"));
+        depth->setInsertPolicy(QComboBox::NoInsert);
+        depth->setPlaceholderText(owner.tr("No depth output"));
+        markPassField(*depth, "output");
+        clear_depth = new QPushButton(owner.tr("Clear depth"), targets);
+        clear_depth->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.clearDepth"));
+
+        target_layout->addWidget(input_candidate, 1, 0);
+        target_layout->addWidget(color_candidate, 1, 1);
+        target_layout->addWidget(depth, 1, 2);
+        target_layout->addWidget(add_input, 2, 0);
+        target_layout->addWidget(add_color, 2, 1);
+        target_layout->addWidget(clear_depth, 2, 2);
+        target_layout->addWidget(inputs, 3, 0);
+        target_layout->addWidget(colors, 3, 1);
+        target_layout->addWidget(new QLabel(
+                                     owner.tr("No selection emits null."),
+                                     targets),
+                                 3, 2);
+        target_layout->addWidget(remove_input, 4, 0);
+        target_layout->addWidget(remove_color, 4, 1);
+        layout->addWidget(targets);
+
+        auto *validation = new QGroupBox(owner.tr("Validation axes"), &owner);
+        validation->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.validation"));
+        auto *validation_layout = new QVBoxLayout(validation);
+        const auto make_axis = [&](const char *object_name) {
+            auto *label = new QLabel(validation);
+            label->setObjectName(QString::fromLatin1(object_name));
+            label->setWordWrap(true);
+            label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            validation_layout->addWidget(label);
+            return label;
+        };
+        field_ownership = make_axis(
+            "pelican.fullscreenPass.axis.fieldOwnership");
+        name_collision = make_axis(
+            "pelican.fullscreenPass.axis.nameCollision");
+        target_names = make_axis(
+            "pelican.fullscreenPass.axis.targetNames");
+        target_usage = make_axis(
+            "pelican.fullscreenPass.axis.targetUsage");
+        generation_order = make_axis(
+            "pelican.fullscreenPass.axis.generationOrder");
+        shader_resolution = make_axis(
+            "pelican.fullscreenPass.axis.shaderResolution");
+        layout->addWidget(validation);
+
+        omitted = new QLabel(&owner);
+        omitted->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.omittedKeys"));
+        omitted->setWordWrap(true);
+        omitted->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(omitted);
+
+        json = new QPlainTextEdit(&owner);
+        json->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.json"));
+        json->setReadOnly(true);
+        json->setLineWrapMode(QPlainTextEdit::NoWrap);
+        json->setMinimumHeight(170);
+        layout->addWidget(json, 1);
+
+        QObject::connect(refresh, &QPushButton::clicked, &owner,
+                         [this] { requestRefresh(); });
+        QObject::connect(position, qOverload<int>(&QSpinBox::valueChanged),
+                         &owner, [this](int) { updateDraft(); });
+        QObject::connect(name, &QLineEdit::textChanged, &owner,
+                         [this] { updateDraft(); });
+        QObject::connect(vertex_shader, &QLineEdit::textChanged, &owner,
+                         [this] { updateDraft(); });
+        QObject::connect(fragment_shader, &QLineEdit::textChanged, &owner,
+                         [this] { updateDraft(); });
+        QObject::connect(depth, &QComboBox::currentTextChanged, &owner,
+                         [this] { updateDraft(); });
+        QObject::connect(clear_depth, &QPushButton::clicked, &owner,
+                         [this] {
+                             depth->setCurrentIndex(-1);
+                             updateDraft();
+                         });
+        QObject::connect(add_input, &QPushButton::clicked, &owner,
+                         [this] { appendCandidate(*input_candidate, *inputs); });
+        QObject::connect(add_color, &QPushButton::clicked, &owner,
+                         [this] { appendCandidate(*color_candidate, *colors); });
+        QObject::connect(remove_input, &QPushButton::clicked, &owner,
+                         [this] { removeSelected(*inputs); });
+        QObject::connect(remove_color, &QPushButton::clicked, &owner,
+                         [this] { removeSelected(*colors); });
+        QObject::connect(inputs, &QListWidget::itemDoubleClicked, &owner,
+                         [this](QListWidgetItem *) { removeSelected(*inputs); });
+        QObject::connect(colors, &QListWidget::itemDoubleClicked, &owner,
+                         [this](QListWidgetItem *) { removeSelected(*colors); });
+
+        refresh->setEnabled(refresh_driver.ready());
+        plan_status->setText(refresh->isEnabled()
+                                 ? owner.tr("Press Refresh frame plan to bind "
+                                            "the form to runtime resources.")
+                                 : owner.tr("Frame plan unavailable."));
+        updateDraft();
+    }
+
+    Json draftJson() const {
+        Json draft = Json::object();
+        draft["name"] = name->text().toStdString();
+        draft["type"] = std::string{Pelican::renderPassTypeName(
+            Pelican::RenderPassType::fullscreen)};
+        draft["input"] = selectedSequence(*inputs);
+        draft["output"] = Json{
+            {"color", selectedSequence(*colors)},
+            {"depth", depth->currentIndex() < 0
+                          ? Json(nullptr)
+                          : Json(depth->currentText().toStdString())},
+        };
+        // The ownership authority, rather than a Studio-maintained field set,
+        // decides whether this type may emit its shader editor value.
+        if (fullscreenOwns("shader")) {
+            draft["shader"] = Json{
+                {"vertex", vertex_shader->text().toStdString()},
+                {"fragment", fragment_shader->text().toStdString()},
+            };
+        }
+        return draft;
+    }
+
+    void setAxis(QLabel &label, const QString &axis, const char *state,
+                 const QString &detail) {
+        const QString state_text =
+            QString::fromLatin1(state) == QStringLiteral("valid")
+                ? owner.tr("Valid")
+                : QString::fromLatin1(state) == QStringLiteral("invalid")
+                      ? owner.tr("Invalid")
+                      : owner.tr("Not checked");
+        label.setProperty("pelicanValidationState",
+                          QString::fromLatin1(state));
+        label.setText(owner.tr("%1: %2 — %3")
+                          .arg(axis, state_text, detail));
+    }
+
+    std::vector<std::string> referencedTargets() const {
+        std::vector<std::string> result = selectedSequence(*inputs);
+        const auto color_names = selectedSequence(*colors);
+        result.insert(result.end(), color_names.begin(), color_names.end());
+        if (depth->currentIndex() >= 0) {
+            result.push_back(depth->currentText().toStdString());
+        }
+        return result;
+    }
+
+    void updateOmitted(const Json &draft) {
+        omitted->setProperty("pelicanOmittedKeys", QStringList{});
+        if (!authoring_available) {
+            omitted->setText(owner.tr(
+                "Omitted keys: not known because no authored declaration is "
+                "available. The JSON still contains only fields represented "
+                "by this form."));
+            return;
+        }
+        if (!plan) {
+            omitted->setText(owner.tr(
+                "Omitted keys: not known until a target graph is loaded. The "
+                "JSON still contains only fields represented by this form."));
+            return;
+        }
+        const auto graph_found = authored_passes.find(plan->graph);
+        const auto pass_found =
+            graph_found == authored_passes.end()
+                ? std::map<std::string, Json, std::less<>>::const_iterator{}
+                : graph_found->second.find(name->text().toStdString());
+        if (graph_found == authored_passes.end() ||
+            pass_found == graph_found->second.end()) {
+            omitted->setText(owner.tr(
+                "Omitted keys: no existing declaration has this graph/name. "
+                "This is a new partial draft and only represented fields are "
+                "emitted."));
+            return;
+        }
+
+        std::set<std::string, std::less<>> missing;
+        for (const auto &[key, value] : pass_found->second.items()) {
+            (void)value;
+            if (!draft.contains(key)) {
+                missing.insert(key);
+            }
+        }
+        const QStringList reported = stringList(missing);
+        omitted->setProperty("pelicanOmittedKeys", reported);
+        omitted->setText(
+            missing.empty()
+                ? owner.tr("Omitted keys: none for the matching authored "
+                           "declaration. The output remains a form-owned "
+                           "projection, not a complete validation result.")
+                : owner.tr("Omitted keys from matching authored declaration: "
+                           "%1")
+                      .arg(reported.join(QStringLiteral(", "))));
+    }
+
+    void updateDraft() {
+        if (updating) {
+            return;
+        }
+        const Json draft = draftJson();
+        json->setPlainText(QString::fromStdString(draft.dump(2)));
+
+        const QString graph_name =
+            plan ? text(plan->graph) : owner.tr("(no frame plan)");
+        graph->setText(graph_name);
+        location->setText(
+            plan ? owner.tr("Graph '%1', passes[%2] "
+                            "(declaration_index %2)")
+                       .arg(graph_name)
+                       .arg(position->value())
+                 : owner.tr("Load a frame plan to name the graph and "
+                            "declaration_index."));
+
+        try {
+            (void)Pelican::validatePassFieldOwnership(
+                draft, Pelican::PassFieldOwnershipCapabilities{},
+                "fullscreen pass form draft");
+            setAxis(*field_ownership, owner.tr("Field ownership"), "valid",
+                    owner.tr("generated type-owned fields come from "
+                             "passFieldOwnershipTable()."));
+        } catch (const std::exception &error) {
+            setAxis(*field_ownership, owner.tr("Field ownership"), "invalid",
+                    QString::fromUtf8(error.what()));
+        }
+
+        if (!plan) {
+            setAxis(*name_collision, owner.tr("Same-graph name collision"),
+                    "not_checked", owner.tr("no frame plan is loaded."));
+        } else if (name->text().isEmpty()) {
+            setAxis(*name_collision, owner.tr("Same-graph name collision"),
+                    "invalid", owner.tr("the pass name is empty."));
+        } else {
+            const auto collision = std::ranges::find(
+                plan->nodes, name->text().toStdString(),
+                &FramePlanNode::name);
+            setAxis(*name_collision, owner.tr("Same-graph name collision"),
+                    collision == plan->nodes.end() ? "valid" : "invalid",
+                    collision == plan->nodes.end()
+                        ? owner.tr("the name is absent from the current graph.")
+                        : owner.tr("'%1' already exists in graph '%2'.")
+                              .arg(name->text(), text(plan->graph)));
+        }
+
+        if (!plan) {
+            setAxis(*target_names, owner.tr("Target names"), "not_checked",
+                    owner.tr("no frame plan is loaded."));
+        } else {
+            const auto references = referencedTargets();
+            std::vector<std::string> invalid_names;
+            std::vector<std::string> frame_targets;
+            for (const auto &reference : references) {
+                const auto found = resource_kinds.find(reference);
+                if (found == resource_kinds.end()) {
+                    invalid_names.push_back(reference);
+                } else if (found->second == "frame_target") {
+                    frame_targets.push_back(reference);
+                }
+            }
+            if (inputs->count() == 0 || colors->count() == 0) {
+                setAxis(*target_names, owner.tr("Target names"), "invalid",
+                        owner.tr("choose at least one input and one color "
+                                 "output from resources[]."));
+            } else if (!invalid_names.empty()) {
+                setAxis(*target_names, owner.tr("Target names"), "invalid",
+                        owner.tr("unknown resources: %1")
+                            .arg(text(invalid_names.front())));
+            } else if (!frame_targets.empty()) {
+                setAxis(*target_names, owner.tr("Target names"), "invalid",
+                        owner.tr("'%1' is a frame_target, not an authored "
+                                 "render target.")
+                            .arg(text(frame_targets.front())));
+            } else {
+                setAxis(*target_names, owner.tr("Target names"), "valid",
+                        owner.tr("every selected name exists in this frame "
+                                 "plan's resources[]."));
+            }
+        }
+
+        setAxis(*target_usage, owner.tr("Target usage compatibility"),
+                "not_checked",
+                owner.tr("the frame plan does not publish resource usage."));
+        setAxis(*generation_order, owner.tr("Input generation order"),
+                "not_checked",
+                owner.tr("Studio does not reproduce the engine's "
+                         "position-dependent producer validation."));
+        setAxis(*shader_resolution, owner.tr("Shader stem resolution"),
+                "not_checked",
+                owner.tr("resolution depends on pelican_core and build "
+                         "capabilities; Studio does not predict it."));
+        updateOmitted(draft);
+    }
+
+    void appendCandidate(QComboBox &candidate, QListWidget &sequence) {
+        if (candidate.currentIndex() < 0) {
+            return;
+        }
+        const QString selected = candidate.currentText();
+        if (sequence.findItems(selected, Qt::MatchExactly).isEmpty()) {
+            sequence.addItem(selected);
+        }
+        candidate.setCurrentIndex(-1);
+        updateDraft();
+    }
+
+    void removeSelected(QListWidget &sequence) {
+        const int row = sequence.currentRow();
+        if (row >= 0) {
+            delete sequence.takeItem(row);
+            updateDraft();
+        }
+    }
+
+    void clearDraft() {
+        updating = true;
+        name->clear();
+        vertex_shader->clear();
+        fragment_shader->clear();
+        inputs->clear();
+        colors->clear();
+        depth->setCurrentIndex(-1);
+        position->setValue(0);
+        updating = false;
+    }
+
+    void configurePosition() {
+        std::size_t last = 0;
+        if (plan) {
+            for (const auto &node : plan->nodes) {
+                last = std::max(last, node.declaration_index + 1);
+            }
+        }
+        const auto capped = std::min<std::size_t>(
+            last, static_cast<std::size_t>(std::numeric_limits<int>::max()));
+        position->setRange(0, static_cast<int>(capped));
+    }
+
+    void consumeResult(const QByteArray &result_json) {
+        try {
+            const std::string_view response{
+                result_json.constData(),
+                static_cast<std::size_t>(result_json.size())};
+            FramePlanModel next = buildFramePlanModel(response);
+            const Json wire = Json::parse(response);
+            PlanBinding next_binding{.graph = next.graph};
+            const auto resources = wire.find("resources");
+            if (resources == wire.end() || !resources->is_array()) {
+                throw std::runtime_error(
+                    "frame plan response requires resources[] for this form");
+            }
+            std::map<std::string, std::string, std::less<>> next_kinds;
+            next_binding.resource_names.reserve(resources->size());
+            for (const auto &resource : *resources) {
+                if (!resource.is_object() || !resource.contains("name") ||
+                    !resource.at("name").is_string()) {
+                    throw std::runtime_error(
+                        "frame plan resources[] entries require a string name");
+                }
+                const std::string resource_name =
+                    resource.at("name").get<std::string>();
+                const std::string kind =
+                    resource.contains("kind") &&
+                            resource.at("kind").is_string()
+                        ? resource.at("kind").get<std::string>()
+                        : std::string{};
+                next_binding.resource_names.push_back(resource_name);
+                next_kinds.insert_or_assign(resource_name, kind);
+            }
+            std::ranges::sort(next_binding.resource_names);
+            next_binding.resource_names.erase(
+                std::unique(next_binding.resource_names.begin(),
+                            next_binding.resource_names.end()),
+                next_binding.resource_names.end());
+            const bool changed = binding && *binding != next_binding;
+            const QString previous_depth = depth->currentText();
+
+            plan = std::move(next);
+            binding = next_binding;
+            resource_kinds = std::move(next_kinds);
+            if (changed) {
+                clearDraft();
+            }
+            populateCandidates(*input_candidate,
+                               next_binding.resource_names);
+            populateCandidates(*color_candidate,
+                               next_binding.resource_names);
+            populateCandidates(*depth, next_binding.resource_names);
+            if (!changed && !previous_depth.isEmpty()) {
+                depth->setCurrentIndex(
+                    depth->findText(previous_depth, Qt::MatchExactly));
+            }
+            configurePosition();
+            refresh->setEnabled(refresh_driver.ready());
+            plan_status->setStyleSheet(
+                changed ? QStringLiteral("color: #b36b00;") : QString{});
+            plan_status->setText(
+                changed
+                    ? owner.tr("Frame plan graph/resources changed; the old "
+                               "draft was discarded. Draft restoration is "
+                               "outside this work package.")
+                    : owner.tr("Bound to graph '%1' and %2 resources. "
+                               "runtime_generation is not part of the "
+                               "binding key.")
+                          .arg(text(plan->graph))
+                          .arg(static_cast<qulonglong>(
+                              next_binding.resource_names.size())));
+            updateDraft();
+        } catch (const std::exception &error) {
+            refresh->setEnabled(refresh_driver.ready());
+            plan_status->setStyleSheet(
+                QStringLiteral("color: #d94c3d;"));
+            plan_status->setText(
+                owner.tr("Frame plan refresh failed: %1")
+                    .arg(QString::fromUtf8(error.what())));
+        }
+    }
+
+    void requestRefresh() {
+        if (pending_request != 0) {
+            return;
+        }
+        if (!refresh_driver.ready()) {
+            setRefreshAvailable(false,
+                                owner.tr("the RPC connection is not ready."));
+            return;
+        }
+        QString error;
+        pending_request = refresh_driver.request(&error);
+        if (pending_request == 0) {
+            plan_status->setStyleSheet(
+                QStringLiteral("color: #d94c3d;"));
+            plan_status->setText(owner.tr("Frame plan refresh failed: %1")
+                                     .arg(error));
+            return;
+        }
+        refresh->setEnabled(false);
+        plan_status->setStyleSheet({});
+        plan_status->setText(owner.tr("Requesting the current frame plan..."));
+    }
+
+    void receiveRefreshResult(qint64 request_id,
+                              const QByteArray &result_json) {
+        if (request_id != pending_request) {
+            return;
+        }
+        pending_request = 0;
+        consumeResult(result_json);
+    }
+
+    void receiveRefreshFailure(qint64 request_id, const QString &message) {
+        if (request_id != pending_request) {
+            return;
+        }
+        pending_request = 0;
+        refresh->setEnabled(refresh_driver.ready());
+        plan_status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        plan_status->setText(
+            owner.tr("Frame plan refresh failed: %1")
+                .arg(message));
+    }
+
+    void setRefreshAvailable(bool available, const QString &reason) {
+        pending_request = 0;
+        refresh->setEnabled(available);
+        if (available) {
+            plan_status->setStyleSheet({});
+            plan_status->setText(
+                owner.tr("Frame plan RPC available; press Refresh frame plan."));
+            return;
+        }
+        plan.reset();
+        binding.reset();
+        resource_kinds.clear();
+        populateCandidates(*input_candidate, {});
+        populateCandidates(*color_candidate, {});
+        populateCandidates(*depth, {});
+        clearDraft();
+        configurePosition();
+        plan_status->setStyleSheet(QStringLiteral("color: #b36b00;"));
+        plan_status->setText(
+            reason.isEmpty()
+                ? owner.tr("Frame plan unavailable.")
+                : owner.tr("Frame plan unavailable: %1").arg(reason));
+        updateDraft();
+    }
+
+    void consumeAuthoringConfig(const QByteArray &config_json) {
+        try {
+            const Json root = Json::parse(
+                config_json.constData(),
+                config_json.constData() + config_json.size());
+            if (!root.is_object()) {
+                throw std::runtime_error(
+                    "rendering config must be a JSON object");
+            }
+            if (const auto pipeline = root.find("pipeline");
+                pipeline != root.end() && pipeline->is_object() &&
+                pipeline->contains("preset")) {
+                throw std::runtime_error(
+                    "preset-backed rendering configs are outside this form's "
+                    "scope");
+            }
+            const auto graphs = root.find("rendering_passes");
+            if (graphs == root.end() || !graphs->is_array()) {
+                throw std::runtime_error(
+                    "rendering config requires rendering_passes[]; preset "
+                    "projects are outside this form's scope");
+            }
+
+            decltype(authored_passes) next;
+            for (const auto &graph_value : *graphs) {
+                if (!graph_value.is_object() ||
+                    !graph_value.contains("name") ||
+                    !graph_value.at("name").is_string() ||
+                    !graph_value.contains("passes") ||
+                    !graph_value.at("passes").is_array()) {
+                    throw std::runtime_error(
+                        "rendering_passes entries require name and passes[]");
+                }
+                const std::string graph_name =
+                    graph_value.at("name").get<std::string>();
+                auto [graph_position, inserted] =
+                    next.try_emplace(graph_name);
+                if (!inserted) {
+                    throw std::runtime_error(
+                        "duplicate rendering graph name: " + graph_name);
+                }
+                auto &graph_entry = graph_position->second;
+                for (const auto &pass : graph_value.at("passes")) {
+                    if (!pass.is_object() || !pass.contains("name") ||
+                        !pass.at("name").is_string()) {
+                        throw std::runtime_error(
+                            "passes[] entries require a string name");
+                    }
+                    const std::string pass_name =
+                        pass.at("name").get<std::string>();
+                    if (!graph_entry.emplace(pass_name, pass).second) {
+                        throw std::runtime_error(
+                            "duplicate pass name in graph '" + graph_name +
+                            "': " + pass_name);
+                    }
+                }
+            }
+            authored_passes = std::move(next);
+            authoring_available = true;
+            authoring_status->setStyleSheet({});
+            authoring_status->setText(owner.tr(
+                "Read-only authoring context loaded for omission reporting; "
+                "this form never writes it."));
+        } catch (const std::exception &error) {
+            authored_passes.clear();
+            authoring_available = false;
+            authoring_status->setStyleSheet(
+                QStringLiteral("color: #b36b00;"));
+            authoring_status->setText(
+                owner.tr("Authoring context unavailable: %1")
+                    .arg(QString::fromUtf8(error.what())));
+        }
+        updateDraft();
+    }
+};
+
+FullscreenPassWidget::FullscreenPassWidget(EmbeddedViewport *viewport,
+                                           QWidget *parent)
+    : FullscreenPassWidget(viewportRefreshDriver(viewport), parent) {
+    QObject::connect(
+        viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
+        [this] { impl_->setRefreshAvailable(true, {}); });
+    QObject::connect(
+        viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
+        [this](const QString &message) {
+            impl_->setRefreshAvailable(false, message);
+        });
+    QObject::connect(
+        viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
+        [this](qint64 request_id, const QByteArray &result_json) {
+            impl_->receiveRefreshResult(request_id, result_json);
+        });
+    QObject::connect(
+        viewport, &EmbeddedViewport::inspectorRpcFailed, this,
+        [this](qint64 request_id, const QString &message) {
+            impl_->receiveRefreshFailure(request_id, message);
+        });
+}
+
+FullscreenPassWidget::FullscreenPassWidget(
+    FramePlanRefreshDriver refresh_driver, QWidget *parent)
+    : QWidget(parent) {
+    setObjectName(QStringLiteral("pelican.fullscreenPass"));
+    impl_ = std::make_unique<Impl>(*this, std::move(refresh_driver));
+}
+
+FullscreenPassWidget::~FullscreenPassWidget() = default;
+
+void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {
+    impl_->pending_request = 0;
+    impl_->consumeResult(result_json);
+}
+
+void FullscreenPassWidget::receiveRefreshResult(
+    qint64 request_id, const QByteArray &result_json) {
+    impl_->receiveRefreshResult(request_id, result_json);
+}
+
+void FullscreenPassWidget::receiveRefreshFailure(
+    qint64 request_id, const QString &message) {
+    impl_->receiveRefreshFailure(request_id, message);
+}
+
+void FullscreenPassWidget::setRefreshAvailable(bool available,
+                                               const QString &reason) {
+    impl_->setRefreshAvailable(available, reason);
+}
+
+void FullscreenPassWidget::receiveAuthoringConfig(
+    const QByteArray &config_json) {
+    impl_->consumeAuthoringConfig(config_json);
+}
+
+void FullscreenPassWidget::openProjectReadOnly(
+    const std::filesystem::path &project_root) {
+    try {
+        const auto project_text =
+            readTextFile(project_root / "project.json", "project.json");
+        const auto parsed = Pelican::parseProjectEnvelopeText(project_text);
+        if (!parsed.envelope.basic_config.is_object()) {
+            throw std::runtime_error(
+                "project.json basic_config must be an object");
+        }
+        const auto reference =
+            parsed.envelope.basic_config.find("rendering_config_json");
+        if (reference == parsed.envelope.basic_config.end() ||
+            !reference->is_string() ||
+            reference->get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "project.json requires basic_config.rendering_config_json");
+        }
+        Pelican::ProjectPathResolver resolver;
+        resolver.setup(project_root, false, parsed.envelope);
+        const std::string config_text =
+            resolver.loadText(reference->get_ref<const std::string &>());
+        receiveAuthoringConfig(QByteArray::fromStdString(config_text));
+    } catch (const std::exception &error) {
+        impl_->authored_passes.clear();
+        impl_->authoring_available = false;
+        impl_->authoring_status->setStyleSheet(
+            QStringLiteral("color: #b36b00;"));
+        impl_->authoring_status->setText(
+            tr("Authoring context unavailable: %1")
+                .arg(QString::fromUtf8(error.what())));
+        impl_->updateDraft();
+    }
+}
+
+} // namespace PelicanStudio

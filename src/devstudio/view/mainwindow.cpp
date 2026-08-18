@@ -1,5 +1,6 @@
 #include "mainwindow.hpp"
 #include "frameplanwidget.hpp"
+#include "fullscreenpasswidget.hpp"
 #include "inspectorwidget.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
@@ -184,6 +185,10 @@ void MainWindow::createWorkspace() {
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         frame_plan_);
+    fullscreen_pass_ = new FullscreenPassWidget(viewport_, this);
+    docks_[FullscreenPassDock] = makeDock(
+        this, tr("Fullscreen Pass JSON"),
+        QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
     connect(viewport_, &EmbeddedViewport::engineProcessExitedWithFailure, this,
@@ -321,6 +326,7 @@ void MainWindow::openProject(const QString &path) {
     try {
         project_model_ = ProjectOutlinerModel::open(filesystemPath(path));
         selection_model_.bindProject(&*project_model_);
+        fullscreen_pass_->openProjectReadOnly(project_model_->projectRoot());
         populateOutliner();
         refreshSelectionViews();
         viewport_->openProject(displayPath(project_model_->projectRoot()));
@@ -806,11 +812,13 @@ void MainWindow::applyDefaultLayout() {
     addDockWidget(Qt::BottomDockWidgetArea, docks_[OutputDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[EngineLogDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[FramePlanDock]);
+    addDockWidget(Qt::BottomDockWidgetArea, docks_[FullscreenPassDock]);
     tabifyDockWidget(docks_[OutputDock], docks_[EngineLogDock]);
     tabifyDockWidget(docks_[EngineLogDock], docks_[FramePlanDock]);
+    tabifyDockWidget(docks_[FramePlanDock], docks_[FullscreenPassDock]);
     docks_[FramePlanDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);
-    resizeDocks({docks_[FramePlanDock]}, {240}, Qt::Vertical);
+    resizeDocks({docks_[FullscreenPassDock]}, {320}, Qt::Vertical);
     resize(1280, 800);
 }
 
