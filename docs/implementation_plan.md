@@ -5567,36 +5567,52 @@ frame plan は宣言順、物理計画は辞書順 `[alpha, zeta]` になる。
 
 `pelican_studio.exe` がノード移動中に落ちる。**無限再帰である。**
 
-#### 輪の場所
+#### 分かっていること(ダンプ解析、2026-08-18)
 
-`src/devstudio/view/frameplangraphics.cpp:799-809` の移動コールバックが
+`%LOCALAPPDATA%\CrashDumps\pelican_studio.exe.25452.dmp` を解析した。
 
-```cpp
-session_node_positions_[key] = moved_position;
-rerouteConnectedBundles(*this, key.graph, key.name);
-setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
-```
+- 例外は `0xc00000fd`(スタックオーバーフロー)、落ちたスレッドは 30836
+- **輪はおよそ 145 段**繰り返している
+- **輪に我々のコードが含まれる**: `pelican_studio.exe +0xdf2f0`(146 回)と
+  `+0x3b91e8`(145 回)。その間に Qt6Widgets のイベント配送と Qt6Core のフレームが挟まる
+- スタック上のフレーム帰属: Qt6Widgetsd 3884 / Qt6Cored 1785 / **pelican_studio.exe 1189**
 
-を `ItemPositionHasChanged`(`:70`)から呼ぶ。
+**単純な関数再帰ではなく、Qt のイベント配送を経由して自分のハンドラに戻る輪である。**
 
-**`setSceneRect` を移動ハンドラの中で呼ぶのが輪の起点である。**
-シーン矩形が変わるとビューのスクロールバーと変換が調整され、
-ビューは `AnchorUnderMouse`(`view/frameplanwidget.cpp:230`)なので
-**カーソル下のシーン座標がずれる**。ドラッグ中のアイテムはカーソルを追うので
-目標位置が変わり、再び動き、`ItemPositionHasChanged` が再発火する。
+#### 分かっていないこと —— 推測を書かないこと
 
-`ItemSendsGeometryChanges` を立てているのはノードの 1 箇所だけ(`:825`)なので、
-ラベルや矢印の経由ではない。
+輪の起点は**特定できていない**。次の 4 つの仮説を立てて、いずれも実験で否定した:
 
-#### なぜテストが通ったか
+1. **移動ハンドラ内の `setSceneRect` がビュー変換を動かす** ——
+   実マウスイベントでビュー越しにドラッグするテストを書いたが、
+   ネイティブ / offscreen の両方で通る
+2. **多数の操作の組み合わせ** —— 22 ターゲット × 深さ 3 × ズーム × 全ノードの長距離ドラッグ
+   (285 assertions)を回したが通る
+3. **ドラッグ中にフレームプランが届く** —— ドラッグの途中で `receiveResult` を
+   繰り返し投入するテストを書いたが通る
+4. **コンボボックスのシグナル輪** —— `currentTextChanged` は `populate()` を呼ぶが、
+   再投入は両方とも `QSignalBlocker` で守られている(`view/frameplanwidget.cpp:427`, `:524`)。
+   `processEvents` / `sendEvent` は studio に存在しない
 
-**テストは実ドラッグをビュー越しに通していない。**
-`test/devstudio_frameplan_graph_test.cpp` は `QGraphicsView` を取得しているが、
-`QTest::mouse*` も `sendEvent` も使わず、`ItemPositionHasChanged` を
-**プログラムから直接発火**させているだけである。
-ビューもスクロールバーもカーソルも関与しないので、フィードバックの輪が成立しない。
+**次の決定的な一手は `+0xdf2f0` と `+0x3b91e8` の記号解決である。**
+デバッガ(cdb / windbg)がこの環境に無いので、
+`/MAP` 付きで再リンクして RVA を引くか、デバッガを入れる必要がある。
 
-**本セッションで繰り返し出ている「テストが本番経路を通らない」の再発である。**
+#### 別件: studio は 1 週間前から落ちている
+
+イベントログを 10 日分見たところ、`pelican_studio.exe` のクラッシュは今回が初めてではない:
+
+| 日付 | 例外 |
+|---|---|
+| 08/18 | **0xc00000fd**(スタックオーバーフロー) |
+| 08/17 | 0xc0000005(アクセス違反) |
+| 08/14 | 0xc0000005 |
+| 08/13 | 0xc0000005 |
+| 08/11 | 0xc0000005 |
+
+**今回の署名は過去 4 件と異なる**ので、今回は新種である可能性が高い。
+ただし**アクセス違反での常習的なクラッシュが別に存在し、誰も起票していない。**
+ダンプは `%LOCALAPPDATA%\CrashDumps` に残っている。別 WP として調べること。
 
 #### 実装範囲
 
