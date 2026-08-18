@@ -9,6 +9,7 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsSimpleTextItem>
 #include <QLineF>
+#include <QMetaObject>
 #include <QPainterPath>
 #include <QPen>
 #include <QPolygonF>
@@ -804,8 +805,11 @@ void FramePlanGraphicsScene::populate(
                     }
                     session_node_positions_[key] = moved_position;
                     rerouteConnectedBundles(*this, key.graph, key.name);
-                    setSceneRect(itemsBoundingRect().adjusted(
-                        -30.0, -30.0, 30.0, 30.0));
+                    // Growing the scene rect from inside itemChange re-enters
+                    // this handler through Qt's view update, which recurses
+                    // until the stack is exhausted. Defer it to the event
+                    // loop, coalescing the requests made during one drag.
+                    scheduleSceneRectUpdate();
                 });
             addItem(item);
             item->setPos(position);
@@ -990,6 +994,20 @@ void FramePlanGraphicsScene::populate(
     setProperty("pelicanExecutionPlanReasonCode", QString{});
     setProperty("pelicanExecutionPlanReason", QString{});
     publishStateProperties();
+}
+
+void FramePlanGraphicsScene::applySceneRectNow() {
+    scene_rect_update_queued_ = false;
+    setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+}
+
+void FramePlanGraphicsScene::scheduleSceneRectUpdate() {
+    if (scene_rect_update_queued_) {
+        return;
+    }
+    scene_rect_update_queued_ = true;
+    QMetaObject::invokeMethod(
+        this, [this] { applySceneRectNow(); }, Qt::QueuedConnection);
 }
 
 void FramePlanGraphicsScene::recordSelection() {

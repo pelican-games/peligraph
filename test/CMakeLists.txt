@@ -206,7 +206,7 @@ if(TARGET pelican_studio_frame_plan)
 endif()
 
 if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
-  find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  find_package(Qt6 REQUIRED COMPONENTS Core Test Widgets)
   pelican_define_test(devstudio_engine_failure_test QT GPU GOLDEN
     pelican_studio_viewport
     pelican_studio_frame_plan
@@ -237,6 +237,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     pelican_studio_frame_plan
     pelican_core
     Qt6::Core
+    Qt6::Test
     Qt6::Widgets
   )
   target_sources(pelican_test_devstudio_frameplan_graph_test PRIVATE

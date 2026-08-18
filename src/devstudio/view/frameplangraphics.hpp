@@ -86,7 +86,14 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // Deliberately owned only by the live scene.  Node positions are editor
     // session state, not QMainWindow workspace state and never reach disk.
     std::map<FramePlanNodeKey, QPointF> session_node_positions_;
+    // Never call this from inside itemChange: changing the scene rect makes
+    // the view update, which moves the dragged item, which re-enters
+    // itemChange. Schedule it instead; requests coalesce.
+    void scheduleSceneRectUpdate();
+    void applySceneRectNow();
+
     bool rebuilding_ = false;
+    bool scene_rect_update_queued_ = false;
 
     void recordSelection();
     void publishStateProperties();

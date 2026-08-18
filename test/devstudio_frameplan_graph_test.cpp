@@ -33,10 +33,12 @@
 #include <QLabel>
 #include <QSpinBox>
 #include <QStringList>
+#include <QTest>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -1574,6 +1576,98 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP320 dragging through the real view keeps movement and scene bounds finite",
+    "[devstudio][frame-plan][drag][mouse][wp320]") {
+    (void)application();
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(520, 420);
+    widget.show();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText(
+        QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+
+    QGraphicsScene &logical = scene(widget);
+    QGraphicsView &view = logicalView(widget);
+    const auto nodes = itemsOfKind(logical, FramePlanNodeItem);
+    REQUIRE_FALSE(nodes.empty());
+    QGraphicsItem *dragged = *std::ranges::max_element(
+        nodes, {}, [](const QGraphicsItem *item) {
+            return item->sceneBoundingRect().right();
+        });
+    REQUIRE(dragged != nullptr);
+    REQUIRE(dragged->flags().testFlag(QGraphicsItem::ItemIsMovable));
+
+    view.centerOn(dragged);
+    QApplication::processEvents();
+    QWidget *const viewport_widget = view.viewport();
+    REQUIRE(viewport_widget != nullptr);
+    REQUIRE(viewport_widget->isVisible());
+    const QPoint press_position =
+        view.mapFromScene(dragged->mapToScene(QPointF{18.0, 18.0}));
+    const std::array move_offsets{
+        QPoint{15, 10}, QPoint{30, 20}, QPoint{45, 30},
+        QPoint{60, 40}, QPoint{75, 50}, QPoint{90, 60},
+        QPoint{105, 70}, QPoint{120, 80},
+    };
+    REQUIRE(viewport_widget->rect().contains(press_position));
+    REQUIRE(viewport_widget->rect().contains(press_position +
+                                             move_offsets.back()));
+
+    const auto finite_rect = [](const QRectF &rect) {
+        return std::isfinite(rect.x()) && std::isfinite(rect.y()) &&
+               std::isfinite(rect.width()) && std::isfinite(rect.height());
+    };
+    const QRectF before_scene_rect = logical.sceneRect();
+    REQUIRE(finite_rect(before_scene_rect));
+    const auto before_positions = sceneNodePositions(logical);
+    const QPointF before_position = dragged->pos();
+    const QPointF expected_delta =
+        view.mapToScene(press_position + move_offsets.back()) -
+        view.mapToScene(press_position);
+    const std::string dragged_name =
+        dragged->data(FramePlanNameRole).toString().toStdString();
+
+    QTest::mousePress(viewport_widget, Qt::LeftButton, Qt::NoModifier,
+                      press_position);
+    for (const QPoint &offset : move_offsets) {
+        QTest::mouseMove(viewport_widget, press_position + offset, 1);
+    }
+    QTest::mouseRelease(viewport_widget, Qt::LeftButton, Qt::NoModifier,
+                        press_position + move_offsets.back());
+    QApplication::processEvents();
+
+    const QPointF actual_delta = dragged->pos() - before_position;
+    REQUIRE(QLineF{actual_delta, expected_delta}.length() < 0.01);
+    const auto after_positions = sceneNodePositions(logical);
+    REQUIRE(after_positions.size() == before_positions.size());
+    for (const auto &[name, position] : before_positions) {
+        CAPTURE(name);
+        if (name == dragged_name) {
+            REQUIRE(after_positions.at(name) != position);
+        } else {
+            REQUIRE(after_positions.at(name) == position);
+        }
+    }
+
+    const QRectF settled_scene_rect = logical.sceneRect();
+    REQUIRE(finite_rect(settled_scene_rect));
+    REQUIRE(settled_scene_rect.contains(dragged->sceneBoundingRect()));
+    REQUIRE(settled_scene_rect ==
+            logical.itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+    for (int index = 0; index < 4; ++index) {
+        QApplication::processEvents();
+        REQUIRE(logical.sceneRect() == settled_scene_rect);
+    }
+}
+
+TEST_CASE(
     "WP318 mouse anchored wheel zoom clamps with visible boundary feedback",
     "[devstudio][frame-plan][zoom][wp318]") {
     (void)application();
@@ -2005,6 +2099,136 @@ TEST_CASE(
                 .toString()
                 .isEmpty());
 #endif
+}
+
+
+TEST_CASE(
+    "WP320 stress: interleaved target, depth, zoom and repeated drags stay stable",
+    "[devstudio][frame-plan][drag][stress][wp320]") {
+    (void)application();
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.show();
+    widget.resize(1200, 800);
+    QApplication::processEvents();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+
+    QGraphicsScene &logical = scene(widget);
+    QGraphicsView &view = logicalView(widget);
+    QComboBox &selector = targetSelector(widget);
+    QSpinBox &depth = subtreeDepth(widget);
+    QWidget *const vp = view.viewport();
+    REQUIRE(vp != nullptr);
+
+    const auto finite_rect = [](const QRectF &r) {
+        return std::isfinite(r.x()) && std::isfinite(r.y()) &&
+               std::isfinite(r.width()) && std::isfinite(r.height());
+    };
+
+    for (int target = 0; target < selector.count(); ++target) {
+        selector.setCurrentIndex(target);
+        QApplication::processEvents();
+        for (int d = 1; d <= 3; ++d) {
+            depth.setValue(d);
+            QApplication::processEvents();
+
+            // zoom in and out around the view centre
+            for (int w = 0; w < 3; ++w) {
+                QWheelEvent in{QPointF{vp->rect().center()},
+                               vp->mapToGlobal(vp->rect().center()),
+                               QPoint{0, 0}, QPoint{0, 120},
+                               Qt::NoButton, Qt::NoModifier,
+                               Qt::NoScrollPhase, false};
+                QApplication::sendEvent(vp, &in);
+            }
+            QApplication::processEvents();
+
+            const auto nodes = itemsOfKind(logical, FramePlanNodeItem);
+            for (QGraphicsItem *node : nodes) {
+                const QPoint press =
+                    view.mapFromScene(node->sceneBoundingRect().center());
+                if (!vp->rect().contains(press)) continue;
+                QTest::mousePress(vp, Qt::LeftButton, Qt::NoModifier, press);
+                // long drag with many intermediate moves
+                for (int step = 1; step <= 40; ++step) {
+                    const QPoint at = press + QPoint{step * 7, step * 5};
+                    if (!vp->rect().contains(at)) break;
+                    QTest::mouseMove(vp, at, 1);
+                }
+                QTest::mouseRelease(vp, Qt::LeftButton, Qt::NoModifier,
+                                    press + QPoint{40 * 7, 40 * 5});
+                QApplication::processEvents();
+                REQUIRE(finite_rect(logical.sceneRect()));
+            }
+
+            for (int w = 0; w < 3; ++w) {
+                QWheelEvent out{QPointF{vp->rect().center()},
+                                vp->mapToGlobal(vp->rect().center()),
+                                QPoint{0, 0}, QPoint{0, -120},
+                                Qt::NoButton, Qt::NoModifier,
+                                Qt::NoScrollPhase, false};
+                QApplication::sendEvent(vp, &out);
+            }
+            QApplication::processEvents();
+            REQUIRE(finite_rect(logical.sceneRect()));
+        }
+    }
+    REQUIRE(finite_rect(logical.sceneRect()));
+}
+
+
+TEST_CASE(
+    "WP320 a frame plan arriving mid-drag does not destabilise the scene",
+    "[devstudio][frame-plan][drag][refresh][wp320]") {
+    (void)application();
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
+    const QByteArray captured = QByteArray::fromStdString(wire.dump());
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.show();
+    widget.resize(1200, 800);
+    QApplication::processEvents();
+    widget.receiveResult(captured);
+    QApplication::processEvents();
+
+    QGraphicsScene &logical = scene(widget);
+    QGraphicsView &view = logicalView(widget);
+    QWidget *const vp = view.viewport();
+    REQUIRE(vp != nullptr);
+
+    const auto finite_rect = [](const QRectF &r) {
+        return std::isfinite(r.x()) && std::isfinite(r.y()) &&
+               std::isfinite(r.width()) && std::isfinite(r.height());
+    };
+
+    const auto nodes = itemsOfKind(logical, FramePlanNodeItem);
+    REQUIRE_FALSE(nodes.empty());
+    const QPoint press =
+        view.mapFromScene(nodes.front()->sceneBoundingRect().center());
+    REQUIRE(vp->rect().contains(press));
+
+    QTest::mousePress(vp, Qt::LeftButton, Qt::NoModifier, press);
+    for (int step = 1; step <= 30; ++step) {
+        QTest::mouseMove(vp, press + QPoint{step * 6, step * 4}, 1);
+        // the live studio keeps receiving frame plans while the user drags
+        if (step % 5 == 0) {
+            widget.receiveResult(captured);
+            QApplication::processEvents();
+        }
+        REQUIRE(finite_rect(logical.sceneRect()));
+    }
+    QTest::mouseRelease(vp, Qt::LeftButton, Qt::NoModifier,
+                        press + QPoint{30 * 6, 30 * 4});
+    QApplication::processEvents();
+    REQUIRE(finite_rect(logical.sceneRect()));
 }
 
 } // namespace PelicanStudio
