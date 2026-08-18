@@ -5635,130 +5635,242 @@ frame plan は宣言順、物理計画は辞書順 `[alpha, zeta]` になる。
 
 依存: なし。見積: 小。**最優先** —— 主要な新機能が実使用で落ちる。
 
-### WP321: パスを GUI で組んで JSON を出す(書き込まない・反映しない)
+### WP321a〜b / WP322 / WP323 の共通前提 —— 実測値(定義付き)
+
+**ビルドフラグで変わる数字を固定値で書かないこと。**以下は 3 層に分けてある。
+
+#### 層 A: 無条件に固定値でよい(git 追跡ファイル、`if()` の外の宣言)
+
+| 値 | 定義 |
+|---|---|
+| **20 パス / 1 グラフ** | `projects/example/passes/main_rendering_config.json` の `rendering_passes` は 1 要素(`main_render`)、その `passes` が 20。内訳 fullscreen **16** / material **2** / snapshot_copy **2** |
+| **20** | 同ファイルの `render_targets` の要素数 |
+| **16 / 16** | fullscreen 16 件のうち `{name,type,shader,input,output}` の外に鍵を持つもの。**例外なし。**のべ内訳: `clear_color` 15、`color_load_op` 4、`push_constants` 2、`uses_light_data` 1。**既定値からの逸脱**で数え直しても 16/16 |
+| **7 / 1** | example の fullscreen が使う相異なる `shader.fragment` = 7、`shader.vertex` = 1(`engine://fullscreen`、16/16) |
+| **32** | エンジンの登録済み **fragment stem** 数。git 追跡下の `src/core/resources/**/*.frag` も 32 で**同一集合** |
+| **26** | `src/core/resources/CMakeLists.txt` の `embed_shader()` が SPIR-V を作る `.frag` の本数(すべて `if()` の外) |
+| **14 / 14** | `RenderPassType` の要素数と `passFieldOwnershipTable()` のエントリ数 |
+| **9 / 5** | `shader` を**所有する**型 9(fullscreen, output_transform, raster, debug_draw, gizmo, debug_text, shadow_depth, velocity, picking)/ **所有しない**型 5(material, ui, imgui, canonical_anchor, snapshot_copy)。**フォームが常に `shader` を吐くと後者 5 型で所有検査に落ちる** |
+| **30 / 22** | fixture `example_frame_plan.json` の nodes / resources |
+| **22 = 20 + 2、21 + 1** | resources の `source` 内訳(project 20 / engine 2)と `kind` 内訳(render_target 21 / frame_target 1 = `swapchain`)。**存在集合であって候補集合ではない** |
+| **20 / 19 / 1** | 同じ 22 件に**位置非依存の門だけ**を掛けたときの候補数。`input` 20 / `output.color` 19 / `output.depth` 1。`input` はさらに「同じ `passes[]` のより前で生成済み」に縛られ**位置依存**(`gbuffer_pass` 直後なら 5) |
+| **`{kind, name, source}` のみ** | フレームプランの `resources[]` が運ぶ鍵(+任意で `provider_feature` / `provider_ref`)。**`usage` も `storage_mode` も `role` も無い** |
+| **15 / 0** | フレームプラン 30 ノードの鍵の**和集合**は 15 個。**シェーダー参照を運ぶ鍵は 0** |
+| **4 値** | ノードの `kind` は `render` / `snapshot_copy` / `anchor` / `output_transform` の 4 種のみで、**`fullscreen` と `material` を区別しない**。型はプランから読めず `passFieldOwnershipTable()` から引くしかない |
+| **11 / 9** | preset `hybrid_v1.json` の `config.render_targets` = 11、`config.rendering_passes` は 1 グラフ 9 パス。台帳の animgraph_demo 0/0 は**著作ファイルの列**であって実行時ではない |
+| **11 鍵** | preset 使用中の著作 config の許可鍵。`rendering_passes` は**含まれない** |
+| **0 / 1 / 1 / 0** | プロジェクト側の著作 **fragment stem** 数。example 0(`.surface` 3 本はマテリアルの surface 入力であって fragment stem ではない)/ sprite_demo 1 / vrm_xr_demo 1 / animgraph_demo 0 |
+
+#### 層 B: フラグ名を必ず併記する(裸の数字を置かない)
+
+| 値 | 条件 |
+|---|---|
+| 登録 vertex stem **17 / 16** | `PELICAN_WITH_VAT` = ON / OFF。追跡下の `.vert` ソース 17 本自体はフラグ非依存 |
+| stem 経由で解決できる fragment **32 / 26** | `PELICAN_RUNTIME_SHADER_COMPILER` = ON / OFF。source-only 6 件のうち `surface_v1` は別経路なので実際に落ちるのは 5 件 |
+| `imgui` 型の有効性 | **消費側エンジン**の `PELICAN_WITH_IMGUI` 依存。`pelican_project` は `PELICAN_WITH_OPENXR` しか定義しないので **studio は原理的に判定できない。提示しないこと** |
+
+#### 層 C: 台帳に書いてはならない
+
+`.spv` は git 追跡下に **0 件**(`src/core/resources/.gitignore`)。ローカルに見える `.frag.spv` はビルド生成物である。
+「SPIR-V が 26 個ある」ではなく「`embed_shader()` が 26 本コンパイルする」と書くこと。
+
+---
+
+### WP321a: fullscreen のパスを GUI で組んで JSON を出す(書き込まない・反映しない)
 
 **目的**: 利用者の要求は
 「**どのパスで、どのシェーダーで処理して、次にこうする**」を GUI で指定すること。
 本 WP は**フォームだけ**を作る。**プロジェクトに書き込まない。エンジンに反映しない。**
 
-#### 著作する対象は小さい
+#### studio が判定できる軸は 2 つしかない
 
-`projects/example/passes/main_rendering_config.json` の `rendering_passes` は
-グラフの配列(`{name, passes[]}`)で、`main_render` の 1 グラフに **20 パス**。
-うち **16 が `fullscreen`**(`material` 2、`snapshot_copy` 2)。その形は:
+これが本 WP の設計を決めている構造的事実である。
 
-```json
-{
-  "name": "ssao_pass",
-  "type": "fullscreen",
-  "shader": { "vertex": "engine://fullscreen", "fragment": "engine://ssao" },
-  "input":  ["gbuffer_worldpos", "gbuffer_normal"],
-  "output": { "color": ["ssao_output"], "depth": null }
-}
-```
+- **判定できる**: フィールド所有(`validatePassFieldOwnership` は `src/project/passfieldownership.cpp`
+  すなわち **pelican_project** にあり studio から呼べる)、同一グラフ内の名前衝突、
+  ターゲット**名**の存在(フレームプランの `resources[]`)
+- **判定できない**: ターゲットの **usage 適合**(`input` は SAMPLED、`output.color` は
+  COLOR_ATTACHMENT が要るが、**フレームプランは usage を運んでいない**)、
+  **生成順**(`input` は同じ `passes[]` のより前で生成済みでなければならない)、
+  **シェーダー stem の解決可能性**(D0 とビルドフラグ依存)
 
-**利用者の言葉がそのまま項目に対応している。**
+判定側の実装 —— `renderingpassvalidation.cpp` と `shaderlibrary.cpp` —— はいずれも
+**pelican_core** にあり、`src/devstudio/CMakeLists.txt` の `pelican_assert_link_boundary` が
+configure 時 FATAL_ERROR で遮断する。**回避してはならない。**
 
-#### 選択肢として提示できるもの / できないもの(実測)
+#### したがって成果物の定義はこうである
 
-| 項目 | studio から到達できるか | 実測 |
-|---|---|---|
-| `type` | **できる**(列挙) | example は `fullscreen` 16 / `material` 2 / `snapshot_copy` 2 |
-| `input` / `output.color` | **できる** | フレームプランの `resources` が **22**(著作 20 + エンジン 2) |
-| `shader.vertex` | fullscreen なら実質固定 | 20 パス中 16 が `engine://fullscreen` |
-| `shader.fragment` | **できない(下記)** | エンジンに `.frag` 32・`.vert` 17。プロジェクト側は example 0 / sprite_demo 2 / vrm_xr_demo 2 / animgraph_demo 0 |
+> **フォームが出すのは、パス宣言の「フォームが所有する部分」と、
+> 出さなかった鍵・検査しなかった軸の明示的な申告である。**
 
-**シェーダーだけが列挙できない。**確認した理由は 2 つある。
+`ssao_pass` を例に取ると、実物は
+`{name, type, output, input, push_constants, shader, clear_color}` の 7 鍵で、
+フォームが出すのは前者 5 鍵、**申告するのは `{push_constants, clear_color}`** である。
 
-1. **D0**。エンジン資産の一覧を持つ `engineResource` は `src/core/loader/engineresources.cpp:151`
-   にあり `pelican_core` に属する。studio は `pelican_project` と rpc しかリンクできない。
-2. **フレームプランがシェーダーを運んでいない。**
-   `test/fixtures/devstudio/example_frame_plan.json` のノードの鍵は
-   `declaration_index / kind / level / name / order / reads / reads_history / source / writes` のみで、
-   **shader を含む鍵が 1 つもない**。既存パスがどのシェーダーで動いているかすら studio は知らない。
-
-したがって本 WP では **`shader.fragment` は自由入力とし、「ここでは検査していない」と明示すること。**
-**エンジン資産の一覧を studio 側に写経してはならない**(第二の流儀になり、
-資産が増えたときに黙って古くなる)。この穴を塞ぐのは WP322 である。
-
-#### 書かない・反映しない理由
-
-編集ループの設計は 3 回不合格になった。難しいのは**フォームではなく、
-どこに書くかとどう反映するか**である。台帳の
-「編集側の設計 — 確定した条件と、3 回失敗した原因」と、
-未解決の 5 項目(書き込み先・反映経路・識別子・preset 型プロジェクト・studio の overlay)を読むこと。
-
-**本 WP はその 5 つを一つも踏まない。**
-
-- 書かないので書き込み先の問題を踏まない
-- 反映しないのでリロードと再コンパイルの問題を踏まない
-- 保存しないので識別子の衝突を踏まない
-- 新しいパスの JSON を作るだけなので preset 型でも成立する
-- コンパイルしないので studio の overlay 差を踏まない
-
-**フォームが使えると分かってから、どれを解くかを選ぶ。**
+**「妥当」と「判定していない」を同じ状態にしてはならない。**
+画面全体の但し書き 1 つでは足りない。**軸の名前を挙げて示すこと。**
 
 #### 実装範囲
 
-1. パスを組むフォーム。上表のうち**到達できる項目は選択肢から選ばせること**。
-   自由入力は名前と `shader.fragment` のみ。
-2. **組んだ結果の JSON をその場に表示すること。**利用者がコピーできること。
-3. **検査できることだけ、その場で示すこと。**
-   存在しないターゲットを参照していないか、名前が既存パスと衝突しないか。
-   **エンジンの検証規則を studio 側に写経しないこと** ——
-   `pelican_project` にある既存の検証を使うか、使えないなら
-   **「ここでは検査していない」と画面に明示すること。**黙って通してはならない。
-4. 選択肢の出所を実データにすること。ターゲットは現在のフレームプランの `resources` から。
-   **ハードコードした一覧を作らないこと。**
+1. **型は `fullscreen` に固定する。**選択項目にしない(型を増やすのは WP321b)。
+2. **出す鍵は、その型が所有する鍵に限る。**所有集合は `passFieldOwnershipTable()` から
+   引くこと。**studio 側に写経しないこと。**
+3. **判定は軸ごとに三値**(`妥当` / `不当` / `判定していない`)。
+   判定できない 3 軸(usage 適合・生成順・シェーダー解決)は**軸名を挙げて**
+   「判定していない」と表示すること。加えて
+   **出力が実物の部分にすぎないこと**(出さなかった鍵の集合)を表示すること。
+4. **貼り付け先を画面に出す。**対象グラフ名と `passes[]` 内の想定位置
+   (位置は `declaration_index` になり実行順に効く)。
+5. ターゲットの選択肢はフレームプランの `resources[]` から。**ハードコードしないこと。**
+6. **`pelican_studio` に配線すること。**`src/devstudio/view/CMakeLists.txt` の
+   `target_sources(pelican_studio PRIVATE ...)` に載せ、`MainWindow` から構築すること。
 
 #### 範囲外
 
-**プロジェクトへの書き込み。エンジンへの反映。位置やフォーム状態の永続化。**
-既存パスの編集(本 WP は新規作成のみ)。シェーダー資産の列挙(WP322)。
+**プロジェクトへの書き込み。エンジンへの反映。**フォーム状態の永続化。既存パスの編集。
+`fullscreen` 以外の型(WP321b)。シェーダー資産の列挙。ターゲットの usage 判定(WP323)。
+**preset 型プロジェクト** —— 出力形は preset 使用中の著作 config に置けない
+(許可 11 鍵に `rendering_passes` が無く、名前付きエラーで拒否される)。
+feature へ包み直す合法経路は存在するが、出荷プロジェクトでの使用例は 0 である。
 
 #### 受け入れ条件(§4 規約 10)
 
-- **フォームで組んだ JSON が、`projects/example` の既存パス宣言と同じ形であること。**
-  `ssao_pass` と同じ選択を行うと、`main_rendering_config.json` の当該エントリと
-  **意味的に一致する JSON** が出ること —— これが本 WP の中心的な対照である
-- **存在しないターゲットを参照した状態で、妥当と表示されないこと。**
-  名前が既存パスと衝突する場合も同様。**同じテストの中で**、
-  妥当な選択では妥当と表示されることを検査すること(否定対照)
-- **選択肢が実データ由来であること。**同じテストの中で、
-  `resources` が異なる 2 つのフレームプランを与え、
-  **選択肢が両者で異なること**を検査すること。ハードコードなら一致してしまう
-- **`shader.fragment` について「検査していない」旨が画面から取得できること。**
-  存在しないシェーダー名を入れても妥当と表示されるなら、それが明示されていること
-- **プロジェクトのファイルが 1 バイトも変わらないこと。**
-  本 WP の実行前後で `git status` が変化しないこと
+すべて **widget を入口とし、期待値は権威から取得する**こと(テストにリテラルで書かない)。
+
+- **(A) 投影対照 —— 本 WP の中心。**
+  テスト実行時に `projects/example/passes/main_rendering_config.json` を
+  **実ファイルとして**読み(fixture の写しを使わないこと)、`ssao_pass` を取る。
+  同じ選択でフォームを駆動し、**同じテストの中で**次を検査すること。
+  - 出力 JSON が、実エントリを**フォームが所有する鍵集合へ投影したもの**と一致すること。
+    鍵集合は `passFieldOwnershipTable()` から引くこと(**テストに列挙しないこと**)
+  - **フォームが「再現しなかった鍵」を自分で報告し、その集合が
+    `実エントリの鍵 - 出力の鍵` と一致すること。**`ssao_pass` では `{push_constants, clear_color}`
+  - **同じテストの中で `UpsampleBlend_3` でも同じ 2 つを検査すること。**
+    差集合は `{clear_color, color_load_op}` になる。**差集合を固定値で持つ実装はここで落ちる**
+  - 名前が既存と一致するため衝突警告が出るが、それは**本対照の合否に影響しない**
+    (中心条件の述語は「JSON が出ること」であり「妥当と表示されること」ではない)
+- **(C) 実データ由来対照。**同じテストの中で `resources` が異なる 2 つのフレームプランを与え、
+  **それぞれについて選択肢の集合が当該プランの `resources[].name` の集合と一致すること**。
+  「異なること」では不十分 —— `固定22件 ∪ {resources 数}` が通ってしまう。
+  **2 つのうち少なくとも 1 つはテスト内で組み立てたプランとすること**
+- **(D) 未検査対照。**未検査の軸を含む下書きの判定が、全軸検査済みの下書きと
+  **表示そのもので区別できること。**画面全体の但し書き 1 つでは不可。
+  同じテストで次を否定対照として実行すること:
+  `shader.fragment` に `engine://ssao.frag`(拡張子付きは必ず拒否される)/
+  `engine://taa_resolve`(`.spv` が無く compiler OFF で拒否される)/
+  `input` に `offscreen_depth`(SAMPLED 無し)/ `output.color` に `opaque_color`
+  (COLOR_ATTACHMENT 無し)/ `input` に `swapchain`(名指しで拒否される)。
+  **いずれも「妥当」と表示されないこと。**studio が拒否を予言できない軸は
+  **軸名を伴って「判定していない」と表示されること**。
+  `swapchain` は studio 単独で落とせる(`kind: frame_target` は 1 件のみ)
+- **(E) 本番配線対照。**新規 view ソースが
+  `src/devstudio/view/CMakeLists.txt` の `target_sources(pelican_studio PRIVATE ...)` に
+  載っていること。**offscreen で `MainWindow` を構築し `findChild` で当該 widget が
+  居ることを検査すること。**既存テストは widget ソースを `target_sources` で直接
+  コンパイルしているので、**テストにだけ足して studio に配線しない偽装が現に可能である**
+- **(F) 無副作用 —— `git status` 1 行では証明にならないので 3 条件に割る。**
+  - **リポジトリ内に書かない**: `git status --ignored` で `projects/` 配下が変化しないこと。
+    `.pelican/shader_cache/` はエンジン起動の正当な副作用なので、
+    エンジンを起動しない構成で測るか**唯一の既知例外として名指しで除外**すること
+  - **リポジトリ外に書かない**: 本 WP が追加するコードが `LayoutPresetManager` /
+    `QStandardPaths` / `QSaveFile` / `QFile::open(WriteOnly)` を呼ばないこと
+  - **反映しない**: 本 WP が追加するコードが `EmbeddedViewport::requestRpc` を
+    `get_frame_plan` 以外のメソッドで呼ばないこと。
+    **これが本 WP で唯一「反映しない」を検査する条件である。**
+    studio は既に `edit` / `commit_preview` / `undo` / `save_scene` / `set_gizmo` を送っており、
+    `requestRpc` はメソッド名を文字列で受ける汎用通しなので、宣言だけでは守られない
+- **(G) 陳腐化対照。**下書きがある状態でフレームプランが差し替わったとき、
+  **古い `resources` に基づく妥当判定が残らないこと。**
+  同じテストで `resources` が異なる 2 プランを **Refresh の実経路で**順に与え、
+  1 つ目で妥当だった選択が 2 つ目で妥当と表示されないこと。
+  束縛の鍵は `graph` 名 + `resources` の名前集合とすること。
+  **`runtime_generation` に束縛しないこと** —— エクステントだけの変化(ドックのリサイズ)で
+  世代が上がるため偽陽性になる。下書きを毎回破棄する設計なら、
+  「差し替え後の下書き復元は範囲外」と明記した上で破棄を検査すれば足りる
 - `QT_QPA_PLATFORM=offscreen` で緑であること
 - `ctest` 全数が緑(`-j4`)、`uv run tools/doclink.py check` が通ること
 
 依存: なし。見積: 中。
 
+### WP321b: フォームが扱う型を増やす
+
+**目的**: WP321a は `fullscreen` 固定である。型を増やす。
+
+**範囲**: 型の一覧を `passFieldOwnershipTable()` から取り、**型ごとの鍵集合を表から導出する**
+(写経しない)。`imgui` は**提示しない**(studio が有効性を判定できない)。
+`raster` / `snapshot_copy` / `canonical_anchor` は鍵集合が別物なので、
+除外するか各々の鍵集合を与えること。
+
+**注意**: 「material は固有フィールドを要求するので作れない」は**誤りである。**
+example の `gbuffer_pass` は `{name, type, output}` の 3 鍵で成立している。
+material が作れない理由はその逆で、**フォームが常に `shader` を吐くと
+所有しない型 5 つで所有検査に落ちる**からである。
+
+**受け入れ条件**:
+- **(B) 所有対照。**同じテストの中で、`shader` を持つ `fullscreen` の下書きが「妥当」と表示され、
+  `type` だけを `shader` を所有しない型(`material` / `ui` / `snapshot_copy` /
+  `canonical_anchor`)に切り替えると「不当」になること。
+  **表示された文言が、同じ JSON に対して `validatePassFieldOwnership` が実際に投げた文言と
+  一致すること** —— 期待文言をテストにリテラルで書かないこと
+- **提示する型の集合が `passFieldOwnershipTable()` の型名の集合と一致すること**
+  (部分集合でも「異なること」でもなく、**集合として等しいこと**)。
+  studio が宣言した capability で除外した型があるなら、除外の根拠が同じ表から引けること
+- 提示したすべての型について、フォームの出力が `validatePassFieldOwnership` を通ること。
+  および、所有しない型に `shader` を混ぜた JSON が throw する否定対照
+- `ctest` 全数が緑
+
+依存: WP321a。見積: 中。
+
 ### WP322: フレームプランにシェーダーの同定を載せる
 
 **目的**: **studio は、既存のパスがどのシェーダーで動いているかを知らない。**
-`test/fixtures/devstudio/example_frame_plan.json` のノードの鍵に shader を含むものが 1 つもなく、
-`FramePlanNode`(`src/devstudio/model/frameplanmodel.hpp:53`)にも
-シェーダーの場は無い(`shader_contract` はマテリアル経路のもので、別物)。
+`ssao_pass` ノードの鍵は
+`declaration_index / kind / level / name / order / reads / reads_history / source / writes` で、
+**30 ノードの鍵の和集合 15 個**を見てもシェーダー参照を運ぶものは無い。
+`FramePlanNode` にもシェーダーの場は無い(`shader_contract` はマテリアル経路のもので別物)。
 
 これは可視化そのものの穴である。「このパスは何をしているのか」を見に来た利用者に、
 **読み書きするターゲットは見せているのに、実際の処理内容は見せていない。**
 
 **範囲**: フレームプランの出力にパス毎のシェーダー参照を載せ、studio のモデルと
 グラフ表示に通すこと。**記述だけ。書き込みも反映もしない。**
-これが通れば WP321 の `shader.fragment` は自由入力から選択に変えられる。
+
+**これは WP321a のシェーダー選択肢の解にはならない。**
+WP322 が運ぶのは**使用中の参照だけ**で、example では fragment 7 種にすぎず、
+エンジンの 32 stem に対する部分集合である。しかも解決可能集合は
+`PELICAN_RUNTIME_SHADER_COMPILER` に依存するため、単なる id 一覧では健全にならない。
+資産列挙は D0 を越える別 WP が要る。
 
 **受け入れ条件**:
-- `projects/example` のフレームプランで、`ssao_pass` のノードから
-  `engine://ssao` が取得できること
-- シェーダーを持たないノード(`snapshot_copy` の 2 つ)で、
-  **空文字と「持たない」が区別できること**(否定対照)
+- `projects/example` のフレームプランで `ssao_pass` のノードから `engine://ssao` が取得できること
+- **状態が 3 つ区別できること**(否定対照): **宣言されている**(fullscreen 16 件)/
+  **マテリアルから解決される**(`material` 2 件は `shader` 鍵を持たないが実際にはシェーダーが走る)/
+  **本当に持たない**(`snapshot_copy` 2 件)。**空文字で潰さないこと**
 - studio の表示から当該シェーダー名が読めること
 - `ctest` 全数が緑
 
-依存: なし(WP321 と独立に進められる)。見積: 小。
+依存: なし。見積: 小。
+
+### WP323: フレームプランにリソースの usage / role を載せる
+
+**目的**: **これが「存在する ≠ 妥当」の穴を塞ぐ唯一の道である。**
+現状 `resources[]` は `{kind, name, source}` しか運ばない。
+`format` では代用できない(`offscreen_depth` と `opaque_depth` はどちらも `D32Sfloat` だが
+**前者は input 不可・後者は可**)。`required_physical_features` でも代用できない
+(SAMPLED を宣言していない `offscreen_depth` に `sampled_image@1` が立っている)。
+
+**範囲**: WP322 と同じ形 —— **記述だけ。書き込みも反映もしない。**
+これが入ると WP321a の受け入れ条件 (D) のターゲット 3 例を
+「判定していない」から「不当」に移せる。
+
+**受け入れ条件**:
+- `offscreen_depth` が SAMPLED を持たず `gbuffer_normal` が持つことが、
+  **同じテストの中で**フレームプランから区別できること
+- `swapchain` の `kind` が他の 21 件と区別できること
+- studio のモデルに通り、`FramePlanResource` から読めること
+- `ctest` 全数が緑
+
+依存: なし。見積: 小〜中。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
