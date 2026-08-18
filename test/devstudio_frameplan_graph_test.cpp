@@ -20,6 +20,7 @@
 #include <QBrush>
 #include <QByteArray>
 #include <QColor>
+#include <QComboBox>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
@@ -29,8 +30,10 @@
 #include <QGraphicsView>
 #include <QPainterPath>
 #include <QPen>
+#include <QLabel>
 #include <QSpinBox>
 #include <QStringList>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
@@ -408,13 +411,31 @@ QGraphicsScene &scene(FramePlanWidget &widget) {
     return *view->scene();
 }
 
-QSpinBox &groupMinimum(FramePlanWidget &widget) {
+QComboBox &targetSelector(FramePlanWidget &widget) {
+    auto *selector = widget.findChild<QComboBox *>(
+        QStringLiteral("pelican.framePlanTarget"));
+    if (selector == nullptr) {
+        throw std::runtime_error("frame-plan target control was not installed");
+    }
+    return *selector;
+}
+
+QSpinBox &subtreeDepth(FramePlanWidget &widget) {
     auto *spin = widget.findChild<QSpinBox *>(
-        QStringLiteral("pelican.framePlanGroupMinimum"));
+        QStringLiteral("pelican.framePlanDepth"));
     if (spin == nullptr) {
-        throw std::runtime_error("frame-plan grouping control was not installed");
+        throw std::runtime_error("frame-plan depth control was not installed");
     }
     return *spin;
+}
+
+QGraphicsView &logicalView(FramePlanWidget &widget) {
+    auto *view = widget.findChild<QGraphicsView *>(
+        QStringLiteral("pelican.framePlanLogicalView"));
+    if (view == nullptr) {
+        throw std::runtime_error("frame-plan logical view was not installed");
+    }
+    return *view;
 }
 
 QString kind(const QGraphicsItem &item) {
@@ -429,6 +450,41 @@ std::vector<QGraphicsItem *> itemsOfKind(QGraphicsScene &value,
             result.push_back(item);
         }
     }
+    return result;
+}
+
+StringSet sceneNodeNames(QGraphicsScene &value) {
+    StringSet result;
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanNodeItem)) {
+        result.insert(item->data(FramePlanNameRole).toString().toStdString());
+    }
+    return result;
+}
+
+struct BundleObservation {
+    std::string from;
+    std::string to;
+    qulonglong order = 0;
+    QStringList records;
+    QPainterPath path;
+
+    bool operator==(const BundleObservation &) const = default;
+};
+
+std::vector<BundleObservation> sceneBundles(QGraphicsScene &value) {
+    std::vector<BundleObservation> result;
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanEdgeItem)) {
+        auto *path = dynamic_cast<QGraphicsPathItem *>(item);
+        if (path == nullptr) {
+            throw std::runtime_error("frame-plan edge was not a path item");
+        }
+        result.push_back(BundleObservation{
+            item->data(FramePlanFromNameRole).toString().toStdString(),
+            item->data(FramePlanToNameRole).toString().toStdString(),
+            item->data(FramePlanBundleOrderRole).toULongLong(),
+            item->data(FramePlanEdgeRecordsRole).toStringList(), path->path()});
+    }
+    std::ranges::sort(result, {}, &BundleObservation::order);
     return result;
 }
 
@@ -1316,8 +1372,9 @@ TEST_CASE(
             0);
     REQUIRE(itemsOfKind(logical, FramePlanLogicalUnavailableItem).empty());
     const auto valid_nodes = itemsOfKind(logical, FramePlanNodeItem);
-    REQUIRE(valid_nodes.size() == zero_dependencies.at("nodes").size());
-    REQUIRE_FALSE(valid_nodes.empty());
+    REQUIRE(valid_nodes.size() == 1);
+    REQUIRE(logical.property("pelicanSubtreeDepth").toInt() == 1);
+    REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() == 1);
     REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
     for (const QGraphicsItem *node : valid_nodes) {
         REQUIRE(logical.sceneRect().contains(node->sceneBoundingRect()));
@@ -1325,146 +1382,275 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP306 logical graph exposes lost edges grouping identity and readable deterministic layout",
-    "[devstudio][frame-plan][logical-graph][wp306]") {
-    (void)application();
-    const std::string captured = readText(PELICAN_TEST_FRAME_PLAN_FIXTURE);
-
-    EmbeddedViewport viewport;
-    FramePlanWidget widget{&viewport};
-    widget.receiveResult(QByteArray::fromStdString(captured));
-    QApplication::processEvents();
-    QGraphicsScene &logical = scene(widget);
-
-    REQUIRE(logical.property("pelicanNodeRecordCount").toULongLong() == 30);
-    REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() == 30);
-    const auto expanded_nodes = itemsOfKind(logical, FramePlanNodeItem);
-    REQUIRE(expanded_nodes.size() == 30);
-    REQUIRE(std::count_if(expanded_nodes.begin(), expanded_nodes.end(),
-                          [](const QGraphicsItem *item) {
-                              return item->data(FramePlanAnchorRole).toBool();
-                          }) == 8);
-    requireExpectedExpandedScene(logical);
-    requireReadableLabels(logical);
-    const auto ordered_positions = sceneNodePositions(logical);
-
-    QSpinBox &minimum = groupMinimum(widget);
-    minimum.setValue(13);
-    QApplication::processEvents();
-    REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() == 18);
-    REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() == 17);
-    const auto groups = itemsOfKind(logical, FramePlanGroupItem);
-    REQUIRE(groups.size() == 1);
-    auto *group = dynamic_cast<QGraphicsPathItem *>(groups.front());
-    REQUIRE(group != nullptr);
-    const StringSet actual_members =
-        strings(group->data(FramePlanMembersRole));
-    REQUIRE(actual_members.size() == 13);
-    StringSet one_wrong_member = expectedBloomMembers();
-    one_wrong_member.erase("HorizontalBlur_2");
-    one_wrong_member.insert("lighting_pass");
-    REQUIRE(actual_members != one_wrong_member);
-    REQUIRE(actual_members == expectedBloomMembers());
-    REQUIRE(group->isVisible());
-    REQUIRE(group->data(FramePlanGraphRole).toString() ==
-            QStringLiteral("main_render"));
-    REQUIRE(group->data(FramePlanNameRole).toString() ==
-            QStringLiteral("group:resource-family:Bloom"));
-    REQUIRE(group->data(FramePlanSourceRole).toString() ==
-            QStringLiteral("project"));
-    REQUIRE_FALSE(group->data(FramePlanAnchorRole).toBool());
-    QPainterPath expected_group_path;
-    expected_group_path.addRoundedRect(
-        QRectF{0.0, 0.0, 260.0, 76.0}, 13.0, 13.0);
-    REQUIRE(group->path() == expected_group_path);
-    REQUIRE(group->brush() ==
-            QBrush{QColor{QStringLiteral("#7653a6")}});
-    QPen expected_group_pen{QColor{QStringLiteral("#edf2f6")}};
-    expected_group_pen.setWidthF(2.0);
-    REQUIRE(group->pen() == expected_group_pen);
-    const auto group_labels = itemsOfKind(logical, FramePlanGroupLabelItem);
-    REQUIRE(group_labels.size() == 1);
-    auto *group_label = dynamic_cast<QGraphicsSimpleTextItem *>(
-        group_labels.front());
-    REQUIRE(group_label != nullptr);
-    REQUIRE(group_label->parentItem() == group);
-    REQUIRE(group_label->isVisible());
-    REQUIRE(group_label->text() ==
-            QStringLiteral("Bloom structure\n13 nodes"));
-    REQUIRE(group_label->brush() ==
-            QBrush{QColor{QStringLiteral("#f7f9fb")}});
-    REQUIRE(group_label->font().bold());
-    REQUIRE(group_label->data(FramePlanGraphRole).toString() ==
-            QStringLiteral("main_render"));
-    REQUIRE(group_label->data(FramePlanNameRole).toString() ==
-            QStringLiteral("group:resource-family:Bloom"));
-
-    StringSet expected_records;
-    for (const auto &dependency : expectedExpandedDependencies()) {
-        expected_records.insert(expectedRecordIdentity(dependency));
-    }
-    REQUIRE(sceneDependencyRecords(logical) == expected_records);
-    requireReadableLabels(logical);
-
-    minimum.setValue(14);
-    QApplication::processEvents();
-    REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() == 30);
-    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
-    requireExpectedExpandedScene(logical);
-    requireReadableLabels(logical);
-
-    // buildFramePlanModel() has already applied its order-field sort here.
-    // Reverse that view-independent result itself, then feed the reordered
-    // input directly to the layout boundary.
-    FramePlanModel reordered = buildFramePlanModel(captured);
-    std::reverse(reordered.nodes.begin(), reordered.nodes.end());
-    std::reverse(reordered.dependencies.begin(), reordered.dependencies.end());
-    auto *graphics = dynamic_cast<FramePlanGraphicsScene *>(&logical);
-    REQUIRE(graphics != nullptr);
-    graphics->populate(reordered, 14);
-    QApplication::processEvents();
-    REQUIRE(sceneNodePositions(logical) == ordered_positions);
-    requireExpectedExpandedScene(logical);
-    requireReadableLabels(logical);
-}
-
-TEST_CASE(
-    "WP307 production widget overlays every example physical resource and distinguishes reused from legal-not-adopted aliasing",
-    "[devstudio][frame-plan][physical-overlay][wp307]") {
+    "WP318 every example target stays within five direct nodes and named depths are exact",
+    "[devstudio][frame-plan][target-subtree][wp318]") {
     (void)application();
     Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
-    const std::string captured = wire.dump();
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+    QComboBox &selector = targetSelector(widget);
+    QSpinBox &depth = subtreeDepth(widget);
+
+    REQUIRE(selector.count() == 22);
+    REQUIRE(depth.value() == 1);
+    REQUIRE(logical.property("pelicanNodeRecordCount").toULongLong() == 30);
+
+    for (int index = 0; index < selector.count(); ++index) {
+        selector.setCurrentIndex(index);
+        QApplication::processEvents();
+        CAPTURE(selector.currentText().toStdString());
+        REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 5);
+        REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() <=
+                5);
+        REQUIRE(logical.property("pelicanTarget").toString() ==
+                selector.currentText());
+        REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() ==
+                1);
+    }
+
+    const std::map<std::string, StringSet, std::less<>> direct{
+        {"gbuffer_albedo", {"gbuffer_pass", "lighting_pass"}},
+        {"ssao_blur", {"lighting_pass", "ssao_blur_pass"}},
+        {"lit_color",
+         {"FinalBloomComposite", "HighLuminanceExtraction",
+          "__snapshot_opaque_color", "forward_transparent",
+          "lighting_pass"}},
+        {"Bloom_Threshold_RT",
+         {"HighLuminanceExtraction", "HorizontalBlur_0"}},
+        {"display",
+         {"FinalBloomComposite", "output_transform", "pelican_ui"}},
+    };
+    for (const auto &[target, expected] : direct) {
+        selector.setCurrentText(QString::fromStdString(target));
+        QApplication::processEvents();
+        REQUIRE(sceneNodeNames(logical) == expected);
+    }
+
+    selector.setCurrentText(QStringLiteral("Bloom_Threshold_RT"));
+    const std::array expected_by_depth{
+        StringSet{},
+        StringSet{"HighLuminanceExtraction", "HorizontalBlur_0"},
+        StringSet{"FinalBloomComposite", "HighLuminanceExtraction",
+                  "HorizontalBlur_0", "UpsampleBlend_1", "VerticalBlur_0",
+                  "__snapshot_opaque_color", "forward_transparent",
+                  "lighting_pass"},
+    };
+    for (int value = 0; value <= 2; ++value) {
+        depth.setValue(value);
+        QApplication::processEvents();
+        CAPTURE(value);
+        REQUIRE(sceneNodeNames(logical) == expected_by_depth[value]);
+        REQUIRE(logical.property("pelicanSubtreeDepth").toInt() == value);
+    }
+    REQUIRE(expected_by_depth[2].size() == 8);
+    REQUIRE(expected_by_depth[2].size() < wire.at("nodes").size());
+}
+
+TEST_CASE(
+    "WP318 subtree coordinates and bundle order ignore every input array order",
+    "[devstudio][frame-plan][target-subtree][determinism][wp318]") {
+    (void)application();
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
+    FramePlanModel ordered = buildFramePlanModel(wire.dump());
+    FramePlanModel reversed = ordered;
+    std::reverse(reversed.nodes.begin(), reversed.nodes.end());
+    std::reverse(reversed.dependencies.begin(), reversed.dependencies.end());
+    std::reverse(reversed.resources.begin(), reversed.resources.end());
+    std::reverse(reversed.physical_plan.alias_groups.begin(),
+                 reversed.physical_plan.alias_groups.end());
+    std::reverse(reversed.physical_plan.alias_candidates.begin(),
+                 reversed.physical_plan.alias_candidates.end());
+    for (auto &node : reversed.nodes) {
+        std::reverse(node.reads.begin(), node.reads.end());
+        std::reverse(node.writes.begin(), node.writes.end());
+    }
+
+    const FramePlanNodeKey target{ordered.graph, "Bloom_Threshold_RT"};
+    FramePlanGraphicsScene first;
+    FramePlanGraphicsScene second;
+    first.populate(ordered, target, 2);
+    second.populate(reversed, target, 2);
+    REQUIRE(sceneNodePositions(first) == sceneNodePositions(second));
+    REQUIRE(sceneBundles(first) == sceneBundles(second));
+}
+
+TEST_CASE(
+    "WP318 moving a node reroutes its curve arrow and label and positions live only in one scene",
+    "[devstudio][frame-plan][drag][curve][session][wp318]") {
+    (void)application();
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
+    const QByteArray captured = QByteArray::fromStdString(wire.dump());
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(captured);
+    targetSelector(widget).setCurrentText(
+        QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+
+    QGraphicsItem *node = nodeItem(logical, "HorizontalBlur_0");
+    auto *edge = dynamic_cast<QGraphicsPathItem *>(
+        edgeItem(logical, "HighLuminanceExtraction", "HorizontalBlur_0"));
+    REQUIRE(node != nullptr);
+    REQUIRE(edge != nullptr);
+    REQUIRE(node->flags().testFlag(QGraphicsItem::ItemIsMovable));
+    REQUIRE(node->flags().testFlag(QGraphicsItem::ItemSendsGeometryChanges));
+    REQUIRE(edge->data(FramePlanCurveRole).toBool());
+    bool has_curve = false;
+    for (int index = 0; index < edge->path().elementCount(); ++index) {
+        has_curve = has_curve ||
+                    edge->path().elementAt(index).type ==
+                        QPainterPath::CurveToElement;
+    }
+    REQUIRE(has_curve);
+
+    QGraphicsItem *arrow = nullptr;
+    QGraphicsItem *label = nullptr;
+    for (QGraphicsItem *item : logical.items()) {
+        if (item->data(FramePlanFromNameRole).toString() !=
+                QStringLiteral("HighLuminanceExtraction") ||
+            item->data(FramePlanToNameRole).toString() !=
+                QStringLiteral("HorizontalBlur_0")) {
+            continue;
+        }
+        if (kind(*item) == QLatin1String{FramePlanEdgeArrowItem}) {
+            arrow = item;
+        } else if (kind(*item) == QLatin1String{FramePlanEdgeLabelItem}) {
+            label = item;
+        }
+    }
+    auto *arrow_polygon = dynamic_cast<QGraphicsPolygonItem *>(arrow);
+    REQUIRE(arrow_polygon != nullptr);
+    REQUIRE(label != nullptr);
+    QGraphicsItem *node_label = nodeLabelItem(logical, "HorizontalBlur_0");
+    REQUIRE(node_label != nullptr);
+
+    const QPointF default_position = node->pos();
+    const QPainterPath old_path = edge->path();
+    const QPolygonF old_arrow = arrow_polygon->polygon();
+    const QPointF old_node_label = node_label->scenePos();
+    const QPointF moved_position = default_position + QPointF{73.0, 81.0};
+    node->setPos(moved_position);
+    QApplication::processEvents();
+    REQUIRE(edge->path() != old_path);
+    REQUIRE(arrow_polygon->polygon() != old_arrow);
+    REQUIRE(QLineF{arrow_polygon->mapToScene(arrow_polygon->polygon().first()),
+                   edge->mapToScene(edge->path().currentPosition())}
+                .length() < 0.01);
+    REQUIRE(QLineF{label->sceneBoundingRect().center(),
+                   edge->mapToScene(edge->path().pointAtPercent(0.5))}
+                .length() < 0.01);
+    REQUIRE(node_label->scenePos() != old_node_label);
+
+    subtreeDepth(widget).setValue(0);
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+    REQUIRE(nodeItem(logical, "HorizontalBlur_0")->pos() ==
+            moved_position);
+
+    EmbeddedViewport fresh_viewport;
+    FramePlanWidget fresh{&fresh_viewport};
+    fresh.receiveResult(captured);
+    targetSelector(fresh).setCurrentText(
+        QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(fresh).setValue(2);
+    QApplication::processEvents();
+    REQUIRE(nodeItem(scene(fresh), "HorizontalBlur_0")->pos() ==
+            default_position);
+    REQUIRE(nodeItem(scene(fresh), "HorizontalBlur_0")->pos() !=
+            moved_position);
+}
+
+TEST_CASE(
+    "WP318 mouse anchored wheel zoom clamps with visible boundary feedback",
+    "[devstudio][frame-plan][zoom][wp318]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(
+        readText(PELICAN_TEST_FRAME_PLAN_FIXTURE)));
+    QApplication::processEvents();
+    QGraphicsView &view = logicalView(widget);
+    REQUIRE(view.transformationAnchor() == QGraphicsView::AnchorUnderMouse);
+
+    const auto wheel = [&](int delta) {
+        QWheelEvent event{QPointF{12.0, 12.0}, QPointF{12.0, 12.0},
+                          QPoint{}, QPoint{0, delta}, Qt::NoButton,
+                          Qt::NoModifier, Qt::NoScrollPhase, false};
+        QApplication::sendEvent(view.viewport(), &event);
+    };
+    for (int index = 0; index < 20; ++index) {
+        wheel(120);
+    }
+    REQUIRE(std::abs(view.transform().m11() - 4.0) < 0.000001);
+    REQUIRE(view.property("pelicanZoomBoundary").toString() ==
+            QStringLiteral("maximum"));
+    auto *zoom_status = widget.findChild<QLabel *>(
+        QStringLiteral("pelican.framePlanZoomStatus"));
+    REQUIRE(zoom_status != nullptr);
+    REQUIRE(zoom_status->text().contains(QStringLiteral("maximum")));
+
+    for (int index = 0; index < 40; ++index) {
+        wheel(-120);
+    }
+    REQUIRE(std::abs(view.transform().m11() - 0.25) < 0.000001);
+    REQUIRE(view.property("pelicanZoomBoundary").toString() ==
+            QStringLiteral("minimum"));
+    REQUIRE(zoom_status->text().contains(QStringLiteral("minimum")));
+}
+
+TEST_CASE(
+    "WP318 selected target preserves every WP307 physical fact and scopes both alias outcomes",
+    "[devstudio][frame-plan][physical-overlay][target][wp318]") {
+    (void)application();
+    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    wire["runtime_resolution"] =
+        exampleFramePlan(true).at("runtime_resolution");
     const Json &physical = wire.at("physical_target_plan");
     const Json &published_resources = physical.at("resources");
     const std::string endpoint = selectedPlanningEndpoint(physical);
 
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
-    widget.receiveResult(QByteArray::fromStdString(captured));
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
     QApplication::processEvents();
     QGraphicsScene &logical = scene(widget);
+    QComboBox &selector = targetSelector(widget);
 
     REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("optimized"));
     REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
             QString::fromStdString(endpoint));
-    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
-            published_resources.size());
     REQUIRE(published_resources.size() == 22);
 
-    const auto rows =
-        itemsOfKind(logical, FramePlanResourceLifetimeItem);
-    REQUIRE(rows.size() == published_resources.size());
     std::size_t arbitrary_materialized_count = 0;
     std::size_t same_pixel_count = 0;
     for (const auto &published : published_resources) {
         const std::string name =
             published.at("logical_resource").get<std::string>();
+        selector.setCurrentText(QString::fromStdString(name));
+        QApplication::processEvents();
         QGraphicsItem *row = physicalResourceItem(logical, name);
         INFO("physical resource overlay: " << name);
         REQUIRE(row != nullptr);
+        REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() ==
+                1);
+        REQUIRE(logical.property("pelicanPhysicalResourceCount")
+                    .toULongLong() == 1);
+        REQUIRE(logical.property("pelicanSelectedTarget").toString() ==
+                QString::fromStdString(name));
         REQUIRE(row->data(FramePlanProfileRole).toString() ==
                 QStringLiteral("optimized"));
         REQUIRE(row->data(FramePlanEndpointRole).toString() ==
@@ -1496,12 +1682,6 @@ TEST_CASE(
             published.at("reason") ==
             "arbitrary read requires a materialized resource";
         same_pixel_count += published.at("widest_read") == "same_pixel";
-
-        logical.clearSelection();
-        row->setSelected(true);
-        QApplication::processEvents();
-        REQUIRE(logical.property("pelicanSelectedResource").toString() ==
-                QString::fromStdString(name));
         REQUIRE(logical.property("pelicanSelectedResourceReason")
                     .toString()
                     .toStdString() ==
@@ -1525,30 +1705,34 @@ TEST_CASE(
                  : QStringLiteral("unused");
         REQUIRE(logical.property("pelicanSelectedResourceLifetime")
                     .toString() == expected_lifetime);
-        const auto selection_items =
-            itemsOfKind(logical, FramePlanPhysicalSelectionItem);
-        REQUIRE(selection_items.size() == 1);
-        const auto *selection_text =
-            dynamic_cast<const QGraphicsSimpleTextItem *>(
-                selection_items.front());
-        REQUIRE(selection_text != nullptr);
-        const QString visible = selection_text->text();
-        REQUIRE(visible.contains(QString::fromStdString(name)));
-        REQUIRE(visible.contains(QString::fromStdString(
+        REQUIRE(logical.sceneRect().contains(row->sceneBoundingRect()));
+
+        QString visible_facts;
+        for (QGraphicsItem *child : row->childItems()) {
+            if (auto *text =
+                    dynamic_cast<QGraphicsSimpleTextItem *>(child);
+                text != nullptr && text->isVisible()) {
+                visible_facts += text->text();
+            }
+        }
+        REQUIRE(visible_facts.contains(QString::fromStdString(name)));
+        REQUIRE(visible_facts.contains(QString::fromStdString(
             published.at("reason").get<std::string>())));
-        REQUIRE(visible.contains(QString::fromStdString(
+        REQUIRE(visible_facts.contains(QString::fromStdString(
             published.at("widest_read").get<std::string>())));
-        REQUIRE(visible.contains(QString::fromStdString(
+        REQUIRE(visible_facts.contains(QString::fromStdString(
             published.at("representation").get<std::string>())));
-        REQUIRE(visible.contains(
+        REQUIRE(visible_facts.contains(
             published.at("aliasable").get<bool>()
                 ? QStringLiteral("aliasable: yes")
                 : QStringLiteral("aliasable: no")));
-        REQUIRE(visible.contains(expected_lifetime));
+        REQUIRE(visible_facts.contains(expected_lifetime));
     }
     REQUIRE(arbitrary_materialized_count == 16);
     REQUIRE(same_pixel_count == 1);
 
+    selector.setCurrentText(QStringLiteral("Bloom_Threshold_RT"));
+    QApplication::processEvents();
     REQUIRE(logical.property("pelicanAdoptedAliasCount").toULongLong() == 1);
     REQUIRE(logical.property("pelicanNotAdoptedAliasCount").toULongLong() ==
             1);
@@ -1564,96 +1748,66 @@ TEST_CASE(
             StringSet{"Bloom_Threshold_RT", "gbuffer_albedo"});
     REQUIRE_FALSE(not_adopted->data(FramePlanReasonRole).isValid());
     REQUIRE(not_adopted->toolTip().contains(
-        QStringLiteral("No selection reason was published")));
-
-    REQUIRE(logical.property("pelicanFusionCandidateCount").toULongLong() ==
-            0);
-    REQUIRE(logical.property("pelicanParallelCandidateCount").toULongLong() ==
-            0);
-    REQUIRE(logical.property("pelicanPhysicalExplicitEmptyCount")
-                .toULongLong() == 2);
-    const auto empty = itemsOfKind(logical, FramePlanPhysicalEmptyItem);
-    REQUIRE(empty.size() == 2);
-    REQUIRE(std::count_if(empty.begin(), empty.end(),
-                          [](const QGraphicsItem *item) {
-                              return item
-                                         ->data(FramePlanPhysicalStateRole)
-                                         .toString() ==
-                                     QStringLiteral("reported_empty");
-                          }) == 2);
+        QStringLiteral("not adopted")));
+    REQUIRE(logical.property("pelicanSelectedResourceReason").toString() ==
+            QStringLiteral("arbitrary read requires a materialized resource"));
+    REQUIRE(logical.property("pelicanSelectedResourceWidestRead").toString() ==
+            QStringLiteral("arbitrary"));
+    REQUIRE(logical.property("pelicanSelectedResourceAliasable").toBool());
+    REQUIRE(logical.property("pelicanSelectedResourceRepresentation")
+                .toString() == QStringLiteral("materialized_image"));
+    REQUIRE(logical.property("pelicanSelectedResourceLifetime").toString() ==
+            QStringLiteral("[11, 12]"));
 }
 
 TEST_CASE(
-    "WP307 production planning compile contrasts nonzero optimized opportunities with reported-empty conservative profile in one widget",
-    "[devstudio][frame-plan][physical-overlay][opportunities][wp307]") {
+    "WP318 selected target updates its profile and endpoint through the production widget boundary",
+    "[devstudio][frame-plan][physical-overlay][profile][wp318]") {
     (void)application();
     const Json optimized = independentOpportunityFramePlan(
         Pelican::PlanningProfileKind::optimized);
     const Json conservative = independentOpportunityFramePlan(
         Pelican::PlanningProfileKind::conservative_debug);
-    const Json &optimized_opportunities =
-        optimized.at("physical_target_plan").at("planning_opportunities");
-    const Json &conservative_opportunities =
-        conservative.at("physical_target_plan").at("planning_opportunities");
-    REQUIRE(optimized_opportunities.at("profile") == "optimized");
-    REQUIRE_FALSE(optimized_opportunities.at("fusion_candidates").empty());
-    REQUIRE_FALSE(optimized_opportunities.at("parallel_candidates").empty());
-    REQUIRE(conservative_opportunities.at("profile") ==
-            "conservative_debug");
-    REQUIRE(conservative_opportunities.at("fusion_candidates").empty());
-    REQUIRE(conservative_opportunities.at("parallel_candidates").empty());
 
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
     widget.receiveResult(QByteArray::fromStdString(optimized.dump()));
     QApplication::processEvents();
     QGraphicsScene &logical = scene(widget);
-
     REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("optimized"));
     REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
             QStringLiteral("device:0"));
-    REQUIRE(logical.property("pelicanFusionCandidateCount").toULongLong() ==
-            optimized_opportunities.at("fusion_candidates").size());
-    REQUIRE(logical.property("pelicanParallelCandidateCount").toULongLong() ==
-            optimized_opportunities.at("parallel_candidates").size());
-    const auto fusion = itemsOfKind(logical, FramePlanFusionOverlayItem);
-    const auto parallel = itemsOfKind(logical, FramePlanParallelOverlayItem);
-    REQUIRE_FALSE(fusion.empty());
-    REQUIRE_FALSE(parallel.empty());
-    REQUIRE(std::any_of(fusion.begin(), fusion.end(),
-                        [](const QGraphicsItem *item) {
-                            return strings(item->data(FramePlanMembersRole)) ==
-                                   StringSet{"alpha", "beta"};
-                        }));
-    REQUIRE(std::any_of(parallel.begin(), parallel.end(),
-                        [](const QGraphicsItem *item) {
-                            return strings(item->data(FramePlanMembersRole)) ==
-                                   StringSet{"alpha", "beta"};
-                        }));
-    REQUIRE(itemsOfKind(logical, FramePlanPhysicalEmptyItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() == 1);
+    QGraphicsItem *optimized_row =
+        itemsOfKind(logical, FramePlanResourceLifetimeItem).front();
+    REQUIRE(optimized_row->data(FramePlanProfileRole).toString() ==
+            QStringLiteral("optimized"));
+    const QString selected =
+        logical.property("pelicanSelectedTarget").toString();
+    REQUIRE_FALSE(selected.isEmpty());
 
-    // Same FramePlanWidget::receiveResult -> Impl::populate production path;
-    // only the producer's planning profile changes between these compiles.
     widget.receiveResult(QByteArray::fromStdString(conservative.dump()));
     QApplication::processEvents();
     REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("conservative_debug"));
     REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
             QStringLiteral("device:0"));
-    REQUIRE(logical.property("pelicanFusionCandidateCount").toULongLong() ==
-            0);
-    REQUIRE(logical.property("pelicanParallelCandidateCount").toULongLong() ==
-            0);
-    REQUIRE(itemsOfKind(logical, FramePlanFusionOverlayItem).empty());
-    REQUIRE(itemsOfKind(logical, FramePlanParallelOverlayItem).empty());
-    REQUIRE(itemsOfKind(logical, FramePlanPhysicalEmptyItem).size() == 2);
+    REQUIRE(logical.property("pelicanSelectedTarget").toString() == selected);
+    REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() == 1);
+    QGraphicsItem *conservative_row =
+        itemsOfKind(logical, FramePlanResourceLifetimeItem).front();
+    REQUIRE(conservative_row->data(FramePlanProfileRole).toString() ==
+            QStringLiteral("conservative_debug"));
+    REQUIRE(conservative_row->data(FramePlanEndpointRole).toString() ==
+            QStringLiteral("device:0"));
 }
 
 TEST_CASE(
-    "WP307 example flat feature toggle recompiles and replaces the physical overlay through one widget",
-    "[devstudio][frame-plan][physical-overlay][feature-toggle][wp307]") {
+    "WP318 flat compiler feature toggle purges removed subtree nodes in one widget",
+    "[devstudio][frame-plan][target-subtree][feature-toggle][wp318]") {
     (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER, PELICAN_WITH_IMGUI);
 #if !PELICAN_RUNTIME_SHADER_COMPILER
     const Json base = exampleFramePlan(false);
     REQUIRE_FALSE(wireNodeNames(base).contains("pelican_ui"));
@@ -1663,34 +1817,22 @@ TEST_CASE(
     QApplication::processEvents();
     QGraphicsScene &off_logical = scene(off_widget);
     REQUIRE(off_logical.property("pelicanPhysicalResourceCount")
-                .toULongLong() ==
-            base.at("physical_target_plan").at("resources").size());
+                .toULongLong() == 1);
     REQUIRE(off_logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("optimized"));
     REQUIRE(off_logical.property("pelicanPlanningEndpoint").toString() ==
             QStringLiteral("device:0"));
     return;
-#endif
+#else
     const Json enabled = exampleFramePlan(true);
     const Json disabled = exampleFramePlan(false);
     REQUIRE(wireNodeNames(enabled).contains("pelican_ui"));
     REQUIRE_FALSE(wireNodeNames(disabled).contains("pelican_ui"));
-    REQUIRE(enabled.at("physical_target_plan")
-                .at("planning_opportunities")
-                .at("profile") == "optimized");
-    REQUIRE(disabled.at("physical_target_plan")
-                .at("planning_opportunities")
-                .at("profile") == "optimized");
-    REQUIRE(enabled.at("physical_target_plan").at("lowering_graph").at("nodes")
-                .size() !=
-            disabled.at("physical_target_plan")
-                .at("lowering_graph")
-                .at("nodes")
-                .size());
 
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
     widget.receiveResult(QByteArray::fromStdString(enabled.dump()));
+    targetSelector(widget).setCurrentText(QStringLiteral("display"));
     QApplication::processEvents();
     QGraphicsScene &logical = scene(widget);
     QGraphicsItem *ui = nodeItem(logical, "pelican_ui");
@@ -1700,38 +1842,54 @@ TEST_CASE(
     REQUIRE(logical.property("pelicanSelectedNode").toString() ==
             QStringLiteral("pelican_ui"));
     REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
-            enabled.at("physical_target_plan").at("resources").size());
-    REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
-            QStringLiteral("device:0"));
+            1);
 
     widget.receiveResult(QByteArray::fromStdString(disabled.dump()));
     QApplication::processEvents();
     REQUIRE(nodeItem(logical, "pelican_ui") == nullptr);
     REQUIRE(logical.property("pelicanSelectedNode").toString().isEmpty());
     REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
-            disabled.at("physical_target_plan").at("resources").size());
+            1);
+    REQUIRE(logical.property("pelicanSelectedTarget").toString() ==
+            QStringLiteral("display"));
     REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("optimized"));
     REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
             QStringLiteral("device:0"));
+#endif
 }
 
 TEST_CASE(
-    "WP307 preview and XR production variants publish scoped physical overlays or a named unavailable result",
-    "[devstudio][frame-plan][physical-overlay][variant][wp307]") {
+    "WP318 flat preview and XR variants expose the specified logical and physical target states",
+    "[devstudio][frame-plan][target-subtree][variant][wp318]") {
     (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER, PELICAN_WITH_IMGUI,
+            PELICAN_WITH_OPENXR);
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
+
+    const Json flat = animgraphFramePlan(
+        true, Pelican::RenderPipelineGraphVariant::flat);
+    widget.receiveResult(QByteArray::fromStdString(flat.dump()));
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+    REQUIRE_FALSE(itemsOfKind(logical, FramePlanNodeItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 5);
+    REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() == 1);
+    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
+            1);
 
     const Json preview = animgraphFramePlan(
         true, Pelican::RenderPipelineGraphVariant::preview);
     REQUIRE_FALSE(preview.contains("physical_target_plan"));
     widget.receiveResult(QByteArray::fromStdString(preview.dump()));
     QApplication::processEvents();
-    QGraphicsScene &logical = scene(widget);
     REQUIRE(logical.property("pelicanGraph").toString() ==
             QString::fromStdString(preview.at("graph").get<std::string>()));
-    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() == 0);
+    REQUIRE_FALSE(itemsOfKind(logical, FramePlanNodeItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 5);
+    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
+            0);
     const auto preview_context =
         itemsOfKind(logical, FramePlanPhysicalContextItem);
     REQUIRE(preview_context.size() == 1);
@@ -1749,7 +1907,9 @@ TEST_CASE(
     REQUIRE(logical.property("pelicanGraph").toString() ==
             QString::fromStdString(xr.at("graph").get<std::string>()));
     REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
-            xr.at("physical_target_plan").at("resources").size());
+            1);
+    REQUIRE_FALSE(itemsOfKind(logical, FramePlanNodeItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 5);
     REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("optimized"));
     REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
@@ -1768,181 +1928,83 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP306 animgraph feature purge updates one widget without node edge overlay selection or fold orphans",
-    "[devstudio][frame-plan][logical-graph][purge][wp306]") {
+    "WP318 compiler feature removal purges target subtree selection and physical details in one widget",
+    "[devstudio][frame-plan][target-subtree][purge][wp318]") {
     (void)application();
-    const auto variant_case = GENERATE(table<
-        Pelican::RenderPipelineGraphVariant, std::string, bool>({
-        {Pelican::RenderPipelineGraphVariant::flat, "flat", true},
-        {Pelican::RenderPipelineGraphVariant::preview, "preview", false},
-        {Pelican::RenderPipelineGraphVariant::xr, "xr", true},
-    }));
-    const auto &[variant, variant_name, publishes_physical_plan] =
-        variant_case;
-    CAPTURE(variant_name, PELICAN_RUNTIME_SHADER_COMPILER);
-
-#if !PELICAN_WITH_OPENXR
-    if (variant == Pelican::RenderPipelineGraphVariant::xr) {
-        for (const bool feature_enabled : {false, true}) {
-            try {
-                (void)animgraphFramePlan(feature_enabled, variant);
-                FAIL("XR production variant unexpectedly compiled without OpenXR");
-            } catch (const std::runtime_error &error) {
-                REQUIRE(std::string_view{error.what()}.find(
-                            "XR graph variant is unavailable in this build") !=
-                        std::string_view::npos);
-            }
-        }
-        return;
-    }
-#endif
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER, PELICAN_WITH_IMGUI);
+    const Json enabled = animgraphFramePlan(
+        true, Pelican::RenderPipelineGraphVariant::flat);
+    const Json disabled = animgraphFramePlan(
+        false, Pelican::RenderPipelineGraphVariant::flat);
 
 #if !PELICAN_RUNTIME_SHADER_COMPILER
-    {
-        const Json enabled = animgraphFramePlan(true, variant);
-        const Json disabled = animgraphFramePlan(false, variant);
-        REQUIRE(wireNodeNames(enabled) == wireNodeNames(disabled));
-        REQUIRE(wireEdges(enabled) == wireEdges(disabled));
-        REQUIRE_FALSE(wireNodeNames(enabled).contains("shadow_depth"));
-
-        EmbeddedViewport off_viewport;
-        FramePlanWidget off_widget{&off_viewport};
-        groupMinimum(off_widget).setValue(64);
-        off_widget.receiveResult(QByteArray::fromStdString(disabled.dump()));
-        QApplication::processEvents();
-        QGraphicsScene &off_logical = scene(off_widget);
-        REQUIRE(sceneEdges(off_logical) == wireEdges(disabled));
-        REQUIRE(off_logical.property("pelicanGraph").toString() ==
-                QString::fromStdString(
-                    disabled.at("graph").get<std::string>()));
-        if (publishes_physical_plan) {
-            REQUIRE(disabled.contains("physical_target_plan"));
-            REQUIRE(off_logical.property("pelicanPhysicalResourceCount")
-                        .toULongLong() ==
-                    disabled.at("physical_target_plan")
-                        .at("resources")
-                        .size());
-            REQUIRE(off_logical.property("pelicanPlanningEndpoint")
-                        .toString() == QStringLiteral("device:0"));
-        } else {
-            REQUIRE_FALSE(disabled.contains("physical_target_plan"));
-            REQUIRE(off_logical.property("pelicanPhysicalResourceCount")
-                        .toULongLong() == 0);
-            const auto context =
-                itemsOfKind(off_logical, FramePlanPhysicalContextItem);
-            REQUIRE(context.size() == 1);
-            REQUIRE(context.front()
-                        ->data(FramePlanPhysicalStateRole)
-                        .toString() == QStringLiteral("unavailable"));
-        }
-        requireNoReference(off_logical, "shadow_depth", "shadow_map");
-        requireReadableLabels(off_logical);
-        return;
-    }
-#endif
-    const Json enabled = animgraphFramePlan(true, variant);
-    const Json disabled = animgraphFramePlan(false, variant);
-
-    if (publishes_physical_plan) {
-        REQUIRE(enabled.contains("physical_target_plan"));
-        REQUIRE(disabled.contains("physical_target_plan"));
-        for (const auto &resource :
-             enabled.at("physical_target_plan").at("resources")) {
-            REQUIRE_FALSE(resource.at("logical_resource")
-                              .get<std::string>()
-                              .starts_with("Bloom_"));
-        }
-    } else {
-        REQUIRE_FALSE(enabled.contains("physical_target_plan"));
-        REQUIRE_FALSE(disabled.contains("physical_target_plan"));
-    }
-
-    const StringSet removed_nodes =
-        removedFrom(wireNodeNames(enabled), wireNodeNames(disabled));
-    const EdgeSet removed_edges =
-        removedFrom(wireEdges(enabled), wireEdges(disabled));
-    INFO("actual removed animgraph edges:\n" << edgeSetText(removed_edges));
-    REQUIRE(removed_nodes == StringSet{"shadow_depth"});
-    // This list is deliberately literal: it is the complete producer-side
-    // contrast for disabling exactly shadow_directional in animgraph_demo.
-    const EdgeSet expected_removed_edges{
-        {"shadow_depth", "__anchor_sprite"},
-        {"shadow_depth", "deferred_geometry"},
-        {"shadow_depth", "deferred_lighting"},
-        {"shadow_depth", "forward_opaque"},
-        {"shadow_depth", "forward_transparent"},
-    };
-    REQUIRE(removed_edges == expected_removed_edges);
+    REQUIRE(wireNodeNames(enabled) == wireNodeNames(disabled));
+    REQUIRE_FALSE(wireNodeNames(enabled).contains("shadow_depth"));
+    EmbeddedViewport off_viewport;
+    FramePlanWidget off_widget{&off_viewport};
+    off_widget.receiveResult(QByteArray::fromStdString(disabled.dump()));
+    QApplication::processEvents();
+    REQUIRE(targetSelector(off_widget).findText(
+                QStringLiteral("shadow_map")) == -1);
+    REQUIRE(scene(off_widget)
+                .property("pelicanPhysicalResourceCount")
+                .toULongLong() == 1);
+    return;
+#else
+    REQUIRE(wireNodeNames(enabled).contains("shadow_depth"));
+    REQUIRE_FALSE(wireNodeNames(disabled).contains("shadow_depth"));
 
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
-    QSpinBox &minimum = groupMinimum(widget);
-    minimum.setValue(64);
     widget.receiveResult(QByteArray::fromStdString(enabled.dump()));
+    QComboBox &selector = targetSelector(widget);
+    REQUIRE(selector.findText(QStringLiteral("shadow_map")) >= 0);
+    selector.setCurrentText(QStringLiteral("shadow_map"));
+    subtreeDepth(widget).setValue(1);
     QApplication::processEvents();
     QGraphicsScene &logical = scene(widget);
-    REQUIRE(sceneEdges(logical) == wireEdges(enabled));
-    if (publishes_physical_plan) {
-        REQUIRE(logical.property("pelicanPhysicalResourceCount")
-                    .toULongLong() ==
-                enabled.at("physical_target_plan").at("resources").size());
-        REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
-                QStringLiteral("optimized"));
-        REQUIRE(logical.property("pelicanPlanningEndpoint").toString() ==
-                QStringLiteral("device:0"));
-    } else {
-        REQUIRE(logical.property("pelicanPhysicalResourceCount")
-                    .toULongLong() == 0);
-    }
 
+    REQUIRE(logical.property("pelicanSelectedTarget").toString() ==
+            QStringLiteral("shadow_map"));
+    REQUIRE_FALSE(sceneNodeNames(logical).empty());
+    REQUIRE(sceneNodeNames(logical).contains("shadow_depth"));
+    REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() == 1);
+    REQUIRE_FALSE(logical.property("pelicanSelectedResourceReason")
+                      .toString()
+                      .isEmpty());
     QGraphicsItem *shadow = nodeItem(logical, "shadow_depth");
     REQUIRE(shadow != nullptr);
     shadow->setSelected(true);
     QApplication::processEvents();
-    REQUIRE(logical.property("pelicanSelectedGraph").toString() ==
-            QString::fromStdString(enabled.at("graph").get<std::string>()));
     REQUIRE(logical.property("pelicanSelectedNode").toString() ==
             QStringLiteral("shadow_depth"));
 
-    minimum.setValue(1);
-    QApplication::processEvents();
-    const QStringList enabled_folds =
-        logical.property("pelicanCollapsedGroups").toStringList();
-    REQUIRE(std::any_of(enabled_folds.begin(), enabled_folds.end(),
-                        [](const QString &group) {
-                            return group.contains(
-                                QStringLiteral("feature:shadow_directional"));
-                        }));
-
-    // Same widget, same receiveResult -> populate production path.
     widget.receiveResult(QByteArray::fromStdString(disabled.dump()));
     QApplication::processEvents();
-    REQUIRE(logical.property("pelicanSelectedGraph").toString().isEmpty());
-    REQUIRE(logical.property("pelicanSelectedNode").toString().isEmpty());
-    const QStringList disabled_folds =
-        logical.property("pelicanCollapsedGroups").toStringList();
-    REQUIRE(std::none_of(disabled_folds.begin(), disabled_folds.end(),
-                         [](const QString &group) {
-                             return group.contains(QStringLiteral(
-                                 "feature:shadow_directional"));
-                         }));
-    requireNoReference(logical, "shadow_depth", "shadow_map");
-    if (publishes_physical_plan) {
-        REQUIRE(logical.property("pelicanPhysicalResourceCount")
-                    .toULongLong() ==
-                disabled.at("physical_target_plan").at("resources").size());
-    } else {
-        REQUIRE(logical.property("pelicanPhysicalResourceCount")
-                    .toULongLong() == 0);
-    }
 
-    minimum.setValue(64);
-    QApplication::processEvents();
-    REQUIRE(sceneEdges(logical) == wireEdges(disabled));
-    REQUIRE(removedFrom(wireEdges(enabled), sceneEdges(logical)) ==
-            expected_removed_edges);
-    REQUIRE(nodeItem(logical, "shadow_depth") == nullptr);
-    requireReadableLabels(logical);
+    REQUIRE(selector.findText(QStringLiteral("shadow_map")) == -1);
+    REQUIRE(selector.currentIndex() == -1);
+    REQUIRE(logical.property("pelicanSelectedTarget").toString().isEmpty());
+    REQUIRE(logical.property("pelicanSelectedResource").toString().isEmpty());
+    REQUIRE(logical.property("pelicanSelectedNode").toString().isEmpty());
+    REQUIRE(sceneNodeNames(logical).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanAliasOverlayItem).empty());
+    REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
+            0);
+    REQUIRE(logical.property("pelicanSelectedResourceReason")
+                .toString()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanSelectedResourceWidestRead")
+                .toString()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanSelectedResourceRepresentation")
+                .toString()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanSelectedResourceLifetime")
+                .toString()
+                .isEmpty());
+#endif
 }
 
 } // namespace PelicanStudio

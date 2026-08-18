@@ -7,6 +7,7 @@
 #include <QAbstractItemView>
 #include <QByteArray>
 #include <QColor>
+#include <QComboBox>
 #include <QDateTime>
 #include <QFont>
 #include <QGraphicsView>
@@ -18,13 +19,17 @@
 #include <QPlainTextEdit>
 #include <QPainter>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <algorithm>
+#include <cmath>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -156,6 +161,67 @@ QString resourceLabel(const FramePlanModel &model, const std::string &name) {
     return QStringLiteral("%1  [%2]").arg(text(name), text(resource->format));
 }
 
+class FramePlanGraphicsView final : public QGraphicsView {
+  public:
+    using ZoomObserver = std::function<void(qreal, const QString &)>;
+
+    FramePlanGraphicsView(QGraphicsScene *scene, QWidget *parent)
+        : QGraphicsView{scene, parent} {
+        setProperty("pelicanZoomScale", 1.0);
+        setProperty("pelicanZoomMinimum", MinimumZoom);
+        setProperty("pelicanZoomMaximum", MaximumZoom);
+        setProperty("pelicanZoomBoundary", QString{});
+    }
+
+    void setZoomObserver(ZoomObserver observer) {
+        observer_ = std::move(observer);
+    }
+
+  protected:
+    void wheelEvent(QWheelEvent *event) override {
+        int delta = event->angleDelta().y();
+        if (delta == 0) {
+            delta = event->pixelDelta().y();
+        }
+        if (delta == 0) {
+            QGraphicsView::wheelEvent(event);
+            return;
+        }
+
+        const qreal current = transform().m11();
+        const qreal requested =
+            current * std::pow(1.0015, static_cast<qreal>(delta));
+        const qreal bounded = std::clamp(requested, MinimumZoom, MaximumZoom);
+        QString boundary;
+        if (requested < MinimumZoom) {
+            boundary = QStringLiteral("minimum");
+        } else if (requested > MaximumZoom) {
+            boundary = QStringLiteral("maximum");
+        }
+        if (std::abs(bounded - current) > 0.000001) {
+            scale(bounded / current, bounded / current);
+        }
+        setProperty("pelicanZoomScale", bounded);
+        setProperty("pelicanZoomBoundary", boundary);
+        setAccessibleDescription(
+            boundary.isEmpty()
+                ? QStringLiteral("Frame-plan zoom %1 percent")
+                      .arg(qRound(bounded * 100.0))
+                : QStringLiteral("Frame-plan zoom %1 limit reached at %2 percent")
+                      .arg(boundary)
+                      .arg(qRound(bounded * 100.0)));
+        if (observer_) {
+            observer_(bounded, boundary);
+        }
+        event->accept();
+    }
+
+  private:
+    static constexpr qreal MinimumZoom = 0.25;
+    static constexpr qreal MaximumZoom = 4.0;
+    ZoomObserver observer_;
+};
+
 } // namespace
 
 struct FramePlanWidget::Impl {
@@ -164,9 +230,11 @@ struct FramePlanWidget::Impl {
     QLabel *status = nullptr;
     QLineEdit *filter = nullptr;
     QPushButton *refresh = nullptr;
-    QSpinBox *group_minimum = nullptr;
+    QComboBox *target = nullptr;
+    QSpinBox *depth = nullptr;
+    QLabel *zoom_status = nullptr;
     QTabWidget *tabs = nullptr;
-    QGraphicsView *logical = nullptr;
+    FramePlanGraphicsView *logical = nullptr;
     FramePlanGraphicsScene *logical_scene = nullptr;
     QTreeWidget *passes = nullptr;
     QTreeWidget *resources = nullptr;
@@ -199,19 +267,28 @@ struct FramePlanWidget::Impl {
         filter->setClearButtonEnabled(true);
         toolbar->addWidget(refresh);
         toolbar->addWidget(filter, 1);
-        auto *group_label = new QLabel(owner.tr("Collapse groups with at least"),
-                                       &owner);
-        group_minimum = new QSpinBox(&owner);
-        group_minimum->setObjectName(
-            QStringLiteral("pelican.framePlanGroupMinimum"));
-        group_minimum->setRange(1, 64);
-        group_minimum->setValue(14);
-        group_minimum->setSuffix(owner.tr(" nodes"));
-        group_minimum->setToolTip(owner.tr(
-            "Controls grouping granularity. Lower values collapse smaller "
-            "repeated/resource or feature structures."));
-        toolbar->addWidget(group_label);
-        toolbar->addWidget(group_minimum);
+        toolbar->addWidget(new QLabel(owner.tr("Target"), &owner));
+        target = new QComboBox(&owner);
+        target->setObjectName(QStringLiteral("pelican.framePlanTarget"));
+        target->setInsertPolicy(QComboBox::NoInsert);
+        target->setMinimumContentsLength(18);
+        target->setToolTip(owner.tr(
+            "Choose one logical render target. The graph shows only passes "
+            "within the selected resource depth."));
+        toolbar->addWidget(target);
+        toolbar->addWidget(new QLabel(owner.tr("Depth"), &owner));
+        depth = new QSpinBox(&owner);
+        depth->setObjectName(QStringLiteral("pelican.framePlanDepth"));
+        depth->setRange(0, 64);
+        depth->setValue(1);
+        depth->setToolTip(owner.tr(
+            "Depth 0 shows no pass nodes. Depth 1 is exactly the unique "
+            "writers and readers of the selected target."));
+        toolbar->addWidget(depth);
+        zoom_status = new QLabel(owner.tr("Zoom: 100%"), &owner);
+        zoom_status->setObjectName(
+            QStringLiteral("pelican.framePlanZoomStatus"));
+        toolbar->addWidget(zoom_status);
         layout->addLayout(toolbar);
 
         status = new QLabel(&owner);
@@ -223,13 +300,22 @@ struct FramePlanWidget::Impl {
         tabs = new QTabWidget(&owner);
         tabs->setObjectName(QStringLiteral("pelican.framePlanTabs"));
         logical_scene = new FramePlanGraphicsScene(&owner);
-        logical = new QGraphicsView(logical_scene, tabs);
+        logical = new FramePlanGraphicsView(logical_scene, tabs);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
         logical->setRenderHint(QPainter::Antialiasing, true);
         logical->setDragMode(QGraphicsView::ScrollHandDrag);
         logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         logical->setResizeAnchor(QGraphicsView::AnchorViewCenter);
         logical->setBackgroundBrush(QColor{QStringLiteral("#20262d")});
+        logical->setZoomObserver(
+            [this](qreal scale, const QString &boundary) {
+                zoom_status->setText(
+                    boundary.isEmpty()
+                        ? owner.tr("Zoom: %1%").arg(qRound(scale * 100.0))
+                        : owner.tr("Zoom: %1% (%2 limit)")
+                              .arg(qRound(scale * 100.0))
+                              .arg(boundary));
+            });
         passes = makeTree(
             {owner.tr("Order"), owner.tr("Pass / detail"), owner.tr("Kind"),
              owner.tr("Inputs"), owner.tr("Outputs")},
@@ -286,14 +372,18 @@ struct FramePlanWidget::Impl {
                              applyFilter(*barriers, needle);
                              applyFilter(*materials, needle);
                          });
-        QObject::connect(
-            group_minimum, qOverload<int>(&QSpinBox::valueChanged), &owner,
-            [this](int minimum) {
-                if (!model) {
-                    return;
-                }
-                logical_scene->populate(*model, minimum);
-            });
+        QObject::connect(target, &QComboBox::currentTextChanged, &owner,
+                         [this](const QString &) {
+                             if (model) {
+                                 populate();
+                             }
+                         });
+        QObject::connect(depth, qOverload<int>(&QSpinBox::valueChanged),
+                         &owner, [this](int) {
+                             if (model) {
+                                 populate();
+                             }
+                         });
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable,
                          &owner, [this] {
                              pending_request = 0;
@@ -333,6 +423,12 @@ struct FramePlanWidget::Impl {
 
     void clearTrees() {
         logical_scene->resetGraph();
+        {
+            const QSignalBlocker blocker{target};
+            target->clear();
+            target->setCurrentIndex(-1);
+        }
+        target->setEnabled(false);
         passes->clear();
         resources->clear();
         physical->clear();
@@ -406,10 +502,40 @@ struct FramePlanWidget::Impl {
 
     void consumeResult(const QByteArray &result_json) {
         try {
+            const bool had_model = model.has_value();
+            const std::string previous_graph =
+                model ? model->graph : std::string{};
+            const QString previous_target = target->currentText();
             FramePlanModel next = buildFramePlanModel(std::string_view{
                 result_json.constData(),
                 static_cast<std::size_t>(result_json.size())});
             model = std::move(next);
+            const bool same_graph =
+                had_model && previous_graph == model->graph;
+            std::vector<std::string> targets;
+            targets.reserve(model->resources.size());
+            for (const auto &resource : model->resources) {
+                targets.push_back(resource.name);
+            }
+            std::ranges::sort(targets);
+            targets.erase(std::unique(targets.begin(), targets.end()),
+                          targets.end());
+            {
+                const QSignalBlocker blocker{target};
+                target->clear();
+                for (const auto &name : targets) {
+                    target->addItem(text(name));
+                }
+                int selected_index = -1;
+                if (!targets.empty() && (!had_model || !same_graph)) {
+                    selected_index = 0;
+                } else if (same_graph && !previous_target.isEmpty()) {
+                    selected_index = target->findText(previous_target,
+                                                      Qt::MatchExactly);
+                }
+                target->setCurrentIndex(selected_index);
+            }
+            target->setEnabled(!targets.empty());
             populate();
         } catch (const std::exception &error) {
             showFailure(QString::fromUtf8(error.what()));
@@ -433,7 +559,12 @@ struct FramePlanWidget::Impl {
         barriers->clear();
         materials->clear();
         raw_json->clear();
-        logical_scene->populate(*model, group_minimum->value());
+        const std::optional<FramePlanNodeKey> selected_target =
+            target->currentIndex() < 0
+                ? std::nullopt
+                : std::optional<FramePlanNodeKey>{FramePlanNodeKey{
+                      model->graph, target->currentText().toStdString()}};
+        logical_scene->populate(*model, selected_target, depth->value());
         populatePasses();
         populateResources();
         populatePhysicalPlan();
@@ -480,13 +611,19 @@ struct FramePlanWidget::Impl {
                     model->execution_plan.available()
                 ? QStringLiteral("color: #388e3c;")
                 : QStringLiteral("color: #b36b00;"));
+        const QString target_summary =
+            selected_target
+                ? owner.tr("target %1 at depth %2")
+                      .arg(text(selected_target->name))
+                      .arg(depth->value())
+                : owner.tr("no target selected");
         status->setText(
-            owner.tr("%1 | %2%3 passes/tasks (%4 compute), %5, "
-                     "%6 resources, %7 barriers | %8 | %9 response | "
-                     "refreshed %10. Snapshot updates "
+            owner.tr("%1 | %2 | %3%4 passes/tasks (%5 compute), %6, "
+                     "%7 resources, %8 barriers | %9 | %10 response | "
+                     "refreshed %11. Snapshot updates "
                      "only when the engine connects or Refresh is pressed; it "
                      "is not polled per frame.")
-                .arg(text(model->graph), generation)
+                .arg(text(model->graph), target_summary, generation)
                 .arg(static_cast<qulonglong>(model->nodes.size()))
                 .arg(static_cast<qulonglong>(compute_count))
                 .arg(execution_summary)

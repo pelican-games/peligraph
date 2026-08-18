@@ -3,9 +3,10 @@
 #include "../model/frameplanmodel.hpp"
 
 #include <QGraphicsScene>
+#include <QPointF>
 
+#include <map>
 #include <optional>
-#include <set>
 #include <string>
 
 namespace PelicanStudio {
@@ -38,6 +39,9 @@ inline constexpr int FramePlanLifetimeLastRole = Qt::UserRole + 3081;
 inline constexpr int FramePlanOpportunityKindRole = Qt::UserRole + 3082;
 inline constexpr int FramePlanLogicalStateRole = Qt::UserRole + 3083;
 inline constexpr int FramePlanReasonCodeRole = Qt::UserRole + 3084;
+inline constexpr int FramePlanBundleOrderRole = Qt::UserRole + 3085;
+inline constexpr int FramePlanCurveRole = Qt::UserRole + 3086;
+inline constexpr int FramePlanSubtreeDepthRole = Qt::UserRole + 3087;
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";
@@ -59,7 +63,12 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
   public:
     explicit FramePlanGraphicsScene(QObject *parent = nullptr);
 
-    void populate(const FramePlanModel &model, int group_minimum);
+    // The selected target is the root resource.  Depth zero intentionally has
+    // no pass nodes; depth one is exactly unique(writers U readers).  Further
+    // depths cross resources touched by the preceding node frontier.
+    void populate(const FramePlanModel &model,
+                  const std::optional<FramePlanNodeKey> &selected_target,
+                  int depth);
     void resetGraph();
 
     [[nodiscard]] const std::optional<FramePlanNodeKey> &selectedNode() const
@@ -74,7 +83,9 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
   private:
     std::optional<FramePlanNodeKey> selected_node_;
     std::optional<FramePlanNodeKey> selected_resource_;
-    std::set<std::string, std::less<>> collapsed_groups_;
+    // Deliberately owned only by the live scene.  Node positions are editor
+    // session state, not QMainWindow workspace state and never reach disk.
+    std::map<FramePlanNodeKey, QPointF> session_node_positions_;
     bool rebuilding_ = false;
 
     void recordSelection();
