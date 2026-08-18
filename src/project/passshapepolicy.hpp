@@ -106,7 +106,8 @@ PassShapeInputReference parsePassShapeInputReference(
 
 // Builds the core/studio-neutral observation from an authored pass object.
 // Names listed in non_image_inputs still count as inputs, but are excluded
-// from render-target duplicate, role, and feedback checks.
+// from render-target duplicate and feedback checks. Reserved-name role checks
+// apply regardless of the resolved resource kind.
 PassShapeObservation passShapeObservationFromJson(
     RenderPassType type, const nlohmann::json &pass,
     std::span<const std::string> non_image_inputs = {});
@@ -114,5 +115,24 @@ PassShapeObservation passShapeObservationFromJson(
 std::vector<PassShapeViolation> evaluatePassShape(
     const PassShapePolicy &policy,
     const PassShapeObservation &observation);
+
+// Converts evaluator output into the one named exception contract shared by
+// every engine parser. Keeping this formatting beside the evaluator prevents
+// parser-specific interpretations of the same violation.
+void validatePassShapeObservation(
+    const PassShapePolicy &policy,
+    const PassShapeObservation &observation,
+    std::string_view pass_name);
+
+// Shared pre-validation boundary for independently-built views of authored
+// pass JSON (notably PassDefinition and frameplanner). It preserves the exact
+// authored RenderPassType while applying the injected immutable policy.
+RenderPassType validateAuthoredPassShape(
+    const PassShapePolicy &policy,
+    const nlohmann::json &pass,
+    PassFieldOwnershipCapabilities capabilities,
+    std::string_view pass_name,
+    std::span<const std::string> non_image_inputs = {},
+    std::string_view context = "pass");
 
 } // namespace Pelican

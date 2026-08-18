@@ -1,6 +1,7 @@
 #include "renderpipeline.hpp"
 #include "featurecompose.hpp"
 #include "passfieldownership.hpp"
+#include "renderresourcename.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1912,8 +1913,12 @@ void synchronizeRenderPipelineProvenance(
             throw std::runtime_error("render_targets must be an array");
         }
         for (const auto &target : *render_targets) {
+            const auto name =
+                requireString(target, "name", "render target");
+            validateAuthoredRenderResourceName(
+                name, "render target");
             append_resource(
-                requireString(target, "name", "render target"),
+                name,
                 "render_target");
         }
     }
@@ -1924,11 +1929,16 @@ void synchronizeRenderPipelineProvenance(
         }
         for (const auto &buffer : *buffers) {
             if (buffer.is_string()) {
-                append_resource(buffer.get<std::string>(), "buffer");
+                const auto name = buffer.get<std::string>();
+                validateAuthoredRenderResourceName(
+                    name, "buffer");
+                append_resource(name, "buffer");
             } else if (buffer.is_object()) {
-                append_resource(
-                    requireString(buffer, "name", "buffer"),
-                    "buffer");
+                const auto name =
+                    requireString(buffer, "name", "buffer");
+                validateAuthoredRenderResourceName(
+                    name, "buffer");
+                append_resource(name, "buffer");
             } else {
                 throw std::runtime_error(
                     "buffers entries must be strings or objects");

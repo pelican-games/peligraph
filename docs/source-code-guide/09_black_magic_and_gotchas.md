@@ -502,11 +502,11 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 ### planner
 
 - 自動 edge は宣言順で「直前 writer → reader」の RAW(read-after-write — 書いた後に読む依存。以下 WAW は write-after-write、WAR は write-after-read で、いずれも順序が入れ替わると結果が変わる組み合わせです)。
-- WAW は明示 edge で全 writer を順序付けないと [`validateWritesAreOrdered()`](../../src/core/renderingpass/frameplanner.cpp#L1458) が拒否。
+- WAW は明示 edge で全 writer を順序付けないと [`validateWritesAreOrdered()`](../../src/core/renderingpass/frameplanner.cpp#L1463) が拒否。
 - WAR は自動 edge なし。
 - `after` / `before` は control edge。
 - cycle は例外。
-- stable topological order は作るが、[`levels`](../../src/core/renderingpass/frameplanner.cpp#L1546) は現在並列実行に使わない。
+- stable topological order は作るが、[`levels`](../../src/core/renderingpass/frameplanner.cpp#L1551) は現在並列実行に使わない。
 
 ### barrier
 
@@ -562,7 +562,7 @@ hot reload は shader compile と pipeline rebuild を transactional にしま�
 
 - shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2524) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2491) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L4340))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L445) です。
 - `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2594))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
-- compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2375) 時に一度作り、hot reload path では作り直していません。
+- compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2379) 時に一度作り、hot reload path では作り直していません。
 - material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L371) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
 
 したがって hot reload の安全な基本範囲は、既存 set/binding/type と push constant layout を保った shader body の変更です。layout-changing reload を正式対応するなら、pipeline 使用者ごとの descriptor rebuild notification が必要です。

@@ -2119,6 +2119,304 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
 }
 
 TEST_CASE(
+    "WP326 restores all three engine pass-shape rejections with resolved negative controls",
+    "[renderingpass][frameplanner][pass-shape][wp326][negative-contrast]") {
+    const RenderTargetNameResolver names{
+        [](const std::string &name) {
+            if (name == "lit_color") {
+                return GlobalRenderTargetId{10};
+            }
+            if (name == "offscreen_depth") {
+                return GlobalRenderTargetId{11};
+            }
+            if (name == "source_color") {
+                return GlobalRenderTargetId{12};
+            }
+            if (name == "output_color") {
+                return GlobalRenderTargetId{13};
+            }
+            if (name == "second_color") {
+                return GlobalRenderTargetId{14};
+            }
+            return noRenderTargetId();
+        }};
+    const RenderTargetMetadataResolver metadata{
+        [](GlobalRenderTargetId target) {
+            if (target == GlobalRenderTargetId{10}) {
+                return RenderTargetMetadata{
+                    "lit_color",
+                    vk::ImageUsageFlagBits::eColorAttachment |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eR16G16B16A16Sfloat,
+                    vk::Extent2D{1280, 720}, true};
+            }
+            if (target == GlobalRenderTargetId{11}) {
+                return RenderTargetMetadata{
+                    "offscreen_depth",
+                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                    vk::Format::eD32Sfloat,
+                    vk::Extent2D{1280, 720}};
+            }
+            if (target == GlobalRenderTargetId{12}) {
+                return RenderTargetMetadata{
+                    "source_color",
+                    vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eR8G8B8A8Unorm,
+                    vk::Extent2D{1280, 720}};
+            }
+            if (target == GlobalRenderTargetId{13}) {
+                return RenderTargetMetadata{
+                    "output_color",
+                    vk::ImageUsageFlagBits::eColorAttachment,
+                    vk::Format::eR8G8B8A8Unorm,
+                    vk::Extent2D{1280, 720}};
+            }
+            if (target == GlobalRenderTargetId{14}) {
+                return RenderTargetMetadata{
+                    "second_color",
+                    vk::ImageUsageFlagBits::eColorAttachment,
+                    vk::Format::eR8G8B8A8Unorm,
+                    vk::Extent2D{1280, 720}};
+            }
+            throw std::runtime_error(
+                "unexpected WP326 render target metadata lookup");
+        }};
+    const auto rejectionMessage = [](auto &&operation) {
+        try {
+            operation();
+        } catch (const std::exception &error) {
+            return std::string{error.what()};
+        }
+        return std::string{};
+    };
+
+    SECTION("regression 1 observes named material inputs after resolution") {
+        const auto formerly_accepted = nlohmann::json::parse(R"json({
+          "name": "forward_transparent",
+          "type": "material",
+          "material_contract": "forward_transparent_v1",
+          "screen_inputs": {"opaque_color": "lit_color"},
+          "output": {
+            "color": ["lit_color"],
+            "depth": "offscreen_depth"
+          }
+        })json");
+        const auto rejected = rejectionMessage([&] {
+            (void)parsePassDefinitionFromJson(
+                formerly_accepted, names, metadata);
+        });
+        REQUIRE_FALSE(rejected.empty());
+        REQUIRE_THAT(
+            rejected,
+            Catch::Matchers::ContainsSubstring(
+                "Pass shape violation 'current_frame_color_feedback'") &&
+                Catch::Matchers::ContainsSubstring("lit_color"));
+
+        const auto history_neighbor = nlohmann::json::parse(R"json({
+          "name": "forward_transparent_history",
+          "type": "material",
+          "material_contract": "forward_transparent_v1",
+          "material_resources": {
+            "previous_color": "lit_color@history"
+          },
+          "output": {
+            "color": ["lit_color"],
+            "depth": "offscreen_depth"
+          }
+        })json");
+        const auto resolved = parsePassDefinitionFromJson(
+            history_neighbor, names, metadata);
+        REQUIRE(
+            resolved.input_targets ==
+            std::vector<GlobalRenderTargetId>{
+                GlobalRenderTargetId{10}});
+        REQUIRE(
+            resolved.input_target_history ==
+            std::vector<bool>{true});
+        REQUIRE(
+            resolved.output_color.front().target ==
+            resolved.input_targets.front());
+        REQUIRE(
+            resolved.materialInfo()
+                .material_resources.front().history);
+    }
+
+    SECTION("regression 2 reserves swapchain for every authored resource kind") {
+        const auto formerly_accepted = nlohmann::json::parse(R"json({
+          "buffers": [{"name": "swapchain", "size": 16}],
+          "rendering_passes": [{
+            "name": "main",
+            "passes": [{
+              "name": "read_reserved_buffer",
+              "type": "fullscreen",
+              "input": ["swapchain"],
+              "output": {"color": "output_color", "depth": null},
+              "shader": {
+                "vertex": "engine://fullscreen",
+                "fragment": "engine://copy"
+              }
+            }]
+          }]
+        })json");
+        const auto declaration_rejected = rejectionMessage([&] {
+            (void)parseFrameGraphBufferDefinitionsFromJson(
+                formerly_accepted);
+        });
+        REQUIRE_FALSE(declaration_rejected.empty());
+        REQUIRE_THAT(
+            declaration_rejected,
+            Catch::Matchers::ContainsSubstring(
+                "Render resource name violation 'reserved_swapchain'") &&
+                Catch::Matchers::ContainsSubstring("buffer"));
+
+        const auto render_target_rejected =
+            rejectionMessage([&] {
+                (void)parseRenderTargetDefinitionsFromJson(
+                    nlohmann::json::parse(R"json({
+                      "render_targets": [{"name": "swapchain"}]
+                    })json"));
+            });
+        REQUIRE_FALSE(render_target_rejected.empty());
+        REQUIRE_THAT(
+            render_target_rejected,
+            Catch::Matchers::ContainsSubstring(
+                "Render resource name violation 'reserved_swapchain'") &&
+                Catch::Matchers::ContainsSubstring("render target"));
+
+        const auto &invalid_pass =
+            formerly_accepted.at("rendering_passes")
+                .at(0).at("passes").at(0);
+        const auto input_rejected = rejectionMessage([&] {
+            (void)parsePassDefinitionFromJson(
+                invalid_pass, names, metadata,
+                std::unordered_set<std::string>{"swapchain"});
+        });
+        REQUIRE_FALSE(input_rejected.empty());
+        REQUIRE_THAT(
+            input_rejected,
+            Catch::Matchers::ContainsSubstring(
+                "Pass shape violation 'swapchain_input'"));
+
+        const auto valid_neighbor = nlohmann::json::parse(R"json({
+          "buffers": [{"name": "light_buffer", "size": 16}],
+          "rendering_passes": [{
+            "name": "main",
+            "passes": [{
+              "name": "read_regular_buffer",
+              "type": "fullscreen",
+              "input": ["light_buffer"],
+              "output": {"color": "output_color", "depth": null},
+              "shader": {
+                "vertex": "engine://fullscreen",
+                "fragment": "engine://copy"
+              }
+            }]
+          }]
+        })json");
+        const auto buffers =
+            parseFrameGraphBufferDefinitionsFromJson(valid_neighbor);
+        REQUIRE(buffers.size() == 1);
+        REQUIRE(buffers.front().name == "light_buffer");
+        const auto resolved = parsePassDefinitionFromJson(
+            valid_neighbor.at("rendering_passes")
+                .at(0).at("passes").at(0),
+            names, metadata,
+            frameGraphBufferNameSet(buffers));
+        REQUIRE(
+            resolved.input_buffers ==
+            std::vector<std::string>{"light_buffer"});
+        REQUIRE(resolved.input_targets.empty());
+        REQUIRE(
+            resolved.output_color.front().target ==
+            GlobalRenderTargetId{13});
+    }
+
+    SECTION("regression 3 rejects one malformed fullscreen in both parser paths") {
+        const auto formerly_accepted = nlohmann::json::parse(R"json({
+          "name": "wp326_bad_fullscreen_graph",
+          "render_targets": [
+            {"name": "source_color"},
+            {"name": "output_color"},
+            {"name": "second_color"},
+            {"name": "offscreen_depth"}
+          ],
+          "passes": [{
+            "name": "bad_fullscreen",
+            "type": "fullscreen",
+            "input": ["source_color", "source_color"],
+            "output": {
+              "color": ["output_color", "second_color"],
+              "depth": "offscreen_depth"
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://copy"
+            }
+          }]
+        })json");
+        const auto frameplanner_rejected = rejectionMessage([&] {
+            (void)parseFrameGraphDefinitionFromJson(
+                formerly_accepted);
+        });
+        const auto parser_rejected = rejectionMessage([&] {
+            (void)parsePassDefinitionFromJson(
+                formerly_accepted.at("passes").at(0),
+                names, metadata);
+        });
+        REQUIRE_FALSE(frameplanner_rejected.empty());
+        REQUIRE_FALSE(parser_rejected.empty());
+        REQUIRE(frameplanner_rejected == parser_rejected);
+        REQUIRE_THAT(
+            frameplanner_rejected,
+            Catch::Matchers::ContainsSubstring(
+                "Pass shape violation 'color_output_count'") &&
+                Catch::Matchers::ContainsSubstring("bad_fullscreen"));
+
+        const auto valid_neighbor = nlohmann::json::parse(R"json({
+          "name": "wp326_valid_fullscreen_graph",
+          "render_targets": [
+            {"name": "source_color"},
+            {"name": "output_color"}
+          ],
+          "passes": [{
+            "name": "valid_fullscreen",
+            "type": "fullscreen",
+            "input": ["source_color"],
+            "output": {"color": "output_color", "depth": null},
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://copy"
+            }
+          }]
+        })json");
+        const auto graph =
+            parseFrameGraphDefinitionFromJson(valid_neighbor);
+        REQUIRE(graph.nodes.size() == 1);
+        REQUIRE(
+            graph.nodes.front().reads ==
+            std::vector<std::string>{"source_color"});
+        REQUIRE(
+            graph.nodes.front().writes ==
+            std::vector<std::string>{"output_color"});
+
+        const auto resolved = parsePassDefinitionFromJson(
+            valid_neighbor.at("passes").at(0),
+            names, metadata);
+        REQUIRE(
+            resolved.input_targets ==
+            std::vector<GlobalRenderTargetId>{
+                GlobalRenderTargetId{12}});
+        REQUIRE(
+            resolved.output_color.size() == 1);
+        REQUIRE(
+            resolved.output_color.front().target ==
+            GlobalRenderTargetId{13});
+        REQUIRE_FALSE(
+            isConcreteRenderTarget(resolved.output_depth));
+    }
+}
+
+TEST_CASE(
     "pass definition JSON parser builds an arbitrary-MRT generic raster pass",
     "[renderingpass][raster][wp238b]") {
     const auto name_resolver =

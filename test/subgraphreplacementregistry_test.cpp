@@ -539,15 +539,23 @@ TEST_CASE(
         nlohmann::json::array({"scratch"});
     second["output"]["color"] = "scene_out";
     passes.at(1)["output"]["color"] = "scratch";
+    config["render_targets"].push_back({
+        {"name", "unrelated_out"},
+        {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"},
+        {"usage",
+         nlohmann::json::array(
+             {"COLOR_ATTACHMENT", "SAMPLED"})},
+    });
     passes.insert(
         passes.begin() + 2,
         nlohmann::json{
             {"name", "unrelated"},
             {"type", "fullscreen"},
-            {"input",
+             {"input",
              nlohmann::json::array({"scratch"})},
             {"output",
-             {{"color", "scratch"},
+             {{"color", "unrelated_out"},
               {"depth", nullptr}}},
             {"shader",
              {{"vertex", "engine://fullscreen"},

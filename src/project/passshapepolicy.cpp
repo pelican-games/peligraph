@@ -253,24 +253,34 @@ PassShapeObservation passShapeObservationFromJson(
     if (!pass.is_object()) {
         throw std::runtime_error("Pass shape observation requires an object");
     }
+    PassShapeObservation observation{.type = type};
     const auto output = pass.find("output");
-    if (output == pass.end() || !output->is_object()) {
+    const bool outputless_pseudo_pass =
+        type == RenderPassType::canonical_anchor ||
+        type == RenderPassType::snapshot_copy;
+    if (output == pass.end()) {
+        if (!outputless_pseudo_pass) {
+            throw std::runtime_error(
+                "Pass shape observation requires object field 'output'");
+        }
+    } else if (!output->is_object()) {
         throw std::runtime_error(
             "Pass shape observation requires object field 'output'");
-    }
-    if (!output->contains("color") || !output->contains("depth")) {
+    } else if (!output->contains("color") ||
+               !output->contains("depth")) {
         throw std::runtime_error(
             "Pass shape observation output requires color and depth fields");
-    }
-
-    PassShapeObservation observation{.type = type};
-    forEachScalarOrArray(output->at("color"), [&](const auto &encoded) {
-        observation.color_outputs.push_back(
-            targetName(encoded, "Color output"));
-    });
-    if (!output->at("depth").is_null()) {
-        observation.depth_output =
-            targetName(output->at("depth"), "Depth output");
+    } else {
+        forEachScalarOrArray(
+            output->at("color"),
+            [&](const auto &encoded) {
+                observation.color_outputs.push_back(
+                    targetName(encoded, "Color output"));
+            });
+        if (!output->at("depth").is_null()) {
+            observation.depth_output =
+                targetName(output->at("depth"), "Depth output");
+        }
     }
 
     const auto input = pass.find("input");
@@ -338,7 +348,7 @@ std::vector<PassShapeViolation> evaluatePassShape(
 
     if (!policy.swapchain_input_allowed) {
         for (const auto &input : observation.inputs) {
-            if (input.image && input.name == "swapchain") {
+            if (input.name == "swapchain") {
                 violations.push_back(targetViolation(
                     PassShapeViolationKind::swapchain_input, input.name));
                 break;
@@ -396,6 +406,40 @@ std::vector<PassShapeViolation> evaluatePassShape(
         }
     }
     return violations;
+}
+
+void validatePassShapeObservation(
+    const PassShapePolicy &policy,
+    const PassShapeObservation &observation,
+    std::string_view pass_name) {
+    const auto violations =
+        evaluatePassShape(policy, observation);
+    if (violations.empty()) {
+        return;
+    }
+    const auto &violation = violations.front();
+    throw std::runtime_error(
+        "Pass shape violation '" +
+        std::string{passShapeViolationName(violation.kind)} +
+        "' in pass '" + std::string{pass_name} + "': " +
+        passShapeViolationDescription(violation));
+}
+
+RenderPassType validateAuthoredPassShape(
+    const PassShapePolicy &policy,
+    const nlohmann::json &pass,
+    PassFieldOwnershipCapabilities capabilities,
+    std::string_view pass_name,
+    std::span<const std::string> non_image_inputs,
+    std::string_view context) {
+    const auto type =
+        validatePassFieldOwnership(pass, capabilities, context);
+    validatePassShapeObservation(
+        policy,
+        passShapeObservationFromJson(
+            type, pass, non_image_inputs),
+        pass_name);
+    return type;
 }
 
 } // namespace Pelican

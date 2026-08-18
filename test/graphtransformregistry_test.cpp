@@ -238,9 +238,15 @@ RenderGraphTransform::Status resolveTransform(
             } else if (
                 state.behavior ==
                 ProviderBehavior::change_boundary) {
-                config["rendering_passes"][0]
-                      ["passes"][1]["output"]["color"] =
+                auto &present =
+                    config["rendering_passes"][0]
+                          ["passes"][1];
+                present["output"]["color"] =
                     "scene";
+                // Keep the candidate shape-valid so the protected-boundary
+                // rejection remains the tested failure rather than current
+                // frame feedback.
+                present.erase("input");
             } else if (
                 state.behavior ==
                 ProviderBehavior::change_control) {
@@ -276,6 +282,9 @@ RenderGraphTransform::Status resolveTransform(
                           .push_back({
                               {"name", "after_terminal"},
                               {"type", "fullscreen"},
+                              {"output",
+                               {{"color", "swapchain"},
+                                {"depth", nullptr}}},
                           });
             } else if (
                 state.behavior ==

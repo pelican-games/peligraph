@@ -3,6 +3,8 @@
 #include "materialpassinfojsonparser.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/imagesubresourcejson.hpp"
+#include "../../project/passshapepolicy.hpp"
+#include "../../project/renderresourcename.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include <algorithm>
@@ -667,11 +669,6 @@ parseOutputDepth(const nlohmann::json &output_json) {
         throw std::runtime_error(
             "Frame graph pass output depth accepts at most one attachment");
     }
-    if (!result.empty() &&
-        result.front().resource == "swapchain") {
-        throw std::runtime_error(
-            "Depth output target cannot be swapchain");
-    }
     return result;
 }
 
@@ -693,9 +690,10 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         parseOptionalRegionTags(
             pass_json, "Frame graph pass '" + node.name + "'");
 
-    const auto type = validatePassFieldOwnership(
-        pass_json, buildPassFieldOwnershipCapabilities(),
-        "frame graph pass");
+    const auto type = validateAuthoredPassShape(
+        defaultPassShapePolicy(), pass_json,
+        buildPassFieldOwnershipCapabilities(), node.name,
+        {}, "frame graph pass");
     if (type == RenderPassType::material) {
         node.material_filter =
             parseMaterialDrawTagFilterFromJson(
@@ -955,7 +953,10 @@ std::vector<std::string> parseDeclaredRenderTargets(const nlohmann::json &json) 
         if (!target.is_object()) {
             throw std::runtime_error("Frame graph render_targets entries must be objects");
         }
-        appendUnique(resources, requireString(target, "name", "render target"));
+        auto name = requireString(target, "name", "render target");
+        validateAuthoredRenderResourceName(
+            name, "render target");
+        appendUnique(resources, std::move(name));
     }
     return resources;
 }
@@ -988,11 +989,15 @@ std::vector<std::string> parseDeclaredBuffers(const nlohmann::json &json) {
     }
     for (const auto &buffer : buffers) {
         if (buffer.is_string()) {
-            appendUnique(resources, buffer.get<std::string>());
+            auto name = buffer.get<std::string>();
+            validateAuthoredRenderResourceName(name, "buffer");
+            appendUnique(resources, std::move(name));
             continue;
         }
         if (buffer.is_object()) {
-            appendUnique(resources, requireString(buffer, "name", "buffer"));
+            auto name = requireString(buffer, "name", "buffer");
+            validateAuthoredRenderResourceName(name, "buffer");
+            appendUnique(resources, std::move(name));
             continue;
         }
         throw std::runtime_error("Frame graph buffers entries must be strings or objects");

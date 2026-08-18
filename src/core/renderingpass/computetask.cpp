@@ -10,6 +10,7 @@
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/render_target_layout_tracker.hpp"
 #include "../vkcore/util.hpp"
+#include "../../project/renderresourcename.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1460,9 +1461,11 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
     definitions.reserve(buffers.size());
     for (const auto &entry : buffers) {
         if (entry.is_string()) {
+            auto name = entry.get<std::string>();
+            validateAuthoredRenderResourceName(name, "buffer");
             definitions.push_back(
                 FrameGraphBufferDefinition{
-                    entry.get<std::string>(),
+                    std::move(name),
                     0, true});
             continue;
         }
@@ -1471,6 +1474,7 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
         }
         const auto name =
             requireString(entry, "name", "buffer");
+        validateAuthoredRenderResourceName(name, "buffer");
         const auto context = "buffer '" + name + "'";
         if (entry.contains("size") &&
             entry.contains("size_from_extent")) {

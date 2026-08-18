@@ -1,5 +1,6 @@
 #include "rendertargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include "../../project/renderresourcename.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -246,9 +247,8 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
 
         const std::string name = parseStringField(rt_json, "name", "render target");
         validateName(name, "Render target");
-        if (name == "swapchain") {
-            throw std::runtime_error("Render target name is reserved: swapchain");
-        }
+        validateAuthoredRenderResourceName(
+            name, "render target");
         if (!render_target_names.insert(name).second) {
             throw std::runtime_error("Duplicate render target name: " + name);
         }

@@ -1,10 +1,12 @@
 #include "passdefinitionjsonparser.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "passattachmentoptionsjsonparser.hpp"
+#include "passfieldownershipcapabilities.hpp"
 #include "passinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
+#include "rendertargetmetadataresolver.hpp"
 #include "../userpublic/render/pass_implementation_abi_v1.hpp"
 #include "passshapepolicy.hpp"
 #include <stdexcept>
@@ -13,6 +15,63 @@
 namespace Pelican {
 
 namespace {
+
+std::string passShapeTargetName(
+    GlobalRenderTargetId target,
+    const RenderTargetMetadataResolver &rt_metadata) {
+    if (isSwapchainRenderTarget(target)) {
+        return "swapchain";
+    }
+    return rt_metadata.get(target).name;
+}
+
+PassShapeObservation passShapeObservationFromDefinition(
+    RenderPassType type,
+    const PassDefinition &pass_def,
+    const RenderTargetMetadataResolver &rt_metadata) {
+    PassShapeObservation observation{.type = type};
+    observation.color_outputs.reserve(
+        pass_def.output_color.size());
+    for (const auto &attachment : pass_def.output_color) {
+        observation.color_outputs.push_back(
+            passShapeTargetName(
+                attachment.target, rt_metadata));
+    }
+    if (isSwapchainRenderTarget(
+            pass_def.output_depth.target) ||
+        isConcreteRenderTarget(
+            pass_def.output_depth.target)) {
+        observation.depth_output =
+            passShapeTargetName(
+                pass_def.output_depth.target,
+                rt_metadata);
+    }
+    observation.inputs.reserve(
+        pass_def.input_targets.size() +
+        pass_def.input_buffers.size());
+    for (std::size_t index = 0;
+         index < pass_def.input_targets.size();
+         ++index) {
+        observation.inputs.push_back(
+            PassShapeInputObservation{
+                .name = passShapeTargetName(
+                    pass_def.input_targets[index],
+                    rt_metadata),
+                .history =
+                    pass_def.input_target_history.at(index),
+                .image = true,
+            });
+    }
+    for (const auto &buffer : pass_def.input_buffers) {
+        observation.inputs.push_back(
+            PassShapeInputObservation{
+                .name = buffer,
+                .history = false,
+                .image = false,
+            });
+    }
+    return observation;
+}
 
 void parsePassImplementationProvider(
     PassDefinition &pass_def,
@@ -71,17 +130,14 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
 
     const std::vector<std::string> non_image_inputs{
         buffer_names.begin(), buffer_names.end()};
-    const auto shape_observation = passShapeObservationFromJson(
-        pass_type, pass_json, non_image_inputs);
-    const auto shape_violations =
-        evaluatePassShape(shape_policy, shape_observation);
-    if (!shape_violations.empty()) {
+    const auto authored_type = validateAuthoredPassShape(
+        shape_policy, pass_json,
+        buildPassFieldOwnershipCapabilities(),
+        pass_def.name, non_image_inputs);
+    if (authored_type != pass_type) {
         throw std::runtime_error(
-            "Pass shape violation '" +
-            std::string{passShapeViolationName(
-                shape_violations.front().kind)} +
-            "' in pass '" + pass_def.name + "': " +
-            passShapeViolationDescription(shape_violations.front()));
+            "Pass type changed across authored shape validation: " +
+            pass_def.name);
     }
 
     parsePassOutputTargetsFromJson(pass_def, rt_resolver, pass_json);
@@ -97,6 +153,11 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
         pass_def, pass_json, rt_resolver,
         buffer_names);
     validatePassInputs(pass_def);
+    validatePassShapeObservation(
+        shape_policy,
+        passShapeObservationFromDefinition(
+            pass_type, pass_def, rt_metadata),
+        pass_def.name);
     validatePassTargetUsage(pass_def, rt_metadata);
     validatePassOutputExtents(pass_def, rt_metadata);
     pass_def.rasterization_samples =

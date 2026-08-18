@@ -252,6 +252,12 @@ nlohmann::json localReadAttachmentConfig(
                  {"footprint", "same_pixel"},
              }},
         };
+    } else if (consumer_type == "output_transform") {
+        result["rendering_passes"][0]
+              ["passes"][1]["output"]["color"] =
+            "display";
+        result["rendering_passes"][0]
+              ["passes"].erase(2);
     }
     return result;
 }
@@ -983,12 +989,13 @@ TEST_CASE(
         VulkanResourceRepresentation::
             tile_local_attachment);
 
-    const auto unsupported_geometry_consumer =
+    const auto unsupported_output_consumer =
         compile_config(
-            localReadAttachmentConfig("velocity"));
+            localReadAttachmentConfig(
+                "output_transform"));
     REQUIRE(
         representationAssignment(
-            unsupported_geometry_consumer,
+            unsupported_output_consumer,
             "gbuffer")
             .representation ==
         VulkanResourceRepresentation::
@@ -1790,7 +1797,7 @@ TEST_CASE(
                {"passes",
                 nlohmann::json::array(
                     {{{"name", "produce_scene"},
-                      {"type", "fullscreen"},
+                      {"type", "raster"},
                       {"resolution_domain", "scene"},
                       {"output",
                        {{"color",

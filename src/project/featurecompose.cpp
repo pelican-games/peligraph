@@ -1,6 +1,7 @@
 #include "featurecompose.hpp"
 #include "featurejitter.hpp"
 #include "materialscreeninput.hpp"
+#include "renderresourcename.hpp"
 
 #include <algorithm>
 #include <array>
@@ -593,6 +594,8 @@ std::unordered_set<std::string> collectRenderTargetNames(const nlohmann::json &c
             throw std::runtime_error("render_targets entries must be objects");
         }
         const auto name = requireStringField(target, "name", "render target");
+        validateAuthoredRenderResourceName(
+            name, "render target");
         if (!names.insert(name).second) {
             throw std::runtime_error("Duplicate render target name: " + name);
         }
@@ -637,6 +640,7 @@ std::unordered_set<std::string> collectBufferNames(const nlohmann::json &config)
         } else {
             throw std::runtime_error("buffers entries must be strings or objects");
         }
+        validateAuthoredRenderResourceName(name, "buffer");
         if (!names.insert(name).second) {
             throw std::runtime_error("Duplicate buffer name: " + name);
         }
@@ -1519,6 +1523,8 @@ void addRenderTargets(nlohmann::json &config, const nlohmann::json &feature,
             throw std::runtime_error("render feature render_targets entries must be objects");
         }
         const auto name = requireStringField(target, "name", "render feature render target");
+        validateAuthoredRenderResourceName(
+            name, "render target");
         if (!target_names.insert(name).second) {
             throw std::runtime_error("Render feature render target name collides: " + name);
         }
@@ -1553,6 +1559,7 @@ void addBuffers(nlohmann::json &config, const nlohmann::json &feature,
         } else {
             throw std::runtime_error("render feature buffers entries must be strings or objects");
         }
+        validateAuthoredRenderResourceName(name, "buffer");
         if (!buffer_names.insert(name).second) {
             throw std::runtime_error("Render feature buffer name collides: " + name);
         }
