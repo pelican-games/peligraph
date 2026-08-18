@@ -6179,96 +6179,143 @@ core とフォームが共に不当になること**、および解決された�
 
 依存: WP324(マージ済み)、WP325(テスト構造を変えるため後に回す)。見積: 中。
 
-### WP328: 経路を 1 つずつ塞ぐのをやめる —— 検証済み config を型で強制する
+### WP328: 経路を数え上げるのをやめる —— 検証済み config を型で強制する
 
 **WP326 のマージ後の敵対レビューで確認。WP326 の修理は半分だった。**
 そして原因は WP326 個別のミスではなく、**塞ぎ方が間違っている**ことである。
 
-同じ形を **3 回**踏んでいる。WP303(同じ JSON を読む 2 つのパーサの片方だけ塞いだ)、
-WP326(`frameplanner` が評価器を呼んでいなかった)、そして本 WP。
-**経路を数え上げて 1 つずつ塞ぐ限り、4 つ目が必ず出る。**
+同じ形を **3 回**踏んでいる。WP303、WP326、そして本 WP。
+**経路を数え上げて 1 つずつ塞ぐ限り、次が必ず出る。**
 
-#### 確認された残欠陥
+#### 確認された残欠陥(6 件、すべて敵対レビューで再確認済み)
 
-1. **material の名前付き入力を `frameplanner` が依然として検証しない。**
-   `passShapeObservationFromJson` は `screen_inputs` / `surface_resources` /
-   `material_resources` を**一度も読まない**(grep 0 件)。
+1. **material の名前付き入力を `frameplanner` が検証しない。**
+   観測は `output` とトップレベル `input` しか読まない。
    `PassDefinition` 経路は全入力を解決した後に評価器を**再度**通すので直ったが、
    `frameplanner` は不完全な観測を検証したきり再検証しない。
-   **WP326 の回帰テスト 1 は `parsePassDefinitionFromJson` しか呼んでいない。**
-   両経路を通すのは後退 3 の分だけである。**受け入れ条件の書き方が悪かった。**
-
-2. **buffer 種別を渡さないため、両経路が逆向きに食い違う。**
-   `frameplanner` は非 image 入力に `{}` を渡すので buffer が image と分類され、
-   `PassDefinition` が**受理する** JSON を `frameplanner` だけが `duplicate_input` で拒否する。
-   `b@history` も同様に、`frameplanner` では通って後段の一般エラーになり、
-   `PassDefinition` では早期に明示的な buffer-history エラーになる。
-   **WP326 が新しく作った食い違いである。**
-
-3. **第三の終端経路 `preview` / `data_only` は shape 検証を一度も通らない。**
-   `data_only` は render target・buffer・frame graph を parse する**前**に return する。
-   これは production の preview variant が使い、`makePreviewGraphProgram()` に入る。
-   同関数は pass 名を列挙するだけで、壊れたグラフを `continue` し、
-   名前が無ければ `"unnamed"` に落とす。
-
+   **WP326 の回帰テスト 1 は `PassDefinition` しか呼んでいない。**
+   両経路を通すのは後退 3 の分だけだった。**受け入れ条件の書き方が原因である。**
+2. **buffer 種別を渡さないため両経路が逆向きに食い違う。**
+   `frameplanner` は非 image 入力に `{}` を渡すので buffer が image と誤分類される。
+3. **`preview` / `data_only` が shape 検証を一度も通らない。**
+   `data_only` は型付き定義を作る前に return し、
+   `makePreviewGraphProgram()` は壊れたグラフを `continue` し名前が無ければ `"unnamed"` に落とす。
 4. **公開低水準 API が旧版より弱いまま。**
    `parseDepthOutputTargetFromJson` / `parseInputTargetsFromJson` /
    `parseInputResourcesFromJson` に `"swapchain"` を直接渡すと、
-   `0980ad6^` は名前付きエラーで拒否したが現在は受理する。
-   公開 `validatePassInputs()` からも該当分岐が消えたままである。
+   `0980ad6^` は名前付きエラーで拒否したが現在は特別 ID を返す。
+5. **出荷コーパステストが shape 終端を通っていない**(resolve/compile で止まる)。
+6. **複合不正 JSON の診断順序が変わった**(解決前に shape 検証するため、
+   より局所的な「存在しない名前」が隠れる)。
 
-5. **出荷コーパステストが shape パーサの互換性を証明していない。**
-   `resolveRenderPipeline()` と `compileRenderPipeline()` までしか呼んでいない。
+#### 設計 —— 「一度だけ」は成立しない。**revision ごと**に検証する
 
-6. **複合不正 JSON の診断順序が変わった。**
-   解決前に shape 検証するため、より局所的な「存在しない名前」が隠れる。
+**当初案の「artifact 分岐の前に一度だけ検証する」は破綻している。**
+分岐点に在るのは生の `normalized_config` だけで、**その後も config は書き換わる**:
 
-#### 設計 —— 数え上げをやめ、型で強制する
+- `PELICAN_WITH_IMGUI=ON` は検証後に**生 JSON の pass を挿入する**
+- **graph transform は V1 ABI で完全な JSON config を受け取り直し、
+  候補を直接 frameplanner に入れる**
+- **subgraph replacement も生 JSON の pass 群を返す**
 
-**受け入れ条件に「両方の経路」と書く方式は破綻している。**経路が 3 つ以上あり、
-新しい経路はこれからも増える。**数え上げは必ず古くなる。**
+元 config のトークンは、変換後の候補の証明にならない。
 
-代わりに:
+したがって:
 
-1. **正規化済み config が artifact 分岐へ入る前に、全パスの共有事前検証を 1 回行う。**
-2. **検証済みであることを型で表す。**`frameplanner`、`PassDefinition` パーサ、
-   `makePreviewGraphProgram()` は、**共有事前検証だけが構築できる型**を受け取ること。
-   生の JSON からは構築できないこと。
-3. **観測は 1 度だけ、完全に作る。**グラフ宣言から image / buffer の種別集合を先に作り、
-   `screen_inputs` / `surface_resources` / `material_resources` を含む
-   **最終的な read 集合**を観測に入れること。**両経路が同じ観測コンテキストを使うこと。**
+1. **各 immutable な config revision の、最後の書き換えの後**に共有 validator を通す。
+   **preview / flat / xr は別 revision として扱う。**
+2. **V1 provider(graph transform / subgraph replacement)の出力は毎回再検証する。**
+   ABI を型付き編集命令に変えるのは V2 ABI の話であり、本 WP の範囲外。
+3. **型名は `PassShapeValidatedConfig` とする。**「完全検証済み」を名乗らないこと ——
+   material の source type 互換性など、metadata を要する検証は後段に残る。
 
-**これが入れば「4 つ目の経路」は原理的に検証を飛ばせない** —— 型が手に入らないからである。
+#### 型の要件(トークンでは不十分)
 
-#### 実装範囲
+- **private constructor。**生 JSON から構築できないこと。
+- **不変の config を型が所有すること。**mutable な JSON を公開しないこと。
+- **パスの取り出しは `ValidatedPassView` を通し、その config 自身からしか得られないこと。**
+  `(token, rawPassJson)` の形にすると **config A のトークンと config B の pass を混ぜられる。**
+- **variant・policy・リソース種別の情報を型に結び付けること。**
+- **custom `RenderCompilerProgram` の出力は `runRenderCompilerProgram()` が
+  必ず検証してから publish すること。**現状は object かどうかしか見ていない。
 
-- 上記 3 点。
-- 公開低水準 API(欠陥 4)は、内部化するか、検証済みトークンを要求するか、
-  各公開入口で共有 policy による role 検証を行うこと。**旧 validator を復活させないこと。**
-- 診断の優先順位(構造 / 名前解決 / shape)を**明文化し、全経路で固定すること。**
+#### 観測の要件
+
+**「最終 read 集合」では足りない。**`frameplanner` の `appendUnique` は観測前に重複を潰し、
+名前は render target と buffer で別々の集合から作られていて衝突を検査していない。
+
+- 観測は集合ではなく **`{name, kind, history, source_field, occurrence}` の順序付き multiset** とする。
+- **image 名と buffer 名の積集合は `resource_kind_collision` として fail-fast すること。**
+  `renderresourcename.hpp` は「一つの logical namespace」と明記しているのに、
+  現状は cross-kind 衝突を検査していない。
+- material の名前付き入力(`screen_inputs` / `surface_resources` / `material_resources`)を
+  観測に含めること。**contract 解決は不要である** ——
+  読み取り名・history・リソース種別の候補は生 JSON から集められる(レビューで反証済み)。
+
+#### 診断の段階(**実装者に決めさせないこと**)
+
+次の順で評価し、各段階に error code を持たせること。
+
+`structure → ownership → resource-kind / name → shape → material contract / usage`
+
+- ownership と graph-variant の検証は**中央検証より前**に走る(`renderpipeline.cpp`)。
+  preview の history も preview 固有エラーが先に出る(`graphvariantpolicy.cpp`)。
+  **これらを同じ段階付き validator に含めるか、「全経路で同一」の範囲を明示的に限定すること。**
+- 既存テストは ownership の文言と shape violation 名、
+  および二経路のメッセージ一致に依存している。**壊さないこと。**
+
+#### 終端は 7 つある(3 つではない)
+
+| trust route |
+|---|
+| default runtime frameplanner |
+| GPU 登録後の `PassDefinition` |
+| coordinated preview / data-only |
+| standalone `precompilePreviewGraph()` |
+| graph-transform candidate |
+| subgraph-replacement candidate |
+| custom `RenderCompilerProgram` output |
+
+加えて生の公開 API `parseFrameGraphDefinitionFromJson()` /
+`parseFrameGraphDefinitionsFromConfigJson()` が残っている。
+**削除・内部化するか、コンパイル不能条件に含めること。**
 
 #### 受け入れ条件(§4 規約 10)
 
-- **不正 JSON × 終端経路の全組み合わせを検査すること。**
-  欠陥 1〜3 の JSON それぞれについて、**`frameplanner` 経路・`PassDefinition` 経路・
-  `preview` / `data_only` 経路のすべてが拒否すること。**
-  **1 つの経路だけを呼ぶ回帰テストを書かないこと** —— これが WP326 が半分で終わった原因である
-- **型で強制されていることの対照。**同じテストの中で、
-  **生の JSON から検証済み型を構築できないこと**をコンパイル時または実行時に示すこと。
-  共有事前検証を経ずに終端へ到達する経路が書けないこと
-- **両経路の一致。**欠陥 2 の buffer JSON について、
-  **両経路が同じ判定を出すこと**(片方が受理して片方が拒否しないこと)。
-  `b@history` も同様に、両経路が**同じ名前付きエラー**を出すこと
+- **不正 fixture × trust route の全組み合わせ。**
+  **関数名ではなく上表の 7 経路ごとに検査すること。**
+  provider / custom / standalone の**配線**を通ること。
+  **1 つの経路だけを呼ぶ回帰テストを書かないこと** —— WP326 が半分で終わった原因である
+- **各 trust route について、同じ TEST_CASE の中で不正 fixture と
+  最小の正当な近傍を両方通し、`name` / `kind` / `history` / `source_field`、
+  preview の pass 名、最終 plan の値を検査すること。**
+  コーパスの成功を別テストに置くと規約 10 を満たさない
+- **duplicate buffer(`input: ["b","b"]`、`b` は buffer)は
+  全終端で「受理」されること。**
+  ポリシーは非 image 入力を duplicate 検査から意図的に除外している。
+  **現状 `frameplanner` だけが拒否するのが欠陥である。**
+  ポリシーを変えて全終端で拒否させるなら、その変更を明示すること
+- **`b@history` は全終端で同じ名前付きエラー(`buffer_history`)であること**
+- **`resource_kind_collision`**: 同じ名前を render target と buffer の両方で宣言すると
+  名前付きエラーになること。同じテストで衝突しない宣言が通ること
+- **生 JSON から `PassShapeValidatedConfig` を構築できないことを、
+  実行時ではなく `static_assert` または `try_compile` で示すこと**
 - **公開低水準 API に `"swapchain"` を直接渡したときの挙動が、
   `0980ad6^` と同じ名前付きエラーであること**(または当該 API が到達不能になっていること)
-- **出荷コーパステストが shape パーサを実際に通ること。**
-  `resolveRenderPipeline` / `compileRenderPipeline` までで止めないこと。
-  4 プロジェクトとエンジン資産の全パス宣言が、**新しい終端まで**通ること
-- **診断順序が明文化され、全経路で同じであること。**
-  欠陥 6 の複合不正 JSON について、どの文言が出るかを決めて固定すること
+- **診断段階が仕様どおりであること。**複合不正 JSON について、
+  どの段階のどの error code が出るかを固定すること
+- **構成マトリクスを明示すること。**
+  `PELICAN_WITH_IMGUI` ON(**実際に callback が発火する構成**)/ OFF、
+  `PELICAN_WITH_OPENXR` の active / inactive(flat・xr・preview の 3 variant)、
+  `PELICAN_RUNTIME_SHADER_COMPILER` OFF は
+  「optional subset は成功、required は同じ名前付き拒否」とすること。
+  **現コーパステストは graph variant を flat に固定している。**
 - `ctest` 全数が緑(`-j4`)、`uv run tools/doclink.py check` が通ること
 
-依存: WP326(マージ済み)。WP327 とはファイルが分かれる。見積: 大。**最優先。**
+依存: WP326・WP327(マージ済み)。見積: 大。**最優先。**
+
+**注**: WP326 の記述にある「127 行を削除」は不正確である。
+実差分は **3 行追加・124 行削除**(変更行合計 127)。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
