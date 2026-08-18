@@ -2231,4 +2231,5 @@ TEST_CASE(
     REQUIRE(finite_rect(logical.sceneRect()));
 }
 
+
 } // namespace PelicanStudio

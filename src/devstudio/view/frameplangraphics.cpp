@@ -9,6 +9,7 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsSimpleTextItem>
 #include <QLineF>
+#include <array>
 #include <QMetaObject>
 #include <QPainterPath>
 #include <QPen>
@@ -31,7 +32,10 @@ namespace {
 constexpr qreal NodeWidth = 240.0;
 constexpr qreal NodeHeight = 64.0;
 constexpr qreal HorizontalGap = 88.0;
-constexpr qreal VerticalGap = 42.0;
+constexpr qreal VerticalGap = 74.0;
+constexpr std::size_t ColumnsPerRow = 3;
+constexpr qreal StaggerOffset = 132.0;
+constexpr qreal WrapRowHeight = 340.0;
 constexpr qreal EdgeLabelHeight = 24.0;
 constexpr qreal EdgeLabelMinimumWidth = 120.0;
 constexpr qreal PhysicalPanelGap = 74.0;
@@ -138,6 +142,39 @@ bool containsResource(const std::vector<std::string> &resources,
                        [&](const std::string &resource) {
                            return frontier.contains(resource);
                        });
+}
+
+// Column for the subtree layout: the longest path inside the visible subtree,
+// so every dependency edge points left to right. model.dependencies is the
+// same relation the edges are drawn from, and node.level cannot be used --
+// it is the whole-graph depth, which holds one node per level here.
+std::map<std::string, int, std::less<>> subtreeNodeColumns(
+    const FramePlanModel &model,
+    const std::set<std::string, std::less<>> &visible) {
+    std::map<std::string, int, std::less<>> columns;
+    for (const auto &name : visible) {
+        columns.emplace(name, 0);
+    }
+    // Relaxation terminates because the dependency relation is acyclic; the
+    // bound keeps a malformed payload from spinning here.
+    for (std::size_t pass = 0; pass < visible.size(); ++pass) {
+        bool changed = false;
+        for (const auto &dependency : model.dependencies) {
+            const auto from = columns.find(dependency.from);
+            const auto to = columns.find(dependency.to);
+            if (from == columns.end() || to == columns.end()) {
+                continue;
+            }
+            if (to->second < from->second + 1) {
+                to->second = from->second + 1;
+                changed = true;
+            }
+        }
+        if (!changed) {
+            break;
+        }
+    }
+    return columns;
 }
 
 std::set<std::string, std::less<>> subtreeNodeNames(
@@ -769,10 +806,14 @@ void FramePlanGraphicsScene::populate(
         return;
     }
 
-    std::map<std::size_t, std::vector<const FramePlanNode *>> levels;
+    const std::map<std::string, int, std::less<>> node_columns =
+        subtreeNodeColumns(model, visible_names);
+    std::map<int, std::vector<const FramePlanNode *>> levels;
     for (const auto &node : model.nodes) {
         if (visible_names.contains(node.name)) {
-            levels[node.level].push_back(&node);
+            const auto found = node_columns.find(node.name);
+            levels[found != node_columns.end() ? found->second : 0]
+                .push_back(&node);
         }
     }
     for (auto &[level, nodes] : levels) {
@@ -789,9 +830,24 @@ void FramePlanGraphicsScene::populate(
         for (std::size_t row = 0; row < nodes.size(); ++row) {
             const FramePlanNode &node = *nodes[row];
             const FramePlanNodeKey key{model.graph, node.name};
+            // A render graph is usually one long dependency chain, so a
+            // strict layering puts every node in its own column and the
+            // result is a single horizontal line. Wrap the columns into
+            // rows and stagger alternate columns so neighbours are not
+            // collinear and the curve between them stays visible. Both are
+            // pure functions of the column index, so the layout stays
+            // deterministic.
+            // x always grows with the topological column, so every edge
+            // points left to right. y rides a triangular wave across the
+            // columns, which gives the chain vertical spread without the
+            // wrapping that turns one edge backwards at each row break.
+            static constexpr std::array<qreal, 4> WavePhases{0.0, 1.0, 2.0,
+                                                             1.0};
+            const qreal wave =
+                WavePhases[column % WavePhases.size()] * StaggerOffset;
             QPointF position{
                 static_cast<qreal>(column) * (NodeWidth + HorizontalGap),
-                static_cast<qreal>(row) * (NodeHeight + VerticalGap)};
+                wave + static_cast<qreal>(row) * (NodeHeight + VerticalGap)};
             if (const auto retained = session_node_positions_.find(key);
                 retained != session_node_positions_.end()) {
                 position = retained->second;
