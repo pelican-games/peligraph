@@ -1602,7 +1602,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/model/project.hpp|`ProjectInfo`": "class ProjectInfo {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/model/project.hpp|`ProjectOutlinerModel`": "class ProjectOutlinerModel {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/ProjectEdit.qml|`ProjectEdit.qml`": "import QtQuick",
-    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/fullscreenpasswidget.hpp|`FullscreenPassWidget`": "class FullscreenPassWidget final : public QWidget {",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/fullscreenpasswidget.hpp|`FullscreenPassWidget`": "FullscreenPassWidget(",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::MainWindow()`": "MainWindow::MainWindow() : layout_presets_(layoutPresetDirectory()) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::populateOutliner()`": "void MainWindow::populateOutliner() {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.hpp|`MainWindow`": "class MainWindow : public QMainWindow {",

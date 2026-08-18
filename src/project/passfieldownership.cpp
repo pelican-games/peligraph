@@ -46,6 +46,14 @@ constexpr std::array snapshot_copy_fields{
     "snapshot_after"sv,
 };
 
+constexpr std::array fullscreen_authoring_projection_fields{
+    "name"sv,
+    "type"sv,
+    "input"sv,
+    "output"sv,
+    "shader"sv,
+};
+
 constexpr std::array ownership_table{
     PassFieldOwnershipEntry{RenderPassType::material, "material"sv,
                             material_fields},
@@ -94,6 +102,16 @@ bool ownsField(const PassFieldOwnershipEntry &entry,
 
 std::span<const PassFieldOwnershipEntry> passFieldOwnershipTable() {
     return ownership_table;
+}
+
+std::span<const std::string_view> passAuthoringProjectionFields(
+    RenderPassType type) {
+    if (type == RenderPassType::fullscreen) {
+        return fullscreen_authoring_projection_fields;
+    }
+    throw std::runtime_error(
+        "No pass authoring projection schema for type '" +
+        std::string{renderPassTypeName(type)} + "'");
 }
 
 RenderPassType validatePassFieldOwnership(

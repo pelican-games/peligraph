@@ -1,4 +1,5 @@
 #include "layoutpreset.hpp"
+#include "mainwindow.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -9,6 +10,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMainWindow>
+#include <QMenu>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QWidget>
 
@@ -92,63 +95,62 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     char *arguments[] = {application_name};
     QApplication application{argument_count, arguments};
 
-    QMainWindow wp249_window;
+    QMainWindow six_dock_window;
     QDockWidget *legacy_project = addDock(
-        wp249_window, QStringLiteral("pelican.projectDock"), Qt::LeftDockWidgetArea);
+        six_dock_window, QStringLiteral("pelican.projectDock"),
+        Qt::LeftDockWidgetArea);
     QDockWidget *legacy_outliner = addDock(
-        wp249_window, QStringLiteral("pelican.outlinerDock"), Qt::LeftDockWidgetArea);
-    wp249_window.tabifyDockWidget(legacy_project, legacy_outliner);
-    addDock(wp249_window, QStringLiteral("pelican.inspectorDock"), Qt::RightDockWidgetArea);
-    addDock(wp249_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
-    const QByteArray wp249_state =
-        wp249_window.saveState(LayoutPresetManager::WindowStateVersion);
-    REQUIRE_FALSE(wp249_state.isEmpty());
+        six_dock_window, QStringLiteral("pelican.outlinerDock"),
+        Qt::LeftDockWidgetArea);
+    QDockWidget *legacy_inspector = addDock(
+        six_dock_window, QStringLiteral("pelican.inspectorDock"),
+        Qt::RightDockWidgetArea);
+    QDockWidget *legacy_output = addDock(
+        six_dock_window, QStringLiteral("pelican.outputDock"),
+        Qt::BottomDockWidgetArea);
+    QDockWidget *legacy_engine_log = addDock(
+        six_dock_window, QStringLiteral("pelican.engineLogDock"),
+        Qt::BottomDockWidgetArea);
+    QDockWidget *legacy_frame_plan = addDock(
+        six_dock_window, QStringLiteral("pelican.framePlanDock"),
+        Qt::BottomDockWidgetArea);
+    six_dock_window.tabifyDockWidget(legacy_project, legacy_outliner);
+    six_dock_window.tabifyDockWidget(legacy_output, legacy_engine_log);
+    six_dock_window.tabifyDockWidget(legacy_engine_log,
+                                    legacy_frame_plan);
+    legacy_inspector->hide();
 
-    QMainWindow wp263_window;
-    QDockWidget *wp263_project = addDock(
-        wp263_window, QStringLiteral("pelican.projectDock"), Qt::LeftDockWidgetArea);
-    QDockWidget *wp263_outliner = addDock(
-        wp263_window, QStringLiteral("pelican.outlinerDock"), Qt::LeftDockWidgetArea);
-    wp263_window.tabifyDockWidget(wp263_project, wp263_outliner);
-    addDock(wp263_window, QStringLiteral("pelican.inspectorDock"),
-            Qt::RightDockWidgetArea);
-    QDockWidget *wp263_output = addDock(
-        wp263_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
-    QDockWidget *wp263_engine_log = addDock(
-        wp263_window, QStringLiteral("pelican.engineLogDock"), Qt::BottomDockWidgetArea);
-    wp263_window.tabifyDockWidget(wp263_output, wp263_engine_log);
-    const QByteArray wp263_state =
-        wp263_window.saveState(LayoutPresetManager::WindowStateVersion);
-    REQUIRE_FALSE(wp263_state.isEmpty());
+    const QByteArray six_dock_state =
+        six_dock_window.saveState(
+            LayoutPresetManager::WindowStateVersion);
+    REQUIRE_FALSE(six_dock_state.isEmpty());
 
     QTemporaryDir directory;
     REQUIRE(directory.isValid());
     LayoutPresetManager manager(directory.path());
     REQUIRE(manager.savePreset(
-        QStringLiteral("WP249"), {QByteArrayLiteral("geometry"), wp249_state}));
-    REQUIRE(manager.savePreset(
-        QStringLiteral("WP263"), {QByteArrayLiteral("geometry"), wp263_state}));
+        QStringLiteral("Six docks"),
+        {QByteArrayLiteral("geometry"), six_dock_state}));
 
-    QMainWindow current_window;
-    QDockWidget *project = addDock(
-        current_window, QStringLiteral("pelican.projectDock"), Qt::LeftDockWidgetArea);
-    QDockWidget *outliner = addDock(
-        current_window, QStringLiteral("pelican.outlinerDock"), Qt::LeftDockWidgetArea);
-    current_window.tabifyDockWidget(project, outliner);
-    addDock(current_window, QStringLiteral("pelican.inspectorDock"), Qt::RightDockWidgetArea);
-    QDockWidget *output = addDock(
-        current_window, QStringLiteral("pelican.outputDock"), Qt::BottomDockWidgetArea);
-    QDockWidget *engine_log = addDock(
-        current_window, QStringLiteral("pelican.engineLogDock"), Qt::BottomDockWidgetArea);
-    QDockWidget *frame_plan = addDock(
-        current_window, QStringLiteral("pelican.framePlanDock"), Qt::BottomDockWidgetArea);
-    current_window.tabifyDockWidget(output, engine_log);
-    current_window.tabifyDockWidget(engine_log, frame_plan);
+    PelicanStudio::MainWindow current_window;
+    const auto dock = [&current_window](const char *name) {
+        auto *result = current_window.findChild<QDockWidget *>(
+            QString::fromLatin1(name));
+        REQUIRE(result != nullptr);
+        return result;
+    };
+    QDockWidget *project = dock("pelican.projectDock");
+    QDockWidget *outliner = dock("pelican.outlinerDock");
+    QDockWidget *inspector = dock("pelican.inspectorDock");
+    QDockWidget *output = dock("pelican.outputDock");
+    QDockWidget *engine_log = dock("pelican.engineLogDock");
+    QDockWidget *frame_plan = dock("pelican.framePlanDock");
+    QDockWidget *fullscreen_pass = dock("pelican.fullscreenPassDock");
 
     bool default_applied = false;
     QString error;
     LayoutRestoreResult result = manager.restorePreset(
-        QStringLiteral("WP249"),
+        QStringLiteral("Six docks"),
         [&current_window](const LayoutSnapshot &snapshot) {
             return current_window.restoreState(
                 snapshot.window_state, LayoutPresetManager::WindowStateVersion);
@@ -158,26 +160,42 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     REQUIRE(result == LayoutRestoreResult::Restored);
     REQUIRE_FALSE(default_applied);
     REQUIRE(error.isEmpty());
-    REQUIRE(current_window.dockWidgetArea(engine_log) != Qt::NoDockWidgetArea);
+    REQUIRE(current_window.dockWidgetArea(project) ==
+            Qt::LeftDockWidgetArea);
+    REQUIRE(current_window.dockWidgetArea(outliner) ==
+            Qt::LeftDockWidgetArea);
+    REQUIRE(current_window.dockWidgetArea(inspector) ==
+            Qt::RightDockWidgetArea);
+    for (QDockWidget *bottom :
+         {output, engine_log, frame_plan}) {
+        REQUIRE(current_window.dockWidgetArea(bottom) ==
+                Qt::BottomDockWidgetArea);
+    }
+    REQUIRE(current_window.tabifiedDockWidgets(project).contains(outliner));
+    REQUIRE(current_window.tabifiedDockWidgets(output).contains(engine_log));
+    REQUIRE(current_window.tabifiedDockWidgets(output).contains(frame_plan));
+    REQUIRE_FALSE(project->isHidden());
+    REQUIRE_FALSE(outliner->isHidden());
+    REQUIRE(inspector->isHidden());
+    REQUIRE_FALSE(output->isHidden());
     REQUIRE_FALSE(engine_log->isHidden());
-    REQUIRE(current_window.dockWidgetArea(frame_plan) != Qt::NoDockWidgetArea);
     REQUIRE_FALSE(frame_plan->isHidden());
+    REQUIRE(current_window.dockWidgetArea(fullscreen_pass) !=
+            Qt::NoDockWidgetArea);
 
-    default_applied = false;
-    error.clear();
-    result = manager.restorePreset(
-        QStringLiteral("WP263"),
-        [&current_window](const LayoutSnapshot &snapshot) {
-            return current_window.restoreState(
-                snapshot.window_state, LayoutPresetManager::WindowStateVersion);
-        },
-        [&default_applied]() { default_applied = true; }, &error);
+    const auto docks = current_window.findChildren<QDockWidget *>();
+    REQUIRE(docks.size() == 7);
+    QSet<QString> object_names;
+    for (const QDockWidget *current : docks) {
+        REQUIRE_FALSE(current->objectName().isEmpty());
+        object_names.insert(current->objectName());
+    }
+    REQUIRE(object_names.size() == 7);
 
-    REQUIRE(result == LayoutRestoreResult::Restored);
-    REQUIRE_FALSE(default_applied);
-    REQUIRE(error.isEmpty());
-    REQUIRE(current_window.dockWidgetArea(frame_plan) != Qt::NoDockWidgetArea);
-    REQUIRE_FALSE(frame_plan->isHidden());
+    auto *panels = current_window.findChild<QMenu *>(
+        QStringLiteral("pelican.panelsMenu"));
+    REQUIRE(panels != nullptr);
+    REQUIRE(panels->actions().size() == 7);
 }
 
 TEST_CASE("Devstudio layout version mismatch selects the default without applying saved state",

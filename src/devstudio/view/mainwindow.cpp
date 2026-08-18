@@ -185,7 +185,8 @@ void MainWindow::createWorkspace() {
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         frame_plan_);
-    fullscreen_pass_ = new FullscreenPassWidget(viewport_, this);
+    fullscreen_pass_ = new FullscreenPassWidget(
+        framePlanReadCapability(*viewport_), this);
     docks_[FullscreenPassDock] = makeDock(
         this, tr("Fullscreen Pass JSON"),
         QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
@@ -268,6 +269,7 @@ void MainWindow::createMenus() {
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     QMenu *panels_menu = view_menu->addMenu(tr("&Panels"));
+    panels_menu->setObjectName(QStringLiteral("pelican.panelsMenu"));
     for (QDockWidget *dock : docks_) {
         panels_menu->addAction(dock->toggleViewAction());
     }

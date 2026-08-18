@@ -2,7 +2,6 @@
 
 #include "../model/frameplanmodel.hpp"
 #include "../model/frameplanresourcekind.hpp"
-#include "../viewport/embeddedviewport.hpp"
 
 #include "passfieldownership.hpp"
 #include "passshapepolicy.hpp"
@@ -12,13 +11,14 @@
 #include <nlohmann/json.hpp>
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QByteArray>
+#include <QClipboard>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -87,24 +87,6 @@ bool fullscreenOwns(std::string_view field) {
     return std::ranges::find(entry.fields, field) != entry.fields.end();
 }
 
-FramePlanRefreshDriver viewportRefreshDriver(EmbeddedViewport *viewport) {
-    if (viewport == nullptr) {
-        throw std::invalid_argument(
-            "FullscreenPassWidget requires an embedded viewport");
-    }
-    return FramePlanRefreshDriver{
-        .ready = [viewport] { return viewport->rpcReady(); },
-        .request = [viewport](QString *error) {
-            return viewport->requestRpc(QStringLiteral("get_frame_plan"),
-                                        QJsonObject{}, error);
-        },
-    };
-}
-
-void markPassField(QWidget &widget, const char *field) {
-    widget.setProperty("pelicanPassField", QString::fromLatin1(field));
-}
-
 std::vector<std::string> selectedSequence(const QListWidget &list) {
     std::vector<std::string> result;
     result.reserve(static_cast<std::size_t>(list.count()));
@@ -144,7 +126,7 @@ struct FullscreenPassWidget::Impl {
     };
 
     FullscreenPassWidget &owner;
-    FramePlanRefreshDriver refresh_driver;
+    FramePlanReadCapability frame_plan;
     const Pelican::PassShapePolicy &shape_policy;
     QPushButton *refresh = nullptr;
     QLabel *plan_status = nullptr;
@@ -174,8 +156,10 @@ struct FullscreenPassWidget::Impl {
     QLabel *target_usage = nullptr;
     QLabel *generation_order = nullptr;
     QLabel *shader_resolution = nullptr;
+    QLabel *validation_summary = nullptr;
     QLabel *omitted = nullptr;
     QPlainTextEdit *json = nullptr;
+    QPushButton *copy_json = nullptr;
     std::optional<FramePlanModel> plan;
     std::optional<PlanBinding> binding;
     std::map<std::string, std::string, std::less<>> resource_kinds;
@@ -185,16 +169,19 @@ struct FullscreenPassWidget::Impl {
     std::map<std::string, std::size_t, std::less<>>
         authored_pass_counts;
     bool authoring_available = false;
+    bool refresh_available = false;
     bool updating = false;
     qint64 pending_request = 0;
 
-    Impl(FullscreenPassWidget &widget, FramePlanRefreshDriver driver,
+    Impl(FullscreenPassWidget &widget, FramePlanReadCapability capability,
          const Pelican::PassShapePolicy &policy)
-        : owner{widget}, refresh_driver{std::move(driver)},
+        : owner{widget}, frame_plan{std::move(capability)},
           shape_policy{policy} {
-        if (!refresh_driver.ready || !refresh_driver.request) {
+        if (!frame_plan.ready || !frame_plan.requestFramePlan ||
+            !frame_plan.result || !frame_plan.failure) {
             throw std::invalid_argument(
-                "FullscreenPassWidget requires a complete refresh driver");
+                "FullscreenPassWidget requires a complete asynchronous "
+                "frame-plan read capability");
         }
 
         auto *layout = new QVBoxLayout(&owner);
@@ -246,7 +233,6 @@ struct FullscreenPassWidget::Impl {
             &owner);
         type->setObjectName(
             QStringLiteral("pelican.fullscreenPass.type"));
-        markPassField(*type, "type");
         form->addRow(owner.tr("Type (fixed)"), type);
 
         position = new QSpinBox(&owner);
@@ -264,7 +250,6 @@ struct FullscreenPassWidget::Impl {
         name = new QLineEdit(&owner);
         name->setObjectName(
             QStringLiteral("pelican.fullscreenPass.name"));
-        markPassField(*name, "name");
         form->addRow(owner.tr("Pass name"), name);
 
         vertex_shader = new QLineEdit(&owner);
@@ -272,7 +257,6 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.shader.vertex"));
         vertex_shader->setPlaceholderText(
             owner.tr("for example engine://fullscreen"));
-        markPassField(*vertex_shader, "shader");
         form->addRow(owner.tr("Vertex shader stem"), vertex_shader);
 
         fragment_shader = new QLineEdit(&owner);
@@ -280,7 +264,6 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.shader.fragment"));
         fragment_shader->setPlaceholderText(
             owner.tr("enter a stem; assets are not enumerated here"));
-        markPassField(*fragment_shader, "shader");
         form->addRow(owner.tr("Fragment shader stem"), fragment_shader);
         layout->addLayout(form);
 
@@ -312,7 +295,6 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.inputs"));
         inputs->setSelectionMode(QAbstractItemView::SingleSelection);
         inputs->setMaximumHeight(96);
-        markPassField(*inputs, "input");
         remove_input = new QPushButton(owner.tr("Remove selected"), targets);
         remove_input->setObjectName(
             QStringLiteral("pelican.fullscreenPass.removeInput"));
@@ -330,7 +312,6 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.colors"));
         colors->setSelectionMode(QAbstractItemView::SingleSelection);
         colors->setMaximumHeight(96);
-        markPassField(*colors, "output");
         remove_color = new QPushButton(owner.tr("Remove selected"), targets);
         remove_color->setObjectName(
             QStringLiteral("pelican.fullscreenPass.removeColor"));
@@ -340,7 +321,6 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.depthTarget"));
         depth->setInsertPolicy(QComboBox::NoInsert);
         depth->setPlaceholderText(owner.tr("No depth output"));
-        markPassField(*depth, "output");
         clear_depth = new QPushButton(owner.tr("Clear depth"), targets);
         clear_depth->setObjectName(
             QStringLiteral("pelican.fullscreenPass.clearDepth"));
@@ -390,6 +370,14 @@ struct FullscreenPassWidget::Impl {
             "pelican.fullscreenPass.axis.shaderResolution");
         layout->addWidget(validation);
 
+        validation_summary = new QLabel(&owner);
+        validation_summary->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.validationSummary"));
+        validation_summary->setWordWrap(true);
+        validation_summary->setTextInteractionFlags(
+            Qt::TextSelectableByMouse);
+        layout->addWidget(validation_summary);
+
         omitted = new QLabel(&owner);
         omitted->setObjectName(
             QStringLiteral("pelican.fullscreenPass.omittedKeys"));
@@ -404,6 +392,11 @@ struct FullscreenPassWidget::Impl {
         json->setLineWrapMode(QPlainTextEdit::NoWrap);
         json->setMinimumHeight(170);
         layout->addWidget(json, 1);
+
+        copy_json = new QPushButton(owner.tr("Copy JSON"), &owner);
+        copy_json->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.copyJson"));
+        layout->addWidget(copy_json);
 
         QObject::connect(refresh, &QPushButton::clicked, &owner,
                          [this] { requestRefresh(); });
@@ -440,12 +433,32 @@ struct FullscreenPassWidget::Impl {
         QObject::connect(colors, &QListWidget::itemDoubleClicked, &owner,
                          [this](QListWidgetItem *) { removeSelected(*colors); });
 
-        refresh->setEnabled(refresh_driver.ready());
-        plan_status->setText(refresh->isEnabled()
-                                 ? owner.tr("Press Refresh frame plan to bind "
-                                            "the form to runtime resources.")
-                                 : owner.tr("Frame plan unavailable."));
+        QObject::connect(copy_json, &QPushButton::clicked, &owner,
+                         [this] {
+                             QApplication::clipboard()->setText(
+                                 json->toPlainText());
+                         });
+
+        refresh->setEnabled(false);
+        plan_status->setText(owner.tr("Frame plan unavailable."));
         updateDraft();
+
+        frame_plan.result(
+            &owner,
+            [this](qint64 request_id,
+                   const QByteArray &result_json) {
+                receiveRefreshResult(request_id, result_json);
+            });
+        frame_plan.failure(
+            &owner,
+            [this](qint64 request_id, const QString &message) {
+                receiveRefreshFailure(request_id, message);
+            });
+        frame_plan.ready(
+            &owner,
+            [this](bool available, const QString &reason) {
+                setRefreshAvailable(available, reason);
+            });
     }
 
     Json draftJson() const {
@@ -545,6 +558,84 @@ struct FullscreenPassWidget::Impl {
                 : owner.tr("Omitted keys from matching authored declaration: "
                            "%1")
                       .arg(reported.join(QStringLiteral(", "))));
+    }
+
+    void updateValidationSummary() {
+        const std::array axes{
+            std::pair{field_ownership, owner.tr("Field ownership")},
+            std::pair{name_collision,
+                      owner.tr("Same-graph name collision")},
+            std::pair{target_names, owner.tr("Target names")},
+            std::pair{pass_shape, owner.tr("Pass shape")},
+            std::pair{target_usage,
+                      owner.tr("Target usage compatibility")},
+            std::pair{generation_order,
+                      owner.tr("Input generation order")},
+            std::pair{shader_resolution,
+                      owner.tr("Shader stem resolution")},
+        };
+        QStringList invalid;
+        QStringList not_checked;
+        for (const auto &[axis, axis_name] : axes) {
+            const QString state =
+                axis->property("pelicanValidationState").toString();
+            if (state == QStringLiteral("invalid")) {
+                invalid.push_back(axis_name);
+            } else if (state == QStringLiteral("not_checked")) {
+                not_checked.push_back(axis_name);
+            }
+        }
+
+        const bool required_values_present =
+            plan.has_value() && !name->text().trimmed().isEmpty() &&
+            !vertex_shader->text().trimmed().isEmpty() &&
+            !fragment_shader->text().trimmed().isEmpty();
+        if (!invalid.isEmpty()) {
+            validation_summary->setProperty(
+                "pelicanValidationSummaryState",
+                QStringLiteral("invalid"));
+            validation_summary->setStyleSheet(
+                QStringLiteral("color: #d94c3d;"));
+            validation_summary->setText(
+                owner.tr("Draft cannot be copied: Invalid axes — %1.")
+                    .arg(invalid.join(QStringLiteral(", "))));
+            copy_json->setEnabled(false);
+            return;
+        }
+        if (!required_values_present) {
+            validation_summary->setProperty(
+                "pelicanValidationSummaryState",
+                QStringLiteral("incomplete"));
+            validation_summary->setStyleSheet(
+                QStringLiteral("color: #b36b00;"));
+            validation_summary->setText(owner.tr(
+                "Draft is incomplete; load a frame plan and provide a name "
+                "and both shader stems before copying."));
+            copy_json->setEnabled(false);
+            return;
+        }
+        if (!not_checked.isEmpty()) {
+            validation_summary->setProperty(
+                "pelicanValidationSummaryState",
+                QStringLiteral("partial"));
+            validation_summary->setStyleSheet(
+                QStringLiteral("color: #b36b00;"));
+            validation_summary->setText(
+                owner.tr("Partial draft: Not checked — %1. Copying is "
+                         "available, but these named axes still require "
+                         "engine-side review.")
+                    .arg(not_checked.join(QStringLiteral(", "))));
+            copy_json->setEnabled(true);
+            return;
+        }
+
+        validation_summary->setProperty(
+            "pelicanValidationSummaryState", QStringLiteral("valid"));
+        validation_summary->setStyleSheet({});
+        validation_summary->setText(
+            owner.tr("All displayed validation axes are Valid; copying is "
+                     "available."));
+        copy_json->setEnabled(true);
     }
 
     void updateDraft() {
@@ -690,6 +781,7 @@ struct FullscreenPassWidget::Impl {
                 owner.tr("resolution depends on pelican_core and build "
                          "capabilities; Studio does not predict it."));
         updateOmitted(draft);
+        updateValidationSummary();
     }
 
     void appendCandidate(QComboBox &candidate, QListWidget &sequence,
@@ -812,7 +904,7 @@ struct FullscreenPassWidget::Impl {
                     depth->findText(previous_depth, Qt::MatchExactly));
             }
             configurePosition();
-            refresh->setEnabled(refresh_driver.ready());
+            refresh->setEnabled(refresh_available);
             plan_status->setStyleSheet(
                 changed ? QStringLiteral("color: #b36b00;") : QString{});
             plan_status->setText(
@@ -829,7 +921,7 @@ struct FullscreenPassWidget::Impl {
             updateDraft();
         } catch (const std::exception &error) {
             invalidateFramePlanContext();
-            refresh->setEnabled(refresh_driver.ready());
+            refresh->setEnabled(refresh_available);
             plan_status->setStyleSheet(
                 QStringLiteral("color: #d94c3d;"));
             plan_status->setText(
@@ -842,13 +934,13 @@ struct FullscreenPassWidget::Impl {
         if (pending_request != 0) {
             return;
         }
-        if (!refresh_driver.ready()) {
+        if (!refresh_available) {
             setRefreshAvailable(false,
                                 owner.tr("the RPC connection is not ready."));
             return;
         }
         QString error;
-        pending_request = refresh_driver.request(&error);
+        pending_request = frame_plan.requestFramePlan(&error);
         if (pending_request == 0) {
             invalidateFramePlanContext();
             plan_status->setStyleSheet(
@@ -877,7 +969,7 @@ struct FullscreenPassWidget::Impl {
         }
         pending_request = 0;
         invalidateFramePlanContext();
-        refresh->setEnabled(refresh_driver.ready());
+        refresh->setEnabled(refresh_available);
         plan_status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
         plan_status->setText(
             owner.tr("Frame plan refresh failed: %1")
@@ -886,6 +978,7 @@ struct FullscreenPassWidget::Impl {
 
     void setRefreshAvailable(bool available, const QString &reason) {
         pending_request = 0;
+        refresh_available = available;
         refresh->setEnabled(available);
         if (available) {
             plan_status->setStyleSheet({});
@@ -964,14 +1057,30 @@ struct FullscreenPassWidget::Impl {
             authored_passes = std::move(next);
             authored_pass_counts = std::move(next_counts);
             authoring_available = true;
+            std::size_t pass_count = 0;
+            QStringList authored_names;
+            for (const auto &[graph_name, passes] : authored_passes) {
+                pass_count += passes.size();
+                for (const auto &[pass_name, declaration] : passes) {
+                    (void)declaration;
+                    authored_names.push_back(
+                        text(graph_name + "/" + pass_name));
+                }
+            }
             authoring_status->setStyleSheet({});
-            authoring_status->setText(owner.tr(
-                "Read-only authoring context loaded for omission reporting; "
-                "this form never writes it."));
+            authoring_status->setText(
+                owner.tr("Read-only authoring context loaded: %1 graph(s), "
+                         "%2 pass(es). This form never writes it.")
+                    .arg(static_cast<qulonglong>(authored_passes.size()))
+                    .arg(static_cast<qulonglong>(pass_count)));
+            authoring_status->setToolTip(
+                owner.tr("Authored graph/pass declarations: %1")
+                    .arg(authored_names.join(QStringLiteral(", "))));
         } catch (const std::exception &error) {
             authored_passes.clear();
             authored_pass_counts.clear();
             authoring_available = false;
+            authoring_status->setToolTip({});
             authoring_status->setStyleSheet(
                 QStringLiteral("color: #b36b00;"));
             authoring_status->setText(
@@ -983,49 +1092,18 @@ struct FullscreenPassWidget::Impl {
     }
 };
 
-FullscreenPassWidget::FullscreenPassWidget(EmbeddedViewport *viewport,
-                                           QWidget *parent)
-    : FullscreenPassWidget(viewport, Pelican::defaultPassShapePolicy(),
-                           parent) {}
-
 FullscreenPassWidget::FullscreenPassWidget(
-    EmbeddedViewport *viewport,
-    const Pelican::PassShapePolicy &shape_policy,
-    QWidget *parent)
-    : FullscreenPassWidget(viewportRefreshDriver(viewport), shape_policy,
-                           parent) {
-    QObject::connect(
-        viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
-        [this] { impl_->setRefreshAvailable(true, {}); });
-    QObject::connect(
-        viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-        [this](const QString &message) {
-            impl_->setRefreshAvailable(false, message);
-        });
-    QObject::connect(
-        viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
-        [this](qint64 request_id, const QByteArray &result_json) {
-            impl_->receiveRefreshResult(request_id, result_json);
-        });
-    QObject::connect(
-        viewport, &EmbeddedViewport::inspectorRpcFailed, this,
-        [this](qint64 request_id, const QString &message) {
-            impl_->receiveRefreshFailure(request_id, message);
-        });
-}
-
-FullscreenPassWidget::FullscreenPassWidget(
-    FramePlanRefreshDriver refresh_driver, QWidget *parent)
-    : FullscreenPassWidget(std::move(refresh_driver),
+    FramePlanReadCapability frame_plan, QWidget *parent)
+    : FullscreenPassWidget(std::move(frame_plan),
                            Pelican::defaultPassShapePolicy(), parent) {}
 
 FullscreenPassWidget::FullscreenPassWidget(
-    FramePlanRefreshDriver refresh_driver,
+    FramePlanReadCapability frame_plan,
     const Pelican::PassShapePolicy &shape_policy, QWidget *parent)
     : QWidget(parent) {
     setObjectName(QStringLiteral("pelican.fullscreenPass"));
     impl_ = std::make_unique<Impl>(
-        *this, std::move(refresh_driver), shape_policy);
+        *this, std::move(frame_plan), shape_policy);
 }
 
 FullscreenPassWidget::~FullscreenPassWidget() = default;
@@ -1033,21 +1111,6 @@ FullscreenPassWidget::~FullscreenPassWidget() = default;
 void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {
     impl_->pending_request = 0;
     impl_->consumeResult(result_json);
-}
-
-void FullscreenPassWidget::receiveRefreshResult(
-    qint64 request_id, const QByteArray &result_json) {
-    impl_->receiveRefreshResult(request_id, result_json);
-}
-
-void FullscreenPassWidget::receiveRefreshFailure(
-    qint64 request_id, const QString &message) {
-    impl_->receiveRefreshFailure(request_id, message);
-}
-
-void FullscreenPassWidget::setRefreshAvailable(bool available,
-                                               const QString &reason) {
-    impl_->setRefreshAvailable(available, reason);
 }
 
 void FullscreenPassWidget::receiveAuthoringConfig(
@@ -1082,6 +1145,7 @@ void FullscreenPassWidget::openProjectReadOnly(
         impl_->authored_passes.clear();
         impl_->authored_pass_counts.clear();
         impl_->authoring_available = false;
+        impl_->authoring_status->setToolTip({});
         impl_->authoring_status->setStyleSheet(
             QStringLiteral("color: #b36b00;"));
         impl_->authoring_status->setText(

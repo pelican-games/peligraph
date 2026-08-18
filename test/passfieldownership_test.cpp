@@ -224,6 +224,25 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP325 fullscreen authoring projection schema owns its expected JSON keys",
+    "[wp325][pass-field-ownership][authoring-projection]") {
+    const auto fields =
+        passAuthoringProjectionFields(RenderPassType::fullscreen);
+    std::vector<std::string> actual;
+    actual.reserve(fields.size());
+    for (const auto field : fields) {
+        actual.emplace_back(field);
+    }
+    const std::vector<std::string> expected{
+        "name", "type", "input", "output", "shader"};
+
+    REQUIRE(actual == expected);
+    REQUIRE_THROWS_WITH(
+        passAuthoringProjectionFields(RenderPassType::material),
+        "No pass authoring projection schema for type 'material'");
+}
+
+TEST_CASE(
     "WP311 dynamically resolves shipped projects pipelines and features",
     "[wp311][pass-field-ownership][corpus]") {
     std::size_t project_count = 0;

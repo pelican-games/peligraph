@@ -39,6 +39,14 @@ struct PassFieldOwnershipEntry {
 // name, input, output, and ordering constraints are intentionally not listed.
 std::span<const PassFieldOwnershipEntry> passFieldOwnershipTable();
 
+// Returns the authored JSON fields emitted by a pass-authoring surface for
+// the selected type. Unlike passFieldOwnershipTable(), this schema includes
+// the common authored fields (name/type/input/output) as well as the
+// type-owned fields represented by that surface. It is therefore the
+// authority for projection tests and must not be inferred from UI widgets.
+std::span<const std::string_view> passAuthoringProjectionFields(
+    RenderPassType type);
+
 // Validates the type and all type-owned fields, returning the resolved type.
 // Build-dependent capabilities are data, rather than pelican_project compile
 // definitions, so every caller makes its supported schema explicit.

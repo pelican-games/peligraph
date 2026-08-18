@@ -175,7 +175,11 @@ if(TARGET pelican_studio_layout)
   # Qt imported targets are directory-scoped; make the layout library and
   # compatibility test dependencies visible in this sibling directory.
   find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
-  pelican_define_test(devstudio_layoutpreset_test QT pelican_studio_layout Qt6::Core Qt6::Widgets)
+  pelican_define_test(devstudio_layoutpreset_test QT QT_OFFSCREEN
+    pelican_studio_layout
+    pelican_studio_view
+    Qt6::Core
+    Qt6::Widgets)
 endif()
 
 if(TARGET pelican_studio_outliner)
@@ -256,6 +260,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
 
   pelican_define_test(devstudio_fullscreen_pass_test QT QT_OFFSCREEN
+    pelican_studio_view
     pelican_studio_viewport
     pelican_studio_frame_plan
     pelican_studio_layout
@@ -266,16 +271,6 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     pelican_core
     Qt6::Core
     Qt6::Widgets
-  )
-  target_sources(pelican_test_devstudio_fullscreen_pass_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasswidget.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/mainwindow.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/inspectorwidget.cpp
-  )
-  target_include_directories(pelican_test_devstudio_fullscreen_pass_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view
   )
   target_compile_definitions(pelican_test_devstudio_fullscreen_pass_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

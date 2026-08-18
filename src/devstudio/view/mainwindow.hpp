@@ -35,6 +35,7 @@ class InspectorWidget;
 class MainWindow : public QMainWindow {
   public:
     MainWindow();
+    void openProject(const QString &path);
 
   private:
     enum DockIndex {
@@ -73,7 +74,6 @@ class MainWindow : public QMainWindow {
     void createWorkspace();
     void createMenus();
     void chooseProject();
-    void openProject(const QString &path);
     void populateOutliner();
     void selectOutlinerItem(QTreeWidgetItem *item);
     void beginViewportPick(const QPoint &pixel_position);

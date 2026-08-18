@@ -16,14 +16,15 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QComboBox>
+#include <QDir>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
-#include <QProcess>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QWidget>
 
 #include <array>
@@ -73,6 +74,22 @@ Json readJson(const std::filesystem::path &path) {
     return Json::parse(readText(path));
 }
 
+std::filesystem::path filesystemPath(const QString &path) {
+#ifdef _WIN32
+    return std::filesystem::path{path.toStdWString()};
+#else
+    return std::filesystem::path{path.toStdString()};
+#endif
+}
+
+QString displayPath(const std::filesystem::path &path) {
+#ifdef _WIN32
+    return QString::fromStdWString(path.wstring());
+#else
+    return QString::fromStdString(path.string());
+#endif
+}
+
 template <typename Widget>
 Widget &required(FullscreenPassWidget &form, const char *object_name) {
     auto *result = form.findChild<Widget *>(QString::fromLatin1(object_name));
@@ -95,15 +112,53 @@ struct RefreshHarness {
     bool available = true;
     qint64 next_id = 40;
     std::vector<qint64> requests;
+    FramePlanReadCapability::ReadyHandler ready_handler;
+    FramePlanReadCapability::ResultHandler result_handler;
+    FramePlanReadCapability::FailureHandler failure_handler;
+    std::size_t ready_subscriptions = 0;
+    std::size_t result_subscriptions = 0;
+    std::size_t failure_subscriptions = 0;
 
-    FramePlanRefreshDriver driver() {
-        return FramePlanRefreshDriver{
-            .ready = [this] { return available; },
-            .request = [this](QString *) {
+    FramePlanReadCapability driver() {
+        return FramePlanReadCapability{
+            .ready = [this](
+                         QObject *,
+                         FramePlanReadCapability::ReadyHandler handler) {
+                ++ready_subscriptions;
+                ready_handler = std::move(handler);
+                ready_handler(available, {});
+            },
+            .requestFramePlan = [this](QString *) {
                 requests.push_back(++next_id);
                 return requests.back();
             },
+            .result = [this](
+                          QObject *,
+                          FramePlanReadCapability::ResultHandler handler) {
+                ++result_subscriptions;
+                result_handler = std::move(handler);
+            },
+            .failure = [this](
+                           QObject *,
+                           FramePlanReadCapability::FailureHandler handler) {
+                ++failure_subscriptions;
+                failure_handler = std::move(handler);
+            },
         };
+    }
+
+    void succeed(qint64 request_id, const QByteArray &result_json) const {
+        if (!result_handler) {
+            throw std::runtime_error("result callback was not subscribed");
+        }
+        result_handler(request_id, result_json);
+    }
+
+    void fail(qint64 request_id, const QString &message) const {
+        if (!failure_handler) {
+            throw std::runtime_error("failure callback was not subscribed");
+        }
+        failure_handler(request_id, message);
     }
 };
 
@@ -235,47 +290,11 @@ StringSet actualDifference(const Json &declaration, const Json &projection) {
     return result;
 }
 
-std::string stripCMakeComments(const std::string &text) {
-    std::string result;
-    result.reserve(text.size());
-    bool in_comment = false;
-    for (const char character : text) {
-        if (character == '#') {
-            in_comment = true;
-        } else if (character == '\n') {
-            in_comment = false;
-        }
-        if (!in_comment) {
-            result.push_back(character);
-        }
-    }
-    return result;
-}
-
-StringSet formOwnedKeysFromAuthority(const FullscreenPassWidget &form) {
-    StringSet any_type_owned;
-    StringSet fullscreen_owned;
-    for (const auto &entry : Pelican::passFieldOwnershipTable()) {
-        for (const auto field : entry.fields) {
-            any_type_owned.insert(std::string{field});
-            if (entry.type == Pelican::RenderPassType::fullscreen) {
-                fullscreen_owned.insert(std::string{field});
-            }
-        }
-    }
-
+StringSet formOwnedKeysFromAuthority() {
     StringSet result;
-    for (const QWidget *widget : form.findChildren<QWidget *>()) {
-        const QString field_value =
-            widget->property("pelicanPassField").toString();
-        if (field_value.isEmpty()) {
-            continue;
-        }
-        const std::string field = field_value.toStdString();
-        if (!any_type_owned.contains(field) ||
-            fullscreen_owned.contains(field)) {
-            result.insert(field);
-        }
+    for (const auto field : Pelican::passAuthoringProjectionFields(
+             Pelican::RenderPassType::fullscreen)) {
+        result.insert(std::string{field});
     }
     return result;
 }
@@ -435,44 +454,98 @@ void driveMinimalDraft(FullscreenPassWidget &form, std::string_view name,
     QApplication::processEvents();
 }
 
-struct ProjectionObservation {
-    Json output;
-    StringSet reported_omissions;
-};
-
-ProjectionObservation unawarePartialForm(Json selected_output) {
-    // This is the required ineffective side of the contrast: it can emit the
-    // same selected JSON but has no source-declaration awareness and therefore
-    // falsely reports an empty difference.
-    return ProjectionObservation{
-        .output = std::move(selected_output),
-        .reported_omissions = {},
-    };
-}
-
-QStringList projectStatusIgnoringShaderCache() {
-    QProcess process;
-    process.setWorkingDirectory(QString::fromUtf8(PELICAN_TEST_SOURCE_DIR));
-    process.start(QStringLiteral("git"),
-                  {QStringLiteral("status"), QStringLiteral("--short"),
-                   QStringLiteral("--ignored"), QStringLiteral("--"),
-                   QStringLiteral("projects")});
-    if (!process.waitForFinished(30000) || process.exitCode() != 0) {
-        throw std::runtime_error(
-            "git status --ignored failed: " +
-            process.readAllStandardError().toStdString());
-    }
-    QStringList result;
-    for (const auto &line : QString::fromUtf8(process.readAllStandardOutput())
-                                .split('\n', Qt::SkipEmptyParts)) {
-        if (!line.contains(
-                QStringLiteral("/.pelican/shader_cache/"))) {
-            result.push_back(line.trimmed());
+void clearDraftThroughControls(FullscreenPassWidget &form) {
+    required<QLineEdit>(form, "pelican.fullscreenPass.name").clear();
+    required<QLineEdit>(form,
+                        "pelican.fullscreenPass.shader.vertex")
+        .clear();
+    required<QLineEdit>(form,
+                        "pelican.fullscreenPass.shader.fragment")
+        .clear();
+    for (const auto &[list_name, remove_name] :
+         std::array{
+             std::pair{"pelican.fullscreenPass.inputs",
+                       "pelican.fullscreenPass.removeInput"},
+             std::pair{"pelican.fullscreenPass.colors",
+                       "pelican.fullscreenPass.removeColor"}}) {
+        auto &list = required<QListWidget>(form, list_name);
+        auto &remove = required<QPushButton>(form, remove_name);
+        while (list.count() > 0) {
+            list.setCurrentRow(0);
+            remove.click();
         }
     }
-    result.sort();
+    required<QPushButton>(form,
+                          "pelican.fullscreenPass.clearDepth")
+        .click();
+    QApplication::processEvents();
+}
+
+struct TreeSnapshot {
+    StringSet directories;
+    std::map<std::string, std::string, std::less<>> files;
+
+    bool operator==(const TreeSnapshot &) const = default;
+};
+
+TreeSnapshot snapshotTree(const std::filesystem::path &root) {
+    TreeSnapshot result;
+    if (!std::filesystem::exists(root)) {
+        return result;
+    }
+    for (const auto &entry :
+         std::filesystem::recursive_directory_iterator{root}) {
+        const std::string relative =
+            entry.path().lexically_relative(root).generic_string();
+        if (entry.is_directory()) {
+            result.directories.insert(relative);
+        } else if (entry.is_regular_file()) {
+            result.files.emplace(relative, readText(entry.path()));
+        }
+    }
     return result;
 }
+
+class ScopedEnvironment final {
+    struct SavedValue {
+        QByteArray name;
+        QByteArray value;
+        bool existed = false;
+    };
+    std::vector<SavedValue> saved_;
+
+  public:
+    void set(const char *name, const QString &value) {
+        const QByteArray key{name};
+        saved_.push_back(SavedValue{
+            .name = key,
+            .value = qgetenv(name),
+            .existed = qEnvironmentVariableIsSet(name),
+        });
+        qputenv(name, value.toUtf8());
+    }
+
+    ~ScopedEnvironment() {
+        for (auto current = saved_.rbegin(); current != saved_.rend();
+             ++current) {
+            if (current->existed) {
+                qputenv(current->name.constData(), current->value);
+            } else {
+                qunsetenv(current->name.constData());
+            }
+        }
+    }
+};
+
+class ScopedCurrentPath final {
+    std::filesystem::path previous_ = std::filesystem::current_path();
+
+  public:
+    explicit ScopedCurrentPath(const std::filesystem::path &path) {
+        std::filesystem::current_path(path);
+    }
+    ~ScopedCurrentPath() { std::filesystem::current_path(previous_); }
+};
 
 } // namespace
 
@@ -501,24 +574,37 @@ TEST_CASE(
         driveFromDeclaration(form, declaration);
 
         const Json output = outputJson(form);
-        const StringSet owned_keys = formOwnedKeysFromAuthority(form);
+        const StringSet owned_keys = formOwnedKeysFromAuthority();
         REQUIRE(output == projectToKeys(declaration, owned_keys));
         const StringSet expected_difference =
             actualDifference(declaration, output);
         REQUIRE_FALSE(expected_difference.empty());
         REQUIRE(reportedOmissions(form) == expected_difference);
-
-        const ProjectionObservation unaware = unawarePartialForm(output);
-        REQUIRE(unaware.output == output);
-        REQUIRE(unaware.reported_omissions.empty());
-        REQUIRE(unaware.reported_omissions != reportedOmissions(form));
-
-        // Existing-name collision is a separate axis and must not suppress the
-        // central JSON projection observation.
         REQUIRE(axisState(
                     form,
                     "pelican.fullscreenPass.axis.nameCollision") ==
                 "invalid");
+
+        // Exercise the ineffective side with the same widget instance: remove
+        // its authored context, clear it through user controls, and drive the
+        // same declaration again. The JSON values still resolve identically,
+        // but an unaware form cannot resolve the omitted-key difference.
+        form.receiveAuthoringConfig(QByteArrayLiteral("{}"));
+        clearDraftThroughControls(form);
+        driveFromDeclaration(form, declaration);
+        REQUIRE(outputJson(form) == output);
+        REQUIRE(reportedOmissions(form).empty());
+        REQUIRE(required<QLabel>(
+                    form, "pelican.fullscreenPass.authoringStatus")
+                    .text()
+                    .contains(QStringLiteral("unavailable")));
+
+        // Removing authoring context also resolves the opposite collision
+        // state without suppressing the central JSON projection observation.
+        REQUIRE(axisState(
+                    form,
+                    "pelican.fullscreenPass.axis.nameCollision") ==
+                "not_checked");
         REQUIRE_FALSE(output.empty());
     }
 }
@@ -614,136 +700,185 @@ TEST_CASE(
                 "valid");
     }
 
-    auto [refresh, swapchain_form] = make_form();
-    driveMinimalDraft(*swapchain_form, "frame_target_case",
-                      "engine://fullscreen", "swapchain", "safe_output");
-    REQUIRE(axisState(
-                *swapchain_form,
-                "pelican.fullscreenPass.axis.targetNames") == "valid");
-    REQUIRE(axisState(
-                *swapchain_form,
-                "pelican.fullscreenPass.axis.passShape") == "invalid");
-    REQUIRE(shapeViolations(*swapchain_form).contains("swapchain_input"));
+    auto [refresh, contrast_form] = make_form();
+    driveMinimalDraft(*contrast_form, "partial_case",
+                      "engine://fullscreen", "safe_input", "safe_output");
+    auto &summary = required<QLabel>(
+        *contrast_form, "pelican.fullscreenPass.validationSummary");
+    auto &copy = required<QPushButton>(
+        *contrast_form, "pelican.fullscreenPass.copyJson");
+    REQUIRE(summary.property("pelicanValidationSummaryState").toString() ==
+            QStringLiteral("partial"));
+    REQUIRE(summary.text().contains(QStringLiteral("Not checked")));
+    REQUIRE(copy.isEnabled());
+    const QString partial_summary = summary.text();
 
     const std::array unchecked_axes{
         "pelican.fullscreenPass.axis.targetUsage",
         "pelican.fullscreenPass.axis.generationOrder",
         "pelican.fullscreenPass.axis.shaderResolution",
     };
-    QStringList displayed;
-    QStringList falsely_all_checked;
     for (const char *axis : unchecked_axes) {
-        REQUIRE(axisState(*swapchain_form, axis) == "not_checked");
-        const QString actual = axisText(*swapchain_form, axis);
-        REQUIRE(actual.contains(QStringLiteral("Not checked")));
-        displayed.push_back(actual);
-        QString false_display = actual;
-        false_display.replace(QStringLiteral("Not checked"),
-                              QStringLiteral("Valid"));
-        falsely_all_checked.push_back(false_display);
+        REQUIRE(axisState(*contrast_form, axis) == "not_checked");
+        REQUIRE(axisText(*contrast_form, axis)
+                    .contains(QStringLiteral("Not checked")));
     }
-    REQUIRE(displayed != falsely_all_checked);
+
+    // The negative side is another real state of the same widget, not a
+    // rewritten copy of its strings.
+    clearDraftThroughControls(*contrast_form);
+    driveMinimalDraft(*contrast_form, "frame_target_case",
+                      "engine://fullscreen", "swapchain", "safe_output");
+    REQUIRE(axisState(
+                *contrast_form,
+                "pelican.fullscreenPass.axis.targetNames") == "valid");
+    REQUIRE(axisState(
+                *contrast_form,
+                "pelican.fullscreenPass.axis.passShape") == "invalid");
+    REQUIRE(shapeViolations(*contrast_form).contains("swapchain_input"));
+    REQUIRE(summary.property("pelicanValidationSummaryState").toString() ==
+            QStringLiteral("invalid"));
+    REQUIRE(summary.text() != partial_summary);
+    REQUIRE_FALSE(copy.isEnabled());
 }
 
 TEST_CASE(
-    "WP321a production MainWindow constructs the form from a pelican_studio source",
-    "[devstudio][fullscreen-pass][wp321a][production-wiring]") {
+    "WP325 production MainWindow and tests share the compiled studio view",
+    "[devstudio][fullscreen-pass][wp325][production-wiring]") {
     (void)application();
     MainWindow window;
     auto *child = window.findChild<QWidget *>(
         QStringLiteral("pelican.fullscreenPass"));
     REQUIRE(child != nullptr);
     REQUIRE(dynamic_cast<FullscreenPassWidget *>(child) != nullptr);
-
-    // Comments must be stripped before searching: a plain substring scan
-    // accepts "# fullscreenpasswidget.cpp", which is not wired into the
-    // studio at all.
-    const std::string cmake = stripCMakeComments(readText(
-        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" /
-        "devstudio" / "view" / "CMakeLists.txt"));
-    const auto target_sources =
-        cmake.find("target_sources(pelican_studio PRIVATE");
-    REQUIRE(target_sources != std::string::npos);
-    const auto end = cmake.find(')', target_sources);
-    REQUIRE(end != std::string::npos);
-    const std::string_view production_sources{cmake.data() + target_sources,
-                                              end - target_sources};
-    REQUIRE(production_sources.find("fullscreenpasswidget.cpp") !=
-            std::string_view::npos);
-    REQUIRE(production_sources.find("fullscreenpasswidget.hpp") !=
-            std::string_view::npos);
-
-    // Negative control for the stripper itself: the same scan over a copy
-    // whose entries are commented out must not find them.
-    std::string commented{cmake};
-    for (const std::string_view entry :
-         std::array{std::string_view{"fullscreenpasswidget.cpp"},
-                    std::string_view{"fullscreenpasswidget.hpp"}}) {
-        const auto at = commented.find(entry);
-        REQUIRE(at != std::string::npos);
-        commented.insert(at, "# ");
-    }
-    const std::string stripped_again = stripCMakeComments(commented);
-    REQUIRE(stripped_again.find("fullscreenpasswidget.cpp") ==
-            std::string::npos);
-    REQUIRE(stripped_again.find("fullscreenpasswidget.hpp") ==
-            std::string::npos);
 }
 
 TEST_CASE(
-    "WP321a form has no project write or engine-apply path",
-    "[devstudio][fullscreen-pass][wp321a][no-side-effects]") {
+    "WP325 asynchronous frame-plan capability exposes no write or apply operation",
+    "[devstudio][fullscreen-pass][wp325][capability][no-side-effects]") {
     (void)application();
-    const QStringList projects_before = projectStatusIgnoringShaderCache();
 
     RefreshHarness refresh;
     FullscreenPassWidget form{refresh.driver()};
+    REQUIRE(refresh.ready_subscriptions == 1);
+    REQUIRE(refresh.result_subscriptions == 1);
+    REQUIRE(refresh.failure_subscriptions == 1);
+
     const Json plan = minimalFramePlan(
         "side_effect_graph",
         Json::array({resource("input"), resource("output")}));
-    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    auto &refresh_button = required<QPushButton>(
+        form, "pelican.fullscreenPass.refresh");
+    refresh_button.click();
+    REQUIRE(refresh.requests.size() == 1);
+    refresh.succeed(refresh.requests.back(),
+                    QByteArray::fromStdString(plan.dump()));
+    REQUIRE(comboNames(required<QComboBox>(
+                form, "pelican.fullscreenPass.inputTarget")) ==
+            resourceNames(plan));
+
     driveMinimalDraft(form, "draft", "engine://fullscreen", "input",
                       "output");
     REQUIRE_FALSE(outputJson(form).empty());
-    REQUIRE(projectStatusIgnoringShaderCache() == projects_before);
-
-    const auto view_dir = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
-                          "src" / "devstudio" / "view";
-    const std::string source =
-        readText(view_dir / "fullscreenpasswidget.hpp") +
-        readText(view_dir / "fullscreenpasswidget.cpp");
-    for (const std::string_view forbidden :
-         std::array{std::string_view{"LayoutPresetManager"},
-                    std::string_view{"QStandardPaths"},
-                    std::string_view{"QSaveFile"},
-                    std::string_view{"WriteOnly"}}) {
-        REQUIRE(source.find(forbidden) == std::string::npos);
-    }
-
-    std::size_t request_count = 0;
-    std::size_t position = 0;
-    while ((position = source.find("requestRpc(", position)) !=
-           std::string::npos) {
-        const auto statement_end = source.find(';', position);
-        REQUIRE(statement_end != std::string::npos);
-        const std::string_view statement{source.data() + position,
-                                         statement_end - position};
-        REQUIRE(statement.find("QStringLiteral(\"get_frame_plan\")") !=
-                std::string_view::npos);
-        ++request_count;
-        position = statement_end + 1;
-    }
-    REQUIRE(request_count > 0);
 
     const auto &scope = required<QLabel>(
         form, "pelican.fullscreenPass.scopeNotice");
     REQUIRE(scope.text().contains(QStringLiteral("not written")));
     REQUIRE(scope.text().contains(QStringLiteral("not applied")));
+
+    refresh_button.click();
+    REQUIRE(refresh.requests.size() == 2);
+    refresh.fail(refresh.requests.back(),
+                 QStringLiteral("spy failure"));
+    REQUIRE(required<QLabel>(
+                form, "pelican.fullscreenPass.planStatus")
+                .text()
+                .contains(QStringLiteral("spy failure")));
 }
 
 TEST_CASE(
-    "WP321a Refresh invalidates a draft on graph-resource rebinding but not runtime generation",
-    "[devstudio][fullscreen-pass][wp321a][refresh][stale]") {
+    "WP325 production project-open and drafting do not mutate any isolated writable root",
+    "[devstudio][fullscreen-pass][wp325][project-open][no-side-effects]") {
+    (void)application();
+    const auto source_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const auto project_root =
+        source_root / "projects" / "example";
+    const Json config = readJson(
+        project_root / "passes" / "main_rendering_config.json");
+    const QByteArray frame_plan = QByteArray::fromStdString(readText(
+        source_root / "test" / "fixtures" / "devstudio" /
+        "example_frame_plan.json"));
+    const std::string graph =
+        config.at("rendering_passes").at(0).at("name").get<std::string>();
+    const Json &declaration = findPass(config, graph, "ssao_pass");
+
+    QTemporaryDir isolation;
+    REQUIRE(isolation.isValid());
+    const std::filesystem::path isolation_root =
+        filesystemPath(isolation.path());
+    const auto working_root = isolation_root / "working";
+    const auto appdata_root = isolation_root / "appdata";
+    const auto localdata_root = isolation_root / "localdata";
+    const auto temp_root = isolation_root / "temp";
+    std::filesystem::create_directories(working_root);
+    std::filesystem::create_directories(appdata_root);
+    std::filesystem::create_directories(localdata_root);
+    std::filesystem::create_directories(temp_root);
+
+    ScopedEnvironment environment;
+    environment.set("APPDATA", displayPath(appdata_root));
+    environment.set("LOCALAPPDATA",
+                    displayPath(localdata_root));
+    environment.set("TEMP", displayPath(temp_root));
+    environment.set("TMP", displayPath(temp_root));
+    environment.set("XDG_CONFIG_HOME",
+                    displayPath(appdata_root));
+    environment.set("XDG_DATA_HOME",
+                    displayPath(localdata_root));
+    environment.set("XDG_CACHE_HOME",
+                    displayPath(localdata_root));
+    environment.set(
+        "PELICAN_STUDIO_PLAYER",
+        displayPath(isolation_root / "missing-player.exe"));
+    ScopedCurrentPath current_path{working_root};
+
+    const TreeSnapshot project_before = snapshotTree(project_root);
+    const TreeSnapshot writable_before = snapshotTree(isolation_root);
+    {
+        MainWindow window;
+        window.openProject(displayPath(project_root));
+        QApplication::processEvents();
+
+        auto *form_widget = window.findChild<QWidget *>(
+            QStringLiteral("pelican.fullscreenPass"));
+        auto *form = dynamic_cast<FullscreenPassWidget *>(form_widget);
+        REQUIRE(form != nullptr);
+        const auto &authoring_status = required<QLabel>(
+            *form, "pelican.fullscreenPass.authoringStatus");
+        REQUIRE(authoring_status.text().contains(
+            QStringLiteral("authoring context loaded")));
+        REQUIRE(authoring_status.toolTip().contains(
+            QString::fromStdString(graph + "/ssao_pass")));
+
+        form->receiveResult(frame_plan);
+        driveFromDeclaration(*form, declaration);
+        const Json projection = outputJson(*form);
+        REQUIRE(projection == projectToKeys(
+                                  declaration,
+                                  formOwnedKeysFromAuthority()));
+        REQUIRE(reportedOmissions(*form) ==
+                actualDifference(declaration, projection));
+    }
+    QApplication::processEvents();
+
+    REQUIRE((snapshotTree(project_root) == project_before));
+    REQUIRE((snapshotTree(isolation_root) == writable_before));
+}
+
+TEST_CASE(
+    "WP325 Refresh binds drafts to graph and resources but not runtime generation",
+    "[devstudio][fullscreen-pass][wp325][refresh][stale]") {
     (void)application();
     RefreshHarness refresh;
     FullscreenPassWidget form{refresh.driver()};
@@ -756,7 +891,7 @@ TEST_CASE(
         10);
     button.click();
     REQUIRE(refresh.requests.size() == 1);
-    form.receiveRefreshResult(
+    refresh.succeed(
         refresh.requests.back(), QByteArray::fromStdString(first.dump()));
     driveMinimalDraft(form, "fresh_pass", "engine://fullscreen",
                       "first_input", "first_output");
@@ -769,7 +904,7 @@ TEST_CASE(
         11);
     button.click();
     REQUIRE(refresh.requests.size() == 2);
-    form.receiveRefreshResult(
+    refresh.succeed(
         refresh.requests.back(), QByteArray::fromStdString(second.dump()));
     REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name")
                 .text()
@@ -793,7 +928,7 @@ TEST_CASE(
     generation_only["runtime_generation"] = 999999;
     button.click();
     REQUIRE(refresh.requests.size() == 3);
-    form.receiveRefreshResult(
+    refresh.succeed(
         refresh.requests.back(),
         QByteArray::fromStdString(generation_only.dump()));
     REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
@@ -804,6 +939,27 @@ TEST_CASE(
                 .count() == 1);
     REQUIRE(axisState(
                 form, "pelican.fullscreenPass.axis.targetNames") == "valid");
+
+    Json graph_only = generation_only;
+    graph_only["graph"] = "other_refresh_graph";
+    REQUIRE(resourceNames(graph_only) == resourceNames(generation_only));
+    button.click();
+    REQUIRE(refresh.requests.size() == 4);
+    refresh.succeed(
+        refresh.requests.back(),
+        QByteArray::fromStdString(graph_only.dump()));
+    REQUIRE(required<QLabel>(form, "pelican.fullscreenPass.graph").text() ==
+            QStringLiteral("other_refresh_graph"));
+    REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name")
+                .text()
+                .isEmpty());
+    REQUIRE(required<QListWidget>(form, "pelican.fullscreenPass.inputs")
+                .count() == 0);
+    REQUIRE(required<QListWidget>(form, "pelican.fullscreenPass.colors")
+                .count() == 0);
+    REQUIRE(required<QLabel>(form, "pelican.fullscreenPass.planStatus")
+                .text()
+                .contains(QStringLiteral("discarded")));
 }
 
 TEST_CASE(
@@ -1195,8 +1351,8 @@ TEST_CASE(
         form, "pelican.fullscreenPass.refresh");
     refresh_button.click();
     REQUIRE(refresh.requests.size() == 1);
-    form.receiveRefreshFailure(refresh.requests.back(),
-                               QStringLiteral("synthetic failure"));
+    refresh.fail(refresh.requests.back(),
+                 QStringLiteral("synthetic failure"));
 
     REQUIRE(required<QLabel>(
                 form, "pelican.fullscreenPass.graph")
