@@ -7021,6 +7021,84 @@ if 連鎖がそれを歩き、配列がその名前を投影する形にする�
 本 WP のマージ時に直さなかったのは、エンジンのコードを
 マージ直前に組み替える risk が、将来のずれの risk を上回ると判断したためである。
 
+### WP332: カタログの嘘と、no-op でない no-op を直す
+
+**WP331(`07dff76`)のマージ後のコードレビューで確認。**
+**§4 規則 11 の中段**(`pelican_project` と複数経路)。**仕様レビューは省き、コードレビューのみ。**
+
+レビューは 7 件を挙げたが、**直すのは 2 件と、既に記録済みの宿題 1 件である。**
+残り 4 件は下の「記録のみ」に置く。**個別に WP を作らないこと。**
+
+#### 直す 1: カタログが実行可能性を偽る
+
+`hot_add_supported` は「モジュール要求 6 feature でないこと」だけから算出され、
+studio はそれだけで `Available` と表示する。
+
+**しかし apply は他の理由でも拒否する。**
+
+- **`PELICAN_RUNTIME_SHADER_COMPILER=OFF` では、feature 文書に指定が無いものは
+  compiler 必須として扱われる**(`featurecompose.cpp:2603, 2752`)。
+  **`sky_ambient` は指定が無いので、カタログは Available、apply は拒否になる。**
+  これは WP331 が中心対照に使った feature そのものである
+- `rt_shadow_mask` は `"runtime_shader_compiler": "optional"` なので OFF だけを理由に隠す必要はないが、
+  **`ray_query` capability の無いデバイスでも Available と出る**
+
+**直し方**: **エンジンが判定した可用性を返すこと。**
+ビルドフラグ・デバイス capability・モジュール方針を**同じ判定器**で見て、
+`available` と `unavailable_reason` を返し、**studio はそれをそのまま表示する。**
+**studio 側で理由を組み立てないこと。**
+
+#### 直す 2: no-op が runtime 上で no-op でない
+
+`operations: []`(および同じ feature の再追加)は受理され、
+disk の bytes が同じなら replace は省略されるが、**runtime apply は続行される。**
+結果として**新しい generation を publish し、history を reset する。**
+
+**適用を二度押しすると、TAA などの時間蓄積が理由なく飛ぶ。**
+
+既存テストは disk bytes しか見ていない。
+
+**直し方**: candidate の digest が現在の document と同じなら
+**runtime apply を呼ばず、現在の generation で commit 扱いにするか、名前付きで `no_change` を返す。**
+
+#### 直す 3: モジュール要求 feature の名前が 3 箇所にある(WP331 で記録済み)
+
+1. `renderFeaturesRequiringRuntimeModules()` の `constexpr` 配列
+2. `validateFrozenRuntimeFeatureModules()` の if 連鎖(同ファイル)
+3. `test/renderconfigeditor_test.cpp` の期待集合リテラル
+
+**`{feature, 要求モジュール}` の表を 1 つ作り、if 連鎖がそれを歩き、
+配列がその名前を投影する形にすること。**テストの期待集合もその表から作ること。
+
+#### 記録のみ(本 WP では直さない)
+
+- **digest CAS は最終確認後の競合で迂回できる。**外部書き込みが狭い窓に入る必要がある
+- **apply が live preview lease を無視する。**preview 中にのみ効く
+- **publish 後の例外で disk と runtime が分離する。**特定の窓での例外が必要
+- **top-level `features` が無い config では、編集機能が黙って消える。**
+  一般的な「service is unavailable」になる。**出荷 4 プロジェクトはすべて `features` 鍵を持つ**
+  (`vrm_xr_demo` は空配列)ので、今日は誰にも当たらない。
+  ただし fail-fast 違反なので、`render_config_features_missing` 等で名前付きに落とすこと
+- **power-loss durability が無い。**temporary の flush、directory sync が無い
+
+#### 受け入れ条件(§4 規約 10)
+
+- **カタログの可用性がエンジンの判定と一致すること。**
+  同じテストの中で、**apply が拒否する feature がカタログで `available` にならないこと**、
+  および apply が通る feature が `available` になることを検査する。
+  **`PELICAN_RUNTIME_SHADER_COMPILER=OFF` の構成で、`sky_ambient` が
+  `unavailable` かつ理由付きになること**(§4 規則 9 —— 触れた gate の対照構成を実際にビルドする)
+- **studio が理由を組み立てていないこと。**表示された文言がエンジンの返した文言と一致すること
+- **no-op の適用で generation が進まないこと。**
+  同じテストの中で、実際の変更では進むことを検査する。
+  **disk bytes だけでなく generation と apply 呼び出し回数を検査すること**
+- **名前の表が 1 つであること。**表に 7 つ目を足すと、
+  `validateFrozenRuntimeFeatureModules` と カタログとテストの**3 つとも**変わること
+- **変異 1 つで検出力を確かめること**
+- `ctest` 全数が緑(**マージ直前に GPU 込みで 1 回**)、`uv run tools/doclink.py check` が通ること
+
+依存: WP331(マージ済み)。見積: 中。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
