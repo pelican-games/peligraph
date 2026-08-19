@@ -6879,82 +6879,126 @@ Inspector と `SelectionModel` に触らないこと(あれはシーンオブジ
 
 依存: なし。見積: 中。
 
-### WP331: 著作 config を engine が所有し、`features[]` を編集して反映する
+### WP331: 著作 config の `features[]` を編集して、再起動なしで反映する
 
-**§4 規則 11 の上段**(エンジンの挙動が変わる)。**設計レビュー + 仕様レビュー + コードレビュー。**
-
+**§4 規則 11 の上段**(エンジンの挙動が変わる)。
 **「編集側の設計 — 5 回目」節と `docs/design_editor_tooling.md` を先に読むこと。**
-本 WP は**既存契約のレンダリング config への拡張**であり、新しい編集機構の発明ではない。
 
-#### なぜ `features[]` が最初の編集面か
+#### 初版が崩れた原因(繰り返さないこと)
 
-| 理由 | 根拠 |
-|---|---|
-| **4/4 のプロジェクトで動く** | `features` は preset 併用時の許可鍵 11 個に含まれる(`renderpipeline.cpp:708-713`)。`animgraph_demo` で編集できるのは実際この配列だけ(3 要素) |
-| **利用者の条件 4 を丸ごと満たす** | デバッグ表示は全て feature 文書(`debug_draw` / `debug_text` / `gpu_timing` / `gizmo` / `picking`) |
-| **表記の正規化問題が無い** | 文字列の配列 1 本。パスの型も所有鍵表も形の検証も要らない |
+初版は `gpu_timing` を中心の例に据えたが、**hot-add できない。**
 
-**パス属性の編集は本 WP の範囲外である。**
+- `RenderTiming` は**起動時に feature が有効なときだけ**生成される(`loop.cpp:154` 近傍)
+- モジュール生成は RPC 開始前に **freeze** される(`prepareRuntimeModuleGraph`)
+- freeze 後に新たに有効化された feature にモジュールが無ければ、
+  preflight が**名前付きで拒否する**(`renderer_config.cpp:158`)
 
-#### 確認済みの前提(実測)
+また初版は「実効 config に現れること」を対照にしたが、
+**composer は解決後の JSON から `features` を消す**(`featurecompose.cpp:2763`)。
+**その対照は永久に通らない。**
+
+#### モジュールを要求する feature は 6 つだけである(実測)
+
+`validateFrozenRuntimeFeatureModules`(`renderer_config.cpp:158-197`)が名指ししている:
+**`debug_draw` / `debug_text` / `gizmo` / `gpu_timing` / `ui` / `sprite`**。
+
+**この 6 つは v1 の範囲外である。**
+残りはグラフに寄与するだけで、既存の render pipeline reload 経路が扱える。
+
+**UI はこの 6 つを黙って隠さないこと。**選ぼうとしたら
+**「モジュールの動的生成が要るため、再起動なしでは有効化できない」と名前付きで断ること。**
+黙って選択肢から消すと、なぜ出ないのかが誰にも分からなくなる。
+
+#### v1 の例は `sky_ambient`(実測で選定)
+
+- `passes` を **1 つ**寄与し、`render_targets` は **0**
+- **モジュール要求なし**(上の 6 つに含まれない)
+- したがって **frame plan に `provider_feature` 付きのノードが増える** ——
+  **利用者が実際に見ている画面で観測できる**
+
+**対象プロジェクトでは、その feature が編集前に有効でないこと**を選ぶこと。
+`animgraph_demo` は既に `shadow_directional` / `sky_ambient` / `ui` を持つので、
+このプロジェクトで `sky_ambient` を「足す」対照は作れない。**削除側で対照を作ること。**
+
+#### 確認済みの前提
 
 - `features` は著作 config の **top-level**(`featurecompose.cpp:128`)
 - **reload 参加者は `PathResolver.loadText(state.source_reference)` でファイルを読み直す**
   (`renderer.cpp:3071`)。**config の bytes を RPC で送る必要はない**
 - `pelican.render_pipeline` 参加者は**登録済み**(`renderer.cpp:2838`)
-- **使える feature を列挙する経路が存在しない。**エンジンに 18 個あるが、
-  RPC も `pelican_project` からの到達路も無い
+- **使える feature を列挙する経路が存在しない**(RPC も `pelican_project` からの到達路も無い)
 
-#### 契約から流用すること(発明しないこと)
+#### 契約から流用すること / 新しく決めること
 
-- **正本は engine が持つ lossless な document。**runtime は投影
-- **edit は受理と ticket を同期応答し、結果は別途取得する**(5 秒 timeout 対策)
-- **保存は決定的 encode + atomic replace。digest 不一致は `external_modification` で
-  何も書かずに拒否**
-- **`ReloadGate` の `enabled()` を流用しないこと。`can_edit` を独立 query として追加する** ——
-  gate は `--rpc` のとき必ず無効で(`enabled_ = requested_ && !replay_ && !strict_ && !rpc_`)、
-  **studio は必ず `--rpc` で起動する。**迂回してはならない
+**流用する**(`design_editor_tooling.md`):
+
+- **正本は engine が持つ document。**runtime は投影
+- **edit は受理と ticket を同期応答し、結果は別途取得する**(studio の RPC は全 method 一律 5 秒)
+- **保存は preflight → 一時ファイル → atomic replace。digest 不一致は
+  `external_modification` で何も書かずに拒否**
+- **`ReloadGate` の `enabled()` を流用しない。`can_edit` を独立 query として追加する** ——
+  gate は `--rpc` のとき必ず無効で、**studio は必ず `--rpc` で起動する**
+
+**新しく決めること(契約の流用ではない、と明記する)**:
+
+- **byte-lossless な編集は、レンダリング config 用の新しい字句上の契約である。**
+  scene 側の契約は raw JSON の保持であって、原文 bytes の保持ではない。
+  **「既存契約の流用」と書かないこと。**
+- **v1 の CAS は root ファイルの digest だけを見る。**
+  preset / feature / overlay を含む runtime の同定には足りない。
+  **v1 は root の `features[]` しか編集しないので、その範囲では足りる**と明記すること。
+  **preset や feature が供給した feature 参照は編集対象外である。**
+
+#### 保存と適用の順序(初版の欠陥)
+
+初版は「保存 → `applyRuntimeNow`」の順で、**適用が失敗すると disk に不正な config が残る。**
+
+**候補を先に preflight すること。**適用が通ると分かってから書く。
+書いてから適用して失敗した場合は、**disk を編集前に戻すこと。**
+「適用失敗時に disk と runtime の双方が編集前」を成立させること。
 
 #### 実装範囲
 
-1. **`AuthoringRenderConfigDocument`** —— engine が所有する著作 config の lossless 表現。
-   **原文 bytes と digest と `features` 配列の位置を保持すること。**
-   意味 JSON を再直列化しないこと(所有していない鍵・表記・キー順を壊す)。
-2. **`can_edit` query。**`ReloadGate` とは独立。
-3. **`list_render_features` RPC。**エンジンが自分の feature 文書を列挙する。
-   **これは D0 の一般解である** —— シェーダー stem の列挙も同じ機構で後から足す。
+1. **engine が所有する著作 config の document。**原文 bytes と digest と
+   `features` 配列の位置を保持する。**意味 JSON を再直列化しないこと。**
+2. **`can_edit` query**(`ReloadGate` と独立)。
+3. **feature の列挙 RPC。**エンジンが自分の feature 文書を列挙する。
+   **モジュールを要求する 6 つには印を付けて返すこと**(隠さない)。
    **studio 側に一覧を写経しないこと。**
-4. **`features[]` の編集 RPC。**要素の追加・削除。受理と ticket を同期応答。
-5. **保存**: preflight → 一時ファイル → atomic replace。**digest CAS。**
-6. **反映**: `pelican.render_pipeline` を名指しして `applyRuntimeNow`。
-   結果は `{published_generation, source_digest, committed}` を持つこと。
-   **publish 後の後始末の失敗を commit の失敗と混同しないこと** ——
-   fallible な準備を publication の前へ移すこと。
-7. **studio の UI**: 現在の `features[]` を一覧し、
-   **`list_render_features` の結果から選んで追加**、選んで削除、適用。
+   これは D0 の一般解であり、**シェーダー stem の列挙も後から同じ機構で足す。**
+4. **`features[]` の編集 RPC**(要素の追加・削除)。受理と ticket を同期応答。
+5. **保存**: preflight → 一時ファイル → atomic replace、digest CAS。
+6. **適用**: `pelican.render_pipeline` を名指し。返値は
+   `{published_generation, source_digest, committed}`。
+   **publish 後の後始末の失敗を commit 失敗と混同しないこと。**
+7. **studio の UI**: 現在の `features[]` を一覧、列挙 RPC から選んで追加、選んで削除、適用。
+   **`MainWindow` に配線すること。**
 
 #### 範囲外
 
-パス属性の編集。preset の eject。世代保持(条件 2・3)。journal と undo。
-シェーダー stem の列挙(同じ機構で後から)。
+パス属性の編集。preset の eject。世代保持。journal と undo。
+モジュールを要求する 6 feature の動的有効化。シェーダー stem の列挙。
 
 #### 受け入れ条件(§4 規約 10)
 
-- **`gpu_timing` を `features[]` に足して適用すると、再起動なしで実効 config に現れること。**
-  **同じテストの中で、足す前には現れないこと。**——**これが条件 4 の対照であり本 WP の中心である**
-- **no-op 保存が byte-identical であること。**開いて何も変えずに保存し、
-  ファイルが 1 バイトも変わらないこと。**同じテストで、1 要素足すとその差分だけが変わること**
+- **中心対照**: グラフに寄与する feature(例: `sky_ambient`)を `features[]` に足して適用すると、
+  **再起動なしで frame plan に `provider_feature` がその feature のノードが現れること。**
+  **同じテストの中で、足す前には現れないこと。**
+  加えて `RendererRuntimeGeneration::enabled_feature_names` に現れること
+- **削除側**: 既に有効な feature を外すと、そのノードが消えること。同じテストで
+- **モジュール要求 feature の否定対照**: 6 つのいずれかを足そうとすると、
+  **名前付きで拒否されること**(黙って無視しない・黙って成功しない)
+- **no-op 保存が byte-identical であること。**同じテストで、
+  1 要素足すとその差分だけが変わること
 - **外部で変更されたファイルへの保存が `external_modification` で拒否され、
   何も書かれないこと。**同じテストで、変更されていなければ通ること
 - **適用が失敗したとき、disk と runtime の両方が編集前のままであること**
 - **`can_edit` が `ReloadGate` と独立であること。**
-  `--rpc` 下(gate は無効)で `can_edit` が true を返し、編集が通ること。
-  **同じテストで、`can_edit` が false を返す構成では編集が名前付きで拒否されること**
-- **`list_render_features` が実データ由来であること。**
-  返る集合がエンジンの feature 文書の集合と**一致**すること。
+  `--rpc` 下(gate は無効)で編集が通ること
+- **列挙 RPC が実データ由来であること。**返る集合がエンジンの feature 文書と一致し、
   **studio 側にハードコードした一覧が無いこと**
-- **4 プロジェクトすべてで `features[]` を編集できること。**
-  特に `animgraph_demo`(preset 型・著作パス 0)で成立すること
+- **本番配線**: offscreen で `MainWindow` を構築し、当該 widget が居ること。
+  テストにだけ存在する実装が通らないこと
 - `ctest` 全数が緑(**マージ直前に GPU 込みで 1 回**)、`uv run tools/doclink.py check` が通ること
 
 依存: なし。見積: 大。
