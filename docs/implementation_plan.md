@@ -6879,6 +6879,86 @@ Inspector と `SelectionModel` に触らないこと(あれはシーンオブジ
 
 依存: なし。見積: 中。
 
+### WP331: 著作 config を engine が所有し、`features[]` を編集して反映する
+
+**§4 規則 11 の上段**(エンジンの挙動が変わる)。**設計レビュー + 仕様レビュー + コードレビュー。**
+
+**「編集側の設計 — 5 回目」節と `docs/design_editor_tooling.md` を先に読むこと。**
+本 WP は**既存契約のレンダリング config への拡張**であり、新しい編集機構の発明ではない。
+
+#### なぜ `features[]` が最初の編集面か
+
+| 理由 | 根拠 |
+|---|---|
+| **4/4 のプロジェクトで動く** | `features` は preset 併用時の許可鍵 11 個に含まれる(`renderpipeline.cpp:708-713`)。`animgraph_demo` で編集できるのは実際この配列だけ(3 要素) |
+| **利用者の条件 4 を丸ごと満たす** | デバッグ表示は全て feature 文書(`debug_draw` / `debug_text` / `gpu_timing` / `gizmo` / `picking`) |
+| **表記の正規化問題が無い** | 文字列の配列 1 本。パスの型も所有鍵表も形の検証も要らない |
+
+**パス属性の編集は本 WP の範囲外である。**
+
+#### 確認済みの前提(実測)
+
+- `features` は著作 config の **top-level**(`featurecompose.cpp:128`)
+- **reload 参加者は `PathResolver.loadText(state.source_reference)` でファイルを読み直す**
+  (`renderer.cpp:3071`)。**config の bytes を RPC で送る必要はない**
+- `pelican.render_pipeline` 参加者は**登録済み**(`renderer.cpp:2838`)
+- **使える feature を列挙する経路が存在しない。**エンジンに 18 個あるが、
+  RPC も `pelican_project` からの到達路も無い
+
+#### 契約から流用すること(発明しないこと)
+
+- **正本は engine が持つ lossless な document。**runtime は投影
+- **edit は受理と ticket を同期応答し、結果は別途取得する**(5 秒 timeout 対策)
+- **保存は決定的 encode + atomic replace。digest 不一致は `external_modification` で
+  何も書かずに拒否**
+- **`ReloadGate` の `enabled()` を流用しないこと。`can_edit` を独立 query として追加する** ——
+  gate は `--rpc` のとき必ず無効で(`enabled_ = requested_ && !replay_ && !strict_ && !rpc_`)、
+  **studio は必ず `--rpc` で起動する。**迂回してはならない
+
+#### 実装範囲
+
+1. **`AuthoringRenderConfigDocument`** —— engine が所有する著作 config の lossless 表現。
+   **原文 bytes と digest と `features` 配列の位置を保持すること。**
+   意味 JSON を再直列化しないこと(所有していない鍵・表記・キー順を壊す)。
+2. **`can_edit` query。**`ReloadGate` とは独立。
+3. **`list_render_features` RPC。**エンジンが自分の feature 文書を列挙する。
+   **これは D0 の一般解である** —— シェーダー stem の列挙も同じ機構で後から足す。
+   **studio 側に一覧を写経しないこと。**
+4. **`features[]` の編集 RPC。**要素の追加・削除。受理と ticket を同期応答。
+5. **保存**: preflight → 一時ファイル → atomic replace。**digest CAS。**
+6. **反映**: `pelican.render_pipeline` を名指しして `applyRuntimeNow`。
+   結果は `{published_generation, source_digest, committed}` を持つこと。
+   **publish 後の後始末の失敗を commit の失敗と混同しないこと** ——
+   fallible な準備を publication の前へ移すこと。
+7. **studio の UI**: 現在の `features[]` を一覧し、
+   **`list_render_features` の結果から選んで追加**、選んで削除、適用。
+
+#### 範囲外
+
+パス属性の編集。preset の eject。世代保持(条件 2・3)。journal と undo。
+シェーダー stem の列挙(同じ機構で後から)。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`gpu_timing` を `features[]` に足して適用すると、再起動なしで実効 config に現れること。**
+  **同じテストの中で、足す前には現れないこと。**——**これが条件 4 の対照であり本 WP の中心である**
+- **no-op 保存が byte-identical であること。**開いて何も変えずに保存し、
+  ファイルが 1 バイトも変わらないこと。**同じテストで、1 要素足すとその差分だけが変わること**
+- **外部で変更されたファイルへの保存が `external_modification` で拒否され、
+  何も書かれないこと。**同じテストで、変更されていなければ通ること
+- **適用が失敗したとき、disk と runtime の両方が編集前のままであること**
+- **`can_edit` が `ReloadGate` と独立であること。**
+  `--rpc` 下(gate は無効)で `can_edit` が true を返し、編集が通ること。
+  **同じテストで、`can_edit` が false を返す構成では編集が名前付きで拒否されること**
+- **`list_render_features` が実データ由来であること。**
+  返る集合がエンジンの feature 文書の集合と**一致**すること。
+  **studio 側にハードコードした一覧が無いこと**
+- **4 プロジェクトすべてで `features[]` を編集できること。**
+  特に `animgraph_demo`(preset 型・著作パス 0)で成立すること
+- `ctest` 全数が緑(**マージ直前に GPU 込みで 1 回**)、`uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 大。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
