@@ -6522,6 +6522,64 @@ core とフォームが共に不当になること**、および解決された�
 **注**: WP326 の記述にある「127 行を削除」は不正確である。
 実差分は **3 行追加・124 行削除**(変更行合計 127)。
 
+### WP329: ノードを選ぶと、そのパスの詳細が出る
+
+**§4 規則 11 の下段**(studio 内で閉じる・読み取りのみ・表示だけ)。
+**設計レビューも仕様レビューもかけない。マージ後のコードレビューのみ。**
+
+**目的**: 利用者は「ノードをクリックするとそれの詳細情報を表示したい」と言った。
+現在ノードをクリックしても**何も起きない**。Qt 既定の選択枠が出るだけである。
+
+#### 材料は既に在る。繋がっていないだけである
+
+- `FramePlanGraphicsScene::selectedNode()` は実装済みだが **呼び出し元がゼロ**
+- dynamic property `pelicanSelectedNode` / `pelicanSelectedGraph` を読むのは**テストだけ**
+- `selectionChanged` → `recordSelection()` の接続は在るが、**シグナルを出さない**
+- `logical_scene` と `std::optional<FramePlanModel> model` は**同じ `FramePlanWidget::Impl` に同居している**
+
+**新しい型も RPC も書き込みも増やさないこと。**
+Inspector と `SelectionModel` に触らないこと(あれはシーンオブジェクト専用で、
+`FramePlanNodeKey` は型として入らない)。
+
+#### 実装範囲
+
+1. `FramePlanWidget::Impl` で `logical_scene` の `selectionChanged` を購読し、
+   `selectedNode()` から鍵を取り、`model->nodes` を引く。
+2. **Logical graph タブの中に詳細ペインを 1 枚置く。**
+   `populatePasses()` が既に使っている表示規則を流用すること。**別の流儀を作らない。**
+3. 選択が無いときは、その旨を出すこと。**空白にしないこと。**
+
+#### 出せる情報の上限(実測)
+
+`FramePlanNode` のフィールドはほぼ全て Passes ツリーに出ている。
+**完全に未表示なのは `material_filter.resolution_provenance` の 1 個だけ**である。
+本 WP の価値は「新しい事実」ではなく「**タブを往復せずに済む**」ことである。
+**それ以上を約束しないこと。**
+
+**シェーダーは出せない。**フレームプランがシェーダー参照を運んでいない(WP322 未着手)。
+詳細ペインは WP322 が入ったときの受け皿になる。
+
+#### 範囲外
+
+書き込み。編集。ノードの追加・削除・接続。Inspector への統合。
+`FramePlanNodeKey` の永続化。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **ノードを選ぶと、そのノードの詳細が出ること。**
+  `QT_QPA_PLATFORM=offscreen` で `example_frame_plan.json` を読み、
+  ノードを選択し、**そのノードの `name` / `kind` / `reads` / `writes` が
+  ペインから取得できること。**期待値は `model->nodes` から取り、
+  **テストにリテラルで書かないこと**
+- **否定対照**: 選択を外すと、詳細が消える(または「選択なし」になる)こと。
+  **同じテストの中で**両方を実行すること
+- **変異 1 つで検出力を確かめること。**
+  `selectionChanged` の購読を外すと当該テストが落ちることを実際に確かめ、報告すること
+- `ctest --test-dir ./build -C Debug -LE gpu -j16` が緑(**内周は GPU を回さない**、§0)
+- `uv run tools/doclink.py check` が通ること
+
+依存: なし。見積: 小。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
