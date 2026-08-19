@@ -18,6 +18,8 @@
 
 namespace Pelican {
 
+class RenderConfigEditorService;
+
 inline constexpr std::uint64_t maxExactEditorJsonInteger = UINT64_C(9007199254740991);
 inline constexpr std::size_t maxSceneSnapshotBytes = std::size_t{64} * 1024U * 1024U;
 
@@ -214,6 +216,7 @@ struct EditorCommandServiceDependencies {
     std::function<EditorSnapshotState()> snapshot_state;
     std::optional<EditorEditRuntimeDependencies> edit;
     std::optional<EditorPreviewServiceDependencies> preview;
+    std::shared_ptr<RenderConfigEditorService> render_config_editor;
     std::function<SceneRevision(std::string_view, std::string_view)>
         import_scene_snapshot;
     std::function<SaveSceneResult()> save_scene;
@@ -235,6 +238,7 @@ class EditorCommandService {
     };
 
     EditorCommandServiceDependencies dependencies_;
+    std::shared_ptr<RenderConfigEditorService> render_config_editor_;
     std::unique_ptr<EditorEditCoordinator> edit_;
     std::unique_ptr<EditorPreviewService> preview_;
     std::unordered_map<std::uint64_t, std::string> actor_display_names_;
@@ -278,6 +282,9 @@ class EditorCommandService {
     nlohmann::ordered_json updatePreview(const nlohmann::json &params);
     nlohmann::ordered_json commitPreview(const nlohmann::json &params);
     nlohmann::ordered_json abortPreview(const nlohmann::json &params);
+    nlohmann::ordered_json getRenderFeatures(const nlohmann::json &params) const;
+    nlohmann::ordered_json listRenderFeatures(const nlohmann::json &params) const;
+    nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params);
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
@@ -317,6 +324,9 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json updatePreview(const nlohmann::json &params) const;
     nlohmann::ordered_json commitPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json abortPreview(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRenderFeatures(const nlohmann::json &params) const;
+    nlohmann::ordered_json listRenderFeatures(const nlohmann::json &params) const;
+    nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;

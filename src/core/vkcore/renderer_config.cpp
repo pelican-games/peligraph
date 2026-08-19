@@ -33,12 +33,28 @@
 #include "../openxr/openxrmirrorsink.hpp"
 #endif
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace Pelican {
+
+std::span<const std::string_view>
+renderFeaturesRequiringRuntimeModules() noexcept {
+    static constexpr std::array<std::string_view, 6> names{
+        "debug_draw", "debug_text", "gizmo",
+        "gpu_timing", "ui", "sprite",
+    };
+    return names;
+}
+
+bool renderFeatureRequiresRuntimeModule(std::string_view name) noexcept {
+    const auto names = renderFeaturesRequiringRuntimeModules();
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
 
 namespace {
 
@@ -92,29 +108,7 @@ RenderingPassConfigRegistrationDependencies registrationDependencies(
     };
 }
 
-RenderingPassId requireDefaultPass(std::string name) {
-    const auto generation =
-        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
-    if (generation == nullptr) {
-        throw std::runtime_error(
-            "Rendering pipeline generation is unavailable");
-    }
-    const auto found = generation->name_to_id.find(name);
-    const auto rendering_pass_id =
-        found != generation->name_to_id.end()
-            ? found->second
-            : invalidRenderingPassId();
-    if (!isValidRenderingPassId(rendering_pass_id)) {
-        throw std::runtime_error("Rendering pass not found: " + name);
-    }
-    if (!hasOutputTransform(*generation, rendering_pass_id)) {
-        throw std::runtime_error("Default rendering pass has no terminal output_transform: " +
-                                 name);
-    }
-    return rendering_pass_id;
-}
-
-void validateDefaultPass(
+RenderingPassId validateDefaultPass(
     const RendererRuntimeGeneration &generation,
     std::string_view name) {
     const auto found =
@@ -129,6 +123,7 @@ void validateDefaultPass(
             "Default rendering pass has no terminal output_transform: " +
             std::string{name});
     }
+    return found->second;
 }
 
 bool generationEnablesFeature(
@@ -262,6 +257,8 @@ loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     std::string_view rendering_config_json,
     RenderGraphVariantLoadHooks hooks) {
+    static_assert(std::is_nothrow_move_constructible_v<
+                  RenderGraphVariantConfig>);
     ScopedLogTimer timer{"load default rendering pass from config"};
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
@@ -273,17 +270,20 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     const auto base_extent =
         GET_MODULE(RenderTarget).getExtent();
     const auto default_pass_name = config.defaultRenderingPass();
+    RenderingPassId prepared_flat_rendering_pass_id =
+        invalidRenderingPassId();
     std::vector<RenderingPassConfigRegistrationDependencies>
         variant_dependencies;
     RenderingPassConfigRegistrationDependencies::Options
         flat_options;
     flat_options.validate_prepared_generation =
-        [default_pass_name,
+        [default_pass_name, &prepared_flat_rendering_pass_id,
          validate_live_materials =
              hooks.validate_live_materials](
             const RendererRuntimeGeneration &generation) {
-            validateDefaultPass(generation,
-                                default_pass_name);
+            prepared_flat_rendering_pass_id =
+                validateDefaultPass(generation,
+                                    default_pass_name);
             validateFrozenRuntimeFeatureModules(
                 generation);
             if (validate_live_materials) {
@@ -301,6 +301,8 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
 #if PELICAN_WITH_OPENXR
     const bool xr_active =
         GET_MODULE(EngineLaunchConfig).xr_active;
+    RenderingPassId prepared_xr_rendering_pass_id =
+        invalidRenderingPassId();
     if (xr_active) {
         // Flat and XR are one publication/retirement unit. Both variants
         // share targets, shaders, and pipelines, so a combined owner is the
@@ -332,9 +334,10 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         const auto xr_default_pass_name =
             default_pass_name + "#xr";
         xr_options.validate_prepared_generation =
-            [xr_default_pass_name](
+            [xr_default_pass_name,
+             &prepared_xr_rendering_pass_id](
                 const RendererRuntimeGeneration &generation) {
-                validateDefaultPass(
+                prepared_xr_rendering_pass_id = validateDefaultPass(
                     generation, xr_default_pass_name);
             };
         variant_dependencies.push_back(
@@ -349,18 +352,16 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
                 base_extent,
                 std::move(variant_dependencies));
         RenderGraphVariantConfig variants{
-            .flat = requireDefaultPass(
-                default_pass_name),
+            .flat = prepared_flat_rendering_pass_id,
             .preview =
                 std::move(family.preview),
         };
 #if PELICAN_WITH_OPENXR
         if (xr_active) {
-            variants.xr = requireDefaultPass(
-                default_pass_name + "#xr");
+            variants.xr = prepared_xr_rendering_pass_id;
             variants.xr_excluded_features =
-                family.runtime_variants.at(1)
-                    .excluded_feature_names;
+                std::move(family.runtime_variants[1]
+                              .excluded_feature_names);
         }
 #endif
         return variants;

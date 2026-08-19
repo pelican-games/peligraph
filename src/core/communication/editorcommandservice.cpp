@@ -1,8 +1,11 @@
 #include "editorcommandservice.hpp"
+
+#include "renderconfigeditor.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <picosha2.h>
 #include <type_traits>
 #include <utility>
@@ -242,11 +245,25 @@ EditorCommandError::EditorCommandError(EditorCommandErrorCode code,
     : std::runtime_error{message}, code_{code}, detail_{std::move(detail)} {}
 
 EditorCommandService::EditorCommandService(EditorCommandServiceDependencies dependencies)
-    : dependencies_{std::move(dependencies)} {
+    : dependencies_{std::move(dependencies)},
+      render_config_editor_{
+          std::move(dependencies_.render_config_editor)} {
     if (!dependencies_.document || !dependencies_.current_scene_id) {
         throw std::invalid_argument("EditorCommandService requires document and current_scene_id providers");
     }
     if (dependencies_.edit) {
+        if (render_config_editor_) {
+            auto previous = std::move(
+                dependencies_.edit->frame_boundary_extension);
+            const auto render_config_editor =
+                render_config_editor_;
+            dependencies_.edit->frame_boundary_extension =
+                [previous = std::move(previous),
+                 render_config_editor] {
+                    if (previous) previous();
+                    render_config_editor->commitPending();
+                };
+        }
         edit_ = std::make_unique<EditorEditCoordinator>(
             std::move(*dependencies_.edit));
         dependencies_.edit.reset();
@@ -731,7 +748,44 @@ OrderedJson EditorCommandService::abortPreview(const Json &params) {
     return result;
 }
 
+OrderedJson EditorCommandService::getRenderFeatures(
+    const Json &params) const {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->getRenderFeatures(params);
+}
+
+OrderedJson EditorCommandService::listRenderFeatures(
+    const Json &params) const {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->listRenderFeatures(params);
+}
+
+OrderedJson EditorCommandService::editRenderFeatures(
+    const Json &params) {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->editRenderFeatures(params);
+}
+
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
+    if (render_config_editor_ && params.is_object()) {
+        const auto found = params.find("ticket");
+        if (found != params.end() && found->is_string()) {
+            const auto ticket = found->get<std::string>();
+            if (ticket.starts_with("render-feature-edit-") ||
+                render_config_editor_->ownsTicket(ticket)) {
+                return render_config_editor_->getResult(params);
+            }
+        }
+    }
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     return edit_->getResult(params);
 }
@@ -748,13 +802,25 @@ OrderedJson EditorCommandService::queryJournal(const Json &params) const {
 }
 
 std::vector<OrderedJson> EditorCommandService::takeCompletedEditResults() {
-    return edit_ ? edit_->takeCompletedResults() : std::vector<OrderedJson>{};
+    auto result =
+        edit_ ? edit_->takeCompletedResults()
+              : std::vector<OrderedJson>{};
+    if (render_config_editor_) {
+        auto render_results =
+            render_config_editor_->takeCompletedResults();
+        result.insert(result.end(),
+                      std::make_move_iterator(render_results.begin()),
+                      std::make_move_iterator(render_results.end()));
+    }
+    return result;
 }
 
 void EditorCommandService::commitPendingEdits() noexcept {
     if (edit_) {
         edit_->commitPending();
         synchronizePreviewWatch();
+    } else if (render_config_editor_) {
+        render_config_editor_->commitPending();
     }
 }
 
@@ -1067,6 +1133,24 @@ OrderedJson EditorCommandRpcAdapter::commitPreview(const Json &params) const {
 OrderedJson EditorCommandRpcAdapter::abortPreview(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
     return mutable_service_->abortPreview(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getRenderFeatures(
+    const Json &params) const {
+    return service_.getRenderFeatures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::listRenderFeatures(
+    const Json &params) const {
+    return service_.listRenderFeatures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editRenderFeatures(
+    const Json &params) const {
+    if (!mutable_service_) {
+        throw std::logic_error("editor RPC adapter is read-only");
+    }
+    return mutable_service_->editRenderFeatures(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getEditResult(const Json &params) const {

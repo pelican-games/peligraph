@@ -33,6 +33,7 @@ class EmbeddedViewport;
 class FramePlanWidget;
 class FullscreenPassWidget;
 class InspectorWidget;
+class RenderFeaturesWidget;
 
 class MainWindow : public QMainWindow {
   public:
@@ -64,6 +65,7 @@ class MainWindow : public QMainWindow {
     EmbeddedViewport *viewport_ = nullptr;
     InspectorWidget *inspector_ = nullptr;
     FramePlanWidget *frame_plan_ = nullptr;
+    RenderFeaturesWidget *render_features_ = nullptr;
     FullscreenPassWidget *fullscreen_pass_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;

@@ -2696,6 +2696,14 @@ struct EditorEditCoordinator::Impl {
                 completed.push_back(ticket.result);
             }
         }
+        if (dependencies.frame_boundary_extension) {
+            try {
+                dependencies.frame_boundary_extension();
+            } catch (...) {
+                // The frame-boundary hook is noexcept.  Extension services
+                // own conversion of individual requests to stable failures.
+            }
+        }
     }
 };
 

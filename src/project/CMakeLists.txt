@@ -27,6 +27,7 @@ add_library(pelican_project
     projectformat.cpp
     projectpathresolver.cpp
     rasterpass.cpp
+    renderconfigdocument.cpp
     renderfeatureoverlay.cpp
     renderpipeline.cpp
     samplecountplanning.cpp

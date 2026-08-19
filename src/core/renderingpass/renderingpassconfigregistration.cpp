@@ -43,6 +43,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -830,6 +831,10 @@ registerRenderingPassConfigVariantsData(
                     preview_variant
                         .normalized_config));
     }
+    if (include_preview && !prepared_preview) {
+        throw std::runtime_error(
+            "Render graph variant family omitted its preview artifact");
+    }
     for (std::size_t index = 0;
          index < dependencies.size(); ++index) {
         dependencies[index].runtime.shader_defines =
@@ -1055,11 +1060,8 @@ registerRenderGraphVariantFamilyFromJsonData(
             base_extent,
             std::move(runtime_dependencies),
             true);
-    if (!registered.preview) {
-        throw std::runtime_error(
-            "Render graph variant family omitted its "
-            "preview artifact");
-    }
+    static_assert(std::is_nothrow_move_constructible_v<
+                  RenderGraphVariantFamilyRegistrationResult>);
     return {
         .runtime_variants =
             std::move(

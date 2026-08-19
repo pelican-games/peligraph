@@ -11,6 +11,8 @@ add_library(pelican_studio_view STATIC
     fullscreenpasswidget.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
+    renderfeatureswidget.cpp
+    renderfeatureswidget.hpp
 )
 
 set_target_properties(pelican_studio_view PROPERTIES

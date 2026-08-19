@@ -2,6 +2,7 @@
 #include "editorruntimefactory.hpp"
 
 #include "editorcommandservice.hpp"
+#include "renderconfigeditor.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../asset/model.hpp"
 #include "../container.hpp"
@@ -20,6 +21,7 @@
 #include "../loader/scene.hpp"
 #include "../os/inputsequence.hpp"
 #include "../phys/physworld.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/components/predefined.hpp"
@@ -32,8 +34,10 @@
 
 #include <algorithm>
 #include <any>
+#include <array>
 #include <filesystem>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <span>
@@ -1010,6 +1014,26 @@ EditorGateObservation editorGateObservation(const EditorRuntimeModules &modules)
         reload_reconciling);
 }
 
+std::vector<std::string> editorGateReasonNamesForRenderConfig(
+    std::uint32_t bits) {
+    std::vector<std::string> result;
+    const std::array reasons{
+        std::pair{EditorGateReason::replay, "replay"},
+        std::pair{EditorGateReason::golden, "golden"},
+        std::pair{EditorGateReason::strict, "strict"},
+        std::pair{EditorGateReason::reload_scene_transition,
+                  "reload_scene_transition"},
+        std::pair{EditorGateReason::preview_lease_conflict,
+                  "preview_lease_conflict"},
+    };
+    for (const auto &[reason, name] : reasons) {
+        if ((bits & editorGateReasonBit(reason)) != 0) {
+            result.emplace_back(name);
+        }
+    }
+    return result;
+}
+
 EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
                                             std::span<const EditorProjectionRuntimeObjectBinding> bindings,
                                             const AuthoringSceneView &scene,
@@ -1362,8 +1386,106 @@ struct EditorRuntimeState {
 
 } // namespace
 
-std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
+std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
+    EditorRuntimeServiceOptions options) {
     auto runtime = std::make_shared<EditorRuntimeState>();
+    std::shared_ptr<RenderConfigEditorService>
+        render_config_editor;
+    if (options.render_config_editing) {
+        const auto source_reference =
+            runtime->modules.project_config
+                .renderingConfigReference();
+        const auto source_bytes =
+            runtime->modules.path_resolver
+                .loadText(source_reference);
+        const auto authored =
+            nlohmann::json::parse(source_bytes);
+        // Explicit legacy/test configs may omit features entirely. WP331 has
+        // no lexical array to own in that case, but the optional editing
+        // surface must not prevent unrelated production RPC methods from
+        // starting.
+        if (authored.contains("features")) {
+            const auto resolved =
+                runtime->modules.path_resolver
+                    .resolveExistingFileReference(
+                        source_reference);
+            const auto *source_path =
+                std::get_if<std::filesystem::path>(
+                    &resolved);
+            if (source_path == nullptr) {
+                throw std::runtime_error(
+                    "WP331 requires the authored render config root to resolve to a file");
+            }
+            render_config_editor =
+                std::make_shared<RenderConfigEditorService>(
+                RenderConfigEditorDependencies{
+                    .source_reference = source_reference,
+                    .source_path = *source_path,
+                    .source_bytes = source_bytes,
+                    // This is the independent editor query policy.  In
+                    // particular, it never calls ReloadGate::enabled(),
+                    // which is intentionally false for --rpc drivers.
+                    .gate = [runtime] {
+                        const auto observation =
+                            editorGateObservation(
+                                runtime->modules);
+                        return RenderConfigEditorGateObservation{
+                            .can_edit =
+                                observation.reasons == 0,
+                            .transition_epoch =
+                                observation.transition_epoch,
+                            .reasons =
+                                editorGateReasonNamesForRenderConfig(
+                                    observation.reasons),
+                        };
+                    },
+                    .runtime_snapshot = [runtime] {
+                        (void)runtime;
+                        const auto generation =
+                            GET_MODULE(FrameGraphRuntimeContainer)
+                                .snapshot();
+                        if (generation == nullptr) {
+                            throw std::runtime_error(
+                                "render pipeline generation is unavailable");
+                        }
+                        return RenderConfigRuntimeSnapshot{
+                            .published_generation =
+                                generation->generation,
+                            .enabled_feature_names =
+                                generation
+                                    ->enabled_feature_names,
+                        };
+                    },
+                    .apply_candidate =
+                        [runtime](
+                            std::string candidate,
+                            const RenderConfigSourceCommit
+                                &source_commit) {
+                            if (runtime->modules.reload_service ==
+                                nullptr) {
+                                return RenderConfigRuntimeApplyResult{
+                                    .error =
+                                        "pelican.render_pipeline reload participant is unavailable",
+                                };
+                            }
+                            const auto applied =
+                                runtime->modules.reload_service
+                                    ->applyAuthoredCandidate(
+                                        watch::renderPipelineReloadParticipantName,
+                                        std::move(candidate),
+                                        source_commit);
+                            return RenderConfigRuntimeApplyResult{
+                                .committed = applied.committed,
+                                .published_generation =
+                                    applied.published_generation,
+                                .error = applied.error,
+                                .post_commit_error =
+                                    applied.post_commit_error,
+                            };
+                        },
+                });
+        }
+    }
     return std::make_unique<EditorCommandService>(EditorCommandServiceDependencies{
         .document = [runtime]() -> const AuthoringSceneDocument & {
             return runtime->modules.project_config.sceneDocument();
@@ -1458,6 +1580,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                 return runtime->previewSharedState();
             },
         },
+        .render_config_editor =
+            std::move(render_config_editor),
         .import_scene_snapshot =
             [runtime](std::string_view bytes,
                       std::string_view current_scene_id) {

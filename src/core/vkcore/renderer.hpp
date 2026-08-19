@@ -22,6 +22,12 @@
 namespace Pelican {
 
 struct RenderPipelineReloadState;
+struct RenderPipelineAuthoringApplyResult {
+    bool committed = false;
+    std::uint64_t published_generation = 0;
+    std::string error;
+    std::string post_commit_error;
+};
 struct RayQueryAccelerationStructureDiagnostics;
 namespace watch {
 struct ReloadRequest;
@@ -148,6 +154,10 @@ DECLARE_MODULE(Renderer) {
     Renderer();
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    RenderPipelineAuthoringApplyResult
+    applyRenderPipelineAuthoringCandidate(
+        std::string candidate_json,
+        const std::function<void()> &source_commit);
     PickingReadbackResult readPickingPixel(std::uint32_t x,
                                            std::uint32_t y);
     R8RenderTargetReadback readR8RenderTargetForTesting(

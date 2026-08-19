@@ -1,5 +1,6 @@
 #include "fullscreenpasswidget.hpp"
 #include "mainwindow.hpp"
+#include "renderfeatureswidget.hpp"
 #include "../src/devstudio/model/frameplanmodel.hpp"
 
 #include "passfieldownership.hpp"
@@ -27,6 +28,7 @@
 #include <QSpinBox>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTreeWidget>
 #include <QWidget>
 
 #include <array>
@@ -954,6 +956,43 @@ TEST_CASE(
         QStringLiteral("pelican.fullscreenPass"));
     REQUIRE(child != nullptr);
     REQUIRE(dynamic_cast<FullscreenPassWidget *>(child) != nullptr);
+}
+
+TEST_CASE(
+    "WP331 production MainWindow contains the RPC render feature editor",
+    "[devstudio][render-features][wp331][production-wiring]") {
+    (void)application();
+    MainWindow window;
+    auto *child = window.findChild<QWidget *>(
+        QStringLiteral("pelican.renderFeatures"));
+    REQUIRE(child != nullptr);
+    REQUIRE(dynamic_cast<RenderFeaturesWidget *>(child) != nullptr);
+    REQUIRE(child->findChild<QListWidget *>(
+                QStringLiteral("pelican.renderFeatures.current")) !=
+            nullptr);
+    REQUIRE(child->findChild<QTreeWidget *>(
+                QStringLiteral("pelican.renderFeatures.catalog")) !=
+            nullptr);
+    REQUIRE(child->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.add")) !=
+            nullptr);
+    REQUIRE(child->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.remove")) !=
+            nullptr);
+    REQUIRE(child->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.apply")) !=
+            nullptr);
+
+    const auto studio_source = readText(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "src" / "devstudio" / "view" /
+        "renderfeatureswidget.cpp");
+    REQUIRE(studio_source.find("engine://features/") ==
+            std::string::npos);
+    REQUIRE(studio_source.find("sky_ambient") ==
+            std::string::npos);
+    REQUIRE(studio_source.find("gpu_timing") ==
+            std::string::npos);
 }
 
 TEST_CASE(

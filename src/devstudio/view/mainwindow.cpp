@@ -2,6 +2,7 @@
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
 #include "inspectorwidget.hpp"
+#include "renderfeatureswidget.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAction>
@@ -219,10 +220,17 @@ void MainWindow::createWorkspace() {
     engine_log_->setPlaceholderText(tr("Engine output will appear here."));
     docks_[EngineLogDock] = makeDock(
         this, tr("Engine Log"), QStringLiteral("pelican.engineLogDock"), engine_log_);
-    frame_plan_ = new FramePlanWidget(viewport_, this);
+    auto *render_tabs = new QTabWidget(this);
+    render_tabs->setObjectName(
+        QStringLiteral("pelican.renderTools"));
+    frame_plan_ = new FramePlanWidget(viewport_, render_tabs);
+    render_features_ = new RenderFeaturesWidget(
+        viewport_, render_tabs);
+    render_tabs->addTab(frame_plan_, tr("Frame Plan"));
+    render_tabs->addTab(render_features_, tr("Features"));
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
-        frame_plan_);
+        render_tabs);
     fullscreen_pass_ = new FullscreenPassWidget(
         framePlanReadCapability(*viewport_), this);
     docks_[FullscreenPassDock] = makeDock(

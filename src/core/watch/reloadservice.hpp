@@ -57,6 +57,14 @@ struct RuntimeReloadSummary {
     std::size_t failed = 0;
 };
 
+struct AuthoredRuntimeReloadResult {
+    bool attempted = false;
+    bool committed = false;
+    std::uint64_t published_generation = 0;
+    std::string error;
+    std::string post_commit_error;
+};
+
 struct RuntimeReloadParticipant {
     RuntimeReloadBoundary boundary = RuntimeReloadBoundary::frame_start;
     // The participant owns its domain-specific prepare/commit/rollback/retire
@@ -90,6 +98,12 @@ struct ReloadParticipant {
     // boundary so one faulty participant cannot terminate frame teardown.
     std::function<bool(std::shared_ptr<const void>, ReloadCoordinator &)> retire;
     std::optional<RuntimeReloadParticipant> runtime;
+    // Engine-owned authoring documents may supply private candidate bytes.
+    // The participant must preflight them, invoke source_commit as the last
+    // fallible pre-publication operation, and then publish without throwing.
+    std::function<AuthoredRuntimeReloadResult(
+        std::string, const std::function<void()> &)>
+        apply_authored_candidate;
 };
 
 DECLARE_MODULE(ReloadService) {
@@ -100,6 +114,9 @@ DECLARE_MODULE(ReloadService) {
     void applyFrame();
     RuntimeReloadSummary applyRuntimeBoundary(RuntimeReloadBoundary boundary);
     RuntimeReloadResult applyRuntimeNow(std::string_view name);
+    AuthoredRuntimeReloadResult applyAuthoredCandidate(
+        std::string_view name, std::string candidate,
+        const std::function<void()> &source_commit);
     bool requestRuntimeReload(std::string_view name);
     nlohmann::json statusJson() const;
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }

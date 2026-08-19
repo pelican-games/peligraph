@@ -1813,7 +1813,8 @@ struct EngineRpcEndpoint::Impl {
     Impl(std::istream &input, std::ostream &output)
         : modules{resolveEngineRpcModules()}, server{input, output},
           instance_id{generateUuidV4()},
-          editor_service{makeEditorRuntimeService()},
+          editor_service{makeEditorRuntimeService(
+              {.render_config_editing = true})},
           editor_rpc{*editor_service} {
         configureEngineRpcHandlers(server, modules, instance_id,
                                    pending_transforms, editor_rpc);

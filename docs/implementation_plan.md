@@ -7003,6 +7003,24 @@ Inspector と `SelectionModel` に触らないこと(あれはシーンオブジ
 
 依存: なし。見積: 大。
 
+#### マージ時に記録した宿題(2026-08-19)
+
+**モジュールを要求する 6 feature の名前が 3 箇所にある。**
+
+1. `renderFeaturesRequiringRuntimeModules()` の `constexpr` 配列
+   (`src/core/vkcore/renderer_config.cpp`)
+2. `validateFrozenRuntimeFeatureModules()` の if 連鎖(同ファイル)
+3. `test/renderconfigeditor_test.cpp` の期待集合リテラル
+
+**3 つとも現在は一致しているが、一致を保つ機構が無い。**
+7 つ目を if 連鎖に足しても、配列とテストは変わらず**テストは緑のままである。**
+
+**次にこの周辺を触る WP で、`{feature, 要求モジュール}` の表を 1 つ作り、
+if 連鎖がそれを歩き、配列がその名前を投影する形にすること。**
+テストの期待集合もその表から作ること。
+本 WP のマージ時に直さなかったのは、エンジンのコードを
+マージ直前に組み替える risk が、将来のずれの risk を上回ると判断したためである。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:

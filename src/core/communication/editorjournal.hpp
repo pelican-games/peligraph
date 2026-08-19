@@ -146,6 +146,10 @@ struct EditorEditRuntimeDependencies {
     std::function<std::optional<EditorBehaviorAttachmentIdentity>(
         AuthoringObjectId object_id, std::size_t attachment_index)>
         resolve_behavior_attachment;
+    // One production frame-boundary owner drains both the scene journal and
+    // the WP331 render-config ticket queue.  This avoids a second competing
+    // global hook while keeping the two documents independent.
+    std::function<void()> frame_boundary_extension;
     bool install_commit_hook = false;
 };
 

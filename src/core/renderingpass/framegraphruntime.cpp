@@ -526,14 +526,12 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
     if (before_publish) {
         before_publish(*prepared.candidate_);
     }
-    if (!publication->active_generation
-             .compare_exchange_strong(
-                 expected, prepared.candidate_,
-                 std::memory_order_acq_rel,
-                 std::memory_order_acquire)) {
-        throw std::runtime_error(
-            "Renderer runtime candidate lost publication race");
-    }
+    // publication_mutex serializes every writer.  The stale check above is
+    // the final fallible operation other than before_publish; after that hook
+    // returns (WP331 writes its source there), publication is a no-throw
+    // commit and cannot report failure after the new source is on disk.
+    publication->active_generation.store(
+        prepared.candidate_, std::memory_order_release);
     prepared.candidate_.reset();
     prepared.prepared_rendering_pass_ids_.clear();
 }

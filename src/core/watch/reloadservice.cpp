@@ -95,9 +95,10 @@ void ReloadService::registerParticipant(ReloadParticipant participant) {
         throw std::invalid_argument("runtime reload participant '" + participant.name +
                                     "' requires an apply callback");
     }
-    if (!has_file_callbacks && !participant.runtime) {
+    if (!has_file_callbacks && !participant.runtime &&
+        !participant.apply_authored_candidate) {
         throw std::invalid_argument("reload participant '" + participant.name +
-                                    "' has no file or runtime callbacks");
+                                    "' has no file, runtime or authored-candidate callbacks");
     }
     if (std::ranges::any_of(participants_, [&](const auto &existing) {
             return existing.name == participant.name;
@@ -184,6 +185,41 @@ RuntimeReloadResult ReloadService::applyRuntimeNow(std::string_view name) {
     }
     requested_runtime_reloads_.erase(found->name);
     return invokeRuntimeParticipant(*found, RuntimeReloadTrigger::manual);
+}
+
+AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
+    std::string_view name, std::string candidate,
+    const std::function<void()> &source_commit) {
+    ensureBuiltInParticipants();
+    const auto found = std::ranges::find(
+        participants_, name, &ReloadParticipant::name);
+    if (found == participants_.end()) {
+        return {
+            .attempted = true,
+            .error = "authored reload participant '" +
+                     std::string{name} + "' is not registered",
+        };
+    }
+    if (!found->apply_authored_candidate) {
+        return {
+            .attempted = true,
+            .error = "reload participant '" + std::string{name} +
+                     "' does not accept authored candidates",
+        };
+    }
+    try {
+        auto result = found->apply_authored_candidate(
+            std::move(candidate), source_commit);
+        result.attempted = true;
+        return result;
+    } catch (const std::exception &error) {
+        return {.attempted = true, .error = error.what()};
+    } catch (...) {
+        return {
+            .attempted = true,
+            .error = "unknown authored render pipeline reload failure",
+        };
+    }
 }
 
 bool ReloadService::requestRuntimeReload(std::string_view name) {
