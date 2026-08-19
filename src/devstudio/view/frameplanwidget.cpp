@@ -21,6 +21,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -236,6 +238,7 @@ struct FramePlanWidget::Impl {
     QTabWidget *tabs = nullptr;
     FramePlanGraphicsView *logical = nullptr;
     FramePlanGraphicsScene *logical_scene = nullptr;
+    QTreeWidget *logical_details = nullptr;
     QTreeWidget *passes = nullptr;
     QTreeWidget *resources = nullptr;
     QTreeWidget *physical = nullptr;
@@ -299,8 +302,9 @@ struct FramePlanWidget::Impl {
 
         tabs = new QTabWidget(&owner);
         tabs->setObjectName(QStringLiteral("pelican.framePlanTabs"));
+        auto *logical_tab = new QSplitter(Qt::Horizontal, tabs);
         logical_scene = new FramePlanGraphicsScene(&owner);
-        logical = new FramePlanGraphicsView(logical_scene, tabs);
+        logical = new FramePlanGraphicsView(logical_scene, logical_tab);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
         logical->setRenderHint(QPainter::Antialiasing, true);
         logical->setDragMode(QGraphicsView::ScrollHandDrag);
@@ -316,6 +320,15 @@ struct FramePlanWidget::Impl {
                               .arg(qRound(scale * 100.0))
                               .arg(boundary));
             });
+        logical_details = makeTree(
+            {owner.tr("Order"), owner.tr("Pass / detail"), owner.tr("Kind"),
+             owner.tr("Inputs"), owner.tr("Outputs")},
+            logical_tab);
+        logical_details->setObjectName(
+            QStringLiteral("pelican.framePlanLogicalDetails"));
+        logical_tab->setStretchFactor(0, 3);
+        logical_tab->setStretchFactor(1, 2);
+        logical_tab->setSizes({600, 360});
         passes = makeTree(
             {owner.tr("Order"), owner.tr("Pass / detail"), owner.tr("Kind"),
              owner.tr("Inputs"), owner.tr("Outputs")},
@@ -349,7 +362,7 @@ struct FramePlanWidget::Impl {
         raw_json->setObjectName(QStringLiteral("pelican.framePlanRawJson"));
         raw_json->setReadOnly(true);
         raw_json->setLineWrapMode(QPlainTextEdit::NoWrap);
-        tabs->addTab(logical, owner.tr("Logical graph"));
+        tabs->addTab(logical_tab, owner.tr("Logical graph"));
         tabs->addTab(passes, owner.tr("Passes"));
         tabs->addTab(resources, owner.tr("Resources"));
         tabs->addTab(physical, owner.tr("Physical plan"));
@@ -362,6 +375,9 @@ struct FramePlanWidget::Impl {
 
         QObject::connect(refresh, &QPushButton::clicked, &owner,
                          [this] { requestRefresh(); });
+        QObject::connect(logical_scene, &QGraphicsScene::selectionChanged,
+                         &owner, [this] { populateLogicalDetails(); },
+                         Qt::QueuedConnection);
         QObject::connect(filter, &QLineEdit::textChanged, &owner,
                          [this](const QString &needle) {
                              applyFilter(*passes, needle);
@@ -412,6 +428,8 @@ struct FramePlanWidget::Impl {
                 receiveFailure(request_id, message);
             });
 
+        populateLogicalDetails();
+
         if (viewport.rpcReady()) {
             requestRefresh();
         } else {
@@ -423,6 +441,7 @@ struct FramePlanWidget::Impl {
 
     void clearTrees() {
         logical_scene->resetGraph();
+        populateLogicalDetails();
         {
             const QSignalBlocker blocker{target};
             target->clear();
@@ -565,6 +584,7 @@ struct FramePlanWidget::Impl {
                 : std::optional<FramePlanNodeKey>{FramePlanNodeKey{
                       model->graph, target->currentText().toStdString()}};
         logical_scene->populate(*model, selected_target, depth->value());
+        populateLogicalDetails();
         populatePasses();
         populateResources();
         populatePhysicalPlan();
@@ -642,9 +662,10 @@ struct FramePlanWidget::Impl {
         }
     }
 
-    void populatePasses() {
-        for (const FramePlanNode &node : model->nodes) {
-            auto *item = new QTreeWidgetItem(passes);
+    void populatePasses(QTreeWidget *tree,
+                        std::span<const FramePlanNode> nodes) {
+        for (const FramePlanNode &node : nodes) {
+            auto *item = new QTreeWidgetItem(tree);
             item->setText(0, QString::number(static_cast<qulonglong>(node.order)));
             item->setText(1, text(node.name));
             item->setText(2, text(node.kind));
@@ -780,6 +801,32 @@ struct FramePlanWidget::Impl {
                 }
             }
         }
+    }
+
+    void populateLogicalDetails() {
+        logical_details->clear();
+        const auto &selected = logical_scene->selectedNode();
+        if (!model || !selected || selected->graph != model->graph) {
+            auto *message = new QTreeWidgetItem(logical_details);
+            message->setText(1, owner.tr("No node selected"));
+        } else {
+            const auto found = std::ranges::find(
+                model->nodes, selected->name, &FramePlanNode::name);
+            if (found == model->nodes.end()) {
+                auto *message = new QTreeWidgetItem(logical_details);
+                message->setText(1, owner.tr("No node selected"));
+            } else {
+                populatePasses(
+                    logical_details,
+                    std::span<const FramePlanNode>{&*found, 1});
+            }
+        }
+        logical_details->header()->setSectionResizeMode(
+            1, QHeaderView::ResizeToContents);
+    }
+
+    void populatePasses() {
+        populatePasses(passes, model->nodes);
         passes->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     }
 

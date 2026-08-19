@@ -34,6 +34,7 @@
 #include <QSpinBox>
 #include <QStringList>
 #include <QTest>
+#include <QTreeWidget>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -438,6 +439,24 @@ QGraphicsView &logicalView(FramePlanWidget &widget) {
         throw std::runtime_error("frame-plan logical view was not installed");
     }
     return *view;
+}
+
+QTreeWidget &logicalDetails(FramePlanWidget &widget) {
+    auto *details = widget.findChild<QTreeWidget *>(
+        QStringLiteral("pelican.framePlanLogicalDetails"));
+    if (details == nullptr) {
+        throw std::runtime_error(
+            "frame-plan logical details pane was not installed");
+    }
+    return *details;
+}
+
+QString joinedValues(const std::vector<std::string> &values) {
+    QStringList result;
+    for (const auto &value : values) {
+        result.push_back(QString::fromStdString(value));
+    }
+    return result.join(QStringLiteral(", "));
 }
 
 QString kind(const QGraphicsItem &item) {
@@ -1381,6 +1400,58 @@ TEST_CASE(
     for (const QGraphicsItem *node : valid_nodes) {
         REQUIRE(logical.sceneRect().contains(node->sceneBoundingRect()));
     }
+}
+
+TEST_CASE(
+    "WP329 logical node selection shows model details and clearing selection removes them",
+    "[devstudio][frame-plan][logical-graph][selection][wp329][negative-contrast]") {
+    (void)application();
+    const std::string captured = readText(PELICAN_TEST_FRAME_PLAN_FIXTURE);
+    const FramePlanModel model = buildFramePlanModel(captured);
+    REQUIRE_FALSE(model.nodes.empty());
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(captured));
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+    QTreeWidget &details = logicalDetails(widget);
+
+    const auto visible_nodes = itemsOfKind(logical, FramePlanNodeItem);
+    REQUIRE_FALSE(visible_nodes.empty());
+    QGraphicsItem *selected_item = visible_nodes.front();
+    const std::string selected_name =
+        selected_item->data(FramePlanNameRole).toString().toStdString();
+    const auto expected = std::ranges::find(
+        model.nodes, selected_name, &FramePlanNode::name);
+    REQUIRE(expected != model.nodes.end());
+
+    selected_item->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(details.topLevelItemCount() == 1);
+    QTreeWidgetItem *selected_details = details.topLevelItem(0);
+    const QStringList selected_observation{
+        selected_details->text(1), selected_details->text(2),
+        selected_details->text(3), selected_details->text(4)};
+    const QStringList expected_observation{
+        QString::fromStdString(expected->name),
+        QString::fromStdString(expected->kind), joinedValues(expected->reads),
+        joinedValues(expected->writes)};
+    REQUIRE(selected_observation == expected_observation);
+
+    logical.clearSelection();
+    QApplication::processEvents();
+    REQUIRE(details.topLevelItemCount() == 1);
+    QTreeWidgetItem *no_selection = details.topLevelItem(0);
+    const QStringList no_selection_observation{
+        no_selection->text(1), no_selection->text(2), no_selection->text(3),
+        no_selection->text(4)};
+    REQUIRE(no_selection_observation != selected_observation);
+    REQUIRE_FALSE(no_selection->text(1).isEmpty());
+    REQUIRE(no_selection->text(1) != QString::fromStdString(expected->name));
+    REQUIRE(no_selection->text(2).isEmpty());
+    REQUIRE(no_selection->text(3).isEmpty());
+    REQUIRE(no_selection->text(4).isEmpty());
 }
 
 TEST_CASE(
