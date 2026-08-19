@@ -5354,7 +5354,12 @@ codex が出した、Claude 側の誰も問わなかった観点:
 4 つ中 3 つがそうで、`animgraph_demo` は 1 行も書いていない。
 `example` だけが全部書いている外れ値である。
 
-## 編集側の設計 — 4 回目の案(2026-08-19)
+## 編集側の設計 — 4 回目の案(2026-08-19)【却下。5 回目に置き換え済み】
+
+**この節は却下された案の記録である。実装の根拠にしないこと。**
+既存の編集契約 `docs/design_editor_tooling.md` を読まずに書かれ、
+両レビューで 4 条件 0/4 と判定された。**次節が現行の設計である。**
+
 
 前 3 回の失敗原因は「編集側の設計 — 確定した条件と、3 回失敗した原因」節にある。
 **この案は、そこで誤りと判明した一般化を外して書き直したものである。**
@@ -5466,6 +5471,187 @@ WP324〜328 で 3 回踏んだ形と同型である。
 前回、保持物が存在しないのに「入力にしていない」と主張して空虚と指摘された。
 
 ---
+
+## 編集側の設計 — 5 回目(2026-08-19 夜)
+
+**4 回目は Reject。両レビュー合わせて 20 件近くの指摘が出た。**
+だが最大の問題は指摘ではなく、**設計を書く前に既存の設計書を探さなかったこと**である。
+
+### 既に受理済みの編集契約がある
+
+`docs/design_editor_tooling.md`(664 行・47 KB・2026-08-04・レビュー受理済み)。
+**4 回目はこれを読まずに書かれた。**
+
+同書が定めていること:
+
+- **正本 = `AuthoringSceneDocument`(authored JSON の lossless な **engine 内**表現)。
+  runtime は投影である**
+- edit = document + 投影の**同時 commit トランザクション**。
+  全 preflight 後に failure-atomic に commit し、**部分成功を禁止**する
+- **ticket 方式** —— edit は受理と ticket を同期応答し、
+  結果は `step_frame.edit_results[]` または `get_edit_result(ticket)` で返す
+- Save = 決定的 encode + **atomic replace**。
+  **digest 不一致は `external_modification` で拒否し、何も書かない**
+- journal に forward/inverse
+- **`ReloadGate` の `enabled()` 流用禁止。`can_edit` を独立 query として追加する**
+
+**ただし同書は scene 用であり、レンダリング config を扱っていない**
+(`rendering_config` / `rendering_passes` の出現は 0 件)。
+
+**したがって本設計は「5 回目をゼロから書く」ではなく、
+「同書の契約をレンダリング config へ拡張する」である。**
+
+### 契約に従うと、4 回目の欠陥がまとめて消える
+
+| 4 回目の欠陥(レビュー指摘) | 契約で消える理由 |
+|---|---|
+| studio と player が別ファイルを解決しうる(`--user-dir`) | **studio はファイルに触らない。**document は engine が所有する |
+| studio の RPC が 5 秒 timeout、reload は family 全体で超えうる | **ticket 方式**が既に定められている |
+| 保存してから reload すると、失敗時に壊れた project が disk に残る | **preflight → atomic replace。**失敗時は何も書かない |
+| 最小差分にならない(原文・位置・表記を保持していない) | **lossless document が正本。**studio は編集トランザクションを送るだけ |
+| D0(studio は `pelican_core` をリンクできない) | studio は RPC を送るだけなので**自明に満たす** |
+
+**4 回目の中心的な誤り**は「studio が著作ファイルを直接書き換える」であった。
+正しくは **engine が document を所有し、studio は編集を要求する**。
+
+### v1 の編集面は `features[]` にする
+
+**4 回目の v1(既存パスの属性編集)は 4 条件のどれも満たさない。**
+
+- `pelican project init` が生成する config は **`hybrid_v1` preset** である。
+  **標準コマンドで作った新規プロジェクトを編集できない。**
+  preset は例外ではなく**既定**である
+- `example` で実際に可能な意味のある変更は
+  「bloom/SSAO の再配線と、同一入力数のステム差し替え」1 族に縮む。
+  しかも studio は入力の**個数しか見ていない**ので、
+  差し替えると**警告なく絵だけが変わる**
+- 所有鍵の内側でも最小差分が破れる ——
+  `vrm_xr_demo` と `sprite_demo` は `"color": "ssao_blur"` と**スカラー**で書いており、
+  フォームは常に配列を出すので、シェーダー名を 1 文字変えるだけで
+  `["ssao_blur"]` に正規化され、無かった `"input": []` が新設される
+
+**代わりに top-level `features[]`(文字列の配列)を編集面にする。**
+
+| 理由 | 根拠 |
+|---|---|
+| **4/4 のプロジェクトで動く** | `features` は **preset 併用時の許可鍵 11 個に含まれる**(`renderpipeline.cpp:708-713`)。`animgraph_demo` で編集できるのは実際この配列だけである(3 要素) |
+| **条件 4 を丸ごと満たす** | デバッグ表示は全て feature 文書(`debug_draw` / `debug_text` / `gpu_timing` / `gizmo` / `picking`)。利用者が条件 4 に挙げたものそのものである |
+| **機構がほぼ要らない** | 文字列配列 1 本。パスの型も所有鍵表も形の検証も要らない |
+| **最小差分が自明** | 配列要素の増減だけなので、表記の正規化問題が発生しない |
+
+**パス属性の編集はその後である。**
+
+### ReloadGate について(4 回目の誤読を訂正)
+
+`ReloadGate` は `enabled_ = requested_ && !replay_ && !strict_ && !rpc_` であり、
+**`--rpc` のとき必ず無効**(理由 "rpc driver")。
+**studio は必ず `--rpc` で player を起動する。**
+
+4 回目は「`applyRuntimeNow` は gate を見ない」を**利点**として書いた。
+事実ではあるが、**決定性のために意図的に閉じている門を別口で回る**という意味である。
+
+**既存契約が正しい**:
+
+> `ReloadGate` の `enabled()` 流用禁止 —— **`can_edit` を独立 query として追加する**
+
+**本設計はこれに従う。**gate を迂回しない。
+
+### fingerprint は 1 語ではない
+
+4 回目は「fingerprint で古さを検出」とだけ書いた。**識別子は少なくとも 4 種ある。**
+
+| 識別子 | 用途 |
+|---|---|
+| source file digest | 外部変更の検出・CAS |
+| effective config fingerprint | preset / feature / overlay 合成後 |
+| runtime generation | 現在 publish されている版 |
+| logical / automatic plan fingerprint | 保持した物理 artifact の入力適合 |
+
+**具体例**: root の bytes は不変のまま editor overlay や feature provider が変わると、
+source digest は同じだがフレームプランは stale である。
+逆にウィンドウ再 lowering では runtime generation が変わるが source は stale でない。
+
+**型と UI 表示で 4 種を分けること。**「fingerprint で古さを検出」だけでは設計にならない。
+
+### 反映の結果を信じられるようにすること
+
+`committed=false` は「旧 runtime のまま」を意味しない。
+variant family 登録は `publishPreparedGeneration()` を呼んでから返り、
+その後の処理(watch source 更新、履歴 reset の `waitIdle`)も同じ `try/catch` に入るため、
+**新しい generation が publish 済みでも RPC が failure を返しうる。**
+
+**fallible な準備を全て publication の前へ移し、最後を no-throw の commit にすること。**
+返値は少なくとも `{published_generation, source_digest, committed}` を持つこと。
+**publish 後の後始末の失敗を commit の失敗と混同しないこと。**
+
+### 制約(設計が答えるべき、解いていない問題)
+
+- **field 単位の provenance が無い。**`pass_overrides` は feature が root pass の
+  `input` / `resource_ports` / `material_resources` を合成後に足せるが、
+  provenance は pass 単位しかない。**「この pass は project 由来」でも
+  「この field は feature 由来」でありうる。**
+- **実効 config は複数文書に散る。**4 プロジェクトとも root + feature + editor overlay で、
+  feature は pass 自体も供給する(UI pass は `engine://features/ui.json` 内)。
+  `engine://` は書き込み可能ファイルに解決できない。
+  **編集対象は「pass の source」ではなく「field の owner document」で決まる。**
+  `features[]` を v1 の面に選ぶのは、この問題を踏まないからでもある。
+
+### 段階(4 回目から順序を変更)
+
+**4 回目は段階 1・2 を編集の前提としたが、それは誤りだった。**
+ノード詳細も workspace も、1 field の save/apply には要らない。
+独立した WP としては有用なので、**前提から外して並行に置く。**
+
+```
+1. document / CAS / lossless な編集トランザクション(契約の拡張)
+2. features[] の 1 要素を選ぶ → 保存 → ticket で apply → 実効値を確認
+3. preset の eject、feature の owner document 解決、パス属性の編集
+4. 世代保持(条件 2・3)
+5. 著作キャンバス
+```
+
+**WP329(ノード詳細)と workspace 状態は、この列に依存しない。並行してよい。**
+
+### 著作キャンバスは「別 view-model」であって「別 widget」ではない
+
+4 回目は「同居キャンバスは必ず自己矛盾表示になる」と書いた。**これは誤りである。**
+
+編集後・反映前の `lighting_pass` を、著作レイヤでは amber/pending、
+コンパイル済みレイヤでは generation N と表示するのは矛盾ではなく、
+**利用者が見たい差分そのものである。**
+
+辺の意味が違うこと(著作は pass↔resource の名前参照、プランは pass→pass の導出依存)は
+**確認済みの事実**であり、**view-model は分ける。**
+しかし **widget を分けることは論証されていない。**
+分離を固定すると、著作ノードとエンジンの merge/split 結果の空間対応を
+利用者が頭の中で再構成することになる。
+
+**同期 split view / 同一 scene のレイヤ切替 / 重ね表示を比較してから決めること。**
+linked selection と共有レイアウトを受け入れ条件にする。
+
+### WP328 との関係(4 回目の過大評価を訂正)
+
+**8 個目の trust route にはならない。**
+本設計は config bytes を RPC で送らず、engine が document を持ち、
+既存の participant が `PathResolver.loadText()` で読み直す。
+**既存の variant-family compiler への既存入口である。**
+
+### 受け入れ条件は段階 2 の WP で書く
+
+4 回目には段階 3 の受け入れ条件が無かった。
+そのため「永久に通らない対照」は見つからなかったが、
+それは妥当だからではなく **対照自体が書かれていなかった**ためである。
+
+**段階 2 を WP 化するときに、逐語の対照を書くこと。**最低限:
+
+- **no-op 保存が byte-identical であること**(lossless の対照)
+- **外部で変更されたファイルへの保存が `external_modification` で拒否され、
+  何も書かれないこと**
+- **apply が失敗したとき、disk と runtime の両方が編集前のままであること**
+- **`features[]` に `gpu_timing` を足して apply すると、
+  再起動なしで実効 config に現れること** —— 条件 4 の対照
+- **同じテストの中で、足す前には現れないこと**
+
 
 ## 実装の順序(この後の全体)
 
