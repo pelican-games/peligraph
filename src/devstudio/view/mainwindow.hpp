@@ -1,6 +1,7 @@
 #pragma once
 
 #include "layoutpreset.hpp"
+#include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
 #include "../model/project.hpp"
 #include "../model/selection.hpp"
@@ -16,6 +17,7 @@
 
 class QDockWidget;
 class QAction;
+class QCloseEvent;
 class QLabel;
 class QListWidget;
 class QMenu;
@@ -35,7 +37,11 @@ class InspectorWidget;
 class MainWindow : public QMainWindow {
   public:
     MainWindow();
+    explicit MainWindow(const QString &application_config_directory);
     void openProject(const QString &path);
+
+  protected:
+    void closeEvent(QCloseEvent *event) override;
 
   private:
     enum DockIndex {
@@ -49,7 +55,9 @@ class MainWindow : public QMainWindow {
         DockCount,
     };
 
+    QString application_config_directory_;
     LayoutPresetManager layout_presets_;
+    std::optional<ToolLayoutPresetManager> tool_layout_presets_;
     std::array<QDockWidget *, DockCount> docks_{};
     QListWidget *project_list_ = nullptr;
     QTreeWidget *outliner_ = nullptr;
@@ -59,6 +67,9 @@ class MainWindow : public QMainWindow {
     FullscreenPassWidget *fullscreen_pass_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;
+    QAction *save_tool_layout_action_ = nullptr;
+    QMenu *restore_tool_layout_menu_ = nullptr;
+    QMenu *delete_tool_layout_menu_ = nullptr;
     QPlainTextEdit *engine_log_ = nullptr;
     EngineLogBuffer engine_log_buffer_;
     std::optional<ProjectOutlinerModel> project_model_;
@@ -97,6 +108,15 @@ class MainWindow : public QMainWindow {
     void saveLayoutPreset();
     void restoreLayoutPreset(const QString &name);
     void deleteLayoutPreset(const QString &name);
+    LayoutRestoreResult applyLayoutPreset(const QString &name,
+                                          QString *error);
+    void saveLastPanelLayout();
+    void restoreLastPanelLayout();
+    void saveToolLayoutPreset();
+    void restoreToolLayoutPreset(const QString &name);
+    void deleteToolLayoutPreset(const QString &name);
+    void saveLastToolLayout();
+    QString restoreLastToolLayout();
     void applyDefaultLayout();
 };
 

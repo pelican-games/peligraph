@@ -4,6 +4,7 @@ add_subdirectory(viewport)
 
 add_library(pelican_studio_layout STATIC
     layoutpreset.cpp
+    toollayoutpreset.cpp
 )
 set_target_properties(pelican_studio_layout PROPERTIES
     AUTOMOC ON

@@ -22,6 +22,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -38,6 +39,31 @@
 
 namespace PelicanStudio {
 namespace {
+
+constexpr auto ToolTabIdProperty = "pelicanToolTabId";
+
+const QStringList &defaultToolTabOrder() {
+    static const QStringList order{
+        QStringLiteral("logical-graph"), QStringLiteral("passes"),
+        QStringLiteral("resources"), QStringLiteral("physical-plan"),
+        QStringLiteral("decisions"), QStringLiteral("backends"),
+        QStringLiteral("barriers"), QStringLiteral("materials"),
+        QStringLiteral("raw-json"),
+    };
+    return order;
+}
+
+QString toolTabId(const QWidget *page) {
+    return page == nullptr
+               ? QString{}
+               : page->property(ToolTabIdProperty).toString();
+}
+
+void addToolTab(QTabWidget &tabs, QWidget *page, const QString &id,
+                const QString &label) {
+    page->setProperty(ToolTabIdProperty, id);
+    tabs.addTab(page, label);
+}
 
 QString text(const std::string &value) {
     return QString::fromStdString(value);
@@ -236,6 +262,7 @@ struct FramePlanWidget::Impl {
     QSpinBox *depth = nullptr;
     QLabel *zoom_status = nullptr;
     QTabWidget *tabs = nullptr;
+    QSplitter *logical_splitter = nullptr;
     FramePlanGraphicsView *logical = nullptr;
     FramePlanGraphicsScene *logical_scene = nullptr;
     QTreeWidget *logical_details = nullptr;
@@ -302,9 +329,12 @@ struct FramePlanWidget::Impl {
 
         tabs = new QTabWidget(&owner);
         tabs->setObjectName(QStringLiteral("pelican.framePlanTabs"));
-        auto *logical_tab = new QSplitter(Qt::Horizontal, tabs);
+        tabs->setMovable(true);
+        logical_splitter = new QSplitter(Qt::Horizontal, tabs);
+        logical_splitter->setObjectName(
+            QStringLiteral("pelican.framePlanLogicalSplitter"));
         logical_scene = new FramePlanGraphicsScene(&owner);
-        logical = new FramePlanGraphicsView(logical_scene, logical_tab);
+        logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
         logical->setRenderHint(QPainter::Antialiasing, true);
         logical->setDragMode(QGraphicsView::ScrollHandDrag);
@@ -323,12 +353,12 @@ struct FramePlanWidget::Impl {
         logical_details = makeTree(
             {owner.tr("Order"), owner.tr("Pass / detail"), owner.tr("Kind"),
              owner.tr("Inputs"), owner.tr("Outputs")},
-            logical_tab);
+            logical_splitter);
         logical_details->setObjectName(
             QStringLiteral("pelican.framePlanLogicalDetails"));
-        logical_tab->setStretchFactor(0, 3);
-        logical_tab->setStretchFactor(1, 2);
-        logical_tab->setSizes({600, 360});
+        logical_splitter->setStretchFactor(0, 3);
+        logical_splitter->setStretchFactor(1, 2);
+        logical_splitter->setSizes({600, 360});
         passes = makeTree(
             {owner.tr("Order"), owner.tr("Pass / detail"), owner.tr("Kind"),
              owner.tr("Inputs"), owner.tr("Outputs")},
@@ -362,15 +392,24 @@ struct FramePlanWidget::Impl {
         raw_json->setObjectName(QStringLiteral("pelican.framePlanRawJson"));
         raw_json->setReadOnly(true);
         raw_json->setLineWrapMode(QPlainTextEdit::NoWrap);
-        tabs->addTab(logical_tab, owner.tr("Logical graph"));
-        tabs->addTab(passes, owner.tr("Passes"));
-        tabs->addTab(resources, owner.tr("Resources"));
-        tabs->addTab(physical, owner.tr("Physical plan"));
-        tabs->addTab(decisions, owner.tr("Decisions"));
-        tabs->addTab(backends, owner.tr("Backends"));
-        tabs->addTab(barriers, owner.tr("Barriers"));
-        tabs->addTab(materials, owner.tr("Materials"));
-        tabs->addTab(raw_json, owner.tr("Raw JSON"));
+        addToolTab(*tabs, logical_splitter, QStringLiteral("logical-graph"),
+                   owner.tr("Logical graph"));
+        addToolTab(*tabs, passes, QStringLiteral("passes"),
+                   owner.tr("Passes"));
+        addToolTab(*tabs, resources, QStringLiteral("resources"),
+                   owner.tr("Resources"));
+        addToolTab(*tabs, physical, QStringLiteral("physical-plan"),
+                   owner.tr("Physical plan"));
+        addToolTab(*tabs, decisions, QStringLiteral("decisions"),
+                   owner.tr("Decisions"));
+        addToolTab(*tabs, backends, QStringLiteral("backends"),
+                   owner.tr("Backends"));
+        addToolTab(*tabs, barriers, QStringLiteral("barriers"),
+                   owner.tr("Barriers"));
+        addToolTab(*tabs, materials, QStringLiteral("materials"),
+                   owner.tr("Materials"));
+        addToolTab(*tabs, raw_json, QStringLiteral("raw-json"),
+                   owner.tr("Raw JSON"));
         layout->addWidget(tabs, 1);
 
         QObject::connect(refresh, &QPushButton::clicked, &owner,
@@ -457,6 +496,45 @@ struct FramePlanWidget::Impl {
         materials->clear();
         raw_json->clear();
         tabs->setEnabled(false);
+    }
+
+    QStringList tabOrder() const {
+        QStringList order;
+        order.reserve(tabs->count());
+        for (int index = 0; index < tabs->count(); ++index) {
+            order.push_back(toolTabId(tabs->widget(index)));
+        }
+        return order;
+    }
+
+    bool reorderTabs(const QStringList &order) {
+        if (order.size() != tabs->count()) {
+            return false;
+        }
+        const QStringList current_order = tabOrder();
+        for (const QString &tab_id : order) {
+            if (tab_id.isEmpty() || order.count(tab_id) != 1 ||
+                !current_order.contains(tab_id)) {
+                return false;
+            }
+        }
+
+        for (int target_index = 0; target_index < order.size();
+             ++target_index) {
+            int current_index = target_index;
+            while (current_index < tabs->count() &&
+                   toolTabId(tabs->widget(current_index)) !=
+                       order[target_index]) {
+                ++current_index;
+            }
+            if (current_index >= tabs->count()) {
+                return false;
+            }
+            if (current_index != target_index) {
+                tabs->tabBar()->moveTab(current_index, target_index);
+            }
+        }
+        return tabOrder() == order;
     }
 
     void showUnavailable(const QString &reason) {
@@ -1188,6 +1266,34 @@ FramePlanWidget::~FramePlanWidget() = default;
 
 void FramePlanWidget::receiveResult(const QByteArray &result_json) {
     impl_->consumeResult(result_json);
+}
+
+ToolLayoutSnapshot FramePlanWidget::toolLayoutSnapshot() const {
+    return {
+        impl_->tabOrder(),
+        impl_->logical_splitter->saveState(),
+    };
+}
+
+bool FramePlanWidget::restoreToolLayout(
+    const ToolLayoutSnapshot &snapshot) {
+    const ToolLayoutSnapshot previous = toolLayoutSnapshot();
+    if (!impl_->reorderTabs(snapshot.tab_order)) {
+        return false;
+    }
+    if (!impl_->logical_splitter->restoreState(
+            snapshot.logical_splitter_state)) {
+        impl_->reorderTabs(previous.tab_order);
+        impl_->logical_splitter->restoreState(
+            previous.logical_splitter_state);
+        return false;
+    }
+    return true;
+}
+
+void FramePlanWidget::applyDefaultToolLayout() {
+    impl_->reorderTabs(defaultToolTabOrder());
+    impl_->logical_splitter->setSizes({600, 360});
 }
 
 } // namespace PelicanStudio

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../toollayoutpreset.hpp"
+
 #include <QWidget>
 
 #include <memory>
@@ -23,6 +25,10 @@ class FramePlanWidget final : public QWidget {
     // deterministic widget tests.  Successful input always flows through the
     // same populate() path.
     void receiveResult(const QByteArray &result_json);
+
+    ToolLayoutSnapshot toolLayoutSnapshot() const;
+    bool restoreToolLayout(const ToolLayoutSnapshot &snapshot);
+    void applyDefaultToolLayout();
 };
 
 } // namespace PelicanStudio

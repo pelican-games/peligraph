@@ -8,6 +8,8 @@
 #include <QActionGroup>
 #include <QAbstractItemView>
 #include <QCoreApplication>
+#include <QCloseEvent>
+#include <QDebug>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -41,6 +43,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
@@ -50,9 +53,28 @@ namespace {
 constexpr int SceneIdRole = Qt::UserRole;
 constexpr int DeclarationIndexRole = Qt::UserRole + 1;
 
-QString layoutPresetDirectory() {
-    const QString application_config = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+const QString &lastPanelLayoutName() {
+    static const QString name = QStringLiteral("Last panel session");
+    return name;
+}
+
+const QString &lastToolLayoutName() {
+    static const QString name = QStringLiteral("Last tool session");
+    return name;
+}
+
+QString applicationConfigDirectory() {
+    return QStandardPaths::writableLocation(
+        QStandardPaths::AppConfigLocation);
+}
+
+QString layoutPresetDirectory(const QString &application_config) {
     return QDir(application_config).filePath(QStringLiteral("layouts"));
+}
+
+QStringList userPresetNames(QStringList names, const QString &reserved_name) {
+    names.removeAll(reserved_name);
+    return names;
 }
 
 QDockWidget *makeDock(
@@ -105,7 +127,18 @@ std::optional<OutlinerObjectKey> objectKey(QTreeWidgetItem *item) {
 
 } // namespace
 
-MainWindow::MainWindow() : layout_presets_(layoutPresetDirectory()) {
+MainWindow::MainWindow() : MainWindow(applicationConfigDirectory()) {}
+
+MainWindow::MainWindow(const QString &application_config_directory)
+    : application_config_directory_(
+          QDir::cleanPath(application_config_directory)),
+      layout_presets_(
+          layoutPresetDirectory(application_config_directory_)) {
+    if (application_config_directory_.isEmpty() ||
+        application_config_directory_ == QStringLiteral(".")) {
+        throw std::invalid_argument(
+            "MainWindow requires an application config directory");
+    }
     setWindowTitle(tr("Pelican Studio"));
     setDockOptions(
         QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks |
@@ -115,8 +148,13 @@ MainWindow::MainWindow() : layout_presets_(layoutPresetDirectory()) {
 
     createWorkspace();
     createMenus();
-    applyDefaultLayout();
-    statusBar()->showMessage(tr("Ready"));
+    restoreLastPanelLayout();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    saveLastToolLayout();
+    saveLastPanelLayout();
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::createWorkspace() {
@@ -289,6 +327,38 @@ void MainWindow::createMenus() {
         statusBar()->showMessage(tr("Default layout restored"), 3000);
     });
 
+    layout_menu->addSeparator();
+    QMenu *tool_layout_menu =
+        layout_menu->addMenu(tr("&Frame Plan Layout"));
+    save_tool_layout_action_ =
+        tool_layout_menu->addAction(tr("&Save Tool Layout As..."));
+    connect(save_tool_layout_action_, &QAction::triggered, this,
+            [this]() { saveToolLayoutPreset(); });
+    restore_tool_layout_menu_ =
+        tool_layout_menu->addMenu(tr("&Restore Tool Layout"));
+    delete_tool_layout_menu_ =
+        tool_layout_menu->addMenu(tr("&Delete Tool Layout"));
+    tool_layout_menu->addSeparator();
+    QAction *default_tool_action =
+        tool_layout_menu->addAction(tr("Reset Tool Layout to &Default"));
+    connect(default_tool_action, &QAction::triggered, this, [this]() {
+        frame_plan_->applyDefaultToolLayout();
+        statusBar()->showMessage(tr("Default Frame Plan layout restored"),
+                                 3000);
+    });
+    save_tool_layout_action_->setEnabled(false);
+    restore_tool_layout_menu_->setEnabled(false);
+    delete_tool_layout_menu_->setEnabled(false);
+    default_tool_action->setEnabled(false);
+    connect(tool_layout_menu, &QMenu::aboutToShow, this,
+            [this, default_tool_action]() {
+                const bool project_open = tool_layout_presets_.has_value();
+                save_tool_layout_action_->setEnabled(project_open);
+                restore_tool_layout_menu_->setEnabled(project_open);
+                delete_tool_layout_menu_->setEnabled(project_open);
+                default_tool_action->setEnabled(project_open);
+            });
+
     auto *gizmo_toolbar = addToolBar(tr("Gizmo"));
     gizmo_toolbar->setObjectName(QStringLiteral("pelican.gizmoToolbar"));
     gizmo_toolbar->setMovable(true);
@@ -326,14 +396,23 @@ void MainWindow::chooseProject() {
 
 void MainWindow::openProject(const QString &path) {
     try {
-        project_model_ = ProjectOutlinerModel::open(filesystemPath(path));
+        ProjectOutlinerModel opened_project =
+            ProjectOutlinerModel::open(filesystemPath(path));
+        saveLastToolLayout();
+        project_model_ = std::move(opened_project);
+        tool_layout_presets_.emplace(
+            application_config_directory_,
+            displayPath(project_model_->projectRoot()));
+        const QString tool_layout_notice = restoreLastToolLayout();
         selection_model_.bindProject(&*project_model_);
         fullscreen_pass_->openProjectReadOnly(project_model_->projectRoot());
         populateOutliner();
         refreshSelectionViews();
         viewport_->openProject(displayPath(project_model_->projectRoot()));
         statusBar()->showMessage(
-            tr("Opened %1").arg(displayPath(project_model_->projectRoot())),
+            tr("Opened %1. %2")
+                .arg(displayPath(project_model_->projectRoot()),
+                     tool_layout_notice),
             5000);
     } catch (const std::exception &error) {
         QMessageBox::warning(this, tr("Could Not Open Project"),
@@ -714,21 +793,51 @@ void MainWindow::refreshLayoutMenus() {
     restore_layout_menu_->clear();
     delete_layout_menu_->clear();
 
-    const QStringList names = layout_presets_.presetNames();
+    const QStringList names = userPresetNames(
+        layout_presets_.presetNames(), lastPanelLayoutName());
     if (names.isEmpty()) {
         QAction *empty_restore = restore_layout_menu_->addAction(tr("No saved layouts"));
         empty_restore->setEnabled(false);
         QAction *empty_delete = delete_layout_menu_->addAction(tr("No saved layouts"));
         empty_delete->setEnabled(false);
-        return;
+    } else {
+        for (const QString &name : names) {
+            QAction *restore_action = restore_layout_menu_->addAction(name);
+            connect(restore_action, &QAction::triggered, this,
+                    [this, name]() { restoreLayoutPreset(name); });
+
+            QAction *delete_action = delete_layout_menu_->addAction(name);
+            connect(delete_action, &QAction::triggered, this,
+                    [this, name]() { deleteLayoutPreset(name); });
+        }
     }
 
-    for (const QString &name : names) {
-        QAction *restore_action = restore_layout_menu_->addAction(name);
-        connect(restore_action, &QAction::triggered, this, [this, name]() { restoreLayoutPreset(name); });
+    restore_tool_layout_menu_->clear();
+    delete_tool_layout_menu_->clear();
+    const QStringList tool_names =
+        tool_layout_presets_
+            ? userPresetNames(tool_layout_presets_->presetNames(),
+                              lastToolLayoutName())
+            : QStringList{};
+    if (tool_names.isEmpty()) {
+        QAction *empty_restore = restore_tool_layout_menu_->addAction(
+            tr("No saved tool layouts"));
+        empty_restore->setEnabled(false);
+        QAction *empty_delete = delete_tool_layout_menu_->addAction(
+            tr("No saved tool layouts"));
+        empty_delete->setEnabled(false);
+    } else {
+        for (const QString &name : tool_names) {
+            QAction *restore_action =
+                restore_tool_layout_menu_->addAction(name);
+            connect(restore_action, &QAction::triggered, this,
+                    [this, name]() { restoreToolLayoutPreset(name); });
 
-        QAction *delete_action = delete_layout_menu_->addAction(name);
-        connect(delete_action, &QAction::triggered, this, [this, name]() { deleteLayoutPreset(name); });
+            QAction *delete_action =
+                delete_tool_layout_menu_->addAction(name);
+            connect(delete_action, &QAction::triggered, this,
+                    [this, name]() { deleteToolLayoutPreset(name); });
+        }
     }
 }
 
@@ -741,6 +850,13 @@ void MainWindow::saveLayoutPreset() {
     }
 
     const QString normalized_name = name.trimmed();
+    if (normalized_name == lastPanelLayoutName()) {
+        QMessageBox::warning(
+            this, tr("Reserved Layout Name"),
+            tr("'%1' is reserved for the last panel session.")
+                .arg(normalized_name));
+        return;
+    }
     if (layout_presets_.presetNames().contains(normalized_name)) {
         const auto answer = QMessageBox::question(
             this, tr("Replace Layout"), tr("A layout named '%1' already exists. Replace it?").arg(normalized_name));
@@ -764,14 +880,7 @@ void MainWindow::saveLayoutPreset() {
 
 void MainWindow::restoreLayoutPreset(const QString &name) {
     QString error;
-    const LayoutRestoreResult result = layout_presets_.restorePreset(
-        name,
-        [this](const LayoutSnapshot &snapshot) {
-            const bool geometry_restored = restoreGeometry(snapshot.geometry);
-            const bool state_restored = restoreState(snapshot.window_state, LayoutPresetManager::WindowStateVersion);
-            return geometry_restored && state_restored;
-        },
-        [this]() { applyDefaultLayout(); }, &error);
+    const LayoutRestoreResult result = applyLayoutPreset(name, &error);
 
     if (result == LayoutRestoreResult::Restored) {
         statusBar()->showMessage(tr("Layout '%1' restored").arg(name), 3000);
@@ -780,7 +889,8 @@ void MainWindow::restoreLayoutPreset(const QString &name) {
 
     QMessageBox::warning(
         this, tr("Layout Could Not Be Restored"),
-        tr("%1\n\nThe default layout has been restored.").arg(error));
+        tr("Layout '%1' could not be restored: %2\n\nThe default layout has been restored.")
+            .arg(name, error));
 }
 
 void MainWindow::deleteLayoutPreset(const QString &name) {
@@ -796,6 +906,195 @@ void MainWindow::deleteLayoutPreset(const QString &name) {
         return;
     }
     statusBar()->showMessage(tr("Layout '%1' deleted").arg(name), 3000);
+}
+
+LayoutRestoreResult MainWindow::applyLayoutPreset(const QString &name,
+                                                   QString *error) {
+    return layout_presets_.restorePreset(
+        name,
+        [this](const LayoutSnapshot &snapshot) {
+            // Establish the current default first. Qt leaves docks that are
+            // absent from an older state untouched, so newly added docks keep
+            // their default location while known docks regain saved state.
+            applyDefaultLayout();
+            const bool geometry_restored =
+                restoreGeometry(snapshot.geometry);
+            const bool state_restored = restoreState(
+                snapshot.window_state,
+                LayoutPresetManager::WindowStateVersion);
+            return geometry_restored && state_restored;
+        },
+        [this]() { applyDefaultLayout(); }, error);
+}
+
+void MainWindow::saveLastPanelLayout() {
+    const LayoutSnapshot snapshot{
+        saveGeometry(),
+        saveState(LayoutPresetManager::WindowStateVersion),
+    };
+    QString error;
+    if (!layout_presets_.savePreset(lastPanelLayoutName(), snapshot,
+                                    &error)) {
+        qWarning().noquote()
+            << tr("Could not save panel layout '%1': %2")
+                   .arg(lastPanelLayoutName(), error);
+    }
+}
+
+void MainWindow::restoreLastPanelLayout() {
+    QString error;
+    const LayoutRestoreResult result =
+        applyLayoutPreset(lastPanelLayoutName(), &error);
+    if (result == LayoutRestoreResult::Restored) {
+        statusBar()->showMessage(
+            tr("Panel layout '%1' restored")
+                .arg(lastPanelLayoutName()));
+        return;
+    }
+    if (result == LayoutRestoreResult::DefaultMissing) {
+        statusBar()->showMessage(
+            tr("No saved panel layout '%1'; the default panel layout was restored")
+                .arg(lastPanelLayoutName()));
+        return;
+    }
+
+    const QString message =
+        tr("Panel layout '%1' could not be restored: %2 The default panel layout was restored.")
+            .arg(lastPanelLayoutName(), error);
+    qWarning().noquote() << message;
+    statusBar()->showMessage(message);
+}
+
+void MainWindow::saveToolLayoutPreset() {
+    if (!tool_layout_presets_) {
+        return;
+    }
+
+    bool accepted = false;
+    const QString name = QInputDialog::getText(
+        this, tr("Save Frame Plan Layout"), tr("Tool layout name:"),
+        QLineEdit::Normal, {}, &accepted);
+    if (!accepted) {
+        return;
+    }
+
+    const QString normalized_name = name.trimmed();
+    if (normalized_name == lastToolLayoutName()) {
+        QMessageBox::warning(
+            this, tr("Reserved Tool Layout Name"),
+            tr("'%1' is reserved for the last tool session.")
+                .arg(normalized_name));
+        return;
+    }
+    if (tool_layout_presets_->presetNames().contains(normalized_name)) {
+        const auto answer = QMessageBox::question(
+            this, tr("Replace Tool Layout"),
+            tr("A tool layout named '%1' already exists. Replace it?")
+                .arg(normalized_name));
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    QString error;
+    if (!tool_layout_presets_->savePreset(
+            normalized_name, frame_plan_->toolLayoutSnapshot(), &error)) {
+        QMessageBox::warning(this, tr("Could Not Save Tool Layout"),
+                             error);
+        return;
+    }
+    statusBar()->showMessage(
+        tr("Frame Plan layout '%1' saved").arg(normalized_name), 3000);
+}
+
+void MainWindow::restoreToolLayoutPreset(const QString &name) {
+    if (!tool_layout_presets_) {
+        return;
+    }
+
+    QString error;
+    const ToolLayoutRestoreResult result =
+        tool_layout_presets_->restorePreset(
+            name,
+            [this](const ToolLayoutSnapshot &snapshot) {
+                return frame_plan_->restoreToolLayout(snapshot);
+            },
+            [this]() { frame_plan_->applyDefaultToolLayout(); }, &error);
+    if (result == ToolLayoutRestoreResult::Restored) {
+        statusBar()->showMessage(
+            tr("Frame Plan layout '%1' restored").arg(name), 3000);
+        return;
+    }
+
+    QMessageBox::warning(
+        this, tr("Tool Layout Could Not Be Restored"),
+        tr("Frame Plan layout '%1' could not be restored: %2\n\nThe default tool layout has been restored.")
+            .arg(name, error));
+}
+
+void MainWindow::deleteToolLayoutPreset(const QString &name) {
+    if (!tool_layout_presets_) {
+        return;
+    }
+    const auto answer = QMessageBox::question(
+        this, tr("Delete Tool Layout"),
+        tr("Delete the Frame Plan layout '%1'?").arg(name));
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    QString error;
+    if (!tool_layout_presets_->deletePreset(name, &error)) {
+        QMessageBox::warning(this, tr("Could Not Delete Tool Layout"),
+                             error);
+        return;
+    }
+    statusBar()->showMessage(
+        tr("Frame Plan layout '%1' deleted").arg(name), 3000);
+}
+
+void MainWindow::saveLastToolLayout() {
+    if (!tool_layout_presets_) {
+        return;
+    }
+    QString error;
+    if (!tool_layout_presets_->savePreset(
+            lastToolLayoutName(), frame_plan_->toolLayoutSnapshot(),
+            &error)) {
+        qWarning().noquote()
+            << tr("Could not save Frame Plan layout '%1': %2")
+                   .arg(lastToolLayoutName(), error);
+    }
+}
+
+QString MainWindow::restoreLastToolLayout() {
+    if (!tool_layout_presets_) {
+        frame_plan_->applyDefaultToolLayout();
+        return tr("No project-specific Frame Plan layout is active.");
+    }
+
+    QString error;
+    const ToolLayoutRestoreResult result =
+        tool_layout_presets_->restorePreset(
+            lastToolLayoutName(),
+            [this](const ToolLayoutSnapshot &snapshot) {
+                return frame_plan_->restoreToolLayout(snapshot);
+            },
+            [this]() { frame_plan_->applyDefaultToolLayout(); }, &error);
+    if (result == ToolLayoutRestoreResult::Restored) {
+        return tr("Frame Plan layout '%1' restored.")
+            .arg(lastToolLayoutName());
+    }
+    if (result == ToolLayoutRestoreResult::DefaultMissing) {
+        return tr("No saved Frame Plan layout '%1'; using the default tool layout.")
+            .arg(lastToolLayoutName());
+    }
+
+    const QString message =
+        tr("Frame Plan layout '%1' could not be restored: %2 The default tool layout was restored.")
+            .arg(lastToolLayoutName(), error);
+    qWarning().noquote() << message;
+    return message;
 }
 
 void MainWindow::applyDefaultLayout() {
