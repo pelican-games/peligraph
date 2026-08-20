@@ -1973,3 +1973,36 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_golden_inventory.py
     )
 endif()
+
+if(MSVC)
+  string(SHA256 crash_symbol_test_id "${CMAKE_BINARY_DIR}")
+  string(SUBSTRING "${crash_symbol_test_id}" 0 12 crash_symbol_test_id)
+  file(TO_CMAKE_PATH "$ENV{TEMP}" crash_symbol_test_temp)
+  add_test(
+    NAME crash_symbol_archive_contract
+    COMMAND ${CMAKE_COMMAND}
+      "-DTEST_FIXTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/crash_symbol_archive"
+      "-DTEST_MODULE=${CMAKE_SOURCE_DIR}/cmake/pelican_crash_symbols.cmake"
+      "-DTEST_WORK_ROOT=${crash_symbol_test_temp}/pelican_wp333_${crash_symbol_test_id}"
+      "-DTEST_GENERATOR=${CMAKE_GENERATOR}"
+      "-DTEST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+      "-DTEST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_crash_symbol_archive.cmake
+  )
+  set_tests_properties(crash_symbol_archive_contract PROPERTIES TIMEOUT 180)
+
+  # The contract test above drives the module through its own fixture, so it
+  # stays green even if pelican_studio stops calling it. This one reads what
+  # the real studio build left behind.
+  if(TARGET pelican_studio)
+    add_test(
+      NAME crash_symbol_production_wiring
+      COMMAND ${CMAKE_COMMAND}
+        "-DARCHIVE_ROOT=${PELICAN_CRASH_SYMBOL_ARCHIVE_DIR}"
+        "-DEXPECTED_TARGET=pelican_studio"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_crash_symbol_production_wiring.cmake
+    )
+    set_tests_properties(crash_symbol_production_wiring
+                         PROPERTIES TIMEOUT 60)
+  endif()
+endif()

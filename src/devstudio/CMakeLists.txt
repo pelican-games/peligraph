@@ -23,6 +23,26 @@ set_target_properties(pelican_studio PROPERTIES
     CXX_STANDARD 20
 )
 
+if(MSVC)
+    include(${CMAKE_SOURCE_DIR}/cmake/pelican_crash_symbols.cmake)
+    pelican_read_git_identity(
+        SOURCE_DIR ${CMAKE_SOURCE_DIR}
+        COMMIT_OUT pelican_studio_source_commit
+        GIT_OUT pelican_studio_git_executable
+    )
+    pelican_preserve_crash_symbols(
+        TARGET pelican_studio
+        ARCHIVE_ROOT ${PELICAN_CRASH_SYMBOL_ARCHIVE_DIR}
+        SOURCE_COMMIT ${pelican_studio_source_commit}
+        SOURCE_DIR ${CMAKE_SOURCE_DIR}
+        GIT_EXECUTABLE ${pelican_studio_git_executable}
+        MAX_GENERATIONS ${PELICAN_CRASH_SYMBOL_GENERATIONS}
+    )
+    message(STATUS
+        "Pelican Studio crash symbols: ${PELICAN_CRASH_SYMBOL_ARCHIVE_DIR} "
+        "(keep ${PELICAN_CRASH_SYMBOL_GENERATIONS})")
+endif()
+
 # D0: Studio is a public-client application, never an engine-internal client.
 target_link_libraries(pelican_studio PRIVATE
     argparse

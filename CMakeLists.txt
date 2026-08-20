@@ -449,6 +449,11 @@ add_subdirectory(src/player)
 add_subdirectory(src/devcli)
 
 ## pelican studio
+set(PELICAN_CRASH_SYMBOL_ARCHIVE_DIR
+    "${CMAKE_SOURCE_DIR}/.pelican/crash-symbols" CACHE PATH
+    "Directory outside build outputs that retains pelican_studio crash symbols")
+set(PELICAN_CRASH_SYMBOL_GENERATIONS "8" CACHE STRING
+    "Maximum number of retained pelican_studio crash-symbol generations")
 if(NOT SKIP_DEVSTUDIO)
 add_subdirectory(src/devstudio)
 endif()

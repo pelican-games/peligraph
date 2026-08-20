@@ -1,0 +1,9 @@
+#include <string_view>
+
+__declspec(noinline) std::string_view build_marker() {
+    return "@BUILD_MARKER@";
+}
+
+int main() {
+    return build_marker().empty() ? 1 : 0;
+}
