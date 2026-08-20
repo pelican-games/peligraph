@@ -1889,8 +1889,9 @@ void synchronizeRenderPipelineProvenance(
 
     std::vector<RenderResourceProvenance> synchronized_resources;
     std::unordered_set<std::string> seen_resources;
-    const auto append_resource = [&](std::string name,
-                                     std::string kind) {
+    const auto append_resource =
+        [&](std::string name, std::string kind,
+            std::optional<std::vector<std::string>> usage = std::nullopt) {
         if (name.empty() || !seen_resources.insert(name).second) {
             if (name.empty()) {
                 throw std::runtime_error(
@@ -1902,12 +1903,14 @@ void synchronizeRenderPipelineProvenance(
         if (found != known_resources.end()) {
             auto retained = found->second;
             retained.kind = std::move(kind);
+            retained.usage = std::move(usage);
             synchronized_resources.push_back(std::move(retained));
         } else {
             synchronized_resources.push_back(RenderResourceProvenance{
                 .name = std::move(name),
                 .kind = std::move(kind),
                 .source = default_source,
+                .usage = std::move(usage),
             });
         }
     };
@@ -1923,7 +1926,13 @@ void synchronizeRenderPipelineProvenance(
                 name, "render target");
             append_resource(
                 name,
-                "render_target");
+                "render_target",
+                target.contains("usage")
+                    ? std::optional<std::vector<std::string>>{
+                          compileStringArray(
+                              target, "usage", "render target '" +
+                                                   name + "'")}
+                    : std::nullopt);
         }
     }
     if (const auto buffers = config.find("buffers");

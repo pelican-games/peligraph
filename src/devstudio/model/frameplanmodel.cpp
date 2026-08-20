@@ -71,6 +71,31 @@ std::string optionalStringField(const Json &object, std::string_view field,
     return found->get<std::string>();
 }
 
+std::optional<std::vector<std::string>> optionalStringArrayField(
+    const Json &object, std::string_view field,
+    std::string_view context) {
+    const auto found = object.find(field);
+    if (found == object.end()) {
+        return std::nullopt;
+    }
+    if (!found->is_array()) {
+        throw invalid(std::string{context} + " field '" +
+                      std::string{field} +
+                      "' must be an array of strings");
+    }
+    std::vector<std::string> result;
+    result.reserve(found->size());
+    for (const auto &entry : *found) {
+        if (!entry.is_string()) {
+            throw invalid(std::string{context} + " field '" +
+                          std::string{field} +
+                          "' must be an array of strings");
+        }
+        result.push_back(entry.get<std::string>());
+    }
+    return result;
+}
+
 bool requireBoolField(const Json &object, std::string_view field,
                       std::string_view context) {
     const auto found = object.find(field);
@@ -972,6 +997,8 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             resource.kind = std::string{framePlanResourceKindName(
                 decodeFramePlanResourceKind(value, context))};
             resource.source = optionalStringField(value, "source", context);
+            resource.usage =
+                optionalStringArrayField(value, "usage", context);
             resource.provider_feature =
                 optionalStringField(value, "provider_feature", context);
             resource.provider_reference =

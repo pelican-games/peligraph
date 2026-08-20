@@ -1833,6 +1833,9 @@ nlohmann::json framePlanToJson(
                     resource["provider_ref"] =
                         provenance.provider_reference;
                 }
+                if (provenance.usage) {
+                    resource["usage"] = *provenance.usage;
+                }
                 resources.push_back(std::move(resource));
             }
             result["resources"] = std::move(resources);

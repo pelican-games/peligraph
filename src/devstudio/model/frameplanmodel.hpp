@@ -132,6 +132,9 @@ struct FramePlanResource {
     std::string name;
     std::string kind;
     std::string source;
+    // Missing in an older frame plan (or unavailable from the producer) is
+    // distinct from a present, explicitly empty usage array.
+    std::optional<std::vector<std::string>> usage;
     std::string format = "unknown";
     std::string dimension;
     std::optional<FramePlanExtent> extent;

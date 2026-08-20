@@ -203,9 +203,12 @@ if(TARGET pelican_studio_gizmo_model)
 endif()
 
 if(TARGET pelican_studio_frame_plan)
-  pelican_define_test(devstudio_frameplan_test pelican_studio_frame_plan)
+  pelican_define_test(devstudio_frameplan_test
+    pelican_studio_frame_plan
+    pelican_core)
   target_compile_definitions(pelican_test_devstudio_frameplan_test PRIVATE
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
   )
 endif()
 

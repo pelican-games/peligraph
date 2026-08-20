@@ -2,6 +2,9 @@
 #include "executionplanwire.hpp"
 #include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
+#include "../src/core/loader/engineresources.hpp"
+#include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -185,6 +188,62 @@ const FramePlanResource *findResource(const FramePlanModel &model,
     return found == model.resources.end() ? nullptr : &*found;
 }
 
+const Json *findResource(const Json &plan, std::string_view name) {
+    const auto &resources = plan.at("resources");
+    const auto found = std::find_if(
+        resources.begin(), resources.end(),
+        [&](const Json &resource) {
+            return resource.value("name", std::string{}) == name;
+        });
+    return found == resources.end() ? nullptr : &*found;
+}
+
+Json *findResource(Json &plan, std::string_view name) {
+    auto &resources = plan.at("resources");
+    const auto found = std::find_if(
+        resources.begin(), resources.end(),
+        [&](const Json &resource) {
+            return resource.value("name", std::string{}) == name;
+        });
+    return found == resources.end() ? nullptr : &*found;
+}
+
+Json exampleFramePlanFromProducer() {
+    const Json authored = readJson(
+        sourceRoot() / "projects" / "example" / "passes" /
+        "main_rendering_config.json");
+    const auto resolved = Pelican::resolveRenderPipeline(
+        Pelican::RenderPipelineRequest{
+            .authored_config = authored,
+            .source_name = "projects/example",
+        },
+        Pelican::RenderEnvironmentCapabilities{
+            .runtime_shader_compiler_enabled =
+                PELICAN_RUNTIME_SHADER_COMPILER != 0,
+        },
+        Pelican::RenderPipelineResolveDependencies{
+            .load_feature_json = [](std::string_view reference) {
+                constexpr std::string_view prefix = "engine://";
+                if (!reference.starts_with(prefix)) {
+                    throw std::runtime_error(
+                        "projects/example requested a non-engine feature");
+                }
+                return Pelican::engineResourceOrThrow(
+                    reference.substr(prefix.size()));
+            },
+        });
+    const auto graphs =
+        Pelican::parseFrameGraphDefinitionsFromConfigJson(
+            resolved.normalized_config);
+    if (graphs.size() != 1) {
+        throw std::runtime_error(
+            "projects/example did not resolve to one frame graph");
+    }
+    const auto compiled = Pelican::compileRenderPipeline(resolved);
+    return Pelican::framePlanToJson(
+        Pelican::planFrameGraph(graphs.front()), &compiled);
+}
+
 const FramePlanNode *findNode(const FramePlanModel &model,
                               std::string_view name) {
     const auto found = std::find_if(
@@ -238,6 +297,103 @@ const FramePlanOpportunityPair *findAliasCandidate(
 }
 
 } // namespace
+
+TEST_CASE(
+    "WP323 carries resolved resource usage into the Studio frame-plan model",
+    "[devstudio][frame-plan][usage][wp323][negative-contrast]") {
+    const Json produced = exampleFramePlanFromProducer();
+    const Json *wire_offscreen = findResource(produced, "offscreen_depth");
+    const Json *wire_opaque = findResource(produced, "opaque_depth");
+    const Json *wire_normal = findResource(produced, "gbuffer_normal");
+    REQUIRE(wire_offscreen != nullptr);
+    REQUIRE(wire_opaque != nullptr);
+    REQUIRE(wire_normal != nullptr);
+    REQUIRE(wire_offscreen->at("kind") == wire_opaque->at("kind"));
+    REQUIRE(wire_offscreen->at("usage").get<std::vector<std::string>>() ==
+            std::vector<std::string>{
+                "DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"});
+    REQUIRE(wire_opaque->at("usage").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"TRANSFER_DST", "SAMPLED"});
+    REQUIRE(wire_normal->at("usage").get<std::vector<std::string>>() ==
+            std::vector<std::string>{
+                "COLOR_ATTACHMENT", "SAMPLED"});
+
+    const FramePlanModel model = buildFramePlanModel(produced.dump());
+    const FramePlanResource *offscreen =
+        findResource(model, "offscreen_depth");
+    const FramePlanResource *opaque =
+        findResource(model, "opaque_depth");
+    const FramePlanResource *normal =
+        findResource(model, "gbuffer_normal");
+    REQUIRE(offscreen != nullptr);
+    REQUIRE(opaque != nullptr);
+    REQUIRE(normal != nullptr);
+    REQUIRE(offscreen->kind == opaque->kind);
+    REQUIRE(offscreen->usage.has_value());
+    REQUIRE(*offscreen->usage == std::vector<std::string>{
+                                     "DEPTH_STENCIL_ATTACHMENT",
+                                     "TRANSFER_SRC"});
+    REQUIRE(opaque->usage.has_value());
+    REQUIRE(*opaque->usage ==
+            std::vector<std::string>{"TRANSFER_DST", "SAMPLED"});
+    REQUIRE(normal->usage.has_value());
+    REQUIRE(*normal->usage == std::vector<std::string>{
+                                 "COLOR_ATTACHMENT", "SAMPLED"});
+
+    const Json *wire_display = findResource(produced, "display");
+    const Json *wire_swapchain = findResource(produced, "swapchain");
+    REQUIRE(wire_display != nullptr);
+    REQUIRE(wire_swapchain != nullptr);
+    REQUIRE(wire_display->at("source") == "engine");
+    REQUIRE(wire_display->at("usage").get<std::vector<std::string>>() ==
+            std::vector<std::string>{
+                "COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
+    REQUIRE(wire_swapchain->at("source") == "engine");
+    REQUIRE_FALSE(wire_swapchain->contains("usage"));
+    const FramePlanResource *display = findResource(model, "display");
+    const FramePlanResource *swapchain = findResource(model, "swapchain");
+    REQUIRE(display != nullptr);
+    REQUIRE(swapchain != nullptr);
+    REQUIRE(display->usage.has_value());
+    REQUIRE(*display->usage == std::vector<std::string>{
+                                  "COLOR_ATTACHMENT", "SAMPLED",
+                                  "TRANSFER_SRC"});
+    REQUIRE_FALSE(swapchain->usage.has_value());
+
+    Json legacy = produced;
+    for (auto &resource : legacy.at("resources")) {
+        resource.erase("usage");
+    }
+    const FramePlanModel legacy_model =
+        buildFramePlanModel(legacy.dump());
+    const FramePlanResource *legacy_offscreen =
+        findResource(legacy_model, "offscreen_depth");
+    REQUIRE(legacy_offscreen != nullptr);
+    REQUIRE_FALSE(legacy_offscreen->usage.has_value());
+
+    Json explicit_empty = legacy;
+    Json *empty_offscreen =
+        findResource(explicit_empty, "offscreen_depth");
+    REQUIRE(empty_offscreen != nullptr);
+    (*empty_offscreen)["usage"] = Json::array();
+    const FramePlanModel empty_model =
+        buildFramePlanModel(explicit_empty.dump());
+    const FramePlanResource *modeled_empty =
+        findResource(empty_model, "offscreen_depth");
+    REQUIRE(modeled_empty != nullptr);
+    REQUIRE(modeled_empty->usage.has_value());
+    REQUIRE(modeled_empty->usage->empty());
+
+    Json malformed = produced;
+    Json *malformed_offscreen =
+        findResource(malformed, "offscreen_depth");
+    REQUIRE(malformed_offscreen != nullptr);
+    (*malformed_offscreen)["usage"] = "SAMPLED";
+    REQUIRE_THROWS_WITH(
+        buildFramePlanModel(malformed.dump()),
+        ContainsSubstring(
+            "field 'usage' must be an array of strings"));
+}
 
 TEST_CASE(
     "Devstudio reads every decision from a captured get_frame_plan response and invents none",

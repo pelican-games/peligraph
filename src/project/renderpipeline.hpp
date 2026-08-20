@@ -166,6 +166,10 @@ struct RenderResourceProvenance {
         RenderPipelineProvenanceSource::engine;
     std::string provider_feature;
     std::string provider_reference;
+    // Present only when the resolved declaration publishes image usage.
+    // Synthetic resources such as the swapchain deliberately remain
+    // unknown instead of being represented as an empty usage set.
+    std::optional<std::vector<std::string>> usage;
 
     bool operator==(const RenderResourceProvenance &) const = default;
 };
