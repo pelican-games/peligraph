@@ -6300,24 +6300,63 @@ WP322 が運ぶのは**使用中の参照だけ**で、example では fragment 7
 
 依存: なし。見積: 小。
 
-### WP323: フレームプランにリソースの usage / role を載せる
+### WP323: フレームプランにリソースの usage を載せる
 
-**目的**: **これが「存在する ≠ 妥当」の穴を塞ぐ唯一の道である。**
-現状 `resources[]` は `{kind, name, source}` しか運ばない。
-`format` では代用できない(`offscreen_depth` と `opaque_depth` はどちらも `D32Sfloat` だが
-**前者は input 不可・後者は可**)。`required_physical_features` でも代用できない
-(SAMPLED を宣言していない `offscreen_depth` に `sampled_image@1` が立っている)。
+**§4 規則 11 の中段**(`pelican_project` と複数経路)。**仕様レビューは省き、コードレビューのみ。**
 
-**範囲**: WP322 と同じ形 —— **記述だけ。書き込みも反映もしない。**
-これが入ると WP321a の受け入れ条件 (D) のターゲット 3 例を
-「判定していない」から「不当」に移せる。
+**目的**: **著作側は `usage` を持っているのに、フレームプランが落としている。**
+studio が「存在する ≠ 妥当」を判定できないのは、情報が来ていないからである。
 
-**受け入れ条件**:
-- `offscreen_depth` が SAMPLED を持たず `gbuffer_normal` が持つことが、
-  **同じテストの中で**フレームプランから区別できること
-- `swapchain` の `kind` が他の 21 件と区別できること
-- studio のモデルに通り、`FramePlanResource` から読めること
-- `ctest` 全数が緑
+#### 実測(2026-08-20 に再確認)
+
+`projects/example` の著作宣言:
+
+| ターゲット | format | usage |
+|---|---|---|
+| `gbuffer_normal` | `R16G16B16A16_SFLOAT` | `COLOR_ATTACHMENT`, **`SAMPLED`** |
+| `offscreen_depth` | **`D32_SFLOAT`** | `DEPTH_STENCIL_ATTACHMENT`, `TRANSFER_SRC` |
+| `opaque_depth` | **`D32_SFLOAT`** | `TRANSFER_DST`, **`SAMPLED`** |
+
+フレームプランが運ぶのは 3 件とも `{kind, name, source}` **だけ**である。
+
+**`format` では代用できない** —— `offscreen_depth` と `opaque_depth` は
+同じ `D32_SFLOAT` で同じ `kind` なのに **input 可否が逆**である。
+**`required_physical_features` でも代用できない** ——
+SAMPLED を宣言していない `offscreen_depth` に `sampled_image@1` が立っている。
+
+#### WP327 との関係(この節は WP327 より前に書かれた)
+
+WP327 は `kind`(`render_target` / `frame_target` / `buffer`)から
+役割別の候補集合を作った。**あれは代用であって解ではない。**
+**同じ `kind` の中の適合差は依然として見えない。**本 WP がそこを埋める。
+
+これが入ると、WP321a の受け入れ条件 (D) の
+`input` に `offscreen_depth` / `output.color` に `opaque_color` の 2 例を
+**「判定していない」から「不当」に移せる。**
+
+#### 範囲
+
+**記述だけ。書き込みも反映もしない。**WP322 と同じ形である。
+`role` は載せない(`usage` から導けるものを二重に持たない)。
+
+#### 範囲外
+
+studio 側の判定の変更(本 WP は情報を運ぶところまで)。
+`role` の導出。WP321a の受け入れ条件 (D) の書き換え。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **`offscreen_depth` が SAMPLED を持たず `opaque_depth` が持つことが、
+  同じテストの中でフレームプランから区別できること。**
+  **この 2 つは format も kind も同じなので、これが本 WP の中心的な対照である**
+- `gbuffer_normal` が `COLOR_ATTACHMENT` と `SAMPLED` の両方を持つことが読めること
+- **studio の `FramePlanResource` から読めること。**
+  同じテストで、載っていないプラン(旧形式)を与えたときに
+  **「不明」と「空」が区別できること**(黙って空集合にしないこと)
+- **エンジン由来のリソース**(`display` / `swapchain`)でも
+  usage が読めるか、読めないなら**そう分かること**
+- **変異 1 つで検出力を確かめること**
+- `ctest` 全数が緑(**マージ直前に GPU 込みで 1 回**)、`uv run tools/doclink.py check` が通ること
 
 依存: なし。見積: 小〜中。
 
