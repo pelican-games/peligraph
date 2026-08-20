@@ -18,6 +18,7 @@
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/renderingsamplecount.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpassconfigloader.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
@@ -29,6 +30,8 @@
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
+#include "../../project/featurecompose.hpp"
+#include "../../project/vulkanviewplanning.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrmirrorsink.hpp"
 #endif
@@ -42,18 +45,209 @@
 
 namespace Pelican {
 
+namespace {
+
+template <typename Module>
+bool runtimeModuleInitialized() noexcept {
+    return FastModuleContainer::isInitialized<Module>();
+}
+
+static constexpr std::array<RenderRuntimeModuleRequirement, 1>
+    debug_draw_modules{{
+        {"DebugDraw", &runtimeModuleInitialized<DebugDraw>},
+    }};
+static constexpr std::array<RenderRuntimeModuleRequirement, 1>
+    debug_text_modules{{
+        {"DebugText", &runtimeModuleInitialized<DebugText>},
+    }};
+static constexpr std::array<RenderRuntimeModuleRequirement, 1>
+    gizmo_modules{{
+        {"Gizmo", &runtimeModuleInitialized<Gizmo>},
+    }};
+static constexpr std::array<RenderRuntimeModuleRequirement, 1>
+    gpu_timing_modules{{
+        {"RenderTiming", &runtimeModuleInitialized<RenderTiming>},
+    }};
+static constexpr std::array<RenderRuntimeModuleRequirement, 3>
+    ui_modules{{
+        {"UiRenderer", &runtimeModuleInitialized<UiRenderer>},
+        {"UIContainer", &runtimeModuleInitialized<UIContainer>},
+        {"ui::UiModule", &runtimeModuleInitialized<ui::UiModule>},
+    }};
+static constexpr std::array<RenderRuntimeModuleRequirement, 3>
+    sprite_modules{{
+        {"SpriteScene", &runtimeModuleInitialized<SpriteScene>},
+        {"SpriteRenderer", &runtimeModuleInitialized<SpriteRenderer>},
+        {"AtlasAssetResource", &runtimeModuleInitialized<AtlasAssetResource>},
+    }};
+
+static constexpr std::array<RenderFeatureRuntimeModuleRequirement, 6>
+    runtime_feature_modules{{
+        {"debug_draw", debug_draw_modules},
+        {"debug_text", debug_text_modules},
+        {"gizmo", gizmo_modules},
+        {"gpu_timing", gpu_timing_modules},
+        {"ui", ui_modules},
+        {"sprite", sprite_modules},
+    }};
+
+const RenderFeatureRuntimeModuleRequirement *
+findRuntimeFeatureModules(std::string_view feature) noexcept {
+    const auto found = std::ranges::find(
+        runtime_feature_modules, feature,
+        &RenderFeatureRuntimeModuleRequirement::feature);
+    return found == runtime_feature_modules.end()
+               ? nullptr
+               : &*found;
+}
+
+void requireRuntimeFeatureModules(
+    const RenderFeatureRuntimeModuleRequirement &requirement,
+    const std::function<bool(std::string_view)> &module_initialized) {
+    for (const auto &module : requirement.modules) {
+        const bool initialized = module_initialized
+                                     ? module_initialized(module.module)
+                                     : module.initialized();
+        if (initialized) continue;
+        throw std::runtime_error(
+            "Render pipeline hot reload cannot enable feature '" +
+            std::string{requirement.feature} +
+            "' after module creation is frozen; missing runtime module " +
+            std::string{module.module});
+    }
+}
+
+RenderFeatureRuntimeAvailabilityEnvironment
+currentRenderFeatureRuntimeAvailabilityEnvironment() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr bool runtime_shader_compiler_enabled = true;
+#else
+    constexpr bool runtime_shader_compiler_enabled = false;
+#endif
+    const auto &capabilities =
+        GET_MODULE(VulkanManageCore).getRuntimeCapabilities();
+    RenderingTargetPlanDeviceFacts device_facts{
+        .multiview = capabilities.multiview,
+        .max_multiview_view_count =
+            capabilities.multiview ? 1u : 0u,
+        .ray_query = capabilities.ray_query,
+        .ray_tracing_pipeline =
+            capabilities.ray_tracing_pipeline,
+        .transient_attachments = true,
+        .dynamic_rendering_local_read =
+            capabilities.dynamic_rendering_local_read,
+    };
+    return {
+        .runtime_shader_compiler_enabled =
+            runtime_shader_compiler_enabled,
+        .target_endpoint = renderingTargetRuntimeEndpoint(
+            device_facts,
+            capabilities.dynamic_rendering_local_read),
+        .runtime_module_creation_frozen =
+            FastModuleContainer::isCreationFrozen(),
+    };
+}
+
+} // namespace
+
 std::span<const std::string_view>
 renderFeaturesRequiringRuntimeModules() noexcept {
-    static constexpr std::array<std::string_view, 6> names{
-        "debug_draw", "debug_text", "gizmo",
-        "gpu_timing", "ui", "sprite",
-    };
+    static const auto names = [] {
+        std::array<std::string_view,
+                   runtime_feature_modules.size()>
+            result{};
+        std::ranges::transform(
+            runtime_feature_modules, result.begin(),
+            &RenderFeatureRuntimeModuleRequirement::feature);
+        return result;
+    }();
     return names;
 }
 
+std::span<const RenderFeatureRuntimeModuleRequirement>
+renderFeatureRuntimeModuleRequirements() noexcept {
+    return runtime_feature_modules;
+}
+
 bool renderFeatureRequiresRuntimeModule(std::string_view name) noexcept {
-    const auto names = renderFeaturesRequiringRuntimeModules();
-    return std::find(names.begin(), names.end(), name) != names.end();
+    return findRuntimeFeatureModules(name) != nullptr;
+}
+
+void requireRenderFeatureRuntimeAvailability(
+    std::string_view feature_name,
+    const nlohmann::json &feature_document,
+    const RenderFeatureRuntimeAvailabilityEnvironment &environment) {
+    if (environment.runtime_module_creation_frozen) {
+        if (const auto *modules =
+                findRuntimeFeatureModules(feature_name)) {
+            requireRuntimeFeatureModules(
+                *modules,
+                environment.runtime_module_initialized);
+        }
+    }
+    if (!environment.runtime_shader_compiler_enabled &&
+        renderFeatureRequiresRuntimeShaderCompiler(
+            feature_document, feature_name)) {
+        throw std::runtime_error(std::string{
+            renderFeatureRuntimeCompilerRequiredMessage});
+    }
+    const auto required_capabilities =
+        renderFeatureRequiredCapabilities(
+            feature_document, feature_name);
+    requireVulkanEndpointCapabilities(
+        environment.target_endpoint,
+        required_capabilities);
+}
+
+RenderFeatureRuntimeAvailability evaluateRenderFeatureRuntimeAvailability(
+    std::string_view feature_name,
+    const nlohmann::json &feature_document,
+    const RenderFeatureRuntimeAvailabilityEnvironment &environment) noexcept {
+    try {
+        requireRenderFeatureRuntimeAvailability(
+            feature_name, feature_document, environment);
+        return {.available = true};
+    } catch (const std::exception &error) {
+        return {
+            .available = false,
+            .unavailable_reason = error.what(),
+        };
+    } catch (...) {
+        return {
+            .available = false,
+            .unavailable_reason =
+                "unknown render feature availability failure",
+        };
+    }
+}
+
+RenderFeatureRuntimeAvailability currentRenderFeatureRuntimeAvailability(
+    std::string_view feature_name,
+    const nlohmann::json &feature_document) noexcept {
+    try {
+        return evaluateRenderFeatureRuntimeAvailability(
+            feature_name, feature_document,
+            currentRenderFeatureRuntimeAvailabilityEnvironment());
+    } catch (const std::exception &error) {
+        return {
+            .available = false,
+            .unavailable_reason = error.what(),
+        };
+    } catch (...) {
+        return {
+            .available = false,
+            .unavailable_reason =
+                "unknown render feature environment failure",
+        };
+    }
+}
+
+void requireCurrentRenderFeatureRuntimeAvailability(
+    std::string_view feature_name,
+    const nlohmann::json &feature_document) {
+    requireRenderFeatureRuntimeAvailability(
+        feature_name, feature_document,
+        currentRenderFeatureRuntimeAvailabilityEnvironment());
 }
 
 namespace {
@@ -70,6 +264,12 @@ bool hasOutputTransform(
 
 RenderingPassConfigRegistrationDependencies registrationDependencies(
     RenderingPassConfigRegistrationDependencies::Options options = {}) {
+    options.validate_render_feature =
+        [](std::string_view feature_name,
+           const nlohmann::json &feature_document) {
+            requireCurrentRenderFeatureRuntimeAvailability(
+                feature_name, feature_document);
+        };
     auto &rt_module = GET_MODULE(RenderTarget);
     auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &shader_library = GET_MODULE(ShaderLibrary);
@@ -136,59 +336,17 @@ bool generationEnablesFeature(
            generation.enabled_feature_names.end();
 }
 
-template <typename Module>
-void requireInitializedRuntimeModule(
-    std::string_view feature,
-    std::string_view module) {
-    if (FastModuleContainer::tryGet<Module>() != nullptr) {
-        return;
-    }
-    throw std::runtime_error(
-        "Render pipeline hot reload cannot enable feature '" +
-        std::string{feature} +
-        "' after module creation is frozen; missing runtime module " +
-        std::string{module});
-}
-
 void validateFrozenRuntimeFeatureModules(
     const RendererRuntimeGeneration &generation) {
     if (!FastModuleContainer::isCreationFrozen()) {
         return;
     }
-    if (generationEnablesFeature(
-            generation, "debug_draw")) {
-        requireInitializedRuntimeModule<DebugDraw>(
-            "debug_draw", "DebugDraw");
-    }
-    if (generationEnablesFeature(
-            generation, "debug_text")) {
-        requireInitializedRuntimeModule<DebugText>(
-            "debug_text", "DebugText");
-    }
-    if (generationEnablesFeature(generation, "gizmo")) {
-        requireInitializedRuntimeModule<Gizmo>("gizmo", "Gizmo");
-    }
-    if (generationEnablesFeature(
-            generation, "gpu_timing")) {
-        requireInitializedRuntimeModule<RenderTiming>(
-            "gpu_timing", "RenderTiming");
-    }
-    if (generationEnablesFeature(generation, "ui")) {
-        requireInitializedRuntimeModule<UiRenderer>(
-            "ui", "UiRenderer");
-        requireInitializedRuntimeModule<UIContainer>(
-            "ui", "UIContainer");
-        requireInitializedRuntimeModule<ui::UiModule>(
-            "ui", "ui::UiModule");
-    }
-    if (generationEnablesFeature(
-            generation, "sprite")) {
-        requireInitializedRuntimeModule<SpriteScene>(
-            "sprite", "SpriteScene");
-        requireInitializedRuntimeModule<SpriteRenderer>(
-            "sprite", "SpriteRenderer");
-        requireInitializedRuntimeModule<AtlasAssetResource>(
-            "sprite", "AtlasAssetResource");
+    for (const auto &requirement :
+         renderFeatureRuntimeModuleRequirements()) {
+        if (generationEnablesFeature(
+                generation, requirement.feature)) {
+            requireRuntimeFeatureModules(requirement, {});
+        }
     }
 }
 

@@ -103,6 +103,13 @@ struct RenderingTargetPlanDeviceFacts {
     bool dynamic_rendering_local_read = false;
 };
 
+// Canonical endpoint projection used by target planning and engine tooling
+// that must answer whether a feature's required capabilities are executable
+// on the selected runtime device.
+TargetEndpoint renderingTargetRuntimeEndpoint(
+    const RenderingTargetPlanDeviceFacts &facts,
+    bool enable_tile_local);
+
 // Exact source inputs retained beside an automatic target plan so a
 // delegating backend compiler can verify and install a complete physical
 // replacement without reconstructing private runtime-device facts.

@@ -85,6 +85,8 @@ struct RenderCompilerProgramInput {
         &backend_context;
     std::span<const RenderCompilerProgramVariantRequest>
         variants;
+    std::function<void(std::string_view, const nlohmann::json &)>
+        validate_feature;
 };
 
 struct RenderCompilerProgramVariantOutput {

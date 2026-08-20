@@ -27,8 +27,6 @@ constexpr int supported_feature_version = 1;
 constexpr int color_format_resolver_version = 2;
 constexpr std::string_view feature_parameters_schema = "pelican.render_feature_parameters";
 constexpr int supported_feature_parameters_version = 1;
-constexpr std::string_view runtime_compiler_required_message =
-    "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";
 constexpr std::array<std::string_view, 8> canonical_anchors = {
     "sprite", "post_main", "tonemap", "post_ldr", "pelican_ui", "debug_draw", "debug_text", "imgui"};
 
@@ -2600,7 +2598,7 @@ void appendShaderDefines(std::vector<std::string> &defines, const nlohmann::json
     appendUnique(defines, parseStringArray(json, "shader_defines", context));
 }
 
-bool featureRequiresRuntimeShaderCompiler(
+bool parseFeatureRequiresRuntimeShaderCompiler(
     const nlohmann::json &feature,
     std::string_view feature_name) {
     if (!feature.contains("runtime_shader_compiler")) {
@@ -2625,14 +2623,8 @@ void appendRequiredCapabilities(
     const nlohmann::json &feature,
     std::string_view feature_name) {
     if (!feature.contains("required_capabilities")) return;
-    const auto capabilities = parseStringArray(
-        feature, "required_capabilities",
-        "render feature '" + std::string{feature_name} + "'");
-    if (capabilities.empty()) {
-        throw std::runtime_error(
-            "render feature required_capabilities must not be empty: " +
-            std::string{feature_name});
-    }
+    const auto capabilities = renderFeatureRequiredCapabilities(
+        feature, feature_name);
     auto &planning = config["target_planning"];
     if (planning.is_null()) planning = nlohmann::json::object();
     if (!planning.is_object()) {
@@ -2677,6 +2669,28 @@ void appendRequiredCapabilities(
 }
 
 } // namespace
+
+bool renderFeatureRequiresRuntimeShaderCompiler(
+    const nlohmann::json &feature,
+    std::string_view feature_name) {
+    return parseFeatureRequiresRuntimeShaderCompiler(
+        feature, feature_name);
+}
+
+std::vector<std::string> renderFeatureRequiredCapabilities(
+    const nlohmann::json &feature,
+    std::string_view feature_name) {
+    if (!feature.contains("required_capabilities")) return {};
+    auto capabilities = parseStringArray(
+        feature, "required_capabilities",
+        "render feature '" + std::string{feature_name} + "'");
+    if (capabilities.empty()) {
+        throw std::runtime_error(
+            "render feature required_capabilities must not be empty: " +
+            std::string{feature_name});
+    }
+    return capabilities;
+}
 
 RenderFeatureComposeResult composeRenderFeatureConfig(
     const nlohmann::json &config,
@@ -2736,6 +2750,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             appendUnique(excluded_feature_names, feature_name);
             continue;
         }
+        if (dependencies.validate_feature) {
+            dependencies.validate_feature(feature_name, feature);
+        }
         appendUnique(feature_names, feature_name);
         hdr_enabled = hdr_enabled || feature_name == "hdr";
         if (auto declaration = FeatureComposeInternal::parseProjectionJitterDeclaration(
@@ -2753,11 +2770,12 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         std::any_of(
             loaded_features.begin(), loaded_features.end(),
             [](const auto &loaded) {
-                return featureRequiresRuntimeShaderCompiler(
+                return renderFeatureRequiresRuntimeShaderCompiler(
                     loaded.feature, loaded.name);
             })) {
         throw std::runtime_error(
-            std::string{runtime_compiler_required_message});
+            std::string{
+                renderFeatureRuntimeCompilerRequiredMessage});
     }
 
     auto composed = resolved_config;

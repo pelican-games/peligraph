@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../project/renderconfigdocument.hpp"
+#include "../vkcore/renderer_config.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +18,8 @@ struct RenderFeatureCatalogEntry {
     std::string name;
     std::string reference;
     bool requires_runtime_module = false;
+    bool available = false;
+    std::string unavailable_reason;
 
     bool operator==(const RenderFeatureCatalogEntry &) const = default;
 };
@@ -117,6 +120,8 @@ class RenderConfigEditorService {
 };
 
 std::vector<RenderFeatureCatalogEntry>
-enumerateEngineRenderFeatureDocuments();
+enumerateEngineRenderFeatureDocuments(
+    const std::function<RenderFeatureRuntimeAvailability(
+        std::string_view, const nlohmann::json &)> &availability);
 
 } // namespace Pelican

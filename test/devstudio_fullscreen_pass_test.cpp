@@ -996,6 +996,73 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP332 render feature catalog displays the engine availability reason verbatim",
+    "[devstudio][render-features][wp332][availability]") {
+    (void)application();
+    MainWindow window;
+    auto *form = dynamic_cast<RenderFeaturesWidget *>(
+        window.findChild<QWidget *>(
+            QStringLiteral("pelican.renderFeatures")));
+    REQUIRE(form != nullptr);
+
+    const QString engine_reason =
+        QStringLiteral(
+            "engine-policy: capability pelican.test.unavailable@1");
+    const Json response{
+        {"features",
+         Json::array({
+             {{"name", "blocked_probe"},
+              {"reference", "engine://features/blocked_probe.json"},
+              {"requires_runtime_module", false},
+              {"hot_add_supported", false},
+              {"available", false},
+              {"unavailable_reason",
+               engine_reason.toStdString()}},
+             {{"name", "available_probe"},
+              {"reference", "engine://features/available_probe.json"},
+              {"requires_runtime_module", false},
+              {"hot_add_supported", true},
+              {"available", true}},
+         })},
+    };
+    form->receiveCatalogResult(
+        QByteArray::fromStdString(response.dump()));
+
+    auto *catalog = form->findChild<QTreeWidget *>(
+        QStringLiteral("pelican.renderFeatures.catalog"));
+    REQUIRE(catalog != nullptr);
+    REQUIRE(catalog->topLevelItemCount() == 2);
+    const auto find_item = [&](const QString &name) {
+        for (int index = 0;
+             index < catalog->topLevelItemCount(); ++index) {
+            auto *item = catalog->topLevelItem(index);
+            if (item->text(0) == name) return item;
+        }
+        return static_cast<QTreeWidgetItem *>(nullptr);
+    };
+    const auto *blocked =
+        find_item(QStringLiteral("blocked_probe"));
+    const auto *available =
+        find_item(QStringLiteral("available_probe"));
+    REQUIRE(blocked != nullptr);
+    REQUIRE(available != nullptr);
+    REQUIRE(blocked->text(1) == engine_reason);
+    REQUIRE(blocked->toolTip(0) == engine_reason);
+    REQUIRE(blocked->toolTip(1) == engine_reason);
+    REQUIRE(available->text(1) == QStringLiteral("Available"));
+
+    const auto studio_source = readText(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "src" / "devstudio" / "view" /
+        "renderfeatureswidget.cpp");
+    REQUIRE(studio_source.find(engine_reason.toStdString()) ==
+            std::string::npos);
+    REQUIRE(studio_source.find(
+                "requires dynamic runtime module creation") ==
+            std::string::npos);
+}
+
+TEST_CASE(
     "WP325 asynchronous frame-plan capability exposes no write or apply operation",
     "[devstudio][fullscreen-pass][wp325][capability][no-side-effects]") {
     (void)application();

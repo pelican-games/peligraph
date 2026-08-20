@@ -88,6 +88,10 @@ struct RenderingPassConfigRegistrationDependencies {
         bool publish_enabled_features = true;
         std::string gpu_owner_scope;
         std::function<void()> prepare_additional_gpu_resources;
+        // Engine-owned feature availability policy. The compiler invokes
+        // this on the same loaded document used by the catalog decision.
+        std::function<void(std::string_view, const nlohmann::json &)>
+            validate_render_feature;
         // Runs after every program and GPU scope in the transaction has been
         // prepared, but before the single publication CAS.
         std::function<void(const RendererRuntimeGeneration &)>

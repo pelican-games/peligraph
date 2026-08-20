@@ -808,6 +808,9 @@ registerRenderingPassConfigVariantsData(
             subgraph_replacement_providers,
         .backend_context = backend_context,
         .variants = variant_requests,
+        .validate_feature =
+            dependencies.front()
+                .options.validate_render_feature,
     };
     auto compiler_output =
         runRenderCompilerProgram(

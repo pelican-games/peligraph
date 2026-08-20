@@ -201,6 +201,8 @@ struct RenderPipelineResolveDependencies {
         const nlohmann::json &,
         const CompiledGraphVariantPolicy &)>
         resolve_render_strategy;
+    std::function<void(std::string_view, const nlohmann::json &)>
+        validate_feature;
 };
 
 struct ResolvedRenderPipeline {

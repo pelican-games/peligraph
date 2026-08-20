@@ -422,6 +422,7 @@ compileDefaultLogicalVariant(
                         generated.selection;
                     return std::move(generated.config);
                 },
+            .validate_feature = input.validate_feature,
         };
     if (request.artifact ==
         RenderCompilerProgramArtifact::

@@ -168,7 +168,13 @@ std::string primaryReason(const std::vector<std::string> &reasons) {
 } // namespace
 
 std::vector<RenderFeatureCatalogEntry>
-enumerateEngineRenderFeatureDocuments() {
+enumerateEngineRenderFeatureDocuments(
+    const std::function<RenderFeatureRuntimeAvailability(
+        std::string_view, const Json &)> &availability) {
+    if (!availability) {
+        throw std::invalid_argument(
+            "render feature enumeration requires an engine availability evaluator");
+    }
     std::vector<RenderFeatureCatalogEntry> result;
     std::set<std::string, std::less<>> names;
     for (const auto id : registeredEngineResourceIds()) {
@@ -194,11 +200,24 @@ enumerateEngineRenderFeatureDocuments() {
             throw std::runtime_error(
                 "registered render feature name is duplicated: " + name);
         }
+        auto evaluated = availability(name, document);
+        if (!evaluated.available &&
+            evaluated.unavailable_reason.empty()) {
+            throw std::runtime_error(
+                "engine marked render feature unavailable without a reason: " +
+                name);
+        }
+        if (evaluated.available) {
+            evaluated.unavailable_reason.clear();
+        }
         result.push_back(RenderFeatureCatalogEntry{
             .name = name,
             .reference = "engine://" + std::string{id},
             .requires_runtime_module =
                 renderFeatureRequiresRuntimeModule(name),
+            .available = evaluated.available,
+            .unavailable_reason =
+                std::move(evaluated.unavailable_reason),
         });
     }
     std::ranges::sort(result, {}, &RenderFeatureCatalogEntry::name);
@@ -216,9 +235,11 @@ RenderConfigEditorService::RenderConfigEditorService(
         throw std::invalid_argument(
             "RenderConfigEditorService requires source, gate, runtime and apply dependencies");
     }
-    feature_catalog_ = dependencies_.feature_catalog
-                           ? dependencies_.feature_catalog()
-                           : enumerateEngineRenderFeatureDocuments();
+    if (!dependencies_.feature_catalog) {
+        throw std::invalid_argument(
+            "RenderConfigEditorService requires an engine-evaluated feature catalog");
+    }
+    feature_catalog_ = dependencies_.feature_catalog();
 }
 
 RenderConfigEditorService::GateSnapshot
@@ -279,11 +300,12 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
             {"name", entry.name},
             {"reference", entry.reference},
             {"requires_runtime_module", entry.requires_runtime_module},
-            {"hot_add_supported", !entry.requires_runtime_module},
+            {"hot_add_supported", entry.available},
+            {"available", entry.available},
         };
-        if (entry.requires_runtime_module) {
+        if (!entry.available) {
             encoded["unavailable_reason"] =
-                "requires dynamic runtime module creation; cannot be enabled without restarting";
+                entry.unavailable_reason;
         }
         features.push_back(std::move(encoded));
     }
@@ -355,11 +377,12 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
                     {{"feature", feature}});
             }
             if (!candidate.containsFeature(feature) &&
-                catalog->requires_runtime_module) {
+                !catalog->available) {
                 return rejection(
-                    "restart_required_feature",
-                    "render feature '" + catalog->name +
-                        "' requires dynamic runtime module creation and cannot be enabled without restarting",
+                    catalog->requires_runtime_module
+                        ? "restart_required_feature"
+                        : "render_feature_unavailable",
+                    catalog->unavailable_reason,
                     {{"feature", catalog->name},
                      {"reference", catalog->reference}});
             }
@@ -452,6 +475,24 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {{"ticket", ticket.id},
                      {"expected_source_digest", ticket.base_source_digest},
                      {"actual_source_digest", disk_digest}}));
+                continue;
+            }
+
+            if (ticket.candidate.sourceDigest() ==
+                document_.sourceDigest()) {
+                const auto runtime =
+                    dependencies_.runtime_snapshot();
+                finish(OrderedJson{
+                    {"ticket", ticket.id},
+                    {"status", "committed"},
+                    {"committed", true},
+                    {"no_change", true},
+                    {"published_generation",
+                     runtime.published_generation},
+                    {"source_digest",
+                     digestJson(document_.sourceDigest())},
+                    {"source_commit_called", false},
+                });
                 continue;
             }
 

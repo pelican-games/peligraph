@@ -1483,6 +1483,15 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     applied.post_commit_error,
                             };
                         },
+                    .feature_catalog = [] {
+                        return enumerateEngineRenderFeatureDocuments(
+                            [](std::string_view feature_name,
+                               const nlohmann::json &feature_document) {
+                                return currentRenderFeatureRuntimeAvailability(
+                                    feature_name,
+                                    feature_document);
+                            });
+                    },
                 });
         }
     }

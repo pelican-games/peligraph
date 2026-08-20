@@ -27,6 +27,11 @@ struct RenderFeatureComposeDependencies {
     // the returned config is still compiled by every normal validation stage.
     std::function<nlohmann::json(const nlohmann::json &)>
         transform_resolved_config;
+    // Engine/runtime policy is supplied explicitly so the same feature
+    // availability decision can be used by authoring catalogs and the real
+    // compile/apply path.  Pure project-layer callers may leave it empty.
+    std::function<void(std::string_view, const nlohmann::json &)>
+        validate_feature;
 };
 
 struct RenderFeatureComposeResult {
@@ -49,5 +54,16 @@ struct RenderFeatureComposeResult {
 RenderFeatureComposeResult composeRenderFeatureConfig(
     const nlohmann::json &config,
     const RenderFeatureComposeDependencies &dependencies = {});
+
+inline constexpr std::string_view
+    renderFeatureRuntimeCompilerRequiredMessage =
+        "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";
+
+bool renderFeatureRequiresRuntimeShaderCompiler(
+    const nlohmann::json &feature,
+    std::string_view feature_name);
+std::vector<std::string> renderFeatureRequiredCapabilities(
+    const nlohmann::json &feature,
+    std::string_view feature_name);
 
 } // namespace Pelican

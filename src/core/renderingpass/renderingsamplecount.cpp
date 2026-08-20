@@ -313,7 +313,7 @@ const CompilerProviderRegistrySnapshot &runtimeProviders() {
     return snapshot;
 }
 
-TargetTopologySnapshot runtimeTopology(
+TargetEndpoint makeRuntimeEndpoint(
     const RenderingTargetPlanDeviceFacts &facts,
     bool enable_tile_local) {
     std::vector<std::string> capabilities{
@@ -381,15 +381,21 @@ TargetTopologySnapshot runtimeTopology(
             std::string{
                 vulkanRayTracingPipelineCapability});
     }
+    return TargetEndpoint{
+        .id = "device:0",
+        .kind = TargetEndpointKind::vulkan_device,
+        .capabilities = std::move(capabilities),
+        .facts = std::move(target_facts),
+    };
+}
+
+TargetTopologySnapshot runtimeTopology(
+    const RenderingTargetPlanDeviceFacts &facts,
+    bool enable_tile_local) {
     return TargetTopologySnapshot{
         .name = "runtime_vulkan_device",
-        .endpoints =
-            {TargetEndpoint{
-                .id = "device:0",
-                .kind = TargetEndpointKind::vulkan_device,
-                .capabilities = std::move(capabilities),
-                .facts = std::move(target_facts),
-            }},
+        .endpoints = {
+            makeRuntimeEndpoint(facts, enable_tile_local)},
     };
 }
 
@@ -1615,6 +1621,12 @@ mergeRuntimeAliasGroups(
 }
 
 } // namespace
+
+TargetEndpoint renderingTargetRuntimeEndpoint(
+    const RenderingTargetPlanDeviceFacts &facts,
+    bool enable_tile_local) {
+    return makeRuntimeEndpoint(facts, enable_tile_local);
+}
 
 std::vector<CompiledLogicalRenderGraph>
 compileRenderingLogicalGraphs(

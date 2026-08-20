@@ -26,7 +26,8 @@ namespace {
 
 constexpr int ReferenceRole = Qt::UserRole;
 constexpr int FeatureNameRole = Qt::UserRole + 1;
-constexpr int RequiresRuntimeModuleRole = Qt::UserRole + 2;
+constexpr int AvailableRole = Qt::UserRole + 2;
+constexpr int UnavailableReasonRole = Qt::UserRole + 3;
 
 QString responseError(const QJsonObject &response) {
     const auto error = response.value(QStringLiteral("error"));
@@ -143,7 +144,7 @@ struct RenderFeaturesWidget::Impl {
             QStringLiteral("pelican.renderFeatures.catalog"));
         catalog->setColumnCount(2);
         catalog->setHeaderLabels(
-            {owner.tr("Feature"), owner.tr("Hot add")});
+            {owner.tr("Feature"), owner.tr("Availability")});
         catalog->header()->setStretchLastSection(false);
         catalog->header()->setSectionResizeMode(
             0, QHeaderView::Stretch);
@@ -318,10 +319,9 @@ struct RenderFeaturesWidget::Impl {
             item->data(0, FeatureNameRole).toString();
         const auto reference =
             item->data(0, ReferenceRole).toString();
-        if (item->data(0, RequiresRuntimeModuleRole).toBool()) {
-            showError(owner.tr(
-                "%1 requires dynamic runtime module creation and cannot be enabled without restarting.")
-                          .arg(name));
+        if (!item->data(0, AvailableRole).toBool()) {
+            showError(item->data(
+                0, UnavailableReasonRole).toString());
             staged.reset();
             updateControls();
             return;
@@ -404,7 +404,10 @@ struct RenderFeaturesWidget::Impl {
             request.refresh_generation != refresh_generation) {
             return;
         }
-
+        if (request.kind == RequestKind::Catalog) {
+            owner.receiveCatalogResult(result_json);
+            return;
+        }
         switch (request.kind) {
         case RequestKind::CanEdit:
             consumeCanEdit(*decoded);
@@ -471,6 +474,19 @@ struct RenderFeaturesWidget::Impl {
         if (have_catalog) applyCatalogNamesToCurrent();
     }
 
+    void receiveCatalogResult(const QByteArray &result_json) {
+        QString error;
+        const auto decoded = decodeObject(
+            result_json, &error);
+        if (!decoded) {
+            showError(error);
+            updateControls();
+            return;
+        }
+        consumeCatalog(*decoded);
+        updateControls();
+    }
+
     void consumeCatalog(const QJsonObject &response) {
         catalog->clear();
         for (const auto value : response.value(
@@ -480,24 +496,24 @@ struct RenderFeaturesWidget::Impl {
                 QStringLiteral("name")).toString();
             const auto reference = feature.value(
                 QStringLiteral("reference")).toString();
-            const bool requires_module = feature.value(
-                QStringLiteral("requires_runtime_module"))
-                                      .toBool(false);
+            const bool available = feature.value(
+                QStringLiteral("available")).toBool(false);
+            const auto unavailable_reason = feature.value(
+                QStringLiteral("unavailable_reason")).toString();
             auto *item = new QTreeWidgetItem(catalog);
             item->setText(0, name);
             item->setText(1,
-                          requires_module
-                              ? owner.tr("Restart required")
-                              : owner.tr("Available"));
+                          available
+                              ? owner.tr("Available")
+                              : unavailable_reason);
             item->setData(0, ReferenceRole, reference);
             item->setData(0, FeatureNameRole, name);
-            item->setData(0, RequiresRuntimeModuleRole,
-                          requires_module);
-            if (requires_module) {
-                item->setToolTip(
-                    0, owner.tr(
-                           "%1 requires dynamic runtime module creation and cannot be enabled without restarting.")
-                           .arg(name));
+            item->setData(0, AvailableRole, available);
+            item->setData(0, UnavailableReasonRole,
+                          unavailable_reason);
+            if (!available) {
+                item->setToolTip(0, unavailable_reason);
+                item->setToolTip(1, unavailable_reason);
             }
         }
         have_catalog = true;
@@ -583,9 +599,13 @@ struct RenderFeaturesWidget::Impl {
         remove->setEnabled(
             can_edit && idle &&
             !current->selectedItems().isEmpty());
+        const auto catalog_selection =
+            catalog->selectedItems();
         add->setEnabled(
             can_edit && idle &&
-            !catalog->selectedItems().isEmpty());
+            !catalog_selection.isEmpty() &&
+            catalog_selection.front()
+                ->data(0, AvailableRole).toBool());
         apply->setEnabled(
             can_edit && idle && staged.has_value() &&
             !source_digest.isEmpty());
@@ -603,5 +623,10 @@ RenderFeaturesWidget::RenderFeaturesWidget(
 }
 
 RenderFeaturesWidget::~RenderFeaturesWidget() = default;
+
+void RenderFeaturesWidget::receiveCatalogResult(
+    const QByteArray &result_json) {
+    impl_->receiveCatalogResult(result_json);
+}
 
 } // namespace PelicanStudio

@@ -4,6 +4,8 @@
 
 #include <memory>
 
+class QByteArray;
+
 namespace PelicanStudio {
 
 class EmbeddedViewport;
@@ -21,6 +23,10 @@ class RenderFeaturesWidget final : public QWidget {
         EmbeddedViewport *viewport,
         QWidget *parent = nullptr);
     ~RenderFeaturesWidget() override;
+
+    // Applies the successful list_render_features payload. Production RPC
+    // delivery and focused widget tests intentionally share this entry.
+    void receiveCatalogResult(const QByteArray &result_json);
 };
 
 } // namespace PelicanStudio

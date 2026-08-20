@@ -9,6 +9,7 @@
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/vulkanviewplanning.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -43,6 +44,22 @@ using Json = nlohmann::json;
 
 constexpr std::string_view skyReference =
     "engine://features/sky_ambient.json";
+constexpr std::string_view rtShadowReference =
+    "engine://features/rt_shadow_mask.json";
+constexpr std::string_view debugDrawReference =
+    "engine://features/debug_draw.json";
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+constexpr std::string_view buildAvailableReference = skyReference;
+constexpr std::string_view buildAvailableFeature = "sky_ambient";
+constexpr std::string_view rejectedReference = debugDrawReference;
+constexpr std::string_view rejectedFeature = "debug_draw";
+#else
+constexpr std::string_view buildAvailableReference = rtShadowReference;
+constexpr std::string_view buildAvailableFeature = "rt_shadow_mask";
+constexpr std::string_view rejectedReference = skyReference;
+constexpr std::string_view rejectedFeature = "sky_ambient";
+#endif
 
 std::string readBytes(const std::filesystem::path &path) {
     std::ifstream input{path, std::ios::binary};
@@ -157,6 +174,45 @@ struct ActualCpuRenderRuntime {
     bool fail_after_source_commit = false;
     std::string post_commit_error;
     std::size_t apply_calls = 0;
+    bool ray_query_available = true;
+    bool module_creation_frozen = false;
+    std::set<std::string, std::less<>> initialized_modules;
+
+    RenderFeatureRuntimeAvailabilityEnvironment
+    availabilityEnvironment() const {
+        TargetEndpoint endpoint{
+            .id = "device:0",
+            .kind = TargetEndpointKind::vulkan_device,
+            .capabilities = {
+                "pelican.vulkan.graphics@1",
+                "pelican.vulkan.sampled_image@1",
+                "pelican.vulkan.storage_buffer@1",
+                "pelican.vulkan.transfer_copy@1",
+            },
+        };
+        if (ray_query_available) {
+            endpoint.capabilities.push_back(
+                std::string{vulkanRayQueryCapability});
+        }
+        return {
+            .runtime_shader_compiler_enabled =
+                PELICAN_RUNTIME_SHADER_COMPILER != 0,
+            .target_endpoint = std::move(endpoint),
+            .runtime_module_creation_frozen =
+                module_creation_frozen,
+            .runtime_module_initialized =
+                [this](std::string_view module) {
+                    return initialized_modules.contains(module);
+                },
+        };
+    }
+
+    RenderFeatureRuntimeAvailability availability(
+        std::string_view name,
+        const Json &document) const {
+        return evaluateRenderFeatureRuntimeAvailability(
+            name, document, availabilityEnvironment());
+    }
 
     Prepared prepare(std::string_view bytes) const {
         auto composition = composeRenderFeatureConfig(
@@ -166,6 +222,13 @@ struct ActualCpuRenderRuntime {
                 .runtime_shader_compiler_enabled =
                     PELICAN_RUNTIME_SHADER_COMPILER != 0,
                 .load_pipeline_json = loadEngineDocument,
+                .validate_feature =
+                    [this](std::string_view name,
+                           const Json &document) {
+                        requireRenderFeatureRuntimeAvailability(
+                            name, document,
+                            availabilityEnvironment());
+                    },
             });
         // Production lowers output-relative targets against the active
         // window extent before frame planning.  Supply the same concrete
@@ -198,7 +261,23 @@ struct ActualCpuRenderRuntime {
     }
 
     void initialize(std::string_view bytes) {
+        module_creation_frozen = false;
         auto prepared = prepare(bytes);
+        initialized_modules.clear();
+        for (const auto &requirement :
+             renderFeatureRuntimeModuleRequirements()) {
+            if (std::find(
+                    prepared.enabled_feature_names.begin(),
+                    prepared.enabled_feature_names.end(),
+                    requirement.feature) ==
+                prepared.enabled_feature_names.end()) {
+                continue;
+            }
+            for (const auto &module : requirement.modules) {
+                initialized_modules.emplace(module.module);
+            }
+        }
+        module_creation_frozen = true;
         snapshot = {
             .published_generation = 37,
             .enabled_feature_names =
@@ -211,7 +290,12 @@ struct ActualCpuRenderRuntime {
         std::string bytes,
         const RenderConfigSourceCommit &source_commit) {
         ++apply_calls;
-        auto prepared = prepare(bytes);
+        Prepared prepared;
+        try {
+            prepared = prepare(bytes);
+        } catch (const std::exception &error) {
+            return {.error = error.what()};
+        }
         if (fail_before_source_commit) {
             return {.error = "injected preflight failure"};
         }
@@ -257,6 +341,14 @@ std::unique_ptr<RenderConfigEditorService> makeService(
                     return runtime.apply(
                         std::move(candidate), commit);
                 },
+            .feature_catalog = [&runtime] {
+                return enumerateEngineRenderFeatureDocuments(
+                    [&runtime](std::string_view name,
+                               const Json &document) {
+                        return runtime.availability(
+                            name, document);
+                    });
+            },
         });
 }
 
@@ -306,7 +398,7 @@ std::string emptyHybridConfig() {
 } // namespace
 
 TEST_CASE(
-    "WP331 adding sky ambient publishes its real frame-plan node without restarting",
+    "WP331 adding a build-available feature publishes its real frame-plan node without restarting",
     "[render-config-editor][wp331][central-control]") {
     TemporaryConfig source{emptyHybridConfig()};
     ActualCpuRenderRuntime runtime;
@@ -318,15 +410,17 @@ TEST_CASE(
     const auto *same_runtime = &runtime;
     const auto before_generation =
         runtime.snapshot.published_generation;
-    REQUIRE_FALSE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE_FALSE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
     REQUIRE_FALSE(containsName(
-        runtime.snapshot.enabled_feature_names, "sky_ambient"));
+        runtime.snapshot.enabled_feature_names,
+        buildAvailableFeature));
 
     const auto before = service->getRenderFeatures(Json::object());
     const auto result = submitAndCommit(
         *service,
         before.at("source_digest").at("hex").get<std::string>(),
-        operation("add", skyReference));
+        operation("add", buildAvailableReference));
 
     REQUIRE(&runtime == same_runtime);
     REQUIRE(result.at("status") == "committed");
@@ -337,36 +431,53 @@ TEST_CASE(
             renderConfigSourceDigest(readBytes(source.path)));
     REQUIRE(result.at("post_commit_error") ==
             runtime.post_commit_error);
-    REQUIRE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
     REQUIRE(containsName(runtime.snapshot.enabled_feature_names,
-                         "sky_ambient"));
+                         buildAvailableFeature));
 }
 
 TEST_CASE(
-    "WP331 animgraph demo deletion removes the existing sky ambient node",
+    "WP331 deletion removes an existing build-available feature node",
     "[render-config-editor][wp331][delete-control]") {
     const auto shipped =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
         "projects" / "animgraph_demo" / "passes" /
         "main.json";
-    TemporaryConfig source{readBytes(shipped)};
+    std::string initial_bytes;
+    std::string_view feature_reference;
+    std::string_view feature_name;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    initial_bytes = readBytes(shipped);
+    feature_reference = skyReference;
+    feature_name = "sky_ambient";
+#else
+    initial_bytes = AuthoredRenderConfigDocument::parse(
+                        emptyHybridConfig())
+                        .withFeatureAdded(
+                            std::string{rtShadowReference})
+                        .bytes();
+    feature_reference = rtShadowReference;
+    feature_name = "rt_shadow_mask";
+#endif
+    TemporaryConfig source{initial_bytes};
     ActualCpuRenderRuntime runtime;
     runtime.initialize(readBytes(source.path));
     auto service = makeService(source, runtime);
 
-    REQUIRE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE(hasProvider(runtime.frame_plan, feature_name));
     REQUIRE(containsName(runtime.snapshot.enabled_feature_names,
-                         "sky_ambient"));
+                         feature_name));
     const auto before = service->getRenderFeatures(Json::object());
     const auto result = submitAndCommit(
         *service,
         before.at("source_digest").at("hex").get<std::string>(),
-        operation("remove", skyReference));
+        operation("remove", feature_reference));
 
     REQUIRE(result.at("committed") == true);
-    REQUIRE_FALSE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE_FALSE(hasProvider(runtime.frame_plan, feature_name));
     REQUIRE_FALSE(containsName(
-        runtime.snapshot.enabled_feature_names, "sky_ambient"));
+        runtime.snapshot.enabled_feature_names, feature_name));
     REQUIRE(readBytes(shipped).find(std::string{skyReference}) !=
             std::string::npos);
 }
@@ -381,10 +492,19 @@ TEST_CASE(
     const auto baseline_bytes = readBytes(source.path);
     const auto baseline_runtime = runtime.snapshot;
 
-    const std::set<std::string> expected_module_features{
-        "debug_draw", "debug_text", "gizmo",
-        "gpu_timing", "ui", "sprite",
-    };
+    std::set<std::string> expected_module_features;
+    std::size_t multi_module_features = 0;
+    for (const auto &requirement :
+         renderFeatureRuntimeModuleRequirements()) {
+        REQUIRE_FALSE(requirement.feature.empty());
+        REQUIRE_FALSE(requirement.modules.empty());
+        REQUIRE(expected_module_features.emplace(
+                    requirement.feature).second);
+        if (requirement.modules.size() > 1) {
+            ++multi_module_features;
+        }
+    }
+    REQUIRE(multi_module_features == 2);
     const auto implementation_names =
         renderFeaturesRequiringRuntimeModules();
     REQUIRE(std::set<std::string>{implementation_names.begin(),
@@ -403,6 +523,9 @@ TEST_CASE(
         REQUIRE(found != catalog.at("features").end());
         REQUIRE(found->at("requires_runtime_module") == true);
         REQUIRE(found->at("hot_add_supported") == false);
+        REQUIRE(found->at("available") == false);
+        REQUIRE_FALSE(found->at("unavailable_reason")
+                          .get<std::string>().empty());
 
         const auto response = service->editRenderFeatures(
             {{"base_source_digest",
@@ -425,8 +548,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP331 no-op is byte identical and add changes only the features array insertion",
-    "[render-config-editor][wp331][byte-lossless]") {
+    "WP332 no-op preserves bytes generation and apply count while a real edit advances them",
+    "[render-config-editor][wp331][wp332][byte-lossless][no-op]") {
     const std::string original =
         "{\r\n"
         "  \"pipeline\": { \"preset\": \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
@@ -438,23 +561,213 @@ TEST_CASE(
     runtime.initialize(readBytes(source.path));
     auto service = makeService(source, runtime);
 
+    const auto baseline_generation =
+        runtime.snapshot.published_generation;
+    const auto baseline_apply_calls = runtime.apply_calls;
+
     auto result = submitAndCommit(
         *service, service->documentForTesting().sourceDigest(),
         Json::array());
     REQUIRE(result.at("committed") == true);
+    REQUIRE(result.at("no_change") == true);
+    REQUIRE(result.at("published_generation") ==
+            baseline_generation);
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation);
+    REQUIRE(runtime.apply_calls == baseline_apply_calls);
     REQUIRE(readBytes(source.path) == original);
 
     result = submitAndCommit(
         *service, service->documentForTesting().sourceDigest(),
-        operation("add", skyReference));
+        operation("add", buildAvailableReference));
     REQUIRE(result.at("committed") == true);
+    REQUIRE_FALSE(result.contains("no_change"));
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation + 1);
+    REQUIRE(runtime.apply_calls == baseline_apply_calls + 1);
     const std::string expected =
         "{\r\n"
         "  \"pipeline\": { \"preset\": \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
         "  \"shader_defines\": [ \"WP331_KEPT\" ],\r\n"
-        "  \"features\": [\"engine://features/sky_ambient.json\"]\r\n"
+        "  \"features\": [\"" +
+        std::string{buildAvailableReference} +
+        "\"]\r\n"
         "}\r\n";
     REQUIRE(readBytes(source.path) == expected);
+
+    const auto changed_generation =
+        runtime.snapshot.published_generation;
+    const auto changed_apply_calls = runtime.apply_calls;
+    result = submitAndCommit(
+        *service, service->documentForTesting().sourceDigest(),
+        operation("add", buildAvailableReference));
+    REQUIRE(result.at("committed") == true);
+    REQUIRE(result.at("no_change") == true);
+    REQUIRE(result.at("published_generation") ==
+            changed_generation);
+    REQUIRE(runtime.snapshot.published_generation ==
+            changed_generation);
+    REQUIRE(runtime.apply_calls == changed_apply_calls);
+    REQUIRE(readBytes(source.path) == expected);
+}
+
+TEST_CASE(
+    "WP332 catalog and apply share the engine availability decision",
+    "[render-config-editor][wp332][catalog][availability]") {
+    TemporaryConfig source{emptyHybridConfig()};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+
+    const auto catalog =
+        service->listRenderFeatures(Json::object());
+    const auto find_entry = [&](std::string_view reference)
+        -> const nlohmann::ordered_json & {
+        const auto found = std::ranges::find_if(
+            catalog.at("features"), [&](const auto &entry) {
+                return entry.at("reference")
+                           .template get<std::string>() ==
+                       reference;
+            });
+        REQUIRE(found != catalog.at("features").end());
+        return *found;
+    };
+
+    const auto &unavailable = find_entry(rejectedReference);
+    REQUIRE(unavailable.at("name").get<std::string>() ==
+            std::string{rejectedFeature});
+    REQUIRE(unavailable.at("available") == false);
+    REQUIRE(unavailable.at("hot_add_supported") == false);
+    const auto unavailable_reason =
+        unavailable.at("unavailable_reason")
+            .get<std::string>();
+    REQUIRE_FALSE(unavailable_reason.empty());
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    REQUIRE(unavailable_reason ==
+            std::string{renderFeatureRuntimeCompilerRequiredMessage});
+#endif
+
+    const auto baseline_generation =
+        runtime.snapshot.published_generation;
+    bool rejected_source_commit_called = false;
+    const auto directly_rejected = runtime.apply(
+        AuthoredRenderConfigDocument::parse(emptyHybridConfig())
+            .withFeatureAdded(std::string{rejectedReference})
+            .bytes(),
+        [&] { rejected_source_commit_called = true; });
+    REQUIRE_FALSE(directly_rejected.committed);
+    REQUIRE(directly_rejected.error == unavailable_reason);
+    REQUIRE_FALSE(rejected_source_commit_called);
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation);
+    const auto baseline_apply_calls = runtime.apply_calls;
+    const auto rejected = service->editRenderFeatures(
+        {{"base_source_digest",
+          service->documentForTesting().sourceDigest()},
+         {"operations",
+          operation("add", rejectedReference)}});
+    REQUIRE(rejected.at("status") == "rejected");
+    REQUIRE(rejected.at("error").at("message") ==
+            unavailable_reason);
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation);
+    REQUIRE(runtime.apply_calls == baseline_apply_calls);
+
+    const auto &available =
+        find_entry(buildAvailableReference);
+    REQUIRE(available.at("name").get<std::string>() ==
+            std::string{buildAvailableFeature});
+    REQUIRE(available.at("available") == true);
+    REQUIRE(available.at("hot_add_supported") == true);
+    REQUIRE_FALSE(available.contains("unavailable_reason"));
+
+    const auto applied = submitAndCommit(
+        *service, service->documentForTesting().sourceDigest(),
+        operation("add", buildAvailableReference));
+    REQUIRE(applied.at("committed") == true);
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation + 1);
+    REQUIRE(runtime.apply_calls == baseline_apply_calls + 1);
+}
+
+TEST_CASE(
+    "WP332 device capability changes both catalog availability and apply",
+    "[render-config-editor][wp332][catalog][capability]") {
+    TemporaryConfig unavailable_source{emptyHybridConfig()};
+    ActualCpuRenderRuntime unavailable_runtime;
+    unavailable_runtime.ray_query_available = false;
+    unavailable_runtime.initialize(
+        readBytes(unavailable_source.path));
+    auto unavailable_service = makeService(
+        unavailable_source, unavailable_runtime);
+    const auto unavailable_catalog =
+        unavailable_service->listRenderFeatures(Json::object());
+    const auto unavailable = std::ranges::find_if(
+        unavailable_catalog.at("features"),
+        [](const auto &entry) {
+            return entry.at("reference")
+                       .template get<std::string>() ==
+                   rtShadowReference;
+        });
+    REQUIRE(unavailable !=
+            unavailable_catalog.at("features").end());
+    REQUIRE(unavailable->at("available") == false);
+    const auto reason = unavailable->at("unavailable_reason")
+                            .get<std::string>();
+    REQUIRE(reason.find(
+                std::string{vulkanRayQueryCapability}) !=
+            std::string::npos);
+    bool rejected_source_commit_called = false;
+    const auto directly_rejected = unavailable_runtime.apply(
+        AuthoredRenderConfigDocument::parse(emptyHybridConfig())
+            .withFeatureAdded(std::string{rtShadowReference})
+            .bytes(),
+        [&] { rejected_source_commit_called = true; });
+    REQUIRE_FALSE(directly_rejected.committed);
+    REQUIRE(directly_rejected.error == reason);
+    REQUIRE_FALSE(rejected_source_commit_called);
+    const auto rejected_apply_calls =
+        unavailable_runtime.apply_calls;
+    const auto rejected =
+        unavailable_service->editRenderFeatures(
+            {{"base_source_digest",
+              unavailable_service->documentForTesting()
+                  .sourceDigest()},
+             {"operations",
+              operation("add", rtShadowReference)}});
+    REQUIRE(rejected.at("status") == "rejected");
+    REQUIRE(rejected.at("error").at("message") == reason);
+    REQUIRE(unavailable_runtime.apply_calls ==
+            rejected_apply_calls);
+
+    TemporaryConfig available_source{emptyHybridConfig()};
+    ActualCpuRenderRuntime available_runtime;
+    available_runtime.ray_query_available = true;
+    available_runtime.initialize(readBytes(available_source.path));
+    auto available_service = makeService(
+        available_source, available_runtime);
+    const auto available_catalog =
+        available_service->listRenderFeatures(Json::object());
+    const auto available = std::ranges::find_if(
+        available_catalog.at("features"),
+        [](const auto &entry) {
+            return entry.at("reference")
+                       .template get<std::string>() ==
+                   rtShadowReference;
+        });
+    REQUIRE(available !=
+            available_catalog.at("features").end());
+    REQUIRE(available->at("available") == true);
+    const auto baseline_generation =
+        available_runtime.snapshot.published_generation;
+    const auto applied = submitAndCommit(
+        *available_service,
+        available_service->documentForTesting().sourceDigest(),
+        operation("add", rtShadowReference));
+    REQUIRE(applied.at("committed") == true);
+    REQUIRE(available_runtime.snapshot.published_generation ==
+            baseline_generation + 1);
+    REQUIRE(available_runtime.apply_calls == 1);
 }
 
 TEST_CASE(
@@ -467,7 +780,7 @@ TEST_CASE(
 
     auto result = submitAndCommit(
         *service, service->documentForTesting().sourceDigest(),
-        operation("add", skyReference));
+        operation("add", buildAvailableReference));
     REQUIRE(result.at("committed") == true);
     const auto generation_after_success =
         runtime.snapshot.published_generation;
@@ -478,7 +791,8 @@ TEST_CASE(
     const auto rejected = service->editRenderFeatures(
         {{"base_source_digest",
           service->documentForTesting().sourceDigest()},
-         {"operations", operation("remove", skyReference)}});
+         {"operations",
+          operation("remove", buildAvailableReference)}});
     REQUIRE(rejected.at("status") == "rejected");
     REQUIRE(rejected.at("error").at("code") ==
             "external_modification");
@@ -501,7 +815,7 @@ TEST_CASE(
 
     const auto result = submitAndCommit(
         *service, service->documentForTesting().sourceDigest(),
-        operation("add", skyReference));
+        operation("add", buildAvailableReference));
     REQUIRE(result.at("status") == "rejected");
     REQUIRE(result.at("committed") == false);
     REQUIRE(result.at("error").at("code") ==
@@ -537,9 +851,10 @@ TEST_CASE(
     });
     const auto result = submitAndCommit(
         *service, service->documentForTesting().sourceDigest(),
-        operation("add", skyReference));
+        operation("add", buildAvailableReference));
     REQUIRE(result.at("committed") == true);
-    REQUIRE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
 }
 
 TEST_CASE(
@@ -612,6 +927,11 @@ TEST_CASE(
             entry.at("reference").get<std::string>(),
             entry.at("requires_runtime_module")
                 .get<bool>());
+        const auto available = entry.at("available").get<bool>();
+        REQUIRE(entry.at("hot_add_supported").get<bool>() ==
+                available);
+        REQUIRE(available !=
+                entry.contains("unavailable_reason"));
     }
     REQUIRE(observed == expected);
 }
@@ -664,7 +984,8 @@ TEST_CASE(
                 .dump()));
     };
 
-    REQUIRE_FALSE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE_FALSE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
     const auto current =
         call(1, "get_render_features", Json::object());
     const auto digest = current.at("result")
@@ -674,7 +995,8 @@ TEST_CASE(
     const auto accepted = call(
         2, "edit_render_features",
         {{"base_source_digest", digest},
-         {"operations", operation("add", skyReference)}});
+         {"operations",
+          operation("add", buildAvailableReference)}});
     REQUIRE(accepted.at("result").at("status") ==
             "accepted");
     const auto ticket = accepted.at("result")
@@ -685,7 +1007,8 @@ TEST_CASE(
     const auto completed = call(
         3, "get_edit_result", {{"ticket", ticket}});
     REQUIRE(completed.at("result").at("committed") == true);
-    REQUIRE(hasProvider(runtime.frame_plan, "sky_ambient"));
+    REQUIRE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
     const auto frame_results = commands.takeCompletedEditResults();
     REQUIRE(frame_results.size() == 1);
     REQUIRE(frame_results.front().at("ticket") == ticket);

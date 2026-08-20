@@ -1019,9 +1019,11 @@ ResolvedRenderPipeline resolveRenderPipeline(
     auto composed = composeRenderFeatureConfig(
         request.authored_config,
         RenderFeatureComposeDependencies{
-            dependencies.load_feature_json,
-            capabilities.runtime_shader_compiler_enabled,
-            [&graph_variant_policy, &feature_decisions](
+            .load_feature_json = dependencies.load_feature_json,
+            .runtime_shader_compiler_enabled =
+                capabilities.runtime_shader_compiler_enabled,
+            .include_feature =
+                [&graph_variant_policy, &feature_decisions](
                 std::string_view feature_name,
                 const nlohmann::json &feature) {
                 auto decision = decideGraphVariantFeature(
@@ -1041,9 +1043,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 }
                 return include;
             },
-            dependencies.load_pipeline_json,
-            [&dependencies, &graph_variant_policy,
-             &capabilities, &request](
+            .load_pipeline_json = dependencies.load_pipeline_json,
+            .transform_resolved_config =
+                [&dependencies, &graph_variant_policy,
+                 &capabilities, &request](
                 const nlohmann::json &config) {
                 validatePassFieldOwnershipInConfig(
                     config, capabilities.pass_field_ownership,
@@ -1058,6 +1061,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 }
                 return config;
             },
+            .validate_feature = dependencies.validate_feature,
         });
 
     validatePassFieldOwnershipInConfig(
