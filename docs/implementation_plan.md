@@ -5711,7 +5711,7 @@ linked selection と共有レイアウトを受け入れ条件にする。
 - **同じテストの中で、足す前には現れないこと**
 
 
-## preset を参照の束にする(2026-08-22)
+## preset を bundle の manifest にする(2026-08-22・第 2 版)
 
 **利用者の判断**(2026-08-20):
 
@@ -5719,146 +5719,158 @@ linked selection と共有レイアウトを受け入れ条件にする。
 > eject よりももっと深い融合がある気がします。
 > 段階を踏まずどんどん直していってもいい。優先の変更が終わったらやっていい。
 
-**優先分(WP329〜335、キャンバスの編集ループ)は完了した。**本設計はその次である。
+初稿は設計レビューで**着手不可**と判定された。以下は訂正済みの版である。
 
-### これは既存決定の拡張ではなく、置き換えである
+### 初稿が破綻した理由(繰り返さないこと)
 
-`docs/design_render_pipeline_extensibility.md` §3.2 は
-**eject を「詳細 config を所有する入口」として既に設計している** ——
-preset 解決結果を project 側へ書き出し、以後は通常の verbose config として編集する。
-`eject-render-pipeline` という将来のツールまで想定されている。
+**1. コピーしても、差し替える先が無い。**
+中心操作は「preset 由来の文書をコピーし、参照を書き換える」だったが、
+**resolver は authored の `features` を preset のものに加算するだけで、置換しない**
+(`renderpipeline.cpp` の `pipeline` は `preset` / `settings` しか持てず、
+authored feature は append される)。
+コピーは**同じ target / pass 名で衝突する**。
+**書き換える先が定義されていなかった。**
 
-**本設計はその路線を採らない。**理由:
+**2.「preset 固有に残すものは無い」は強すぎた。**
+inline の graph payload は無くせるが、**manifest 自体が固有の情報を持つ**:
 
-- eject は**一方向で、粒度が全部入り**である。1 パスを所有したいだけでも全部が project に落ちる
-- **preset と feature が別の機構のまま**残る。同じことをする方法が 2 つある状態は、
-  WP324〜328 で 4 つの WP を費やした失敗の型である
-- `pelican project init` が生成するのは preset 型なので、
-  **eject を通らない限り新規プロジェクトはパスを所有できない**
+| 鍵 | 性質 |
+|---|---|
+| `schema` | loader が `pelican.render_pipeline` を要求する。**参照へ分解不能** |
+| `version` | schema version であって content revision ではない。**別に revision / closure hash が要る** |
+| `name` | provenance と UI identity |
 
-**§3.2 を書き換えること。**却下ではなく、**適用範囲を物理層に限定する** ——
-物理 plan の eject(`ejectable_*` 三種)は実装済みで有用であり、そのまま残す。
-**論理層の「resolved authoring eject」を、参照の束で置き換える。**
+**preset は「参照の並び」ではなく「slot の manifest」である。**
 
-### preset の中身を分けて測る(実測。初稿の判断を訂正した)
+**3. 設定の分類を 2 つ誤っていた。**
 
-`hybrid_v1.json` の `config` の中身:
+- **`shader_defines` は UI 設定ではない。**全 shader compile に伝播する
+- **`draw_sort.xr_view_policy` は provider 選択ではない。**queue 数を 1 か 2 に変える
+  **view execution policy** である
 
-| 鍵 | 中身 | 分解できるか |
-|---|---|---|
-| `rendering_passes` | 9 パス(material 3 / fullscreen 4 / snapshot_copy 2) | **できる** |
-| `render_targets` | 11 件 | **できる** |
-| `shader_defines` | `["PELICAN_HYBRID_SCENE_LINEAR"]` | できる(設定) |
-| `draw_sort` | `{opaque, transparent, xr_view_policy}` の provider 選択 | できる(設定) |
-| `material_routing.routes` | 役割名 → 具体パス名の写像 | **できる(下記)** |
-| `material_routing.policy` | `hybrid_auto_v1` | **選択肢が無い(下記)** |
-
-**初稿は「`material_routing` は参照に還元できない」と書いたが、強すぎた。**
-分けて見ると:
-
-- **`routes` はただのデータ**である。しかも `hybrid_v1` では
-  役割名とパス名が一致している(`deferred_geometry` → `deferred_geometry`)。
-  **パスを供給する文書自身が「この役割を担う」と宣言すれば、写像は寄与から組み上がる。**
-- **`policy` は「アルゴリズムの名前」だが、選択肢が 1 つしかない。**
-  `MaterialRoutingPolicy` は値が `hybrid_auto_v1` だけの enum で、
-  ほかの値は名前付きで拒否される。
-  **選択肢の無いものを「preset 固有で分解できない部分」と呼ぶのは実態と違う。**
-  これは**単一の既定値**であり、`draw_sort` の provider 選択と同じ格の設定である。
-
-**したがって preset に固有で残さねばならないものは、実は無い。**
-供給物は参照へ、役割の写像は寄与から、policy は設定へ。
-**preset は「参照の束 + 設定」になる。**これが利用者の言った「もっと深い融合」である。
-
-**ただし分解には代償がある。**中央で決めていた写像を寄与から組み上げると、
-**2 つの文書が同じ役割を主張しうる。**
-いま preset が中央で裁いていたものが、**衝突として表に出る。**
-**名前付きの hard error にすること**(名前衝突を hard error にする既存の作法に合わせる)。
+**4. 粒度を決めていなかった。それ自体が欠陥である。**
+9 パスを 1 文書にすると一項目の編集で大きな fork になり、
+1 パスずつにすると import / export・複数 writer・snapshot の結合を表現できない。
 
 ### 設計
 
-**preset は「参照の束 + 設定」になる。固有に持つものは無い。**
+#### bundle slot —— 差し替える先
 
-1. **供給物** —— 参照の並び。`features` と同じ形式で、
-   **利用者が自分で書けるのと同じ文書を指す**
-2. **役割の写像** —— **パスを供給する文書が「この役割を担う」と宣言し、寄与から組み上げる。**
-   衝突は名前付きの hard error
-3. **設定** —— `draw_sort` / `shader_defines` / `material_routing.policy`。
-   いずれも既存の設定と同じ格
+preset の成員に、ノード名とは別の**安定した slot 名**を与える。
+authored root は slot を**名指しで差し替える**。加算ではない。
 
-**供給物側が参照になることで得られるもの:**
-
-- preset の `deferred_geometry` は、**利用者も同じように参照できる文書**になる
-- 「自分のものにする」= **その文書をコピーして参照を書き換える。**
-  これは既に決まっている正規操作で、**feature 由来については動くことが確認済み**である
-  (WP334b の managed fragment とは別の、手書き側の経路)
-- **eject という特別な機構が、論理層では要らなくなる**
-- **preset と feature が 1 つの機構になる**
-- **キャンバスにとって: preset 由来のノードが「触れないもの」でなくなる**
-
-### 解かなければならない問題
-
-**1. 解決の順序。**
-現在は preset 解決 → feature 合成の順である(`featurecompose.cpp`)。
-preset が参照の束なら、**供給物は feature と同じ経路で合成される**ことになる。
-**役割の写像は合成の前か後か。**
-
-**2. 許可鍵 11 個の根拠が変わる。**
-preset 使用時の著作 config は 11 鍵しか許されず、`rendering_passes` を含まない。
-これは「preset と著作が衝突しないように」だが、
-**preset が参照の束なら衝突の意味が変わる。**
-`features` は既に許可鍵に含まれているので、**そこへ足すのと何が違うのかを設計が答えること。**
-
-**3. `pelican project init` の移行。**
-生成するのは `hybrid_v1` である。**既存プロジェクトが壊れないこと。**
-`animgraph_demo` が動き続けること。
-
-**4. purgeable を下げないこと(利用者の明示指示)。**
-**preset を外したら、供給物が全部消えること。**
-参照の束になると、**外し忘れた参照が孤児として残る**経路が新しくできる。
-**足す前・preset を使っている状態・preset を外した後の 3 点で検査すること。**
-
-**5. 版と provenance。**
-§3.2 は「元 preset の名前・版・content hash を provenance として残す」と要求している。
-参照の束にしても**これを失わないこと。**
-
-**6. 役割の主張が衝突したときの扱い。**
-中央の写像を寄与から組み上げると、**2 つの文書が同じ役割を主張しうる。**
-いままで preset が中央で裁いていたものが表に出る。
-**名前付きの hard error にすること。**黙って先勝ち・後勝ちにしないこと。
-
-**7. `policy` を設定へ落とす範囲。**
-`MaterialRoutingPolicy` は現在 `hybrid_auto_v1` だけの enum である。
-**選択肢を増やすのは本設計の範囲外**だが、
-**preset 固有の鍵ではなく設定として置く**ことは今決める。
-
-### 段階
-
-**利用者は「段階を踏まず直接直してよい」と言った。**
-ただし**出荷 4 プロジェクトと `project init` を壊さない**ことは絶対条件である。
-
-```
-1. preset の供給物を参照へ分解する。役割の写像は preset 固有のまま残す
-   —— 出荷 preset(hybrid_v1)を、参照の束 + material_routing として書き直す
-2. 解決の順序を、供給物は feature と同じ経路へ寄せる
-3. 許可鍵 11 個の根拠を書き換える
-4. 論理層の eject を落とす(§3.2 の書き換え)。物理層の eject は残す
+```json
+{
+  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+  "render_components": [
+    { "slot": "hybrid.ssao", "ref": "project://render/my_ssao.json" }
+  ]
+}
 ```
 
-**段階 1 が出荷を壊さないことが最初の関門である。**
-`hybrid_v1` を書き直した結果、`animgraph_demo` のフレームプランが
-**書き直し前と一致すること**が中心の対照になる。
+**`features` への追加とは別の口である。**`features` は「足す」、slot は「差し替える」。
+**この 2 つを混ぜないこと。**
+
+#### 粒度は 5 つ(決定)
+
+`hybrid_v1` の 9 パス / 11 target を次の 5 bundle に割る。
+**依存を実測して決めた。**
+
+| slot | 成員 |
+|---|---|
+| `hybrid.geometry` | `deferred_geometry` + G-buffer 5 件 + `scene_depth` |
+| `hybrid.ssao` | `ssao_pass` / `ssao_blur_pass` + `ssao_output` / `ssao_blur` |
+| `hybrid.lighting` | `deferred_lighting` + `lit_color`。G-buffer と SSAO を import |
+| `hybrid.forward` | `forward_opaque` / snapshot 2 件 / `forward_transparent` + `opaque_color` / `opaque_depth`。`lit_color` と `scene_depth` を read-write import |
+| `hybrid.present` | `scene_present`。`lit_color` を import、`swapchain` を external export |
+
+#### target は 11 文書に分けない
+
+11 件は**パスをまたいで共有される**。`lit_color` は writer が 3 つ、
+`scene_depth` は 3 パスが共有し、`opaque_color` / `opaque_depth` は
+snapshot の宛先かつ transparent の screen input である。
+
+**target は、それを所有する bundle に属する。**bundle の境界では
+**typed な import / export** で受け渡す。既存の graph compiler 設計も
+open fragment に typed import/export を要求している。
+
+**現在の planner は未使用の宣言を孤児として拒否しない**ので、
+**分解によって黙って増える宣言が出ないことを検査すること。**
+
+#### 役割の主張
+
+`material_routing.routes` は、**パスを供給する bundle が
+「この役割を担う」と明示的に claim する**形に変える。
+**衝突は名前付きの hard error。**黙って先勝ち・後勝ちにしない。
+
+`material_routing.policy` は現在 `hybrid_auto_v1` の 1 値のみ。
+**設定として置く**が、**省略時に既定の routing が生成されない**現状を先に直すこと。
+
+#### purgeable —— 所有権の模型(利用者の明示指示)
+
+**「3 点で検査する」だけでは足りない。所有権を決める。**
+
+1. **preset の成員を authored root へ物理展開しない。**解決時に origin edge を作るだけ
+2. edge を **`preset(bundle, slot, ref)` と `project(slot, ref)` に分けて持つ**
+3. **preset を外したら preset edge だけを切る。**project edge があれば寄与は 1 件残る
+4. **ファイルを消してよいのは editor-managed marker を持つ project 文書だけ**
+5. **root・bundle・他文書を含む到達可能グラフ全体**の正規化 inbound refcount が
+   0 になってから削除する
+6. **engine resource と、利用者が作った / marker の無いコピーは絶対に削除しない**
+7. root の edge 除去・managed ファイルの削除・preflight・runtime publish を、
+   **既存の複数文書トランザクションと同じ failure-atomic な commit に載せる**
+
+現在の `appendUniqueArray` は値を dedupe して origin を失う。**ここを変える。**
+削除側の refcount も root の `features` しか数えていない。
+
+**検査は 3 点に加えて、少なくとも次の 3 ケース:**
+preset と project が同じ成員を共有 / 外部編集された managed コピー / 別 bundle からも参照。
+
+#### §3.2(eject)の置き換え範囲
+
+**論理層の「resolved authoring eject」だけを置き換える。**
+
+**残すもの**: 物理層の eject 三種(`ejectable_pin_package` /
+`ejectable_physical_fragment` / `ejectable_complete_physical_plan`)、
+および **logical dump の診断**(`dump-resolved-render-pipeline` 等)。
+**診断まで失わないこと。**
+
+#### Studio が判断するために要るもの(D0)
+
+Studio は `pelican_core` をリンクできない。engine resource の列挙と bytes 取得は core 側にある。
+現在の authoring context は config / preset 情報 / pass provenance だけで、
+**resource provenance・bundle slot・member hash・依存・setting の所有者が無い。**
+これでは **「どの文書をコピーし、どの slot を差し替えるか」を Studio が判断できない。**
+**authoring context を拡張すること。**
+
+### 出荷・移行で落としてはならないもの
+
+- **埋め込み資源**: preset は `engine://` の埋め込み資源である。分解した bundle も同様に埋め込む
+- **`PELICAN_RUNTIME_SHADER_COMPILER=OFF`** 構成で成立すること
+- **Studio のカタログを汚さないこと** —— bundle が feature として列挙されて
+  利用者に「足せるもの」として出てはいけない
+- **出荷 4 プロジェクトのフレームプランが変わらないこと**
+- **`pelican project init`** の出力が動くこと
 
 ### 受け入れ条件の骨子(WP 化するときに逐語で書く)
 
-- **`hybrid_v1` を参照の束へ書き直した前後で、`animgraph_demo` の
+- **`hybrid_v1` を 5 bundle へ書き直した前後で、`animgraph_demo` の
   フレームプランが一致すること。**同じテストの中で、
-  意図的に 1 つの参照を落とすと一致しなくなることを示すこと
-- **preset を外すと供給物が全部消えること**(purge の 3 点)
-- **preset 由来の文書を、利用者がコピーして参照を書き換えられること。**
-  そのあと preset を外しても、コピーは残ること
-- **provenance(名前・版・content hash)が失われないこと**
-- **`pelican project init` の出力が動くこと**
-- 出荷 4 プロジェクトすべてでフレームプランが変わらないこと
+  **1 つの slot を落とすと一致しなくなること**
+- **slot の差し替えが加算ではなく置換であること。**
+  同じ target / pass 名を持つコピーを差し替えて、**衝突せず置き換わること。**
+  同じテストで、`features` への追加は従来どおり加算であること
+- **purge**: preset と project が同じ成員を共有した状態で preset を外すと、
+  **project 側の寄与が残ること。**marker の無いファイルが消えないこと
+- **分解で宣言が増えていないこと**(planner が孤児を拒否しないため、明示的に数える)
+- **役割の二重 claim が名前付きで落ちること**
+- 出荷 4 プロジェクトと `project init`、`RUNTIME_SHADER_COMPILER` の ON / OFF
+
+### v1 の単独価値について
+
+レビューは「段階 1 だけでは利用者価値が無く、別の loader を作れば段階 2 で捨てる二重機構になる」と指摘した。
+**したがって段階に割らず、slot の差し替えまでを一つの縦切りとする。**
+利用者が「段階を踏まず直接直してよい」と言っているのと整合する。
 
 ## 著作キャンバスの設計(2026-08-20・第 2 版)
 
