@@ -471,9 +471,10 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 
 `PELICAN_WITH_IMGUI`(既定 ON・配布は dist-config が常時 OFF)でビルドすると、**通常ウィンドウ起動時のみ** ImGui のデバッグ UI が使えます。**`--rpc` / headless / リプレイ / golden / XR セッション中は無効**です(そのため「GUI で触りながら外部エージェントも繋ぐ」ことは現状できません — [第13章](13_editor.md) §13.1)。
 
-- **F1** で表示トグル(専用 CLI フラグはありません)。メニューバー
-  「Pelican」から Frame Plan Viewer、Frame Stats、Asset Browser、
-  Object Tree / Inspector、ImGui Demoを開けます。
+- **開発者 UI は既定で表示されています。`F1` は開くキーではなくトグル**で、
+  起動直後に押すと消えます(専用 CLI フラグはありません)。
+  メニューバー「Pelican」の項目は **7 つ** —— Asset Browser / Object Tree / Inspector /
+  Frame Plan Viewer / **Compiled Passes** / Frame Stats / Dear ImGui Demo。
 - **Frame Plan Viewer**: フレームプランのノードグラフ可視化(パス = ノード、RT = エッジ。ホイールでズーム、中/右ドラッグでパン、左クリックで選択詳細)。データ源は `get_frame_plan` と同一の公開 JSON のみ — **D0(エディタ特権の禁止)準拠の第 1 実例**です。
 - Asset Browserは読み取り専用です。Object Tree / Inspectorの編集は
   ECS/renderer/PhysWorldへ直接触れず、RPCと同じtyped

@@ -1,13 +1,13 @@
 # 第13章 エディタとエディタ RPC
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-08-20 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - **`pelican_player` が「編集サーバ」になった**という今回いちばん大きな変化(✅WP149〜172)
 - 編集の正本 `AuthoringSceneDocument` と、シーンファイルとの関係
 - 編集の実行モデル — チケット・フレーム境界コミット・global CAS
-- 編集 RPC のリファレンス(23 メソッド)とエラーの読み方
+- 編集 RPC のリファレンスとエラーの読み方(**総数は挙げない** —— メソッドが増えるたび腐るため)
 - プレビューの 4 段梯子(どこまでが「本物の絵」か)
 - 保存(`save_scene`)・スナップショット・ImGui のエディタパネル・Python クライアント
 
@@ -119,7 +119,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 - 編集メソッドには必ず `base_revision`(見ている文書のリビジョン)を添えます。**文書全体で 1 つの `SceneRevision` を使った CAS(Compare-And-Swap)**なので、他の誰かが**無関係なオブジェクト**を編集しただけでも `stale_revision` で弾かれます。これは v1 の意図的な制約です — 最新の revision を取り直し、**操作内容も作り直してから**再送してください(revision だけ差し替えて再送するのは誤りです)。
 - 現在の revision は `get_scene_revision` で取れます(`preview_epoch` / 直近トランザクション / プレビューリースも一緒に返ります)。変化を検出する目的にはこれをポーリングします。
 
-## 13.5 編集 RPC リファレンス(23 メソッド)
+## 13.5 編集 RPC リファレンス
 
 RPC は全 46 メソッドで、そのうち **23 個がエディタトラックで増えた分**です(残り 23 個の基盤メソッドは [第10章](10_tools.md) §10.3)。
 
@@ -164,6 +164,38 @@ RPC は全 46 メソッドで、そのうち **23 個がエディタトラック
 | `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` |
 | `save_scene` | `{}`(フィールドを書くとエラー) |
 
+### レンダー設定の `features[]` を編集する(3 メソッド)
+
+**シーン編集とは実行モデルが違います。**混ぜると壊れます。
+
+| メソッド | 何をするか |
+|---|---|
+| `get_render_features` | 著作 config の現在の `features[]`、`source_reference`、`source_digest`、runtime の状態を返す |
+| `list_render_features` | **engine が可用性を判定した**カタログ。各項目に `available` と `unavailable_reason` が付く |
+| `edit_render_features` | `base_source_digest` と `operations[]` を受け、**チケットを返す**。結果は `get_edit_result` か `step_frame` の `edit_results[]` |
+
+**シーン編集との違い:**
+
+- **`actor_id` もセッションも要りません。**
+- **undo / redo できません。journal にも載りません。**
+- **CAS は SceneRevision ではなく、ルート設定ファイルの sha256 digest** です。
+  **メモリ上の文書とディスク上の実物の両方**を照合し、食い違えば `external_modification` で**何も書きません**。
+- 書き込みは原子的置換で、**engine が文書を所有します。編集側はファイルに触れません。**
+- **v1 は `operations` が最大 1 要素**、`op` は `add` と `remove` のみ。
+- **可用性の判定は engine 側**です。studio が理由を組み立てることはありません。
+  モジュールの動的生成を要する feature は名指しで断られます([第6章](06_rendering.md) §6.5)。
+- **no-op は runtime にもファイルにも届きません**(digest が一致すれば `no_change`)。
+  同じ内容で 2 回適用しても世代は進まず、履歴も reset されません。
+
+**編集面が存在しないプロジェクトがあります。**ルートの rendering config に
+最上位 `features` 鍵が無いと、以前はサービスごと作られず 3 メソッドとも
+「render config editor service is unavailable」で失敗しました。
+現在は**初期化操作が `features: []` を byte-lossless に挿入する**ので、
+手書きや legacy の config でも編集面が作られます。
+
+**適用は 3 つの graph variant(flat / xr / preview)をまとめて再コンパイルします。**
+したがって **preview を壊す候補は、feature を 1 つ足しただけでも preview 由来の理由で拒否されます。**
+
 ## 13.6 エラーの読み方 — 2 つのチャネル
 
 **ここを取り違えるとクライアント実装が丸ごと壊れます。**
@@ -171,7 +203,7 @@ RPC は全 46 メソッドで、そのうち **23 個がエディタトラック
 | チャネル | どのメソッド | どこに出るか |
 |---|---|---|
 | **A: JSON-RPC の `error`** | `scene_tree` / `get_components` / snapshot / `save_scene` / preview のスキーマ違反など | 通常の JSON-RPC エラー(`-32602` / `-32000`)。`data.code` に安定コード |
-| **B: `result` の中の `error`** | **`edit` / `undo` / `redo` / `open_preview` / `update_preview` / `commit_preview` / `abort_preview`** | **成功応答の中**。`result.status` が `"rejected"` か `"failed"`、`result.error` が `{code, message, payload}` |
+| **B: `result` の中の `error`** | **`edit` / `undo` / `redo` / `open_preview` / `update_preview` / `commit_preview` / `abort_preview` / `edit_render_features`** | **成功応答の中**。`result.status` が `"rejected"` か `"failed"`、`result.error` が `{code, message, payload}` |
 
 ```jsonc
 // チャネル B の例(JSON-RPC 的には成功応答)
@@ -182,8 +214,9 @@ RPC は全 46 メソッドで、そのうち **23 個がエディタトラック
 ```
 
 - `rejected` = **受付の時点**で弾かれた / `failed` = **フレーム境界の実行時**に弾かれた、という区別です。
-- 編集側の安定コードは 21 種(`stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `unknown_component_type` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`)。
-- 保存・スナップショット側は別系統(`save_busy` / `runtime_only_data` / `external_modification` / `digest_mismatch` / `snapshot_too_large` など)。
+- **シーン編集**の安定コードは 21 種(`stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `unknown_component_type` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`)。
+- **`edit_render_features` はこの 21 種では尽きない別系統**です。共通するのは `gate_closed` だけで、ほかに `unknown_render_feature` / `restart_required_feature` / `render_feature_unavailable` / `render_feature_not_enabled` / `external_modification` / `stale_source_digest` / `render_pipeline_preflight_failed` / `render_config_rollback_failed` / `render_pipeline_commit_protocol_error` を返します(§13.5)。
+- 保存・スナップショット側も別系統(`save_busy` / `runtime_only_data` / `external_modification` / `digest_mismatch` / `snapshot_too_large` など)。
 
 ### 編集がそもそもできない状態(gate)
 
@@ -238,16 +271,16 @@ RPC は全 46 メソッドで、そのうち **23 個がエディタトラック
 
 ## 13.9 エンジン内蔵のエディタ UI(ImGui ✅WP159/164/167)
 
-`PELICAN_WITH_IMGUI` を有効にしたビルド(既定 ON)をウィンドウモードで起動し、**F1** でメニューを開きます。項目は 6 つです:
+**開発者 UI は既定で表示されています。`F1` は開くキーではなくトグルで、
+起動直後に押すと消えます。**メニュー項目の一覧と、UI が無効になる条件は
+[第10章](10_tools.md) §10.6 が正本です。
+
+この章で関係するのは 2 つだけです。
 
 | ウィンドウ | 内容 |
 |---|---|
 | **Object Tree** | シーンのオブジェクト階層。選択すると Inspector に出る |
 | **Inspector** | **編集可能**。コンポーネントの値をウィジェットで編集、behavior の attach / remove / params 編集、undo/redo、保存 |
-| **Asset Browser** | アセット一覧(読み取り専用) |
-| Frame Plan Viewer | フレームプランのノードグラフ([第10章](10_tools.md) §10.6) |
-| Frame Stats | FPS・フレーム番号・CPU 時間 |
-| Dear ImGui Demo | ImGui 自体のデモ |
 
 > **設計決定(インスペクタはスキーマ駆動):** インスペクタは型ごとに専用 UI を手書きしない。`get_components` が返す**フィールドのスキーマ(型・範囲・単位・enum 候補)からウィジェットを組み立てる**。したがって behavior に新しいパラメータを足すと、**エンジンを 1 行も変えずにインスペクタへ現れます**。
 
