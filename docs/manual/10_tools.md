@@ -443,7 +443,8 @@ cmake --build build-dist --config Release
 | VRMA source/profile | 部分✅WP178 | generation/stale/rebind entry pointは済。FileWatcher/loaderからの自動配線は未 |
 | ゲームロジック DLL | ✅WP90/162 | 下記。candidateを旧DLLと並存side-decodeしてから切替 |
 | input actions / profile(HR2-I)、pelican.ui(U3) | 📐 | backlog Tier 1 |
-| scene JSON / rendering config / project.json | 対象外 | 設計上の決定(再起動) |
+| rendering config | ✅ | ディスク経由は `pelican.render_pipeline` 参加者が拾う。加えて Studio から `features[]` を編集して再起動なしで反映できる(§13.5) |
+| scene JSON / project.json | 対象外 | 設計上の決定(再起動) |
 
 - **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。
 - **fail-soft**: 壊れたファイルを保存しても旧リソースで動き続け、名前入り WARNING と `get_status.reload.last_reload_error` に出ます。修正して保存し直せば回復します。
@@ -482,7 +483,9 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 ## 10.7 Pelican Studio(devstudio)
 
 **現状 🚧: Qt Widgets の editor shell、別 process engine viewport、Outliner と viewport の
-選択同期、読み取り専用 Frame Plan パネルまで実装済み。**
+選択同期、Frame Plan パネル(9 タブ・並べ替え可・ノード詳細ペイン)、
+ワークスペース配置の永続化、fullscreen パスの下書きフォーム、
+そして `features[]` の編集と再起動なしの反映まで実装済み。**
 起動は `cmake --build ./build --target run_studio`。
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
@@ -538,13 +541,24 @@ abort します。handle 以外を押した場合は通常の object pick へ移
 その後にシーンを開き直しても gizmo 編集は残ります。gizmo の描画機能自体は Studio 起動時の editor
 overlay が用意しますが、overlay の feature 一覧を scene や project へ書き戻す経路はありません。
 
-`View > Panels > Frame Plan` は、実行中 player の公開 `get_frame_plan` を読むレンダーパス調査用の
-読み取り専用 dock です。Passes タブの先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、
+`View > Panels > Frame Plan` の dock には **Frame Plan と Features の 2 つのタブ**が同居します。
+
+**Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
+logical graph / passes / resources / physical plan / decisions / backends / barriers / materials / raw JSON。
+**タブは掴んで並べ替えでき、その順序は保存されます**(下記のツール配置)。
+
+Passes の先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、
 種別(render / compute / anchor / snapshot copy / output transform)が出ます。行を開くと履歴入力、
 color/depth attachment の load/store、前後 barrier、material filter、execution resource use が見えます。
-Resources、Barriers、Materials タブでは writer/reader、hazard edge、公開された material route を逆引きでき、
-上部 filter は折りたたみ配下も検索します。native scope や alias decision など Compiled Plan Viewer 相当の
-低レベル物理情報と編集操作はこのパネルの対象外です。
+Resources、Barriers、Materials では writer/reader、hazard edge、公開された material route を逆引きでき、
+上部 filter は折りたたみ配下も検索します。**Physical plan は alias group と scope をそのまま出します。**
+
+**Logical graph は左右 2 面**です。左のキャンバスでノードを選ぶと、右の詳細ペインにそのパスの行が出ます。
+境目は掴んで動かせ、位置は保存されます。
+
+**Features タブが編集面です。**著作 config の `features[]` を読み、engine が返したカタログから選んで
+足す・外すができ、**再起動なしで反映されます**。カタログは engine が可用性を判定して返すので、
+モジュールの動的生成が要る feature は理由付きで断られます(§6.5)。RPC の契約は §13.5。
 
 plan は player の RPC 接続直後に1回取得し、それ以後は `Refresh` を押した時だけ更新します。実測で
 6,000 行を超える応答を毎 frame 転送・parse・tree 再構築すると editor 自身が診断対象を重くするためです。

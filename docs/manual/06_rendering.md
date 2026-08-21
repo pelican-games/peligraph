@@ -101,13 +101,13 @@ cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2D�
 | `name` | ✔ | — | パス列内で一意 |
 | `type` | ✔ | — | `material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `gizmo` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / attachment / attachment配列)と `depth`(null / attachment)の**両キー必須**。attachmentは従来の名前または`{target, subresource}`。`"swapchain"` は color のみ |
-| `input` | 任意 | — | **`fullscreen` / `output_transform` / `raster` / `material` 限定**(ほかの type に書くと `Only fullscreen, raster, and material passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
-| `resource_ports` | 任意 | — | **`fullscreen` / `raster` 限定**(ほかは `Only fullscreen and raster passes support resource_ports`)。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
+| `input` | 任意 | — | **`fullscreen` / `output_transform` / `raster` / `material` 限定**(ほかの type に書くと違反名 `input_unsupported` で、文言は `Pass shape violation 'input_unsupported' in pass '<名前>': ...`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
+| `resource_ports` | 任意 | — | **`fullscreen` / `output_transform` / `raster` 限定**(ほかは `Pass '<名前>' type '<type>' does not own field 'resource_ports'`)。`input` の画像を logical name、sampled access、shared/per-view/cube view、filter/address、mip/layer subresourceで注釈し、generated shader accessorを作る。依存edgeは増やさない |
 | `view_family` | 任意 | `$main` | このパスを実行する ViewFamily の ID(§6.12)。compute タスクにも同じキーがある |
 | `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` / `picking` = `scene`、`output_transform` / `ui` / `gizmo` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
 | `regions` | 任意 | — | subgraph replacement 用の region タグ(string 配列)。重複は `has duplicate region tag`(後述「差し替えプロバイダの入口」)|
-| `implementation` | 任意 | — | **`fullscreen` 限定**。`{"provider": "<名前>"}` **ちょうど 1 キー**。ほかの type に書くと `Pass implementation providers currently support fullscreen passes only`(同上)|
-| `draw` / `raster_state` | `raster` では `draw` のみ必須 | — | **`raster` 限定**(ほかの type に書くと `Only raster passes support draw` / `Only raster passes support raster_state`)。後述「type: raster」|
+| `implementation` | 任意 | — | **`fullscreen` / `output_transform` 限定**。`{"provider": "<名前>"}` **ちょうど 1 キー**。ほかの type に書くと所有していない旨の名指しエラー|
+| `draw` / `raster_state` | `raster` では `draw` のみ必須 | — | **`raster` 限定**(ほかの type に書くと所有していない旨の名指しエラー)。後述「type: raster」|
 | `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、mip/layer subresource、read footprintから依存とbarrierを導出する |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
@@ -154,7 +154,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 `layer_count`を省略できます。cube全体をraster attachmentとして一度にbindするのではなく、
 各faceを2D viewとして明示的に描画します。
 
-主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 attachment は同一実サイズ / 同一 RT の入出力同時使用は不可 / input に書いた RT は先行パスが出力していること。
+主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 attachment は同一実サイズ / 同一 RT の入出力同時使用は不可(違反名 `current_frame_color_feedback` / `current_frame_depth_feedback`)—— ただし **`@history` を付けた input は免除**され、同梱 TAA はこれに依っている(`taa_accum@history` を読みつつ `taa_accum` へ書く) / **同じ名前を `input` に 2 度書くのは不可**(`duplicate_input`)。**重複判定は `@history` を剥がした後の名前で行うので、`X` と `X@history` を同じパスに両方書くと起動時に落ちる** / input に書いた RT は先行パスが出力していること。
 
 ### type 別の要点
 
@@ -232,7 +232,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 
 `color_attachments[].blend` / `.write_mask` の値の語彙は §6.7 の `material_output_states` と**同一のパーサ**です。
 ただしキーは別で、`material_outputs` / `material_output_states` は material パス限定です
-(`Only material passes support material_outputs`)。raster パスの blend / write mask は
+(所有していない旨の名指しエラー)。raster パスの blend / write mask は
 必ず `raster_state.color_attachments[]` に書きます。
 
 `input` / `resource_ports` も受理します。resource port は image が `sampled`、buffer が `storage` に限られ、
@@ -1539,7 +1539,7 @@ blend constant/dual-source blendの境界は
 を参照してください。
 
 `material_outputs` / `material_output_states` は **material パス限定**です
-(ほかの type に書くと `Only material passes support material_outputs`)。
+(ほかの type に書くと所有していない旨の名指しエラー)。
 `raster` パスの attachment blend / write mask は、値の語彙は同じですが
 `raster_state.color_attachments[]` の側に書きます(§6.2)。
 
@@ -1884,12 +1884,15 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `Pass input target is not produced as an earlier output: display` | authored な `"swapchain"` 出力は `display` RT へ置換されるため、`display` を誰も書かない構成はここで落ちる(§6.1) |
 | `uses an explicit file extension; use an extensionless ... shader stem` | shader 参照に拡張子を書いた |
 | `Shader stem could not be resolved: ... Tried: ...` | stem のパスミス(試行一覧がエラーに含まれる) |
-| `Unknown pass type: ...` | `type` の typo(§6.2 の一覧参照) |
-| `Only raster passes support draw` / `... support raster_state` | `draw` / `raster_state` を `raster` 以外の type に書いた(§6.2) |
+| `Pass '<名前>' has unknown type '<type>'` | `type` の typo(§6.2 の一覧参照) |
+| `Pass '<名前>' type '<type>' does not own field '<鍵>'` | その type が所有していない鍵を書いた(§6.2)。**形の規則の正本は `src/project/passshapepolicy.*` で、違反は `Pass shape violation '<違反名>' in pass '<名前>'` の形で出る** |
+| `swapchain_input` / `swapchain_depth_output` | `swapchain` を input か depth 出力に使った。**color 出力には使える** |
+| `duplicate_input` / `duplicate_color_output` | 同じ名前を 2 度書いた。**`@history` を剥がした後の名前で判定する** |
+| `current_frame_color_feedback` / `current_frame_depth_feedback` | 同じ RT を読み書きした。**`@history` 付きの読みは免除される** |
 | `<pass> requires a draw object` / `Raster pass requires shader: <pass>` | `raster` パスに `draw` / `shader` が無い |
 | `Raster pass shader implementation must use canonical namespace.name@major syntax` | `shader.implementation` が `namespace.name@major` 形式でない |
 | `raster_state color_attachments count must match pass color outputs` | `color_attachments` の要素数が `output.color` の枚数と違う |
-| `Pass implementation providers currently support fullscreen passes only` | `implementation` を fullscreen 以外の type に書いた(§6.2) |
+| `Pass '<名前>' type '<type>' does not own field 'implementation'` | `implementation` を `fullscreen` / `output_transform` 以外の type に書いた(§6.2) |
 | `tagged region v1 supports contiguous fullscreen passes only` / `... requires contiguous authored passes` | `regions` タグが非連続、または fullscreen 以外のパスに付いている(§6.2) |
 | `resolved draw_sort has unknown xr_view_policy: <x>` / `XR per_view draw sorting requires exactly two views` | `draw_sort.xr_view_policy` の値が不正 / `per_view` を view 数 2 以外で使った(§6.2) |
 | `Only rendering resolver_version 2 is supported` | `resolver_version` に 2 以外を書いた |
