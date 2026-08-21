@@ -7441,74 +7441,127 @@ crash reporter の実装。ダンプの自動送信。
 9 個のダンプは残してあるが、**うち 8 個は対応する PDB が既に存在しないので、
 おそらく永久に読めない。**次に落ちたものから追うこと。
 
-### WP334: 著作したパスをプロジェクトへ保存する(複数文書トランザクション)
+### WP334a: `features` を持たない config で feature を編集できるようにする
 
-**§4 規則 11 の上段**(エンジンの挙動が変わる)。**仕様レビュー + コードレビュー。**
-設計は「著作キャンバスの設計(第 2 版)」と「利用者の決定(2026-08-20)」に従う。**先に読むこと。**
+**§4 規則 11 の中段。**仕様レビュー + コードレビュー。
 
-**目的**: 現在フォームは下書き JSON を作るが、**利用者が手でコピーして貼る**しかない。
-パスを 1 つ足すには **fragment ファイル + root からの参照**で 2 ファイル要り、
-**いまの編集経路は 1 ファイルしか原子的に扱えない。**
+**目的**: 現在の runtime は、著作 root が `features` を含むときだけ編集サービスを構築する。
 
-本 WP はその 2 ファイルを原子的に書く経路を作り、**フォームに「保存」を付ける。**
-**キャンバスは本 WP の範囲外である**(段階 2 以降)。
+```json
+{ "rendering_passes": [...] }
+```
 
-#### 消費者を同時に作ること
+これは描画 config として成立するが、**編集 RPC の面が作られない。**
+つまり **legacy / 手書きの config は WP331 の feature 編集を一切使えない。**
 
-**内部基盤だけを作らないこと。**このリポジトリには誰も使っていない機構が既に 5 つある。
-本 WP は `FullscreenPassWidget` に保存操作を足し、**その場で消費者になること。**
-
-#### 決定済みの前提(変更しないこと)
-
-- **複数文書トランザクション。**root への inline delta field は却下されている ——
-  形式を分岐させ、共有できず、`planar_reflection` 級を持てないため
-- **孤児を作らないこと(purgeable)。**
-  「参照されない fragment が残るが害は無い」は**却下された。**本原則が禁じている孤児である
-- **GUI に出すのは 1 つの複合操作 `add_authored_pass`。**
-  低水準 operation を複数送る形にしない
-- **engine が document を所有する。**studio はファイルに触らない
-- **ticket 方式。**受理を同期応答し、結果は別途取得する
-- **`ReloadGate` を迂回しない**(`can_edit` が独立 query)
+**単独で価値がある** —— 既存の Render Features UI がそのまま使えるようになる。
 
 #### 実装範囲
 
-1. **複数文書トランザクション。**staging、全ファイルの digest、commit-last manifest、
-   クラッシュ復旧。**途中状態と孤児が残らないこと。**
-2. **`add_authored_pass` 複合操作。**fragment の作成と root の `features[]` への参照追加を、
-   **1 つのドメイン操作として**受け、失敗時は**両方とも書かれないこと。**
-3. **root document の初期化。**`features` を持たない config でも編集面が作られること。
-   **既存 bytes を全体再直列化せず**、`features: []` を挿入する。
-4. **`FullscreenPassWidget` に保存操作。**現在の下書きをそのまま `add_authored_pass` へ送る。
-   **成功したら反映まで行く**(WP331 の経路)。
+- root document の初期化を正式な操作にする。
+  **既存 bytes を全体再直列化せず** `features: []` を挿入する
+- **挿入位置が決定的であること。**現在の document は
+  root の `features` 配列の**字句範囲**しか持たない。
+  **存在しない配列に字句範囲は無い**ので、そこを定義すること
 
 #### 範囲外
 
-**キャンバス**(段階 2 以降)。パス以外の著作対象(target / buffer / compute task)。
-preset 由来の所有化。ヘッドレス検証(段階 2)。undo / journal。
+パスの著作。複数文書トランザクション。UI の新規追加(既存の Render Features UI を使う)。
 
 #### 受け入れ条件(§4 規約 10)
 
-- **フォームで組んだ fullscreen パスを保存すると、
-  fragment が作られ root の `features[]` から参照され、
-  再起動なしでフレームプランにノードとして現れること。**
-  **同じテストの中で、保存前には現れないこと。**——これが本 WP の中心的な対照である
-- **原子性の対照**: fragment の書き込みを成功させ root の CAS を失敗させたとき、
-  **fragment が残らないこと。**逆に root を書いて fragment を失敗させたときも、
-  **root が変わらないこと。**同じテストで、両方成功する場合を検査すること
-- **purge の対照(3 点)**: 足す前 / 足した後 / **参照を外した後**。
-  **外した後にパスとターゲットが揃って消え、孤児が残らないこと。**
-  `git status --ignored` で `projects/` に未参照のファイルが残らないこと
-- **`features` を持たない config で編集面が作られること。**
-  同じテストで、初期化が **no-op byte identity** を保つこと
-  (`features: []` の挿入以外に 1 バイトも変えない)
-- **外部で変更されたファイルへの保存が `external_modification` で拒否され、
-  何も書かれないこと**(root と fragment の両方について)
-- **失敗した保存のあと、下書きが失われないこと**
-- **本番配線**: offscreen で `MainWindow` を構築し、保存操作が本番の widget から到達できること
+- **`features` を持たない config で編集面が作られ、feature を 1 つ足せること。**
+  同じテストで、初期化前には編集面が無いこと
+- **初期化が `features: []` の挿入以外に 1 バイトも変えないこと**
+- **2 回目の初期化が no-op であること**(byte-identical)
+- **挿入位置が決定的であること。**同じ入力から同じ bytes
 - **変異 1 つで検出力を確かめること**
+- `ctest` 全数が緑、`uv run tools/doclink.py check` が通ること
+
+依存: WP331 / WP332(マージ済み)。見積: 中。
+
+### WP334b: 著作したパスの生涯(追加・除去・保存・反映)
+
+**§4 規則 11 の上段。**仕様レビュー + コードレビュー。
+**初版は着手不可で差し戻された。**下記の「初版が破綻した理由」を読むこと。
+
+**これは一つの縦切りとして残す。**トランザクション・復旧・除去・UI を別マージに割ると、
+**「利用者のいない基盤」か「孤児を作る一方向機能」のどちらか**になる。
+
+#### 初版が破綻した理由(繰り返さないこと)
+
+**1. 新規 fragment を preflight できない。**
+コンパイラの feature / preset loader は通常の `PathResolver.loadText(ref)` であり、
+本番の登録は具体的なグローバル `PathResolver&` を固定している。
+**staging にしかないファイルは候補としてコンパイルできない。**
+書いてしまえば root の CAS 失敗時に孤児になる。
+
+**グローバル `PathResolver` を一時的に差し替える実装は不可** ——
+同時に走る reload へ staged bytes が漏れる。
+
+**設計の前提節は `virtual candidate loader` を必要物として挙げていたが、
+初版はそれを実装範囲から落としていた。**
+
+**2. purge の第三状態を作る操作が無く、条件が矛盾していた。**
+操作が `add_authored_pass` だけで「参照を外す」が無い。
+しかも **target を範囲外にしながら「パスとターゲットが揃って消える」を要求**していた。
+target を足せないなら正の状態を作れず、条件は永久に通らないか空虚になる。
+
+**3. 消費者が原則に反していた。**
+現在のフォームは **studio プロセス自身が `project.json` と rendering config を読む。**
+これは「engine が document を所有し、studio はファイルに触らない」と矛盾する。
+さらにフォームは preset config を明示的に拒否するので、
+**`animgraph_demo` と `pelican project init` が作る全プロジェクトが対象外**だった。
+
+#### 実装範囲
+
+1. **候補は root の bytes ではなく `candidate document set`。**
+   正規化済み参照を鍵とし、`create` / `replace` / `delete` と各ファイルの期待状態を持つ。
+   **feature と preset の双方が同じ request-local overlay loader を通ること。**
+   本番 `PathResolver` への fallback を残しつつ、**候補集合を先に引く。**
+   renderer / reload service / source commit の型も document-set 対応にする。
+2. **複数文書トランザクション。**staging、commit-last manifest、
+   **起動前のクラッシュ復旧**(未完了 manifest を見つけたときの動作を定義すること)。
+3. **`add_authored_pass` と `remove_authored_pass` を同じ WP のドメイン操作にする。**
+4. **managed fragment の名前空間と所有権規則。**
+   - editor が作った fragment は固定の名前空間に置く
+   - **参照数がゼロになった managed fragment だけをトランザクション内で削除する**
+   - **手書き / 共有 fragment は物理削除しない。**参照解除は別操作
+   - managed fragment が外部変更済みなら、root も fragment も変えず `external_modification`
+5. **engine が著作コンテキストを返す RPC。**
+   解決済みの著作コンテキスト、provenance、**アンカー候補**、root の digest と世代。
+   **direct と preset を同じ面で扱う。**
+6. **保存 UI。**フォームから `openProjectReadOnly` によるローカル読取を**除去し**、
+   上記 RPC に置き換える。
+
+#### 範囲外
+
+キャンバス。target / buffer / compute task の著作。preset の作り直し。undo / journal。
+
+#### 受け入れ条件(§4 規約 10)
+
+- **中心対照**: フォームで組んだ fullscreen パスを保存すると、
+  managed fragment が作られ root から参照され、
+  **再起動なしでフレームプランにノードとして現れること。**
+  **同じテストの中で、保存前には現れないこと。**
+  **`animgraph_demo` または `pelican project init` の出力を必ず一例含めること**
+  (preset 型が対象外では消費者にならない)
+- **原子性を両方向で**: fragment を書いて root の CAS を失敗させたとき **fragment が残らない**。
+  root を書いて fragment を失敗させたとき **root が変わらない**。
+  同じテストで両方成功する場合を検査すること
+- **purge の 3 点対照**は **pass ノード / root の参照 / managed fragment ファイル**に限定する。
+  足す前・足した後・**`remove_authored_pass` の後**で、
+  **managed fragment が消え、参照が消え、ノードが消えること。**
+  **target の数は 3 点で同一であること**(target を足さないため)
+- **手書き fragment を参照解除しても、ファイルが削除されないこと**
+- **孤児の検査は `git status` ではなく、
+  「どの `features[]` からも参照されていない managed fragment が存在しないこと」で行うこと**
+- **overlay loader を外す変異で、本番統合テストが失敗すること**
+- **本番配線**: offscreen で `MainWindow` を構築し、保存が本番 widget から到達できること
+- **`PELICAN_RUNTIME_SHADER_COMPILER` の ON / OFF 両構成**(§4 規則 9)
 - `ctest` 全数が緑(**マージ直前に GPU 込みで 1 回**)、`uv run tools/doclink.py check` が通ること
 
-依存: WP331 / WP332(マージ済み)。見積: 大。
+依存: WP334a。見積: 大。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
