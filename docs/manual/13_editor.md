@@ -171,7 +171,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | メソッド | 何をするか |
 |---|---|
 | `get_render_features` | 著作 config の現在の `features[]`、`source_reference`、`source_digest`、runtime の状態を返す |
-| `list_render_features` | **engine が可用性を判定した**カタログ。各項目に `available` と `unavailable_reason` が付く |
+| `list_render_features` | **engine が可用性を判定した**カタログ。各項目に `available` が付き、**`unavailable_reason` は `available` が false の項目にだけ現れる**(使える項目には鍵ごと無い) |
 | `edit_render_features` | `base_source_digest` と `operations[]` を受け、**チケットを返す**。結果は `get_edit_result` か `step_frame` の `edit_results[]` |
 
 **シーン編集との違い:**
@@ -179,7 +179,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 - **`actor_id` もセッションも要りません。**
 - **undo / redo できません。journal にも載りません。**
 - **CAS は SceneRevision ではなく、ルート設定ファイルの sha256 digest** です。
-  **メモリ上の文書とディスク上の実物の両方**を照合し、食い違えば `external_modification` で**何も書きません**。
+  **メモリ上の文書とディスク上の実物の両方**を照合します。**受付の時点**でどちらかが食い違えば `external_modification`。**受付のあと**、フレーム境界までの間に**別のチケットがメモリ上の文書を先に更新していれば `stale_source_digest`**、ディスク側が変わっていれば `external_modification` です。いずれも**何も書きません**。
 - 書き込みは原子的置換で、**engine が文書を所有します。編集側はファイルに触れません。**
 - **v1 は `operations` が最大 1 要素**、`op` は `add` と `remove` のみ。
 - **可用性の判定は engine 側**です。studio が理由を組み立てることはありません。
@@ -193,7 +193,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 現在は**初期化操作が `features: []` を byte-lossless に挿入する**ので、
 手書きや legacy の config でも編集面が作られます。
 
-**適用は 3 つの graph variant(flat / xr / preview)をまとめて再コンパイルします。**
+**適用は graph variant をまとめて再コンパイルします。**flat と preview は常に、**XR は `PELICAN_WITH_OPENXR` かつ実行中の XR セッションがあるときだけ**です。
 したがって **preview を壊す候補は、feature を 1 つ足しただけでも preview 由来の理由で拒否されます。**
 
 ## 13.6 エラーの読み方 — 2 つのチャネル
@@ -214,6 +214,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 ```
 
 - `rejected` = **受付の時点**で弾かれた / `failed` = **フレーム境界の実行時**に弾かれた、という区別です。
+- **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは 21 種(`stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `unknown_component_type` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`)。
 - **`edit_render_features` はこの 21 種では尽きない別系統**です。共通するのは `gate_closed` だけで、ほかに `unknown_render_feature` / `restart_required_feature` / `render_feature_unavailable` / `render_feature_not_enabled` / `external_modification` / `stale_source_digest` / `render_pipeline_preflight_failed` / `render_config_rollback_failed` / `render_pipeline_commit_protocol_error` を返します(§13.5)。
 - 保存・スナップショット側も別系統(`save_busy` / `runtime_only_data` / `external_modification` / `digest_mismatch` / `snapshot_too_large` など)。

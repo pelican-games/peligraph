@@ -154,7 +154,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 `layer_count`を省略できます。cube全体をraster attachmentとして一度にbindするのではなく、
 各faceを2D viewとして明示的に描画します。
 
-主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 attachment は同一実サイズ / 同一 RT の入出力同時使用は不可(違反名 `current_frame_color_feedback` / `current_frame_depth_feedback`)—— ただし **`@history` を付けた input は免除**され、同梱 TAA はこれに依っている(`taa_accum@history` を読みつつ `taa_accum` へ書く) / **同じ名前を `input` に 2 度書くのは不可**(`duplicate_input`)。**重複判定は `@history` を剥がした後の名前で行うので、`X` と `X@history` を同じパスに両方書くと起動時に落ちる** / input に書いた RT は先行パスが出力していること。
+主な検証(すべて起動時の名指しエラー): input の RT に `SAMPLED` usage が必要 / 1 パスの全出力 attachment は同一実サイズ / 同一 RT の入出力同時使用は不可(違反名 `current_frame_color_feedback` / `current_frame_depth_feedback`)—— ただし **`@history` を付けた input は免除**され、同梱 TAA はこれに依っている(`taa_accum@history` を読みつつ `taa_accum` へ書く) / **同じ RT を `input` に 2 度書くのは不可**(`duplicate_input`)—— **判定対象は画像(RT)だけで、buffer input は重複してよい。**重複判定は `@history` を剥がした後の名前で行うので、**`X` と `X@history` を同じパスに両方書くと起動時に落ちる** / input に書いた RT は先行パスが出力していること。
 
 ### type 別の要点
 
@@ -268,7 +268,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 
 | 粒度 | config の書き場所 | 既定 provider | 対象 |
 |---|---|---|---|
-| 1 パスの実装 | pass の `implementation.provider` | `builtin.fullscreen_v1` | **fullscreen パス限定**。logical な pass contract を保ったままシェーダ対を差し替える |
+| 1 パスの実装 | pass の `implementation.provider` | `builtin.fullscreen_v1` | **`fullscreen` / `output_transform` 限定**(§6.2)。logical な pass contract を保ったままシェーダ対を差し替える |
 | 連続区間の置換 | pass の `regions[]` + パス列の `region_replacements[]` | `builtin.identity_v1` | **連続した fullscreen パス**を最大 256 パスへ展開・置換する |
 | 論理グラフ全体の変換 | トップレベル `graph_transforms[]` | (省略可) | feature 合成後の config を順序付き chain(最大 32 段)で変換する |
 | renderer の seed 生成 | トップレベル `render_strategy` | `builtin.authored_config_v1` | preset 展開後・feature 合成前の seed config **全体**を provider が生成する |
