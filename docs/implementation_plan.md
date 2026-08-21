@@ -5740,35 +5740,50 @@ preset 解決結果を project 側へ書き出し、以後は通常の verbose c
 物理 plan の eject(`ejectable_*` 三種)は実装済みで有用であり、そのまま残す。
 **論理層の「resolved authoring eject」を、参照の束で置き換える。**
 
-### preset は参照に還元できない部分を持つ(実測)
+### preset の中身を分けて測る(実測。初稿の判断を訂正した)
 
 `hybrid_v1.json` の `config` の中身:
 
-| 鍵 | 中身 | 参照に還元できるか |
+| 鍵 | 中身 | 分解できるか |
 |---|---|---|
 | `rendering_passes` | 9 パス(material 3 / fullscreen 4 / snapshot_copy 2) | **できる** |
 | `render_targets` | 11 件 | **できる** |
 | `shader_defines` | `["PELICAN_HYBRID_SCENE_LINEAR"]` | できる(設定) |
 | `draw_sort` | `{opaque, transparent, xr_view_policy}` の provider 選択 | できる(設定) |
-| **`material_routing`** | **`policy: "hybrid_auto_v1"` と、役割名 → 具体パス名の写像** | **できない** |
+| `material_routing.routes` | 役割名 → 具体パス名の写像 | **できる(下記)** |
+| `material_routing.policy` | `hybrid_auto_v1` | **選択肢が無い(下記)** |
 
-**`material_routing` が核心である。**
-「`deferred_geometry` という役割を、どのパスが担うか」という宣言であり、
-**パスの束を並べただけでは復元できない。**
-`docs/design_render_pipeline_extensibility.md` §3.1 が
-「preset は material の semantic route を concrete pass へ写像する」と書いているのはこれである。
+**初稿は「`material_routing` は参照に還元できない」と書いたが、強すぎた。**
+分けて見ると:
 
-**したがって preset は「参照の束 + 役割の写像」になる。**
-束だけにはできない。**この点を曖昧にしたまま実装に入らないこと。**
+- **`routes` はただのデータ**である。しかも `hybrid_v1` では
+  役割名とパス名が一致している(`deferred_geometry` → `deferred_geometry`)。
+  **パスを供給する文書自身が「この役割を担う」と宣言すれば、写像は寄与から組み上がる。**
+- **`policy` は「アルゴリズムの名前」だが、選択肢が 1 つしかない。**
+  `MaterialRoutingPolicy` は値が `hybrid_auto_v1` だけの enum で、
+  ほかの値は名前付きで拒否される。
+  **選択肢の無いものを「preset 固有で分解できない部分」と呼ぶのは実態と違う。**
+  これは**単一の既定値**であり、`draw_sort` の provider 選択と同じ格の設定である。
+
+**したがって preset に固有で残さねばならないものは、実は無い。**
+供給物は参照へ、役割の写像は寄与から、policy は設定へ。
+**preset は「参照の束 + 設定」になる。**これが利用者の言った「もっと深い融合」である。
+
+**ただし分解には代償がある。**中央で決めていた写像を寄与から組み上げると、
+**2 つの文書が同じ役割を主張しうる。**
+いま preset が中央で裁いていたものが、**衝突として表に出る。**
+**名前付きの hard error にすること**(名前衝突を hard error にする既存の作法に合わせる)。
 
 ### 設計
 
-**preset を次の 2 つに分ける。**
+**preset は「参照の束 + 設定」になる。固有に持つものは無い。**
 
 1. **供給物** —— 参照の並び。`features` と同じ形式で、
    **利用者が自分で書けるのと同じ文書を指す**
-2. **役割の写像** —— `material_routing` と設定(`draw_sort` / `shader_defines`)。
-   preset が固有に持つ
+2. **役割の写像** —— **パスを供給する文書が「この役割を担う」と宣言し、寄与から組み上げる。**
+   衝突は名前付きの hard error
+3. **設定** —— `draw_sort` / `shader_defines` / `material_routing.policy`。
+   いずれも既存の設定と同じ格
 
 **供給物側が参照になることで得られるもの:**
 
@@ -5806,9 +5821,15 @@ preset 使用時の著作 config は 11 鍵しか許されず、`rendering_passe
 §3.2 は「元 preset の名前・版・content hash を provenance として残す」と要求している。
 参照の束にしても**これを失わないこと。**
 
-**6. `material_routing` の policy をどう扱うか。**
-`hybrid_auto_v1` は**アルゴリズムの名前**である。参照に還元できない。
-**preset 固有の鍵として残すのか、別の機構(provider)にするのか。**
+**6. 役割の主張が衝突したときの扱い。**
+中央の写像を寄与から組み上げると、**2 つの文書が同じ役割を主張しうる。**
+いままで preset が中央で裁いていたものが表に出る。
+**名前付きの hard error にすること。**黙って先勝ち・後勝ちにしないこと。
+
+**7. `policy` を設定へ落とす範囲。**
+`MaterialRoutingPolicy` は現在 `hybrid_auto_v1` だけの enum である。
+**選択肢を増やすのは本設計の範囲外**だが、
+**preset 固有の鍵ではなく設定として置く**ことは今決める。
 
 ### 段階
 
