@@ -255,7 +255,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 
 ### エディタ拡張メソッド(詳細は[第13章](13_editor.md))
 
-上の表の `export_scene_snapshot` / `import_scene_snapshot` と合わせて、エディタトラックで増えたのは **23 メソッド**です(RPC は全部で 46 メソッド)。
+上の表の `export_scene_snapshot` / `import_scene_snapshot` はエディタトラックで増えた分です。**総数は挙げません** —— メソッドは増え続けるので、数字を書くと必ず腐ります。登録の実物は `src/core/communication/rpcserver.cpp`(基盤)と `src/core/communication/editorrpchandlers.cpp`(エディタ)です。
 
 シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。
 
