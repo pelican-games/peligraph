@@ -16,6 +16,13 @@ struct StringToken {
     std::string value;
 };
 
+struct FeatureElementToken {
+    std::size_t begin = 0;
+    std::size_t end = 0;
+    bool editable = false;
+    std::string reference;
+};
+
 class JsonCursor {
     std::string_view bytes_;
     std::size_t position_ = 0;
@@ -162,7 +169,7 @@ struct FeaturesLocation {
     bool found = false;
     std::size_t open = 0;
     std::size_t close = 0;
-    std::vector<StringToken> elements;
+    std::vector<FeatureElementToken> elements;
     std::size_t root_open = 0;
     std::size_t root_close = 0;
     std::size_t last_member_key = 0;
@@ -200,11 +207,25 @@ FeaturesLocation locateTopLevelFeatures(std::string_view bytes) {
                 cursor.skipWhitespace();
                 if (cursor.peek() != ']') {
                     for (;;) {
-                        if (cursor.peek() != '"') {
+                        const auto element_begin = cursor.position();
+                        if (cursor.peek() == '"') {
+                            const auto element = cursor.parseString();
+                            result.elements.push_back(FeatureElementToken{
+                                .begin = element.begin,
+                                .end = element.end,
+                                .editable = true,
+                                .reference = std::move(element.value),
+                            });
+                        } else if (cursor.peek() == '{') {
+                            cursor.skipValue();
+                            result.elements.push_back(FeatureElementToken{
+                                .begin = element_begin,
+                                .end = cursor.position(),
+                            });
+                        } else {
                             throw std::invalid_argument(
-                                "WP331 only edits string entries in the top-level features array");
+                                "render config top-level features entries must be strings or objects");
                         }
-                        result.elements.push_back(cursor.parseString());
                         cursor.skipWhitespace();
                         if (cursor.peek() == ']') break;
                         cursor.require(',');
@@ -354,15 +375,19 @@ std::string renderConfigSourceDigest(std::string_view bytes) {
 }
 
 AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
-    std::string bytes)
+    std::string bytes, bool require_features)
     : bytes_{std::move(bytes)}, digest_{renderConfigSourceDigest(bytes_)} {
     try {
         const auto semantic = nlohmann::json::parse(bytes_);
         if (!semantic.is_object()) {
             throw std::invalid_argument("render config root must be an object");
         }
-        if (!semantic.contains("features") ||
+        if (semantic.contains("features") &&
             !semantic.at("features").is_array()) {
+            throw std::invalid_argument(
+                "render config requires a top-level features array");
+        }
+        if (require_features && !semantic.contains("features")) {
             throw std::invalid_argument(
                 "render config requires a top-level features array");
         }
@@ -373,9 +398,13 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
 
     const auto location = locateTopLevelFeatures(bytes_);
     if (!location.found) {
-        throw std::invalid_argument(
-            "render config requires a top-level features array");
+        if (require_features) {
+            throw std::invalid_argument(
+                "render config requires a top-level features array");
+        }
+        return;
     }
+    has_features_array_ = true;
     features_open_ = location.open;
     features_close_ = location.close;
     feature_tokens_.reserve(location.elements.size());
@@ -384,9 +413,14 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
         feature_tokens_.push_back(FeatureToken{
             .begin = element.begin,
             .end = element.end,
-            .reference = element.value,
+            .editable = element.editable,
+            .reference = element.reference,
         });
-        feature_references_.push_back(element.value);
+        if (element.editable) {
+            feature_references_.push_back(element.reference);
+        } else {
+            ++uneditable_feature_entry_count_;
+        }
     }
 }
 
@@ -414,8 +448,13 @@ AuthoredRenderConfigDocument::initialize(std::string bytes) {
 }
 
 AuthoredRenderConfigDocument
+AuthoredRenderConfigDocument::inspect(std::string bytes) {
+    return AuthoredRenderConfigDocument{std::move(bytes), false};
+}
+
+AuthoredRenderConfigDocument
 AuthoredRenderConfigDocument::parse(std::string bytes) {
-    return AuthoredRenderConfigDocument{std::move(bytes)};
+    return AuthoredRenderConfigDocument{std::move(bytes), true};
 }
 
 bool AuthoredRenderConfigDocument::containsFeature(
@@ -467,7 +506,9 @@ AuthoredRenderConfigDocument::withFeatureRemoved(
     std::string_view reference) const {
     const auto found = std::find_if(
         feature_tokens_.begin(), feature_tokens_.end(),
-        [&](const auto &token) { return token.reference == reference; });
+        [&](const auto &token) {
+            return token.editable && token.reference == reference;
+        });
     if (found == feature_tokens_.end()) {
         throw std::invalid_argument(
             "render feature is not present in the authored root: " +

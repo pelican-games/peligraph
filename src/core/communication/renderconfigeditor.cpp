@@ -227,7 +227,7 @@ enumerateEngineRenderFeatureDocuments(
 RenderConfigEditorService::RenderConfigEditorService(
     RenderConfigEditorDependencies dependencies)
     : dependencies_{std::move(dependencies)},
-      document_{AuthoredRenderConfigDocument::initialize(
+      document_{AuthoredRenderConfigDocument::inspect(
           dependencies_.source_bytes)} {
     if (dependencies_.source_reference.empty() ||
         dependencies_.source_path.empty() || !dependencies_.gate ||
@@ -240,13 +240,6 @@ RenderConfigEditorService::RenderConfigEditorService(
             "RenderConfigEditorService requires an engine-evaluated feature catalog");
     }
     feature_catalog_ = dependencies_.feature_catalog();
-    if (document_.bytes() != dependencies_.source_bytes) {
-        (void)atomicReplaceWithDigestCas(
-            dependencies_.source_path,
-            renderConfigSourceDigest(dependencies_.source_bytes),
-            document_.bytes());
-        dependencies_.source_bytes = document_.bytes();
-    }
 }
 
 RenderConfigEditorService::GateSnapshot
@@ -292,9 +285,15 @@ RenderConfigEditorService::findCatalogReference(
 OrderedJson RenderConfigEditorService::getRenderFeatures(
     const Json &params) const {
     requireOnly(params, {}, "get_render_features");
+    const auto uneditable_entries =
+        document_.uneditableFeatureEntryCount();
     return {{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(document_.sourceDigest())},
             {"features", document_.featureReferences()},
+            {"has_uneditable_feature_entries",
+             uneditable_entries != 0},
+            {"uneditable_feature_entry_count",
+             uneditable_entries},
             {"runtime", runtimeJson(dependencies_.runtime_snapshot())}};
 }
 
@@ -365,7 +364,10 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
         return rejection("external_modification", error.what());
     }
 
-    auto candidate = document_;
+    auto candidate = document_.hasFeaturesArray()
+                         ? document_
+                         : AuthoredRenderConfigDocument::initialize(
+                               document_.bytes());
     if (!operations->empty()) {
         const auto &operation = operations->front();
         requireOnly(operation, {"op", "feature"},

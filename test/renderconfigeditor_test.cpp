@@ -398,8 +398,8 @@ std::string emptyHybridConfig() {
 } // namespace
 
 TEST_CASE(
-    "WP334a initializes a missing features edit surface without rewriting the root",
-    "[render-config-editor][wp334a][byte-lossless][initialization]") {
+    "WP335 RPC startup is read-only and the first requested edit initializes features",
+    "[render-config-editor][wp335][rpc][byte-lossless][initialization]") {
     const std::string original =
         "{\r\n"
         "  \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
@@ -425,6 +425,8 @@ TEST_CASE(
     REQUIRE(deterministic.bytes() == first.bytes());
     REQUIRE(AuthoredRenderConfigDocument::initialize(first.bytes()).bytes() ==
             first.bytes());
+    const auto expected_edited =
+        first.withFeatureAdded(std::string{buildAvailableReference}).bytes();
 
     TemporaryConfig source{original};
     ActualCpuRenderRuntime runtime;
@@ -434,33 +436,97 @@ TEST_CASE(
     REQUIRE_FALSE(hasProvider(
         runtime.frame_plan, buildAvailableFeature));
 
-    auto service = makeService(source, runtime);
-    REQUIRE(service->getRenderFeatures(Json::object())
-                .at("features")
-                .empty());
-    REQUIRE(readBytes(source.path) == initialized);
-    REQUIRE(service->documentForTesting().bytes() == initialized);
+    // This is the editor service and RPC adapter that the --rpc composition
+    // constructs unconditionally. Merely constructing and querying them must
+    // leave the authored source untouched.
+    EngineLaunchConfig launch;
+    launch.rpc = true;
+    REQUIRE(launch.rpc);
+    auto render_service =
+        std::shared_ptr<RenderConfigEditorService>{
+            makeService(source, runtime).release()};
+    const auto scene_bytes = readBytes(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "test" / "fixtures" / "authoring_scene" /
+        "multi_scene_roundtrip.json");
+    const auto scene_document =
+        AuthoringSceneDocument::load(scene_bytes, SceneRevision{1});
+    EditorCommandService commands{
+        EditorCommandServiceDependencies{
+            .document = [&scene_document]()
+                -> const AuthoringSceneDocument & {
+                return scene_document;
+            },
+            .current_scene_id = [] { return std::string{"main"}; },
+            .render_config_editor = render_service,
+        }};
+    EditorCommandRpcAdapter adapter{commands};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureEditorRpcHandlers(
+        rpc, adapter,
+        EditorRpcHandlerHooks{
+            .snapshot_imported = [] {},
+            .save_busy = [] { return false; },
+        });
+    const auto call = [&](int id, std::string_view method,
+                          Json params) {
+        const auto response = Json::parse(rpc.processLine(
+            Json{{"jsonrpc", "2.0"},
+                 {"id", id},
+                 {"method", method},
+                 {"params", std::move(params)}}
+                .dump()));
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    };
+
+    REQUIRE(readBytes(source.path) == original);
+    REQUIRE(render_service->documentForTesting().bytes() == original);
+    const auto before = call(3350, "get_render_features", Json::object());
+    REQUIRE(before.at("features").empty());
+    REQUIRE(before.at("has_uneditable_feature_entries") == false);
+    REQUIRE(before.at("uneditable_feature_entry_count") == 0);
+    REQUIRE(before.at("source_digest").at("hex") ==
+            renderConfigSourceDigest(original));
+    REQUIRE(readBytes(source.path) == original);
     REQUIRE(runtime.snapshot.published_generation ==
             baseline_generation);
     REQUIRE(runtime.apply_calls == 0);
 
-    auto second_initialization = makeService(source, runtime);
-    REQUIRE(readBytes(source.path) == initialized);
-    REQUIRE(second_initialization->documentForTesting().bytes() ==
-            initialized);
-    REQUIRE(runtime.snapshot.published_generation ==
-            baseline_generation);
-    REQUIRE(runtime.apply_calls == 0);
-
-    const auto result = submitAndCommit(
-        *second_initialization,
-        second_initialization->documentForTesting().sourceDigest(),
-        operation("add", buildAvailableReference));
+    const auto accepted = call(
+        3351, "edit_render_features",
+        {{"base_source_digest", before.at("source_digest").at("hex")},
+         {"operations", operation("add", buildAvailableReference)}});
+    REQUIRE(accepted.at("status") == "accepted");
+    REQUIRE(readBytes(source.path) == original);
+    const auto ticket = accepted.at("ticket").get<std::string>();
+    commands.commitPendingEdits();
+    const auto result = call(
+        3352, "get_edit_result", {{"ticket", ticket}});
     REQUIRE(result.at("committed") == true);
+    REQUIRE(readBytes(source.path) == expected_edited);
+    REQUIRE(readBytes(source.path) != original);
     REQUIRE(hasProvider(
         runtime.frame_plan, buildAvailableFeature));
     REQUIRE(containsName(runtime.snapshot.enabled_feature_names,
                          buildAvailableFeature));
+
+    const auto edited_bytes = readBytes(source.path);
+    const auto after = call(3353, "get_render_features", Json::object());
+    const auto no_op = call(
+        3354, "edit_render_features",
+        {{"base_source_digest", after.at("source_digest").at("hex")},
+         {"operations", operation("add", buildAvailableReference)}});
+    const auto no_op_ticket = no_op.at("ticket").get<std::string>();
+    commands.commitPendingEdits();
+    const auto no_op_result = call(
+        3355, "get_edit_result", {{"ticket", no_op_ticket}});
+    REQUIRE(no_op_result.at("committed") == true);
+    REQUIRE(no_op_result.at("no_change") == true);
+    REQUIRE(readBytes(source.path) == edited_bytes);
+    REQUIRE(runtime.apply_calls == 1);
 }
 
 TEST_CASE(
@@ -501,6 +567,164 @@ TEST_CASE(
         runtime.frame_plan, buildAvailableFeature));
     REQUIRE(containsName(runtime.snapshot.enabled_feature_names,
                          buildAvailableFeature));
+}
+
+TEST_CASE(
+    "WP335 parameterized feature entries stay byte-exact while string entries remain editable",
+    "[render-config-editor][wp335][byte-lossless][parameterized-feature]") {
+    constexpr std::string_view parameterized_reference =
+        "project://features/parameterized.json";
+    constexpr std::string_view editable_old =
+        "project://features/editable-old.json";
+    constexpr std::string_view editable_new =
+        "project://features/editable-new.json";
+    const std::string object_entry =
+        "{  \"ref\" : \"" + std::string{parameterized_reference} +
+        "\", \"parameters\" : { \"alpha\" : 0.125 } }";
+    const std::string object_config =
+        "{\r\n"
+        "  \"features\" : [\r\n"
+        "    " + object_entry + ",\r\n"
+        "    \"" + std::string{editable_old} + "\"\r\n"
+        "  ],\r\n"
+        "  \"sentinel\" : \"WP335_KEEP\"\r\n"
+        "}\r\n";
+
+    struct PassthroughRuntime {
+        std::uint64_t generation = 7;
+        std::size_t apply_calls = 0;
+    };
+    const auto make_passthrough_service =
+        [&](TemporaryConfig &source,
+            PassthroughRuntime &runtime) {
+            return std::make_unique<RenderConfigEditorService>(
+                RenderConfigEditorDependencies{
+                    .source_reference = "passes/main.json",
+                    .source_path = source.path,
+                    .source_bytes = readBytes(source.path),
+                    .gate = [] {
+                        return RenderConfigEditorGateObservation{};
+                    },
+                    .runtime_snapshot = [&runtime] {
+                        return RenderConfigRuntimeSnapshot{
+                            .published_generation = runtime.generation,
+                        };
+                    },
+                    .apply_candidate =
+                        [&runtime](
+                            std::string,
+                            const RenderConfigSourceCommit &commit) {
+                            ++runtime.apply_calls;
+                            commit();
+                            ++runtime.generation;
+                            return RenderConfigRuntimeApplyResult{
+                                .committed = true,
+                                .published_generation = runtime.generation,
+                            };
+                        },
+                    .feature_catalog = [=] {
+                        return std::vector<RenderFeatureCatalogEntry>{
+                            {.name = "editable_old",
+                             .reference = std::string{editable_old},
+                             .available = true},
+                            {.name = "editable_new",
+                             .reference = std::string{editable_new},
+                             .available = true},
+                        };
+                    },
+                });
+        };
+
+    TemporaryConfig object_source{object_config};
+    PassthroughRuntime object_runtime;
+    auto object_service =
+        make_passthrough_service(object_source, object_runtime);
+    REQUIRE(readBytes(object_source.path) == object_config);
+    const auto object_view =
+        object_service->getRenderFeatures(Json::object());
+    REQUIRE(object_view.at("features") ==
+            Json::array({editable_old}));
+    REQUIRE(object_view.at("has_uneditable_feature_entries") == true);
+    REQUIRE(object_view.at("uneditable_feature_entry_count") == 1);
+
+    const auto object_no_op = submitAndCommit(
+        *object_service,
+        object_view.at("source_digest").at("hex").get<std::string>(),
+        Json::array());
+    REQUIRE(object_no_op.at("no_change") == true);
+    REQUIRE(readBytes(object_source.path) == object_config);
+    REQUIRE(object_runtime.apply_calls == 0);
+
+    const auto object_add = submitAndCommit(
+        *object_service,
+        object_service->documentForTesting().sourceDigest(),
+        operation("add", editable_new));
+    REQUIRE(object_add.at("committed") == true);
+    const auto bytes_after_add = readBytes(object_source.path);
+    REQUIRE(bytes_after_add.find(object_entry) != std::string::npos);
+    const auto semantic_after_add = Json::parse(bytes_after_add);
+    REQUIRE(semantic_after_add.at("features").at(0) ==
+            Json::parse(object_entry));
+    REQUIRE(semantic_after_add.at("features").at(1) ==
+            std::string{editable_old});
+    REQUIRE(semantic_after_add.at("features").at(2) ==
+            std::string{editable_new});
+
+    const auto object_remove = submitAndCommit(
+        *object_service,
+        object_service->documentForTesting().sourceDigest(),
+        operation("remove", editable_old));
+    REQUIRE(object_remove.at("committed") == true);
+    const auto bytes_after_remove = readBytes(object_source.path);
+    REQUIRE(bytes_after_remove.find(object_entry) != std::string::npos);
+    const auto semantic_after_remove = Json::parse(bytes_after_remove);
+    REQUIRE(semantic_after_remove.at("features").size() == 2);
+    REQUIRE(semantic_after_remove.at("features").at(0) ==
+            Json::parse(object_entry));
+    REQUIRE(semantic_after_remove.at("features").at(1) ==
+            std::string{editable_new});
+    const auto object_view_after =
+        object_service->getRenderFeatures(Json::object());
+    REQUIRE(object_view_after.at("features") ==
+            Json::array({editable_new}));
+    REQUIRE(object_view_after.at("uneditable_feature_entry_count") == 1);
+
+    const std::string strings_only_config =
+        "{\n  \"features\" : [ \"" + std::string{editable_old} +
+        "\" ],\n  \"sentinel\" : \"WP335_STRINGS\"\n}\n";
+    TemporaryConfig strings_source{strings_only_config};
+    PassthroughRuntime strings_runtime;
+    auto strings_service =
+        make_passthrough_service(strings_source, strings_runtime);
+    const auto strings_view =
+        strings_service->getRenderFeatures(Json::object());
+    REQUIRE(strings_view.at("features") ==
+            Json::array({editable_old}));
+    REQUIRE(strings_view.at("has_uneditable_feature_entries") == false);
+    REQUIRE(strings_view.at("uneditable_feature_entry_count") == 0);
+    REQUIRE(readBytes(strings_source.path) == strings_only_config);
+
+    const auto strings_no_op = submitAndCommit(
+        *strings_service,
+        strings_view.at("source_digest").at("hex").get<std::string>(),
+        operation("add", editable_old));
+    REQUIRE(strings_no_op.at("no_change") == true);
+    REQUIRE(readBytes(strings_source.path) == strings_only_config);
+
+    REQUIRE(submitAndCommit(
+                *strings_service,
+                strings_service->documentForTesting().sourceDigest(),
+                operation("add", editable_new))
+                .at("committed") == true);
+    REQUIRE(submitAndCommit(
+                *strings_service,
+                strings_service->documentForTesting().sourceDigest(),
+                operation("remove", editable_old))
+                .at("committed") == true);
+    const auto strings_semantic = Json::parse(readBytes(strings_source.path));
+    REQUIRE(strings_semantic.at("features") ==
+            Json::array({editable_new}));
+    REQUIRE(strings_semantic.at("sentinel") == "WP335_STRINGS");
 }
 
 TEST_CASE(

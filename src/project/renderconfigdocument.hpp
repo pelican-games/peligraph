@@ -15,26 +15,37 @@ class AuthoredRenderConfigDocument {
     struct FeatureToken {
         std::size_t begin = 0;
         std::size_t end = 0;
+        bool editable = false;
         std::string reference;
     };
 
     std::string bytes_;
     std::string digest_;
+    bool has_features_array_ = false;
     std::size_t features_open_ = 0;
     std::size_t features_close_ = 0;
     std::vector<FeatureToken> feature_tokens_;
     std::vector<std::string> feature_references_;
+    std::size_t uneditable_feature_entry_count_ = 0;
 
-    explicit AuthoredRenderConfigDocument(std::string bytes);
+    explicit AuthoredRenderConfigDocument(std::string bytes,
+                                          bool require_features);
 
   public:
     static AuthoredRenderConfigDocument initialize(std::string bytes);
+    // Read-only inspection accepts a valid legacy root without features[].
+    // initialize() remains the explicit transition to the editable form.
+    static AuthoredRenderConfigDocument inspect(std::string bytes);
     static AuthoredRenderConfigDocument parse(std::string bytes);
 
     const std::string &bytes() const noexcept { return bytes_; }
     const std::string &sourceDigest() const noexcept { return digest_; }
     const std::vector<std::string> &featureReferences() const noexcept {
         return feature_references_;
+    }
+    bool hasFeaturesArray() const noexcept { return has_features_array_; }
+    std::size_t uneditableFeatureEntryCount() const noexcept {
+        return uneditable_feature_entry_count_;
     }
     std::size_t featuresArrayOpenOffset() const noexcept {
         return features_open_;

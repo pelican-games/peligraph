@@ -1398,8 +1398,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         const auto source_bytes =
             runtime->modules.path_resolver
                 .loadText(source_reference);
-        // The editor service byte-losslessly initializes legacy roots that
-        // do not yet have the lexical features array it owns.
+        // The editor service inspects legacy roots without writing them.
+        // Their lexical features array is initialized only by a requested
+        // edit and committed through the normal candidate transaction.
         {
             const auto resolved =
                 runtime->modules.path_resolver
