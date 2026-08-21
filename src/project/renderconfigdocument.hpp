@@ -9,7 +9,8 @@ namespace Pelican {
 
 // WP331's byte-lossless authoring contract is deliberately separate from the
 // scene document's semantic encoder.  The root bytes remain authoritative;
-// only the lexical span of the top-level features array may be changed.
+// only the lexical span of the top-level features array may be changed after
+// a byte-lossless root initialization has established that span.
 class AuthoredRenderConfigDocument {
     struct FeatureToken {
         std::size_t begin = 0;
@@ -27,6 +28,7 @@ class AuthoredRenderConfigDocument {
     explicit AuthoredRenderConfigDocument(std::string bytes);
 
   public:
+    static AuthoredRenderConfigDocument initialize(std::string bytes);
     static AuthoredRenderConfigDocument parse(std::string bytes);
 
     const std::string &bytes() const noexcept { return bytes_; }

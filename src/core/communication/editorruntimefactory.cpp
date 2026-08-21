@@ -1398,13 +1398,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         const auto source_bytes =
             runtime->modules.path_resolver
                 .loadText(source_reference);
-        const auto authored =
-            nlohmann::json::parse(source_bytes);
-        // Explicit legacy/test configs may omit features entirely. WP331 has
-        // no lexical array to own in that case, but the optional editing
-        // surface must not prevent unrelated production RPC methods from
-        // starting.
-        if (authored.contains("features")) {
+        // The editor service byte-losslessly initializes legacy roots that
+        // do not yet have the lexical features array it owns.
+        {
             const auto resolved =
                 runtime->modules.path_resolver
                     .resolveExistingFileReference(

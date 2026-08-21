@@ -159,72 +159,79 @@ class JsonCursor {
 };
 
 struct FeaturesLocation {
+    bool found = false;
     std::size_t open = 0;
     std::size_t close = 0;
     std::vector<StringToken> elements;
+    std::size_t root_open = 0;
+    std::size_t root_close = 0;
+    std::size_t last_member_key = 0;
+    std::size_t last_member_value_end = 0;
+    bool has_members = false;
 };
 
 FeaturesLocation locateTopLevelFeatures(std::string_view bytes) {
     JsonCursor cursor{bytes};
     cursor.skipWhitespace();
+    FeaturesLocation result;
+    result.root_open = cursor.position();
     cursor.require('{');
     cursor.skipWhitespace();
 
-    bool found_features = false;
-    FeaturesLocation result;
     if (cursor.peek() == '}') {
-        throw std::invalid_argument(
-            "render config requires a top-level features array");
-    }
-    for (;;) {
-        const auto key = cursor.parseString();
-        cursor.skipWhitespace();
-        cursor.require(':');
-        cursor.skipWhitespace();
-        if (key.value == "features") {
-            if (found_features) {
-                throw std::invalid_argument(
-                    "render config contains duplicate top-level features keys");
-            }
-            found_features = true;
-            result.open = cursor.position();
-            cursor.require('[');
+        result.root_close = cursor.position();
+        cursor.require('}');
+    } else {
+        for (;;) {
+            const auto key = cursor.parseString();
+            result.has_members = true;
+            result.last_member_key = key.begin;
             cursor.skipWhitespace();
-            if (cursor.peek() != ']') {
-                for (;;) {
-                    if (cursor.peek() != '"') {
-                        throw std::invalid_argument(
-                            "WP331 only edits string entries in the top-level features array");
-                    }
-                    result.elements.push_back(cursor.parseString());
-                    cursor.skipWhitespace();
-                    if (cursor.peek() == ']') break;
-                    cursor.require(',');
-                    cursor.skipWhitespace();
+            cursor.require(':');
+            cursor.skipWhitespace();
+            if (key.value == "features") {
+                if (result.found) {
+                    throw std::invalid_argument(
+                        "render config contains duplicate top-level features keys");
                 }
+                result.found = true;
+                result.open = cursor.position();
+                cursor.require('[');
+                cursor.skipWhitespace();
+                if (cursor.peek() != ']') {
+                    for (;;) {
+                        if (cursor.peek() != '"') {
+                            throw std::invalid_argument(
+                                "WP331 only edits string entries in the top-level features array");
+                        }
+                        result.elements.push_back(cursor.parseString());
+                        cursor.skipWhitespace();
+                        if (cursor.peek() == ']') break;
+                        cursor.require(',');
+                        cursor.skipWhitespace();
+                    }
+                }
+                result.close = cursor.position();
+                cursor.require(']');
+            } else {
+                cursor.skipValue();
             }
-            result.close = cursor.position();
-            cursor.require(']');
-        } else {
-            cursor.skipValue();
-        }
+            result.last_member_value_end = cursor.position();
 
-        cursor.skipWhitespace();
-        if (cursor.peek() == '}') {
-            cursor.require('}');
-            break;
+            cursor.skipWhitespace();
+            if (cursor.peek() == '}') {
+                result.root_close = cursor.position();
+                cursor.require('}');
+                break;
+            }
+            cursor.require(',');
+            cursor.skipWhitespace();
         }
-        cursor.require(',');
-        cursor.skipWhitespace();
     }
     cursor.skipWhitespace();
     if (!cursor.atEnd()) {
         throw std::invalid_argument(
             "render config has trailing bytes after its root object");
-    }
-    if (!found_features) {
-        throw std::invalid_argument(
-            "render config requires a top-level features array");
     }
     return result;
 }
@@ -252,6 +259,68 @@ std::pair<std::size_t, std::string_view> lastLineBreak(
         return {cr, value.substr(cr, 1)};
     }
     return {std::string_view::npos, {}};
+}
+
+std::string_view horizontalWhitespaceBefore(
+    std::string_view bytes, std::size_t position) {
+    auto begin = position;
+    while (begin > 0 &&
+           (bytes[begin - 1] == ' ' || bytes[begin - 1] == '\t')) {
+        --begin;
+    }
+    return bytes.substr(begin, position - begin);
+}
+
+struct RootInsertion {
+    std::size_t offset = 0;
+    std::string bytes;
+};
+
+RootInsertion missingFeaturesInsertion(
+    std::string_view bytes, const FeaturesLocation &location) {
+    constexpr std::string_view member = "\"features\": []";
+    if (!location.has_members) {
+        const auto interior = bytes.substr(
+            location.root_open + 1,
+            location.root_close - location.root_open - 1);
+        if (!containsNewline(interior)) {
+            return {.offset = location.root_close,
+                    .bytes = std::string{member}};
+        }
+
+        const auto [newline, line_break] = lastLineBreak(interior);
+        const auto closing_indent = interior.substr(
+            newline + line_break.size());
+        std::string insertion{closing_indent};
+        insertion += "  ";
+        insertion += member;
+        insertion += line_break;
+        return {
+            .offset = location.root_open + 1 + newline +
+                      line_break.size(),
+            .bytes = std::move(insertion),
+        };
+    }
+
+    const auto closing_whitespace = bytes.substr(
+        location.last_member_value_end,
+        location.root_close - location.last_member_value_end);
+    std::string insertion{","};
+    if (containsNewline(closing_whitespace)) {
+        const auto [newline, line_break] =
+            lastLineBreak(closing_whitespace);
+        (void)newline;
+        insertion += line_break;
+        insertion += horizontalWhitespaceBefore(
+            bytes, location.last_member_key);
+    } else {
+        insertion += " ";
+    }
+    insertion += member;
+    return {
+        .offset = location.last_member_value_end,
+        .bytes = std::move(insertion),
+    };
 }
 
 template <class FeatureTokens>
@@ -303,6 +372,10 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
     }
 
     const auto location = locateTopLevelFeatures(bytes_);
+    if (!location.found) {
+        throw std::invalid_argument(
+            "render config requires a top-level features array");
+    }
     features_open_ = location.open;
     features_close_ = location.close;
     feature_tokens_.reserve(location.elements.size());
@@ -315,6 +388,29 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
         });
         feature_references_.push_back(element.value);
     }
+}
+
+AuthoredRenderConfigDocument
+AuthoredRenderConfigDocument::initialize(std::string bytes) {
+    try {
+        const auto semantic = nlohmann::json::parse(bytes);
+        if (!semantic.is_object()) {
+            throw std::invalid_argument(
+                "render config root must be an object");
+        }
+        if (semantic.contains("features")) {
+            return parse(std::move(bytes));
+        }
+    } catch (const nlohmann::json::exception &error) {
+        throw std::invalid_argument(
+            std::string{"render config is not valid JSON: "} +
+            error.what());
+    }
+
+    const auto location = locateTopLevelFeatures(bytes);
+    const auto insertion = missingFeaturesInsertion(bytes, location);
+    bytes.insert(insertion.offset, insertion.bytes);
+    return parse(std::move(bytes));
 }
 
 AuthoredRenderConfigDocument

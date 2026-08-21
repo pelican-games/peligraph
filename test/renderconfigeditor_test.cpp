@@ -398,6 +398,72 @@ std::string emptyHybridConfig() {
 } // namespace
 
 TEST_CASE(
+    "WP334a initializes a missing features edit surface without rewriting the root",
+    "[render-config-editor][wp334a][byte-lossless][initialization]") {
+    const std::string original =
+        "{\r\n"
+        "  \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
+        "  \"shader_defines\" : [ \"WP334A_KEPT\" ]\r\n"
+        "}\r\n";
+    const std::string initialized =
+        "{\r\n"
+        "  \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
+        "  \"shader_defines\" : [ \"WP334A_KEPT\" ],\r\n"
+        "  \"features\": []\r\n"
+        "}\r\n";
+
+    REQUIRE_FALSE(Json::parse(original).contains("features"));
+    REQUIRE_THROWS_AS(
+        AuthoredRenderConfigDocument::parse(original),
+        std::invalid_argument);
+
+    const auto first =
+        AuthoredRenderConfigDocument::initialize(original);
+    const auto deterministic =
+        AuthoredRenderConfigDocument::initialize(original);
+    REQUIRE(first.bytes() == initialized);
+    REQUIRE(deterministic.bytes() == first.bytes());
+    REQUIRE(AuthoredRenderConfigDocument::initialize(first.bytes()).bytes() ==
+            first.bytes());
+
+    TemporaryConfig source{original};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    const auto baseline_generation =
+        runtime.snapshot.published_generation;
+    REQUIRE_FALSE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
+
+    auto service = makeService(source, runtime);
+    REQUIRE(service->getRenderFeatures(Json::object())
+                .at("features")
+                .empty());
+    REQUIRE(readBytes(source.path) == initialized);
+    REQUIRE(service->documentForTesting().bytes() == initialized);
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation);
+    REQUIRE(runtime.apply_calls == 0);
+
+    auto second_initialization = makeService(source, runtime);
+    REQUIRE(readBytes(source.path) == initialized);
+    REQUIRE(second_initialization->documentForTesting().bytes() ==
+            initialized);
+    REQUIRE(runtime.snapshot.published_generation ==
+            baseline_generation);
+    REQUIRE(runtime.apply_calls == 0);
+
+    const auto result = submitAndCommit(
+        *second_initialization,
+        second_initialization->documentForTesting().sourceDigest(),
+        operation("add", buildAvailableReference));
+    REQUIRE(result.at("committed") == true);
+    REQUIRE(hasProvider(
+        runtime.frame_plan, buildAvailableFeature));
+    REQUIRE(containsName(runtime.snapshot.enabled_feature_names,
+                         buildAvailableFeature));
+}
+
+TEST_CASE(
     "WP331 adding a build-available feature publishes its real frame-plan node without restarting",
     "[render-config-editor][wp331][central-control]") {
     TemporaryConfig source{emptyHybridConfig()};

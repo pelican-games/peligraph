@@ -227,7 +227,7 @@ enumerateEngineRenderFeatureDocuments(
 RenderConfigEditorService::RenderConfigEditorService(
     RenderConfigEditorDependencies dependencies)
     : dependencies_{std::move(dependencies)},
-      document_{AuthoredRenderConfigDocument::parse(
+      document_{AuthoredRenderConfigDocument::initialize(
           dependencies_.source_bytes)} {
     if (dependencies_.source_reference.empty() ||
         dependencies_.source_path.empty() || !dependencies_.gate ||
@@ -240,6 +240,13 @@ RenderConfigEditorService::RenderConfigEditorService(
             "RenderConfigEditorService requires an engine-evaluated feature catalog");
     }
     feature_catalog_ = dependencies_.feature_catalog();
+    if (document_.bytes() != dependencies_.source_bytes) {
+        (void)atomicReplaceWithDigestCas(
+            dependencies_.source_path,
+            renderConfigSourceDigest(dependencies_.source_bytes),
+            document_.bytes());
+        dependencies_.source_bytes = document_.bytes();
+    }
 }
 
 RenderConfigEditorService::GateSnapshot
