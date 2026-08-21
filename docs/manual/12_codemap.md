@@ -24,7 +24,8 @@ pelican2/
     player/      … pelican_player.exe(main 1 ファイル)
     devcli/      … pelican_cli.exe(7 サブコマンド系統: assets / bake-camera / import /
                    dist-config / project / dump-lowered-material / vrm)
-    devstudio/   … pelican_studio.exe(Qt。現状は休眠骨組み)
+    devstudio/   … pelican_studio.exe(Qt Widgets。約 15,000 行。静的ライブラリ 7 本 + exe)
+                   view/ は pelican_studio_view としてまとめ、production とテストが同じものをリンクする
     spvlink/     … pelican-spv-link 単体 CLI(experimental、PELICAN_WITH_SPIRV_LINK=ON時)
   projects/
     example/       … 実例プロジェクト(全 JSON 形式の生きた見本)
@@ -118,7 +119,7 @@ pelican2/
 | scene の `behavior` コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L70) `prepareSceneBehaviorAttachments()`(`scene.cpp` は `behavior` を ECS 経路から外すだけ) |
 | `asset_data.json`(`pelican.asset_data` v1) | [第5章](05_assets.md) | 純ロジック(エンベロープ・models/materials/textures): [project/assetdataformat.cpp](../../src/project/assetdataformat.cpp) / model 登録: [asset/model.cpp](../../src/core/asset/model.cpp) / project material 登録: [material/projectmaterialasset.cpp](../../src/core/material/projectmaterialasset.cpp) |
 | `.vrma`(VRM Animation GLB) | [第5章](05_assets.md) | デコード: [loader/vrmadecoder.cpp](../../src/core/loader/vrmadecoder.cpp)(拡張子 `.vrma` が alias ゲート)/ リターゲット: [animation/vrmaretarget.cpp](../../src/core/animation/vrmaretarget.cpp)(版付き profile v1)/ 統合: [animation/animationservice.cpp](../../src/core/animation/animationservice.cpp) |
-| rendering config | [第6章](06_rendering.md) | [renderingpass/](../../src/core/renderingpass) の *jsonparser 群(RT フォーマット 45 種: [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) `format_names` / パス種別 8 種 + `imgui`: 同 `makePassInfo`) |
+| rendering config | [第6章](06_rendering.md) | [renderingpass/](../../src/core/renderingpass) の *jsonparser 群(RT フォーマット 45 種: [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) `format_names` / パス種別 **14 種**: 一覧と鍵の所有は [project/passfieldownership.hpp](../../src/project/passfieldownership.hpp)。形の規則の正本は [project/passshapepolicy.cpp](../../src/project/passshapepolicy.cpp)) |
 | feature fragment(pelican.render_feature) | [第6章](06_rendering.md) | 純ロジック: [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
 | シェーダ stem 参照 | [第6章](06_rendering.md) | [`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L65) `makeShaderReference`(拡張子 hard error はここ) |
 | `input/actions.json`(pelican.input_actions) | [第7章](07_input_ui.md) | [os/actionmap.cpp](../../src/core/os/actionmap.cpp)(schema/version ゲートは `input_actions_schema` の照合箇所) |
@@ -219,7 +220,7 @@ pelican2/
 ## 12.9 テストから読む(テストは実行可能な仕様)
 
 - **形式の仕様を知りたい** → [test/fixtures/](../../test/fixtures) の valid/invalid ペア + `expectations.json`(error_kind 付き)。パーサが何を受理し何を拒むかの正確な一覧です
-- **描画の正解を知りたい** → [test/golden/](../../test/golden)(**49 ケース**、2026-07-21 時点。case.json + expected.png + tolerance.json)。`clear` が最小、`surface_toon` / `taa_*` 7 種 / `vrm_expression_*` / sprite 系 9 種が応用。expected.png は encoded-sRGB 契約(`test/golden/README.md`)
+- **描画の正解を知りたい** → [test/golden/](../../test/golden)(case.json + expected.png + tolerance.json。**件数は [第6章 §6.10](06_rendering.md) が正**)。`clear` が最小、`surface_toon` / `taa_*` 7 種 / `vrm_expression_*` / sprite 系 9 種が応用。expected.png は encoded-sRGB 契約(`test/golden/README.md`)
   - ⚠ **ディレクトリを置くだけでは通りません**。ケースは [test/golden/inventory.json](../../test/golden/inventory.json)(`pelican.golden_inventory` v1)への登録が必須で、未登録・ファイル欠落・ハッシュ不一致は GPU 不要の gate が落とします。エントリの実物:
     ```json
     { "name": "clear", "mode": "clear",
@@ -227,9 +228,9 @@ pelican2/
       "expected_png_sha256": "2d6f3715483b91e4444c11085fd13444ac343803574403008ade21672a299e78",
       "tolerance": true, "vat": "on_and_off", "traces": ["rgba8"] }
     ```
-- **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake` / `run_*.ps1`(player / pelican_cli を実際に子プロセス起動する結合テスト。現在 **33 本**)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル、`run_physics_trigger_behavior.ps1` は scene の `behavior` コンポーネント + トリガーイベントの最小実例です
+- **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake` / `run_*.ps1`(player / pelican_cli を実際に子プロセス起動する結合テスト。現在 **42 本**)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル、`run_physics_trigger_behavior.ps1` は scene の `behavior` コンポーネント + トリガーイベントの最小実例です
 - **CI gate を読む** → [test/ci/run_cpu_gate.py](../../test/ci/run_cpu_gate.py)(CPU ゲートのローカル再現)/ [test/ci/test_golden_inventory.py](../../test/ci/test_golden_inventory.py)(golden 登録の gate)/ [test/contract_boundary_gate.py](../../test/contract_boundary_gate.py)(境界契約の機械 gate。依存の pin や ABI の offset/size をコードから独立に検査)。ワークフロー定義は [.github/workflows/](../../.github/workflows)、運用の正は [../ci.md](../ci.md)
-- テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt)。現在 **113 件**)。GPU 必須テストはデバイス列挙失敗時 SKIP
+- テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt)。現在 **161 件**)。GPU 必須テストはデバイス列挙失敗時 SKIP
 
 ## 関連文書
 

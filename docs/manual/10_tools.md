@@ -573,11 +573,44 @@ Studio の preview lease を使うドラッグ接続は WP275 で入りました
 未接続です。起動主体が宣言する editor feature overlay は WP289 で入りました。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
-## 10.8 テスト基盤
+## 10.8 クラッシュシンボルの退避
+
+**ダンプは Windows が勝手に取ってくれるが、`dist_debug` を作り直すと PDB が上書きされ、
+取ったダンプが読めなくなる。**実際にそれで 8 件の studio クラッシュが未解明のまま残っている。
+
+**MSVC の Debug ビルドで `pelican_studio` を作るたび**、実行ファイルと PDB が
+ビルド出力の外へ退避される。`pelican_player` は対象外。
+
+```
+.pelican/crash-symbols/pelican_studio/generation-<n>-<commit>[-dirty]/
+    pelican_studio.exe
+    pelican_studio-<commit>.pdb
+    manifest.txt
+```
+
+`manifest.txt` は `source_commit` / `source_dirty` / `binary_sha256` / `pdb_sha256` を持つ。
+
+**PDB のファイル名にコミットが入り、リンカが `/PDBALTPATH` でその名前を実行ファイルへ焼き込む。**
+だからダンプ側から「どのコミットのビルドか」が一意に辿れる ——
+**タイムスタンプでは足りない**(同じコミットを作り直すと変わる)。
+
+保持は **8 世代**。変えるなら configure で:
+
+| 変数 | 既定 |
+|---|---|
+| `PELICAN_CRASH_SYMBOL_ARCHIVE_DIR` | `<プロジェクト>/.pelican/crash-symbols` |
+| `PELICAN_CRASH_SYMBOL_GENERATIONS` | `8` |
+
+**退避先をビルド出力(`build/` / `dist` / `dist_debug`)の中へ向けると configure が FATAL_ERROR で止まる。**
+プロセスがハンドルを掴むとディレクトリごと消せなくなるためである。
+
+HEAD が動くと configure が再実行される。
+
+## 10.9 テスト基盤
 
 - 単体テスト: Catch2 v3(`pelican_define_test`)。**GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()`**。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
-- ゴールデンイメージテスト: **49 ケース**(ディレクトリ自動発見。[第6章](06_rendering.md) §6.10)。
+- ゴールデンイメージテスト(ディレクトリ自動発見。**件数は [第6章](06_rendering.md) §6.10 が正**)。
 - ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証)、`run_project_code_smoke.cmake`。
 - **CI(✅WP137/165)**: push/PRのWindows CPU gateに加え、手動/週次の
   build-unit OFF/Jolt/project-code/clean-clone matrixがあります。GPU testは

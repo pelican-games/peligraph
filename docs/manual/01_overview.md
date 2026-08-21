@@ -92,7 +92,7 @@ pelican2/
 │   └── spvlink/          # pelican-spv-link CLI(experimental、build unitは既定OFF)
 ├── projects/             # example / sprite_demo / animgraph_demo / vrm_xr_demo(JSON 例の出典)
 ├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(manual/)+ コード解説(source-code-guide/)
-└── test/                 # Catch2 単体(116 実行ファイル)+ fixture + golden(49)+ 結合スクリプト(run_*、33 本)
+└── test/                 # Catch2 単体 + fixture + golden + 結合スクリプト(run_*)。件数は第12章
 ```
 
 ※ `src/core/` は主要ディレクトリのみを載せています(このほかに `fullscreenpass/` / `geomhelper/` があります)。

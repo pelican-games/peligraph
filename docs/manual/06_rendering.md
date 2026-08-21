@@ -1861,7 +1861,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 ```
 
 - パス JSON の `"swapchain"` 出力は自動的にオフスクリーンイメージへ解決されるので、**config は無変更で動きます**。出力 PNG は encoded-sRGB(§6.3)。
-- ゴールデンイメージテストは **49 ケース**(2026-07-21 時点)。プラン比較テストとあわせて回帰保護の柱です。検証の流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)。
+- ゴールデンイメージテストは **52 ケース**(2026-08-20 時点。**この数字はここが正本**)。プラン比較テストとあわせて回帰保護の柱です。検証の流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)。
 
 > ⚠ **変更(✅WP141):** ケース集合の正本はコミット済みの **`test/golden/inventory.json`**(`pelican.golden_inventory` v1)になりました。**`test/golden/` にディレクトリを置くだけでは発見されません** — 未登録のディレクトリは描画テストの対象にならず、CPU 側の inventory ゲートが名指しで FAIL します。ケースを増減したら次の手順を踏みます。
 >
