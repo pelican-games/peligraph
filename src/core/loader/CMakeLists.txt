@@ -5,6 +5,7 @@ target_sources(pelican_core PRIVATE
     imageloader.cpp
     ktx2.cpp
     pathresolver.cpp
+    renderconfigcandidate.cpp
     projectsrc.cpp
     authoringscenedocument.cpp
     componentcodec.cpp

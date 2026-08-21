@@ -74,6 +74,10 @@ struct RenderCompilerProgramInput {
     std::string source_name =
         "rendering pass registration";
     const PathResolver &path_resolver;
+    // Request-local authoring overlay. When absent, compilation reads the
+    // production PathResolver directly. Feature and preset resolution must
+    // use this same loader.
+    std::function<std::string(std::string_view)> load_document;
     bool runtime_shader_compiler_enabled = false;
     const GraphTransformRegistrySnapshot
         &graph_transforms;

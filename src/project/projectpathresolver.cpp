@@ -313,6 +313,33 @@ ParsedPathRef parsePathReference(std::string_view ref) {
     return ParsedPathRef{std::string{ref.substr(0, marker)}, std::move(fragment)};
 }
 
+std::string normalizedResolvedReferenceKey(const ResolvedRef &reference) {
+    const auto path_key = [](const std::filesystem::path &path) {
+        const auto generic = path.generic_u8string();
+        return std::string{"file:"} +
+               std::string{reinterpret_cast<const char *>(generic.data()),
+                           generic.size()};
+    };
+    return std::visit(
+        [&](const auto &resolved) -> std::string {
+            using T = std::decay_t<decltype(resolved)>;
+            if constexpr (std::is_same_v<T, std::filesystem::path>) {
+                return path_key(resolved);
+            } else if constexpr (std::is_same_v<T, EngineResourceId>) {
+                return "engine://" + resolved.id;
+            } else if constexpr (std::is_same_v<T, ResolvedPathFragment>) {
+                return path_key(resolved.path) + "#" +
+                       resolved.fragment.kind + "/" +
+                       resolved.fragment.path;
+            } else {
+                return "engine://" + resolved.resource.id + "#" +
+                       resolved.fragment.kind + "/" +
+                       resolved.fragment.path;
+            }
+        },
+        reference);
+}
+
 void ProjectPathResolver::setup(const std::filesystem::path &project_root,
                                 bool allow_absolute) {
     setupImpl(project_root, allow_absolute, nullptr, std::nullopt);
@@ -648,6 +675,11 @@ ProjectPathResolver::resolveExistingFile(std::string_view ref) const {
     }
 
     return std::get<std::filesystem::path>(resolved);
+}
+
+std::string ProjectPathResolver::normalizedReference(
+    std::string_view ref) const {
+    return normalizedResolvedReferenceKey(resolveProjectRef(ref).reference);
 }
 
 ResolvedRef ProjectPathResolver::resolveExistingFileReference(

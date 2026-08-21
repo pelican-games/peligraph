@@ -7,6 +7,8 @@ add_library(pelican_studio_view STATIC
     frameplangraphics.hpp
     frameplanreadcapability.cpp
     frameplanreadcapability.hpp
+    renderpassauthoringcapability.cpp
+    renderpassauthoringcapability.hpp
     fullscreenpasswidget.cpp
     fullscreenpasswidget.hpp
     inspectorwidget.cpp

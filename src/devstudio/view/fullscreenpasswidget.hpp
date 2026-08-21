@@ -1,10 +1,10 @@
 #pragma once
 
 #include "frameplanreadcapability.hpp"
+#include "renderpassauthoringcapability.hpp"
 
 #include <QWidget>
 
-#include <filesystem>
 #include <memory>
 
 class QByteArray;
@@ -25,16 +25,23 @@ class FullscreenPassWidget final : public QWidget {
                                   QWidget *parent = nullptr);
     FullscreenPassWidget(
         FramePlanReadCapability frame_plan,
+        RenderPassAuthoringCapability authoring,
+        QWidget *parent = nullptr);
+    FullscreenPassWidget(
+        FramePlanReadCapability frame_plan,
+        const Pelican::PassShapePolicy &shape_policy,
+        QWidget *parent = nullptr);
+    FullscreenPassWidget(
+        FramePlanReadCapability frame_plan,
+        RenderPassAuthoringCapability authoring,
         const Pelican::PassShapePolicy &shape_policy,
         QWidget *parent = nullptr);
     ~FullscreenPassWidget() override;
 
-    // These ingestion boundaries are shared by the production RPC/project
-    // path and deterministic widget tests. They only replace in-memory form
-    // context; neither function persists or applies the draft.
+    // Deterministic projection-test boundaries. Production authoring context
+    // arrives only through RenderPassAuthoringCapability.
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
-    void openProjectReadOnly(const std::filesystem::path &project_root);
 };
 
 } // namespace PelicanStudio

@@ -1,4 +1,5 @@
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -10,10 +11,12 @@
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
+#include "../src/project/renderconfigdocument.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -458,6 +461,98 @@ TEST_CASE(
           execution.buffer_bindings.at(source.commands));
     CHECK(source.count_id ==
           execution.buffer_bindings.at(source.count));
+}
+
+TEST_CASE(
+    "WP334b production compiler resolves a staged preset and feature through one candidate loader",
+    "[wp334b][render-compiler][overlay][preset][feature]") {
+    ProgramInputFixture fixture;
+    const auto project_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "animgraph_demo";
+    fixture.path_resolver.setup(project_root, false);
+
+    const std::string root_reference = "passes/main.json";
+    const std::string preset_reference =
+        "project://passes/wp334b-staged-preset.json";
+    const std::string feature_reference =
+        "project://passes/wp334b-staged-feature.json";
+    const std::string root_bytes =
+        nlohmann::json{
+            {"pipeline", {{"preset", preset_reference}}},
+            {"features", nlohmann::json::array({feature_reference})},
+        }
+            .dump();
+    const auto preset_bytes = fixture.path_resolver.loadText(
+        "engine://render_pipelines/hybrid_v1.json");
+    const auto feature_bytes =
+        nlohmann::json{
+            {"schema", "pelican.render_feature"},
+            {"version", 1},
+            {"name", "wp334b_staged_compiler_feature"},
+            {"runtime_shader_compiler", "optional"},
+            {"passes", nlohmann::json::array()},
+        }
+            .dump();
+    const auto root_key =
+        fixture.path_resolver.normalizedReference(root_reference);
+    const RenderConfigCandidateDocumentSet documents{
+        root_key,
+        {{.reference = root_reference,
+          .normalized_reference = root_key,
+          .path = project_root / "passes" / "main.json",
+          .operation = RenderConfigDocumentOperation::replace,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::present,
+               .digest = renderConfigSourceDigest(
+                   fixture.path_resolver.loadText(root_reference))},
+          .bytes = root_bytes},
+         {.reference = preset_reference,
+          .normalized_reference =
+              fixture.path_resolver.normalizedReference(preset_reference),
+          .path = project_root / "passes" /
+                  "wp334b-staged-preset.json",
+          .operation = RenderConfigDocumentOperation::create,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::missing},
+          .bytes = preset_bytes},
+         {.reference = feature_reference,
+          .normalized_reference =
+              fixture.path_resolver.normalizedReference(feature_reference),
+          .path = project_root / "passes" /
+                  "wp334b-staged-feature.json",
+          .operation = RenderConfigDocumentOperation::create,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::missing},
+          .bytes = feature_bytes}}};
+    REQUIRE_THROWS(fixture.path_resolver.loadText(preset_reference));
+    REQUIRE_THROWS(fixture.path_resolver.loadText(feature_reference));
+
+    fixture.config = nlohmann::json::parse(root_bytes);
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {
+        RenderCompilerProgramVariantRequest{
+            .graph_variant = RenderPipelineGraphVariant::preview,
+            .artifact = RenderCompilerProgramArtifact::data_only,
+        },
+    };
+    auto input = fixture.input();
+    input.load_document =
+        [&](std::string_view reference) {
+            return loadRenderConfigCandidateText(
+                documents, fixture.path_resolver, reference);
+        };
+
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), input);
+    REQUIRE(output.variants.size() == 1);
+    REQUIRE(output.variants.front().compiled_pipeline != nullptr);
+    REQUIRE(std::ranges::find(
+                output.variants.front().compiled_pipeline->feature_names,
+                "wp334b_staged_compiler_feature") !=
+            output.variants.front().compiled_pipeline->feature_names.end());
 }
 
 TEST_CASE(

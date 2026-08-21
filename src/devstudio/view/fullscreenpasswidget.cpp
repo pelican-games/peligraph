@@ -5,8 +5,6 @@
 
 #include "passfieldownership.hpp"
 #include "passshapepolicy.hpp"
-#include "projectformat.hpp"
-#include "projectpathresolver.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -19,6 +17,8 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -27,12 +27,11 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
 
 #include <algorithm>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -52,22 +51,6 @@ using Json = nlohmann::json;
 QString text(std::string_view value) {
     return QString::fromUtf8(value.data(),
                              static_cast<qsizetype>(value.size()));
-}
-
-std::string readTextFile(const std::filesystem::path &path,
-                         std::string_view label) {
-    std::ifstream stream{path, std::ios::binary};
-    if (!stream) {
-        throw std::runtime_error("could not open " + std::string{label} +
-                                 ": " + path.string());
-    }
-    std::string contents{std::istreambuf_iterator<char>{stream},
-                         std::istreambuf_iterator<char>{}};
-    if (stream.bad()) {
-        throw std::runtime_error("could not read " + std::string{label} +
-                                 ": " + path.string());
-    }
-    return contents;
 }
 
 const Pelican::PassFieldOwnershipEntry &fullscreenOwnership() {
@@ -136,6 +119,7 @@ struct FullscreenPassWidget::Impl {
 
     FullscreenPassWidget &owner;
     FramePlanReadCapability frame_plan;
+    RenderPassAuthoringCapability authoring;
     Pelican::PassShapePolicy shape_policy;
     QPushButton *refresh = nullptr;
     QLabel *plan_status = nullptr;
@@ -170,6 +154,9 @@ struct FullscreenPassWidget::Impl {
     QLabel *omitted = nullptr;
     QPlainTextEdit *json = nullptr;
     QPushButton *copy_json = nullptr;
+    QPushButton *save = nullptr;
+    QComboBox *remove_fragment = nullptr;
+    QPushButton *remove_authored = nullptr;
     std::optional<FramePlanModel> plan;
     std::optional<PlanBinding> binding;
     ResourceKinds resource_kinds;
@@ -178,20 +165,47 @@ struct FullscreenPassWidget::Impl {
         authored_passes;
     std::map<std::string, std::size_t, std::less<>>
         authored_pass_counts;
+    struct Anchor {
+        int position = 0;
+        std::string insert;
+    };
+    std::map<std::string, std::vector<Anchor>, std::less<>> anchors;
+    std::string source_digest;
     bool authoring_available = false;
+    bool authoring_rpc_available = false;
     bool refresh_available = false;
     bool updating = false;
     qint64 pending_request = 0;
+    enum class AuthoringRequest {
+        none,
+        context,
+        add,
+        remove,
+        result,
+    };
+    AuthoringRequest pending_authoring_kind = AuthoringRequest::none;
+    qint64 pending_authoring_request = 0;
+    QString pending_ticket;
 
     Impl(FullscreenPassWidget &widget, FramePlanReadCapability capability,
+         RenderPassAuthoringCapability authoring_capability,
          const Pelican::PassShapePolicy &policy)
         : owner{widget}, frame_plan{std::move(capability)},
+          authoring{std::move(authoring_capability)},
           shape_policy{policy} {
         if (!frame_plan.ready || !frame_plan.requestFramePlan ||
             !frame_plan.result || !frame_plan.failure) {
             throw std::invalid_argument(
                 "FullscreenPassWidget requires a complete asynchronous "
                 "frame-plan read capability");
+        }
+        if (!authoring.ready || !authoring.requestContext ||
+            !authoring.addAuthoredPass || !authoring.removeAuthoredPass ||
+            !authoring.requestEditResult || !authoring.result ||
+            !authoring.failure) {
+            throw std::invalid_argument(
+                "FullscreenPassWidget requires a complete asynchronous "
+                "render-pass authoring capability");
         }
 
         auto *layout = new QVBoxLayout(&owner);
@@ -203,8 +217,7 @@ struct FullscreenPassWidget::Impl {
         refresh->setObjectName(
             QStringLiteral("pelican.fullscreenPass.refresh"));
         refresh->setToolTip(owner.tr(
-            "Fetches get_frame_plan. This form never sends an edit or save "
-            "request."));
+            "Fetches get_frame_plan after an engine-owned authoring change."));
         plan_status = new QLabel(&owner);
         plan_status->setObjectName(
             QStringLiteral("pelican.fullscreenPass.planStatus"));
@@ -214,8 +227,10 @@ struct FullscreenPassWidget::Impl {
         layout->addLayout(toolbar);
 
         auto *scope = new QLabel(
-            owner.tr("Draft only: the JSON below is not written to the "
-                     "project and is not applied to the engine."),
+            owner.tr("Save sends this draft to the engine. The engine owns "
+                     "the project documents, validates the complete "
+                     "candidate set, commits it, and publishes the new "
+                     "frame plan."),
             &owner);
         scope->setObjectName(
             QStringLiteral("pelican.fullscreenPass.scopeNotice"));
@@ -224,8 +239,7 @@ struct FullscreenPassWidget::Impl {
         layout->addWidget(scope);
 
         authoring_status = new QLabel(
-            owner.tr("No read-only authoring declaration is loaded."),
-            &owner);
+            owner.tr("Engine authoring context is unavailable."), &owner);
         authoring_status->setObjectName(
             QStringLiteral("pelican.fullscreenPass.authoringStatus"));
         authoring_status->setWordWrap(true);
@@ -411,6 +425,30 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.copyJson"));
         layout->addWidget(copy_json);
 
+        auto *authoring_controls = new QHBoxLayout;
+        save = new QPushButton(owner.tr("Save authored pass"), &owner);
+        save->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.save"));
+        save->setToolTip(owner.tr(
+            "Calls add_authored_pass with the current engine digest and "
+            "anchor."));
+        remove_fragment = new QComboBox(&owner);
+        remove_fragment->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.removeFragment"));
+        remove_fragment->setPlaceholderText(
+            owner.tr("Choose a managed fragment"));
+        remove_authored = new QPushButton(
+            owner.tr("Remove authored pass"), &owner);
+        remove_authored->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.remove"));
+        remove_authored->setToolTip(owner.tr(
+            "Calls remove_authored_pass. Only engine-reported managed "
+            "fragments are offered here."));
+        authoring_controls->addWidget(save);
+        authoring_controls->addWidget(remove_fragment, 1);
+        authoring_controls->addWidget(remove_authored);
+        layout->addLayout(authoring_controls);
+
         QObject::connect(refresh, &QPushButton::clicked, &owner,
                          [this] { requestRefresh(); });
         QObject::connect(position, qOverload<int>(&QSpinBox::valueChanged),
@@ -454,8 +492,17 @@ struct FullscreenPassWidget::Impl {
                              QApplication::clipboard()->setText(
                                  json->toPlainText());
                          });
+        QObject::connect(save, &QPushButton::clicked, &owner,
+                         [this] { requestAddAuthoredPass(); });
+        QObject::connect(remove_authored, &QPushButton::clicked, &owner,
+                         [this] { requestRemoveAuthoredPass(); });
+        QObject::connect(
+            remove_fragment, qOverload<int>(&QComboBox::currentIndexChanged),
+            &owner, [this](int) { updateAuthoringButtons(); });
 
         refresh->setEnabled(false);
+        save->setEnabled(false);
+        remove_authored->setEnabled(false);
         plan_status->setText(owner.tr("Frame plan unavailable."));
         updateDraft();
 
@@ -474,6 +521,22 @@ struct FullscreenPassWidget::Impl {
             &owner,
             [this](bool available, const QString &reason) {
                 setRefreshAvailable(available, reason);
+            });
+        authoring.result(
+            &owner,
+            [this](qint64 request_id,
+                   const QByteArray &result_json) {
+                receiveAuthoringResult(request_id, result_json);
+            });
+        authoring.failure(
+            &owner,
+            [this](qint64 request_id, const QString &message) {
+                receiveAuthoringFailure(request_id, message);
+            });
+        authoring.ready(
+            &owner,
+            [this](bool available, const QString &reason) {
+                setAuthoringRpcAvailable(available, reason);
             });
     }
 
@@ -857,6 +920,411 @@ struct FullscreenPassWidget::Impl {
                          "capabilities; Studio does not predict it."));
         updateOmitted(draft);
         updateValidationSummary();
+        updateAuthoringButtons();
+    }
+
+    void updateAuthoringButtons() {
+        const QString validation =
+            validation_summary
+                ->property("pelicanValidationSummaryState")
+                .toString();
+        bool selected_anchor = false;
+        if (plan) {
+            const auto found = anchors.find(plan->graph);
+            if (found != anchors.end()) {
+                selected_anchor = std::ranges::any_of(
+                    found->second, [&](const Anchor &anchor) {
+                        return anchor.position == position->value();
+                    });
+            }
+        }
+        const bool idle = pending_authoring_request == 0 &&
+                          pending_ticket.isEmpty();
+        save->setEnabled(
+            authoring_rpc_available && authoring_available && idle &&
+            source_digest.size() == 64 && selected_anchor &&
+            (validation == QStringLiteral("valid") ||
+             validation == QStringLiteral("partial")));
+        remove_authored->setEnabled(
+            authoring_rpc_available && authoring_available && idle &&
+            source_digest.size() == 64 &&
+            remove_fragment->currentIndex() >= 0);
+    }
+
+    void authoringError(const QString &message) {
+        authoring_status->setStyleSheet(
+            QStringLiteral("color: #d94c3d;"));
+        authoring_status->setText(
+            owner.tr("Render authoring failed: %1").arg(message));
+        updateAuthoringButtons();
+    }
+
+    static QString responseError(const Json &response) {
+        const auto error = response.find("error");
+        if (error != response.end() && error->is_object()) {
+            const auto message = error->find("message");
+            if (message != error->end() && message->is_string()) {
+                return text(message->get_ref<const std::string &>());
+            }
+        }
+        return QStringLiteral("engine rejected the authoring request");
+    }
+
+    void requestAuthoringContext() {
+        if (!authoring_rpc_available || pending_authoring_request != 0) {
+            return;
+        }
+        QString error;
+        pending_authoring_kind = AuthoringRequest::context;
+        pending_authoring_request = authoring.requestContext(&error);
+        if (pending_authoring_request == 0) {
+            pending_authoring_kind = AuthoringRequest::none;
+            authoringError(error);
+            return;
+        }
+        authoring_status->setStyleSheet({});
+        authoring_status->setText(
+            owner.tr("Requesting the engine-owned authoring context..."));
+        updateAuthoringButtons();
+    }
+
+    std::optional<Anchor> selectedAnchor() const {
+        if (!plan) return std::nullopt;
+        const auto graph_anchors = anchors.find(plan->graph);
+        if (graph_anchors == anchors.end()) return std::nullopt;
+        const auto found = std::ranges::find(
+            graph_anchors->second, position->value(), &Anchor::position);
+        if (found == graph_anchors->second.end()) return std::nullopt;
+        return *found;
+    }
+
+    void requestAddAuthoredPass() {
+        if (!save->isEnabled() || !plan) return;
+        const auto anchor = selectedAnchor();
+        if (!anchor) {
+            authoringError(
+                owner.tr("the selected position has no engine anchor"));
+            return;
+        }
+        QJsonParseError parse_error;
+        const auto pass_document = QJsonDocument::fromJson(
+            QByteArray::fromStdString(draftJson().dump()), &parse_error);
+        if (parse_error.error != QJsonParseError::NoError ||
+            !pass_document.isObject()) {
+            authoringError(owner.tr("the generated pass JSON is invalid"));
+            return;
+        }
+        const QJsonObject params{
+            {QStringLiteral("base_source_digest"),
+             QString::fromStdString(source_digest)},
+            {QStringLiteral("graph"), text(plan->graph)},
+            {QStringLiteral("insert"), text(anchor->insert)},
+            {QStringLiteral("pass"), pass_document.object()},
+        };
+        QString error;
+        pending_authoring_kind = AuthoringRequest::add;
+        pending_authoring_request =
+            authoring.addAuthoredPass(params, &error);
+        if (pending_authoring_request == 0) {
+            pending_authoring_kind = AuthoringRequest::none;
+            authoringError(error);
+            return;
+        }
+        authoring_status->setStyleSheet({});
+        authoring_status->setText(
+            owner.tr("Submitting the complete authored-pass candidate..."));
+        updateAuthoringButtons();
+    }
+
+    void requestRemoveAuthoredPass() {
+        if (!remove_authored->isEnabled()) return;
+        const auto reference =
+            remove_fragment->currentData().toString();
+        if (reference.isEmpty()) return;
+        const QJsonObject params{
+            {QStringLiteral("base_source_digest"),
+             QString::fromStdString(source_digest)},
+            {QStringLiteral("fragment_reference"), reference},
+        };
+        QString error;
+        pending_authoring_kind = AuthoringRequest::remove;
+        pending_authoring_request =
+            authoring.removeAuthoredPass(params, &error);
+        if (pending_authoring_request == 0) {
+            pending_authoring_kind = AuthoringRequest::none;
+            authoringError(error);
+            return;
+        }
+        authoring_status->setStyleSheet({});
+        authoring_status->setText(
+            owner.tr("Submitting the managed-fragment removal..."));
+        updateAuthoringButtons();
+    }
+
+    void requestTicketResult() {
+        if (!authoring_rpc_available || pending_ticket.isEmpty() ||
+            pending_authoring_request != 0) {
+            return;
+        }
+        QString error;
+        pending_authoring_kind = AuthoringRequest::result;
+        pending_authoring_request =
+            authoring.requestEditResult(pending_ticket, &error);
+        if (pending_authoring_request == 0) {
+            pending_authoring_kind = AuthoringRequest::none;
+            authoringError(error);
+            return;
+        }
+        updateAuthoringButtons();
+    }
+
+    void consumeAuthoringContext(const QByteArray &context_json) {
+        const Json context = Json::parse(
+            context_json.constData(),
+            context_json.constData() + context_json.size());
+        if (!context.is_object() || !context.contains("source_digest") ||
+            !context.at("source_digest").is_object() ||
+            !context.at("source_digest").contains("hex") ||
+            !context.at("source_digest").at("hex").is_string() ||
+            !context.contains("graphs") ||
+            !context.at("graphs").is_array()) {
+            throw std::runtime_error(
+                "render authoring context requires source_digest.hex and graphs[]");
+        }
+        const auto next_digest =
+            context.at("source_digest").at("hex").get<std::string>();
+        if (next_digest.size() != 64) {
+            throw std::runtime_error(
+                "render authoring context digest must contain 64 hex characters");
+        }
+
+        decltype(authored_passes) next_passes;
+        decltype(authored_pass_counts) next_counts;
+        decltype(anchors) next_anchors;
+        QStringList provenance_summary;
+        for (const auto &graph_value : context.at("graphs")) {
+            if (!graph_value.is_object() ||
+                !graph_value.contains("name") ||
+                !graph_value.at("name").is_string() ||
+                !graph_value.contains("passes") ||
+                !graph_value.at("passes").is_array() ||
+                !graph_value.contains("anchor_candidates") ||
+                !graph_value.at("anchor_candidates").is_array()) {
+                throw std::runtime_error(
+                    "render authoring graphs require name, passes[] and anchor_candidates[]");
+            }
+            const auto graph_name =
+                graph_value.at("name").get<std::string>();
+            auto [pass_position, inserted] =
+                next_passes.try_emplace(graph_name);
+            if (!inserted) {
+                throw std::runtime_error(
+                    "duplicate graph in render authoring context: " +
+                    graph_name);
+            }
+            const auto &passes = graph_value.at("passes");
+            next_counts.emplace(graph_name, passes.size());
+            for (const auto &pass_value : passes) {
+                if (!pass_value.is_object() ||
+                    !pass_value.contains("name") ||
+                    !pass_value.at("name").is_string()) {
+                    throw std::runtime_error(
+                        "render authoring passes require a string name");
+                }
+                const auto pass_name =
+                    pass_value.at("name").get<std::string>();
+                const Json &declaration =
+                    pass_value.contains("declaration")
+                        ? pass_value.at("declaration")
+                        : pass_value;
+                if (!declaration.is_object() ||
+                    !pass_position->second
+                         .emplace(pass_name, declaration)
+                         .second) {
+                    throw std::runtime_error(
+                        "duplicate pass in render authoring context: " +
+                        graph_name + "/" + pass_name);
+                }
+                if (pass_value.contains("provenance") &&
+                    pass_value.at("provenance").is_object()) {
+                    const auto &provenance =
+                        pass_value.at("provenance");
+                    provenance_summary.push_back(
+                        text(graph_name + "/" + pass_name + " <- " +
+                             provenance.value("source", std::string{})));
+                }
+            }
+            auto &graph_anchors = next_anchors[graph_name];
+            for (const auto &anchor :
+                 graph_value.at("anchor_candidates")) {
+                if (!anchor.is_object() || !anchor.contains("position") ||
+                    !anchor.at("position").is_number_integer() ||
+                    !anchor.contains("insert") ||
+                    !anchor.at("insert").is_string()) {
+                    throw std::runtime_error(
+                        "render authoring anchors require position and insert");
+                }
+                graph_anchors.push_back(Anchor{
+                    .position = anchor.at("position").get<int>(),
+                    .insert = anchor.at("insert").get<std::string>(),
+                });
+            }
+        }
+
+        const QSignalBlocker blocker{remove_fragment};
+        remove_fragment->clear();
+        if (const auto fragments = context.find("managed_fragments");
+            fragments != context.end()) {
+            if (!fragments->is_array()) {
+                throw std::runtime_error(
+                    "managed_fragments must be an array");
+            }
+            for (const auto &fragment : *fragments) {
+                if (!fragment.is_object() ||
+                    !fragment.contains("reference") ||
+                    !fragment.at("reference").is_string()) {
+                    throw std::runtime_error(
+                        "managed fragment requires a reference");
+                }
+                const auto reference =
+                    fragment.at("reference").get<std::string>();
+                QString label = text(reference);
+                if (fragment.contains("pass_names") &&
+                    fragment.at("pass_names").is_array() &&
+                    !fragment.at("pass_names").empty()) {
+                    label = text(fragment.at("pass_names").front()
+                                     .get<std::string>()) +
+                            QStringLiteral(" — ") + text(reference);
+                }
+                remove_fragment->addItem(label, text(reference));
+            }
+        }
+        remove_fragment->setCurrentIndex(-1);
+
+        source_digest = next_digest;
+        authored_passes = std::move(next_passes);
+        authored_pass_counts = std::move(next_counts);
+        anchors = std::move(next_anchors);
+        authoring_available = true;
+        const auto kind = context.value("config_kind", std::string{"direct"});
+        authoring_status->setStyleSheet({});
+        authoring_status->setText(
+            owner.tr("Engine authoring context loaded (%1): %2 graph(s), "
+                     "%3 managed fragment(s).")
+                .arg(text(kind))
+                .arg(static_cast<qulonglong>(authored_passes.size()))
+                .arg(remove_fragment->count()));
+        authoring_status->setToolTip(
+            provenance_summary.isEmpty()
+                ? owner.tr("The engine returned no pass provenance entries.")
+                : owner.tr("Resolved pass provenance: %1")
+                      .arg(provenance_summary.join(
+                          QStringLiteral(", "))));
+        configurePosition();
+        updateDraft();
+    }
+
+    void receiveAuthoringResult(qint64 request_id,
+                                const QByteArray &result_json) {
+        if (request_id != pending_authoring_request) return;
+        const auto completed_kind = pending_authoring_kind;
+        pending_authoring_request = 0;
+        pending_authoring_kind = AuthoringRequest::none;
+        try {
+            if (completed_kind == AuthoringRequest::context) {
+                consumeAuthoringContext(result_json);
+                return;
+            }
+            const Json response = Json::parse(
+                result_json.constData(),
+                result_json.constData() + result_json.size());
+            if (!response.is_object()) {
+                throw std::runtime_error(
+                    "render authoring response must be an object");
+            }
+            const auto status = response.value("status", std::string{});
+            if (completed_kind == AuthoringRequest::add ||
+                completed_kind == AuthoringRequest::remove) {
+                if (status != "accepted" ||
+                    !response.contains("ticket") ||
+                    !response.at("ticket").is_string()) {
+                    authoringError(responseError(response));
+                    return;
+                }
+                pending_ticket =
+                    text(response.at("ticket").get_ref<const std::string &>());
+                authoring_status->setStyleSheet({});
+                authoring_status->setText(
+                    owner.tr("Candidate accepted; waiting for engine "
+                             "publication..."));
+                updateAuthoringButtons();
+                QTimer::singleShot(
+                    0, &owner, [this] { requestTicketResult(); });
+                return;
+            }
+            if (completed_kind == AuthoringRequest::result) {
+                if (status == "pending") {
+                    QTimer::singleShot(
+                        25, &owner,
+                        [this] { requestTicketResult(); });
+                    return;
+                }
+                if (status != "committed" ||
+                    !response.value("committed", false)) {
+                    pending_ticket.clear();
+                    authoringError(responseError(response));
+                    return;
+                }
+                pending_ticket.clear();
+                authoring_status->setStyleSheet({});
+                authoring_status->setText(
+                    owner.tr("Authored pass transaction committed and "
+                             "published."));
+                updateAuthoringButtons();
+                requestAuthoringContext();
+                requestRefresh();
+            }
+        } catch (const std::exception &error) {
+            pending_ticket.clear();
+            authoringError(QString::fromUtf8(error.what()));
+        }
+    }
+
+    void receiveAuthoringFailure(qint64 request_id,
+                                 const QString &message) {
+        if (request_id != pending_authoring_request) return;
+        pending_authoring_request = 0;
+        pending_authoring_kind = AuthoringRequest::none;
+        pending_ticket.clear();
+        authoringError(message);
+    }
+
+    void setAuthoringRpcAvailable(bool available,
+                                  const QString &reason) {
+        pending_authoring_request = 0;
+        pending_authoring_kind = AuthoringRequest::none;
+        pending_ticket.clear();
+        authoring_rpc_available = available;
+        if (available) {
+            requestAuthoringContext();
+            return;
+        }
+        source_digest.clear();
+        anchors.clear();
+        authored_passes.clear();
+        authored_pass_counts.clear();
+        authoring_available = false;
+        remove_fragment->clear();
+        authoring_status->setToolTip({});
+        authoring_status->setStyleSheet(
+            QStringLiteral("color: #b36b00;"));
+        authoring_status->setText(
+            reason.isEmpty()
+                ? owner.tr("Engine authoring context is unavailable.")
+                : owner.tr("Engine authoring context is unavailable: %1")
+                      .arg(reason));
+        configurePosition();
+        updateDraft();
     }
 
     void appendCandidate(QComboBox &candidate, QListWidget &sequence,
@@ -1095,6 +1563,9 @@ struct FullscreenPassWidget::Impl {
 
     void consumeAuthoringConfig(const QByteArray &config_json) {
         try {
+            source_digest.clear();
+            anchors.clear();
+            remove_fragment->clear();
             const Json root = Json::parse(
                 config_json.constData(),
                 config_json.constData() + config_json.size());
@@ -1102,18 +1573,10 @@ struct FullscreenPassWidget::Impl {
                 throw std::runtime_error(
                     "rendering config must be a JSON object");
             }
-            if (const auto pipeline = root.find("pipeline");
-                pipeline != root.end() && pipeline->is_object() &&
-                pipeline->contains("preset")) {
-                throw std::runtime_error(
-                    "preset-backed rendering configs are outside this form's "
-                    "scope");
-            }
             const auto graphs = root.find("rendering_passes");
             if (graphs == root.end() || !graphs->is_array()) {
                 throw std::runtime_error(
-                    "rendering config requires rendering_passes[]; preset "
-                    "projects are outside this form's scope");
+                    "resolved rendering config requires rendering_passes[]");
             }
 
             decltype(authored_passes) next;
@@ -1168,8 +1631,9 @@ struct FullscreenPassWidget::Impl {
             }
             authoring_status->setStyleSheet({});
             authoring_status->setText(
-                owner.tr("Read-only authoring context loaded: %1 graph(s), "
-                         "%2 pass(es). This form never writes it.")
+                owner.tr("Projection-test authoring context loaded: %1 "
+                         "graph(s), %2 pass(es). Saving remains disabled "
+                         "without an engine digest and anchors.")
                     .arg(static_cast<qulonglong>(authored_passes.size()))
                     .arg(static_cast<qulonglong>(pass_count)));
             authoring_status->setToolTip(
@@ -1193,16 +1657,34 @@ struct FullscreenPassWidget::Impl {
 
 FullscreenPassWidget::FullscreenPassWidget(
     FramePlanReadCapability frame_plan, QWidget *parent)
-    : FullscreenPassWidget(std::move(frame_plan),
+    : FullscreenPassWidget(
+          std::move(frame_plan),
+          unavailableRenderPassAuthoringCapability(),
+                           Pelican::defaultPassShapePolicy(), parent) {}
+
+FullscreenPassWidget::FullscreenPassWidget(
+    FramePlanReadCapability frame_plan,
+    RenderPassAuthoringCapability authoring,
+    QWidget *parent)
+    : FullscreenPassWidget(std::move(frame_plan), std::move(authoring),
                            Pelican::defaultPassShapePolicy(), parent) {}
 
 FullscreenPassWidget::FullscreenPassWidget(
     FramePlanReadCapability frame_plan,
     const Pelican::PassShapePolicy &shape_policy, QWidget *parent)
+    : FullscreenPassWidget(
+          std::move(frame_plan),
+          unavailableRenderPassAuthoringCapability(), shape_policy,
+          parent) {}
+
+FullscreenPassWidget::FullscreenPassWidget(
+    FramePlanReadCapability frame_plan,
+    RenderPassAuthoringCapability authoring,
+    const Pelican::PassShapePolicy &shape_policy, QWidget *parent)
     : QWidget(parent) {
     setObjectName(QStringLiteral("pelican.fullscreenPass"));
     impl_ = std::make_unique<Impl>(
-        *this, std::move(frame_plan), shape_policy);
+        *this, std::move(frame_plan), std::move(authoring), shape_policy);
 }
 
 FullscreenPassWidget::~FullscreenPassWidget() = default;
@@ -1215,44 +1697,6 @@ void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {
 void FullscreenPassWidget::receiveAuthoringConfig(
     const QByteArray &config_json) {
     impl_->consumeAuthoringConfig(config_json);
-}
-
-void FullscreenPassWidget::openProjectReadOnly(
-    const std::filesystem::path &project_root) {
-    try {
-        const auto project_text =
-            readTextFile(project_root / "project.json", "project.json");
-        const auto parsed = Pelican::parseProjectEnvelopeText(project_text);
-        if (!parsed.envelope.basic_config.is_object()) {
-            throw std::runtime_error(
-                "project.json basic_config must be an object");
-        }
-        const auto reference =
-            parsed.envelope.basic_config.find("rendering_config_json");
-        if (reference == parsed.envelope.basic_config.end() ||
-            !reference->is_string() ||
-            reference->get_ref<const std::string &>().empty()) {
-            throw std::runtime_error(
-                "project.json requires basic_config.rendering_config_json");
-        }
-        Pelican::ProjectPathResolver resolver;
-        resolver.setup(project_root, false, parsed.envelope);
-        const std::string config_text =
-            resolver.loadText(reference->get_ref<const std::string &>());
-        receiveAuthoringConfig(QByteArray::fromStdString(config_text));
-    } catch (const std::exception &error) {
-        impl_->authored_passes.clear();
-        impl_->authored_pass_counts.clear();
-        impl_->authoring_available = false;
-        impl_->authoring_status->setToolTip({});
-        impl_->authoring_status->setStyleSheet(
-            QStringLiteral("color: #b36b00;"));
-        impl_->authoring_status->setText(
-            tr("Authoring context unavailable: %1")
-                .arg(QString::fromUtf8(error.what())));
-        impl_->configurePosition();
-        impl_->updateDraft();
-    }
 }
 
 } // namespace PelicanStudio

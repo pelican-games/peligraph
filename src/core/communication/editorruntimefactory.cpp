@@ -18,6 +18,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/editorprojectionadapters.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/renderconfigcandidate.hpp"
 #include "../loader/scene.hpp"
 #include "../os/inputsequence.hpp"
 #include "../phys/physworld.hpp"
@@ -31,6 +32,7 @@
 #include "../vkcore/rendertiming.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../../project/featurecompose.hpp"
 
 #include <algorithm>
 #include <any>
@@ -1419,6 +1421,26 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     .source_reference = source_reference,
                     .source_path = *source_path,
                     .source_bytes = source_bytes,
+                    .project_root =
+                        runtime->modules.path_resolver.projectRoot(),
+                    .normalize_reference = [runtime](
+                                               std::string_view reference) {
+                        return runtime->modules.path_resolver
+                            .normalizedReference(reference);
+                    },
+                    .resolve_document_path = [runtime](
+                                                 std::string_view reference) {
+                        const auto resolved =
+                            runtime->modules.path_resolver
+                                .resolveProjectRef(reference);
+                        const auto *path =
+                            std::get_if<std::filesystem::path>(&resolved);
+                        if (path == nullptr) {
+                            throw std::runtime_error(
+                                "render authoring documents must resolve to project files");
+                        }
+                        return *path;
+                    },
                     // This is the independent editor query policy.  In
                     // particular, it never calls ReloadGate::enabled(),
                     // which is intentionally false for --rpc drivers.
@@ -1455,7 +1477,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     },
                     .apply_candidate =
                         [runtime](
-                            std::string candidate,
+                            RenderConfigCandidateDocumentSet candidate,
                             const RenderConfigSourceCommit
                                 &source_commit) {
                             if (runtime->modules.reload_service ==
@@ -1478,6 +1500,44 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .error = applied.error,
                                 .post_commit_error =
                                     applied.post_commit_error,
+                            };
+                        },
+                    .resolve_authoring_context =
+                        [runtime](
+                            const RenderConfigCandidateDocumentSet
+                                &documents) {
+                            const auto loader =
+                                [&documents, runtime](
+                                    std::string_view reference) {
+                                    return loadRenderConfigCandidateText(
+                                        documents,
+                                        runtime->modules.path_resolver,
+                                        reference);
+                                };
+                            auto composed = composeRenderFeatureConfig(
+                                nlohmann::json::parse(
+                                    documents.rootDocument().bytes),
+                                RenderFeatureComposeDependencies{
+                                    .load_feature_json = loader,
+#if PELICAN_RUNTIME_SHADER_COMPILER
+                                    .runtime_shader_compiler_enabled = true,
+#else
+                                    .runtime_shader_compiler_enabled = false,
+#endif
+                                    .load_pipeline_json = loader,
+                                    .validate_feature =
+                                        [](std::string_view name,
+                                           const nlohmann::json &feature) {
+                                            requireCurrentRenderFeatureRuntimeAvailability(
+                                                name, feature);
+                                        },
+                                });
+                            return ResolvedRenderConfigAuthoringContext{
+                                .config = std::move(composed.config),
+                                .pipeline_preset =
+                                    std::move(composed.pipeline_preset),
+                                .pass_provenance =
+                                    std::move(composed.pass_provenance),
                             };
                         },
                     .feature_catalog = [] {

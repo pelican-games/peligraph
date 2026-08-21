@@ -77,6 +77,7 @@ struct RenderingPassConfigRegistrationDependencies {
         // variant participating in one publication transaction.
         const RenderCompilerProgram
             *render_compiler_program = nullptr;
+        std::function<std::string(std::string_view)> load_document;
         // WP203b production wiring is enabled only for targets that can
         // provide one command context spanning the complete view family.
         // OpenXR enables this after its array-swapchain target is installed.

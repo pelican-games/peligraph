@@ -64,6 +64,7 @@ using EngineResourceTextLoader =
     std::function<std::string(std::string_view)>;
 
 ParsedPathRef parsePathReference(std::string_view ref);
+std::string normalizedResolvedReferenceKey(const ResolvedRef &reference);
 
 class ProjectPathResolver {
     bool configured = false;
@@ -110,6 +111,7 @@ class ProjectPathResolver {
     PathResolutionResult resolveCliRef(std::string_view ref) const;
     ResolvedRef resolveExistingFileReference(std::string_view ref) const;
     std::filesystem::path resolveExistingFile(std::string_view ref) const;
+    std::string normalizedReference(std::string_view ref) const;
     std::string loadText(
         std::string_view ref,
         const EngineResourceTextLoader &load_engine_resource = {}) const;

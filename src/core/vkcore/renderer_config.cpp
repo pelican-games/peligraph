@@ -434,6 +434,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         variant_dependencies;
     RenderingPassConfigRegistrationDependencies::Options
         flat_options;
+    flat_options.load_document = hooks.load_document;
     flat_options.validate_prepared_generation =
         [default_pass_name, &prepared_flat_rendering_pass_id,
          validate_live_materials =
@@ -475,6 +476,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
 #if PELICAN_WITH_OPENXR
     if (xr_active) {
         RenderingPassConfigRegistrationDependencies::Options xr_options;
+        xr_options.load_document = hooks.load_document;
         xr_options.graph_variant = RenderPipelineGraphVariant::xr;
         // The OpenXR composition target owns one two-layer color swapchain
         // and exposes a command context spanning the full view family.

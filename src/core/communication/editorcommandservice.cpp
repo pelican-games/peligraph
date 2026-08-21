@@ -775,6 +775,33 @@ OrderedJson EditorCommandService::editRenderFeatures(
     return render_config_editor_->editRenderFeatures(params);
 }
 
+OrderedJson EditorCommandService::getRenderAuthoringContext(
+    const Json &params) const {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->getRenderAuthoringContext(params);
+}
+
+OrderedJson EditorCommandService::addAuthoredPass(
+    const Json &params) {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->addAuthoredPass(params);
+}
+
+OrderedJson EditorCommandService::removeAuthoredPass(
+    const Json &params) {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->removeAuthoredPass(params);
+}
+
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
     if (render_config_editor_ && params.is_object()) {
         const auto found = params.find("ticket");
@@ -1151,6 +1178,29 @@ OrderedJson EditorCommandRpcAdapter::editRenderFeatures(
         throw std::logic_error("editor RPC adapter is read-only");
     }
     return mutable_service_->editRenderFeatures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getRenderAuthoringContext(
+    const Json &params) const {
+    return service_.getRenderAuthoringContext(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::addAuthoredPass(
+    const Json &params) const {
+    if (mutable_service_ == nullptr) {
+        throw std::logic_error(
+            "add_authored_pass requires a mutable editor service");
+    }
+    return mutable_service_->addAuthoredPass(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::removeAuthoredPass(
+    const Json &params) const {
+    if (mutable_service_ == nullptr) {
+        throw std::logic_error(
+            "remove_authored_pass requires a mutable editor service");
+    }
+    return mutable_service_->removeAuthoredPass(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getEditResult(const Json &params) const {

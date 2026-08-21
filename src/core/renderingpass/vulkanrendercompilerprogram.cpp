@@ -394,17 +394,21 @@ compileDefaultLogicalVariant(
         &request) {
     std::optional<RenderStrategySelection>
         resolved_render_strategy;
+    const auto load_document = [&input](std::string_view ref) {
+        if (input.load_document) {
+            return input.load_document(ref);
+        }
+        return input.path_resolver.loadText(ref);
+    };
     RenderPipelineResolveDependencies
         resolve_dependencies{
             .load_feature_json =
-                [&input](std::string_view ref) {
-                    return input.path_resolver.loadText(
-                        ref);
+                [&load_document](std::string_view ref) {
+                    return load_document(ref);
                 },
             .load_pipeline_json =
-                [&input](std::string_view ref) {
-                    return input.path_resolver.loadText(
-                        ref);
+                [&load_document](std::string_view ref) {
+                    return load_document(ref);
                 },
             .resolve_render_strategy =
                 [&input,

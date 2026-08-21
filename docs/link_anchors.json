@@ -629,7 +629,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectformat.cpp|`parseProjectEnvelopeText()`|#1": "parseProjectEnvelopeText(std::string_view project_json,",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.cpp|`ProjectPathResolver::resolveRef()`": "ProjectPathResolver::resolveRef(std::string_view ref, bool cli_origin) const {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.cpp|`ProjectPathResolver::resolveRef()`のproject処理": "const auto joined = project_root_abs / ref_path;",
-    "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.cpp|`ProjectPathResolver::setup()`": "void ProjectPathResolver::setup(",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.cpp|`ProjectPathResolver::setup()`": "void ProjectPathResolver::setup(const std::filesystem::path &project_root,",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.cpp|`asset store解決`": "const auto relative_inside_store = tailPath(ref_components, mount_components.size());",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.cpp|`parsePathReference()`": "ParsedPathRef parsePathReference(std::string_view ref) {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/projectpathresolver.hpp|`ProjectPathResolver`": "class ProjectPathResolver {",

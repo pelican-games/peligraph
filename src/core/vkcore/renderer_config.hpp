@@ -76,6 +76,7 @@ struct RenderGraphVariantConfig {
 
 struct RenderGraphVariantLoadHooks {
     bool validate_live_materials = true;
+    std::function<std::string(std::string_view)> load_document;
     std::function<void(
         const RendererRuntimeGeneration &)>
         before_publish;

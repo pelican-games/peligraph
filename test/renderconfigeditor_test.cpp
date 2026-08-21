@@ -1,9 +1,12 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
+#include "../src/core/communication/renderconfigtransaction.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/watch/reloadgate.hpp"
@@ -175,8 +178,11 @@ struct ActualCpuRenderRuntime {
     std::string post_commit_error;
     std::size_t apply_calls = 0;
     bool ray_query_available = true;
+    bool runtime_shader_compiler_enabled =
+        PELICAN_RUNTIME_SHADER_COMPILER != 0;
     bool module_creation_frozen = false;
     std::set<std::string, std::less<>> initialized_modules;
+    PathResolver *path_resolver = nullptr;
 
     RenderFeatureRuntimeAvailabilityEnvironment
     availabilityEnvironment() const {
@@ -196,7 +202,7 @@ struct ActualCpuRenderRuntime {
         }
         return {
             .runtime_shader_compiler_enabled =
-                PELICAN_RUNTIME_SHADER_COMPILER != 0,
+                runtime_shader_compiler_enabled,
             .target_endpoint = std::move(endpoint),
             .runtime_module_creation_frozen =
                 module_creation_frozen,
@@ -214,14 +220,17 @@ struct ActualCpuRenderRuntime {
             name, document, availabilityEnvironment());
     }
 
-    Prepared prepare(std::string_view bytes) const {
+    Prepared prepare(
+        std::string_view bytes,
+        std::function<std::string(std::string_view)> load_document =
+            loadEngineDocument) const {
         auto composition = composeRenderFeatureConfig(
             Json::parse(bytes),
             RenderFeatureComposeDependencies{
-                .load_feature_json = loadEngineDocument,
+                .load_feature_json = load_document,
                 .runtime_shader_compiler_enabled =
-                    PELICAN_RUNTIME_SHADER_COMPILER != 0,
-                .load_pipeline_json = loadEngineDocument,
+                    runtime_shader_compiler_enabled,
+                .load_pipeline_json = load_document,
                 .validate_feature =
                     [this](std::string_view name,
                            const Json &document) {
@@ -262,7 +271,14 @@ struct ActualCpuRenderRuntime {
 
     void initialize(std::string_view bytes) {
         module_creation_frozen = false;
-        auto prepared = prepare(bytes);
+        auto prepared = prepare(
+            bytes, path_resolver
+                       ? std::function<std::string(std::string_view)>{
+                             [this](std::string_view reference) {
+                                 return path_resolver->loadText(reference);
+                             }}
+                       : std::function<std::string(std::string_view)>{
+                             loadEngineDocument});
         initialized_modules.clear();
         for (const auto &requirement :
              renderFeatureRuntimeModuleRequirements()) {
@@ -287,12 +303,22 @@ struct ActualCpuRenderRuntime {
     }
 
     RenderConfigRuntimeApplyResult apply(
-        std::string bytes,
+        RenderConfigCandidateDocumentSet documents,
         const RenderConfigSourceCommit &source_commit) {
         ++apply_calls;
         Prepared prepared;
         try {
-            prepared = prepare(bytes);
+            const auto load_document =
+                path_resolver
+                    ? std::function<std::string(std::string_view)>{
+                          [this, &documents](std::string_view reference) {
+                              return loadRenderConfigCandidateText(
+                                  documents, *path_resolver, reference);
+                          }}
+                    : std::function<std::string(std::string_view)>{
+                          loadEngineDocument};
+            prepared = prepare(documents.rootDocument().bytes,
+                               load_document);
         } catch (const std::exception &error) {
             return {.error = error.what()};
         }
@@ -315,6 +341,78 @@ struct ActualCpuRenderRuntime {
             .post_commit_error = post_commit_error,
         };
     }
+
+    RenderConfigRuntimeApplyResult apply(
+        std::string bytes,
+        const RenderConfigSourceCommit &source_commit) {
+        const auto digest = renderConfigSourceDigest(bytes);
+        return apply(
+            RenderConfigCandidateDocumentSet{
+                "test://root",
+                {{.reference = "test://root",
+                  .normalized_reference = "test://root",
+                  .path = "main.json",
+                  .operation = RenderConfigDocumentOperation::replace,
+                  .expected =
+                      {.existence =
+                           RenderConfigDocumentExistence::present,
+                       .digest = digest},
+                  .bytes = std::move(bytes)}}},
+            source_commit);
+    }
+};
+
+class TemporaryAnimgraphProject {
+    std::filesystem::path directory_;
+
+  public:
+    std::filesystem::path root;
+    std::filesystem::path render_config;
+
+    TemporaryAnimgraphProject() {
+        static std::atomic<std::uint64_t> next{1};
+        const auto seed = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now()
+                .time_since_epoch()
+                .count());
+        for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
+            directory_ = std::filesystem::temp_directory_path() /
+                         ("pelican-wp334b-animgraph-" +
+                          std::to_string(seed) + "-" +
+                          std::to_string(next.fetch_add(1)));
+            std::error_code error;
+            if (std::filesystem::create_directory(directory_, error)) {
+                break;
+            }
+            directory_.clear();
+        }
+        if (directory_.empty()) {
+            throw std::runtime_error(
+                "failed to allocate WP334b temporary project");
+        }
+        root = directory_;
+        std::filesystem::create_directories(root / "passes");
+        const auto shipped =
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+            "animgraph_demo";
+        std::filesystem::copy_file(
+            shipped / "project.json", root / "project.json",
+            std::filesystem::copy_options::none);
+        render_config = root / "passes" / "main.json";
+        std::filesystem::copy_file(
+            shipped / "passes" / "main.json", render_config,
+            std::filesystem::copy_options::none);
+    }
+
+    ~TemporaryAnimgraphProject() {
+        if (directory_.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove_all(directory_, ignored);
+    }
+
+    TemporaryAnimgraphProject(const TemporaryAnimgraphProject &) = delete;
+    TemporaryAnimgraphProject &operator=(
+        const TemporaryAnimgraphProject &) = delete;
 };
 
 std::unique_ptr<RenderConfigEditorService> makeService(
@@ -336,7 +434,7 @@ std::unique_ptr<RenderConfigEditorService> makeService(
             },
             .apply_candidate =
                 [&runtime](
-                    std::string candidate,
+                    RenderConfigCandidateDocumentSet candidate,
                     const RenderConfigSourceCommit &commit) {
                     return runtime.apply(
                         std::move(candidate), commit);
@@ -347,6 +445,83 @@ std::unique_ptr<RenderConfigEditorService> makeService(
                                const Json &document) {
                         return runtime.availability(
                             name, document);
+                    });
+            },
+        });
+}
+
+std::unique_ptr<RenderConfigEditorService> makeProjectService(
+    TemporaryAnimgraphProject &project, PathResolver &resolver,
+    ActualCpuRenderRuntime &runtime) {
+    runtime.path_resolver = &resolver;
+    // This producer models an already-running animgraph_demo instance. Shader
+    // availability has its own ON/OFF gate tests; keep this lifecycle fixture
+    // focused on the document-set preflight and publish path in both builds.
+    runtime.runtime_shader_compiler_enabled = true;
+    runtime.initialize(readBytes(project.render_config));
+    return std::make_unique<RenderConfigEditorService>(
+        RenderConfigEditorDependencies{
+            .source_reference = "passes/main.json",
+            .source_path = project.render_config,
+            .source_bytes = readBytes(project.render_config),
+            .project_root = project.root,
+            .normalize_reference = [&resolver](std::string_view reference) {
+                return resolver.normalizedReference(reference);
+            },
+            .resolve_document_path =
+                [&resolver](std::string_view reference) {
+                    const auto resolved = resolver.resolveProjectRef(reference);
+                    const auto *path =
+                        std::get_if<std::filesystem::path>(&resolved);
+                    if (path == nullptr) {
+                        throw std::runtime_error(
+                            "WP334b authored document did not resolve to a project file");
+                    }
+                    return *path;
+                },
+            .gate = [] { return RenderConfigEditorGateObservation{}; },
+            .runtime_snapshot = [&runtime] { return runtime.snapshot; },
+            .apply_candidate =
+                [&runtime](RenderConfigCandidateDocumentSet documents,
+                           const RenderConfigSourceCommit &commit) {
+                    return runtime.apply(std::move(documents), commit);
+                },
+            .resolve_authoring_context =
+                [&resolver, &runtime](
+                    const RenderConfigCandidateDocumentSet &documents) {
+                    const auto loader =
+                        [&resolver, &documents](std::string_view reference) {
+                            return loadRenderConfigCandidateText(
+                                documents, resolver, reference);
+                        };
+                    auto composition = composeRenderFeatureConfig(
+                        Json::parse(documents.rootDocument().bytes),
+                        RenderFeatureComposeDependencies{
+                            .load_feature_json = loader,
+                            .runtime_shader_compiler_enabled =
+                                runtime.runtime_shader_compiler_enabled,
+                            .load_pipeline_json = loader,
+                            .validate_feature =
+                                [&runtime](std::string_view name,
+                                           const Json &feature) {
+                                    requireRenderFeatureRuntimeAvailability(
+                                        name, feature,
+                                        runtime.availabilityEnvironment());
+                                },
+                        });
+                    return ResolvedRenderConfigAuthoringContext{
+                        .config = std::move(composition.config),
+                        .pipeline_preset =
+                            std::move(composition.pipeline_preset),
+                        .pass_provenance =
+                            std::move(composition.pass_provenance),
+                    };
+                },
+            .feature_catalog = [&runtime] {
+                return enumerateEngineRenderFeatureDocuments(
+                    [&runtime](std::string_view name,
+                               const Json &document) {
+                        return runtime.availability(name, document);
                     });
             },
         });
@@ -612,7 +787,7 @@ TEST_CASE(
                     },
                     .apply_candidate =
                         [&runtime](
-                            std::string,
+                            RenderConfigCandidateDocumentSet,
                             const RenderConfigSourceCommit &commit) {
                             ++runtime.apply_calls;
                             commit();
@@ -1302,6 +1477,837 @@ TEST_CASE(
     const auto frame_results = commands.takeCompletedEditResults();
     REQUIRE(frame_results.size() == 1);
     REQUIRE(frame_results.front().at("ticket") == ticket);
+}
+
+TEST_CASE(
+    "WP334b animgraph preset authored pass appears only after save and purges without an orphan",
+    "[render-config-editor][wp334b][integration][preset][overlay][purge]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const std::string pass_name = "wp334b_authored_probe";
+    const auto has_node = [&](std::string_view name) {
+        return std::ranges::any_of(
+            runtime.frame_plan.at("nodes"), [&](const auto &node) {
+                return node.value("name", std::string{}) == name;
+            });
+    };
+    const auto target_count = [&] {
+        return runtime.frame_plan.at("resources").size();
+    };
+    const auto root_references = [&] {
+        std::set<std::string, std::less<>> references;
+        const auto root =
+            Json::parse(readBytes(project.render_config));
+        for (const auto &entry : root.at("features")) {
+            if (entry.is_string()) {
+                references.insert(entry.get<std::string>());
+            } else if (entry.is_object() && entry.contains("ref") &&
+                       entry.at("ref").is_string()) {
+                references.insert(entry.at("ref").get<std::string>());
+            }
+        }
+        return references;
+    };
+
+    const auto before_context =
+        service->getRenderAuthoringContext(Json::object());
+    REQUIRE(before_context.at("config_kind") == "preset");
+    REQUIRE(before_context.at("pipeline_preset").at("name") ==
+            "hybrid_v1");
+    REQUIRE_FALSE(has_node(pass_name));
+    const auto targets_before = target_count();
+    const auto root_before = readBytes(project.render_config);
+
+    const Json pass{
+        {"name", pass_name},
+        {"type", "fullscreen"},
+        {"input", Json::array({"gbuffer_normal"})},
+        {"output",
+         {{"color", Json::array({"ssao_output"})},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fullscreen"}}},
+    };
+    const auto accepted = service->addAuthoredPass(
+        {{"base_source_digest",
+          before_context.at("source_digest").at("hex")},
+         {"graph", "main_render"},
+         {"insert", "after:ssao_pass"},
+         {"pass", pass}});
+    REQUIRE(accepted.at("status") == "accepted");
+    const auto ticket = accepted.at("ticket").get<std::string>();
+    const auto fragment_reference =
+        accepted.at("fragment_reference").get<std::string>();
+    const auto resolved_fragment = resolver.resolveProjectRef(
+        fragment_reference);
+    const auto *fragment_path =
+        std::get_if<std::filesystem::path>(&resolved_fragment);
+    REQUIRE(fragment_path != nullptr);
+
+    // The decisive request-local overlay contrast: the candidate compiled,
+    // although the fallback resolver still cannot see its staged fragment.
+    REQUIRE_THROWS(resolver.loadText(fragment_reference));
+    REQUIRE_FALSE(std::filesystem::exists(*fragment_path));
+    REQUIRE(readBytes(project.render_config) == root_before);
+    REQUIRE_FALSE(root_references().contains(fragment_reference));
+    REQUIRE_FALSE(has_node(pass_name));
+
+    service->commitPending();
+    const auto added = service->getResult({{"ticket", ticket}});
+    REQUIRE(added.at("committed") == true);
+    REQUIRE(std::filesystem::is_regular_file(*fragment_path));
+    REQUIRE(root_references().contains(fragment_reference));
+    REQUIRE(has_node(pass_name));
+    REQUIRE(target_count() == targets_before);
+
+    const auto after_context =
+        service->getRenderAuthoringContext(Json::object());
+    REQUIRE(after_context.at("config_kind") == "preset");
+    const auto graph = std::ranges::find(
+        after_context.at("graphs"), std::string{"main_render"},
+        [](const auto &value) {
+            return value.at("name").template get<std::string>();
+        });
+    REQUIRE(graph != after_context.at("graphs").end());
+    const auto authored = std::ranges::find(
+        graph->at("passes"), pass_name, [](const auto &value) {
+            return value.at("name").template get<std::string>();
+        });
+    REQUIRE(authored != graph->at("passes").end());
+    REQUIRE(authored->at("provenance").at("source") == "feature");
+    REQUIRE(authored->at("provenance").at("provider_reference") ==
+            fragment_reference);
+    REQUIRE(authored->at("managed") == true);
+
+    // An externally edited managed fragment is never overwritten or purged,
+    // and the root remains byte-identical.
+    const auto managed_before_external = readBytes(*fragment_path);
+    const auto root_before_external = readBytes(project.render_config);
+    const auto external_fragment = managed_before_external + " \n";
+    writeBytes(*fragment_path, external_fragment);
+    const auto rejected_remove = service->removeAuthoredPass(
+        {{"base_source_digest",
+          after_context.at("source_digest").at("hex")},
+         {"fragment_reference", fragment_reference}});
+    REQUIRE(rejected_remove.at("status") == "rejected");
+    REQUIRE(rejected_remove.at("error").at("code") ==
+            "external_modification");
+    REQUIRE(readBytes(project.render_config) == root_before_external);
+    REQUIRE(readBytes(*fragment_path) == external_fragment);
+    writeBytes(*fragment_path, managed_before_external);
+
+    const auto remove_accepted = service->removeAuthoredPass(
+        {{"base_source_digest",
+          after_context.at("source_digest").at("hex")},
+         {"fragment_reference", fragment_reference}});
+    REQUIRE(remove_accepted.at("status") == "accepted");
+    const auto remove_ticket =
+        remove_accepted.at("ticket").get<std::string>();
+    service->commitPending();
+    const auto removed =
+        service->getResult({{"ticket", remove_ticket}});
+    INFO(removed.dump());
+    REQUIRE(removed.at("committed") == true);
+    REQUIRE_FALSE(std::filesystem::exists(*fragment_path));
+    REQUIRE_FALSE(root_references().contains(fragment_reference));
+    REQUIRE_FALSE(has_node(pass_name));
+    REQUIRE(target_count() == targets_before);
+
+    // Semantic orphan scan: every managed marker below the owned namespace
+    // must be reachable from a root features[] reference.
+    const auto live_references = root_references();
+    const auto managed_directory = project.root / "passes" / "authoring";
+    if (std::filesystem::exists(managed_directory)) {
+        for (const auto &entry :
+             std::filesystem::directory_iterator(managed_directory)) {
+            if (!entry.is_regular_file()) continue;
+            const auto document = Json::parse(readBytes(entry.path()));
+            const auto marker = document.find("pelican_editor_managed");
+            if (marker == document.end()) continue;
+            const auto relative =
+                entry.path().lexically_relative(project.root).generic_string();
+            REQUIRE(live_references.contains("project://" + relative));
+        }
+    }
+}
+
+TEST_CASE(
+    "WP334b multi-document transaction rolls back both failure directions and commits both directions",
+    "[render-config-editor][wp334b][transaction][atomicity]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto root_reference = std::string{"passes/main.json"};
+    const auto root_key = resolver.normalizedReference(root_reference);
+    const auto fragment_reference =
+        std::string{"project://passes/authoring/pass-atomic.json"};
+    const auto fragment_key =
+        resolver.normalizedReference(fragment_reference);
+    const auto resolved = resolver.resolveProjectRef(fragment_reference);
+    const auto fragment_path =
+        std::get<std::filesystem::path>(resolved);
+    const auto original_root = readBytes(project.render_config);
+    const auto added_root =
+        AuthoredRenderConfigDocument::parse(original_root)
+            .withFeatureAdded(fragment_reference)
+            .bytes();
+    const std::string fragment_bytes =
+        R"json({"schema":"pelican.render_feature","version":1,"name":"atomic","passes":[]})json";
+
+    const auto addition = [&] {
+        return RenderConfigCandidateDocumentSet{
+            root_key,
+            {{.reference = fragment_reference,
+              .normalized_reference = fragment_key,
+              .path = fragment_path,
+              .operation = RenderConfigDocumentOperation::create,
+              .expected =
+                  {.existence = RenderConfigDocumentExistence::missing},
+              .bytes = fragment_bytes},
+             {.reference = root_reference,
+              .normalized_reference = root_key,
+              .path = project.render_config,
+              .operation = RenderConfigDocumentOperation::replace,
+              .expected =
+                  {.existence = RenderConfigDocumentExistence::present,
+                   .digest = renderConfigSourceDigest(original_root)},
+              .bytes = added_root}}};
+    };
+
+    const auto external_root = original_root + " \n";
+    REQUIRE_THROWS(commitRenderConfigCandidateDocuments(
+        project.root, addition(),
+        [&](std::size_t index,
+            const RenderConfigCandidateDocument &) {
+            if (index == 0) {
+                writeBytes(project.render_config, external_root);
+            }
+        }));
+    REQUIRE_FALSE(std::filesystem::exists(fragment_path));
+    REQUIRE(readBytes(project.render_config) == external_root);
+    writeBytes(project.render_config, original_root);
+    recoverRenderConfigDocumentTransaction(project.root);
+    REQUIRE_FALSE(std::filesystem::exists(
+        renderConfigTransactionDirectory(project.root)));
+
+    const auto add_receipt =
+        commitRenderConfigCandidateDocuments(project.root, addition());
+    REQUIRE(add_receipt.changed());
+    REQUIRE(readBytes(project.render_config) == added_root);
+    REQUIRE(readBytes(fragment_path) == fragment_bytes);
+
+    const auto removed_root =
+        AuthoredRenderConfigDocument::parse(added_root)
+            .withFeatureRemoved(fragment_reference)
+            .bytes();
+    const auto removal = RenderConfigCandidateDocumentSet{
+        root_key,
+        {{.reference = root_reference,
+          .normalized_reference = root_key,
+          .path = project.render_config,
+          .operation = RenderConfigDocumentOperation::replace,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::present,
+               .digest = renderConfigSourceDigest(added_root)},
+          .bytes = removed_root},
+         {.reference = fragment_reference,
+          .normalized_reference = fragment_key,
+          .path = fragment_path,
+          .operation = RenderConfigDocumentOperation::erase,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::present,
+               .digest = renderConfigSourceDigest(fragment_bytes)}}}};
+    REQUIRE_THROWS(commitRenderConfigCandidateDocuments(
+        project.root, removal,
+        [](std::size_t index,
+           const RenderConfigCandidateDocument &) {
+            if (index == 0) {
+                throw std::runtime_error(
+                    "injected fragment commit failure");
+            }
+        }));
+    REQUIRE(readBytes(project.render_config) == added_root);
+    REQUIRE(readBytes(fragment_path) == fragment_bytes);
+
+    const auto remove_receipt =
+        commitRenderConfigCandidateDocuments(project.root, removal);
+    REQUIRE(remove_receipt.changed());
+    REQUIRE(readBytes(project.render_config) == removed_root);
+    REQUIRE_FALSE(std::filesystem::exists(fragment_path));
+}
+
+TEST_CASE(
+    "WP334b engine authoring context exposes a direct root through the preset-capable contract",
+    "[render-config-editor][wp334b][context][direct]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(
+        project.render_config,
+        readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                  "projects" / "example" / "passes" /
+                  "main_rendering_config.json"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto context =
+        service->getRenderAuthoringContext(Json::object());
+    REQUIRE(context.at("config_kind") == "direct");
+    REQUIRE_FALSE(context.contains("pipeline_preset"));
+    REQUIRE(context.at("source_reference") == "passes/main.json");
+    REQUIRE(context.at("published_generation") ==
+            runtime.snapshot.published_generation);
+    const auto graph = std::ranges::find(
+        context.at("graphs"), std::string{"main_render"},
+        [](const auto &value) {
+            return value.at("name").template get<std::string>();
+        });
+    REQUIRE(graph != context.at("graphs").end());
+    REQUIRE_FALSE(graph->at("passes").empty());
+    REQUIRE_FALSE(graph->at("anchor_candidates").empty());
+}
+
+TEST_CASE(
+    "WP334b engine RPC publishes context and both authored-pass operations",
+    "[render-config-editor][wp334b][rpc][context][add][remove]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto unique_service = makeProjectService(project, resolver, runtime);
+    auto render_service =
+        std::shared_ptr<RenderConfigEditorService>{
+            std::move(unique_service)};
+    const auto scene_document = AuthoringSceneDocument::load(
+        readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                  "test" / "fixtures" / "authoring_scene" /
+                  "multi_scene_roundtrip.json"),
+        SceneRevision{1});
+    EditorCommandService commands{
+        EditorCommandServiceDependencies{
+            .document = [&scene_document]()
+                -> const AuthoringSceneDocument & {
+                return scene_document;
+            },
+            .current_scene_id = [] { return std::string{"main"}; },
+            .render_config_editor = render_service,
+        }};
+    EditorCommandRpcAdapter adapter{commands};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureEditorRpcHandlers(
+        rpc, adapter,
+        EditorRpcHandlerHooks{
+            .snapshot_imported = [] {},
+            .save_busy = [] { return false; },
+        });
+    const auto call = [&](int id, std::string_view method, Json params) {
+        return Json::parse(rpc.processLine(
+            Json{{"jsonrpc", "2.0"},
+                 {"id", id},
+                 {"method", method},
+                 {"params", std::move(params)}}
+                .dump()));
+    };
+
+    const auto context =
+        call(1, "get_render_authoring_context", Json::object())
+            .at("result");
+    REQUIRE(context.at("config_kind") == "preset");
+    REQUIRE(context.at("graphs").at(0)
+                .at("anchor_candidates")
+                .is_array());
+    const Json pass{
+        {"name", "wp334b_rpc_probe"},
+        {"type", "fullscreen"},
+        {"input", Json::array({"gbuffer_normal"})},
+        {"output",
+         {{"color", Json::array({"ssao_output"})},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fullscreen"}}},
+    };
+    const auto add =
+        call(2, "add_authored_pass",
+             {{"base_source_digest",
+               context.at("source_digest").at("hex")},
+              {"graph", "main_render"},
+              {"insert", "after:ssao_pass"},
+              {"pass", pass}})
+            .at("result");
+    REQUIRE(add.at("status") == "accepted");
+    commands.commitPendingEdits();
+    const auto add_result =
+        call(3, "get_edit_result", {{"ticket", add.at("ticket")}})
+            .at("result");
+    REQUIRE(add_result.at("committed") == true);
+
+    const auto updated =
+        call(4, "get_render_authoring_context", Json::object())
+            .at("result");
+    REQUIRE(updated.at("managed_fragments").size() == 1);
+    const auto reference = updated.at("managed_fragments")
+                               .at(0)
+                               .at("reference");
+    const auto remove =
+        call(5, "remove_authored_pass",
+             {{"base_source_digest",
+               updated.at("source_digest").at("hex")},
+              {"fragment_reference", reference}})
+            .at("result");
+    REQUIRE(remove.at("status") == "accepted");
+    commands.commitPendingEdits();
+    const auto remove_result =
+        call(6, "get_edit_result",
+             {{"ticket", remove.at("ticket")}})
+            .at("result");
+    REQUIRE(remove_result.at("committed") == true);
+}
+
+TEST_CASE(
+    "WP334b removing a hand-written feature reference never deletes its file",
+    "[render-config-editor][wp334b][manual-fragment][ownership]") {
+    TemporaryAnimgraphProject project;
+    const auto manual_path = project.root / "passes" / "manual.json";
+    const std::string manual_reference =
+        "project://passes/manual.json";
+    const std::string manual_pass_name = "wp334b_manual_probe";
+    const Json manual_feature{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "manual_probe"},
+        {"passes",
+         Json::array(
+             {{{"insert", "after:ssao_pass"},
+               {"pass",
+                {{"name", manual_pass_name},
+                 {"type", "fullscreen"},
+                 {"input", Json::array({"gbuffer_normal"})},
+                 {"output",
+                  {{"color", Json::array({"ssao_output"})},
+                   {"depth", nullptr}}},
+                 {"shader",
+                  {{"vertex", "engine://fullscreen"},
+                   {"fragment", "engine://fullscreen"}}}}}}})},
+    };
+    writeBytes(manual_path, manual_feature.dump(2) + "\n");
+    const auto root_with_manual =
+        AuthoredRenderConfigDocument::parse(
+            readBytes(project.render_config))
+            .withFeatureAdded(manual_reference)
+            .bytes();
+    writeBytes(project.render_config, root_with_manual);
+
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    REQUIRE(std::ranges::any_of(
+        runtime.frame_plan.at("nodes"), [&](const auto &node) {
+            return node.value("name", std::string{}) == manual_pass_name;
+        }));
+    const auto context =
+        service->getRenderAuthoringContext(Json::object());
+    const auto accepted = service->removeAuthoredPass(
+        {{"base_source_digest",
+          context.at("source_digest").at("hex")},
+         {"fragment_reference", manual_reference}});
+    REQUIRE(accepted.at("status") == "accepted");
+    const auto ticket = accepted.at("ticket").get<std::string>();
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", ticket}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    REQUIRE(std::filesystem::is_regular_file(manual_path));
+    const auto root = Json::parse(readBytes(project.render_config));
+    REQUIRE(std::ranges::none_of(
+        root.at("features"), [&](const auto &feature) {
+            return feature.is_string() &&
+                   feature.get<std::string>() == manual_reference;
+        }));
+    REQUIRE(std::ranges::none_of(
+        runtime.frame_plan.at("nodes"), [&](const auto &node) {
+            return node.value("name", std::string{}) == manual_pass_name;
+        }));
+}
+
+TEST_CASE(
+    "WP334b a marker-less file inside the managed directory is never deleted",
+    "[render-config-editor][wp334b][manual-fragment][ownership]") {
+    // The namespace gate alone does not protect this one: the file sits below
+    // passes/authoring/, so only the managed marker keeps it out of the purge.
+    TemporaryAnimgraphProject project;
+    const auto intruder_path =
+        project.root / "passes" / "authoring" / "handwritten.json";
+    const std::string intruder_reference =
+        "project://passes/authoring/handwritten.json";
+    const std::string intruder_pass_name = "wp334b_intruder_probe";
+    const Json intruder{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "handwritten"},
+        {"passes",
+         Json::array(
+             {{{"insert", "after:ssao_pass"},
+               {"pass",
+                {{"name", intruder_pass_name},
+                 {"type", "fullscreen"},
+                 {"input", Json::array({"gbuffer_normal"})},
+                 {"output",
+                  {{"color", Json::array({"ssao_output"})},
+                   {"depth", nullptr}}},
+                 {"shader",
+                  {{"vertex", "engine://fullscreen"},
+                   {"fragment", "engine://fullscreen"}}}}}}})},
+    };
+    std::filesystem::create_directories(intruder_path.parent_path());
+    writeBytes(intruder_path, intruder.dump(2) + "\n");
+    const auto intruder_bytes = readBytes(intruder_path);
+    writeBytes(project.render_config,
+               AuthoredRenderConfigDocument::parse(
+                   readBytes(project.render_config))
+                   .withFeatureAdded(intruder_reference)
+                   .bytes());
+
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context =
+        service->getRenderAuthoringContext(Json::object());
+    const auto accepted = service->removeAuthoredPass(
+        {{"base_source_digest",
+          context.at("source_digest").at("hex")},
+         {"fragment_reference", intruder_reference}});
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult(
+        {{"ticket", accepted.at("ticket").get<std::string>()}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+
+    // The reference is gone from the root, but the file the editor did not
+    // author stays exactly as it was.
+    REQUIRE(std::filesystem::is_regular_file(intruder_path));
+    REQUIRE(readBytes(intruder_path) == intruder_bytes);
+
+    // Negative control in the same test: a fragment the editor did author,
+    // in the same directory, is removed.
+    const auto after_remove =
+        service->getRenderAuthoringContext(Json::object());
+    const auto added = service->addAuthoredPass(
+        {{"base_source_digest",
+          after_remove.at("source_digest").at("hex")},
+         {"graph", "main_render"},
+         {"insert", "after:ssao_pass"},
+         {"pass",
+          {{"name", "wp334b_marker_control"},
+           {"type", "fullscreen"},
+           {"input", Json::array({"gbuffer_normal"})},
+           {"output",
+            {{"color", Json::array({"ssao_output"})},
+             {"depth", nullptr}}},
+           {"shader",
+            {{"vertex", "engine://fullscreen"},
+             {"fragment", "engine://fullscreen"}}}}}});
+    REQUIRE(added.at("status") == "accepted");
+    service->commitPending();
+    const auto added_result = service->getResult(
+        {{"ticket", added.at("ticket").get<std::string>()}});
+    INFO(added_result.dump());
+    REQUIRE(added_result.at("committed") == true);
+    const auto managed_reference =
+        added_result.at("fragment_reference").get<std::string>();
+    const auto managed_path = std::get<std::filesystem::path>(
+        resolver.resolveProjectRef(managed_reference));
+    REQUIRE(std::filesystem::is_regular_file(managed_path));
+
+    const auto before_purge =
+        service->getRenderAuthoringContext(Json::object());
+    const auto purged = service->removeAuthoredPass(
+        {{"base_source_digest",
+          before_purge.at("source_digest").at("hex")},
+         {"fragment_reference", managed_reference}});
+    REQUIRE(purged.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service
+                ->getResult({{"ticket",
+                              purged.at("ticket").get<std::string>()}})
+                .at("committed") == true);
+    REQUIRE_FALSE(std::filesystem::exists(managed_path));
+}
+
+TEST_CASE(
+    "WP334b a shared managed fragment is purged only after its normalized reference count reaches zero",
+    "[render-config-editor][wp334b][managed-fragment][ownership][shared]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context =
+        service->getRenderAuthoringContext(Json::object());
+    const Json pass{
+        {"name", "wp334b_shared_probe"},
+        {"type", "fullscreen"},
+        {"input", Json::array({"gbuffer_normal"})},
+        {"output",
+         {{"color", Json::array({"ssao_output"})},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fullscreen"}}},
+    };
+    const auto accepted = service->addAuthoredPass(
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"graph", "main_render"},
+         {"insert", "after:ssao_pass"},
+         {"pass", pass}});
+    REQUIRE(accepted.at("status") == "accepted");
+    const auto reference =
+        accepted.at("fragment_reference").get<std::string>();
+    service->commitPending();
+    REQUIRE(service->getResult(
+                {{"ticket", accepted.at("ticket")}})
+                .at("committed") == true);
+    const auto fragment_path = std::get<std::filesystem::path>(
+        resolver.resolveProjectRef(reference));
+    REQUIRE(std::filesystem::is_regular_file(fragment_path));
+
+    const auto filename = fragment_path.filename().generic_string();
+    const auto alias =
+        "project://passes/authoring/./" + filename;
+    REQUIRE(resolver.normalizedReference(alias) ==
+            resolver.normalizedReference(reference));
+    writeBytes(
+        project.render_config,
+        AuthoredRenderConfigDocument::parse(
+            readBytes(project.render_config))
+            .withFeatureAdded(alias)
+            .bytes());
+
+    std::uint64_t published_generation = runtime.snapshot.published_generation;
+    service = std::make_unique<RenderConfigEditorService>(
+        RenderConfigEditorDependencies{
+            .source_reference = "passes/main.json",
+            .source_path = project.render_config,
+            .source_bytes = readBytes(project.render_config),
+            .project_root = project.root,
+            .normalize_reference = [&resolver](std::string_view value) {
+                return resolver.normalizedReference(value);
+            },
+            .resolve_document_path =
+                [&resolver](std::string_view value) {
+                    const auto resolved = resolver.resolveProjectRef(value);
+                    const auto *path =
+                        std::get_if<std::filesystem::path>(&resolved);
+                    if (path == nullptr) {
+                        throw std::runtime_error(
+                            "WP334b ownership fixture expected a project path");
+                    }
+                    return *path;
+                },
+            .gate = [] { return RenderConfigEditorGateObservation{}; },
+            .runtime_snapshot = [&published_generation] {
+                return RenderConfigRuntimeSnapshot{
+                    .published_generation = published_generation};
+            },
+            .apply_candidate =
+                [&published_generation](
+                    RenderConfigCandidateDocumentSet,
+                    const RenderConfigSourceCommit &commit) {
+                    commit();
+                    return RenderConfigRuntimeApplyResult{
+                        .committed = true,
+                        .published_generation = ++published_generation};
+                },
+            .resolve_authoring_context =
+                [](const RenderConfigCandidateDocumentSet &) {
+                    return ResolvedRenderConfigAuthoringContext{};
+                },
+            .feature_catalog = [] {
+                return std::vector<RenderFeatureCatalogEntry>{};
+            },
+        });
+    auto remove = service->removeAuthoredPass(
+        {{"base_source_digest",
+          service->documentForTesting().sourceDigest()},
+         {"fragment_reference", reference}});
+    REQUIRE(remove.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", remove.at("ticket")}})
+                .at("committed") == true);
+    REQUIRE(std::filesystem::is_regular_file(fragment_path));
+    auto root = Json::parse(readBytes(project.render_config));
+    REQUIRE(std::ranges::any_of(
+        root.at("features"), [&](const auto &feature) {
+            return feature.is_string() &&
+                   feature.get<std::string>() == alias;
+        }));
+
+    remove = service->removeAuthoredPass(
+        {{"base_source_digest",
+          service->documentForTesting().sourceDigest()},
+         {"fragment_reference", alias}});
+    REQUIRE(remove.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", remove.at("ticket")}})
+                .at("committed") == true);
+    REQUIRE_FALSE(std::filesystem::exists(fragment_path));
+}
+
+TEST_CASE(
+    "WP334b startup recovery rolls back prepared state and retains commit-last state",
+    "[render-config-editor][wp334b][transaction][recovery][startup]") {
+    TemporaryAnimgraphProject project;
+    const auto original_root = readBytes(project.render_config);
+    const std::string reference =
+        "project://passes/authoring/pass-crash.json";
+    const auto candidate_root =
+        AuthoredRenderConfigDocument::parse(original_root)
+            .withFeatureAdded(reference)
+            .bytes();
+    const std::string fragment =
+        R"json({"schema":"pelican.render_feature","version":1,"name":"crash","passes":[]})json";
+    const auto fragment_path =
+        project.root / "passes" / "authoring" / "pass-crash.json";
+    const auto transaction =
+        renderConfigTransactionDirectory(project.root);
+    const auto manifest = [&](std::string status) {
+        return Json{
+            {"schema", "pelican.render_authoring_transaction"},
+            {"version", 1},
+            {"status", std::move(status)},
+            {"documents",
+             Json::array(
+                 {{{"destination",
+                    "passes/authoring/pass-crash.json"},
+                   {"operation", "create"},
+                   {"expected_digest", ""},
+                   {"next_digest",
+                    renderConfigSourceDigest(fragment)}},
+                  {{"destination", "passes/main.json"},
+                   {"operation", "replace"},
+                   {"expected_digest",
+                    renderConfigSourceDigest(original_root)},
+                   {"next_digest",
+                    renderConfigSourceDigest(candidate_root)},
+                   {"backup", "1.before"}}})},
+            {"created_directories",
+             Json::array({"passes/authoring"})},
+        };
+    };
+
+    std::filesystem::create_directories(fragment_path.parent_path());
+    writeBytes(fragment_path, fragment);
+    writeBytes(project.render_config, candidate_root);
+    std::filesystem::create_directories(transaction);
+    writeBytes(transaction / "1.before", original_root);
+    writeBytes(transaction / "manifest.json",
+               manifest("prepared").dump(2) + "\n");
+    recoverRenderConfigDocumentTransaction(project.root);
+    REQUIRE(readBytes(project.render_config) == original_root);
+    REQUIRE_FALSE(std::filesystem::exists(fragment_path));
+    REQUIRE_FALSE(std::filesystem::exists(transaction));
+
+    std::filesystem::create_directories(fragment_path.parent_path());
+    writeBytes(fragment_path, fragment);
+    writeBytes(project.render_config, candidate_root);
+    std::filesystem::create_directories(transaction);
+    writeBytes(transaction / "1.before", original_root);
+    writeBytes(transaction / "manifest.json",
+               manifest("committed").dump(2) + "\n");
+    recoverRenderConfigDocumentTransaction(project.root);
+    REQUIRE(readBytes(project.render_config) == candidate_root);
+    REQUIRE(readBytes(fragment_path) == fragment);
+    REQUIRE_FALSE(std::filesystem::exists(transaction));
+}
+
+TEST_CASE(
+    "WP334b one candidate-first loader resolves both staged preset and feature documents",
+    "[render-config-editor][wp334b][overlay][feature][preset]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const std::string root_reference = "passes/main.json";
+    const std::string preset_reference =
+        "project://passes/staged-preset.json";
+    const std::string feature_reference =
+        "project://passes/staged-feature.json";
+    const auto preset_path = project.root / "passes" /
+                             "staged-preset.json";
+    const auto feature_path = project.root / "passes" /
+                              "staged-feature.json";
+    const std::string root_bytes =
+        Json{{"pipeline", {{"preset", preset_reference}}},
+             {"features", Json::array({feature_reference})}}
+            .dump();
+    const std::string preset_bytes = engineResourceOrThrow(
+        "render_pipelines/hybrid_v1.json");
+    const std::string feature_bytes =
+        Json{{"schema", "pelican.render_feature"},
+             {"version", 1},
+             {"name", "staged_feature"},
+             {"runtime_shader_compiler", "optional"},
+             {"passes", Json::array()}}
+            .dump();
+    const auto root_key = resolver.normalizedReference(root_reference);
+    const auto documents = RenderConfigCandidateDocumentSet{
+        root_key,
+        {{.reference = root_reference,
+          .normalized_reference = root_key,
+          .path = project.render_config,
+          .operation = RenderConfigDocumentOperation::replace,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::present,
+               .digest = renderConfigSourceDigest(
+                   readBytes(project.render_config))},
+          .bytes = root_bytes},
+         {.reference = preset_reference,
+          .normalized_reference =
+              resolver.normalizedReference(preset_reference),
+          .path = preset_path,
+          .operation = RenderConfigDocumentOperation::create,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::missing},
+          .bytes = preset_bytes},
+         {.reference = feature_reference,
+          .normalized_reference =
+              resolver.normalizedReference(feature_reference),
+          .path = feature_path,
+          .operation = RenderConfigDocumentOperation::create,
+          .expected =
+              {.existence = RenderConfigDocumentExistence::missing},
+          .bytes = feature_bytes}}};
+    REQUIRE_THROWS(resolver.loadText(preset_reference));
+    REQUIRE_THROWS(resolver.loadText(feature_reference));
+
+    std::vector<std::string> loaded;
+    const auto loader = [&](std::string_view reference) {
+        loaded.emplace_back(reference);
+        return loadRenderConfigCandidateText(
+            documents, resolver, reference);
+    };
+    const auto composition = composeRenderFeatureConfig(
+        Json::parse(documents.rootDocument().bytes),
+        RenderFeatureComposeDependencies{
+            .load_feature_json = loader,
+            .runtime_shader_compiler_enabled =
+                PELICAN_RUNTIME_SHADER_COMPILER != 0,
+            .load_pipeline_json = loader,
+        });
+    REQUIRE(composition.pipeline_preset.has_value());
+    REQUIRE(composition.pipeline_preset->reference == preset_reference);
+    REQUIRE(containsName(composition.feature_names, "staged_feature"));
+    REQUIRE(std::ranges::count(loaded, preset_reference) == 1);
+    REQUIRE(std::ranges::count(loaded, feature_reference) == 1);
 }
 
 } // namespace Pelican

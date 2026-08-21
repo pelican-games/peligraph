@@ -188,7 +188,8 @@ RuntimeReloadResult ReloadService::applyRuntimeNow(std::string_view name) {
 }
 
 AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
-    std::string_view name, std::string candidate,
+    std::string_view name,
+    RenderConfigCandidateDocumentSet candidate,
     const std::function<void()> &source_commit) {
     ensureBuiltInParticipants();
     const auto found = std::ranges::find(

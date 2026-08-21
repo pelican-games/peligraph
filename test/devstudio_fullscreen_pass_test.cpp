@@ -20,6 +20,7 @@
 #include <QByteArray>
 #include <QComboBox>
 #include <QDir>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -164,6 +165,82 @@ struct RefreshHarness {
             throw std::runtime_error("failure callback was not subscribed");
         }
         failure_handler(request_id, message);
+    }
+};
+
+struct AuthoringHarness {
+    struct Request {
+        qint64 id = 0;
+        QString method;
+        QJsonObject params;
+    };
+
+    bool available = true;
+    qint64 next_id = 1000;
+    std::vector<Request> requests;
+    RenderPassAuthoringCapability::ReadyHandler ready_handler;
+    RenderPassAuthoringCapability::ResultHandler result_handler;
+    RenderPassAuthoringCapability::FailureHandler failure_handler;
+
+    RenderPassAuthoringCapability driver() {
+        const auto request = [this](QString method,
+                                    QJsonObject params) {
+            const auto id = ++next_id;
+            requests.push_back(
+                Request{.id = id,
+                        .method = std::move(method),
+                        .params = std::move(params)});
+            return id;
+        };
+        return RenderPassAuthoringCapability{
+            .ready = [this](
+                         QObject *,
+                         RenderPassAuthoringCapability::ReadyHandler handler) {
+                ready_handler = std::move(handler);
+                ready_handler(available, {});
+            },
+            .requestContext = [request](QString *) mutable {
+                return request(
+                    QStringLiteral("get_render_authoring_context"), {});
+            },
+            .addAuthoredPass =
+                [request](const QJsonObject &params, QString *) mutable {
+                    return request(QStringLiteral("add_authored_pass"),
+                                   params);
+                },
+            .removeAuthoredPass =
+                [request](const QJsonObject &params, QString *) mutable {
+                    return request(QStringLiteral("remove_authored_pass"),
+                                   params);
+                },
+            .requestEditResult =
+                [request](const QString &ticket, QString *) mutable {
+                    return request(
+                        QStringLiteral("get_edit_result"),
+                        QJsonObject{{QStringLiteral("ticket"), ticket}});
+                },
+            .result = [this](
+                          QObject *,
+                          RenderPassAuthoringCapability::ResultHandler
+                              handler) {
+                result_handler = std::move(handler);
+            },
+            .failure = [this](
+                           QObject *,
+                           RenderPassAuthoringCapability::FailureHandler
+                               handler) {
+                failure_handler = std::move(handler);
+            },
+        };
+    }
+
+    void succeed(qint64 request_id, const Json &result) const {
+        if (!result_handler) {
+            throw std::runtime_error(
+                "authoring result callback was not subscribed");
+        }
+        result_handler(request_id,
+                       QByteArray::fromStdString(result.dump()));
     }
 };
 
@@ -661,7 +738,8 @@ TEST_CASE(
                     std::string_view{"UpsampleBlend_3"}}) {
         const Json &declaration = findPass(config, graph, pass_name);
         FullscreenPassWidget form{refresh.driver()};
-        form.openProjectReadOnly(root / "projects" / "example");
+        form.receiveAuthoringConfig(
+            QByteArray::fromStdString(config.dump()));
         form.receiveResult(frame_plan);
         driveFromDeclaration(form, declaration);
 
@@ -948,14 +1026,169 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP325 production MainWindow and tests share the compiled studio view",
-    "[devstudio][fullscreen-pass][wp325][production-wiring]") {
+    "WP334b production MainWindow exposes engine-owned authored-pass save",
+    "[devstudio][fullscreen-pass][wp334b][production-wiring]") {
     (void)application();
     MainWindow window;
     auto *child = window.findChild<QWidget *>(
         QStringLiteral("pelican.fullscreenPass"));
     REQUIRE(child != nullptr);
     REQUIRE(dynamic_cast<FullscreenPassWidget *>(child) != nullptr);
+    auto *save = child->findChild<QPushButton *>(
+        QStringLiteral("pelican.fullscreenPass.save"));
+    auto *remove = child->findChild<QPushButton *>(
+        QStringLiteral("pelican.fullscreenPass.remove"));
+    REQUIRE(save != nullptr);
+    REQUIRE(remove != nullptr);
+    REQUIRE(save->toolTip().contains(
+        QStringLiteral("add_authored_pass")));
+    REQUIRE(remove->toolTip().contains(
+        QStringLiteral("remove_authored_pass")));
+
+    const auto source_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const auto form_source = readText(
+        source_root / "src" / "devstudio" / "view" /
+        "fullscreenpasswidget.cpp");
+    const auto window_source = readText(
+        source_root / "src" / "devstudio" / "view" /
+        "mainwindow.cpp");
+    REQUIRE(form_source.find("openProjectReadOnly") ==
+            std::string::npos);
+    REQUIRE(form_source.find("ProjectPathResolver") ==
+            std::string::npos);
+    REQUIRE(window_source.find(
+                "renderPassAuthoringCapability(*viewport_)") !=
+            std::string::npos);
+}
+
+TEST_CASE(
+    "WP334b fullscreen form saves and removes through the restricted engine capability",
+    "[devstudio][fullscreen-pass][wp334b][save][remove][rpc]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    REQUIRE(authoring.requests.size() == 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+
+    const std::string first_digest(64, 'a');
+    const Json first_context{
+        {"source_reference", "passes/main.json"},
+        {"source_digest",
+         {{"algorithm", "sha256"}, {"hex", first_digest}}},
+        {"published_generation", 12},
+        {"config_kind", "preset"},
+        {"pipeline_preset",
+         {{"reference", "engine://pipelines/hybrid_v1.json"},
+          {"name", "hybrid_v1"},
+          {"version", 1}}},
+        {"graphs",
+         Json::array(
+             {{{"name", "save_graph"},
+               {"passes",
+                Json::array(
+                    {{{"name", "base"},
+                      {"declaration",
+                       {{"name", "base"},
+                        {"type", "fullscreen"},
+                        {"input", Json::array({"input"})},
+                        {"output",
+                         {{"color", Json::array({"output"})},
+                          {"depth", nullptr}}},
+                        {"shader",
+                         {{"vertex", "engine://fullscreen"},
+                          {"fragment", "engine://fullscreen"}}}}},
+                      {"provenance", {{"source", "engine"}}}}})},
+               {"anchor_candidates",
+                Json::array(
+                    {{{"position", 0}, {"insert", "before:base"}},
+                     {{"position", 1}, {"insert", "after:base"}}})}}})},
+        {"managed_fragments", Json::array()},
+    };
+    authoring.succeed(authoring.requests.back().id, first_context);
+    REQUIRE(required<QLabel>(
+                form, "pelican.fullscreenPass.authoringStatus")
+                .text()
+                .contains(QStringLiteral("preset")));
+
+    const Json plan = minimalFramePlan(
+        "save_graph",
+        Json::array({resource("input"), resource("output")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    driveMinimalDraft(form, "authored_probe", "engine://fullscreen",
+                      "input", "output");
+    auto &save = required<QPushButton>(
+        form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    REQUIRE(authoring.requests.back()
+                .params.value(QStringLiteral("base_source_digest"))
+                .toString() == QString::fromStdString(first_digest));
+    REQUIRE(authoring.requests.back()
+                .params.value(QStringLiteral("graph"))
+                .toString() == QStringLiteral("save_graph"));
+    REQUIRE(authoring.requests.back()
+                .params.value(QStringLiteral("insert"))
+                .toString() == QStringLiteral("after:base"));
+    REQUIRE(authoring.requests.back()
+                .params.value(QStringLiteral("pass"))
+                .toObject()
+                .value(QStringLiteral("name"))
+                .toString() == QStringLiteral("authored_probe"));
+
+    const auto add_id = authoring.requests.back().id;
+    authoring.succeed(
+        add_id,
+        {{"ticket", "render-authored-pass-1"},
+         {"status", "accepted"}});
+    QApplication::processEvents();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_edit_result"));
+    const auto result_id = authoring.requests.back().id;
+    authoring.succeed(
+        result_id,
+        {{"ticket", "render-authored-pass-1"},
+         {"status", "committed"},
+         {"committed", true},
+         {"published_generation", 13}});
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    REQUIRE(refresh.requests.size() == 1);
+
+    const std::string second_digest(64, 'b');
+    Json second_context = first_context;
+    second_context["source_digest"]["hex"] = second_digest;
+    second_context["published_generation"] = 13;
+    second_context["managed_fragments"] = Json::array(
+        {{{"reference",
+           "project://passes/authoring/pass-probe.json"},
+          {"digest",
+           {{"algorithm", "sha256"},
+            {"hex", std::string(64, 'c')}}},
+          {"pass_names", Json::array({"authored_probe"})}}});
+    authoring.succeed(authoring.requests.back().id, second_context);
+    auto &fragment = required<QComboBox>(
+        form, "pelican.fullscreenPass.removeFragment");
+    REQUIRE(fragment.count() == 1);
+    fragment.setCurrentIndex(0);
+    auto &remove = required<QPushButton>(
+        form, "pelican.fullscreenPass.remove");
+    REQUIRE(remove.isEnabled());
+    remove.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("remove_authored_pass"));
+    REQUIRE(authoring.requests.back()
+                .params.value(QStringLiteral("base_source_digest"))
+                .toString() == QString::fromStdString(second_digest));
+    REQUIRE(authoring.requests.back()
+                .params.value(QStringLiteral("fragment_reference"))
+                .toString() ==
+            QStringLiteral(
+                "project://passes/authoring/pass-probe.json"));
 }
 
 TEST_CASE(
@@ -1063,8 +1296,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP325 asynchronous frame-plan capability exposes no write or apply operation",
-    "[devstudio][fullscreen-pass][wp325][capability][no-side-effects]") {
+    "WP334b frame-plan-only test capability cannot reach authored-pass save",
+    "[devstudio][fullscreen-pass][wp334b][capability][no-side-effects]") {
     (void)application();
 
     RefreshHarness refresh;
@@ -1092,8 +1325,14 @@ TEST_CASE(
 
     const auto &scope = required<QLabel>(
         form, "pelican.fullscreenPass.scopeNotice");
-    REQUIRE(scope.text().contains(QStringLiteral("not written")));
-    REQUIRE(scope.text().contains(QStringLiteral("not applied")));
+    REQUIRE(scope.text().contains(QStringLiteral("engine"),
+                                  Qt::CaseInsensitive));
+    REQUIRE_FALSE(required<QPushButton>(
+                      form, "pelican.fullscreenPass.save")
+                      .isEnabled());
+    REQUIRE_FALSE(required<QPushButton>(
+                      form, "pelican.fullscreenPass.remove")
+                      .isEnabled());
 
     refresh_button.click();
     REQUIRE(refresh.requests.size() == 2);
@@ -1106,8 +1345,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP325 production project-open and drafting do not mutate any isolated writable root",
-    "[devstudio][fullscreen-pass][wp325][project-open][no-side-effects]") {
+    "WP334b production project-open waits for engine context and performs no local render-config read",
+    "[devstudio][fullscreen-pass][wp334b][project-open][engine-owned]") {
     (void)application();
     const auto source_root =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
@@ -1166,10 +1405,16 @@ TEST_CASE(
         const auto &authoring_status = required<QLabel>(
             *form, "pelican.fullscreenPass.authoringStatus");
         REQUIRE(authoring_status.text().contains(
-            QStringLiteral("authoring context loaded")));
-        REQUIRE(authoring_status.toolTip().contains(
-            QString::fromStdString(graph + "/ssao_pass")));
+            QStringLiteral("unavailable")));
+        REQUIRE_FALSE(required<QPushButton>(
+                          *form, "pelican.fullscreenPass.save")
+                          .isEnabled());
 
+        // The deterministic projection seam supplies bytes explicitly. The
+        // production project-open path above did not discover these local
+        // declarations by reading project.json or the rendering config.
+        form->receiveAuthoringConfig(
+            QByteArray::fromStdString(config.dump()));
         form->receiveResult(frame_plan);
         driveFromDeclaration(*form, declaration);
         const Json projection = outputJson(*form);

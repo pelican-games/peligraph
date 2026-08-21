@@ -19,6 +19,7 @@
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../vkcore/renderer.hpp"
+#include "../communication/renderconfigtransaction.hpp"
 #include <components/spriteview.hpp>
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
@@ -64,6 +65,12 @@ bool PelicanCore::run() {
         }
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
         GET_MODULE(watch::ReloadGate).configureFromLaunch(launch_config);
+
+        // A render-authoring document transaction may have crossed a process
+        // crash. Resolve it before ProjectBasicConfig or Renderer can observe
+        // any member of the document set.
+        recoverRenderConfigDocumentTransaction(
+            GET_MODULE(PathResolver).projectRoot());
 
         auto &persistence = GET_MODULE(Persistence);
         if (persistence.loadSettings()) {

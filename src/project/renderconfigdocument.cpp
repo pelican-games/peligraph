@@ -374,6 +374,101 @@ std::string renderConfigSourceDigest(std::string_view bytes) {
     return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
 }
 
+RenderConfigCandidateDocumentSet::RenderConfigCandidateDocumentSet(
+    std::string root_normalized_reference,
+    std::vector<RenderConfigCandidateDocument> documents)
+    : root_normalized_reference_{std::move(root_normalized_reference)},
+      documents_{std::move(documents)} {
+    if (root_normalized_reference_.empty()) {
+        throw std::invalid_argument(
+            "render config candidate set requires a normalized root reference");
+    }
+    if (documents_.empty()) {
+        throw std::invalid_argument(
+            "render config candidate set must not be empty");
+    }
+    std::vector<std::string_view> keys;
+    keys.reserve(documents_.size());
+    bool found_root = false;
+    for (const auto &document : documents_) {
+        if (document.reference.empty() ||
+            document.normalized_reference.empty() || document.path.empty()) {
+            throw std::invalid_argument(
+                "render config candidate document requires reference, normalized reference and path");
+        }
+        if (std::find(keys.begin(), keys.end(),
+                      document.normalized_reference) != keys.end()) {
+            throw std::invalid_argument(
+                "render config candidate document reference is duplicated: " +
+                document.reference);
+        }
+        keys.push_back(document.normalized_reference);
+        if (document.expected.existence ==
+            RenderConfigDocumentExistence::present) {
+            if (document.expected.digest.size() != 64) {
+                throw std::invalid_argument(
+                    "present render config candidate document requires a digest: " +
+                    document.reference);
+            }
+        } else if (!document.expected.digest.empty()) {
+            throw std::invalid_argument(
+                "missing render config candidate document must not carry a digest: " +
+                document.reference);
+        }
+        if (document.operation == RenderConfigDocumentOperation::create &&
+            document.expected.existence !=
+                RenderConfigDocumentExistence::missing) {
+            throw std::invalid_argument(
+                "render config create candidate must expect a missing document: " +
+                document.reference);
+        }
+        if ((document.operation == RenderConfigDocumentOperation::replace ||
+             document.operation == RenderConfigDocumentOperation::erase) &&
+            document.expected.existence !=
+                RenderConfigDocumentExistence::present) {
+            throw std::invalid_argument(
+                "render config replace/delete candidate must expect a present document: " +
+                document.reference);
+        }
+        if (document.operation == RenderConfigDocumentOperation::erase &&
+            !document.bytes.empty()) {
+            throw std::invalid_argument(
+                "render config delete candidate must not carry bytes: " +
+                document.reference);
+        }
+        if (document.normalized_reference == root_normalized_reference_) {
+            if (document.operation == RenderConfigDocumentOperation::erase) {
+                throw std::invalid_argument(
+                    "render config candidate root cannot be deleted");
+            }
+            found_root = true;
+        }
+    }
+    if (!found_root) {
+        throw std::invalid_argument(
+            "render config candidate set does not contain its root document");
+    }
+}
+
+const RenderConfigCandidateDocument &
+RenderConfigCandidateDocumentSet::rootDocument() const {
+    const auto *root = find(root_normalized_reference_);
+    if (root == nullptr) {
+        throw std::logic_error(
+            "render config candidate set lost its root document");
+    }
+    return *root;
+}
+
+const RenderConfigCandidateDocument *RenderConfigCandidateDocumentSet::find(
+    std::string_view normalized_reference) const noexcept {
+    const auto found = std::find_if(
+        documents_.begin(), documents_.end(), [&](const auto &document) {
+            return document.normalized_reference == normalized_reference;
+        });
+    return found == documents_.end() ? nullptr : &*found;
+}
+
 AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
     std::string bytes, bool require_features)
     : bytes_{std::move(bytes)}, digest_{renderConfigSourceDigest(bytes_)} {

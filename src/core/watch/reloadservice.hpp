@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "filewatcher.hpp"
 #include "reloadtransaction.hpp"
+#include "../../project/renderconfigdocument.hpp"
 
 #include <functional>
 #include <cstdint>
@@ -102,7 +103,8 @@ struct ReloadParticipant {
     // The participant must preflight them, invoke source_commit as the last
     // fallible pre-publication operation, and then publish without throwing.
     std::function<AuthoredRuntimeReloadResult(
-        std::string, const std::function<void()> &)>
+        RenderConfigCandidateDocumentSet,
+        const std::function<void()> &)>
         apply_authored_candidate;
 };
 
@@ -115,7 +117,8 @@ DECLARE_MODULE(ReloadService) {
     RuntimeReloadSummary applyRuntimeBoundary(RuntimeReloadBoundary boundary);
     RuntimeReloadResult applyRuntimeNow(std::string_view name);
     AuthoredRuntimeReloadResult applyAuthoredCandidate(
-        std::string_view name, std::string candidate,
+        std::string_view name,
+        RenderConfigCandidateDocumentSet candidate,
         const std::function<void()> &source_commit);
     bool requestRuntimeReload(std::string_view name);
     nlohmann::json statusJson() const;

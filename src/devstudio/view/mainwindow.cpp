@@ -232,7 +232,8 @@ void MainWindow::createWorkspace() {
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         render_tabs);
     fullscreen_pass_ = new FullscreenPassWidget(
-        framePlanReadCapability(*viewport_), this);
+        framePlanReadCapability(*viewport_),
+        renderPassAuthoringCapability(*viewport_), this);
     docks_[FullscreenPassDock] = makeDock(
         this, tr("Fullscreen Pass JSON"),
         QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
@@ -413,7 +414,6 @@ void MainWindow::openProject(const QString &path) {
             displayPath(project_model_->projectRoot()));
         const QString tool_layout_notice = restoreLastToolLayout();
         selection_model_.bindProject(&*project_model_);
-        fullscreen_pass_->openProjectReadOnly(project_model_->projectRoot());
         populateOutliner();
         refreshSelectionViews();
         viewport_->openProject(displayPath(project_model_->projectRoot()));

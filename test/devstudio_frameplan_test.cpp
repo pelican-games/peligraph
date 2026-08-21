@@ -218,8 +218,9 @@ Json exampleFramePlanFromProducer() {
             .source_name = "projects/example",
         },
         Pelican::RenderEnvironmentCapabilities{
-            .runtime_shader_compiler_enabled =
-                PELICAN_RUNTIME_SHADER_COMPILER != 0,
+            // This producer fixture tests resource-usage projection, not the
+            // independently-covered shader availability gate.
+            .runtime_shader_compiler_enabled = true,
         },
         Pelican::RenderPipelineResolveDependencies{
             .load_feature_json = [](std::string_view reference) {

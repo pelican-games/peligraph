@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,5 +63,61 @@ class AuthoredRenderConfigDocument {
 };
 
 std::string renderConfigSourceDigest(std::string_view bytes);
+
+// A render-authoring candidate is a document set, not a replacement string
+// for the root document. References use PathResolver's canonical key so an
+// alias cannot bypass the request-local overlay.
+enum class RenderConfigDocumentOperation {
+    create,
+    replace,
+    erase,
+};
+
+enum class RenderConfigDocumentExistence {
+    missing,
+    present,
+};
+
+struct RenderConfigDocumentExpectedState {
+    RenderConfigDocumentExistence existence =
+        RenderConfigDocumentExistence::missing;
+    std::string digest;
+
+    bool operator==(const RenderConfigDocumentExpectedState &) const = default;
+};
+
+struct RenderConfigCandidateDocument {
+    std::string reference;
+    std::string normalized_reference;
+    std::filesystem::path path;
+    RenderConfigDocumentOperation operation =
+        RenderConfigDocumentOperation::replace;
+    RenderConfigDocumentExpectedState expected;
+    // Empty for erase; otherwise the exact candidate bytes.
+    std::string bytes;
+
+    bool operator==(const RenderConfigCandidateDocument &) const = default;
+};
+
+class RenderConfigCandidateDocumentSet {
+    std::string root_normalized_reference_;
+    std::vector<RenderConfigCandidateDocument> documents_;
+
+  public:
+    RenderConfigCandidateDocumentSet(
+        std::string root_normalized_reference,
+        std::vector<RenderConfigCandidateDocument> documents);
+
+    const std::string &rootNormalizedReference() const noexcept {
+        return root_normalized_reference_;
+    }
+    const std::vector<RenderConfigCandidateDocument> &documents() const
+        noexcept {
+        return documents_;
+    }
+    const RenderConfigCandidateDocument &rootDocument() const;
+    const RenderConfigCandidateDocument *find(
+        std::string_view normalized_reference) const noexcept;
+};
 
 } // namespace Pelican

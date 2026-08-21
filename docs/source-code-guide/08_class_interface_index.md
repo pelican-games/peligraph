@@ -12,7 +12,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 |---|---|---|
 | process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 |
 | public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) | game code に内部 module を直接見せない、状態を持たない/薄い value façade |
-| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L68) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
+| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L69) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
 | tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L302) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch |
 | type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L21) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 |
 | resolver/adaptor | [`RenderTargetNameResolver`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | parser に巨大 container を渡さず、必要な名前解決だけを公開 |
@@ -45,13 +45,13 @@ Pelican の「interface」は pure virtual class だけではありません。�
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `PelicanCore` | public façade | [`pelican_core.hpp`](../../src/core/userpublic/pelican_core.hpp#L8) | [`run()`](../../src/core/userpublic/pelican_core.cpp#L46) | settings から runtime 全体を起動し、loop と teardown を囲む |
+| `PelicanCore` | public façade | [`pelican_core.hpp`](../../src/core/userpublic/pelican_core.hpp#L8) | [`run()`](../../src/core/userpublic/pelican_core.cpp#L47) | settings から runtime 全体を起動し、loop と teardown を囲む |
 | `EngineLaunchConfig` | module | [`launchconfig.hpp`](../../src/core/launchconfig.hpp#L26) | [`player main` で設定](../../src/player/main.cpp#L546) | headless、RPC、XR mode、game logic DLL、record/replay など起動時値 |
 | `StartupMetrics` | module | [`startup.hpp`](../../src/core/startup.hpp#L21) | [`startup.cpp`](../../src/core/startup.cpp) | 起動段階の計測 |
 | `XrActivationDecision` / `resolveXrActivation()` | pure decision | [`xractivation.hpp`](../../src/core/xractivation.hpp#L31) | [同 header](../../src/core/xractivation.hpp#L89) | headless/RPC/replay の forced-off と discovery hook から XR 起動可否を決定 |
 | `gameLogicAbiVersion` / `initializeConfiguredGameLogic()` | game DLL 境界 | [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L8) | [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L371) | game DLL(`pelican_game_logic`)の ABI 契約とロード・ホットリロード |
 | `RegistrationOwner` | 登録所有者 ID | [`registrationowner.hpp`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) | 同左 | engine/game DLL 単位で static 登録を unregister 可能にする |
-| `watch::ReloadService` | module | [`reloadservice.hpp`](../../src/core/watch/reloadservice.hpp#L83) | [`reloadservice.cpp`](../../src/core/watch/reloadservice.cpp) | FileWatcher 変更をフレーム境界で reload transaction として適用 |
+| `watch::ReloadService` | module | [`reloadservice.hpp`](../../src/core/watch/reloadservice.hpp#L84) | [`reloadservice.cpp`](../../src/core/watch/reloadservice.cpp) | FileWatcher 変更をフレーム境界で reload transaction として適用 |
 | `CameraBakeRecorder` | module | [`camerabake.hpp`](../../src/core/playback/camerabake.hpp#L17) | [`camerabake.cpp`](../../src/core/playback/camerabake.cpp) | replay 実行から camera パスを記録(`--bake-camera-output`) |
 | `parallelPrepareOrdered()` | free function | [`parallel_prepare.hpp`](../../src/core/parallel_prepare.hpp#L20) | header only | 順序保証付き並列 prepare(model ロード等) |
 | `FastModuleContainer` | module 基盤 | [`container.hpp`](../../src/core/container.hpp#L53) | [`get()`](../../src/core/container.hpp#L149) | 型ごとの static `optional<T>` を lazy construct し、local container 終了時に登録の逆順で reset |
@@ -77,9 +77,9 @@ Pelican の「interface」は pure virtual class だけではありません。�
 |---|---|---|---|---|
 | `ProjectSource` | module | [`projectsrc.hpp`](../../src/core/loader/projectsrc.hpp#L7) | [`projectsrc.cpp`](../../src/core/loader/projectsrc.cpp#L1) | 起動 settings と project root/source text を保持 |
 | `ProjectBasicConfig` | module/value binding | [`basicconfig.hpp`](../../src/core/loader/basicconfig.hpp#L11) | [`constructor`](../../src/core/loader/basicconfig.cpp#L460) | engine default と project JSON を merge し型付き accessor を提供 |
-| `ProjectPathResolver` | pure resolver | [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L68) | [`resolveRef()`](../../src/project/projectpathresolver.cpp#L524) | `project://`、`user://`、asset store、fragment、escape防止。診断は戻り値 |
+| `ProjectPathResolver` | pure resolver | [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L69) | [`resolveRef()`](../../src/project/projectpathresolver.cpp#L551) | `project://`、`user://`、asset store、fragment、escape防止。診断は戻り値 |
 | `PathResolver` | engine module adapter | [`pathresolver.hpp`](../../src/core/loader/pathresolver.hpp#L8) | [`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) | `ProjectPathResolver`へ委譲し、quillログと`engine://`埋め込みloaderだけを接続 |
-| `ResolvedRef` | variant value | [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L46) | [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L524) | filesystem path、engine resource、project/engine fragment の和型 |
+| `ResolvedRef` | variant value | [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L46) | [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L551) | filesystem path、engine resource、project/engine fragment の和型 |
 | `SceneFormatDocument` | pure document | [`sceneformat.hpp`](../../src/project/sceneformat.hpp#L12) | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L1) | scene v1 schema の validate/normalize 結果 |
 | `SceneLoader` | module/runtime binder | [`scene.hpp`](../../src/core/loader/scene.hpp#L32) | [`load()`](../../src/core/loader/scene.cpp#L271) | scene clear/load、object name↔Entity、camera/light/model/collider/behavior binding、transient glTF |
 | `AuthoringSceneDocument` | 版付きドキュメント | [`authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L88) | [`authoringscenedocument.cpp`](../../src/core/loader/authoringscenedocument.cpp) | scene v1 の権威表現。`SceneRevision` とセッション安定な `AuthoringObjectId` を発行 |
@@ -200,7 +200,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L75) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4205) / [`render()`](../../src/core/vkcore/renderer.cpp#L5128) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
+| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L76) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4218) / [`render()`](../../src/core/vkcore/renderer.cpp#L5141) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
 | `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替 |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |
@@ -292,7 +292,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `JsonRpcHandlerError` | 構造化エラー | [`rpcserver.hpp`](../../src/core/communication/rpcserver.hpp#L28) | 同左 | code に加えて任意の `data` JSON を運ぶ |
 | engine RPC handlers | free registration function | [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp#L1838) | 同左 | 43 の protocol method を module/GameContext/編集サービスへ bind |
 | `EditorCommandService` | typed 編集サービス | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L225) | [`editorcommandservice.cpp`](../../src/core/communication/editorcommandservice.cpp) | 全編集 RPC の実体 |
-| `EditorCommandRpcAdapter` / `EditorCommandImGuiFakeAdapter` | adapter | [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L298) / [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L339) | 同左 | RPC と ImGui が **同じサービス**を呼ぶことの担保 |
+| `EditorCommandRpcAdapter` / `EditorCommandImGuiFakeAdapter` | adapter | [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L302) / [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L349) | 同左 | RPC と ImGui が **同じサービス**を呼ぶことの担保 |
 | `EditorCommandErrorCode` | 正準エラーカタログ | [`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L26) | 同左 | 13 種(`RuntimeOnlyData` / `ExternalModification` など) |
 | `EditorEditErrorCode` | 編集エラーカタログ | [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L46) | [`editorjournal.cpp`](../../src/core/communication/editorjournal.cpp) | 21 種(`stale_revision` / `preview_lease_conflict` など) |
 | `EditorGateReason` / `EditorGateSnapshot` / `EditorGateObservation` | 編集ゲート | [`EditorGateReason`](../../src/core/communication/editorjournal.hpp#L20) / [`EditorGateSnapshot`](../../src/core/communication/editorjournal.hpp#L39) / [`EditorGateObservation`](../../src/core/communication/editorjournal.hpp#L32) | 同左 | `replay` / `golden` / `strict` / `reload_scene_transition` / `preview_lease_conflict` の 5 ビット |

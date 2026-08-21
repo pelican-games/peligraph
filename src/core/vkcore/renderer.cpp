@@ -21,6 +21,7 @@
 #include "../light/lightcontainer.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/renderconfigcandidate.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
@@ -2989,7 +2990,7 @@ void Renderer::installRenderPipelineReloadParticipant() {
                 },
             .apply_authored_candidate =
                 [this](
-                    std::string candidate,
+                    RenderConfigCandidateDocumentSet candidate,
                     const std::function<void()>
                         &source_commit) {
                     const auto applied =
@@ -3178,7 +3179,7 @@ bool Renderer::reloadRenderPipelineFromDisk(
 
 RenderPipelineAuthoringApplyResult
 Renderer::applyRenderPipelineAuthoringCandidate(
-    std::string candidate_json,
+    RenderConfigCandidateDocumentSet candidate_documents,
     const std::function<void()> &source_commit) {
     RenderPipelineAuthoringApplyResult result;
     if (!source_commit) {
@@ -3202,9 +3203,20 @@ Renderer::applyRenderPipelineAuthoringCandidate(
         RenderingPassId prepared_current_rendering_pass_id =
             invalidRenderingPassId();
         std::uint64_t prepared_generation = 0;
+        // The source callback is the final fallible pre-publication action.
+        // Materialize the ProjectBasicConfig cache value now so publishing it
+        // after the callback is a noexcept move instead of a string copy.
+        std::string prepared_config_json =
+            candidate_documents.rootDocument().bytes;
 
         RenderGraphVariantLoadHooks hooks;
         hooks.validate_live_materials = true;
+        hooks.load_document =
+            [&candidate_documents](std::string_view reference) {
+                return loadRenderConfigCandidateText(
+                    candidate_documents, GET_MODULE(PathResolver),
+                    reference);
+            };
         hooks.before_publish =
             [&, default_pass_name](
                 const RendererRuntimeGeneration &generation) {
@@ -3245,7 +3257,8 @@ Renderer::applyRenderPipelineAuthoringCandidate(
 
         auto variants =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
-                candidate_json, std::move(hooks));
+                candidate_documents.rootDocument().bytes,
+                std::move(hooks));
 
         flat_rendering_pass_id = variants.flat;
         xr_rendering_pass_id = variants.xr;
@@ -3256,7 +3269,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
         current_rendering_pass_id =
             prepared_current_rendering_pass_id;
         config.publishRenderingConfigJson(
-            std::move(candidate_json));
+            std::move(prepared_config_json));
         state.watched_sources =
             std::move(prepared_watched_sources);
         state.last_generation = prepared_generation;

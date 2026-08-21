@@ -285,6 +285,10 @@ class EditorCommandService {
     nlohmann::ordered_json getRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json listRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params);
+    nlohmann::ordered_json getRenderAuthoringContext(
+        const nlohmann::json &params) const;
+    nlohmann::ordered_json addAuthoredPass(const nlohmann::json &params);
+    nlohmann::ordered_json removeAuthoredPass(const nlohmann::json &params);
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
@@ -327,6 +331,12 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json listRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRenderAuthoringContext(
+        const nlohmann::json &params) const;
+    nlohmann::ordered_json addAuthoredPass(
+        const nlohmann::json &params) const;
+    nlohmann::ordered_json removeAuthoredPass(
+        const nlohmann::json &params) const;
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;

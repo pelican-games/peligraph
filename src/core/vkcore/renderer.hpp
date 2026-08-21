@@ -6,6 +6,7 @@
 #include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
+#include "../../project/renderconfigdocument.hpp"
 #include <nlohmann/json.hpp>
 #include <glm/glm.hpp>
 #include <cstddef>
@@ -156,7 +157,7 @@ DECLARE_MODULE(Renderer) {
     nlohmann::json currentFramePlanJson() const;
     RenderPipelineAuthoringApplyResult
     applyRenderPipelineAuthoringCandidate(
-        std::string candidate_json,
+        RenderConfigCandidateDocumentSet candidate_documents,
         const std::function<void()> &source_commit);
     PickingReadbackResult readPickingPixel(std::uint32_t x,
                                            std::uint32_t y);

@@ -89,6 +89,10 @@ PathResolver::resolveExistingFile(std::string_view ref) const {
     return resolver.resolveExistingFile(ref);
 }
 
+std::string PathResolver::normalizedReference(std::string_view ref) const {
+    return resolver.normalizedReference(ref);
+}
+
 std::string PathResolver::loadText(std::string_view ref) const {
     return resolver.loadText(ref, engineResourceLoader());
 }

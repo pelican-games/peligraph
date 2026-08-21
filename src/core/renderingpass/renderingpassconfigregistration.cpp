@@ -798,6 +798,8 @@ registerRenderingPassConfigVariantsData(
         .path_resolver =
             dependencies.front()
                 .runtime.path_resolver,
+        .load_document =
+            dependencies.front().options.load_document,
         .runtime_shader_compiler_enabled =
             runtime_shader_compiler_enabled,
         .graph_transforms =
