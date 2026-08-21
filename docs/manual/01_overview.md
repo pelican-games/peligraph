@@ -20,7 +20,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
 | `pelican_cli` | 開発 CLI。7 サブコマンド系統(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm` — [main.cpp](../../src/devcli/main.cpp))。エンジン本体にリンクしない |
-| `pelican_studio` | Qt6 製エディタ(現状は骨組みのみ 🚧)。**エディタ機能の実体は player 側の JSON-RPC + ImGui パネルに入っており(WP149〜172)、Qt Studio はまだそれらを呼んでいません**([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md)・[第13章](13_editor.md)) |
+| `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
 | `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
 
@@ -129,7 +129,7 @@ vkcore(Vulkan 低層)
 
 > **設計決定 6(二層モデル — アセット):** エンジンが読む形式は閉じた小集合(ランタイム層)。FBX/PSD 等(ソース層)はエンジンに 1 バイトも入れず、外部ツールで変換して着地させる([第5章](05_assets.md))。
 
-> **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。
+> **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**(シーンの保存、`features[]` の編集。[第13章](13_editor.md))。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。
 
 > **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。`asset_data.json` は `pelican.asset_data` v1 として strict v1 化済み。※歴史的経緯で ui_overlay.json / rendering config には未適用。
 

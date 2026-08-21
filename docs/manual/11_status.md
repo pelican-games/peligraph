@@ -387,7 +387,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_project_vcs.md](../design_project_vcs.md) | ✅ V1〜V3 + V2 manifest(WP66) | [第3章](03_project_format.md) |
 | [design_project_interpretation_layer.md](../design_project_interpretation_layer.md) | ✅ WP44(現状記述は一部古い) | [第3章](03_project_format.md) |
 | [design_build_tiers.md](../design_build_tiers.md) | ✅ B1/B2(B3/B4 未) | [第2章](02_getting_started.md)・[第10章](10_tools.md) |
-| [design_devstudio_direction.md](../design_devstudio_direction.md) | 🚧 D1 shell / native viewport 済、project/outliner 統合と D2〜D3 は未 | [第10章](10_tools.md) |
+| [design_devstudio_direction.md](../design_devstudio_direction.md) | 🚧 D1(shell / viewport / project / outliner)済。D2(選択・Inspector・gizmo)済。D3 は保存と undo/redo まで済み、`features[]` の編集と反映も入った | [第10章](10_tools.md) §10.7 |
 | [design_roadmap_renderworld.md](../design_roadmap_renderworld.md) | 古い(一部失効) | — |
 | [design_cloth_simulation.md](../design_cloth_simulation.md) | 古い(VAT レーンに実質置換) | [第5章](05_assets.md) |
 

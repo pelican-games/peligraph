@@ -293,8 +293,8 @@ cmake --build ./build --target run_studio
 
 > **注意:** Qt Studio は Widgets shell から別 process の player を native viewport に埋め込み、
 > Outliner 選択、schema-driven Inspector、undo/redo、保存、Frame Plan、Move / Rotate / Scale
-> gizmo のドラッグまで利用できます。gizmo は project の render graph に
-> `engine://features/gizmo.json` が含まれる場合だけ有効で、無い場合は理由を表示します。
+> gizmo のドラッグまで利用できます。**gizmo と picking は Studio が player 起動時に
+> `engine://features/editor.json` overlay を必ず重ねるので、project 側の記述は要りません。**
 > エディタの設計方向(D0「エディタ特権の禁止」など)は [第10章](10_tools.md) §10.7 と
 > [../design_devstudio_direction.md](../design_devstudio_direction.md) /
 > [../design_editor_tooling.md](../design_editor_tooling.md) を参照してください。
