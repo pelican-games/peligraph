@@ -5711,122 +5711,1085 @@ linked selection と共有レイアウトを受け入れ条件にする。
 - **同じテストの中で、足す前には現れないこと**
 
 
-## preset を bundle の manifest にする(2026-08-22・第 2 版)
+## ノードを自在に定義して書けるようにする(2026-08-22・第 4 版)
 
-**利用者の判断**(2026-08-20):
+**第 3 版を敵対レビュー(codex)にかけ、その指摘をさらに独立検証(8 レンズ + 反証段)に
+かけた結果である。**判定は次のとおり。
 
-> preset はあくまで存在するノードの組み合わせを提供するだけにしたいので、
-> eject よりももっと深い融合がある気がします。
-> 段階を踏まずどんどん直していってもいい。優先の変更が終わったらやっていい。
+| レビューの指摘 | 検証後 | 効いたこと |
+|---|---|---|
+| 順序を resource に持たせても reader の読む値が決まらない | **一部正しい** | **論理 IR は既に表現できている。**壊れているのは著作形式と planner |
+| `reads`/`writes` を全部ソケットから導出できない | **正しい** | **非 shader use が 5 類型ある** |
+| `resource_ports` は型ではなく descriptor 注釈 | **正しい** | **`screen_inputs` は畳めない**(同一 resource 多重束縛を禁止している) |
+| optional/default が未設計 | **正しい** | ただし**解は既に material 側にある** |
+| 名前束縛は OFF ビルドで成立しない | **誤り** | **名前は焼いた `.spv` に入っている。**生成は不要（§2） |
+| preset 編集の著作形式が無い | **過大** | 設計は既に大半を書いている。欠けているのは 1 点 |
+| 「着手不可」(第 3 版へ) | **過大** | 順序と preset override の 2 件だけが保留 |
+| 「着手不可」(第 4 版初稿へ) | **正しい** | **§2.1 は潰れた。**段階 1〜3 は訂正のうえ着手可 |
 
-初稿は設計レビューで**着手不可**と判定された。以下は訂正済みの版である。
+**そして第 3 版が書いた実測値はほとんどが誤っていた。**訂正は §0.1 に置く。
 
-### 初稿が破綻した理由(繰り返さないこと)
+**第 4 版初稿も 1 点誤っていた** —— 「名前束縛は WP211 dist-bake を前提とする」。**焼いた `.spv` に変数名が残っており、reflection は既にそれを読んでいる。**§2 で訂正した。
 
-**1. コピーしても、差し替える先が無い。**
-中心操作は「preset 由来の文書をコピーし、参照を書き換える」だったが、
-**resolver は authored の `features` を preset のものに加算するだけで、置換しない**
-(`renderpipeline.cpp` の `pipeline` は `preset` / `settings` しか持てず、
-authored feature は append される)。
-コピーは**同じ target / pass 名で衝突する**。
-**書き換える先が定義されていなかった。**
+**その訂正版をもう一度レビューにかけた結果、§2.1(テンプレ生成)が丸ごと潰れた。**
+管理範囲を `//!` ヘッダだけにすると**ソケットを足しても宣言が増えず**、例自体が「契約はシェーダー、接続はパス」に違反していた。
+**検算で 5 件すべて実在を確認した。**§2.1 と段階表と受け入れ条件を書き直した。
 
-**2.「preset 固有に残すものは無い」は強すぎた。**
-inline の graph payload は無くせるが、**manifest 自体が固有の情報を持つ**:
+### 0. 核心 —— ソケットは発明しない。material 経路が既に全部持っている
 
-| 鍵 | 性質 |
+第 3 版は「`resource_ports` を正本にする」と書いた。**これが誤りだった。**
+
+**利用者が要求した 4 つは、すべて material 経路に既に実装されている:**
+
+| 利用者の要求 | material 経路の実装 |
 |---|---|
-| `schema` | loader が `pelican.render_pipeline` を要求する。**参照へ分解不能** |
-| `version` | schema version であって content revision ではない。**別に revision / closure hash が要る** |
-| `name` | provenance と UI identity |
+| 種類ごとのソケット | `MaterialPassInputContract`(nominal type / conversion / footprint / fallback) |
+| 契約と接続の分離 | `MaterialPassInputContract` と `MaterialPassInputBinding` |
+| 既定値 | `CustomTextureBinding::missing_default` → `MaterialDummyTexture::white` |
+| ソケット名で落ちる | 「material pass 'X' does not provide shader input '<socket>'」 |
+| 名前を出さずに繋ぐ | `surface_resources` の contract 選択子 / canonical anchor |
 
-**preset は「参照の並び」ではなく「slot の manifest」である。**
+**したがって設計は「ソケットを作る」ではない。**
+**「material が持っているものを fullscreen と compute へ一般化する」である。**
 
-**3. 設定の分類を 2 つ誤っていた。**
+`resource_ports` は**その一般化の受け皿にならない** ——
+型を持たず(`shaderresourceport.hpp` は resource / kind / element / access /
+view / sampling / subresource だけ)、
+**同一 resource への多重束縛を禁止している。**
+`forward_transparent` は同じ `opaque_depth` を
+`opaque_depth` / `scene_depth` / `linear_view_depth` の**三契約**に繋いでおり、
+うち一つは depth linearization を伴う。**畳めない。**
+fullscreen パーサの拒否は無条件である。
 
-- **`shader_defines` は UI 設定ではない。**全 shader compile に伝播する
-- **`draw_sort.xr_view_policy` は provider 選択ではない。**queue 数を 1 か 2 に変える
-  **view execution policy** である
+**`resource_ports` は shader-descriptor 部分集合の frontend に格下げする。**
+正本は既存の `MaterialPassInputContract` と `LogicalResourceUse` である。
 
-**4. 粒度を決めていなかった。それ自体が欠陥である。**
-9 パスを 1 文書にすると一項目の編集で大きな fork になり、
-1 パスずつにすると import / export・複数 writer・snapshot の結合を表現できない。
+**ただし「`.surface` を fullscreen / compute へ広げる」という読み方は誤りである。**
+`.surface` は material 専用で、fullscreen には届かない。
+**共有するのは文書種ではなく文法とパーサである。**実測と確定した schema は §1.1 に置いた。
 
-### 設計
+### 0.1 実測値の訂正(第 3 版はほぼ全部を誤っていた)
 
-#### bundle slot —— 差し替える先
+**独立に 2 回数え直した結果である。**
 
-preset の成員に、ノード名とは別の**安定した slot 名**を与える。
-authored root は slot を**名指しで差し替える**。加算ではない。
+| 第 3 版 | 正しい値 |
+|---|---|
+| 手書き `before` 4 件、うち他人を名指すのは 2 件 | **4 field / 6 edge。6 edge 全部が他ファイルのパスを名指す** |
+| `insert` の名指し 25 件 = intra 18 / cross 7 | **canonical anchor 8 / 同一ファイル内 15 / 他ファイル 2** |
+| 壊れる結合 9 件・名指されるパス 6 つ | **6 宣言箇所 / 8 edge / 外部パス名 6 つ** |
+| 複数 writer のターゲット 4 件 | **7 件。深度 3 本が抜けていた** |
+| `resource_ports` 13 / `material_resources` 8 / `screen_inputs` 3 / `surface_resources` 1 | key 数としては正しい。**entry 数は 25 / 10 / 12 / 1** |
+| render target の鍵 14 | 正しい |
 
-```json
-{
-  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "render_components": [
-    { "slot": "hybrid.ssao", "ref": "project://render/my_ssao.json" }
-  ]
+**最も重要な訂正: `insert` の「cross 7 件」のうち 5 件は壊れる結合ではない。**
+`hdr`→`tonemap` / `picking`・`velocity`・`taa`→`post_main` / `gizmo`→`debug_text` は、
+**エンジンが無条件に挿入する canonical anchor 8 個**に解決される。
+`hybrid_v1` に `tonemap` や `post_main` という名のパスは存在しない。
+**これは「名前で繋いでいる」のではなく「エンジン所有の安定ノードに繋いでいる」**であり、
+**§1 の「種類で繋ぐ」の三つ目の既存実例である。**消す対象ではない。
+
+**本当に壊れる結合:**
+
+| 宣言 | 名指す先 |
+|---|---|
+| `rt_shadow_mask` の `insert` | `deferred_geometry` |
+| `sky_ambient` の `insert` | `deferred_lighting` |
+| `clustered_light_select` の `before` | `deferred_lighting` / `forward_opaque` / `forward_transparent` |
+| `planar_reflection_light_select` の `before` | `planar_reflection_lighting` |
+| `cube_capture_light_select` の `before` | `cube_capture_lighting` |
+| `planar_reflection_filter_mip_6` の `before` | `forward_transparent` |
+
+**6 宣言箇所・8 edge・外部パス名 6 つ。**うち 4 つは preset の構造パスである。
+
+**複数 writer のターゲット(7 件):**
+
+| ターゲット | writer 数 |
+|---|---|
+| `swapchain` | 6 |
+| `lit_color` | 4 |
+| `scene_depth` | 3 |
+| `cube_capture_color` | 3 |
+| `cube_capture_depth` | 3 |
+| `planar_reflection_color` | 3(compute の mip 6 を含めると **9**) |
+| `planar_reflection_depth` | 3 |
+
+**深度が 3 本ある。**`output.depth` も `node.writes` に入り
+`validateWritesAreOrdered` の対象なので、
+**順序機構を color 専用にはできない。**
+
+**注記**: 上表は全 feature を有効にした和である。resolved では
+`swapchain` の writer は `output_transform` 1 件になり、
+残りは `display` 側へ移る。出荷 4 プロジェクトの `display` writer は最大 2 件。
+
+### 1. 三軸ある。混ぜないこと
+
+第 3 版は「二軸」と書いた。**三軸である。**
+
+| 軸 | 誰が所有するか | 既存の実装 |
+|---|---|---|
+| **契約** | 消費側の**実装**(シェーダ / material) | `MaterialPassInputContract`、`LogicalPortContract` |
+| **接続** | パスの**インスタンス** | `MaterialPassInputBinding`、`resource_ports`、`input` |
+| **選択子** | **供給側** | `surface_resources` の contract 選択、canonical anchor |
+
+**第 3 版が「畳む」と言ったのは接続の軸だけである。**
+契約を接続に畳もうとしたのが誤りだった ——
+**接続を消すと契約も消えるので、既定値の宣言を置く場所が無くなる。**
+
+#### 契約(消費側の実装が所有)
+
+**シェーダが「AO ソケットが要る。無ければ 1.0」と宣言する。**
+これはパスの接続とは別の文書に住む。
+`surface_resources` の supply document が既に
+`//! resource_ports: - {name: ...}` の形でこれをやっている。
+
+**この軸が無いと、利用者の「型にエラーがなければ動く」は成立しない。**
+
+#### 接続(パスインスタンスが所有)
+
+`resource_ports` を frontend にする。ただし:
+
+- **同一 resource への多重束縛を許すこと**(契約名で区別する)。
+  現在の重複禁止(`shaderresourceport.cpp` と fullscreen パーサ)を書き換える
+- **`material_resources` だけが持つ footprint と `@history` を落とさないこと**
+- **`shaderresourceport.hpp` の「These never create graph edges.」契約を破棄すること**
+
+#### 選択子(供給側が所有)
+
+**パス名を名指さずに消費者へ届ける機構が、既に 3 つある:**
+
+1. `surface_resources` の `material_contracts` / `fullscreen_consumers`
+   —— `shadow_directional` は `deferred_lighting` を知らない
+2. **canonical anchor 8 個** —— エンジンが無条件に挿入する安定ノード。
+   `hdr` / `picking` / `velocity` / `taa` / `gizmo` はこれに繋いでいる
+3. `material_contract` による material パスの選択
+
+**残る 6 件の壊れる結合を消す手段はこれである。**
+新しい機構ではなく、**選択子の適用範囲を広げること。**
+
+### 1.1 ソケット宣言 schema(段階 1 の正本・2026-08-22)
+
+**段階 1 を WP にするには、この schema が決まっている必要がある。**
+6 面の実測(engine シェーダー / 論理型語彙 / physical ABI / `//!` ヘッダ /
+接続側 JSON / Studio の D0)から確定した。
+
+#### 先に訂正 —— `.surface` は material 専用である
+
+**§0 は「`.surface` が既にその形式で、fullscreen / compute へ広げる」と書いた。届かない。**
+
+- `SurfacePass` は `main` / `deferred_geometry` / `forward` / `depth` / `velocity` の
+  **5 値で、compute も fullscreen も無い**
+- `SurfaceShaderComposition` は vertex_source と fragment_source しか持たない
+- fullscreen / compute のパスは JSON の `shader` 鍵で `.frag` / `.comp` を直接指しており、
+  **`.surface` を経由しない**
+
+**したがって `.surface` に `sockets:` を足しても fullscreen には届かない。**
+**新しい文書種が要る。**ただし**文法とパーサは `.surface` と共有する** ——
+「形式を分岐させない」は文書種を 1 つにすることではなく、**同じ文法で書けること**である。
+
+**もう一つの訂正**: **compute はパス型ではない。**
+`RenderPassType` は 14 種で compute を含まず、compute は config 直下の `compute_tasks[]`、
+ray_tracing はその task 内の 1 鍵である。
+**著作コンテキストも `add_authored_pass` も compute には届いていない。**
+「fullscreen と compute へ広げる」は、compute について別の配管を要する。
+
+#### 宣言するもの / 導出するもの
+
+**実測で確定した。理由なしに動かさないこと。**
+
+| | 宣言 | 導出 | 理由 |
+|---|---|---|---|
+| ソケット名 | ● | | シェーダーの語彙。reflection の `OpName` は照合にのみ使う |
+| 契約(型・footprint・sampling・fallback) | ● | | **シェーダーの性質**。パスの著者は知り得ない |
+| view 方針(`shared_2d`/`per_view`/`family_array`/`cube`) | ● | | **アルゴリズムの ABI である。**物理と一致しなければ例外、という制約側の値 |
+| buffer の要素型(std430) | ● | | 物理 plan から導出できない。現行も明示必須 |
+| stage 可視性(vertex / fragment / 両方) | ● | | input_attachment は fragment 限定。**これが決まらないと local read の可否が決まらない** |
+| 出力の型と個数 | ● | | 入力のような自動変種が出力には無い |
+| **省略可能性と既定値** | ● | | 本設計の目的そのもの |
+| binding 番号 | | ● | **宣言の並び順**(下記) |
+| descriptor 種別(sampler / input_attachment) | | ● | tile-local 融合の成否。**同じプロジェクトが GPU を変えるだけで反転する** |
+| 次元(`sampler2D` / `sampler2DArray`) | | ● | 宣言 view × 物理 view_layout × consumer の積 |
+| set 番号 | | ● | 常に 1(`PELICAN_SET_PASS_INPUT`) |
+
+#### binding は「シェーダーの宣言順」にする(これが中核の変更)
+
+**現在 binding は「そのパスの `input` 配列における序数」である。**
+だから**パスの接続を編集すると全ソケットの番号がずれる。**
+宣言者が知り得ない情報(パスの入力個数と順序)の関数になっている。
+
+**`.surface` は既に正しい側にいる** —— `screen_inputs[i]` が binding=i、
+つまり**宣言の並びが binding** である。
+
+**同じ規則を fullscreen / compute へ適用する。**
+
+- シェーダーの ABI が**著作時に確定する**。焼いた `.spv` と矛盾しない
+- **SSAO を外しても番号がずれない**(接続が消えるだけ)
+- 末尾に足す限り既存 binding は動かない。**間に挿すと動く。**そこは明示する
+
+**ただし「接続が消えるだけ」は、接続側の仕様が来るまで成立しない(仕様レビューで確定)。**
+今日の fullscreen は `input` が文字列配列で、**ソケット名も空き slot も表せない。**
+具体例: `deferred_lighting` から SSAO の接続だけ消して shadow を有効にすると、
+**shadow は序数 5 に詰められ、descriptor write は binding 5 になる。**
+**接続を「ソケット名 → resource」にし、省略時も slot を残して既定 descriptor を束縛する**
+までが揃って初めて成立する。**別 WP として名指しで残すこと。**
+
+**注意**: `.surface` の set 1 は「宣言済み screen_inputs が 0 から連番で先頭を占め、
+その後ろに feature 所有が付く」ことを reflection 照合が強制する。**穴も並べ替えも例外。**
+新しいセクションを set 1 に置くなら、この連番規約のどこに割り込むかを決めること。
+
+#### v1 は型を綴らない。契約を名前で呼ぶ
+
+**論理型を宣言に綴らせてはいけない(v1 では)。**実測:
+
+- 登録されている nominal type は **4 個だけ**
+  (`color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`。後 2 者は逃げ道)
+- **`LogicalType` に JSON パーサが存在しない。**writer だけで reader が無い。
+  この schema が**最初の reader になってしまう**
+- 変換は 3 個。しかも pass input の解決は `allow_explicit_conversions=false` 固定なので、
+  **自動で使えるのは `depth_linearize` 1 個だけ**
+- **`conversion` は宣言できても適用する汎用経路が無い** ——
+  実際の GLSL は `if (input == "linear_view_depth")` という文字列直書き分岐が生んでいる
+- `source_type` は宣言できず vk::Format から導出され、写像は **5 フォーマット → 2 型**のみ。
+  **fullscreen の `R8G8B8A8` や storage buffer は現状論理型を持てない**
+
+**したがって v1 は `.surface` の `screen_inputs` と同じ流儀にする** ——
+**組み込み契約を名前で呼ぶ。**書ける名前は現状 5 つ
+(`opaque_color` / `opaque_depth` / `scene_depth` / `linear_view_depth` / `directional_shadow`)
+で、**足りないものは C++ 側に組み込み契約を追加する。**
+
+**型を綴る文法は段階 1 の範囲外とする。**入れるなら
+`namespace.name@major` + 引数写像 → `canonicalize()` のパーサ新設になり、
+それ自体が独立した WP である。
+
+#### footprint は 3 箇所に分かれている。ここを畳むのが仕事の実体
+
+| 場所 | 鍵 |
+|---|---|
+| material | `material_resources` の項目内 `footprint` |
+| fullscreen / raster | パス直下の `input_footprints` |
+| compute | task 直下の `read_footprints` |
+
+**同じ語彙(`same_pixel` / `neighborhood` + `radius` / `arbitrary`)を
+3 つの別実装が解析している。**
+
+**そして出荷資産で宣言しているのは 2 箇所だけ**(どちらも `planar_reflection` の `arbitrary`)。
+**fullscreen パスは footprint を一切埋めず、全入力が `arbitrary` に落ちて
+`legacy_read_footprint_conservative` が記録される。**
+結果として **tile-local(local read)は engine シェーダー 7 本のどれにも発火していない。**
+
+**footprint をシェーダー宣言へ移すと、この 3 箇所が 1 つになる。**
+そして `ssao_blur` が `neighborhood, radius: 2` を**正しく名乗れる**ようになる
+(現在は誰も書いていないので `arbitrary` 扱い)。
+
+**制約**: `temporal` は JSON 語彙に無く、`@history` から導出せよと例外が言う。
+`none` には綴りが無い。**宣言でも同じ規約を守ること。**
+**read には footprint 必須、write には footprint 禁止**が二重に強制されている。
+
+#### footprint はソケットが持つ。契約ではない(訂正)
+
+**初版は `contract` と `footprint` を並べて書いたが、
+どちらが正本かを決めていなかった。**仕様レビューで潰れた。
+
+**実測**: `MaterialPassInputContract` は footprint を持っており、
+**`opaque_color` の組み込み footprint は `neighborhood`** である
+(`opaque_depth` / `scene_depth` は `same_pixel`)。
+
+**しかし footprint は契約の性質ではない。消費側の性質である:**
+
+- `fullscreen.frag` は albedo を**同一ピクセル**で読む
+- `ssao_blur.frag` は同じ形の resource を **5×5 の近傍**で読む
+
+**同じ契約でも、シェーダーが違えば footprint が違う。**
+
+**決定: 新しい宣言経路では、footprint はソケットが所有する。**
+**契約は型 / 変換 / sampling / view / fallback を持つ。**
+`MaterialPassInputContract` が footprint を抱えているのは material 経路の既存事情であり、
+**新経路ではソケット側を正本とする。**両方書けて曖昧、という状態にしないこと。
+
+#### 条件付きソケットと feature 所有ソケット
+
+**これがこの設計線全体の門である(5 案の評価で確定)。**
+`fullscreen.frag` に触る案は **3 つともここで死んだ**
+(WP336 初版 / 案 D「既存鍵で footprint」/ 案 E「著作時判定」)。
+
+`appendFullscreenSurfaceResource` が **`shadow_map` を `input` 配列へ追記する**ので、
+合成後の image 入力数は **shadow 有効で 7、無効で 6** に揺れる。
+**6 固定の宣言表は `animgraph_demo` と `project init` を落とし、
+7 固定は残り 3 プロジェクトを落とす。**
+
+**したがって、条件付きソケットの表現が決まるまで
+`fullscreen.frag` は移行できない。**これを順序の前提として明記すること。
+向こう側の情報(`surface_resource_contracts` / `shader_defines`)は
+**`parsePassDefinitionFromJson` にも `evaluatePassShape` にも渡っていない。**
+
+**静的なヘッダだけでは足りない。**
+
+`fullscreen.frag` の binding 6 は `#ifdef PELICAN_FEATURE_SHADOW` の中にあり、
+**出荷構成に両方の variant が存在する**
+(shadow 有効: `animgraph_demo` / `project init`、
+無効: `example` / `sprite_demo` / `vrm_xr_demo`)。
+
+**ヘッダに書けば無効側で「宣言にあるが SPIR-V に無い」、
+書かなければ有効側で「SPIR-V にあるが宣言に無い」になる。**
+
+**`.surface` が既に解いている** —— 宣言済みが先頭を占め、feature 所有が後ろに付く。
+
+**決定: 照合の対象は「有効 interface」である** ——
+**ヘッダ所有のソケットと feature 所有の契約を合成したもの。**
+**「SPIR-V の余り」は「ヘッダに無い」ではなく「合成後の interface に無い」と定義する。**
+
+#### v1 の形
+
+**インライン写像は 1 行に収めること**(現文法は行をまたげない)。
+
+```glsl
+//! pelican.fullscreen v1
+//! language: glsl
+//! sockets:
+//!   - { name: albedoSampler, contract: gbuffer_albedo, footprint: same_pixel, stage: fragment }
+//!   - { name: ssaoSampler, contract: ssao, footprint: same_pixel, stage: fragment }
+//! outputs:
+//!   - { name: outColor, type: color }
+//! BEGIN GENERATED
+...
+//! END GENERATED
+```
+
+`ssao_blur` は
+`- { name: ssaoInput, contract: ssao, footprint: neighborhood, radius: 2, stage: fragment }`。
+
+**`optional` / `default` は v1 に書かない。**既定値は後続の WP であり、
+**書けると誤解させないこと。**
+
+#### 組み込み契約が足りない(v1 で足すもの)
+
+**現在の 5 つ**(`opaque_color` / `opaque_depth` / `scene_depth` /
+`linear_view_depth` / `directional_shadow`)**では、
+engine シェーダー 7 本の 15 入力を名指せない。**
+
+意味どおり名指せるのは 3 つだけである
+(`sceneColorSampler` → `opaque_color`、`sceneDepthSampler` → `scene_depth`、
+`shadowMapSampler` → `directional_shadow`)。
+
+**足りない契約(最低限):**
+`gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` /
+`gbuffer_world_position` / `gbuffer_emissive` / `ssao` / `display_linear`。
+
+**`gbuffer_normal` と `gbuffer_world_position` は `scene_color` と同じ
+`R16G16B16A16_SFLOAT` である。**format では識別できない。
+**producer 側の semantic annotation が要る** ——
+現行の format → 論理型の写像は深度と `R16G16B16A16_SFLOAT` しか扱わず、
+後者を一律 scene-linear color にしている。
+
+**これは engine-only の bootstrap である。**
+**利用者が「自在に定義」するには C++ 追加方式では足りない。**
+後段に登録可能な型参照文法か契約 registry を置くこと。**そう明記しておく。**
+
+
+#### 文法の制約(`//!` パーサから逐語)
+
+**同じパーサに載せる以上、次は動かせない:**
+
+- **1 行目は magic 行の完全一致。**版は magic 行が持つ(`schema` 鍵は存在しない)
+- `//!` で始まらない行が 1 本出た時点で**ヘッダは終わり、残り全部が code**。
+  **code の途中に宣言ブロックは置けない**
+- **index 3 は ASCII U+0020 の完全一致である**(一般の whitespace ではない。`//!` の直後がタブの行は拒否される)。
+  内容は `trim(substr(4))` なので**インデントは意味を持たない**
+- 行は「リスト項目」か「`key: value`」の 2 種のみ。
+  **リスト判定は「trim 後の先頭文字が `-`」だけで、直後の空白は任意である。**
+  `- ` を必須にすると、今日警告して黙殺されている `//! -legacy_item` が
+  **`key:value` と解釈されて throw に変わる。**挙動を変えないこと
+  **`key:` 行が来るたびセクションが none に戻る**ので、
+  リスト項目はセクション鍵の直後に連続していなければならない
+- 鍵と値の分割は**最初の `:`**。括弧も引用符も見ない。**鍵名に `:` を含められない**
+- 名前は識別子規則(先頭が英字か `_`、以降は英数字か `_`)。
+  **`.` や `@` を含む契約名をソケット名にはできない**
+- 階層は**インライン写像の入れ子でしか表現できない**
+
+#### 版の扱いは engine 先行にする(重要)
+
+**未知の鍵は拒否されない。警告して無視する。**
+しかも**値が空だとセクションが `unknown` になり、続くリスト項目まで黙って捨てられる。**
+**そして `warnings` を production で読むコードは存在しない。**
+
+**つまり旧エンジンが新形式を開くと、エラーにならずソケットが黙って消える。**
+
+**ただし `.frag` については、それでも旧エンジンは落ちない(仕様レビューで確定)。**
+`.frag` は今日ヘッダを持たないので、
+**旧エンジンは `//!` をただの GLSL コメントとして glslang へ渡すだけ**であり、
+OFF 構成は raw source を読まない。
+
+**したがって版の gate は `project.json` の `engine_min_version` を使う。**
+旧エンジンを明示的に落とす経路として**既に存在する。**
+**`warnings` で誘導する設計は現状無効である。**警告の消費経路を先に作らない限り採らない。
+
+これは `project-format-subset-principle`(形式拡張は常にエンジン先行)そのものである。
+
+#### 接続側に残る鍵
+
+**宣言を `//!` ヘッダへ移したとき、パス JSON に残るのは:**
+
+- **`resource`**(`@history` 修飾を含む)
+- **`subresource`**(どの mip / layer か)
+- **`access`** —— 同一資源を複数 port に張る/読み書き両方に現れるときの曖昧性解消のみ
+- **`output` の target 名**
+
+**これは `resource_ports` の文字列略記 `"port": "resource"` が運ぶ情報と、
+`screen_inputs` の `{契約名: RT 名}` が運ぶ情報にほぼ一致する。**
+**新しい接続構文を発明しなくてよい。**
+
+#### Studio 側 —— 配管は既にある
+
+- **`get_render_authoring_context` は著作パス JSON を丸ごと返している。**
+  `resource_ports` を含む全鍵が既に Studio に届いている
+- 欠けているのは **型付き DTO と論理契約の publish** である。
+  現在 `FullscreenPassWidget` の draft は `name` / `type` / `input` / `output` / `shader` の
+  5 鍵しか作らず、残りは「omitted keys」として名前だけ申告している
+- **`get_frame_plan` の node は平坦な資源名配列で、port 名も型も無い。**
+  resource 側の `surface_resource_contracts[]` は `sampling` / `view_policy` / `fallback` を
+  運んでいるが、**Studio は `source_type` / `sampled_type` / `footprint` / `relation` を
+  復号せず捨てている**
+- **`pelican_project` は Vulkan にリンクしない**ので、
+  `MaterialPassInputContract` / `LogicalType` / `ShaderResourcePortDefinition` は
+  **そのまま Studio から呼べる。**
+  逆に `ShaderResourceInterfaceBinding` は `vulkan/vulkan.hpp` を直接 include する
+  core 側にあり、**Studio は永久に触れない**
+
+**したがって段階 1 の D0 作業は「新設」ではなく
+「既に届いている情報を型付きで publish する」である。**
+
+#### v1 の範囲外(明示すること)
+
+- **論理型を綴る文法**(パーサ新設が要る)
+- **任意の `conversion` id**(適用する汎用経路が無い)
+- **compute への適用**(compute はパス型ではなく、著作コンテキストが届いていない)
+- **8 本を超える入力**(`PELICAN_DECLARE_INPUT_0..7` の 8 枠しかなく、
+  fullscreen 経路に上限検査が無い)
+- **XR / multiview の variant を焼く**(WP211 相当)
+
+### 2. 位置による束縛をやめる —— WP211 は前提ではない(訂正)
+
+**第 4 版初稿は「名前束縛は WP211 dist-bake を前提とする」と書いた。誤りだった。**
+測って崩れた。
+
+`hybrid_v1` の `deferred_lighting` は `input` に 6 件を並べ、**6 件目が `ssao_blur`**。
+`engine://fullscreen` は `PELICAN_DECLARE_INPUT_5(ssaoSampler)` と**位置 5 番で**宣言する。
+**配列の順序だけが両者を結んでいる。**
+**「このスロットは AO である」と書いてある場所はどこにも無い。**
+
+#### 名前は既にシェーダーの中にある
+
+**焼いた `src/core/resources/fullscreen.frag.spv` の中身**(実測):
+
+```
+albedoSampler  normalSampler  materialSampler
+worldPosSampler  emissiveSampler  ssaoSampler
+```
+
+- engine シェーダーは**ビルド時に glslang で `.spv` へ焼いて埋め込んでいる**
+- reflection は `spirv-reflect` で、`binding.name` を読んでいる
+- **変数名から役目を決める先例が既に出荷されている** ——
+  `materialscreeninput.cpp` が `binding.name == directionalShadowSamplerName` で
+  builtin contract を組み立てている
+
+**したがって名前束縛に生成は要らない。読めば済む。焼いた `.spv` に対して動く。**
+
+現在の `resource_ports`(fullscreen)が virtual include を生成しているのは
+**実装の選択であって必要条件ではない** ——
+`registerFullscreenShaders` は `resource_interface` が空なら生成しない分岐を既に持つ。
+
+**WP211 dist-bake は前提から外す。**
+
+#### ただし reflection 単独を正本にはしない
+
+**理由 2 つ:**
+
+1. **`OpName` はデバッグ情報である。**`-g0` が入れば消え、ソケットが無名になる
+2. **マクロが 3 変種を持つ** —— `PELICAN_DECLARE_INPUT_5` はビルド定義で
+   `subpassInput` / `sampler2DArray` / `sampler2D` に分かれる。
+   **reflection は「今回焼かれた形」しか言えず、「あるべき形」は言えない**
+
+**正本はシェーダー脇の宣言、reflection はその照合。**
+`shaderresourceinterface.cpp` が既にその向き
+(engine が期待 binding を組み、reflection と突き合わせる)で書かれている。
+
+#### 移行の規模
+
+`PELICAN_DECLARE_INPUT` を使う engine シェーダーは **7 本**
+(`fullscreen` / `output_transform` / `rt_shadow_mask` / `scene_present` /
+`sky_ambient` / `ssao` / `ssao_blur`)。
+**マクロは既に名前を受け取っている。**足すのは役目の宣言だけである。
+
+#### 出力側にも同じ位置束縛がある(第 4 版初稿の欠落)
+
+`layout(location = 0) out vec4 outColor` ↔ `output.color[0]`。
+**入力とまったく同じ構図である。**
+
+engine の fullscreen シェーダーは**全部が出力 1 本**なので今は表面化しない。
+**しかし MRT は既にある** —— G-buffer パスは
+`gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` /
+`gbuffer_worldpos` / `g_emissive` の 5 枚を書く。
+これは `material` 型なので契約が供給しているが、
+**ノードから 2 出力の fullscreen パスを組んだ瞬間に位置束縛が効く。**
+
+**出力も同じ宣言に載せること。**入力だけ名前にして出力を位置のまま残さない。
+
+### 2.1 逆方向 —— ノードから入出力テンプレを生成する(利用者の要望)
+
+> **逆にノード側で組んだら input、output のテンプレを生成する機能もあると嬉しい**
+
+**§2 が「シェーダー → エディタ」なら、これは「エディタ → シェーダー」である。**
+**両方要る。**キャンバスで 0 から組むとき、
+シェーダーを手で書き起こすところで止まってしまう。
+
+**初稿は「`//!` ヘッダのブロックだけを管理領域にする」と書いた。成立しない。**
+レビューで潰れ、検算でも確認した。以下は訂正済みの版である。
+
+#### 初稿が破綻した理由(繰り返さないこと)
+
+**1. ヘッダだけ更新してもインターフェースが増えない。**
+`ao` の次に `normal` を足したとき、`//! sockets:` に一行足しても
+**実際に効くのは `PELICAN_DECLARE_INPUT_n(normal)` の方**であり、
+それは管理範囲の外にある。SPIR-V に binding は増えない。
+しかも現行 validator は**宣言した binding が SPIR-V に無ければ拒否する**ので、
+ヘッダだけ進むと即座に落ちる。
+
+**2. 例が自分の設計に違反していた。**
+初稿は `//! outputs: - { name: outColor, location: 0, resource: ssao_output }` と書いた。
+**`resource` は接続であって契約ではない。**
+§1 で「契約はシェーダー、接続はパスインスタンス」と決めておきながら、
+接続をシェーダーに埋めていた。
+
+#### 管理単位は prologue —— ヘッダではない
+
+**メタデータ・入力宣言・出力宣言をまとめて一つの managed prologue にする。**
+**明示的な begin / end 番兵で範囲を確定し、その後だけを利用者の本体とする。**
+
+```glsl
+//! pelican.fullscreen v1
+//! pelican_editor_managed
+//! sockets:
+//!   - { name: ao, contract: ambient_occlusion_v1, optional: true, default: white }
+//! outputs:
+//!   - { name: outColor }
+//! BEGIN GENERATED
+PELICAN_DECLARE_INPUT_5(ao)
+layout(location = 0) out vec4 outColor;
+//! END GENERATED
+
+void main() {
+    outColor = vec4(1.0);
 }
 ```
 
-**`features` への追加とは別の口である。**`features` は「足す」、slot は「差し替える」。
-**この 2 つを混ぜないこと。**
+**代案**: 固定の `#include <pelican_generated_interface.glsl>` を prologue に置き、
+宣言をそこから生成する。**番兵方式より境界が硬い。**
+`AuthoredRenderConfigDocument` の「一つの字句範囲だけ書き換える」技法は
+**この番兵の間にだけ適用する** —— GLSL には JSON のような構文境界が無いので、
+範囲は番兵が作る。
 
-#### 粒度は 5 つ(決定)
+**`binding` / `location` を宣言に書かない。**
+**物理 ABI は導出して reflection と照合する**(下記)。
 
-`hybrid_v1` の 9 パス / 11 target を次の 5 bundle に割る。
-**依存を実測して決めた。**
+#### 出力の接続はパス側に置く
 
-| slot | 成員 |
+**現在の `output.color` は target 名の列であり、ソケット名を持てない。**
+パーサが受け取るのは `target` と `subresource` だけで、
+それ以外の鍵は「unknown field」で落ちる。
+**つまり初稿の受け入れ条件「`output.color` の並びを入れ替えても正しい target に書かれる」は、
+今日は書きようがない。**
+
+**新しい形を正本にする:**
+
+```json
+"output": {
+  "color": [
+    {"socket": "outAlbedo", "target": "target_a"},
+    {"socket": "outMask",   "target": "target_b"}
+  ],
+  "depth": null
+}
+```
+
+**さらに fullscreen は pass-shape policy が color 出力を最大 1 に固定している。**
+バックエンドは複数 format を受けられるので、**制限は policy 側にある。**
+**新機構は fullscreen に限定し、material の `MaterialOutputSchema` は変更しない。**
+
+**訂正**: material の 5 枚は上限ではない ——
+`pelican.material_outputs` schema を省いたときの**互換既定**であり、
+明示 schema は任意数を扱う。既存テストに 7 出力の fixture がある。
+**回帰対照は 5 枚だけでなく 7 出力 fixture も含めること。**
+
+#### 契約の schema は logical と physical を分ける
+
+**初稿の `type: sampler2d` では足りない。**
+`opaque_depth` と `linear_view_depth` を区別できず、
+same-pixel と neighborhood も、変換の要否も表せない。
+**それでは「型にエラーがなければ動く」ノードにならない。**
+
+さらに `PELICAN_DECLARE_INPUT_n` は**同じソケットから 3 形態を生成する**
+(`subpassInput` / `sampler2DArray` / `sampler2D`)。
+**固定の `sampler2d` を reflection と一致させる規則は存在しない。**
+
+**したがって:**
+
+- **logical socket** —— 型 / footprint / view policy / fallback / 変換。
+  正本は既存の `MaterialPassInputContract`
+- **physical ABI** —— binding / location / descriptor 種別 / 次元。
+  **flat・multiview・local-read の物理 plan から導出**して reflection と照合する
+
+#### 契約の照合と source 生成は別の channel にする
+
+**これが §2 の「生成は要らない」を実装で守るための要点である。**
+
+現行の `resource_interface` をそのまま契約に流用すると、
+**非空であるだけで virtual include を生成する。**
+そして **`.spv` と virtual include の組み合わせは明示的に拒否される。**
+**つまり流用した瞬間に OFF ビルドが壊れる。**
+
+**照合用の契約と、source 生成用の virtual include を、別の経路に分けること。**
+
+#### 名前の scope
+
+**ソケット名はシェーダーをまたいで重複する** ——
+`worldPosSampler` と `normalSampler` は 3 本、`outColor` は 7 本すべてにある。
+**重複自体は正常。registry の鍵をソケット名だけにできない。**
+**正規化した shader stem・stage・宣言 digest で scope すること。**
+
+#### 新規シェーダーを commit 前にコンパイルできない(未解決)
+
+**現行の候補文書集合は render-config 文書しか差し替えられない。**
+`ShaderLibrary` は project シェーダーを候補集合ではなく**実ファイルから読む。**
+
+したがって新規 `.frag` は二択になる:
+
+- **preflight 前に disk へ書く** → コンパイル失敗時に壊れたファイルが残る
+- **commit まで書かない** → `ShaderLibrary` から見えず preflight が file-not-found
+
+**これは WP334b が render-config で解いた問題の再演である。**
+**同じ解を shader source へ広げること** ——
+候補集合を shader にも広げ、`ShaderLibrary` / `PathResolver` が
+request-local な source overlay を読む経路を設ける。
+相対 include 解決のために論理 path も保持し、
+**コンパイル・reflection・pipeline 作成がすべて成功してから
+config と shader を同一トランザクションで commit する。**
+
+#### 置き場所と purge
+
+**`project://shaders/authoring/` + `pelican_editor_managed` マーカーの二重ゲート。**
+ただし**そのまま流用すると壊れる。**
+
+**1. 本体は利用者のものなのに、ファイル全体が purge 対象になる。**
+利用者が数百行書いたあと最後の参照を消すと、その本体ごと消える。
+
+**2. 外部編集の検出が誤爆する。**
+既存の管理 fragment は外部編集を検出すると削除を拒否する。
+**シェーダー本体の正当な編集は毎回それに当たる。**
+かといって digest 検査を外すと利用者の本体を消す。
+
+**3. ファイル名が `(graph, name)` の graph を落としている。**
+`main/blur` と `preview/blur` が衝突する。
+既存の fragment は `(graph, pass)` を NUL 区切りで hash している。
+
+**4. 参照の探索が流用できない。**
+既存実装は root の `features[]` だけを起点にする。
+**シェーダーは拡張子なしの stem で参照される。**
+
+**したがって:**
+
+- **ファイル名は `(graph, name)` の決定的 hash にする**
+- **managed prologue と利用者 body の digest を分ける**
+- **body が編集されたファイルは「adopted」とし、自動 purge しない。**明示確認を要求する
+- **到達可能性は fullscreen / raster / compute / feature / preset を通した
+  正規化 shader stem 単位で数える**
+- 復旧操作として「新しい sibling に雛形を生成」「明示的に body を置換し backup」を提供する。
+  **現在の hot reload はプロセス内の旧 bundle を保つが、
+  再起動後の壊れた disk source は救えない**
+
+#### OFF ビルドでの扱い
+
+**生成した `.frag` は source なので OFF ビルドではコンパイルできない。**
+これは今日の利用者シェーダー
+(`example` の `.surface` 3 本、`sprite_demo` / `vrm_xr_demo` の `.frag` / `.vert`)と
+**同じ制約であって、新しい問題ではない。**
+
+**ただしエディタは黙ってはいけない** ——
+生成した時点で「この構成は OFF ビルドでは出荷できない」と示すこと。
+
+**なお §2 の「WP211 は前提ではない」は、
+source と基底 SPV の双方が埋め込まれている engine シェーダー 7 本の移行に限った話である。**
+**project の SPV-only 配布と define variant の binding manifest には、依然 WP211 相当が要る。**
+
+### 3. 既定値は shader を触らずに engine が書く
+
+**第 3 版は「ソケットの属性」としか書いていなかった。**
+検証で解の形が確定した。**material 側に既に動いているものがある。**
+
+`CustomTextureBinding::missing_default` → `MaterialDummyTexture::white` → `tex_white`。
+**engine が同じ binding へ既定 descriptor を書く。**
+
+**この形なら SPIR-V にも virtual include にも触れないので、
+compiler-OFF でもそのまま成立する。**AO は白 = 1.0 で意味も合う。
+
+- **SSAO を外す** → AO ソケットに engine が白を束縛して動く
+- **既定値を宣言していないソケットを空にする** → **ソケット名付きで落ちる**
+  (material 経路は今日これができている)
+
+**制約(WP 化のときに解くこと):**
+
+- dummy が 2D にしか無い。cube / array / 3D / buffer が要る
+- material の default は**名前推論の 3 択**である。
+  **port の default は名前推論ではなく明示宣言にすること**
+- `shaderresourceport.cpp` の未知フィールド拒否に `optional` / `default` を足す
+- **`resource` が `reads`/`writes` に必須という検査を緩め、
+  「接続を持たない port 宣言」を表現可能にすること** ——
+  これが無いと「接続を消すと既定値の宣言も消える」がそのまま残る
+
+**なお現状は、入力を 1 つ減らすと binding が layout に残ったまま
+descriptor が書かれない**(layout は reflection から生成され、
+write は接続数ちょうど、検査は `input_count` 未満しか回らない)。
+**「コンパイルが通る」を「動く」の証拠にしないこと。**これは ON ビルドでも起きる。
+
+### 4. 順序 —— resource ごとの参加者列
+
+第 3 版は「順序はターゲット(resource)が持つ」と書き、
+レビューは「reader が読む値が決まらないので破綻」と判定した。
+**検証の結論は「一部正しい」である。**
+
+#### レビューが叩いた形は、設計が提案した形ではない
+
+レビューは「resource 上で `A → B` とだけ宣言しても、
+R が A と B のどちらを読むか決まらない」と書いた。
+**しかし設計の例は writer だけの列ではない** ——
+`__snapshot_opaque_color` という **reader を writer の間に挟んだ列**である。
+
+**正しい定式化を逐語で置く:**
+
+> **resource は「参加者の列」を持つ。writer と reader を同じ列に置く。**
+> **writer を通ると版が上がり、reader は列上の直前の版に束縛される。**
+
+#### この意味論は、論理 IR に既に存在する
+
+- `LogicalValueId { resource, version }` が既にある
+- `deriveLogicalDataEdges` は `(resource, version)` の **exact producer** に辺を張り、
+  多重 producer は「logical value has multiple producers」、
+  未生産は「logical input value has no producer or import」で落ちる
+- version は書き込みごとに `++` される
+
+**したがって「設計として不可能」ではない。表現できないのは IR ではない。**
+
+**表現できていないのは 2 つだけ:**
+
+1. **著作形式**(ノードごとの平坦な `reads` / `writes`)
+2. **planner の `last_writer`**
+
+しかも上記の論理層は現在**影(shadow)**であり、
+既に配列順が決めた `FrameGraphDefinition` から**導出**されている。
+呼ばれているのは target plan の 2 箇所だけで、実行辺は `buildEdges` が作る。
+**要るのは新 IR ではなく、この影を正本へ昇格させることである。**
+
+#### 配列順の荷重点は 3 箇所(第 3 版は 2 と書いた。誤り)
+
+1. **`buildEdges`** —— `last_writer` を配列順に走らせ、
+   **先行**する writer からしか read-after-write 辺を張らない
+2. **`topologicalOrder`** —— ready 集合を `declaration_index`(配列位置)で整列する
+3. **`enforceCanonicalOrder`**(第 3 版もレビューも挙げていなかった)——
+   通常パスに対し**配列上の直前パスへの明示 `after` 辺**を打ち、
+   **合成時点で配列順を辺として焼き込む**
+
+**3 が最も早く効く。**そして**これが負の対照を壊していた** ——
+第 3 版が書いた「配列を並べ替えても同じフレームプランになること」は、
+**この関数を外さない限り成立しない。**受け入れ条件を書き直した(下記)。
+
+#### resource に載らない順序は残す
+
+**canonical anchor と `output_transform` の順序辺は resource を持たない。**
+`enforceTerminalAfterComputeTasks` は `output_transform` を
+**共有 resource の有無に関係なく**全 compute task の後に置く。
+
+**したがって `before` / `after` を全廃してはならない。**
+**非データ依存の channel として残すこと。**
+第 3 版はこれを挙げていなかった。
+
+#### 弱かった反証(採らない)
+
+- **`snapshot_after`** —— これは「`lit_color` の writer N と N+1 の間でこの reader を止める」を
+  パス名で書いているだけで、**resource 側の参加者列が包含する。**移行先がある
+- **複数 graph 共有** —— パーサの潜在能力ではあるが、
+  出荷 4 プロジェクトと `hybrid_v1` はすべて `rendering_passes` が 1 で
+  top-level `compute_tasks` が 0。しかも feature 合成は
+  「`insert` には `rendering_passes` がちょうど 1 つ」を要求する。
+  **feature 合成経路では複数 graph が成立しない。**段階 4 の範囲外と宣言する
+
+#### 複数 writer の曖昧さは既に名前付きで落ちている
+
+`validateWritesAreOrdered` は
+`Ambiguous writes-writes dependency for resource ... between A and B` を投げる。
+**新しい検査を足す話ではない。**
+現在これを通っているのは、**配列順が暗黙に到達路を与えているから**である。
+
+### 5. `reads` / `writes` はソケットから導出できない(第 3 版の一文を撤回)
+
+**第 3 版は「`input` / `reads` / `writes` はソケットから導出されるようにする
+(逆ではない)」と書いた。撤回する。**
+
+**shader descriptor ではない resource use が 5 類型ある**(検証で全数):
+
+| 類型 | 由来 |
 |---|---|
-| `hybrid.geometry` | `deferred_geometry` + G-buffer 5 件 + `scene_depth` |
-| `hybrid.ssao` | `ssao_pass` / `ssao_blur_pass` + `ssao_output` / `ssao_blur` |
-| `hybrid.lighting` | `deferred_lighting` + `lit_color`。G-buffer と SSAO を import |
-| `hybrid.forward` | `forward_opaque` / snapshot 2 件 / `forward_transparent` + `opaque_color` / `opaque_depth`。`lit_color` と `scene_depth` を read-write import |
-| `hybrid.present` | `scene_present`。`lit_color` を import、`swapchain` を external export |
+| A | `dispatch.indirect.buffer` —— engine が read edge を足す |
+| B | `gpu_draw_source` の `commands` / `count` —— **2 箇所に重複実装** |
+| C | `snapshot_copy` の source / destination —— **shader が存在しない** |
+| D | attachment の `load_op == load` による**暗黙 read** |
+| E | output attachment の `writes` と attachment 定義の**二重表現** |
 
-#### target は 11 文書に分けない
+**D と C は出荷資産で日常的に発火する**
+(`load_op: "load"` は `ui` / `hdr` / `debug_draw` / `debug_text` / `gizmo` / `sky_ambient`、
+`snapshot_copy` は `cube_capture` / `planar_reflection` / `example`)。
+A は現状テスト資産のみ。
 
-11 件は**パスをまたいで共有される**。`lit_color` は writer が 3 つ、
-`scene_depth` は 3 パスが共有し、`opaque_color` / `opaque_depth` は
-snapshot の宛先かつ transparent の screen input である。
+**受け皿は既にある。**`LogicalResourceUse` と
+`LogicalAccessIntent { automatic, sampled, attachment, storage, transfer, host }`。
+attachment と transfer は既に推論されている。
+**足りないのは `indirect` の 1 値と、著作層が論理層と別建てで
+手書きリストを持っている二重管理だけである。**
 
-**target は、それを所有する bundle に属する。**bundle の境界では
-**typed な import / export** で受け渡す。既存の graph compiler 設計も
-open fragment に typed import/export を要求している。
+### 6. preset を編集可能にする
 
-**現在の planner は未使用の宣言を孤児として拒否しない**ので、
-**分解によって黙って増える宣言が出ないことを検査すること。**
+**検証の結果、第 3 版の記述は大半が正しく、欠けているのは 1 点だった。**
 
-#### 役割の主張
+**既にできていること(レビューの「触れない」は過大):**
 
-`material_routing.routes` は、**パスを供給する bundle が
-「この役割を担う」と明示的に claim する**形に変える。
-**衝突は名前付きの hard error。**黙って先勝ち・後勝ちにしない。
+- 許可鍵に `features` があり、preset 解決は feature 適用より**前**に走るので、
+  **feature 経由で preset のパスへ加算的に届く**(commit 83d9c52 で出荷済み)
+- `render_target_overrides` は preset 供給の render target の
+  `format` / `usage` / `format_candidates` / `width` / `height` を**上書き代入する**
 
-`material_routing.policy` は現在 `hybrid_auto_v1` の 1 値のみ。
-**設定として置く**が、**省略時に既定の routing が生成されない**現状を先に直すこと。
+**無いのは「既存 preset パスの書き換え・削除」である。**
 
-#### purgeable —— 所有権の模型(利用者の明示指示)
+**欠けている 1 点(逐語で決めること):**
 
-**「3 点で検査する」だけでは足りない。所有権を決める。**
+> **名指し override をどの文書のどの鍵に置くのか。**
+> root の新鍵か、feature の新フィールドか、`passes/authoring/` 下の管理 fragment か。
 
-1. **preset の成員を authored root へ物理展開しない。**解決時に origin edge を作るだけ
-2. edge を **`preset(bundle, slot, ref)` と `project(slot, ref)` に分けて持つ**
-3. **preset を外したら preset edge だけを切る。**project edge があれば寄与は 1 件残る
-4. **ファイルを消してよいのは editor-managed marker を持つ project 文書だけ**
-5. **root・bundle・他文書を含む到達可能グラフ全体**の正規化 inbound refcount が
-   0 になってから削除する
-6. **engine resource と、利用者が作った / marker の無いコピーは絶対に削除しない**
-7. root の edge 除去・managed ファイルの削除・preflight・runtime publish を、
-   **既存の複数文書トランザクションと同じ failure-atomic な commit に載せる**
+**purge の条件を強める** —— 現状は消えた preset パスを名指す著作 feature が
+`insertPassByAnchor` / `applyPassOverrides` で throw し、**プロジェクトが読めなくなる。**
 
-現在の `appendUniqueArray` は値を dedupe して origin を失う。**ここを変える。**
-削除側の refcount も root の `features` しか数えていない。
+> **preset を外したあとロードが成功し、
+> 著作物のうち preset 依存だったものだけが名前付きで落ちること。**
 
-**検査は 3 点に加えて、少なくとも次の 3 ケース:**
-preset と project が同じ成員を共有 / 外部編集された managed コピー / 別 bundle からも参照。
+**origin の欠落は `appendUniqueArray` ではない**(第 3 版の誤帰属)。
+preset の pass は `config` ごと丸ごと入り、`appendUniqueArray` は
+`features` / `shader_defines` / `graph_transforms` しか触らない。
+**実際の原因は `RenderPipelineProvenanceSource` に preset が無いことと、
+合成が preset 解決後の基底 config を丸ごと project と印付けしていることである。**
 
-#### §3.2(eject)の置き換え範囲
+### 落としてはならないもの
+
+- **purgeable**(利用者の明示指示)
+- **provenance が `(graph, name)` を持つこと**。現在は `name` だけ
+- **`material_resources` の footprint と `@history`**
+- **非 shader use の 5 類型**(§5)
+- **`shader_defines` は設定ではない。**全 shader compile に伝播する
+- **`draw_sort.xr_view_policy` は provider 選択ではない。**queue 数を 1↔2 に変える
+- **swapchain と `output_transform` はエンジンの canonical 層が所有する**
+- **swapchain の role による判定**(入力・深度出力として不正、色出力として正当)
+- **canonical anchor 8 個は消さない。**選択子の実例として使う
+
+### 段階 —— 1〜3 は着手可、4 は設計が残っている
+
+**利用者は「段階を踏まず直接直してよい」と言った。**
+ただし出荷 4 プロジェクトと `project init` を壊さないことは絶対条件である。
+
+**第 4 版初稿の段階表は依存関係を誤っていた**(段階 4 が「段階 1 だけに依存」)。訂正済み。
+
+```
+着手可:
+  1. 契約の軸を立てる。**schema は §1.1 で確定済み**
+     —— `.frag` / `.comp` 用の新しい文書種を立てる
+        (`.surface` は material 専用で届かない。文法とパーサだけ共有する)
+     —— v1 は型を綴らず、組み込み契約を名前で呼ぶ
+        (LogicalType に JSON パーサが存在しない。最初の reader になってはいけない)
+     —— binding を「パスの input 配列の序数」から「シェーダーの宣言順」へ移す
+     —— footprint の 3 経路(material_resources / input_footprints / read_footprints)を畳む
+     —— engine シェーダー 7 本に宣言を足す
+        (ssao_blur は neighborhood radius 2。現在は誰も書いておらず arbitrary 扱い)
+     —— 版は engine 先行で落とす。**未知の鍵は拒否されず、警告は誰も読んでいない**
+     —— Studio は core の reflection を読めない(D0)が、
+        **配管は既にある** —— get_render_authoring_context がパス JSON を丸ごと返している。
+        仕事は型付き DTO と契約の publish であり、新設ではない
+     【単独出荷可】内部 invariant として閉じる
+     【compute は別配管】compute はパス型ではなく compute_tasks[] であり、
+        著作コンテキストも add_authored_pass も届いていない
+
+  2. 接続の軸を名前へ移す(段階 1 に依存)
+     —— 照合用の契約と source 生成用 virtual include を別 channel にする
+        (resource_interface は非空なだけで include を生成し、.spv と併用すると拒否される)
+     —— fullscreen の index 固定 descriptor write を廃する
+     —— compute の positional fallback を廃する(今は名前で引いて失敗すると位置に落ちる)
+     —— 同一 resource 多重束縛の禁止を契約名付きの多重束縛へ緩める
+     —— LogicalAccessIntent に indirect を足し、非 shader use 5 類型を載せる
+     —— 「These never create graph edges.」契約を破棄する
+     【二重機構を残さないこと】宣言済みシェーダーで旧 positional と新 named の
+        両方を許すと、それ自体が WP324〜328 の失敗型になる
+
+  3. 既定値を engine 側 descriptor で実装する(段階 1・2 に依存)
+     —— MaterialDummyTexture::missing_default を fullscreen / compute へ横展開
+     —— dummy を 2D 以外(cube / array / 3D / buffer)へ広げる
+     —— 接続を持たない port 宣言を表現可能にする
+     【ここで利用者に届く】sprite_demo / vrm_xr_demo の ssao_clear 回避策が消える
+
+段階 4(テンプレ生成)—— 着手前に決めることが残っている:
+     依存は段階 1 だけではない。段階 2・3 に加えて
+     —— shader source の候補 overlay(commit 前 preflight)
+     —— shader を含む複数文書トランザクション
+     —— managed prologue / body の digest 分離と「adopted」の扱い
+     —— (graph, name) hash によるファイル名
+     —— 正規化 shader stem 単位の到達可能性
+     —— fullscreen の color 出力上限 1 を外す pass-shape policy 変更
+     —— output.color の {socket, target} schema
+
+  5. 選択子の一般化(段階 2 に依存 —— 名前付き契約を consumer 選択に使うため)
+
+保留(理由を明示する):
+  6. 順序を resource の参加者列へ
+     【保留理由】canonical anchor と output_transform の非データ依存が
+     resource に載らないため、before/after を残す設計が先に要る。
+     また enforceCanonicalOrder が合成時点で配列順を after 辺へ焼き込んでおり、
+     これを外さない限り負の対照が成立しない
+  7. preset パスの名指し override
+     【保留理由】override をどの文書のどの鍵に置くかが未決定
+```
+
+**段階 1・2 は単独では利用者価値のある変更ではない。内部の作り替えである。**
+**利用者に届くのは段階 3 からである。**そう明記すること —— 段階 1 を「v1」と呼ばない。
+
+**段階 6 が来るまで、ノードエディタは「0 から組む」を完全には満たせない**
+—— キャンバスには配列が無いのに、順序は配列が持っているためである。
+
+### 別件として切り出すもの(この設計の範囲外)
+
+レビューが `--feature-overlay` 周りで 3 点を指摘した。
+**題材は実在する**(`src/player/main.cpp` / `studioplayerarguments.cpp` /
+`renderer_config.cpp` / `launchconfig.hpp`)。**本設計とは無関係なので別 WP にする。**
+
+- **overlay 文書が reload watch に入っていない。**
+  watch 対象は root・preset・合成後 feature 文書だけで、overlay 参照を含まない
+- **CLI の absolute-path policy が overlay loader で失われる。**
+  overlay は `resolveProjectRef` を通り、`--allow-absolute-paths` を見る `resolveCliRef` を通らない
+- **`launchconfig.hpp` は `std::vector<std::string> render_feature_overlays` なのに、
+  `main.cpp` は `get<std::string>` で 1 件しか取っていない**(要確認)
+
+**注意**: レビューはこれらを「別紙 `design_for_codex.md` の指摘」として提示したが、
+**そのファイルはリポジトリに存在しない。**題材は実在するので指摘自体は追う価値があるが、
+**出典は確認できていない。**起票前に一次確認すること。
+
+### 受け入れ条件の骨子(WP 化するときに逐語で書く)
+
+**第 3 版が書いた条件のうち 3 つ、第 4 版初稿が足した 5 つのうち 4 つが成立しなかった。**
+**現行コードで実際に書ける形へ直した。**
+
+- **接続を 1 つ落とすとフレームプランが変わること。**
+  **今日 `material_resources` で成立する** ——
+  ソケット 1 個 → `reads` 1 本 → barrier という因果が既にテストにある。
+  **畳んだ後に同じ対照を `resource_ports` へ広げること。**
+  第 3 版の「`resource_ports` の 1 socket を落とすと」は、
+  今日は port が辺を作らないので**畳む前には成立しない**
+- **SSAO の回避策が消せること。**数はプロジェクトごとに違う ——
+  `sprite_demo` と `vrm_xr_demo` は **`ssao_clear` 1 パス + `ssao_blur` 1 ターゲット**、
+  `hybrid_v1` は **2 パス + 2 ターゲット**。**同じ文章にまとめないこと。**
+  **今日の負の対照は既にある** —— 2 つの demo から消すと
+  「Unknown resource reference ... ssao_blur」で落ちる
+- **既定値のないソケットを空にするとソケット名付きで落ちること。**
+  **material surface 経路では今日書ける** ——
+  「does not provide shader input 'X'」を `ContainsSubstring` で検査する
+- **配列を並べ替えてもフレームプランが同じであること(意味論射影で比較)。**
+  **完全一致ではない。**`declaration_index` と `order` を落とし、
+  `nodes` を名前で整列、`levels` と `barriers` を集合化して比較する。
+  **既存の dump 形式のままで可能。**
+  `after`/`before` だけの順序辺まで見るなら `edges` 配列を足す。
+  **前提: `enforceCanonicalOrder` が配列順を `after` 辺へ焼き込むのを外すこと。**
+  外さない限りこの対照は成立しない
+- **非 shader use が消えないこと** ——
+  `gpu_draw_source` を持つ material パスと `dispatch.indirect` を持つ compute task で、
+  畳み込み前後に read edge が一致すること。
+  **負の対照は「indirect buffer の read edge を落とすと barrier が消えること」**
+- **同一 resource への多重束縛が通ること** ——
+  `forward_transparent` の 3 契約(`opaque_depth` / `scene_depth` / `linear_view_depth`)が
+  畳んだ後も落ちないこと
+- **preset を外したあとロードが成功し、preset 依存だったものだけが名前付きで落ちること**
+- **provenance が `(graph, name)` を持つこと**
+
+#### 名前束縛(段階 1・2)—— 初稿から書き直した
+
+- **契約のみの経路では virtual include が空であること。**
+  そのうえで `ao → set1 / binding5` という**解決した binding 値を実測**する。
+  **負の対照は「source 生成経路を通したときだけ OFF で名前付きに落ちること」** ——
+  **「OFF で落ちる」を対照にしない。**照合と生成が別 channel であることを示すのが目的である
+- **宣言と実物の不一致を拒否すること。**
+  名前が読める構成では**誤った `OpName` を拒否**する。
+  名前が読めない構成(`-g0` 相当)では
+  **binding の不在 / descriptor 種別 / 次元の不一致を拒否**し、
+  **解決した binding 値を検査**する。
+  **同型・同 binding の「別物」を意味で見分けることは原理的にできない。**そこは要求しない
+- **compute の positional fallback が消えていること** ——
+  名前で引けなかったときに位置へ落ちないこと。
+  **同じテストの中で、宣言済みシェーダーが旧 positional で解決されないこと**
+- **回帰対照に material の 7 出力 fixture を含めること**(5 枚は上限ではなく互換既定)
+
+#### 出力の名前付き接続(段階 4 の前提)
+
+- **`{socket, target}` schema が受理されること。**
+  現在の parser は `target` / `subresource` 以外を「unknown field」で拒否する
+- **2 出力の fullscreen パスが組めること。**
+  現在は pass-shape policy が color 出力を最大 1 に固定している。**policy 変更が要る**
+- **2 出力が異なる色を書くシェーダーを headless で readback し、
+  `output.color` の順序を逆転しても 2 つの target の値が同じであること**
+- **material の `MaterialOutputSchema` が変わらないこと**
+
+#### テンプレ生成(段階 4)—— 初稿から書き直した
+
+- **明示操作の前は disk の bytes が完全一致すること。**
+  **「黙って再生成すると編集が消えること」を対照にしない** ——
+  禁止された実装を本番経路に置くことになる
+- **明示操作の後は managed prologue だけが変わり、body の digest が一致すること**
+- **コンパイル失敗時はすべてのファイルが未変更であること**
+- **ソケットを 1 つ足したとき、`PELICAN_DECLARE_INPUT_n` が実際に増えること** ——
+  ヘッダだけ増えて SPIR-V に binding が増えない状態にならないこと
+
+#### 生成シェーダーの purge(段階 4)
+
+**次の 6 ケースを同一テストで走らせること:**
+
+1. 2 つの graph に同名のパス(`main/blur` と `preview/blur`)
+2. stem の別名参照
+3. 複数箇所から共有参照
+4. 最後の参照を消したとき
+5. マーカーの無い手書きシェーダー(**消えないこと**)
+6. **body を編集済みの管理シェーダー(自動 purge しないこと。明示確認を要求すること)**
+
+- 出荷 4 プロジェクト、`pelican project init`、
+  `PELICAN_RUNTIME_SHADER_COMPILER` の ON / OFF(**OFF は「壊れない」の意味**)
+
+**fixture は既にある** —— `animgraph_demo` と `example` の完全な frame plan を作る
+ヘルパが `devstudio_frameplan_graph_test.cpp` にある。
+**`sprite_demo` / `vrm_xr_demo` の 2 本を同じ形で足すこと。**
+
+### bundle を捨てた理由(第 2 版の破棄。継続)
+
+第 2 版は preset の成員に「bundle slot」という差し替え単位を与えようとした。**要らない。**
+
+- **パスの同一性は既に `(graph, name)` である**
+- slot を足すと、**同じものに 2 つ目の識別体系**ができる。
+  「同じことをする方法が 2 つある」は WP324〜328 で 4 つの WP を費やした失敗の型である
+- **preset のパスに触れないのは、許可鍵の一行が `rendering_passes` を
+  禁じているからにすぎない**
+
+**SSAO を実測して確かめた** —— `hybrid_v1` の SSAO の中身は
+`type: fullscreen` のパス 2 枚(`engine://ssao` / `engine://ssao_blur`)と
+`R8_UNORM` / `extent_scale 1.0` のターゲット 2 枚だけである。
+**特別なものは一つも無い。今日のフォームで組めるものそのものである。**
+
+### §3.2(eject)の置き換え範囲(第 2 版から継続)
 
 **論理層の「resolved authoring eject」だけを置き換える。**
 
@@ -5835,42 +6798,12 @@ preset と project が同じ成員を共有 / 外部編集された managed コ�
 および **logical dump の診断**(`dump-resolved-render-pipeline` 等)。
 **診断まで失わないこと。**
 
-#### Studio が判断するために要るもの(D0)
-
-Studio は `pelican_core` をリンクできない。engine resource の列挙と bytes 取得は core 側にある。
-現在の authoring context は config / preset 情報 / pass provenance だけで、
-**resource provenance・bundle slot・member hash・依存・setting の所有者が無い。**
-これでは **「どの文書をコピーし、どの slot を差し替えるか」を Studio が判断できない。**
-**authoring context を拡張すること。**
-
-### 出荷・移行で落としてはならないもの
-
-- **埋め込み資源**: preset は `engine://` の埋め込み資源である。分解した bundle も同様に埋め込む
-- **`PELICAN_RUNTIME_SHADER_COMPILER=OFF`** 構成で成立すること
-- **Studio のカタログを汚さないこと** —— bundle が feature として列挙されて
-  利用者に「足せるもの」として出てはいけない
-- **出荷 4 プロジェクトのフレームプランが変わらないこと**
-- **`pelican project init`** の出力が動くこと
-
-### 受け入れ条件の骨子(WP 化するときに逐語で書く)
-
-- **`hybrid_v1` を 5 bundle へ書き直した前後で、`animgraph_demo` の
-  フレームプランが一致すること。**同じテストの中で、
-  **1 つの slot を落とすと一致しなくなること**
-- **slot の差し替えが加算ではなく置換であること。**
-  同じ target / pass 名を持つコピーを差し替えて、**衝突せず置き換わること。**
-  同じテストで、`features` への追加は従来どおり加算であること
-- **purge**: preset と project が同じ成員を共有した状態で preset を外すと、
-  **project 側の寄与が残ること。**marker の無いファイルが消えないこと
-- **分解で宣言が増えていないこと**(planner が孤児を拒否しないため、明示的に数える)
-- **役割の二重 claim が名前付きで落ちること**
-- 出荷 4 プロジェクトと `project init`、`RUNTIME_SHADER_COMPILER` の ON / OFF
-
-### v1 の単独価値について
-
-レビューは「段階 1 だけでは利用者価値が無く、別の loader を作れば段階 2 で捨てる二重機構になる」と指摘した。
-**したがって段階に割らず、slot の差し替えまでを一つの縦切りとする。**
-利用者が「段階を踏まず直接直してよい」と言っているのと整合する。
+**なお「合成後は一切書き戻せない」は範囲が広すぎた。**
+feature / canonical 合成後の逆変換が非可逆なのは事実だが、
+**preset 解決直後の `resolved` は「eject した verbose config と同じ
+canonical compiler input」だとコード自身が書いている。**
+全体ダンプを通常編集形式に戻す理由にはならないが、
+**stale override の復旧・比較用の限定 export 経路まで削除する根拠にはならない。**
 
 ## 著作キャンバスの設計(2026-08-20・第 2 版)
 
@@ -5913,7 +6846,7 @@ Studio は `pelican_core` をリンクできない。engine resource の列挙�
 `example` は 20 パス中 16 が fullscreen なので大半に届く。
 preset の構造ノードには届かない(②)。
 
-#### ④ preset は eject ではなく「参照の束」へ作り直す
+#### ④ preset は eject ではなく「参照の束」へ作り直す【「参照の束」は第 3 版で破棄。第 4 版が正本】
 
 利用者の判断: **preset はあくまで存在するノードの組み合わせを提供するだけにしたい。
 eject よりももっと深い融合がある。**
@@ -6068,7 +7001,9 @@ commit は 1 ファイルを CAS 置換し、runtime apply も root 1 本と sou
 - root を先に書く → **dangling reference**
 - **`operations` の個数制限を外しても解決しない。**複数ファイルの commit とクラッシュ復旧が増えないため
 
-**二択。前者を推奨する:**
+**二択。前者を推奨する【却下。利用者の決定 ① が B(複数文書トランザクション)を選び、
+A を「形式を分岐させる」として明示的に却下した。WP334b は B で実装済みである。
+以下の表は決定前の下書きであり、推奨は失効している】:**
 
 | 案 | 内容 |
 |---|---|
@@ -6148,7 +7083,8 @@ commit は 1 ファイルを CAS 置換し、runtime apply も root 1 本と sou
 第 1 版はそれらを後続へ後回しにしていた。
 
 ```
-1. 保存の基盤 —— 単一ファイル delta field と add_authored_pass 複合操作、
+1. 保存の基盤 —— 【却下】単一ファイル delta field 【→ 複数文書トランザクション。
+   利用者の決定 ①。WP334b で実装済み】と add_authored_pass 複合操作、
    root document 初期化。**内部基盤であり、単独の利用者価値を主張しない**
 2. 縦切り —— セッション draft(入力にしない)/ 1 複合操作で保存 /
    コンパイル失敗時は draft を保持し disk と runtime は旧世代 /
@@ -7781,6 +8717,219 @@ WP334a の受け入れ条件は「挿入以外に 1 バイトも変えない」�
 
 依存: WP334a(マージ済み)。見積: 中。**WP334b より先に直すこと** ——
 334b は同じ document の上に載る。
+
+### WP336: `ssao_blur.frag` 1 本で、ソケット宣言を execution plan まで通す
+
+**設計は §1.1 が正本である。着手前に §0 / §1 / §1.1 / §2 を読むこと。**
+
+**§4 規則 11 の中段**(`pelican_project` と複数経路にまたがる)。**仕様 + コード。**
+
+**この節は初版・第 2 版とも仕様レビューで着手不可になった。**
+**5 案(非出荷 slice / 原子的に全部 / reflection 照合だけ / 既存鍵で footprint /
+著作時判定)を評価し、反証を当てて残ったのがこの形である。**
+
+#### 収束の理由 —— 条件付きソケットが 3 案を殺した
+
+**`fullscreen.frag` に触る案はすべて同じ理由で落ちた。**
+
+`appendFullscreenSurfaceResource` は、fragment が `engine://fullscreen` かつ
+`uses_light_data: true` のパスに対し **`shadow_map` を `input` 配列へ追記する。**
+したがって合成後の image 入力数は **shadow 有効で 7、無効で 6** に揺れる。
+
+- shadow 有効: `animgraph_demo` と `pelican project init`
+- shadow 無効: `example` / `sprite_demo` / `vrm_xr_demo`
+
+**6 固定の宣言表は前者を落とし、7 固定は後者を落とす。**
+初版・案 D・案 E がすべてここで死んだ。
+
+**`ssao_blur.frag` にはこの問題が無い** —— ソケット 1 本、feature 条件なし、
+`ssao_blur_pass` の `input` は `["ssao_output"]` の 1 件で序数写像が自明。
+
+**したがって本 WP は `fullscreen.frag` に触らない。**
+**条件付きソケットの表現が決まるまで、`fullscreen.frag` は移行対象外である。**
+
+#### この WP は実行時の挙動を変えない(実測で保証できる)
+
+- **`read_requires_materialization` は `neighborhood` / `arbitrary` / `temporal` を
+  同一に扱う。**`tile_local_eligible` は `widest_read == same_pixel` を要求する。
+  **`ssao_output` を `arbitrary` → `neighborhood` に narrow しても反転しない**
+- **`.spv` は git 追跡外で、raw `.frag` は `b_embed` と `embed_shader` の
+  両方で無条件に埋め込まれている。**`engineResource()` は `.spv` と独立に raw を返す
+- **`//!` を `#version` の前に置いて glslang が通ることは実測済み**
+
+#### 範囲
+
+**やること:**
+
+1. **`//!` 行読みを共通 tokenizer へ抽出する。**
+   prefix / **index 3 が ASCII U+0020 完全一致** /
+   **リスト判定は「trim 後の先頭が `-`」のみ(直後の空白は任意)** /
+   最初の `:` で分割。
+   **`//! -legacy_item` と「`//!` の直後がタブ」の回帰テストを足すこと** ——
+   前者は今日警告して黙殺され、後者は throw する。**どちらも変えないこと**。
+   **`.surface` の挙動は byte 一致を保つこと**(未知鍵の警告も、
+   値が空のとき section が `unknown` になって続く項目を黙殺することも、そのまま)
+2. **新文書種 `pelican.fullscreen v1`。**`DocumentKind` と `UnknownKeyPolicy` を渡し、
+   **新文書種でだけ未知のトップレベル鍵と未知の inline field を拒否する**
+3. **v1 が綴るのは `name` / `footprint` / `radius` / `stage` のみ。**
+   **`contract:` を書かせないこと** —— 組み込み契約を足さない本 WP では
+   footprint に上書きされるだけの無効フィールドになり、
+   **宣言の中に小さな「誰も使わないもの」を作る**
+4. **graph parse より前に metadata を解決する。**
+   `parseFrameGraphDefinitionsFromConfigJson` に既定値付き引数を足す。
+   production の呼び出しは 3 箇所だけである
+5. **`ssao_blur.frag` 1 本にヘッダを載せる**
+   (`- { name: ssaoInput, footprint: neighborhood, radius: 2, stage: fragment }`)
+6. **同一パスにヘッダと `input_footprints` の両方があれば名前付きエラー**
+7. **宣言ソケット数がパスの `input` 配列長と一致しなければ名前付きエラー**
+
+**やらないこと(理由付きで明示する):**
+
+- **照合専用 reflection channel** —— 照合が走るのは `buildGraphicsPipeline` で
+  **device が要る。**本 WP の受け入れ条件は全部 CPU 経路なので、
+  **この channel には受け入れ条件が 1 つも付かない。**
+  段階 2(名前束縛)で、実装上の動機が立ってから作る
+- **解析結果の cache** —— `engineResource()` は埋め込みへの `string_view` を返す。
+  **測る前に置く cache は、それ自体が「誰も使わない機構」である**
+- **`fullscreen.frag`**(条件付きソケット。上記)
+- **組み込み契約の追加 / producer semantic / `outputs:`**
+- **版の gate** —— 本 WP は engine 同梱のシェーダーしか触らないので、
+  エンジンと同梱物の版は必ず一致する。**`engine_min_version` は不要**
+- **21 本の移行 / headerless の拒否 / binding を宣言順へ / 既定値**
+
+#### 受け入れ条件(§4 規約 10)
+
+**3 回目の仕様レビューで、この節は「限定修正すれば着手可」になった。**
+**以下は修正を織り込んだ版である。**
+
+**観測点は `test/devstudio_frameplan_graph_test.cpp` の既存ヘルパである** ——
+実プロジェクト config → `parseFrameGraphDefinitionsFromConfigJson` →
+`planFrameGraph` → `compileFrameExecutionPlan` → `compileRenderingTargetPlans` を
+**device 無しで**通す。**`RUNTIME_SHADER_COMPILER` の ON / OFF 両方でビルドされる。**
+
+##### 肯定
+
+- `ssao_blur_pass` の `execution_plan.nodes[].resource_uses[]` のうち
+  `resource == "ssao_output"` の `footprint` が
+  **`{"kind":"neighborhood","radius":2}`** であること。
+  **serializer は `{kind, radius}` を出し、execution adapter は
+  未指定のときだけ `arbitrary` にする**(実測済み)
+
+##### 否定対照 —— 「変更前」の作り方を逐語で決める
+
+**ヘルパの返却値全体を byte 比較してはならない。**
+ヘルパは `framePlanToJson` の後に `execution_plan` と `physical_target_plan` を
+**同じ wire へ入れ子で足しており**、execution plan の fingerprint は footprint を含む。
+
+**同一 `TEST_CASE` の中で:**
+
+- **肯定側**は既定 resolver から実際の `engineResource("ssao_blur.frag")` を読む
+- **否定側**は同じ shader body の**ヘッダ無し source** を loader から返し、
+  従来どおり `arbitrary` を得る
+- **byte 比較の対象は、入れ子を足す前の `framePlanToJson(...).dump()`** とする。
+  基底の `FramePlan` は `read_footprints` を保持せず
+  reads / writes / order / level だけを写すので、**ここは一致する**
+- **記録 fixture を「変更前」の golden にしてはならない**
+
+##### `physical_target_plan` —— 除外する欄を列挙する
+
+**footprint は logical graph fingerprint の入力であり、
+それが automatic fingerprint にも波及する。**
+fingerprint は top-level だけでなく **pin / physical fragment /
+complete package にも重複して出る。**
+したがって「`widest_read` と reason だけが差分」は**必ず失敗する。**
+
+**比較前に除外するのは次だけである:**
+
+- **top-level と 3 つの ejectable package の logical / automatic fingerprint**
+- **`ssao_output` の `widest_read`**(lowering graph / resources /
+  complete package の各所)
+- **`ssao_output` の materialization `reason`**(resources / complete package)
+- **`pelican.plan.resource_representation@1` decision の当該 detail**
+
+**それ以外は完全一致とすること** ——
+特に `representation` / `backend_selection` / `scopes` / `attachments` /
+`alias_groups` / sample・view・resolution plan。
+**`neighborhood` と `arbitrary` はともに materialization 必須、
+tile-local は `same_pixel` のみ、scope fusion も `same_pixel` を要求し、
+cost は representation・stored・scope 数で決まる**(実測)ので、
+これらが動かないことは保証できる。
+
+##### 既存テストの追随(範囲に含めること)
+
+**`test/devstudio_frameplan_graph_test.cpp` は
+materialization reason が `arbitrary` の resource 数を 16 で固定している。**
+`ssao_output` 1 件が neighborhood へ移るので **15 になる。**
+
+- **`arbitrary_materialized_count == 15` に直すこと**
+- **加えて `ssao_output` の neighborhood reason を直接検査すること**
+  (数を減らすだけでは、別の resource が動いても通る)
+- `same_pixel_count == 1` は変わらない(neighborhood はどちらでもない)
+
+##### 形式の厳格化 —— 同一テストの両側で
+
+- **新文書種で未知のトップレベル鍵が throw すること**
+- **新文書種で未知の inline field も throw すること。**
+  トップレベル鍵だけを検査すると、inline の typo を無視する実装でも通る
+- **同じ `TEST_CASE` の中で、`.surface` は従来どおり warnings に積んで通ること**
+  (既存テストが `editor_group` / `capabilities` で警告になることを検査している)
+
+##### 序数の対照
+
+- **ヘッダは 1 ソケットのままにし、config の `input` を 2 件にする。**
+  「2 個目のソケットを書いた config」は書けない —— **config が持つのは接続であり、
+  ソケットを書く場所が無い**
+- **不一致の検出場所は resolver ではない。**
+  metadata は先に解決するが、**比較は `parseRenderNodeFromJson` が `input` を
+  読んだ直後、`input_footprints` を適用する前**に行う
+- **ヘッダと `input_footprints` の併記拒否も、同じ choke point に置ける**
+
+##### その他
+
+- **top-level のフレームプランが byte 一致すること**
+  (`order` / `level` / `reads` / `writes` / `barriers`)
+- **`legacy_read_footprint_conservative` を条件に使わないこと。**
+  **この decision は frame plan の wire に出ない**(出荷 fixture で 0 件)
+- **出荷 4 プロジェクトと `pelican project init`**
+- **ON / OFF 両構成。**OFF では `engineResource("ssao_blur.frag")` から
+  同じ宣言が得られること
+- **変異は 2 つ、名指しで**:
+  **(a) metadata → `node.read_footprints` の適用を外す**、
+  **(b) 併記拒否を外す。**
+  **試していない項目は明示すること**
+
+**着地点の確認(実測)**: `ssao_blur_pass` は
+`projects/example`(verbose config)と `hybrid_v1`(preset)の**両方**にあり、
+どちらも `fragment: engine://ssao_blur` / `input: ["ssao_output"]` の 1 件である。
+
+**記録 fixture の扱い**: `test/fixtures/devstudio/example_frame_plan.json` には
+既に `ssao_blur_pass` の `resource_uses` があり、
+`ssao_output` の `footprint` は **`{"kind":"arbitrary"}`** である。
+**ただしこれは golden ではなく、studio テストの入力である**
+(読み込んで widget に食わせるだけで、再生成も比較もされない)。
+**対照に使わないこと。**ただし engine の出力が変わる以上
+**内容が実態と食い違うので、同じ WP で更新すること**。
+
+#### 二重機構の終了条件(この WP で名指しすること)
+
+**`input_footprints` とヘッダが同じ `node.read_footprints` を書く状態になる。**
+本 WP は「同一パスで併記したら落ちる」で 1 パス 1 経路にするが、
+**鍵そのものは残る。**
+
+**終了 WP を採番して台帳に置くこと** ——
+「generic fullscreen の engine シェーダーを原子的に移行し、
+同じ変更で headerless を拒否し、`input_footprints` を削除する」。
+**その WP の入口条件は「条件付きソケットの表現が決まっていること」である。**
+
+#### 利用者に届くもの
+
+**届かない。内部 invariant のみである。**
+描画結果も性能もエラー文言も変わらない。**そう明記すること。**
+設計自身が「段階 1・2 は内部の作り替え、利用者に届くのは段階 3 から」と書いている。
+**本 WP を `v1` と呼ばないこと。**
+
+依存: 無し。見積: 中。
+**次は「条件付きソケットの表現」。**それが決まるまで `fullscreen.frag` は動かせない。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
