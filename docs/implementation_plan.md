@@ -9638,6 +9638,115 @@ materialization reason が `arbitrary` の resource 数を 16 で固定してい
 依存: 無し。見積: 中。
 **次は「条件付きソケットの表現」。**それが決まるまで `fullscreen.frag` は動かせない。
 
+
+### WP338: `engine://ssao` を生成 include へ移す(位置束縛の最初の 1 本)
+
+**設計は `## ノードを自在に定義して書けるようにする(2026-08-23・第 5 版)` の
+`### 完了までの順序` の段階 A・B が正本である。着手前に全文を読むこと。**
+
+**§4 規則 11 の上段**(engine の挙動が変わる)。**仕様 + コード。**
+
+#### なぜ `ssao.frag` を最初にするか(実測で選んだ)
+
+**7 本のうち、移行の難所を 1 つも含まない唯一の本である。**
+
+| | `ssao.frag` |
+|---|---|
+| 宣言 | **2**(`PELICAN_DECLARE_INPUT_0/1`)。`#ifdef` なし |
+| sample 呼び出し | **3**(worldPos ×2、normal ×1) |
+| `sampler2DArray` | **使わない**(accessor が 2 引数しかない問題に当たらない) |
+| `textureSize` | **使わない**(定数 accessor の size 未解決問題に当たらない) |
+| `inherit_bindings_from` | **無い**(`*_lighting` 系だけが使う) |
+| 条件付きソケット | **無い**(shadow の門に当たらない) |
+| 消費者 | **4 つ。すべて入力 2 件で同じ順** |
+
+消費者:
+`hybrid_v1` の `ssao_pass` / `projects/example` の `ssao_pass` /
+`cube_capture` の `cube_capture_ssao` / `planar_reflection` の `planar_reflection_ssao`。
+
+#### 観測可能な変化(これが射程である)
+
+**`ssao_pass` の `input` 2 件を入れ替えても、絵が変わらなくなる。**
+
+**今日は変わる** —— 序数束縛なので `worldPosSampler` が normal を、
+`normalSampler` が worldpos を読む。**エラーも警告も出ない**(実測で確認済み: 別パスで
+入力を並べ替えると exit 0 / エラー 0 件 / VUID 0 件で絵だけが変わった)。
+
+移行後は `resource_ports` が**名前で対応**し、binding は resource に追従するので、
+`input` の並びは無意味になる。
+
+#### 範囲
+
+**やること:**
+
+1. **`ssao.frag` を焼くのをやめる** ——
+   `embed_shader(ssao.frag)` を外し、`engineresources.cpp` の `.spv` 登録 2 行と
+   `test/fixtures/project_format/engine_resources.json` の 1 行を追随させる。
+   **実験(ブランチ `exp/unbake`)で `ssao_blur.frag` について同じ手順が
+   configure / build / 1137 件緑を通ることを確認済み**
+2. **`PELICAN_DECLARE_INPUT_0/1` と `PELICAN_TEXTURE_2D_0/1` を捨て、
+   生成 include の accessor(`pelican_sample_<port>()`)へ移す**
+3. **4 つの消費者に `resource_ports` を足す。**
+   **`input` は残す** —— fullscreen の `resource_ports` は
+   `input` に在る resource しか指せず、グラフの辺は `input` が作る。
+   `clustered_lighting` の `pass_overrides` が `deferred_lighting` に対して
+   既に同じ形をしている(`input` と `resource_ports` の併記)
+4. **OFF 構成への影響を測る** ——
+   OFF の 1094 件のうち `engine://ssao` を**実際にロードする**ものがあるか。
+   shader 依存テストは既に `if(PELICAN_RUNTIME_SHADER_COMPILER)` で除外されているが、**確かめること**
+
+**やらないこと(理由つきで明示する):**
+
+- **他の 6 本**(それぞれ難所を持つ。`fullscreen.frag` は条件付き shadow、
+  `ssao_blur` は `textureSize`、shadow cascade は array accessor)
+- **既定値 / `optional`**(段階 C)
+- **`input` を `resource_ports` に畳むこと**(段階 D)。今回は併記のまま
+- **footprint**(段階 D で 3 経路を畳む)
+- **順序**(段階 E)/ **compute の著作型**(段階 F)
+- **WP211 dist-bake** —— 完了の前提ではない
+
+#### 受け入れ条件(§4 規約 10)
+
+- **肯定**: `ssao_pass` の `input` を `["gbuffer_normal", "gbuffer_worldpos"]` と
+  逆順にしても、**headless の出力画素が canonical 順と一致すること**
+- **否定対照 1(今日の挙動)**: **同じテストの中で**、移行前の構成
+  (または `resource_ports` を外した構成)で同じ入れ替えを行うと**画素が変わること**。
+  **「2 枚が同じ」だけでは両方黒でも通る。**移行前後で**異なる**ことを示して初めて対照になる
+- **否定対照 2(取り違え)**: `resource_ports` の socket 名と resource の対応を
+  **故意に交換**すると**画素が変わること**
+- **生成 include が production 経路で取れること**
+  (`ShaderBundle::virtual_includes`)。**その中に binding が入っていること。**
+  ただしこれは補助条件であり、**画素検査の代わりにしない**
+- **4 つの消費者すべてがロードでき、フレームが回ること** ——
+  `hybrid_v1` / `example` / `cube_capture` / `planar_reflection`
+- **`ssao.frag` の `.spv` が生成されなくなり、registry と fixture が一致すること**
+  (`pathresolver_test.cpp` の registry 突き合わせ)
+- **出荷 4 プロジェクトと `pelican project init`**
+- **`RUNTIME_SHADER_COMPILER` の ON / OFF 両構成でビルドが通り、テストが緑であること。**
+  **OFF で「出荷プロジェクトが動く」ことは条件にしない**(今日も動かない)。
+  **OFF のテスト数が減るなら、どのテストがなぜ落ちたかを報告すること**
+- **`uv run tools/doclink.py check` が緑であること**
+- **変異を 2 つ**: **(a) `resource_ports` を外す**(序数束縛に戻り、入れ替えで絵が変わる)/
+  **(b) 生成 include の binding 割り当てを固定値にする**。
+  **試していない項目は明示すること**
+
+#### 落とし穴
+
+- **`ssao.frag` は `worldPosSampler` を 2 回読む** ——
+  同一ピクセル(`inUV`)と**再投影した任意座標**(`offset.xy`)。
+  **同じ port を 2 回 sample するだけなので port は 1 つでよい**
+- **生成 accessor の名前は port 名から作られる。**port 名は識別子規則に従うこと
+- **`cube_capture` / `planar_reflection` は自前の resource を使う**
+  (`cube_capture_worldpos` 等)。`deferred_lighting` の継承とは別経路である
+- **binding は今も `input` の index である。**
+  本 WP が変えるのは「シェーダーが番号を書かなくなる」ことと
+  「port が名前で resource に対応する」ことであって、**番号の決まり方ではない**
+  (それは段階 D 以降)
+
+依存: 無し。見積: 中。
+**次は `ssao_blur.frag`**(`textureSize` の扱いを決める)、
+**その次が `fullscreen.frag`**(条件付き shadow ソケット = 段階 C と同時)。
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
