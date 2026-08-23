@@ -6,6 +6,7 @@
 #include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
+#include "../../project/imagesubresource.hpp"
 #include "../../project/renderconfigdocument.hpp"
 #include <nlohmann/json.hpp>
 #include <glm/glm.hpp>
@@ -58,6 +59,16 @@ struct PickingReadbackResult {
 struct R8RenderTargetReadback {
     vk::Extent2D extent{};
     std::vector<std::uint8_t> pixels;
+};
+
+struct RenderTargetReadback {
+    vk::Extent2D extent{};
+    vk::Format format{};
+    std::uint32_t layer_count = 1;
+    // Layers the image actually has, so a caller narrowing to one
+    // can tell whether it saw the whole thing.
+    std::uint32_t image_layer_count = 1;
+    std::vector<std::uint8_t> bytes;
 };
 
 struct LogicalFrameRuntime {
@@ -161,6 +172,9 @@ DECLARE_MODULE(Renderer) {
         const std::function<void()> &source_commit);
     PickingReadbackResult readPickingPixel(std::uint32_t x,
                                            std::uint32_t y);
+    RenderTargetReadback readRenderTargetForTesting(
+        std::string_view name,
+        const ImageSubresourceRange &range);
     R8RenderTargetReadback readR8RenderTargetForTesting(
         std::string_view name);
     std::optional<vk::Format>

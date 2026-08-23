@@ -201,6 +201,18 @@
           "cube_capture_worldpos",
           "cube_capture_normal"
         ],
+        "resource_ports": {
+          "world": {
+            "resource": "cube_capture_worldpos",
+            "access": "sampled",
+            "view": "per_view"
+          },
+          "normal": {
+            "resource": "cube_capture_normal",
+            "access": "sampled",
+            "view": "per_view"
+          }
+        },
         "push_constants": "projection_view",
         "shader": {
           "vertex": "engine://fullscreen",

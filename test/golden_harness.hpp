@@ -26,5 +26,10 @@ void runGpuTimingCompute();
 void runGpuTimingSprite();
 void runGpuDrawBreakEvenTiming();
 void runFullscreenRebind();
+void runSsaoFlatGolden();
+void runSsaoXrSequentialGolden();
+void runSsaoXrMultiviewGolden();
+void runSsaoCubeGolden();
+void runSsaoPlanarGolden();
 
 } // namespace Pelican::GoldenHarness

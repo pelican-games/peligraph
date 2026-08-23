@@ -22,6 +22,9 @@
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
+#include "../src/core/model/modeltemplate.hpp"
+#include "../src/core/model/polygonvertdata.hpp"
+#include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/openxr/openxrmirrorsink.hpp"
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/playback/vatplayer.hpp"
@@ -78,6 +81,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -8299,7 +8303,578 @@ float srgbToLinear(std::uint8_t encoded) {
                              : std::pow((value + 0.055f) / 1.055f, 2.4f);
 }
 
+constexpr std::uint32_t wp338SsaoExtent = 64;
+
+enum class Wp338SsaoScenario {
+    hybrid_flat,
+    example_flat,
+    xr_sequential,
+    xr_multiview,
+    cube,
+    planar,
+};
+
+struct Wp338SsaoContract {
+    std::string_view golden_name;
+    std::string_view target;
+    std::uint32_t layer_count = 1;
+    bool example_config = false;
+    bool xr_graph = false;
+    bool multiview = false;
+};
+
+Wp338SsaoContract wp338SsaoContract(
+    Wp338SsaoScenario scenario) {
+    switch (scenario) {
+    case Wp338SsaoScenario::hybrid_flat:
+        return {
+            .golden_name = "hybrid_flat",
+            .target = "ssao_output",
+        };
+    case Wp338SsaoScenario::example_flat:
+        return {
+            .golden_name = "example_flat",
+            .target = "ssao_output",
+            .example_config = true,
+        };
+    case Wp338SsaoScenario::xr_sequential:
+        return {
+            .golden_name = "xr_sequential",
+            .target = "ssao_output",
+            .xr_graph = true,
+        };
+    case Wp338SsaoScenario::xr_multiview:
+        return {
+            .golden_name = "xr_multiview",
+            .target = "ssao_output",
+            .layer_count = 2,
+            .xr_graph = true,
+            .multiview = true,
+        };
+    case Wp338SsaoScenario::cube:
+        return {
+            .golden_name = "cube",
+            .target = "cube_capture_ao",
+            .layer_count = 6,
+        };
+    case Wp338SsaoScenario::planar:
+        return {
+            .golden_name = "planar",
+            .target = "planar_reflection_ao",
+            .layer_count = 2,
+            .xr_graph = true,
+        };
+    }
+    throw std::runtime_error("unknown WP338 SSAO scenario");
+}
+
+void writeWp338SsaoProject(
+    const std::filesystem::path &root,
+    Wp338SsaoScenario scenario) {
+    const auto contract = wp338SsaoContract(scenario);
+    auto project = makeShadowProjectJson();
+    project["name"] = "WP338 SSAO golden";
+    project["basic_config"]["default_rendering_pass"] =
+        "main_render";
+    project["basic_config"]["window_size"] = {
+        {"width", wp338SsaoExtent},
+        {"height", wp338SsaoExtent},
+    };
+    writeTextFile(
+        root / "project.json", project.dump(2));
+    writeTextFile(
+        root / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        root / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeTextFile(
+        root / "ui" / "ui.json",
+        R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+
+    nlohmann::json config;
+    if (contract.example_config) {
+        config = nlohmann::json::parse(readTextFile(
+            sourceRoot() / "projects" / "example" /
+            "passes" / "main_rendering_config.json"));
+    } else {
+        config = nlohmann::json::parse(
+                     engineResourceOrThrow(
+                         "render_pipelines/hybrid_v1.json"))
+                     .at("config");
+    }
+    if (!config.contains("features")) {
+        config["features"] = nlohmann::json::array();
+    }
+
+    if (scenario == Wp338SsaoScenario::xr_sequential ||
+        scenario == Wp338SsaoScenario::xr_multiview) {
+        config["xr"] = {
+            {"view_execution",
+             scenario == Wp338SsaoScenario::xr_sequential
+                 ? "sequential"
+                 : "auto"},
+        };
+        if (scenario ==
+            Wp338SsaoScenario::xr_multiview) {
+            auto retained = nlohmann::json::array();
+            for (const auto wanted : {
+                     "deferred_geometry",
+                     "ssao_pass",
+                     "scene_present",
+                 }) {
+                for (const auto &pass :
+                     config["rendering_passes"][0]["passes"]) {
+                    if (pass.value(
+                            "name", std::string{}) == wanted) {
+                        retained.push_back(pass);
+                        break;
+                    }
+                }
+            }
+            config["rendering_passes"][0]["passes"] =
+                std::move(retained);
+            auto &present =
+                config["rendering_passes"][0]["passes"].back();
+            present["input"] =
+                nlohmann::json::array({"ssao_output"});
+            config.erase("material_routing");
+        }
+    }
+    if (scenario == Wp338SsaoScenario::cube) {
+        config["features"].push_back({
+            {"ref", "engine://features/cube_capture.json"},
+            {"parameters",
+             {
+                 {"resolution", wp338SsaoExtent},
+                 {"position_x", 0.15},
+                 {"position_y", -0.1},
+                 {"position_z", 2.0},
+             }},
+        });
+    }
+    if (scenario == Wp338SsaoScenario::planar) {
+        // Keep the live SSAO fragment, but give this secondary-family pass a
+        // non-builtin vertex stem so it belongs to only one planner set.
+        writeTextFile(
+            root / "shaders" / "wp338_fullscreen.vert",
+            engineResourceOrThrow("fullscreen.vert"));
+        auto feature = nlohmann::json::parse(
+            engineResourceOrThrow(
+                "features/planar_reflection.json"));
+        auto retained = nlohmann::json::array();
+        for (const auto wanted : {
+                 "planar_reflection_geometry",
+                 "planar_reflection_ssao",
+             }) {
+            for (const auto &entry : feature.at("passes")) {
+                if (entry.at("pass").value(
+                        "name", std::string{}) == wanted) {
+                    retained.push_back(entry);
+                    break;
+                }
+            }
+        }
+        for (auto &entry : retained) {
+            if (entry["pass"].value(
+                    "name", std::string{}) ==
+                "planar_reflection_ssao") {
+                entry["pass"]["shader"]["vertex"] =
+                    "project://shaders/wp338_fullscreen";
+            }
+        }
+        feature["passes"] = std::move(retained);
+        feature["compute_tasks"] =
+            nlohmann::json::array();
+        feature.erase("pass_overrides");
+        writeTextFile(
+            root / "features" /
+                "wp338_planar_reflection.json",
+            feature.dump(2));
+        config["xr"] = {
+            {"view_execution", "sequential"},
+        };
+        config["features"].push_back({
+            {"ref",
+             "project://features/"
+             "wp338_planar_reflection.json"},
+            {"parameters",
+             {
+                 {"resolution", wp338SsaoExtent},
+                 {"plane_x", 0.0},
+                 {"plane_y", 1.0},
+                 {"plane_z", 0.0},
+                 {"plane_offset", -0.5},
+                 {"preserve_raster_winding", true},
+                 {"oblique_near_plane", true},
+             }},
+        });
+    }
+
+    const auto feature_name =
+        std::string{"wp338_readback_"} +
+        std::string{contract.golden_name};
+    const auto feature_file =
+        feature_name + ".json";
+    writeTextFile(
+        root / "features" / feature_file,
+        nlohmann::json{
+            {"schema", "pelican.render_feature"},
+            {"version", 1},
+            {"name", feature_name},
+            {"render_target_overrides",
+             {{std::string{contract.target},
+               {{"usage",
+                 nlohmann::json::array(
+                     {"TRANSFER_SRC"})}}}}},
+        }.dump(2));
+    config["features"].push_back(
+        "project://features/" + feature_file);
+    writeTextFile(
+        root / "passes" / "main.json",
+        config.dump(2));
+}
+
+CommonPolygonVertData makeWp338SsaoQuad(
+    float half_extent,
+    float z,
+    glm::vec2 center,
+    glm::vec3 normal) {
+    CommonPolygonVertData data;
+    data.indices = {0, 1, 2, 0, 2, 3};
+    data.pos = {
+        {center.x - half_extent,
+         center.y - half_extent, z},
+        {center.x + half_extent,
+         center.y - half_extent, z},
+        {center.x + half_extent,
+         center.y + half_extent, z},
+        {center.x - half_extent,
+         center.y + half_extent, z},
+    };
+    data.normal.assign(
+        data.pos.size(), glm::normalize(normal));
+    data.texcoord = {
+        {0.0f, 0.0f}, {1.0f, 0.0f},
+        {1.0f, 1.0f}, {0.0f, 1.0f},
+    };
+    data.color.assign(
+        data.pos.size(), glm::vec4{1.0f});
+    return data;
+}
+
+void placeWp338SsaoScene() {
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    const auto material =
+        GET_MODULE(MaterialContainer)
+            .registerMaterial(MaterialInfo{
+                .vert_shader =
+                    standard.standardVertShader(),
+                .frag_shader =
+                    standard.standardFragShader(),
+                .base_color_texture =
+                    standard.whiteTexture(),
+                .metallic_roughness_texture =
+                    standard.metallicRoughnessDefaultTexture(),
+                .normal_texture =
+                    standard.normalDefaultTexture(),
+                .emissive_texture =
+                    standard.emissiveDefaultTexture(),
+                .occlusion_texture =
+                    standard.occlusionDefaultTexture(),
+            });
+    auto &geometry = GET_MODULE(VertBufContainer);
+    auto ground = geometry.addPrimitiveEntry(
+        makeWp338SsaoQuad(
+            1.6f, 0.0f, {0.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f}));
+    ground.mesh_index = 0;
+    ground.primitive_index = 0;
+    auto near_blocker = geometry.addPrimitiveEntry(
+        makeWp338SsaoQuad(
+            0.42f, 0.38f, {-0.30f, 0.12f},
+            {0.45f, 0.20f, 1.0f}));
+    near_blocker.mesh_index = 1;
+    near_blocker.primitive_index = 0;
+    auto far_blocker = geometry.addPrimitiveEntry(
+        makeWp338SsaoQuad(
+            0.28f, 0.20f, {0.48f, -0.28f},
+            {-0.40f, 0.35f, 1.0f}));
+    far_blocker.mesh_index = 2;
+    far_blocker.primitive_index = 0;
+
+    ModelTemplate model;
+    model.asset_id = ModelAssetId{338};
+    model.material_primitives = {
+        ModelTemplate::MaterialPrimitives{
+            .material = material,
+            .primitives = {
+                ground, near_blocker, far_blocker},
+            .source_material_index = 0,
+        },
+    };
+    GET_MODULE(PolygonInstanceContainer)
+        .placeModelInstance(model);
+
+    auto &camera = GET_MODULE(Camera);
+    camera.setScreenSize(
+        wp338SsaoExtent, wp338SsaoExtent);
+    camera.setPos({0.0f, 0.0f, 2.0f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+}
+
+RenderViewFamily makeWp338StereoFamily() {
+    std::array<RenderViewParameters, 2> views;
+    for (std::uint32_t view = 0;
+         view < views.size(); ++view) {
+        const auto eye = view == 0
+            ? glm::vec3{-0.35f, 0.0f, 2.0f}
+            : glm::vec3{0.45f, 0.35f, 1.6f};
+        const auto target = view == 0
+            ? glm::vec3{-0.10f, 0.0f, 0.0f}
+            : glm::vec3{0.10f, -0.20f, 0.0f};
+        views[view].view = glm::lookAt(
+            eye,
+            target,
+            glm::vec3{0.0f, 1.0f, 0.0f});
+        views[view].projection = glm::perspective(
+            glm::radians(view == 0 ? 55.0f : 85.0f), 1.0f,
+            0.1f, 100.0f);
+        views[view].projection[1][1] *= -1.0f;
+        views[view].camera_position = eye;
+        views[view].view_id =
+            "$wp338/" + std::to_string(view);
+    }
+    return RenderViewFamily{
+        .family_id =
+            std::string{mainRenderViewFamilyId},
+        .views = {views.begin(), views.end()},
+    };
+}
+
+RenderTargetReadback captureWp338Ssao(
+    Wp338SsaoScenario scenario) {
+    const auto contract = wp338SsaoContract(scenario);
+    const auto root = makeTempProjectDir(
+        "wp338_ssao_" +
+        std::string{contract.golden_name});
+    try {
+        writeWp338SsaoProject(root, scenario);
+        RenderTargetReadback readback;
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(
+                readTextFile(root / "project.json"));
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = vk::Extent2D{
+                wp338SsaoExtent, wp338SsaoExtent};
+            launch.headless_frames = 1;
+
+            auto &vkcore = GET_MODULE(VulkanManageCore);
+            if (contract.xr_graph) {
+                // Vulkan exists first, so this selects the XR graph without
+                // starting an OpenXR runtime or requiring a headset.
+                launch.xr_active = true;
+            }
+            auto &time = GET_MODULE(EngineTime);
+            time.setup(
+                EngineTime::Mode::fixed_step,
+                1.0 / 60.0);
+            auto &renderer = GET_MODULE(Renderer);
+            if (contract.xr_graph) {
+                renderer.selectGraphVariant(
+                    RenderGraphVariant::xr);
+            }
+            placeWp338SsaoScene();
+            time.advance();
+
+            if (contract.multiview) {
+                Test::VulkanSyntheticViewFamilyTarget target{
+                    launch.headless_extent,
+                    GET_MODULE(RenderTarget)
+                        .getSwapchainFormat()};
+                renderer.renderLogicalFrame(
+                    target, makeWp338StereoFamily());
+            } else if (contract.xr_graph) {
+                Test::VulkanSyntheticStereoTarget target{
+                    launch.headless_extent,
+                    GET_MODULE(RenderTarget)
+                        .getSwapchainFormat()};
+                renderer.renderLogicalFrame(
+                    target, makeWp338StereoFamily());
+            } else {
+                renderer.render();
+            }
+            vkcore.waitIdle();
+            readback = renderer.readRenderTargetForTesting(
+                contract.target,
+                ImageSubresourceRange{
+                    .layer_count = contract.layer_count,
+                });
+        }
+        std::filesystem::remove_all(root);
+        return readback;
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+}
+
+std::filesystem::path wp338SsaoGoldenPath(
+    std::string_view name) {
+    return sourceRoot() / "test" / "golden" /
+           "wp338_ssao" /
+           (std::string{name} + ".r8");
+}
+
+bool updateWp338SsaoGoldenRequested() {
+    const auto *value =
+        std::getenv("PELICAN_UPDATE_WP338_SSAO_GOLDEN");
+    return value != nullptr &&
+           std::string_view{value} == "1";
+}
+
+std::vector<std::uint8_t> readBinaryFile(
+    const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        throw std::runtime_error(
+            "failed to open binary fixture: " +
+            path.string());
+    }
+    return {
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{}};
+}
+
+void writeBinaryFile(
+    const std::filesystem::path &path,
+    const std::vector<std::uint8_t> &bytes) {
+    std::filesystem::create_directories(
+        path.parent_path());
+    std::ofstream file{
+        path, std::ios::binary | std::ios::trunc};
+    if (!file) {
+        throw std::runtime_error(
+            "failed to write binary fixture: " +
+            path.string());
+    }
+    file.write(
+        reinterpret_cast<const char *>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+    if (!file) {
+        throw std::runtime_error(
+            "failed to finish binary fixture: " +
+            path.string());
+    }
+}
+
+void requireWp338SsaoGolden(
+    Wp338SsaoScenario scenario) {
+    const auto contract = wp338SsaoContract(scenario);
+    CAPTURE(std::string{contract.golden_name});
+    const auto readback = captureWp338Ssao(scenario);
+    REQUIRE(readback.extent == vk::Extent2D{
+        wp338SsaoExtent, wp338SsaoExtent});
+    REQUIRE(readback.format == vk::Format::eR8Unorm);
+    REQUIRE(readback.layer_count == contract.layer_count);
+    const auto layer_bytes =
+        static_cast<std::size_t>(wp338SsaoExtent) *
+        wp338SsaoExtent;
+    REQUIRE(
+        readback.bytes.size() ==
+        layer_bytes * contract.layer_count);
+    const auto range = std::minmax_element(
+        readback.bytes.begin(), readback.bytes.end());
+    REQUIRE(*range.first != *range.second);
+    if (contract.layer_count > 1) {
+        bool distinct_layer = false;
+        for (std::uint32_t layer = 1;
+             layer < contract.layer_count; ++layer) {
+            distinct_layer = distinct_layer ||
+                !std::equal(
+                    readback.bytes.begin(),
+                    readback.bytes.begin() + layer_bytes,
+                    readback.bytes.begin() +
+                        layer * layer_bytes);
+        }
+        REQUIRE(distinct_layer);
+    }
+
+    const auto golden = wp338SsaoGoldenPath(
+        contract.golden_name);
+    if (updateWp338SsaoGoldenRequested()) {
+        writeBinaryFile(golden, readback.bytes);
+    }
+    const auto expected = readBinaryFile(golden);
+    REQUIRE(readback.bytes == expected);
+}
+
 } // namespace
+
+void GoldenHarness::runSsaoFlatGolden() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    requireWp338SsaoGolden(
+        Wp338SsaoScenario::hybrid_flat);
+    requireWp338SsaoGolden(
+        Wp338SsaoScenario::example_flat);
+#else
+    SKIP("WP338 flat SSAO golden requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runSsaoXrSequentialGolden() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    requireWp338SsaoGolden(
+        Wp338SsaoScenario::xr_sequential);
+#else
+    SKIP("WP338 sequential XR SSAO golden requires the runtime shader compiler and OpenXR graph support");
+#endif
+}
+
+void GoldenHarness::runSsaoXrMultiviewGolden() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    requireWp338SsaoGolden(
+        Wp338SsaoScenario::xr_multiview);
+#else
+    SKIP("WP338 multiview XR SSAO golden requires the runtime shader compiler and OpenXR graph support");
+#endif
+}
+
+void GoldenHarness::runSsaoCubeGolden() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && \
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    requireWp338SsaoGolden(
+        Wp338SsaoScenario::cube);
+#else
+    SKIP("WP338 cube SSAO golden requires the runtime shader compiler and standard render algorithms");
+#endif
+}
+
+void GoldenHarness::runSsaoPlanarGolden() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && \
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS && \
+    PELICAN_WITH_OPENXR
+    requireWp338SsaoGolden(
+        Wp338SsaoScenario::planar);
+#else
+    SKIP("WP338 planar SSAO golden requires the runtime shader compiler, standard render algorithms, and OpenXR graph support");
+#endif
+}
 
 void GoldenHarness::runProjectionJitterEquivalence() {
     setupLogger();

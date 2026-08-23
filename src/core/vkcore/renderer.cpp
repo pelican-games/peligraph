@@ -3957,8 +3957,9 @@ PickingReadbackResult Renderer::readPickingPixel(std::uint32_t x,
     return result;
 }
 
-R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
-    std::string_view name) {
+RenderTargetReadback Renderer::readRenderTargetForTesting(
+    std::string_view name,
+    const ImageSubresourceRange &authored_range) {
     const auto generation =
         GET_MODULE(FrameGraphRuntimeContainer).snapshot();
     const auto *program = generation != nullptr
@@ -3967,37 +3968,56 @@ R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
                               : nullptr;
     if (program == nullptr) {
         throw std::runtime_error(
-            "R8 readback requires a compiled render pipeline");
+            "render-target readback requires a compiled render pipeline");
     }
     const auto target_id =
         boundRenderTarget(
             program->frame_graph, std::string{name});
     if (!isConcreteRenderTarget(target_id)) {
         throw std::runtime_error(
-            "R8 readback target is not active: " +
+            "render-target readback target is not active: " +
             std::string{name});
     }
 
     auto &targets = GET_MODULE(RenderTargetContainer);
     const auto metadata = targets.getMetadata(target_id);
-    if (metadata.format != vk::Format::eR8Unorm ||
-        metadata.samples != 1 ||
-        metadata.dimension != ImageResourceDimension::two_d ||
-        metadata.array_layers != 1 ||
+    const auto texel_bytes = formatTexelBytes(metadata.format);
+    if (metadata.samples != 1 || texel_bytes == 0 ||
+        snapshotAspect(metadata.format) !=
+            vk::ImageAspectFlagBits::eColor ||
         (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
             vk::ImageUsageFlagBits::eTransferSrc) {
         throw std::runtime_error(
-            "R8 readback requires a single-sample R8_UNORM 2D transfer source: " +
+            "render-target readback requires a supported single-sample "
+            "color transfer source: " +
             std::string{name});
     }
-    const auto pixel_count =
-        static_cast<std::uint64_t>(metadata.extent.width) *
-        metadata.extent.height;
-    if (pixel_count == 0 ||
-        pixel_count >
+    const auto range = resolveImageSubresourceRange(
+        authored_range, metadata.mip_levels,
+        metadata.array_layers);
+    if (range.level_count != 1) {
+        throw std::runtime_error(
+            "render-target readback requires exactly one mip level: " +
+            std::string{name});
+    }
+    const vk::Extent2D extent{
+        std::max(
+            1u,
+            metadata.extent.width >>
+                range.base_mip_level),
+        std::max(
+            1u,
+            metadata.extent.height >>
+                range.base_mip_level),
+    };
+    const auto byte_count =
+        static_cast<std::uint64_t>(extent.width) *
+        extent.height * range.layer_count * texel_bytes;
+    if (byte_count == 0 ||
+        byte_count >
             std::numeric_limits<std::size_t>::max()) {
         throw std::runtime_error(
-            "R8 readback target has an invalid extent: " +
+            "render-target readback has an invalid byte size: " +
             std::string{name});
     }
     const auto previous_layout =
@@ -4005,13 +4025,13 @@ R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
             target_id, false, &targets);
     if (previous_layout == vk::ImageLayout::eUndefined) {
         throw std::runtime_error(
-            "R8 readback target has no completed contents: " +
+            "render-target readback target has no completed contents: " +
             std::string{name});
     }
 
     auto &vulkan = GET_MODULE(VulkanManageCore);
     auto staging = vulkan.allocBuf(
-        pixel_count,
+        byte_count,
         vk::BufferUsageFlagBits::eTransferDst,
         vma::MemoryUsage::eAutoPreferHost,
         vma::AllocationCreateFlagBits::eHostAccessRandom);
@@ -4023,10 +4043,12 @@ R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
                 vk::ImageLayout::eTransferSrcOptimal);
             vk::BufferImageCopy copy;
             copy.imageSubresource = {
-                vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+                vk::ImageAspectFlagBits::eColor,
+                range.base_mip_level,
+                range.base_array_layer,
+                range.layer_count};
             copy.imageExtent = vk::Extent3D{
-                metadata.extent.width,
-                metadata.extent.height, 1};
+                extent.width, extent.height, 1};
             command.copyImageToBuffer(
                 targets.getImage(target_id).image.get(),
                 vk::ImageLayout::eTransferSrcOptimal,
@@ -4037,17 +4059,35 @@ R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
         },
         true);
 
-    const auto bytes = vulkan.readBuf(
-        staging, static_cast<std::size_t>(pixel_count));
-    R8RenderTargetReadback result{
-        .extent = metadata.extent,
-        .pixels = std::vector<std::uint8_t>(
-            static_cast<std::size_t>(pixel_count)),
+    return RenderTargetReadback{
+        .extent = extent,
+        .format = metadata.format,
+        .layer_count = range.layer_count,
+        .image_layer_count = metadata.array_layers,
+        .bytes = vulkan.readBuf(
+            staging,
+            static_cast<std::size_t>(byte_count)),
     };
-    std::memcpy(
-        result.pixels.data(), bytes.data(),
-        result.pixels.size());
-    return result;
+}
+
+R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
+    std::string_view name) {
+    // The selected range is always one layer, so it cannot speak for the
+    // image. Ask the target before narrowing, or a six-layer cube would
+    // quietly answer with its first face.
+    auto readback = readRenderTargetForTesting(
+        name, ImageSubresourceRange{});
+    if (readback.format != vk::Format::eR8Unorm ||
+        readback.image_layer_count != 1 ||
+        readback.layer_count != 1) {
+        throw std::runtime_error(
+            "R8 readback requires a single-layer R8_UNORM target: " +
+            std::string{name});
+    }
+    return R8RenderTargetReadback{
+        .extent = readback.extent,
+        .pixels = std::move(readback.bytes),
+    };
 }
 
 std::optional<vk::Format>

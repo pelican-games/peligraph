@@ -161,6 +161,18 @@
           "type": "fullscreen",
           "output": { "color": ["ssao_output"], "depth": null },
           "input": ["gbuffer_worldpos", "gbuffer_normal"],
+          "resource_ports": {
+            "world": {
+              "resource": "gbuffer_worldpos",
+              "access": "sampled",
+              "view": "per_view"
+            },
+            "normal": {
+              "resource": "gbuffer_normal",
+              "access": "sampled",
+              "view": "per_view"
+            }
+          },
           "push_constants": "projection_view",
           "shader": {
             "vertex": "engine://fullscreen",

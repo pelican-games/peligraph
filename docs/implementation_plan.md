@@ -9768,6 +9768,21 @@ sample は 3 箇所(world ×2、normal ×1)。
 - **binding は今も `input` の index である。**
   本 WP が変えるのは「シェーダーが番号を書かなくなる」ことであって、番号の決まり方ではない
 
+#### 完了時の記録: `engine://ssao` は OFF で解決できなくなった
+
+**焼くのをやめた帰結であり、意図したものである。**
+OFF は `.frag.spv` しか探さないので、`Shader stem could not be resolved: engine://ssao` で名前付きに落ちる。
+
+**ただし到達する出荷構成は存在しない**(実測) ——
+`engine://ssao` を使うのは `projects/example` と `hybrid_v1` だけで、
+**`example` は `ui` feature が OFF で required なので、
+シェーダー解決より先に feature gate で落ちる。**
+`animgraph_demo` と `pelican project init` も shadow / sky / ui を要求する。
+
+**これが「内蔵シェーダーが実行時コンパイラ必須になる」最初の 1 本である。**
+残り 6 本を移すと、**内蔵パイプライン全体がそうなる。**
+OFF 対応を作るのは WP211(dist-bake)であり、完了の前提ではない。
+
 依存: 無し。見積: 中。
 **次は `ssao_blur.frag`**(`textureSize` の扱い)、
 **その次が `fullscreen.frag`**(条件付き shadow ソケット = 既定値と同時)。

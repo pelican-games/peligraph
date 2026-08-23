@@ -3,13 +3,10 @@
 
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
+#include "pelican_resource_ports.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
-
-// G-Buffer inputs
-PELICAN_DECLARE_INPUT_0(worldPosSampler);
-PELICAN_DECLARE_INPUT_1(normalSampler);
 
 // Parameters
 const int KERNEL_SIZE = 32;
@@ -47,8 +44,8 @@ vec3 random(vec2 co) {
 
 void main() {
     // Get G-Buffer data
-    vec3 fragPos = (pelicanFrame.view * vec4(PELICAN_TEXTURE_2D_0(worldPosSampler, inUV).xyz, 1.0)).xyz;
-    vec3 normal = normalize((pelicanFrame.view * vec4(PELICAN_TEXTURE_2D_1(normalSampler, inUV).xyz * 2.0 - 1.0, 0.0)).xyz);
+    vec3 fragPos = (pelicanFrame.view * vec4(pelican_sample_world(inUV, pelican_view_index()).xyz, 1.0)).xyz;
+    vec3 normal = normalize((pelicanFrame.view * vec4(pelican_sample_normal(inUV, pelican_view_index()).xyz * 2.0 - 1.0, 0.0)).xyz);
     
     // Random rotation for sampling kernel
     vec3 randomVec = normalize(random(inUV * 1000.0));
@@ -69,7 +66,7 @@ void main() {
         offset.xyz = offset.xyz * 0.5 + 0.5; // transform to [0,1] range
 
         // Get sample depth from G-Buffer
-        vec3 occluderPos = (pelicanFrame.view * vec4(PELICAN_TEXTURE_2D_0(worldPosSampler, offset.xy).xyz, 1.0)).xyz;
+        vec3 occluderPos = (pelicanFrame.view * vec4(pelican_sample_world(offset.xy, pelican_view_index()).xyz, 1.0)).xyz;
 
         // Check if sample is within range and occluded
         float occluderDepth = occluderPos.z;

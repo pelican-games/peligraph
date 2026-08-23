@@ -218,6 +218,18 @@
           "planar_reflection_worldpos",
           "planar_reflection_normal"
         ],
+        "resource_ports": {
+          "world": {
+            "resource": "planar_reflection_worldpos",
+            "access": "sampled",
+            "view": "per_view"
+          },
+          "normal": {
+            "resource": "planar_reflection_normal",
+            "access": "sampled",
+            "view": "per_view"
+          }
+        },
         "push_constants": "projection_view",
         "shader": {
           "vertex": "engine://fullscreen",

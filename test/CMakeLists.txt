@@ -803,6 +803,7 @@ target_compile_definitions(pelican_golden_harness PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=$<BOOL:${PELICAN_WITH_STANDARD_RENDER_ALGORITHMS}>
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
@@ -827,6 +828,7 @@ set(pelican_golden_test_sources
     golden_temporal_test
     golden_timing_test
     golden_framegraph_test
+    golden_ssao_test
 )
 foreach(golden_test_source IN LISTS pelican_golden_test_sources)
     pelican_define_test(${golden_test_source} GROUP golden_runtime
