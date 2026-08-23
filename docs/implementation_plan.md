@@ -6005,6 +6005,157 @@ canonical port order と variant 予算が要る。
 
 **次に決めるのはこの三択である。**
 
+### 訂正: bake は前提ではない(実験で確認・2026-08-23)
+
+**設計レビューは「7 本を生成 include にすると CMake の bake が壊れる」と指摘した。
+それは「焼き続けたまま」の場合である。**
+
+**正しい移行は「焼くのをやめる」** ——
+`clustered_light_select.comp` が既にその形である
+(`b_embed` で生ソースだけ埋め込み、`embed_shader` に無い)。
+**生成 include を使うシェーダーは、そもそも焼かれていない。**
+
+#### 実験(ブランチ `exp/unbake`、コミット `f4f5f14`)
+
+`ssao_blur.frag` について:
+
+- `src/core/resources/CMakeLists.txt` の `embed_shader(ssao_blur.frag)` を削除
+- `src/core/loader/engineresources.cpp` の `.spv` 登録 2 行を削除
+- `test/fixtures/project_format/engine_resources.json` の 1 行を削除
+
+**結果: configure 成功 / build 成功 / `ctest -LE gpu` が 1137 件 0 失敗(完全に緑)。**
+
+**費用は削除 3 行 + 台帳合わせ 1 行。**
+`loadFromStemReference` は compiler ON ならソースを先に試すので、
+`.spv` が無くても解決する。
+
+#### 代償
+
+**そのシェーダーは実行時コンパイラが必須になる。**
+OFF ビルドでは `.spv` 候補しか出さないので見つからない。
+
+**ただし出荷 4 プロジェクトは既に全部 OFF で読めない**(§「OFF ビルドは、今日どの出荷プロジェクトも読めない」)。
+**したがって WP211 は完了の前提ではない。**OFF 対応を作る独立した仕事である。
+
+### 完了までの順序(2026-08-23)
+
+**利用者の判断: 中途半端にせず終わらせる。**
+以下は 8 本の暗黙の約束をすべて明示に変えるまでの全行程である。
+
+**各段階に「観測可能に何が変わるか」を先に書く。書けない段階は切り方が間違っている。**
+
+#### A. 焼くのをやめる
+
+7 本を `embed_shader` から外し、`.spv` の登録と fixture を追随させる。
+
+**観測可能**: OFF ビルドで `engine://fullscreen` が**名前付きで見つからないこと**。
+今日は `.spv` があるので見つかるが、feature が required なのでどのみち読めない ——
+**「動いていたものが壊れる」のではなく「動いていない理由が正直になる」。**
+
+**risk**: OFF のテスト 1094 件のうち engine シェーダーを実際に**ロードする**ものがあれば落ちる。
+**着手時に測ること。**shader 依存のテストは既に `if(PELICAN_RUNTIME_SHADER_COMPILER)` で除外されている。
+
+#### B. 7 本を生成 include へ移す
+
+- **15 宣言 + 15 sample** を `pelican_sample_<port>()` へ
+- **`ssao_blur` の `textureSize` 1 箇所**と **shadow の直接 `texture` 1 系統**
+- **`sampler2DArray` の accessor は `(vec2, uint layer)` の 2 引数しかない。**
+  一律置換できない。**shadow cascade は current view ではなく cascade layer を渡す**
+- **全 consumer を同時に移す** ——
+  shadow composer(`input` と sampling は足すが `resource_ports` を足さない)/
+  canonical `output_transform` / OpenXR mirror(`engine://output_transform` を直接構築、
+  失敗が警告で握り潰される)/ render-policy fixture
+- **`cube_capture` / `planar_reflection` は `deferred_lighting` の binding を継承する。**
+  **capture 資源へ向けた明示的な socket map が要る**(順序で自動対応させると位置 ABI が残る)
+
+**観測可能**: **`deferred_lighting` の `input` を並べ替えても絵が変わらないこと。**
+今日は exit 0 / エラー 0 件で**絵だけが変わる**(実測)。
+
+**対照の作り方(空振り防止)**: 「2 枚が同じ」では両方黒でも通る。
+**区別可能な色**の resource を用意し、**canonical 順と permuted 順の双方が
+独立した期待画素に一致**し、**socket / resource 対応を故意に交換した否定対照が
+異なる画素になる**まで検査する。
+生成 include の binding 番号検査は補助であって画素検査の代わりにならない
+(生成 include は `ShaderBundle::virtual_includes` から production 経路で取れる)。
+
+#### C. 未接続ソケットの解決
+
+**これは「消える」ではなく新規実装である。**
+
+```
+socket → connected binding | constant value | required-missing
+```
+
+- **connected** —— descriptor と accessor を生成
+- **constant** —— **descriptor 無しの inline accessor** を生成
+- **required-missing** —— コンパイル前に graph / pass / shader / socket 名付きで失敗
+
+**既定値 accessor の ABI を最初は狭める** ——
+現行 ABI には sample 以外に size / mip / view 系があり、
+**物理テクスチャを持たない定数の size をどう定義するかが未解決**である。
+**まず「sample のみを許す `vec4` 既定値」に限る。**
+
+**binding が空だと interface 生成を打ち切る**現行分岐も直す必要がある
+(定数 accessor 以前に include 不在で落ちる)。
+
+**観測可能**: **`ssao_clear` を 3 箇所すべて**
+(`projects/sprite_demo` / `projects/vrm_xr_demo` / `test/golden_harness.cpp`)
+**から削除できること。**
+
+**画素比較を対照にしない** —— この 2 プロジェクトでは `ambientRadiance` が `vec3(0)` なので
+**AO が 1 でも未定義でも絵が byte 一致する**(実測)。
+**生成された accessor が定数を返していることを、生成 include の内容で検査する。**
+
+**`type: raster` の実証を失わないこと** ——
+`sprite_demo` の `ssao_clear` はプロジェクト空間で唯一の raster 使用例である。
+**代替の dogfood を同じ WP に含める。**
+
+#### D. 入力の口を `resource_ports` へ寄せる
+
+`input` / `material_resources` / `screen_inputs` を畳む。
+**`surface_resources` は供給側の選択子なので残す。**
+**footprint の 3 経路(`material_resources.footprint` / `input_footprints` /
+`read_footprints`)がここで 1 つになる。**
+
+**観測可能**: 同じ resource を複数の契約に繋げること
+(`forward_transparent` の `opaque_depth` / `scene_depth` / `linear_view_depth` の 3 契約)。
+今日は `resource_ports` が同一 resource の多重束縛を禁じている。
+
+#### E. 順序を resource の参加者列へ
+
+**荷重点は 3 箇所** —— `buildEdges`(先行 writer からしか辺を張らない)/
+`topologicalOrder`(`declaration_index` で整列)/
+**`enforceCanonicalOrder`(合成時に配列順を `after` 辺へ焼き込む)**。
+
+**canonical anchor と `output_transform` の順序は resource に載らない。**
+**非データ依存の channel として `before` / `after` を残す。**
+
+**観測可能**: **キャンバスから 0 からグラフを組めること。**
+今日は順序が著作 JSON の配列に宿っており、ノードを置いた位置には宿らない。
+
+#### F. compute を著作型に入れる
+
+**スケジューラは既に対応済み**(`parseComputeNodes` がフレームグラフのノードを作り、
+`before`/`after` も barrier も効く)。
+分かれているのは **`RenderPassType`(14 種、compute を含まない)と `add_authored_pass`** だけ。
+
+**観測可能**: キャンバスから compute ノードを足せること。
+
+#### 完了の定義
+
+**8 本すべてが明示になること:**
+
+1. 入力の口 → D
+2. footprint 3 箇所 → D
+3. binding が序数 → B
+4. 順序が配列順 → E
+5. ソケットが feature 条件で増減 → C(無条件宣言 + 既定値)
+6. compute がパス型でない → F
+7. `.surface` が material 専用 → B
+8. 既定値の所在が 2 箇所 + 名前推論 → C
+
+**WP211(dist-bake / OFF 対応)は完了の条件に含めない。**独立した仕事である。
+
 ## ノードを自在に定義して書けるようにする(2026-08-22・第 4 版)【機構は第 5 版へ。実測と制約は引き続き有効】
 
 **位置束縛マクロの側を直すという前提は第 5 版で置き換えた。**
