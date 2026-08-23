@@ -6899,6 +6899,157 @@ canonical compiler input」だとコード自身が書いている。**
 全体ダンプを通常編集形式に戻す理由にはならないが、
 **stale override の復旧・比較用の限定 export 経路まで削除する根拠にはならない。**
 
+## 段階 3 の設計 —— 既定値(2026-08-23)
+
+**射程は「`ssao_clear` 回避策を削除できること」である。**
+利用者の要求「SSAO を外しても `deferred_lighting` が動く」「型にエラーがなければ動く」の実体。
+
+**設計に入る前に player を実際に走らせて測った。**以下はすべて実測である。
+
+### 回避策の正体 —— 絵のためではなかった
+
+**`ssao_clear` は AO=1 を作るためのパスではない。`ssao_blur` に生産者を 1 つ立てるためだけのパスである。**
+
+**否定対照で確かめた**: `white.frag` を `outColor = vec4(0.0)` に焼き替えて
+**AO=0 にしても、出力 PNG が byte 一致する**(md5 同一)。
+`ao` は `ambient = albedo * ao * ambientRadiance` にしか入らず、
+この 2 プロジェクトは `sky_ambient` を持たないので **`ambientRadiance` は `vec3(0)`** である。
+
+**つまり回避策は descriptor ABI を満たすためだけに存在し、絵には一切効いていない。**
+書いている値 1.0 も `clear_color` の既定 `eClear` で達成済みで、**描画自体が冗長**である。
+
+`sprite_demo` だけが `raster` 型なのは **WP238b の dogfood** であって描画上の理由は無い。
+
+### 今日 SSAO を消すと起きること(3 通り。うち 1 つは無言)
+
+| 消す範囲 | 結果 |
+|---|---|
+| `ssao_clear` パスだけ | **落ちる** ——「Pass input target is not produced as an earlier output: ssao_blur in pass: lighting_pass」 |
+| + `ssao_blur` ターゲット | **落ちる** ——「logical shadow graph node 'lighting_pass' reads unknown resource 'ssao_blur'」(より早い CPU 位相) |
+| + `input` の項目 | **落ちない。exit 0 でフレームが回る** |
+
+**3 番目が問題である。**`binding 5` は reflection 由来なので layout に載るが、
+descriptor write は接続数ちょうど 5 件しか出さないので**未書き込みのまま draw される。**
+
+- Debug の validation layer だけが `VUID-vkCmdDraw-None-08114` を出す
+  (「Set 1, Binding 5, variable "ssaoSampler" が更新されていない」)
+- **engine は `VkDebugUtilsMessenger` を作らないので、この文字列は stdout に流れるだけで止まらない**
+- **Release 既定(validation off)では何も出ない**
+
+**「黙って既定値に落ちる経路を作らない」の逆で、今日は「黙って何も無い経路」が既に開いている。**
+
+**設計文書の否定対照の記述は、この 3 通りのうち 1 通りにしか当たっていない。訂正すること。**
+
+### 序数結線には名前検査が無い(実測・別件だが重い)
+
+`lighting_pass` の `input` を並べ替える(`ssao_blur` を先頭にする)だけで、
+**exit 0 / エラー 0 件 / VUID 0 件で走り、絵だけが変わった。**
+6 つの G-buffer 入力を取り違えても**何も言わない。**
+
+さらに **shadow feature を足して SSAO を消すと、`shadow_map` が index 5 へ繰り上がり**、
+`PELICAN_INPUT_5_LAYERED=1` が付いて型が食い違い、
+**シェーダーコンパイルが「no matching overloaded function」で落ちる。**
+
+### 障害は「値」ではなく「slot」である
+
+**既定値の語彙は既にある**(`MaterialDummyTexture{white, flat_normal, black}`)。
+**欠けているのは 3 つ:**
+
+1. **`input` が文字列配列で、空き slot を表せない。**エントリが文字列でなければ即例外
+2. **`PassDefinition::input_targets` が `GlobalRenderTargetId` の密な配列**で、
+   空きの表現が無い。**12 ファイル・104 箇所が位置で舐めており**、
+   barrier 遷移と validation もそこに乗っている。**ここがこの縦切りの実体積である**
+3. **白の image view を core の fullscreen 経路から取る production API が無い**
+   (あるのは `textureViewsForTesting` だけ)。
+   `FullscreenPassContainer` は sampler と `RenderTargetImageViewResolver` しか持たず、
+   `TextureContainer` / `StandardMaterialResource` への経路が無い
+
+**そして「binding 5 が未接続だ」と気づく検査が engine に一つも無い。**
+`requireInputBindings` は `0..input_count-1` しか回らず、
+`validateShaderResourceInterfaceReflection` は宣言 → reflection の一方向である。
+
+### 前提の要否(実測による判定)
+
+| | 判定 | 根拠 |
+|---|---|---|
+| **ソケット宣言(ヘッダ)** | **要る** | ただし「白」を知るためではなく、**「slot がある / 省略可」を宣言する場所**として。`engine://fullscreen` は **4 つのパスインスタンスが共有**するので、接続側に書くと 4 重になる |
+| **binding を宣言順にする(段階 2)** | **要らない** | 必要なのは**番号の付け替えではなく slot の保存**である。descriptor write は `input_rts` の添字そのものなので、**slot さえ残れば番号は動かない** |
+| **接続を持たない port 宣言** | **要る** | ただし `shaderresourceport.cpp` の検査は本命ではない —— fullscreen の `resource_ports` は `input` の注釈にすぎず、binding も添字固定。**塞いでいるのは `input` の schema と `input_targets`** |
+| **組み込み契約の追加** | **要らない** | `default: white` を直接書けば足りる。ただし**「省略可か」の 1 bit は要る** |
+| **2D 以外のダミー** | **要らない** | この射程では 2D で足りる |
+| **`fullscreen.frag` の条件付き shadow ソケット** | **この縦切りの最大の門** | 下記 |
+
+**段階 2(名前束縛)が前提から外れたのは実測の成果である。**
+設計の段階表は「3 は 1・2 に依存」と書いていたが、**2 は要らない。**
+
+### 最大の門 —— 条件付き shadow ソケット
+
+**`//!` ヘッダのトークナイザはプリプロセッサを解釈しない。**
+一方 `fullscreen.frag` の 7 本目は `#ifdef PELICAN_FEATURE_SHADOW` の下にある。
+
+**したがって `fullscreen.frag` にヘッダを足した瞬間、
+shadow 有り(`animgraph_demo` は 7 入力)と shadow 無し(他 3 プロジェクト)を
+1 つの宣言リストで満たせない。**
+
+**先送りできない。**この WP の中でどちらかを決めること:
+
+- **socket 6 を無条件宣言 + 既定値にして `#ifdef` を宣言から外す**(推奨)——
+  shadow が無い構成では既定値が入る。**まさに本 WP が作る機構で解ける**
+- ヘッダに feature 条件の文法を足す —— 文法が増える
+
+### 保留中の WP336 をどう取り込むか —— 土台として使うのではなく、検査を反転させる
+
+**ブランチ `agent/wp336` はそのままでは合流できない。**
+
+- **resolver が「socket 数 == `input` 数」の完全一致を強制している。**
+  **省略された socket は定義上エラーになる。**
+  この検査を**「各 socket は接続を持つか、既定値を持つか」へ反転させる**改修が要る
+- **socket 宣言に省略可能性・既定値・view 方針の欄が無い。**schema の拡張が先に要る
+
+**つまり段階 3 は WP336 を「載せる」のではなく「作り替えて取り込む」。**
+
+### 受け入れ条件の骨子(WP 化するときに逐語で書く)
+
+**この節は 6 回「成立しない受け入れ条件」で差し戻されている。実測に基づいて書く。**
+
+- **`ssao_clear` パスと `ssao_blur` ターゲットが `sprite_demo` / `vrm_xr_demo` から消え、
+  ロードが成功し、フレームが回ること**
+- **`binding 5` に既定 descriptor が実際に束縛されたことを検査すること。**
+  **画素比較を対照にしてはならない** —— この 2 プロジェクトでは
+  `ambientRadiance` が `vec3(0)` なので **AO が 1 でも未定義でも絵が byte 一致する**(実測)。
+  **descriptor / plan 側で「何が解決されたか」を観測すること。**
+  あるいは `sky_ambient` を有効にした構成を**同じテストの中に**置く
+- **未接続かつ既定値の宣言も無い socket が、ソケット名を含む名前付きエラーで落ちること。**
+  **今日は無言である**(Debug の VUID は engine を止めない、Release は何も出ない)。
+  **これが本 WP の fail-fast の錨である**
+- **shadow 有り / 無しの両構成で成立すること。**
+  `animgraph_demo`(7 入力)と `sprite_demo` / `vrm_xr_demo` / `example`(6 入力)。
+  **同じテストの中で、SSAO を外した shadow 構成が
+  `shadow_map` を `ssaoSampler` として読まないこと**(今日は型が食い違ってコンパイルが落ちる)
+- **`test/golden_harness.cpp` の 3 つ目のコピーも消すこと。**
+  `makeShadowRenderingConfig` が `ssao_clear` を組み立て、`white.frag` を 2 箇所で書き出しており、
+  **shadow / sprite / taa / morph / material-override の golden 全部に乗っている。**
+  **`projects/` の 2 件だけ消しても「回避策が消えた」は成立しない**
+- **`type: raster` の実証を失わないこと。**
+  `sprite_demo` の `ssao_clear` は**プロジェクト空間で唯一の `raster` 使用例**であり、
+  manual の唯一の実例でもある。**代替の dogfood か画素 golden を同じ WP に含めること。**
+  含めないなら、回避策の削除は**別の機構の証拠を削る取引**になる
+- 出荷 4 プロジェクト、`pelican project init`、`RUNTIME_SHADER_COMPILER` の ON / OFF
+- **`uv run tools/doclink.py check` が緑であること**
+
+### 落としてはならないもの
+
+- **既定値の所在は一箇所。**現在は分類(名前の部分一致)が `materiallowering.cpp`、
+  画素値が `standardmaterialresource.cpp` に**割れている。**
+  fullscreen へ広げる前に畳むこと
+- **名前の部分一致を socket 名へ持ち込まないこと。**
+  そのまま持ち込むと `gbuffer_normal` → flat_normal、`g_emissive` → black のように
+  **「名前が既定値を決める」隠れた結合が fullscreen 側にも増える**
+- **`MaterialPassInputFallback::fully_lit` は値を選ばない。**
+  metadata として publish されるだけで、実体はシェーダー変種である。**既定 descriptor の経路ではない**
+- **material のパス入力(set 1)は今日も fail-fast で、未接続は例外になる。**
+  **非対称なのは fullscreen だけである。**揃えること
+
 ## 著作キャンバスの設計(2026-08-20・第 2 版)
 
 ### 利用者の決定(2026-08-20)
