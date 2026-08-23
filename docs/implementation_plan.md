@@ -5869,6 +5869,142 @@ set も binding も書かない。`planar_reflection` の prefilter も同じ。
 - **canonical anchor は「名前を出さずに繋ぐ」の実例**であり、消す対象ではない
 - **`surface_resources` の選択子**も同じく実例である
 
+### 設計レビューによる訂正(2026-08-23)
+
+**第 5 版は設計レビューで着手不可になった。方向は残るが、主張が 3 つ誤っていた。**
+
+#### 訂正 1: engine シェーダーの移行は WP211 を前提とする
+
+**第 5 版は「WP211 dist-bake は前提ではない」と書いた。engine シェーダーについては誤りである。**
+
+```glsl
+#ifdef PELICAN_FEATURE_CLUSTERED_LIGHTING
+#include "pelican_resource_ports.glsl"     // ← マクロの内側
+#endif
+```
+
+**`fullscreen.frag` がビルド時に焼けるのは、生成 include が `#ifdef` の内側にあり
+CMake の bake 時に開かれないからである。**
+生成 include は物理ファイルではなく、**runtime compiler に渡す仮想 include** である。
+
+**そして生成 include を使う compute シェーダーは `b_embed`(生ソース)だけで、
+`embed_shader`(glslang で焼く)には入っていない。**
+
+**対応関係: 生成 include ⟺ 実行時コンパイル専用。**
+焼かれるシェーダーは、マクロで囲わない限り生成 include を使えない。
+
+**したがって 7 本を無条件に移すと CMake の bake が壊れる。**
+engine SPIR-V 経路は defines / virtual includes が付くこと自体を拒否する。
+
+#### 訂正 2: 「4 本が消える」は不正確
+
+| | 正確には |
+|---|---|
+| **3. binding** | **半分**。著作者は番号を書かなくなるが、**番号は今も `input` の index** であり、順序依存と cache identity は残る |
+| **5. 条件付きソケット** | generator 単体では成立。**ただし shadow composer が `resource_ports` を供給しない**ので production では未成立 |
+| **7. `.surface` 専用** | **消える** |
+| **8. 既定値** | **誤り。消えず、新規実装である**(下記) |
+
+#### 訂正 3: 既定値は新機能である
+
+**現行 `resource_ports` は既存の edge への注釈**であり、
+受理時に resource が `reads`/`writes`/`input` に在ることを要求する。
+**未接続ソケットを書く構文が無い。**
+さらに **binding が空なら interface の生成自体を打ち切る**ので、
+「定数 accessor」以前に **include 不在で失敗する。**
+
+**必要なのは sentinel ではなく論理解決の結果である:**
+
+```
+socket → connected binding | constant value | required-missing
+```
+
+- **connected** —— descriptor と accessor を生成
+- **constant** —— descriptor 無しの inline accessor を生成
+- **required-missing** —— コンパイル前に graph / pass / shader / socket 名付きで失敗
+
+**既定値 accessor の ABI を最初は狭めること** ——
+現行 ABI には sample 以外に size / mip / view 系があり、
+**`ssao_blur` は `textureSize` を使う。**
+物理テクスチャを持たない定数の size をどう定義するかは未記載である。
+**最初は「sample のみを許す `vec4` 既定値」に限る。**
+
+**なお material の dummy/default 経路は生成 include では消えない。**
+「消える」のは **pass socket に限った話**である。そう明記すること。
+
+#### 訂正 4: 段階 1 は「7 本の変更」ではない
+
+**全 consumer / configuration を同時に移さないと、生成 include に binding が供給されない。**
+
+- **shadow composer は `input` と sampling を足すが `resource_ports` を足さない**
+- **canonical `output_transform` の生成にも port が無い**
+- **OpenXR mirror は `engine://output_transform` を直接構築する**(失敗は警告で握り潰される)
+- render-policy fixture も engine shader を直接構築する
+- **`cube_capture` / `planar_reflection` は `deferred_lighting` の binding を継承する** ——
+  継承先の先頭 input に生成 binding が無くなり、ロードが失敗する。
+  **capture 資源へ向けた明示的な socket map が要る**(順序で自動対応させると位置 ABI が残る)
+
+#### 訂正 5: `sampler2DArray` は一律移行できない
+
+生成 accessor は **`(vec2, uint layer)` の 2 引数のみ**。
+旧マクロは view / layer を暗黙に選ぶ。
+**`pelican_sample_<port>(uv)` の一律置換では array を扱えない。**
+**shadow cascade は current view ではなく cascade layer を渡す必要がある。**
+
+#### 訂正 6: 作業量
+
+**「7 ファイル・15 置換」ではない。**
+15 宣言 + 15 sample + `textureSize` 1 箇所 + shadow の直接 `texture` 1 系統
++ **全 consumer / config**。
+
+**variant は 2〜3**(shadow 有 7 口 / shadow 無 6 口 / AO 未接続 5 口)。
+キャッシュはある(virtual include の内容も hash に入る)が、
+**eviction / 上限は未確認**、`PipelineFactory` は論理的な interning をしていない。
+**一般 GUI で任意 N ソケットを独立接続できるようにすると最大 `2^N`** なので、
+canonical port order と variant 予算が要る。
+
+#### 訂正 7: 受け入れ条件「並べ替えても絵が変わらない」は空振りする
+
+**2 枚が同じだけでは、両方黒でも通る。**同一テストの中で:
+
+- **区別可能な色**(赤・緑など)の resource を用意する
+- **canonical 順と permuted 順の双方が、独立した期待画素に一致する**
+- **socket / resource 対応を故意に交換した否定対照が、異なる画素になる**
+
+**生成 include の binding 番号検査は補助であって、画素検査の代わりにならない。**
+
+**生成 include は production から取り出せる**(`ShaderBundle::virtual_includes`)。
+
+#### 残ったもの
+
+- **OFF の実測は正しい**(出荷 4 プロジェクトはいずれも OFF で読めない)。
+  **ただし raw set 1 ABI は `docs/shader_contract.md` の公開契約である。**
+  4 プロジェクトが動かないことは、外部の precompiled consumer を壊してよい根拠にならない
+- **`.surface` 専用という制約は消せる**
+- **生成 include が fullscreen / raster のコードで対応済み**であることも確認された
+  (ただし shipped raster shader による end-to-end 実証は fullscreen / compute までである)
+
+### 目的地と、今日開いている道は別である(結論)
+
+**第 5 版(生成 include + 定数 accessor)は目的地として正しい。**
+**しかし engine シェーダーを動かすには WP211 が要る。**
+
+**第 4 版の道は今日開いている** ——
+焼いたシェーダーの位置束縛マクロはそのままにし、
+**エンジンが未接続 binding へ既定 descriptor を書く。**
+必要なのは「binding 5 は省略可・既定は白」という宣言(`agent/wp336` の器)と、
+`FullscreenPassContainer` から白い image view へ届く配線だけで、
+**bake には触らない。**
+
+**したがって:**
+
+- **`ssao_clear` を消したいだけなら第 4 版の道**(bake 不要)
+- **`.surface` 制約を外し、利用者が自在にシェーダーを書くなら第 5 版の道**(WP211 が前提)
+- **project 所有のシェーダーは既に実行時コンパイル専用**なので、
+  **そこだけなら第 5 版の道が今日でも通る**(ただし `ssao_clear` には届かない)
+
+**次に決めるのはこの三択である。**
+
 ## ノードを自在に定義して書けるようにする(2026-08-22・第 4 版)【機構は第 5 版へ。実測と制約は引き続き有効】
 
 **位置束縛マクロの側を直すという前提は第 5 版で置き換えた。**
