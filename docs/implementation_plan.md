@@ -9639,179 +9639,138 @@ materialization reason が `arbitrary` の resource 数を 16 で固定してい
 **次は「条件付きソケットの表現」。**それが決まるまで `fullscreen.frag` は動かせない。
 
 
-### WP338a: SSAO 移行の観測基盤と view-family 実行
+### WP338: `engine://ssao` を生成 include へ移す
 
-**設計は第 5 版の `### 完了までの順序` 段階 A・B。WP338b と対になる。**
-**§4 規則 11 の中段。仕様 + コード。**
+**設計は第 5 版の `### 完了までの順序` 段階 A・B。**
 
-**WP338 は仕様レビュー 2 回目で「着手可」になったが、1 つの実装 WP としては大きい。
-観測基盤(338a)と本番移行(338b)に分ける。**
-**338a だけで完了扱いにしないこと。**
+**§4 規則 11 の上段。仕様 + コード。**
 
-#### なぜ観測基盤を先に作るか
+#### これはリファクタである。証明は「挙動が変わらないこと」
 
-**移行そのものより、移行が効いたことの証明のほうが難しい。**
+**初版と 338a/338b の分割は破棄した。**
 
-- **画素で対照できる構成が限られる** —— AO が最終色に入るのは
-  `ambient = albedo * ao * ambientRadiance` のみで、
-  `ambientRadiance` は `PELICAN_FEATURE_SKY_AMBIENT` があるときだけ非ゼロ。
-  出荷で有効なのは `animgraph_demo` だけで、**その scene が入れ替えを識別できるかは未確認**
-  (hero 1 体のみ)。既存 headless harness は **PNG の存在と 64 byte 以上しか見ていない**
-- **「到達した」だけでは弱い** —— sequential な cube / planar 入力は
-  `variant` 番目の layer view を descriptor に書く。
-  **そこを `0` 固定に壊しても、compile・descriptor write・draw には全部到達する。**
-  cube の 6 invocation も planar も全て layer 0 を読むが、到達検査では通る。
-  既存 planar golden が見るのは `view_index == 0` だけである
+**移行は構造の変更であって挙動の変更ではない。**
+したがって正しい受け入れ条件は **「移行前後で `ssao_output` が完全一致すること」** である。
 
-#### やること
+**`ssao.frag` が書く先が一致すれば、同じテクスチャを読んだ証明になる。**
+間違ったものを読んでいれば画像が変わる。
 
-1. **project 所有の legacy シェーダー経路**
-   現行 `ssao.frag` を複製した test project の `.frag` を置き、
-   **`"project://shaders/ssao_legacy"`(拡張子なし)** で参照する。
-   `.frag` を付けると明示拡張子として拒否される。
-   project shader から engine include への fallback は既にある
+**捨てたもの(作らないこと):**
 
-2. **直接 R8 readback による oracle**
-   **`ssao_output` を直接読む。**最終画素を経由しない。
-   - test feature で `ssao_output` に **`TRANSFER_SRC` を追加**する
-     (現行 `hybrid_v1` の `ssao_output` は持っていない)
-   - **ground・奥行き差・異なる法線を持つ遮蔽物**からなる固定 scene を用意する
-   - Renderer の既存 R8 readback は `R8_UNORM` / 2D / `TRANSFER_SRC` を明示検証している
+- legacy シェーダーの二経路 —— **生きた `ssao.frag` から導出する形は、
+  移行した瞬間に壊れる**(338a の実装がそうなっていた)
+- `permuted` による「順序が意味を失った」の証明 ——
+  **リファクタの受け入れ条件ではない。**構造の帰結であって、
+  次の WP(既定値)が要求したときに測ればよい
+- descriptor identity の 5 構成行列
+- 5 通り比較
 
-3. **descriptor identity の検査 helper**
-   **§4 規約 10 の「実際に解決した値」はこれである:**
-   1. production の生成 include(`ShaderBundle::virtual_includes`)から
-      `world` / `normal` の**実 binding** を得る
-   2. その binding 番目の **`boundInputImageViewsForTesting(pass_id, view_index)`** を得る
-      —— descriptor write に渡した `VkImageView` を保持している
-   3. resource 名から引いた target の、**該当 view / layer の image view と一致させる**
+**`agent/wp338a` の成果のうち、R8 readback と一時 project 生成は再利用してよい。**
+**descriptor identity helper と legacy シェーダー生成は捨てること。**
 
-   **frame plan の `inputs[].resource` を見るだけでは不十分である** ——
-   あれは `definition.input_targets` を名前へ戻しているだけで、descriptor write 後の値ではない
+#### 範囲
 
-4. **view-family の実行テスト**
-   - **cube 6-view の runtime golden**(今日あるのは composition / compile の静的検査だけ)
-   - **planar 2-view の runtime golden** ——
-     **2-view の main-family を与えること。**標準 provider は
-     main-family の view 数だけ reflection view を作る
-   - XR sequential / multiview は**既存の synthetic Vulkan target を再利用**する
-     (実 HMD / OpenXR runtime は不要)
+**0. readback を format 非依存・部分資源指定にする**
 
-#### 構成と消費者の対応(直積にしない)
+```cpp
+struct RenderTargetReadback {
+    vk::Extent2D  extent{};
+    vk::Format    format{};
+    std::uint32_t layer_count = 1;
+    std::vector<std::uint8_t> bytes;      // layer-major
+};
 
-| 構成 | 実行する消費者 | 必要な build option |
-|---|---|---|
-| flat | `projects/example` の `ssao_pass` と `hybrid_v1` の `ssao_pass` | compiler ON |
-| XR sequential | `hybrid_v1::ssao_pass` | + `PELICAN_WITH_OPENXR=ON` |
-| XR multiview | `hybrid_v1::ssao_pass` | + `PELICAN_WITH_OPENXR=ON` |
-| cube 6-view | `cube_capture_ssao`(view 0〜5) | + `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=ON` |
-| planar 2-view | `planar_reflection_ssao`(view 0〜1) | + `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=ON` |
+RenderTargetReadback readRenderTargetForTesting(
+    std::string_view name, const ImageSubresourceRange &range);
+```
 
-**cube / planar の標準 provider は `STANDARD_RENDER_ALGORITHMS=ON` でしか登録されない。**
-未登録で走らせると **shader compile より前に unavailable view-family エラー**になる。
+- **`ImageSubresourceRange` は既存の型**(`src/project/imagesubresource.hpp`)。
+  `resource_ports` の `subresource:` が使っているものと同じ。**新しい引数規約を作らない**
+- **format 非依存にすること** ——
+  **次に移す `fullscreen.frag` は G-buffer 6 枚(`R16G16B16A16_SFLOAT` /
+  `B8G8R8A8_UNORM`)を読む。**R8 専用では 7 本のうち 1 本にしか使えない
+- **layer-major** —— cube 6 面の比較が 1 回の呼び出しと 1 回の比較で済む
+- **既存の `readR8RenderTargetForTesting` は薄いラッパとして残す**(呼び出し側を動かさない)
 
-**compiler OFF は build と非 GPU テストの退行確認のみ。draw 行列を要求しない。**
+**1. 移行前の像を `test/golden/` に保存する**
 
-#### 受け入れ条件(§4 規約 10)
+`ssao_output` と capture 版(`cube_capture_ao` / `planar_reflection` 系)を**全層**読んで保存する。
+**数 KB。恒久的に残す** —— AO は `sky_ambient` 構成でしか画素に出ないので、
+**既存 golden はこの退行を捕まえられない。**
 
-- **descriptor identity が構成ごとに正しいこと** ——
-  flat は通常 2D view、XR sequential は view 0/1 に対応する layer 0/1、
-  XR multiview は 2D-array view、cube は face 0〜5 に対応する layer 0〜5、
-  planar は reflection view 0/1 に対応する layer 0/1
-- **legacy 経路で画素対照が成立すること** ——
-  `ssao_output` の R8 readback で、
-  **legacy canonical と legacy permuted が異なること。**
-  **これが 338b の基準になる**(異ならないなら scene が弱い)
-- **変異**: **`getImageLayerViewForFrame(input_rts[i], variant, ...)` の
-  `variant` を `0` に固定すると、cube / planar の descriptor identity 検査が落ちること**
-- 出荷 4 プロジェクト、`pelican project init`、doclink 緑
+**2. `ssao.frag` を焼くのをやめる**
 
-**338a は production の `ssao.frag` / bake / registry / 4 消費者を変更しない。**
+`embed_shader(ssao.frag)` を外し、`engineresources.cpp` の `.spv` 登録 2 行と
+`test/fixtures/project_format/engine_resources.json` の 1 行を追随させる。
 
----
+**実験で確認済み**(ブランチ `exp/unbake` / コミット `f4f5f14`)——
+`ssao_blur.frag` で同じ手順が configure / build / 1137 件緑を通った。
 
-### WP338b: `engine://ssao` を生成 include へ原子的に移す
+**3. 生成 include の accessor へ移す**
 
-**WP338a が完了していること。**
-**`ssao.frag` が生成 include を無条件 include するため、
-production 消費者の移行は分割してはならない。**
+`PELICAN_DECLARE_INPUT_0/1` と `PELICAN_TEXTURE_2D_0/1` を捨て、
+**2 引数 accessor**(`pelican_sample_world(uv, pelican_view_index())` 等)へ。
+sample は 3 箇所(world ×2、normal ×1)。
 
-#### やること
+**4. 4 消費者に `resource_ports` を足す**
 
-1. **`ssao.frag` を焼くのをやめる** ——
-   `embed_shader(ssao.frag)` を外し、`engineresources.cpp` の `.spv` 登録 2 行と
-   `test/fixtures/project_format/engine_resources.json` の 1 行を追随
-2. **`PELICAN_DECLARE_INPUT_0/1` と `PELICAN_TEXTURE_2D_0/1` を捨て、
-   生成 include の 2 引数 accessor へ**(`pelican_sample_world(uv, pelican_view_index())` 等)
-3. **4 消費者すべてに `resource_ports` を足し、`"view": "per_view"` を明示する。
-   4 つを同時に変更する**
-4. **`docs/color_migration_manifest.json` の旧 sampler / binding 名を追随**
+`hybrid_v1` / `projects/example` / `cube_capture` / `planar_reflection`。
+**`"view": "per_view"` を明示すること。**
 
-**`input` は残す**(port は `input` に在る resource しか指せず、辺は `input` が作る)。
+- **既定値は `shared_2d` で、multiview producer の layered target を繋ぐと名前付きエラーになる**
+- **cube / planar も `per_view` が正しい**(producer と consumer が同じ secondary family。
+  `family_array` は family をまたぐ場合で、sequential target に宣言すると明示エラー)
+- **flat と `per_view` は矛盾しない**(物理 `shared_2d` は 2D accessor に解決される)
+
+**`input` は残す**(port は `input` に在る resource しか指せず、グラフの辺は `input` が作る)。
+
+**5. `docs/color_migration_manifest.json` の旧 sampler / binding 名を追随させる**
 
 #### 受け入れ条件
 
-**5 通りを同一テストの中で**(独立した `FastModuleContainer` を 5 回起動する。
-hot-swap は不要。先例あり):
-
-| | 期待 |
-|---|---|
-| 1. legacy canonical | **基準**(`ssao_output` の R8 readback) |
-| 2. legacy permuted | **基準と異なる** |
-| 3. migrated canonical | **基準と一致** |
-| 4. migrated permuted | **基準と一致** |
-| 5. migrated で socket / resource を交換 | **基準と異なる** |
-
-**3 が 1 の readback と一致することが要点である。**
-「4 が 3 と一致」だけでは `world` と `normal` を常に逆対応させる欠陥が通る。
-
-- **descriptor identity が 5 構成すべてで正しいこと**(338a の helper を使う)
-- **`ssao.frag.spv` が生成されなくなること。逐語の手順で確認する:**
-  1. **使い捨ての clean clone / worktree と新規 build ディレクトリ**を使う
-  2. configure 後、生成器の graph
-     (Ninja は `build.ninja`、VS は `*.vcxproj`)を検索し、
-     **`ssao.frag.spv` を output とする custom-command edge が 0 件**であること
-  3. `pelican_resources` または `pelican_core` を **clean verbose build** し、
-     **ログにも同じ出力コマンドが 0 件**であること
-  4. build 後も clean source tree に `src/core/resources/ssao.frag.spv` が**生成されていない**こと
-  5. **registry / fixture の不在検査は別途行い、上記の代用にしない**
-     (`embed_shader` は `.spv` を source tree へ出力し、しかも gitignore される。
-      通常の作業木での存在検査は無効である)
-- **変異**:
-  **(a)** binding を input 順と無関係に `world=0` / `normal=1` に固定する。
-  **割り当ては input-attachment 枝と sampled-image 枝の 2 箇所にある。両方を patch し、
-  descriptor writer の `i` は変更しないこと**
-  **(b)** `view: per_view` を `shared_2d` へ戻す(multiview 構成で名前付きに落ちること)
-  **(c)** layer 選択の `variant` を `0` に固定する(338a の identity 検査が落ちること)
-  現行コードに mutation の seam は無い。**手で patch して rebuild する形でよい。
-  実施内容と落ちた場所を報告し、試していない項目は明示すること**
-- 出荷 4 プロジェクト、`pelican project init`、doclink 緑
+- **移行前後で保存像と完全一致すること。許容差を使わないこと** ——
+  同一プロセス・同一デバイスの比較なので、許容差は本物の差分を吸ってしまう
+- **構成ごとに:** flat / XR sequential / XR multiview / cube(6 面)/ planar(2 view)
+- **cube は 6 層すべて、planar は 2 view すべてを比較すること**
+  (層を 1 つしか見ないと、全層が同じ内容になる退行を見逃す)
+- **保存像が一様でないこと** ——
+  ground・奥行き差・異なる法線を持つ scene を使う。
+  `ssao_output` は `TRANSFER_SRC` を持たないので test feature で追加する
+- **build option を明示すること** ——
+  cube / planar は `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=ON`、
+  XR は `PELICAN_WITH_OPENXR=ON`。
+  **planar は実行時に XR graph variant を要求するので、
+  `STANDARD_RENDER_ALGORITHMS` だけを gate にしないこと**(338a がそこで誤っていた)
+- **非実行は `SUCCEED` ではなく `SKIP` を使うこと。**
+  このファイルの既存 18 箇所はすべて `SKIP` である。
+  `SUCCEED` は skip_policy の検査も通り抜け、「テストがあって緑」に見えて中身が 0 件になる
+- **`ssao.frag.spv` が生成されなくなること** ——
+  **使い捨ての clean worktree と新規 build ディレクトリ**で、
+  生成器の graph(`build.ninja` / `*.vcxproj`)に
+  `ssao.frag.spv` を output とする custom-command edge が 0 件であること。
+  **`embed_shader` は `.spv` を source tree へ出力し gitignore されるので、
+  通常の作業木での存在検査は無効である**
+- **出荷 4 プロジェクトと `pelican project init`**
 - **`RUNTIME_SHADER_COMPILER` の ON / OFF 両構成でビルドが通り、テストが緑。**
-  **OFF のテスト数が減るなら、どのテストがなぜ落ちたかを報告すること**
+  OFF のテスト数が減るならどのテストがなぜかを報告すること
+- **`uv run tools/doclink.py check` が緑**
+- **変異を 1 つ**: **`resource_ports` の `world` と `normal` の resource を入れ替える**
+  → 保存像と一致しなくなること。**試していない項目は明示すること**
 
-#### 確認済み(再調査不要)
+#### 落とし穴
 
-- **中核機構**: port の binding も descriptor write も同じ `input` 添字を使うので**相殺する**
-- **flat と `per_view` は矛盾しない**(物理 `shared_2d` は 2D accessor に解決)
-- **2D 版にも 2 引数 accessor が生成される**(第 2 引数を無視)
-- **cube / planar は `per_view` が正しい**(`family_array` は family をまたぐ場合)
-- **`push_constants` は干渉しない**(Frame UBO であり、生成 port は pass-input set)
+- **`ssao.frag` は `worldPosSampler` を 2 回読む**
+  (同一ピクセルと再投影した任意座標)。**同じ port を 2 回 sample するだけ**
+- **生成 accessor の名前は port 名から作られる。**識別子規則に従うこと
+- **`push_constants: "projection_view"` は残してよい**
+  (Frame UBO であり、生成 port は pass-input descriptor set に出る)
 - **`input_sampling` の追加は不要**(既定値がどちらも linear / repeat)
-- **「input 順が無意味」は過大申告。**binding 番号・生成 include の bytes・
-  shader cache key は依然 `input` 順依存である。
-  **正しくは「描画上の resource identity が順序非依存になる」**
+- **binding は今も `input` の index である。**
+  本 WP が変えるのは「シェーダーが番号を書かなくなる」ことであって、番号の決まり方ではない
 
-#### やらなくてよいこと
-
-cube / planar を `family_array` にする / 実 HMD を起動する /
-legacy と migrated の hot-reload 切替 / 恒久的な mutation seam /
-allocator・descriptor writer・push constants・`input_sampling` の変更 /
-positional fallback / 4 消費者 × 5 構成の全直積 /
-preview の GPU pixel gate(現行 preview executor は CPU raster で Vulkan を呼ばない)
-
-依存: 338a。見積: 中。
+依存: 無し。見積: 中。
 **次は `ssao_blur.frag`**(`textureSize` の扱い)、
-**その次が `fullscreen.frag`**(条件付き shadow ソケット = 段階 C と同時)。
+**その次が `fullscreen.frag`**(条件付き shadow ソケット = 既定値と同時)。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
