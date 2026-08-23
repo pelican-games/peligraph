@@ -9646,34 +9646,60 @@ materialization reason が `arbitrary` の resource 数を 16 で固定してい
 
 **§4 規則 11 の上段**(engine の挙動が変わる)。**仕様 + コード。**
 
-#### なぜ `ssao.frag` を最初にするか(実測で選んだ)
+**初版は仕様レビューで着手不可になった。以下は訂正済みの版である。**
 
-**7 本のうち、移行の難所を 1 つも含まない唯一の本である。**
+#### 中核機構は確認済み(レビューで検証された)
 
-| | `ssao.frag` |
-|---|---|
-| 宣言 | **2**(`PELICAN_DECLARE_INPUT_0/1`)。`#ifdef` なし |
-| sample 呼び出し | **3**(worldPos ×2、normal ×1) |
-| `sampler2DArray` | **使わない**(accessor が 2 引数しかない問題に当たらない) |
-| `textureSize` | **使わない**(定数 accessor の size 未解決問題に当たらない) |
-| `inherit_bindings_from` | **無い**(`*_lighting` 系だけが使う) |
-| 条件付きソケット | **無い**(shadow の門に当たらない) |
-| 消費者 | **4 つ。すべて入力 2 件で同じ順** |
+> `input: [A, B]` に `resource_ports: {world: A, normal: B}` を足すと、
+> **`input` を `[B, A]` に入れ替えても描画結果が変わらない。**
 
-消費者:
-`hybrid_v1` の `ssao_pass` / `projects/example` の `ssao_pass` /
-`cube_capture` の `cube_capture_ssao` / `planar_reflection` の `planar_reflection_ssao`。
+- compiler は `input` を走査し、物理 target 名と `port.resource` を照合する
+- 見つけた port の binding は**その `input` 添字**である
+- descriptor write も `input_rts[i]` を binding `i` へ書く
 
-#### 観測可能な変化(これが射程である)
+**したがって `[A,B]` では `world→0` と `A→0`、`[B,A]` では `world→1` と `A→1` になり、
+確かに相殺される。ここを変更する必要はない。**
 
-**`ssao_pass` の `input` 2 件を入れ替えても、絵が変わらなくなる。**
+**ただし「`input` 順が無意味になる」は過大申告である** ——
+binding 番号・生成 include の bytes・shader cache key は**依然 `input` 順に依存する。**
+**正しくは「描画上の resource identity が順序非依存になる」。**
 
-**今日は変わる** —— 序数束縛なので `worldPosSampler` が normal を、
-`normalSampler` が worldpos を読む。**エラーも警告も出ない**(実測で確認済み: 別パスで
-入力を並べ替えると exit 0 / エラー 0 件 / VUID 0 件で絵だけが変わった)。
+#### 初版が破綻した理由(繰り返さないこと)
 
-移行後は `resource_ports` が**名前で対応**し、binding は resource に追従するので、
-`input` の並びは無意味になる。
+**1. 「`sampler2DArray` を使わない」は誤りだった。**
+
+ソースの字面には無いが、**物理 variant の事実として使う:**
+
+- `resource_ports` の `view` 既定値は **`shared_2d`**
+- **`engine://ssao` は multiview 対応の組み込み fragment 一覧に入っている**
+  (`engine://fullscreen` / `engine://ssao_blur` / `engine://scene_present` /
+  `engine://output_transform` と並んで)
+- **multiview producer の target は `layered_2d_array` になる**
+- **`shared_2d` port に layered target を繋ぐと名前付きエラーで拒否される**
+
+**壊れる構成**: `PELICAN_WITH_OPENXR=ON` + compiler ON +
+`hybrid_v1` の XR を `view_execution: "multiview"` で実行。
+
+**訂正**:
+- **4 消費者の両 port を object 形式で `"view": "per_view"` にする**
+- **3 つの sample を 2 引数形にする** ——
+  `pelican_sample_world(uv, pelican_view_index())` 等。
+  **2D 版にも 2 引数 overload があり view index を無視する**ので、
+  **同じシェーダーで flat / sequential / multiview を扱える**
+
+**2. 否定対照「`resource_ports` を外すと序数束縛に戻る」は成立しない。**
+
+移行後にシェーダーは生成 include を**無条件 include** する。
+ports が空だと resource interface が空になり、**生成 include が作られない。**
+`pelican_resource_ports.glsl` は実ファイルとして存在しないので、
+**include-not-found でコンパイルが失敗し、画素比較まで到達しない。**
+
+**positional fallback を本番に残してはならない**(第二の流儀になる)。
+
+**3. 画素 oracle が正本より弱かった。**
+
+初版は「migrated canonical == migrated permuted」しか要求していなかった。
+**`world` と `normal` を実装全体で常に逆対応させる欠陥でも全部通る。**
 
 #### 範囲
 
@@ -9681,69 +9707,105 @@ materialization reason が `arbitrary` の resource 数を 16 で固定してい
 
 1. **`ssao.frag` を焼くのをやめる** ——
    `embed_shader(ssao.frag)` を外し、`engineresources.cpp` の `.spv` 登録 2 行と
-   `test/fixtures/project_format/engine_resources.json` の 1 行を追随させる。
-   **実験(ブランチ `exp/unbake`)で `ssao_blur.frag` について同じ手順が
-   configure / build / 1137 件緑を通ることを確認済み**
+   `test/fixtures/project_format/engine_resources.json` の 1 行を追随
 2. **`PELICAN_DECLARE_INPUT_0/1` と `PELICAN_TEXTURE_2D_0/1` を捨て、
-   生成 include の accessor(`pelican_sample_<port>()`)へ移す**
-3. **4 つの消費者に `resource_ports` を足す。**
-   **`input` は残す** —— fullscreen の `resource_ports` は
-   `input` に在る resource しか指せず、グラフの辺は `input` が作る。
-   `clustered_lighting` の `pass_overrides` が `deferred_lighting` に対して
-   既に同じ形をしている(`input` と `resource_ports` の併記)
-4. **OFF 構成への影響を測る** ——
-   OFF の 1094 件のうち `engine://ssao` を**実際にロードする**ものがあるか。
-   shader 依存テストは既に `if(PELICAN_RUNTIME_SHADER_COMPILER)` で除外されているが、**確かめること**
+   生成 include の 2 引数 accessor へ移す**
+3. **4 つの消費者に `resource_ports` を足す。`"view": "per_view"` を明示する。**
+   **`input` は残す**(fullscreen の port は `input` に在る resource しか指せず、
+   グラフの辺は `input` が作る。`clustered_lighting` の `pass_overrides` が同じ形)
+4. **`docs/color_migration_manifest.json` が旧 sampler / binding 名を保持している。追随させる**
+5. **OFF 構成への影響を測る**(静的棚卸しでは
+   `engine://ssao` を OFF で実コンパイルするテストは見つかっていない)
 
-**やらないこと(理由つきで明示する):**
+**やらないこと(理由つき):**
 
-- **他の 6 本**(それぞれ難所を持つ。`fullscreen.frag` は条件付き shadow、
-  `ssao_blur` は `textureSize`、shadow cascade は array accessor)
-- **既定値 / `optional`**(段階 C)
-- **`input` を `resource_ports` に畳むこと**(段階 D)。今回は併記のまま
-- **footprint**(段階 D で 3 経路を畳む)
-- **順序**(段階 E)/ **compute の著作型**(段階 F)
-- **WP211 dist-bake** —— 完了の前提ではない
+- 他の 6 本 / 既定値 / `input` を `resource_ports` に畳む / footprint / 順序 / compute / WP211
+- **positional fallback を足さない**
+- **binding allocator と descriptor writer は変更しない**
+- `push_constants: "projection_view"` は残してよい ——
+  `ssao.frag` が読む行列は Frame UBO であり、生成 port は pass-input descriptor set に出るので干渉しない
+- `input_sampling` の追加は不要 —— 旧 `input_sampling` と port sampling の既定値は
+  どちらも linear / repeat である
 
 #### 受け入れ条件(§4 規約 10)
 
-- **肯定**: `ssao_pass` の `input` を `["gbuffer_normal", "gbuffer_worldpos"]` と
-  逆順にしても、**headless の出力画素が canonical 順と一致すること**
-- **否定対照 1(今日の挙動)**: **同じテストの中で**、移行前の構成
-  (または `resource_ports` を外した構成)で同じ入れ替えを行うと**画素が変わること**。
-  **「2 枚が同じ」だけでは両方黒でも通る。**移行前後で**異なる**ことを示して初めて対照になる
-- **否定対照 2(取り違え)**: `resource_ports` の socket 名と resource の対応を
-  **故意に交換**すると**画素が変わること**
-- **生成 include が production 経路で取れること**
-  (`ShaderBundle::virtual_includes`)。**その中に binding が入っていること。**
-  ただしこれは補助条件であり、**画素検査の代わりにしない**
-- **4 つの消費者すべてがロードでき、フレームが回ること** ——
-  `hybrid_v1` / `example` / `cube_capture` / `planar_reflection`
-- **`ssao.frag` の `.spv` が生成されなくなり、registry と fixture が一致すること**
-  (`pathresolver_test.cpp` の registry 突き合わせ)
+**この設計線は 6 回「成立しない受け入れ条件」で差し戻されている。**
+
+##### 画素の対照 —— 5 通りを同一テストの中で
+
+**移行後のシェーダーから ports を外す対照は使えない**(コンパイルが落ちる)。
+**production の移行後シェーダーと、現行 `ssao.frag` を保存した
+project 所有の legacy シェーダーの二経路を、同じテストの中で走らせる。**
+
+| | 期待 |
+|---|---|
+| 1. legacy canonical | **基準画素** |
+| 2. legacy permuted | **基準と異なる** |
+| 3. migrated canonical | **基準と一致** |
+| 4. migrated permuted | **基準と一致** |
+| 5. migrated で socket / resource を故意に交換 | **基準と異なる** |
+
+**3 が独立した期待画素(= 1 の readback)と一致することが要点である。**
+「4 が 3 と一致」だけでは、`world` と `normal` を常に逆対応させる欠陥が通る。
+
+##### 試験車と、その前提の確認
+
+**AO が最終色へ入るのは `ambient = albedo * ao * ambientRadiance` のみで、
+`ambientRadiance` は `PELICAN_FEATURE_SKY_AMBIENT` があるときだけ非ゼロ。
+有効にしている出荷プロジェクトは `animgraph_demo` だけ**(実測)。
+
+**ただし「animgraph の現在の scene が入れ替えを画素で識別できる」ことは未確認である。**
+
+**着手時にまず測ること** —— 今日 `ssao_pass` の `input` を入れ替えて、
+`animgraph_demo` の headless 出力が**実際に変わるか。**
+
+- **変わる** → 上表の画素対照がそのまま成立する
+- **変わらない** → **独立した world / normal 値と遮蔽が出る専用 scene を用意する。**
+  既存 harness は PNG の存在と 64 byte 以上しか見ておらず、
+  既存 hybrid headless test は sky ambient を有効にしているが scene / assets が空である
+
+##### 消費者 4 つ
+
+**「flat で 1 回ずつフレームが回る」では欠陥 1 を捕捉できない。**
+
+**各 pass が、実際の view-family provider とともに
+shader compile → descriptor write → draw まで到達すること。**
+受け入れ行列に **flat / XR sequential / XR multiview / cube 6-view /
+planar view-family** を明記する。
+
+現状: cube は feature composition の静的検査しかなく実 shader load が無い。
+planar には runtime golden があるが compiler 条件付きである。
+
+##### そのほか
+
+- **生成 include が production 経路で取れること**(`ShaderBundle::virtual_includes`)。
+  **その中に binding が入っていること。**画素検査の代わりにはしない
+- **`ssao.frag.spv` が生成されなくなること。**
+  **registry 照合や単なるファイル存在検査で代用しない** ——
+  `embed_shader` は source tree に `.spv` を出力するので、
+  **作業木に ignored の残骸が残っている。**
+  **clean configure / build の build graph で確認すること**
 - **出荷 4 プロジェクトと `pelican project init`**
-- **`RUNTIME_SHADER_COMPILER` の ON / OFF 両構成でビルドが通り、テストが緑であること。**
-  **OFF で「出荷プロジェクトが動く」ことは条件にしない**(今日も動かない)。
+- **`RUNTIME_SHADER_COMPILER` の ON / OFF 両構成でビルドが通り、テストが緑。**
   **OFF のテスト数が減るなら、どのテストがなぜ落ちたかを報告すること**
 - **`uv run tools/doclink.py check` が緑であること**
-- **変異を 2 つ**: **(a) `resource_ports` を外す**(序数束縛に戻り、入れ替えで絵が変わる)/
-  **(b) 生成 include の binding 割り当てを固定値にする**。
-  **試していない項目は明示すること**
+- **変異**:
+  **(a) `world=0` / `normal=1` を `input` 順と無関係に固定し、
+  descriptor write は現行どおり `i` のままにする** ——
+  「全 port を 0 に固定」は duplicate binding で落ちるだけで名前束縛を検査しない。
+  **(b) `view: per_view` を `shared_2d` へ戻す**(multiview 構成で名前付きに落ちること)。
+  現行コードに mutation の seam は無いので、**手で patch して rebuild する形でよい。
+  実施した内容と落ちた場所を報告すること。試していない項目は明示すること**
 
-#### 落とし穴
+#### 前提の裏付け
 
-- **`ssao.frag` は `worldPosSampler` を 2 回読む** ——
-  同一ピクセル(`inUV`)と**再投影した任意座標**(`offset.xy`)。
-  **同じ port を 2 回 sample するだけなので port は 1 つでよい**
-- **生成 accessor の名前は port 名から作られる。**port 名は識別子規則に従うこと
-- **`cube_capture` / `planar_reflection` は自前の resource を使う**
-  (`cube_capture_worldpos` 等)。`deferred_lighting` の継承とは別経路である
-- **binding は今も `input` の index である。**
-  本 WP が変えるのは「シェーダーが番号を書かなくなる」ことと
-  「port が名前で resource に対応する」ことであって、**番号の決まり方ではない**
-  (それは段階 D 以降)
+**「焼くのをやめる」の費用は実測済み**(ブランチ `exp/unbake` / コミット `f4f5f14`)——
+`ssao_blur.frag` について CMake 1 行・registry 2 行・fixture 1 行の削除で
+configure / build / `ctest -LE gpu` 1137 件緑。
+**ただしこの 1137 は読み取り専用のレビュー環境では独立再実測されていない。
+着手時に自分で確かめること。**
 
-依存: 無し。見積: 中。
+依存: 無し。見積: 中〜大。
 **次は `ssao_blur.frag`**(`textureSize` の扱いを決める)、
 **その次が `fullscreen.frag`**(条件付き shadow ソケット = 段階 C と同時)。
 
