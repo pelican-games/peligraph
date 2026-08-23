@@ -5711,7 +5711,168 @@ linked selection と共有レイアウトを受け入れ条件にする。
 - **同じテストの中で、足す前には現れないこと**
 
 
-## ノードを自在に定義して書けるようにする(2026-08-22・第 4 版)
+## ノードを自在に定義して書けるようにする(2026-08-23・第 5 版)
+
+**第 4 版までは、位置束縛マクロの側を直そうとしていた。それが遠回りだった。**
+
+**エンジンには既にシェーダー ABI が 2 つある。**
+
+| | シェーダーが書くもの | 誰が binding を決めるか |
+|---|---|---|
+| **位置束縛マクロ**(レガシー) | `PELICAN_DECLARE_INPUT_5(ssaoSampler)` | **パスの `input` 配列の序数** |
+| **生成 include**(正本にすべき) | `pelican_sample_ao(uv)` だけ | **エンジン** |
+
+`docs/shader_contract.md` が既にこう書いている ——
+**「実 descriptor 変数は generated include の内部詳細であり、shader は set/binding を書かない。」**
+
+そして **production で動いている** ——
+`clustered_light_select.comp` は `pelican_load_light_inventory(0u)` と書くだけで、
+set も binding も書かない。`planar_reflection` の prefilter も同じ。
+
+**第 5 版の決定: 生成 include を正本とし、位置束縛マクロを移行対象とする。**
+
+### 8 本の暗黙の約束のうち、4 本が消える
+
+第 4 版が数え上げた 8 本(§「なぜ 1 本ずつ切れないか」)のうち:
+
+| | 生成 include にすると |
+|---|---|
+| **3. binding がパスの序数** | **消える** —— エンジンが振る。シェーダーは番号を見ない |
+| **5. ソケットが feature 条件で増減** | **消える** —— 繋がっている port の宣言だけを出す |
+| **7. `.surface` が material 専用** | **消える** —— 生成経路はもともと非 `.surface` |
+| **8. 既定値の所在が 2 箇所 + 名前の部分一致** | **消える**(下記) |
+
+**残るのは 4 本で、性質が違う:**
+
+- **1(入力の口が 5 つ)/ 2(footprint が 3 箇所)** —— 「`resource_ports` へ寄せる」に変わる。
+  **統合先が確定するので、迷いが消える**
+- **4(順序が配列順)** —— シェーダー ABI と無関係。独立して直す
+- **6(compute がパス型でない)** —— **スケジューラは対応済み**
+  (`parseComputeNodes` がフレームグラフのノードを作る)。
+  分かれているのは**著作型(`RenderPassType`)と `add_authored_pass`** だけ
+
+### 既定値は「定数を返す accessor」にする
+
+**これが第 4 版から最も大きく変わる点である。**
+
+第 4 版は「engine が同じ binding へ既定 descriptor を書く」と設計した。
+**生成 include なら descriptor 自体が要らない:**
+
+```glsl
+#define pelican_sample_ao(uv) vec4(1.0)   // 未接続のときはこう出す
+```
+
+**消えるもの:**
+
+- **4×4 のダミーテクスチャを束縛する経路**(`tex_white` / `tex_black` / `tex_normal_default`)
+- **set 2(material)と set 1(パス入力)の非対称** —— 既定値機構が material にしか無い問題
+- **名前の部分一致による既定値の選択**
+  (`inferDummy` が変数名に `"normal"` を含むかで決めている)
+- **「descriptor が layout にあるのに書かれない」状態そのもの**
+
+**未接続なら宣言が出ない。**だから未書き込み descriptor が原理的に発生しない。
+第 4 版が「fail-fast の錨」として足そうとした検査も、**構造的に不要になる。**
+
+**既定値は宣言に明示的に書く**(`default: 1.0` など)。**名前から推論しない。**
+
+### OFF ビルドは、今日どの出荷プロジェクトも読めない(実測)
+
+**この設計を止めていたのは「OFF を壊すな」だった。それが守っているものはゼロである。**
+
+`featurecompose.cpp` は、runtime shader compiler が無効なときに
+**required な feature が 1 つでもあれば throw する。**
+そして `runtime_shader_compiler` を宣言しているのは
+`rt_shadow_mask` 系の 2 つだけで(どちらも `"optional"`)、
+**宣言が無ければ既定は required** である。
+
+| プロジェクト | 使う feature | 自前シェーダー |
+|---|---|---|
+| `animgraph_demo` | shadow_directional / sky_ambient / ui —— **全部 required** | 0 |
+| `example` | ui —— **required** | **3**(`.surface`) |
+| `sprite_demo` | sprite —— **required** | **2** |
+| `vrm_xr_demo` | (feature なし) | **2** |
+
+**4 つとも OFF では読めない。**3 つは加えて `.spv` の無いソースシェーダーを持つ。
+
+**したがって:**
+
+- **移行が壊す「動いているもの」は無い**
+- **WP211(dist-bake)は「壊したものの修復」ではなく、OFF 対応をこれから作る話である**
+- **`RUNTIME_SHADER_COMPILER=OFF` の受け入れ条件は
+  「ビルドが通り、テストが緑」までであって、「出荷プロジェクトが動く」ではない。**
+  第 4 版までの記述はここを曖昧にしていた。訂正する
+
+### 移行の順序
+
+**効果が出る順に並べる。「単独で出荷できる最小」で並べない**(第 4 版でその失敗をした)。
+
+```
+1. fullscreen の 7 本を生成 include へ移す
+   —— PELICAN_DECLARE_INPUT_n を pelican_sample_<port>() に置き換える
+   —— binding がエンジン所有になる。序数ずれが消える
+   【観測可能な変化】input の並べ替えで絵が変わらなくなる(今日は黙って変わる)
+
+2. 未接続ソケットを定数 accessor にする
+   —— 宣言に optional / default を足す
+   【観測可能な変化】ssao_clear 回避策を 3 箇所すべてから削除できる
+      (projects 2 件 + test/golden_harness.cpp)
+
+3. 1 と 2 の口を resource_ports へ寄せる(= 8 本のうち 1・2)
+   —— material_resources / screen_inputs / input を畳む
+   —— footprint の 3 経路が 1 つになる
+
+4. 順序を resource の参加者列へ(= 8 本のうち 4)
+   —— キャンバスから組めるようになる前提
+
+5. compute を著作型に入れる(= 8 本のうち 6)
+   —— スケジューラは既に対応済み。RenderPassType と add_authored_pass だけ
+
+保留: WP211 dist-bake —— OFF 対応を作る。移行の前提ではない
+```
+
+**`agent/wp336`(保留中)の扱い**: 共通 tokenizer と新文書種は段階 1 で要る。
+**ただし「socket 数 == input 数」の検査は生成 include では意味が変わる**ので、
+そのまま合流させず作り替えて取り込む。
+
+### 受け入れ条件の骨子
+
+**この節は 6 回「成立しない受け入れ条件」で差し戻されている。実測に基づいて書く。**
+
+- **段階 1**: `deferred_lighting` の `input` を並べ替えても**絵が変わらないこと**。
+  **今日は exit 0 / エラー 0 件 / VUID 0 件で走り、絵だけが変わる**(実測)。
+  **これが「名前で繋がった」ことの直接の証拠になる**
+- **段階 2**: `ssao_clear` パスと `ssao_blur` ターゲットが
+  **`projects/sprite_demo` / `projects/vrm_xr_demo` / `test/golden_harness.cpp` の
+  3 箇所すべてから消え**、ロードが成功しフレームが回ること。
+  **画素比較を対照にしないこと** —— この 2 プロジェクトでは `ambientRadiance` が
+  `vec3(0)` なので **AO が 1 でも未定義でも絵が byte 一致する**(実測)。
+  **生成された accessor が定数を返していることを、生成 include の内容で検査する**
+- **段階 2 の否定対照**: 既定値を宣言していないソケットを未接続にすると、
+  **ソケット名を含む名前付きエラーで落ちること。**今日は無言である
+- **shadow 有り / 無しの両構成**(`animgraph_demo` と他 3 つ)
+- **`type: raster` の実証を失わないこと** ——
+  `sprite_demo` の `ssao_clear` はプロジェクト空間で唯一の `raster` 使用例である。
+  **代替の dogfood を同じ WP に含めること**
+- 出荷 4 プロジェクトと `pelican project init`
+- **`RUNTIME_SHADER_COMPILER=OFF` はビルドとテストが緑であること。**
+  **「出荷プロジェクトが動くこと」を条件にしない**(今日も動かない)
+- **`uv run tools/doclink.py check` が緑であること**
+
+### 第 4 版から引き継ぐもの
+
+- **`same_pixel` を語彙から外す**(利用者の判断)。**扉は 2 枚あることも含めて**
+- **footprint はソケットが持つ**(契約ではない)。`opaque_color` の組み込みが
+  `neighborhood` である一方 `fullscreen.frag` は同一ピクセルで読む、という矛盾がある
+- **順序の荷重点は 3 箇所**(`buildEdges` / `topologicalOrder` / `enforceCanonicalOrder`)
+- **実測値の訂正**(手書き `before` は 4 field / 6 edge で全部外部、
+  `insert` は canonical anchor 8 / 同一ファイル 15 / 他ファイル 2、複数 writer は 7 target)
+- **canonical anchor は「名前を出さずに繋ぐ」の実例**であり、消す対象ではない
+- **`surface_resources` の選択子**も同じく実例である
+
+## ノードを自在に定義して書けるようにする(2026-08-22・第 4 版)【機構は第 5 版へ。実測と制約は引き続き有効】
+
+**位置束縛マクロの側を直すという前提は第 5 版で置き換えた。**
+**実測、制約、訂正した数値はこの節が引き続き正本である。**
 
 **第 3 版を敵対レビュー(codex)にかけ、その指摘をさらに独立検証(8 レンズ + 反証段)に
 かけた結果である。**判定は次のとおり。
@@ -6899,7 +7060,13 @@ canonical compiler input」だとコード自身が書いている。**
 全体ダンプを通常編集形式に戻す理由にはならないが、
 **stale override の復旧・比較用の限定 export 経路まで削除する根拠にはならない。**
 
-## 段階 3 の設計 —— 既定値(2026-08-23)
+## 段階 3 の設計 —— 既定値(2026-08-23)【第 5 版の段階 2 へ。実測は引き続き有効】
+
+**「既定 descriptor を束縛する」という機構は第 5 版で
+「定数を返す accessor を生成する」へ置き換わった。**
+**ただし `ssao_clear` の実測、三通りの壊れ方、
+画素で対照できないこと、golden harness の三つ目のコピーは
+この節が正本である。**
 
 **射程は「`ssao_clear` 回避策を削除できること」である。**
 利用者の要求「SSAO を外しても `deferred_lighting` が動く」「型にエラーがなければ動く」の実体。
