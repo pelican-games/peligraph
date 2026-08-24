@@ -890,6 +890,27 @@ FullscreenPassContainer::inputSamplingForTesting(
                : found->second.input_sampling;
 }
 
+ShaderBundleId
+FullscreenPassContainer::fragmentShaderForTesting(
+    PassId pass_id) const {
+    const auto desc = GET_MODULE(PipelineFactory).graphicsDesc(
+        requirePipelineHandle(pass_id, pipelines));
+    if (!desc.frag) {
+        throw std::runtime_error(
+            "Fullscreen pipeline has no fragment shader");
+    }
+    return *desc.frag;
+}
+
+std::vector<ShaderResourceInterfaceBinding>
+FullscreenPassContainer::resourceInterfaceForTesting(
+    PassId pass_id) const {
+    return GET_MODULE(PipelineFactory)
+        .graphicsDesc(
+            requirePipelineHandle(pass_id, pipelines))
+        .resource_interface;
+}
+
 std::vector<bool>
 FullscreenPassContainer::inputLocalReadsForTesting(
     PassId pass_id) const {

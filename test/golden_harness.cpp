@@ -82,6 +82,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -8817,6 +8818,1077 @@ void requireWp338SsaoGolden(
     REQUIRE(readback.bytes == expected);
 }
 
+constexpr std::uint32_t wp339RenderExtent = 64;
+constexpr std::uint32_t wp339HalfExtent = 32;
+
+enum class Wp339SsaoBlurScenario {
+    flat,
+    half_resolution,
+    xr_sequential,
+    xr_multiview,
+    cube,
+    planar,
+    cross_family,
+};
+
+struct Wp339SsaoBlurContract {
+    std::string_view name;
+    std::string_view producer_target;
+    std::string_view blur_target;
+    std::string_view blur_pass;
+    std::uint32_t producer_layers = 1;
+    std::uint32_t blur_layers = 1;
+    bool example_config = false;
+    bool half_resolution = false;
+    bool xr_graph = false;
+    bool multiview = false;
+    bool cube = false;
+    bool planar = false;
+    bool cross_family = false;
+};
+
+Wp339SsaoBlurContract wp339SsaoBlurContract(
+    Wp339SsaoBlurScenario scenario) {
+    switch (scenario) {
+    case Wp339SsaoBlurScenario::flat:
+        return {
+            .name = "flat",
+            .producer_target = "ssao_output",
+            .blur_target = "ssao_blur",
+            .blur_pass = "ssao_blur_pass",
+        };
+    case Wp339SsaoBlurScenario::half_resolution:
+        return {
+            .name = "half_resolution",
+            .producer_target = "ssao_output",
+            .blur_target = "ssao_blur",
+            .blur_pass = "ssao_blur_pass",
+            .example_config = true,
+            .half_resolution = true,
+        };
+    case Wp339SsaoBlurScenario::xr_sequential:
+        return {
+            .name = "xr_sequential",
+            .producer_target = "ssao_output",
+            .blur_target = "ssao_blur",
+            .blur_pass = "ssao_blur_pass",
+            .xr_graph = true,
+        };
+    case Wp339SsaoBlurScenario::xr_multiview:
+        return {
+            .name = "xr_multiview",
+            .producer_target = "ssao_output",
+            .blur_target = "ssao_blur",
+            .blur_pass = "ssao_blur_pass",
+            .producer_layers = 2,
+            .blur_layers = 2,
+            .xr_graph = true,
+            .multiview = true,
+        };
+    case Wp339SsaoBlurScenario::cube:
+        return {
+            .name = "cube",
+            .producer_target = "cube_capture_ao",
+            .blur_target = "cube_capture_ao_blur",
+            .blur_pass = "cube_capture_ssao_blur",
+            .producer_layers = 6,
+            .blur_layers = 6,
+            .cube = true,
+        };
+    case Wp339SsaoBlurScenario::planar:
+        return {
+            .name = "planar",
+            .producer_target = "planar_reflection_ao",
+            .blur_target = "planar_reflection_ao_blur",
+            .blur_pass = "planar_reflection_ssao_blur",
+            .producer_layers = 2,
+            .blur_layers = 2,
+            .xr_graph = true,
+            .planar = true,
+        };
+    case Wp339SsaoBlurScenario::cross_family:
+        return {
+            .name = "cross_family",
+            .producer_target = "cube_capture_ao",
+            .blur_target = "ssao_blur",
+            .blur_pass = "ssao_blur_pass",
+            .producer_layers = 6,
+            .cross_family = true,
+        };
+    }
+    throw std::runtime_error(
+        "unknown WP339 SSAO blur scenario");
+}
+
+nlohmann::json wp339PassByNameCopy(
+    const nlohmann::json &config,
+    std::string_view name) {
+    for (const auto &rendering_pass :
+         config.at("rendering_passes")) {
+        for (const auto &pass :
+             rendering_pass.at("passes")) {
+            if (pass.value("name", std::string{}) == name) {
+                return pass;
+            }
+        }
+    }
+    throw std::runtime_error(
+        "WP339 fixture pass not found: " +
+        std::string{name});
+}
+
+void makeWp339DeterministicProducer(
+    nlohmann::json &pass) {
+    pass["input"] = nlohmann::json::array();
+    pass.erase("resource_ports");
+    pass.erase("input_sampling");
+    pass.erase("input_footprints");
+    pass.erase("push_constants");
+    pass["shader"]["vertex"] =
+        "engine://fullscreen";
+    pass["shader"]["fragment"] =
+        "project://shaders/wp339_ssao_producer";
+}
+
+nlohmann::json wp339ScenePresentPass(
+    std::string_view input) {
+    return {
+        {"name", "scene_present"},
+        {"type", "fullscreen"},
+        {"output",
+         {{"color", nlohmann::json::array({"swapchain"})},
+          {"depth", nullptr}}},
+        {"input", nlohmann::json::array({input})},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://scene_present"}}},
+    };
+}
+
+nlohmann::json wp339BaseConfig(bool example_config) {
+    auto config = example_config
+        ? nlohmann::json::parse(readTextFile(
+              sourceRoot() / "projects" / "example" /
+              "passes" / "main_rendering_config.json"))
+        : nlohmann::json::parse(
+              engineResourceOrThrow(
+                  "render_pipelines/hybrid_v1.json"))
+              .at("config");
+
+    auto producer = wp339PassByNameCopy(
+        config, "ssao_pass");
+    makeWp339DeterministicProducer(producer);
+    auto blur = wp339PassByNameCopy(
+        config, "ssao_blur_pass");
+    config["rendering_passes"][0]["passes"] =
+        nlohmann::json::array({
+            std::move(producer), std::move(blur),
+            wp339ScenePresentPass("ssao_blur"),
+        });
+    config["features"] = nlohmann::json::array();
+    config.erase("material_routing");
+    config.erase("draw_sort");
+    config.erase("compute_tasks");
+    config.erase("buffers");
+    return config;
+}
+
+nlohmann::json wp339SecondaryFeature(
+    const Wp339SsaoBlurContract &contract) {
+    const auto resource = contract.planar
+        ? "features/planar_reflection.json"
+        : "features/cube_capture.json";
+    auto feature = nlohmann::json::parse(
+        engineResourceOrThrow(resource));
+    const auto producer_name = contract.planar
+        ? "planar_reflection_ssao"
+        : "cube_capture_ssao";
+    const auto blur_name = contract.planar
+        ? "planar_reflection_ssao_blur"
+        : "cube_capture_ssao_blur";
+
+    nlohmann::json retained = nlohmann::json::array();
+    for (const auto &entry : feature.at("passes")) {
+        const auto name = entry.at("pass").value(
+            "name", std::string{});
+        if (name == producer_name) {
+            auto producer = entry;
+            producer["insert"] = "begin";
+            makeWp339DeterministicProducer(
+                producer["pass"]);
+            if (contract.planar) {
+                producer["pass"]["shader"]["vertex"] =
+                    "project://shaders/wp339_fullscreen";
+            }
+            retained.push_back(std::move(producer));
+        } else if (!contract.cross_family &&
+                   name == blur_name) {
+            auto blur = entry;
+            blur["insert"] =
+                "after:" + std::string{producer_name};
+            if (contract.planar) {
+                blur["pass"]["shader"]["vertex"] =
+                    "project://shaders/wp339_fullscreen";
+            }
+            retained.push_back(std::move(blur));
+        }
+    }
+    feature["passes"] = std::move(retained);
+    if (contract.planar) {
+        feature["compute_tasks"] =
+            nlohmann::json::array();
+        feature.erase("pass_overrides");
+    }
+    return feature;
+}
+
+void writeWp339ProjectFiles(
+    const std::filesystem::path &root,
+    std::string_view name) {
+    auto project = makeShadowProjectJson();
+    project["name"] = std::string{name};
+    project["basic_config"]["default_rendering_pass"] =
+        "main_render";
+    project["basic_config"]["window_size"] = {
+        {"width", wp339RenderExtent},
+        {"height", wp339RenderExtent},
+    };
+    writeTextFile(
+        root / "project.json", project.dump(2));
+    writeTextFile(
+        root / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        root / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeTextFile(
+        root / "ui" / "ui.json",
+        R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+}
+
+void writeWp339ProducerShader(
+    const std::filesystem::path &root) {
+    writeTextFile(
+        root / "shaders" / "wp339_fullscreen.vert",
+        engineResourceOrThrow("fullscreen.vert"));
+    writeTextFile(
+        root / "shaders" /
+            "wp339_ssao_producer.frag",
+        R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_frame.glsl"
+
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    uint layer = pelican_view_index();
+    uint low = 8u + 7u * layer;
+    uint high = 230u - 5u * layer;
+    uint stripe = (uint(pixel.x) + layer) & 1u;
+    uint value = stripe == 0u ? low : high;
+    float encoded = float(value) / 255.0;
+    outColor = vec4(encoded, encoded, encoded, 1.0);
+}
+)glsl");
+}
+
+void writeWp339SsaoBlurProject(
+    const std::filesystem::path &root,
+    Wp339SsaoBlurScenario scenario,
+    std::optional<std::string_view> cross_view =
+        std::nullopt) {
+    const auto contract =
+        wp339SsaoBlurContract(scenario);
+    writeWp339ProjectFiles(
+        root,
+        "WP339 SSAO blur " +
+            std::string{contract.name});
+    writeWp339ProducerShader(root);
+
+    auto config = wp339BaseConfig(
+        contract.example_config);
+    if (contract.xr_graph) {
+        config["xr"] = {
+            {"view_execution",
+             contract.multiview ? "auto" : "sequential"},
+        };
+    }
+
+    if (contract.cube || contract.planar ||
+        contract.cross_family) {
+        const auto feature_file =
+            "wp339_" + std::string{contract.name} +
+            "_producer.json";
+        writeTextFile(
+            root / "features" / feature_file,
+            wp339SecondaryFeature(contract).dump(2));
+        nlohmann::json parameters;
+        if (contract.planar) {
+            parameters = {
+                {"resolution", wp339RenderExtent},
+                {"plane_x", 0.0},
+                {"plane_y", 1.0},
+                {"plane_z", 0.0},
+                {"plane_offset", -0.5},
+                {"preserve_raster_winding", true},
+                {"oblique_near_plane", true},
+            };
+        } else {
+            parameters = {
+                {"resolution", wp339RenderExtent},
+                {"position_x", 0.15},
+                {"position_y", -0.1},
+                {"position_z", 2.0},
+            };
+        }
+        config["features"].push_back({
+            {"ref", "project://features/" + feature_file},
+            {"parameters", std::move(parameters)},
+        });
+    }
+
+    if (contract.cross_family) {
+        auto blur = wp339PassByNameCopy(
+            config, "ssao_blur_pass");
+        blur["input"] = nlohmann::json::array(
+            {contract.producer_target});
+        if (blur.contains("resource_ports")) {
+            auto &port =
+                blur["resource_ports"].begin().value();
+            port["resource"] = contract.producer_target;
+            port["view"] = cross_view.value_or(
+                "family_array");
+        }
+        config["rendering_passes"][0]["passes"] =
+            nlohmann::json::array({
+                std::move(blur),
+                wp339ScenePresentPass(
+                    contract.blur_target),
+            });
+    }
+
+    nlohmann::json overrides = nlohmann::json::object();
+    for (const auto target : {
+             contract.producer_target,
+             contract.blur_target,
+         }) {
+        nlohmann::json override = {
+            {"usage",
+             nlohmann::json::array({"TRANSFER_SRC"})},
+        };
+        if (contract.half_resolution) {
+            override["width"] = wp339HalfExtent;
+            override["height"] = wp339HalfExtent;
+        } else if (contract.cross_family) {
+            override["width"] = wp339RenderExtent;
+            override["height"] = wp339RenderExtent;
+        }
+        overrides[std::string{target}] =
+            std::move(override);
+    }
+    const auto readback_feature =
+        "wp339_" + std::string{contract.name} +
+        "_readback.json";
+    writeTextFile(
+        root / "features" / readback_feature,
+        nlohmann::json{
+            {"schema", "pelican.render_feature"},
+            {"version", 1},
+            {"name",
+             "wp339_" + std::string{contract.name} +
+                 "_readback"},
+            {"render_target_overrides",
+             std::move(overrides)},
+        }.dump(2));
+    config["features"].push_back(
+        "project://features/" + readback_feature);
+    writeTextFile(
+        root / "passes" / "main.json",
+        config.dump(2));
+}
+
+struct Wp339SsaoBlurCapture {
+    RenderTargetReadback producer;
+    RenderTargetReadback blur;
+    std::uint32_t sub_texel_precision_bits = 0;
+    std::vector<FullscreenInputSampling> sampling;
+    std::string vertex_shader_ref;
+    GraphicsPipelineViewExecution view_execution =
+        GraphicsPipelineViewExecution::single_view;
+    std::string generated_resource_ports;
+    std::vector<ShaderResourceInterfaceBinding>
+        resource_interface;
+    ReflectedImageViewDimension reflected_port_dimension =
+        ReflectedImageViewDimension::none;
+};
+
+const CompiledPass &wp339CompiledPass(
+    const Wp339SsaoBlurContract &contract) {
+    const auto generation =
+        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    if (generation == nullptr) {
+        throw std::runtime_error(
+            "WP339 fixture has no runtime generation");
+    }
+    const auto program_name = contract.xr_graph
+        ? std::string{"main_render#xr"}
+        : std::string{"main_render"};
+    const auto named =
+        generation->name_to_id.find(program_name);
+    if (named == generation->name_to_id.end()) {
+        throw std::runtime_error(
+            "WP339 fixture program not found: " +
+            program_name);
+    }
+    const auto *program = generation->find(named->second);
+    if (program == nullptr) {
+        throw std::runtime_error(
+            "WP339 fixture program is unavailable: " +
+            program_name);
+    }
+    const auto pass = std::find_if(
+        program->rendering_pass.passes.begin(),
+        program->rendering_pass.passes.end(),
+        [&](const auto &candidate) {
+            return candidate.definition.name ==
+                   contract.blur_pass;
+        });
+    if (pass == program->rendering_pass.passes.end()) {
+        throw std::runtime_error(
+            "WP339 blur pass is unavailable: " +
+            std::string{contract.blur_pass});
+    }
+    return *pass;
+}
+
+Wp339SsaoBlurCapture captureWp339SsaoBlur(
+    Wp339SsaoBlurScenario scenario) {
+    const auto contract =
+        wp339SsaoBlurContract(scenario);
+    const auto root = makeTempProjectDir(
+        "wp339_ssao_blur_" +
+        std::string{contract.name});
+    try {
+        writeWp339SsaoBlurProject(root, scenario);
+        Wp339SsaoBlurCapture capture;
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(
+                readTextFile(root / "project.json"));
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = vk::Extent2D{
+                wp339RenderExtent,
+                wp339RenderExtent};
+            launch.headless_frames = 1;
+
+            auto &vkcore = GET_MODULE(VulkanManageCore);
+            if (contract.xr_graph) {
+                launch.xr_active = true;
+            }
+            capture.sub_texel_precision_bits =
+                vkcore.getPhysDevice()
+                    .getProperties()
+                    .limits
+                    .subTexelPrecisionBits;
+            auto &time = GET_MODULE(EngineTime);
+            time.setup(
+                EngineTime::Mode::fixed_step,
+                1.0 / 60.0);
+            auto &renderer = GET_MODULE(Renderer);
+            if (contract.xr_graph) {
+                renderer.selectGraphVariant(
+                    RenderGraphVariant::xr);
+            }
+            auto &camera = GET_MODULE(Camera);
+            camera.setScreenSize(
+                wp339RenderExtent,
+                wp339RenderExtent);
+            camera.setPos({0.0f, 0.0f, 2.0f});
+            camera.setDir({0.0f, 0.0f, -1.0f});
+            camera.setUp({0.0f, 1.0f, 0.0f});
+            time.advance();
+
+            if (contract.multiview) {
+                Test::VulkanSyntheticViewFamilyTarget target{
+                    launch.headless_extent,
+                    GET_MODULE(RenderTarget)
+                        .getSwapchainFormat()};
+                renderer.renderLogicalFrame(
+                    target, makeWp338StereoFamily());
+            } else if (contract.xr_graph) {
+                Test::VulkanSyntheticStereoTarget target{
+                    launch.headless_extent,
+                    GET_MODULE(RenderTarget)
+                        .getSwapchainFormat()};
+                renderer.renderLogicalFrame(
+                    target, makeWp338StereoFamily());
+            } else {
+                renderer.render();
+            }
+            vkcore.waitIdle();
+
+            const auto &compiled =
+                wp339CompiledPass(contract);
+            auto &fullscreen =
+                GET_MODULE(FullscreenPassContainer);
+            capture.sampling =
+                fullscreen.inputSamplingForTesting(
+                    compiled.pass_id);
+            capture.vertex_shader_ref =
+                compiled.definition
+                    .fullscreenInfo()
+                    .vert_shader.ref;
+            capture.view_execution =
+                compiled.view.execution;
+            const auto fragment_shader =
+                fullscreen.fragmentShaderForTesting(
+                    compiled.pass_id);
+            capture.resource_interface =
+                fullscreen.resourceInterfaceForTesting(
+                    compiled.pass_id);
+            const auto &fragment_bundle =
+                GET_MODULE(ShaderLibrary).get(
+                    fragment_shader);
+            const auto generated = std::find_if(
+                fragment_bundle.virtual_includes.begin(),
+                fragment_bundle.virtual_includes.end(),
+                [](const auto &include) {
+                    return include.first ==
+                           shaderResourcePortIncludeName;
+                });
+            if (generated !=
+                fragment_bundle.virtual_includes.end()) {
+                capture.generated_resource_ports =
+                    generated->second;
+            }
+            const auto reflected = std::find_if(
+                fragment_bundle.reflection.bindings.begin(),
+                fragment_bundle.reflection.bindings.end(),
+                [](const auto &binding) {
+                    return binding.name ==
+                           "pelican_resource_ssaoInput";
+                });
+            if (reflected !=
+                fragment_bundle.reflection.bindings.end()) {
+                capture.reflected_port_dimension =
+                    reflected->image_view_dimension;
+            }
+            capture.producer =
+                renderer.readRenderTargetForTesting(
+                    contract.producer_target,
+                    ImageSubresourceRange{
+                        .layer_count =
+                            contract.producer_layers,
+                    });
+            capture.blur =
+                renderer.readRenderTargetForTesting(
+                    contract.blur_target,
+                    ImageSubresourceRange{
+                        .layer_count =
+                            contract.blur_layers,
+                    });
+        }
+        std::filesystem::remove_all(root);
+        return capture;
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+}
+
+std::size_t wp339LayerBytes(
+    const RenderTargetReadback &readback) {
+    return static_cast<std::size_t>(
+               readback.extent.width) *
+           readback.extent.height;
+}
+
+std::size_t wp339WrappedIndex(
+    int coordinate, std::uint32_t extent) {
+    const auto signed_extent =
+        static_cast<int>(extent);
+    auto wrapped = coordinate % signed_extent;
+    if (wrapped < 0) {
+        wrapped += signed_extent;
+    }
+    return static_cast<std::size_t>(wrapped);
+}
+
+std::uint8_t wp339ProducerPixel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer, int x, int y) {
+    const auto width = producer.extent.width;
+    const auto height = producer.extent.height;
+    const auto offset =
+        static_cast<std::size_t>(layer) *
+            wp339LayerBytes(producer) +
+        wp339WrappedIndex(y, height) * width +
+        wp339WrappedIndex(x, width);
+    return producer.bytes.at(offset);
+}
+
+std::vector<std::uint8_t> wp339BoxKernel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer) {
+    std::vector<std::uint8_t> result(
+        wp339LayerBytes(producer));
+    for (std::uint32_t y = 0;
+         y < producer.extent.height; ++y) {
+        for (std::uint32_t x = 0;
+             x < producer.extent.width; ++x) {
+            std::uint32_t sum = 0;
+            for (int oy = -2; oy <= 2; ++oy) {
+                for (int ox = -2; ox <= 2; ++ox) {
+                    sum += wp339ProducerPixel(
+                        producer, layer,
+                        static_cast<int>(x) + ox,
+                        static_cast<int>(y) + oy);
+                }
+            }
+            result[static_cast<std::size_t>(y) *
+                       producer.extent.width +
+                   x] = static_cast<std::uint8_t>(
+                std::lround(
+                    static_cast<double>(sum) / 25.0));
+        }
+    }
+    return result;
+}
+
+double wp339LinearProducerSample(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer, double x, double y) {
+    const auto x0 = static_cast<int>(std::floor(x));
+    const auto y0 = static_cast<int>(std::floor(y));
+    const auto fx = x - std::floor(x);
+    const auto fy = y - std::floor(y);
+    const auto p00 = static_cast<double>(
+        wp339ProducerPixel(producer, layer, x0, y0));
+    const auto p10 = static_cast<double>(
+        wp339ProducerPixel(producer, layer, x0 + 1, y0));
+    const auto p01 = static_cast<double>(
+        wp339ProducerPixel(producer, layer, x0, y0 + 1));
+    const auto p11 = static_cast<double>(
+        wp339ProducerPixel(
+            producer, layer, x0 + 1, y0 + 1));
+    const auto top = p00 + (p10 - p00) * fx;
+    const auto bottom = p01 + (p11 - p01) * fx;
+    return top + (bottom - top) * fy;
+}
+
+std::vector<std::uint8_t> wp339RenderExtentMutantKernel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer) {
+    std::vector<std::uint8_t> result(
+        wp339LayerBytes(producer));
+    const auto step_x =
+        static_cast<double>(producer.extent.width) /
+        wp339RenderExtent;
+    const auto step_y =
+        static_cast<double>(producer.extent.height) /
+        wp339RenderExtent;
+    for (std::uint32_t y = 0;
+         y < producer.extent.height; ++y) {
+        for (std::uint32_t x = 0;
+             x < producer.extent.width; ++x) {
+            double sum = 0.0;
+            for (int oy = -2; oy <= 2; ++oy) {
+                for (int ox = -2; ox <= 2; ++ox) {
+                    sum += wp339LinearProducerSample(
+                        producer, layer,
+                        static_cast<double>(x) +
+                            ox * step_x,
+                        static_cast<double>(y) +
+                            oy * step_y);
+                }
+            }
+            result[static_cast<std::size_t>(y) *
+                       producer.extent.width +
+                   x] = static_cast<std::uint8_t>(
+                std::lround(sum / 25.0));
+        }
+    }
+    return result;
+}
+
+std::uint32_t wp339MaxNeighborDelta(
+    const RenderTargetReadback &producer) {
+    std::uint32_t result = 0;
+    for (std::uint32_t layer = 0;
+         layer < producer.layer_count; ++layer) {
+        for (std::uint32_t y = 0;
+             y < producer.extent.height; ++y) {
+            for (std::uint32_t x = 0;
+                 x < producer.extent.width; ++x) {
+                const auto value = static_cast<int>(
+                    wp339ProducerPixel(
+                        producer, layer, x, y));
+                for (const auto [nx, ny] : {
+                         std::pair{
+                             static_cast<int>(x) + 1,
+                             static_cast<int>(y)},
+                         std::pair{
+                             static_cast<int>(x),
+                             static_cast<int>(y) + 1},
+                     }) {
+                    result = std::max(
+                        result,
+                        static_cast<std::uint32_t>(
+                            std::abs(
+                                value -
+                                static_cast<int>(
+                                    wp339ProducerPixel(
+                                        producer, layer,
+                                        nx, ny)))));
+                }
+            }
+        }
+    }
+    return result;
+}
+
+std::vector<std::size_t> wp339DistinctCounts(
+    const RenderTargetReadback &producer) {
+    std::vector<std::size_t> result;
+    const auto layer_bytes = wp339LayerBytes(producer);
+    for (std::uint32_t layer = 0;
+         layer < producer.layer_count; ++layer) {
+        const auto begin = producer.bytes.begin() +
+            static_cast<std::ptrdiff_t>(
+                layer * layer_bytes);
+        const auto end = begin +
+            static_cast<std::ptrdiff_t>(layer_bytes);
+        result.emplace_back(
+            std::set<std::uint8_t>{begin, end}.size());
+    }
+    return result;
+}
+
+void requireWp339CrossFamilyPerViewRejected() {
+    const auto root = makeTempProjectDir(
+        "wp339_ssao_blur_cross_family_per_view");
+    std::string error;
+    try {
+        writeWp339SsaoBlurProject(
+            root, Wp339SsaoBlurScenario::cross_family,
+            "per_view");
+        try {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(
+                readTextFile(root / "project.json"));
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = vk::Extent2D{
+                wp339RenderExtent, wp339RenderExtent};
+            (void)GET_MODULE(Renderer);
+        } catch (const std::exception &caught) {
+            error = caught.what();
+        }
+        std::filesystem::remove_all(root);
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    CAPTURE(error);
+    REQUIRE(error.find(
+                "must declare family_array to consume a "
+                "producer-owned view-family array") !=
+            std::string::npos);
+}
+
+void requireWp339SsaoBlurRelationship(
+    Wp339SsaoBlurScenario scenario) {
+    const auto contract =
+        wp339SsaoBlurContract(scenario);
+    CAPTURE(std::string{contract.name});
+    if (contract.cross_family) {
+        requireWp339CrossFamilyPerViewRejected();
+    }
+    const auto capture =
+        captureWp339SsaoBlur(scenario);
+    const auto expected_extent = contract.half_resolution
+        ? vk::Extent2D{wp339HalfExtent, wp339HalfExtent}
+        : vk::Extent2D{wp339RenderExtent,
+                       wp339RenderExtent};
+    REQUIRE(capture.producer.extent == expected_extent);
+    REQUIRE(capture.blur.extent == expected_extent);
+    REQUIRE(capture.producer.format ==
+            vk::Format::eR8Unorm);
+    REQUIRE(capture.blur.format ==
+            vk::Format::eR8Unorm);
+    REQUIRE(capture.producer.layer_count ==
+            contract.producer_layers);
+    REQUIRE(capture.blur.layer_count ==
+            contract.blur_layers);
+    REQUIRE(capture.producer.bytes.size() ==
+            wp339LayerBytes(capture.producer) *
+                contract.producer_layers);
+    REQUIRE(capture.blur.bytes.size() ==
+            wp339LayerBytes(capture.blur) *
+                contract.blur_layers);
+    REQUIRE(capture.sampling.size() == 1);
+    REQUIRE(capture.sampling.front().filter ==
+            FullscreenInputFilter::linear);
+    REQUIRE(capture.sampling.front().address_mode ==
+            FullscreenInputAddressMode::repeat);
+
+    if (contract.multiview || contract.cross_family) {
+        REQUIRE(capture.vertex_shader_ref ==
+                "engine://fullscreen");
+        REQUIRE(capture.generated_resource_ports.find(
+                    "sampler2DArray "
+                    "pelican_resource_ssaoInput") !=
+                std::string::npos);
+        const auto resource = std::find_if(
+            capture.resource_interface.begin(),
+            capture.resource_interface.end(),
+            [](const auto &binding) {
+                return binding.port.name == "ssaoInput";
+            });
+        REQUIRE(resource !=
+                capture.resource_interface.end());
+        REQUIRE(resource->image_view_dimension ==
+                ReflectedImageViewDimension::two_d_array);
+        REQUIRE(capture.reflected_port_dimension ==
+                ReflectedImageViewDimension::two_d_array);
+    }
+    if (contract.multiview) {
+        REQUIRE(capture.view_execution ==
+                GraphicsPipelineViewExecution::multiview);
+    }
+
+    const auto producer_layer_bytes =
+        wp339LayerBytes(capture.producer);
+    for (std::uint32_t left = 0;
+         left < capture.producer.layer_count; ++left) {
+        for (std::uint32_t right = left + 1;
+             right < capture.producer.layer_count; ++right) {
+            REQUIRE_FALSE(std::equal(
+                capture.producer.bytes.begin() +
+                    left * producer_layer_bytes,
+                capture.producer.bytes.begin() +
+                    (left + 1) * producer_layer_bytes,
+                capture.producer.bytes.begin() +
+                    right * producer_layer_bytes));
+        }
+    }
+
+    const auto max_neighbor_delta =
+        wp339MaxNeighborDelta(capture.producer);
+    const auto precision_scale = std::ldexp(
+        1.0,
+        static_cast<int>(
+            capture.sub_texel_precision_bits));
+    const auto tolerance =
+        1u + static_cast<std::uint32_t>(std::ceil(
+                 static_cast<double>(max_neighbor_delta) /
+                 precision_scale));
+    const auto distinct =
+        wp339DistinctCounts(capture.producer);
+
+    std::size_t maximum_kernel_separation = 0;
+    std::size_t separated_pixels = 0;
+    const auto checked_layers =
+        capture.blur.layer_count;
+    const auto blur_layer_bytes =
+        wp339LayerBytes(capture.blur);
+    for (std::uint32_t layer = 0;
+         layer < checked_layers; ++layer) {
+        const auto correct = wp339BoxKernel(
+            capture.producer, layer);
+        std::vector<std::uint8_t> mutant;
+        if (contract.half_resolution) {
+            mutant = wp339RenderExtentMutantKernel(
+                capture.producer, layer);
+            std::size_t layer_separated = 0;
+            std::size_t layer_maximum = 0;
+            for (std::size_t pixel = 0;
+                 pixel < correct.size(); ++pixel) {
+                const auto difference =
+                    static_cast<std::size_t>(std::abs(
+                        static_cast<int>(correct[pixel]) -
+                        static_cast<int>(mutant[pixel])));
+                layer_maximum = std::max(
+                    layer_maximum, difference);
+                layer_separated +=
+                    difference > tolerance ? 1u : 0u;
+            }
+            CAPTURE(layer, layer_separated, layer_maximum,
+                    tolerance);
+            REQUIRE(layer_separated > 0);
+            separated_pixels += layer_separated;
+            maximum_kernel_separation = std::max(
+                maximum_kernel_separation,
+                layer_maximum);
+        }
+
+        std::size_t changed_from_producer = 0;
+        std::size_t differs_from_mutant = 0;
+        for (std::size_t pixel = 0;
+             pixel < blur_layer_bytes; ++pixel) {
+            const auto blur_value =
+                capture.blur.bytes[
+                    layer * blur_layer_bytes + pixel];
+            const auto producer_value =
+                capture.producer.bytes[
+                    layer * producer_layer_bytes + pixel];
+            changed_from_producer +=
+                std::abs(
+                    static_cast<int>(blur_value) -
+                    static_cast<int>(producer_value)) >
+                        static_cast<int>(tolerance)
+                    ? 1u
+                    : 0u;
+            REQUIRE(std::abs(
+                        static_cast<int>(blur_value) -
+                        static_cast<int>(correct[pixel])) <=
+                    static_cast<int>(tolerance));
+            if (contract.half_resolution) {
+                differs_from_mutant +=
+                    std::abs(
+                        static_cast<int>(blur_value) -
+                        static_cast<int>(mutant[pixel])) >
+                            static_cast<int>(tolerance)
+                        ? 1u
+                        : 0u;
+            }
+        }
+        CAPTURE(layer, changed_from_producer,
+                blur_layer_bytes, tolerance);
+        REQUIRE(changed_from_producer * 4 >=
+                blur_layer_bytes);
+        if (contract.half_resolution) {
+            CAPTURE(layer, differs_from_mutant);
+            REQUIRE(differs_from_mutant > 0);
+        }
+    }
+
+    std::ostringstream metrics;
+    metrics << "WP339_METRICS scenario=" << contract.name
+            << " subTexelPrecisionBits="
+            << capture.sub_texel_precision_bits
+            << " tol=" << tolerance
+            << " maxNeighborDelta="
+            << max_neighbor_delta
+            << " distinct=";
+    for (std::size_t index = 0;
+         index < distinct.size(); ++index) {
+        if (index != 0) metrics << ',';
+        metrics << distinct[index];
+    }
+    if (contract.half_resolution) {
+        metrics << " separatedPixels="
+                << separated_pixels
+                << " maxKernelSeparation="
+                << maximum_kernel_separation;
+    }
+    std::cout << metrics.str() << '\n';
+}
+
+void writeWp339SsaoBlurIntegrationProject(
+    const std::filesystem::path &root) {
+    writeWp339ProjectFiles(
+        root, "WP339 shipped SSAO blur integration");
+    auto config = nlohmann::json::parse(
+                      engineResourceOrThrow(
+                          "render_pipelines/hybrid_v1.json"))
+                      .at("config");
+    if (!config.contains("features")) {
+        config["features"] = nlohmann::json::array();
+    }
+    writeTextFile(
+        root / "features" /
+            "wp339_ssao_blur_integration_readback.json",
+        nlohmann::json{
+            {"schema", "pelican.render_feature"},
+            {"version", 1},
+            {"name", "wp339_ssao_blur_integration_readback"},
+            {"render_target_overrides",
+             {{"ssao_output",
+               {{"usage",
+                 nlohmann::json::array(
+                     {"TRANSFER_SRC"})}}},
+              {"ssao_blur",
+               {{"usage",
+                 nlohmann::json::array(
+                     {"TRANSFER_SRC"})}}}}},
+        }.dump(2));
+    config["features"].push_back(
+        "project://features/"
+        "wp339_ssao_blur_integration_readback.json");
+    writeTextFile(
+        root / "passes" / "main.json",
+        config.dump(2));
+}
+
+void requireWp339SsaoBlurIntegrationSmoke() {
+    const auto root = makeTempProjectDir(
+        "wp339_ssao_blur_integration");
+    try {
+        writeWp339SsaoBlurIntegrationProject(root);
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(
+                readTextFile(root / "project.json"));
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = vk::Extent2D{
+                wp339RenderExtent,
+                wp339RenderExtent};
+            launch.headless_frames = 1;
+            auto &vkcore = GET_MODULE(VulkanManageCore);
+            auto &time = GET_MODULE(EngineTime);
+            time.setup(
+                EngineTime::Mode::fixed_step,
+                1.0 / 60.0);
+            auto &renderer = GET_MODULE(Renderer);
+            placeWp338SsaoScene();
+            time.advance();
+            renderer.render();
+            vkcore.waitIdle();
+            const auto producer =
+                renderer.readRenderTargetForTesting(
+                    "ssao_output",
+                    ImageSubresourceRange{});
+            const auto blur =
+                renderer.readRenderTargetForTesting(
+                    "ssao_blur",
+                    ImageSubresourceRange{});
+            REQUIRE(producer.format ==
+                    vk::Format::eR8Unorm);
+            REQUIRE(blur.format ==
+                    vk::Format::eR8Unorm);
+            REQUIRE(producer.extent == blur.extent);
+            REQUIRE(producer.bytes != blur.bytes);
+            REQUIRE(*std::min_element(
+                        producer.bytes.begin(),
+                        producer.bytes.end()) !=
+                    *std::max_element(
+                        producer.bytes.begin(),
+                        producer.bytes.end()));
+            REQUIRE(*std::min_element(
+                        blur.bytes.begin(),
+                        blur.bytes.end()) !=
+                    *std::max_element(
+                        blur.bytes.begin(),
+                        blur.bytes.end()));
+        }
+        std::filesystem::remove_all(root);
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+}
+
 } // namespace
 
 void GoldenHarness::runSsaoFlatGolden() {
@@ -8876,6 +9948,97 @@ void GoldenHarness::runSsaoPlanarGolden() {
         Wp338SsaoScenario::planar);
 #else
     SKIP("WP338 planar SSAO golden requires the runtime shader compiler, standard render algorithms, and OpenXR graph support");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurFlatOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::flat);
+#else
+    SKIP("WP339 flat SSAO blur oracle requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurHalfResolutionOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::half_resolution);
+#else
+    SKIP("WP339 half-resolution SSAO blur oracle requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurXrSequentialOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::xr_sequential);
+#else
+    SKIP("WP339 sequential XR SSAO blur oracle requires the runtime shader compiler and OpenXR graph support");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurXrMultiviewOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::xr_multiview);
+#else
+    SKIP("WP339 multiview XR SSAO blur oracle requires the runtime shader compiler and OpenXR graph support");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurCubeOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && \
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::cube);
+#else
+    SKIP("WP339 cube SSAO blur oracle requires the runtime shader compiler and standard render algorithms");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurPlanarOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && \
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS && \
+    PELICAN_WITH_OPENXR
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::planar);
+#else
+    SKIP("WP339 planar SSAO blur oracle requires the runtime shader compiler, standard render algorithms, and OpenXR graph support");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurCrossFamilyOracle() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && \
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    requireWp339SsaoBlurRelationship(
+        Wp339SsaoBlurScenario::cross_family);
+#else
+    SKIP("WP339 cross-family SSAO blur oracle requires the runtime shader compiler and standard render algorithms");
+#endif
+}
+
+void GoldenHarness::runSsaoBlurIntegrationSmoke() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    requireWp339SsaoBlurIntegrationSmoke();
+#else
+    SKIP("WP339 shipped SSAO blur integration smoke requires the runtime shader compiler");
 #endif
 }
 

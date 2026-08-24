@@ -185,6 +185,13 @@
           "type": "fullscreen",
           "output": { "color": ["ssao_blur"], "depth": null },
           "input": ["ssao_output"],
+          "resource_ports": {
+            "ssaoInput": {
+              "resource": "ssao_output",
+              "access": "sampled",
+              "view": "per_view"
+            }
+          },
           "shader": {
             "vertex": "engine://fullscreen",
             "fragment": "engine://ssao_blur"

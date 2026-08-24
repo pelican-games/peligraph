@@ -131,6 +131,10 @@ DECLARE_MODULE(FullscreenPassContainer) {
         std::uint32_t view_index = 0) const;
     std::vector<FullscreenInputSampling>
     inputSamplingForTesting(PassId pass_id) const;
+    ShaderBundleId fragmentShaderForTesting(
+        PassId pass_id) const;
+    std::vector<ShaderResourceInterfaceBinding>
+    resourceInterfaceForTesting(PassId pass_id) const;
     std::vector<bool>
     inputLocalReadsForTesting(PassId pass_id) const;
     uint64_t inputBindingRevisionForTesting(PassId pass_id) const;

@@ -128,7 +128,6 @@ constexpr auto registered_ids =
     "shader_lab_present.frag.spv",
     "ssao.frag",
     "ssao_blur.frag",
-    "ssao_blur.frag.spv",
     "taa_composite.frag",
     "taa_resolve.frag",
     "sprite.frag.spv",
@@ -293,7 +292,6 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shader_lab_present.frag.spv")
     PELICAN_ENGINE_RESOURCE("ssao.frag")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag")
-    PELICAN_ENGINE_RESOURCE("ssao_blur.frag.spv")
     PELICAN_ENGINE_RESOURCE("taa_composite.frag")
     PELICAN_ENGINE_RESOURCE("taa_resolve.frag")
     PELICAN_ENGINE_RESOURCE("sprite.frag.spv")

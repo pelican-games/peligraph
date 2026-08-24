@@ -911,7 +911,7 @@ TEST_CASE("...") {
 > SKIP(...)                     → TestSkipException                    → 素通り → skip
 > ```
 >
-> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L9769) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L3276) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L10932) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L3276) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
 >
 > **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
 
@@ -927,7 +927,7 @@ rg -n -A3 "catch \(const std::exception" test --glob "*.cpp" | rg -B1 "SKIP\("
 
 skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。現在の GPU allowlist は、clone / worktree 外の corpus を `PELICAN_TEST_PROJECTS_DIR` で指定する `project_catalog_headless_smoke` の未指定 skip だけを載せています。上の 4 件の broad exception skip は載せません。entry を消せば未指定時の skip が非許可になり、逆にテスト名自体が現れなければ stale entry として失敗するので、リストは腐りません([`skip_policy.py` 内](../../test/ci/skip_policy.py#L83))。
 
-なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L30) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L124) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1230) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
+なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L30) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L124) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1231) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
 
 ---
 

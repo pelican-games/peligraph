@@ -250,6 +250,13 @@
           "depth": null
         },
         "input": ["planar_reflection_ao"],
+        "resource_ports": {
+          "ssaoInput": {
+            "resource": "planar_reflection_ao",
+            "access": "sampled",
+            "view": "per_view"
+          }
+        },
         "shader": {
           "vertex": "engine://fullscreen",
           "fragment": "engine://ssao_blur"

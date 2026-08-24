@@ -31,5 +31,13 @@ void runSsaoXrSequentialGolden();
 void runSsaoXrMultiviewGolden();
 void runSsaoCubeGolden();
 void runSsaoPlanarGolden();
+void runSsaoBlurFlatOracle();
+void runSsaoBlurHalfResolutionOracle();
+void runSsaoBlurXrSequentialOracle();
+void runSsaoBlurXrMultiviewOracle();
+void runSsaoBlurCubeOracle();
+void runSsaoBlurPlanarOracle();
+void runSsaoBlurCrossFamilyOracle();
+void runSsaoBlurIntegrationSmoke();
 
 } // namespace Pelican::GoldenHarness

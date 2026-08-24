@@ -116,7 +116,6 @@
     "shader_lab_present.frag.spv",
     "ssao.frag",
     "ssao_blur.frag",
-  "ssao_blur.frag.spv",
   "taa_composite.frag",
   "taa_resolve.frag",
   "sprite.frag.spv",

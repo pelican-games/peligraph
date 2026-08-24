@@ -829,6 +829,7 @@ set(pelican_golden_test_sources
     golden_timing_test
     golden_framegraph_test
     golden_ssao_test
+    golden_ssao_blur_test
 )
 foreach(golden_test_source IN LISTS pelican_golden_test_sources)
     pelican_define_test(${golden_test_source} GROUP golden_runtime

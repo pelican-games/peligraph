@@ -233,6 +233,13 @@
           "depth": null
         },
         "input": ["cube_capture_ao"],
+        "resource_ports": {
+          "ssaoInput": {
+            "resource": "cube_capture_ao",
+            "access": "sampled",
+            "view": "per_view"
+          }
+        },
         "shader": {
           "vertex": "engine://fullscreen",
           "fragment": "engine://ssao_blur"
