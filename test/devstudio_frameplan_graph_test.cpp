@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <QApplication>
+#include <QAction>
 #include <QBrush>
 #include <QByteArray>
 #include <QColor>
@@ -26,14 +27,18 @@
 #include <QGraphicsPolygonItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
+#include <QGraphicsSceneContextMenuEvent>
+#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
+#include <QMenu>
 #include <QPainterPath>
 #include <QPen>
 #include <QLabel>
 #include <QSpinBox>
 #include <QStringList>
 #include <QTest>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QWheelEvent>
 
@@ -42,7 +47,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
+#include <queue>
 #include <ranges>
 #include <set>
 #include <sstream>
@@ -605,6 +612,227 @@ EdgeSet sceneEdges(QGraphicsScene &value) {
     return result;
 }
 
+QGraphicsItem *singleGroupItem(QGraphicsScene &value) {
+    const auto groups = itemsOfKind(value, FramePlanGroupItem);
+    REQUIRE(groups.size() == 1);
+    return groups.front();
+}
+
+StringSet boundaryTargets(QGraphicsScene &value) {
+    StringSet result;
+    for (QGraphicsItem *item :
+         itemsOfKind(value, FramePlanBoundaryStubItem)) {
+        result.insert(
+            item->data(FramePlanBoundaryTargetRole).toString().toStdString());
+    }
+    return result;
+}
+
+std::multiset<std::string> annotatedSceneItems(QGraphicsScene &value) {
+    std::multiset<std::string> result;
+    for (QGraphicsItem *item : value.items()) {
+        const QString item_kind =
+            item->data(FramePlanItemKindRole).toString();
+        if (item_kind.isEmpty()) {
+            continue;
+        }
+        const QString identity =
+            QStringLiteral("%1|%2|%3|%4|%5")
+                .arg(item_kind,
+                     item->data(FramePlanNameRole).toString(),
+                     item->data(FramePlanFromNameRole).toString(),
+                     item->data(FramePlanToNameRole).toString(),
+                     item->data(FramePlanMembersRole)
+                         .toStringList()
+                         .join(QLatin1Char(',')));
+        result.insert(identity.toStdString());
+    }
+    return result;
+}
+
+EdgeSet transitiveReachability(const StringSet &nodes,
+                               const EdgeSet &edges) {
+    std::map<std::string, StringSet, std::less<>> adjacency;
+    for (const auto &[from, to] : edges) {
+        adjacency[from].insert(to);
+    }
+
+    EdgeSet result;
+    for (const auto &start : nodes) {
+        std::queue<std::string> frontier;
+        StringSet visited;
+        if (const auto found = adjacency.find(start);
+            found != adjacency.end()) {
+            for (const auto &next : found->second) {
+                frontier.push(next);
+            }
+        }
+        while (!frontier.empty()) {
+            std::string current = std::move(frontier.front());
+            frontier.pop();
+            if (!visited.insert(current).second) {
+                continue;
+            }
+            result.emplace(start, current);
+            if (const auto found = adjacency.find(current);
+                found != adjacency.end()) {
+                for (const auto &next : found->second) {
+                    frontier.push(next);
+                }
+            }
+        }
+    }
+    return result;
+}
+
+QString edgeLabelText(QGraphicsScene &value, std::string_view from,
+                      std::string_view to) {
+    QGraphicsItem *box = nullptr;
+    const QString expected_from = QString::fromUtf8(
+        from.data(), static_cast<qsizetype>(from.size()));
+    const QString expected_to = QString::fromUtf8(
+        to.data(), static_cast<qsizetype>(to.size()));
+    for (QGraphicsItem *candidate :
+         itemsOfKind(value, FramePlanEdgeLabelItem)) {
+        if (candidate->data(FramePlanFromNameRole).toString() ==
+                expected_from &&
+            candidate->data(FramePlanToNameRole).toString() ==
+                expected_to) {
+            REQUIRE(box == nullptr);
+            box = candidate;
+        }
+    }
+    REQUIRE(box != nullptr);
+    QStringList labels;
+    for (QGraphicsItem *child : box->childItems()) {
+        if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(child)) {
+            labels.push_back(text->text());
+        }
+    }
+    REQUIRE(labels.size() == 1);
+    return labels.front();
+}
+
+FramePlanNode groupingNode(std::string name, std::size_t order,
+                           std::string feature = {}) {
+    FramePlanNode node;
+    node.name = std::move(name);
+    node.kind = "raster";
+    node.source =
+        feature.empty() ? "project" : "feature:" + feature;
+    node.provider_feature = std::move(feature);
+    node.order = order;
+    node.reads = {"focus"};
+    return node;
+}
+
+FramePlanModel convexGroupingModel() {
+    FramePlanModel model;
+    model.graph = "grouping_graph";
+    model.execution_plan.state =
+        FramePlanExecutionPlanState::available;
+    model.execution_plan.graph = model.graph;
+
+    FramePlanResource focus;
+    focus.name = "focus";
+    model.resources.push_back(std::move(focus));
+    model.nodes = {
+        groupingNode("upstream", 0),
+        groupingNode("capture_a", 1, "cube_capture"),
+        groupingNode("capture_b", 2, "cube_capture"),
+        groupingNode("capture_c", 3, "cube_capture"),
+        groupingNode("downstream", 4),
+        // Deliberately occupies the preferred synthetic group name. The
+        // rendered group must choose a distinct endpoint identity.
+        groupingNode("__pelican_group__:cube_capture", 5),
+    };
+    model.dependencies = {
+        {"upstream", "capture_a", "pelican.dependency.input_a@1",
+         "input_a"},
+        {"upstream", "capture_b", "pelican.dependency.input_b@1",
+         "input_b"},
+        {"capture_a", "capture_b", "pelican.dependency.internal_a@1",
+         "inside_a"},
+        {"capture_b", "capture_c", "pelican.dependency.internal_b@1",
+         "inside_b"},
+        {"capture_b", "downstream", "pelican.dependency.output_b@1",
+         "output_b"},
+        {"capture_c", "downstream", "pelican.dependency.output_c@1",
+         "output_c"},
+    };
+    return model;
+}
+
+FramePlanModel nonConvexGroupingModel() {
+    FramePlanModel model;
+    model.graph = "non_convex_grouping_graph";
+    model.execution_plan.state =
+        FramePlanExecutionPlanState::available;
+    model.execution_plan.graph = model.graph;
+
+    FramePlanResource focus;
+    focus.name = "focus";
+    model.resources.push_back(std::move(focus));
+    model.nodes = {
+        groupingNode("inside_a", 0, "non_convex"),
+        groupingNode("outside", 1),
+        groupingNode("inside_b", 2, "non_convex"),
+        groupingNode("project_peer", 3),
+        groupingNode("single_feature_node", 4, "single"),
+    };
+    model.dependencies = {
+        {"inside_a", "outside", "pelican.dependency.leave@1", "leave"},
+        {"outside", "inside_b", "pelican.dependency.return@1", "return"},
+    };
+    return model;
+}
+
+void triggerContextAction(FramePlanGraphicsScene &scene,
+                          QGraphicsItem &item,
+                          const QString &action_text) {
+    bool triggered = false;
+    QTimer chooser;
+    chooser.setInterval(0);
+    QObject::connect(&chooser, &QTimer::timeout, &scene, [&] {
+        for (QWidget *widget : QApplication::topLevelWidgets()) {
+            auto *menu = qobject_cast<QMenu *>(widget);
+            if (menu == nullptr || !menu->isVisible()) {
+                continue;
+            }
+            for (QAction *action : menu->actions()) {
+                if (action->text().contains(action_text)) {
+                    triggered = true;
+                    action->trigger();
+                    menu->close();
+                    return;
+                }
+            }
+            menu->close();
+        }
+    });
+    chooser.start();
+
+    QGraphicsSceneContextMenuEvent event{
+        QEvent::GraphicsSceneContextMenu};
+    event.setScenePos(item.sceneBoundingRect().center());
+    event.setScreenPos(QPoint{100, 100});
+    QApplication::sendEvent(&scene, &event);
+    chooser.stop();
+    QApplication::processEvents();
+    REQUIRE(triggered);
+}
+
+void doubleClickSceneItem(FramePlanGraphicsScene &scene,
+                          QGraphicsItem &item) {
+    QGraphicsSceneMouseEvent event{
+        QEvent::GraphicsSceneMouseDoubleClick};
+    event.setScenePos(item.sceneBoundingRect().center());
+    event.setButton(Qt::LeftButton);
+    event.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &event);
+    QApplication::processEvents();
+}
+
 StringSet wireNodeNames(const Json &wire) {
     StringSet result;
     for (const auto &node : wire.at("nodes")) {
@@ -1031,8 +1259,6 @@ void requireExpectedExpandedScene(QGraphicsScene &value) {
             expected_nodes.size());
     REQUIRE(itemsOfKind(value, FramePlanNodeLabelItem).size() ==
             expected_nodes.size());
-    REQUIRE(itemsOfKind(value, FramePlanGroupItem).empty());
-    REQUIRE(itemsOfKind(value, FramePlanGroupLabelItem).empty());
     for (const auto &expected : expected_nodes) {
         QGraphicsItem *item = nodeItem(value, expected.name);
         REQUIRE(item != nullptr);
@@ -1284,6 +1510,325 @@ void requireNoReference(QGraphicsScene &value, std::string_view node,
 }
 
 } // namespace
+
+TEST_CASE(
+    "WP341 feature group collapses to a convex quotient and supports both scoped exits",
+    "[devstudio][frame-plan][grouping][wp341][negative-contrast]") {
+    (void)application();
+    const FramePlanModel model = convexGroupingModel();
+    const FramePlanNodeKey target{model.graph, "focus"};
+    const StringSet members{"capture_a", "capture_b", "capture_c"};
+
+    FramePlanGraphicsScene logical;
+    logical.populate(model, target, 1);
+
+    // Required negative control: the exact same scene starts expanded.
+    const StringSet expanded_node_names = sceneNodeNames(logical);
+    const EdgeSet expanded_edges = sceneEdges(logical);
+    const StringSet expanded_records = sceneDependencyRecords(logical);
+    const auto expanded_positions = sceneNodePositions(logical);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanGroupLabelItem).empty());
+    REQUIRE(std::ranges::count_if(
+                members,
+                [&](const std::string &member) {
+                    return nodeItem(logical, member) != nullptr;
+                }) == members.size());
+    QGraphicsItem *collapse_member =
+        nodeItem(logical, "capture_a");
+    REQUIRE(collapse_member != nullptr);
+    const QString group_id =
+        collapse_member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(group_id.isEmpty());
+    REQUIRE(collapse_member
+                ->data(FramePlanGroupCollapsibleRole)
+                .toBool());
+
+    // Exercise the user-facing context-menu entry, not only the state method.
+    triggerContextAction(logical, *collapse_member,
+                         QStringLiteral("Collapse"));
+
+    // Positive half of the same negative-control test: every member item is
+    // gone and exactly one group item has replaced all of them.
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 1);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupLabelItem).size() == 1);
+    for (const auto &member : members) {
+        REQUIRE(nodeItem(logical, member) == nullptr);
+    }
+    QGraphicsItem *group = singleGroupItem(logical);
+    REQUIRE(group->data(FramePlanGroupIdRole).toString() == group_id);
+    REQUIRE(strings(group->data(FramePlanMembersRole)) == members);
+    REQUIRE(logical.property("pelicanCollapsedGroups").toStringList() ==
+            QStringList{group_id});
+
+    const std::string group_name =
+        group->data(FramePlanNameRole).toString().toStdString();
+    REQUIRE(group_name != "__pelican_group__:cube_capture");
+    REQUIRE(expanded_node_names.contains(
+        "__pelican_group__:cube_capture"));
+    REQUIRE_FALSE(expanded_node_names.contains(group_name));
+
+    qreal minimum_member_column = std::numeric_limits<qreal>::max();
+    for (const auto &member : members) {
+        minimum_member_column =
+            std::min(minimum_member_column,
+                     expanded_positions.at(member).x());
+    }
+    REQUIRE(group->scenePos().x() == minimum_member_column);
+
+    const auto quotient_name = [&](const std::string &name) {
+        return members.contains(name) ? group_name : name;
+    };
+    EdgeSet expected_quotient_edges;
+    for (const auto &[from, to] : expanded_edges) {
+        const std::string mapped_from = quotient_name(from);
+        const std::string mapped_to = quotient_name(to);
+        if (mapped_from != mapped_to) {
+            expected_quotient_edges.emplace(mapped_from, mapped_to);
+        }
+    }
+    REQUIRE(sceneEdges(logical) == expected_quotient_edges);
+
+    const EdgeSet expanded_reachability =
+        transitiveReachability(expanded_node_names, expanded_edges);
+    EdgeSet expected_quotient_reachability;
+    for (const auto &[from, to] : expanded_reachability) {
+        const std::string mapped_from = quotient_name(from);
+        const std::string mapped_to = quotient_name(to);
+        if (mapped_from != mapped_to) {
+            expected_quotient_reachability.emplace(mapped_from,
+                                                   mapped_to);
+        }
+    }
+    StringSet quotient_nodes;
+    for (const auto &name : expanded_node_names) {
+        quotient_nodes.insert(quotient_name(name));
+    }
+    REQUIRE(transitiveReachability(quotient_nodes, sceneEdges(logical)) ==
+            expected_quotient_reachability);
+
+    // The two internal records are retained on the group but create no edge.
+    REQUIRE(group->data(FramePlanInternalEdgeRecordsRole)
+                .toStringList()
+                .size() == 2);
+    REQUIRE(sceneDependencyRecords(logical) == expanded_records);
+    for (QGraphicsItem *edge :
+         itemsOfKind(logical, FramePlanEdgeItem)) {
+        REQUIRE_FALSE(members.contains(
+            edge->data(FramePlanFromNameRole).toString().toStdString()));
+        REQUIRE_FALSE(members.contains(
+            edge->data(FramePlanToNameRole).toString().toStdString()));
+    }
+
+    const auto incoming =
+        itemsWithEndpoints(logical, FramePlanEdgeItem, "upstream",
+                           group_name);
+    REQUIRE(incoming.size() == 1);
+    REQUIRE(incoming.front()
+                ->data(FramePlanEdgeRecordsRole)
+                .toStringList()
+                .size() == 2);
+    REQUIRE(edgeLabelText(logical, "upstream", group_name)
+                .contains(QStringLiteral("x2")));
+    const auto outgoing =
+        itemsWithEndpoints(logical, FramePlanEdgeItem, group_name,
+                           "downstream");
+    REQUIRE(outgoing.size() == 1);
+    REQUIRE(outgoing.front()
+                ->data(FramePlanEdgeRecordsRole)
+                .toStringList()
+                .size() == 2);
+    REQUIRE(edgeLabelText(logical, group_name, "downstream")
+                .contains(QStringLiteral("x2")));
+
+    const auto collapsed_outer_items = annotatedSceneItems(logical);
+
+    // Double-click enters the group. Only member nodes remain; the two
+    // distinct actual external endpoints become two boundary stubs.
+    doubleClickSceneItem(logical, *group);
+    REQUIRE(sceneNodeNames(logical) == members);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(boundaryTargets(logical) ==
+            StringSet{"downstream", "upstream"});
+    REQUIRE(itemsOfKind(logical, FramePlanBoundaryStubItem).size() == 2);
+    REQUIRE(logical.property("pelicanBoundaryStubCount").toULongLong() ==
+            2);
+    REQUIRE(logical.property("pelicanCurrentGroupScope").toString() ==
+            group_id);
+    REQUIRE(itemsOfKind(logical, FramePlanBreadcrumbItem).size() == 1);
+
+    // The breadcrumb is a real clickable scene control.
+    QGraphicsView view{&logical};
+    view.resize(1000, 700);
+    view.show();
+    QGraphicsItem *breadcrumb =
+        itemsOfKind(logical, FramePlanBreadcrumbItem).front();
+    view.centerOn(breadcrumb);
+    QApplication::processEvents();
+    QTest::mouseClick(
+        view.viewport(), Qt::LeftButton, Qt::NoModifier,
+        view.mapFromScene(breadcrumb->sceneBoundingRect().center()));
+    QApplication::processEvents();
+    REQUIRE(logical.property("pelicanCurrentGroupScope")
+                .toString()
+                .isEmpty());
+    REQUIRE(annotatedSceneItems(logical) == collapsed_outer_items);
+
+    // Enter again, then exercise the independent Escape exit.
+    group = singleGroupItem(logical);
+    doubleClickSceneItem(logical, *group);
+    REQUIRE(sceneNodeNames(logical) == members);
+    view.viewport()->setFocus();
+    QTest::keyClick(view.viewport(), Qt::Key_Escape);
+    QApplication::processEvents();
+    REQUIRE(logical.property("pelicanCurrentGroupScope")
+                .toString()
+                .isEmpty());
+    REQUIRE(annotatedSceneItems(logical) == collapsed_outer_items);
+
+    // The context-menu expand operation restores the exact expanded graph.
+    group = singleGroupItem(logical);
+    triggerContextAction(logical, *group,
+                         QStringLiteral("Expand"));
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(sceneNodeNames(logical) == expanded_node_names);
+    REQUIRE(sceneEdges(logical) == expanded_edges);
+    REQUIRE(logical.property("pelicanCollapsedGroups")
+                .toStringList()
+                .isEmpty());
+}
+
+TEST_CASE(
+    "WP341 collapsed state survives updates, drops orphans, and reset clears dragged positions",
+    "[devstudio][frame-plan][grouping][state][drag][wp341]") {
+    (void)application();
+    const FramePlanModel model = convexGroupingModel();
+    const FramePlanNodeKey target{model.graph, "focus"};
+
+    FramePlanGraphicsScene logical;
+    logical.populate(model, target, 1);
+    QGraphicsItem *member = nodeItem(logical, "capture_a");
+    REQUIRE(member != nullptr);
+    const QString group_id =
+        member->data(FramePlanGroupIdRole).toString();
+    REQUIRE(logical.collapseGroup(group_id));
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 1);
+
+    logical.populate(model, target, 1);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 1);
+    REQUIRE(logical.property("pelicanCollapsedGroups").toStringList() ==
+            QStringList{group_id});
+
+    FramePlanModel without_group = model;
+    for (auto &node : without_group.nodes) {
+        if (node.provider_feature == "cube_capture") {
+            node.provider_feature.clear();
+            node.source = "project";
+        }
+    }
+    logical.populate(without_group, target, 1);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(logical.property("pelicanCollapsedGroups")
+                .toStringList()
+                .isEmpty());
+    REQUIRE(nodeItem(logical, "capture_a") != nullptr);
+    REQUIRE(nodeItem(logical, "capture_b") != nullptr);
+    REQUIRE(nodeItem(logical, "capture_c") != nullptr);
+
+    FramePlanGraphicsScene positions;
+    positions.populate(model, target, 1);
+    QGraphicsItem *upstream = nodeItem(positions, "upstream");
+    REQUIRE(upstream != nullptr);
+    const QPointF default_position = upstream->scenePos();
+    upstream->setPos(default_position + QPointF{177.0, 93.0});
+    REQUIRE(upstream->scenePos() != default_position);
+    positions.resetGraph();
+    positions.populate(model, target, 1);
+    upstream = nodeItem(positions, "upstream");
+    REQUIRE(upstream != nullptr);
+    REQUIRE(upstream->scenePos() == default_position);
+}
+
+TEST_CASE(
+    "WP341 non-convex provider feature stays expanded with an explicit UI reason",
+    "[devstudio][frame-plan][grouping][convexity][wp341][negative-contrast]") {
+    (void)application();
+    const FramePlanModel model = nonConvexGroupingModel();
+    const FramePlanNodeKey target{model.graph, "focus"};
+
+    FramePlanGraphicsScene logical;
+    logical.populate(model, target, 1);
+    QGraphicsItem *inside_a = nodeItem(logical, "inside_a");
+    QGraphicsItem *inside_b = nodeItem(logical, "inside_b");
+    REQUIRE(inside_a != nullptr);
+    REQUIRE(inside_b != nullptr);
+    const QString group_id =
+        inside_a->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(group_id.isEmpty());
+    REQUIRE(inside_b->data(FramePlanGroupIdRole).toString() ==
+            group_id);
+    REQUIRE_FALSE(
+        inside_a->data(FramePlanGroupCollapsibleRole).toBool());
+
+    // Same source is not a grouping fallback, and an N=1 feature is not a
+    // collapsible group.
+    REQUIRE(nodeItem(logical, "outside")
+                ->data(FramePlanGroupIdRole)
+                .toString()
+                .isEmpty());
+    REQUIRE(nodeItem(logical, "project_peer")
+                ->data(FramePlanGroupIdRole)
+                .toString()
+                .isEmpty());
+    REQUIRE(nodeItem(logical, "single_feature_node")
+                ->data(FramePlanGroupIdRole)
+                .toString()
+                .isEmpty());
+
+    REQUIRE_FALSE(logical.collapseGroup(group_id));
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(nodeItem(logical, "inside_a") != nullptr);
+    REQUIRE(nodeItem(logical, "inside_b") != nullptr);
+    REQUIRE(logical.property("pelicanCollapsedGroups")
+                .toStringList()
+                .isEmpty());
+
+    const auto warnings =
+        itemsOfKind(logical, FramePlanGroupWarningItem);
+    REQUIRE(warnings.size() == 1);
+    const QString reason =
+        warnings.front()->data(FramePlanReasonRole).toString();
+    REQUIRE(reason.contains(QStringLiteral("not convex")));
+    REQUIRE(reason.contains(QStringLiteral("outside")));
+    REQUIRE(warnings.front()->isVisible());
+    REQUIRE(warnings.front()->toolTip() == reason);
+    REQUIRE(logical.property("pelicanGroupFeedback").toString() ==
+            reason);
+    REQUIRE(logical.property("pelicanNonCollapsibleGroups")
+                .toStringList()
+                .contains(group_id));
+    bool visible_reason = false;
+    for (QGraphicsItem *child : warnings.front()->childItems()) {
+        if (const auto *text =
+                dynamic_cast<QGraphicsSimpleTextItem *>(child)) {
+            visible_reason = text->text() == reason;
+        }
+    }
+    REQUIRE(visible_reason);
+}
+
+TEST_CASE(
+    "WP341 removed layout constants and no longer writes empty internal-edge roles",
+    "[devstudio][frame-plan][grouping][source-audit][wp341]") {
+    const std::string source = readText(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" /
+        "devstudio" / "view" / "frameplangraphics.cpp");
+    REQUIRE(source.find("ColumnsPerRow") == std::string::npos);
+    REQUIRE(source.find("WrapRowHeight") == std::string::npos);
+    REQUIRE(source.find(
+                "FramePlanInternalEdgeRecordsRole, QStringList{}") ==
+            std::string::npos);
+}
 
 TEST_CASE(
     "Studio consumes producer resolved fractional extents and a non-display output source",

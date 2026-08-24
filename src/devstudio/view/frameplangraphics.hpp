@@ -7,7 +7,12 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
+
+class QGraphicsSceneContextMenuEvent;
+class QGraphicsSceneMouseEvent;
+class QKeyEvent;
 
 namespace PelicanStudio {
 
@@ -42,6 +47,10 @@ inline constexpr int FramePlanReasonCodeRole = Qt::UserRole + 3084;
 inline constexpr int FramePlanBundleOrderRole = Qt::UserRole + 3085;
 inline constexpr int FramePlanCurveRole = Qt::UserRole + 3086;
 inline constexpr int FramePlanSubtreeDepthRole = Qt::UserRole + 3087;
+inline constexpr int FramePlanGroupIdRole = Qt::UserRole + 3088;
+inline constexpr int FramePlanGroupCollapsibleRole = Qt::UserRole + 3089;
+inline constexpr int FramePlanBoundaryTargetRole = Qt::UserRole + 3090;
+inline constexpr int FramePlanBoundaryDirectionRole = Qt::UserRole + 3091;
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";
@@ -49,6 +58,10 @@ inline constexpr auto FramePlanEdgeItem = "edge";
 inline constexpr auto FramePlanEdgeArrowItem = "edge_arrow";
 inline constexpr auto FramePlanNodeLabelItem = "node_label";
 inline constexpr auto FramePlanGroupLabelItem = "group_label";
+inline constexpr auto FramePlanBoundaryStubItem = "boundary_stub";
+inline constexpr auto FramePlanBoundaryStubLabelItem = "boundary_stub_label";
+inline constexpr auto FramePlanGroupWarningItem = "group_warning";
+inline constexpr auto FramePlanBreadcrumbItem = "group_breadcrumb";
 inline constexpr auto FramePlanEdgeLabelItem = "edge_label";
 inline constexpr auto FramePlanPhysicalContextItem = "physical_context";
 inline constexpr auto FramePlanResourceLifetimeItem = "resource_lifetime";
@@ -71,6 +84,14 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
                   int depth);
     void resetGraph();
 
+    // These are the state-changing operations used by the scene's context
+    // menu, double-click, breadcrumb, and Escape handlers. Group ids are read
+    // from FramePlanGroupIdRole and remain stable across frame-plan updates.
+    bool collapseGroup(const QString &group_id);
+    bool expandGroup(const QString &group_id);
+    bool enterGroup(const QString &group_id);
+    bool leaveGroup();
+
     [[nodiscard]] const std::optional<FramePlanNodeKey> &selectedNode() const
         noexcept {
         return selected_node_;
@@ -80,12 +101,22 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         return selected_resource_;
     }
 
+  protected:
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+
   private:
     std::optional<FramePlanNodeKey> selected_node_;
     std::optional<FramePlanNodeKey> selected_resource_;
     // Deliberately owned only by the live scene.  Node positions are editor
     // session state, not QMainWindow workspace state and never reach disk.
     std::map<FramePlanNodeKey, QPointF> session_node_positions_;
+    std::optional<FramePlanModel> current_model_;
+    std::optional<FramePlanNodeKey> current_target_;
+    int current_depth_ = 1;
+    std::set<std::string, std::less<>> collapsed_groups_;
+    std::optional<std::string> current_group_scope_;
     // Never call this from inside itemChange: changing the scene rect makes
     // the view update, which moves the dragged item, which re-enters
     // itemChange. Schedule it instead; requests coalesce.
@@ -95,6 +126,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
 
+    void renderCurrentGraph();
+    void pruneGroupState();
     void recordSelection();
     void publishStateProperties();
 };

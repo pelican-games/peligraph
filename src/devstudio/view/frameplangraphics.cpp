@@ -1,5 +1,6 @@
 #include "frameplangraphics.hpp"
 
+#include <QAction>
 #include <QBrush>
 #include <QColor>
 #include <QFont>
@@ -7,9 +8,12 @@
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
 #include <QGraphicsRectItem>
+#include <QGraphicsSceneContextMenuEvent>
+#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
+#include <QKeyEvent>
 #include <QLineF>
-#include <array>
+#include <QMenu>
 #include <QMetaObject>
 #include <QPainterPath>
 #include <QPen>
@@ -18,9 +22,13 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
+#include <optional>
+#include <queue>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -31,13 +39,18 @@ namespace {
 
 constexpr qreal NodeWidth = 240.0;
 constexpr qreal NodeHeight = 64.0;
+constexpr qreal GroupWidth = 260.0;
+constexpr qreal GroupHeight = 76.0;
+constexpr qreal BoundaryStubWidth = 210.0;
+constexpr qreal BoundaryStubHeight = 54.0;
 constexpr qreal HorizontalGap = 88.0;
 constexpr qreal VerticalGap = 74.0;
-constexpr std::size_t ColumnsPerRow = 3;
 constexpr qreal StaggerOffset = 132.0;
-constexpr qreal WrapRowHeight = 340.0;
 constexpr qreal EdgeLabelHeight = 24.0;
 constexpr qreal EdgeLabelMinimumWidth = 120.0;
+constexpr qreal GroupWarningWidth = 680.0;
+constexpr qreal GroupWarningHeight = 54.0;
+constexpr qreal BreadcrumbHeight = 34.0;
 constexpr qreal PhysicalPanelGap = 74.0;
 constexpr qreal PhysicalPanelMinimumWidth = 760.0;
 constexpr qreal PhysicalHeaderHeight = 76.0;
@@ -47,6 +60,34 @@ constexpr qreal LogicalUnavailableWidth = 640.0;
 constexpr qreal LogicalUnavailableHeight = 140.0;
 
 using EntityPair = std::pair<std::string, std::string>;
+
+struct GroupDefinition {
+    std::string key;
+    std::string state_key;
+    std::string entity_name;
+    std::string feature;
+    QString label;
+    std::vector<std::string> members;
+    bool collapsible = true;
+    QString reason;
+};
+
+struct VisibleEntity {
+    std::string key;
+    QString label;
+    std::string source;
+    std::vector<std::string> members;
+    std::vector<std::string> internal_records;
+    std::string group_id;
+    std::string boundary_target;
+    QString boundary_direction;
+    std::size_t order = 0;
+    int source_column = 0;
+    bool anchor = false;
+    bool group = false;
+    bool boundary_stub = false;
+    QGraphicsPathItem *item = nullptr;
+};
 
 struct DependencyRecord {
     std::string from;
@@ -80,6 +121,27 @@ class MovableNodeItem final : public QGraphicsPathItem {
 
   private:
     Moved moved_;
+};
+
+class BreadcrumbItem final : public QGraphicsRectItem {
+  public:
+    using Clicked = std::function<void()>;
+
+    BreadcrumbItem(const QRectF &rect, Clicked clicked)
+        : QGraphicsRectItem{rect}, clicked_{std::move(clicked)} {}
+
+  protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && clicked_) {
+            event->accept();
+            clicked_();
+            return;
+        }
+        QGraphicsRectItem::mousePressEvent(event);
+    }
+
+  private:
+    Clicked clicked_;
 };
 
 QString qtext(const std::string &value) {
@@ -122,6 +184,148 @@ QStringList qlist(const std::vector<std::string> &values) {
         result.push_back(qtext(value));
     }
     return result;
+}
+
+// This is deliberately the only policy function that decides grouping
+// membership. When frame-plan regions are published, replacing this function
+// is sufficient; source/project provenance must not leak in as a fallback.
+std::optional<std::string> groupingUnit(const FramePlanNode &node) {
+    if (node.provider_feature.empty()) {
+        return std::nullopt;
+    }
+    return "feature:" + node.provider_feature;
+}
+
+std::string groupStateKey(const FramePlanModel &model,
+                          const std::string &group_key) {
+    constexpr char separator = '\x1f';
+    return model.graph + separator + group_key;
+}
+
+QString nonConvexReason(
+    const FramePlanModel &model, const std::string &feature,
+    const std::set<std::string, std::less<>> &members) {
+    std::map<std::string, std::vector<std::string>, std::less<>> adjacency;
+    for (const auto &dependency : model.dependencies) {
+        adjacency[dependency.from].push_back(dependency.to);
+    }
+    for (auto &[from, destinations] : adjacency) {
+        (void)from;
+        std::ranges::sort(destinations);
+        destinations.erase(
+            std::unique(destinations.begin(), destinations.end()),
+            destinations.end());
+    }
+
+    std::queue<std::string> frontier;
+    std::set<std::string, std::less<>> visited;
+    std::map<std::string, std::string, std::less<>> exit_member;
+    for (const auto &member : members) {
+        const auto outgoing = adjacency.find(member);
+        if (outgoing == adjacency.end()) {
+            continue;
+        }
+        for (const auto &destination : outgoing->second) {
+            if (!members.contains(destination) &&
+                visited.insert(destination).second) {
+                frontier.push(destination);
+                exit_member.emplace(destination, member);
+            }
+        }
+    }
+
+    while (!frontier.empty()) {
+        std::string outside = std::move(frontier.front());
+        frontier.pop();
+        const auto outgoing = adjacency.find(outside);
+        if (outgoing == adjacency.end()) {
+            continue;
+        }
+        for (const auto &destination : outgoing->second) {
+            if (members.contains(destination)) {
+                return QStringLiteral(
+                           "Feature \"%1\" cannot be collapsed because it is "
+                           "not convex: a dependency path leaves member \"%2\", "
+                           "passes through \"%3\", and returns to member \"%4\".")
+                    .arg(qtext(feature), qtext(exit_member.at(outside)),
+                         qtext(outside), qtext(destination));
+            }
+            if (visited.insert(destination).second) {
+                frontier.push(destination);
+                exit_member.emplace(destination, exit_member.at(outside));
+            }
+        }
+    }
+    return {};
+}
+
+std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
+    std::map<std::string, std::vector<std::string>, std::less<>> members_by_key;
+    std::map<std::string, std::string, std::less<>> feature_by_key;
+    for (const auto &node : model.nodes) {
+        const auto unit = groupingUnit(node);
+        if (!unit) {
+            continue;
+        }
+        members_by_key[*unit].push_back(node.name);
+        feature_by_key.emplace(*unit, node.provider_feature);
+    }
+
+    std::set<std::string, std::less<>> occupied_names;
+    for (const auto &node : model.nodes) {
+        occupied_names.insert(node.name);
+    }
+
+    std::vector<GroupDefinition> groups;
+    for (auto &[key, members] : members_by_key) {
+        if (members.size() < 2) {
+            continue;
+        }
+        std::ranges::sort(members);
+        const std::string &feature = feature_by_key.at(key);
+        const std::set<std::string, std::less<>> member_set{members.begin(),
+                                                            members.end()};
+        const QString reason = nonConvexReason(model, feature, member_set);
+
+        const std::string base_name = "__pelican_group__:" + feature;
+        std::string entity_name = base_name;
+        std::size_t suffix = 2;
+        while (occupied_names.contains(entity_name)) {
+            entity_name = base_name + "#" + std::to_string(suffix++);
+        }
+        occupied_names.insert(entity_name);
+
+        groups.push_back(GroupDefinition{
+            .key = key,
+            .state_key = groupStateKey(model, key),
+            .entity_name = std::move(entity_name),
+            .feature = feature,
+            .label = QStringLiteral("Feature: %1").arg(qtext(feature)),
+            .members = std::move(members),
+            .collapsible = reason.isEmpty(),
+            .reason = reason,
+        });
+    }
+    return groups;
+}
+
+const GroupDefinition *findGroup(const std::vector<GroupDefinition> &groups,
+                                 const std::string &state_key) {
+    const auto found = std::ranges::find(groups, state_key,
+                                         &GroupDefinition::state_key);
+    return found == groups.end() ? nullptr : &*found;
+}
+
+std::string uniqueSyntheticName(
+    std::string base,
+    std::set<std::string, std::less<>> &occupied_names) {
+    std::string candidate = base;
+    std::size_t suffix = 2;
+    while (occupied_names.contains(candidate)) {
+        candidate = base + "#" + std::to_string(suffix++);
+    }
+    occupied_names.insert(candidate);
+    return candidate;
 }
 
 void annotateIdentity(QGraphicsItem &item, const std::string &kind,
@@ -229,6 +433,12 @@ QPainterPath nodePath(bool anchor) {
     return path;
 }
 
+QPainterPath roundedEntityPath(qreal width, qreal height, qreal radius) {
+    QPainterPath path;
+    path.addRoundedRect(QRectF{0.0, 0.0, width, height}, radius, radius);
+    return path;
+}
+
 void addNodeLabel(QGraphicsPathItem &item, const FramePlanNode &node,
                   const std::string &graph) {
     auto *label = new QGraphicsSimpleTextItem(qtext(node.name), &item);
@@ -244,6 +454,22 @@ void addNodeLabel(QGraphicsPathItem &item, const FramePlanNode &node,
                       (NodeHeight - bounds.height()) / 2.0);
     }
     annotateIdentity(*label, FramePlanNodeLabelItem, graph, node.name);
+}
+
+void addCenteredEntityLabel(QGraphicsPathItem &item, const QString &text,
+                            qreal width, qreal height,
+                            const std::string &kind,
+                            const std::string &graph,
+                            const std::string &name) {
+    auto *label = new QGraphicsSimpleTextItem(text, &item);
+    label->setBrush(QColor{QStringLiteral("#f7f9fb")});
+    QFont font = label->font();
+    font.setBold(true);
+    label->setFont(font);
+    const QRectF bounds = label->boundingRect();
+    label->setPos((width - bounds.width()) / 2.0,
+                  (height - bounds.height()) / 2.0);
+    annotateIdentity(*label, kind, graph, name);
 }
 
 QString dependencyLabel(const std::vector<DependencyRecord> &records) {
@@ -342,7 +568,10 @@ CurveGeometry curveGeometry(const QRectF &from, const QRectF &to) {
 QGraphicsItem *findNodeItem(QGraphicsScene &scene, const QString &graph,
                             const QString &name) {
     for (QGraphicsItem *item : scene.items()) {
-        if (itemKind(*item) == QLatin1String{FramePlanNodeItem} &&
+        const QString kind = itemKind(*item);
+        if ((kind == QLatin1String{FramePlanNodeItem} ||
+             kind == QLatin1String{FramePlanGroupItem} ||
+             kind == QLatin1String{FramePlanBoundaryStubItem}) &&
             item->data(FramePlanGraphRole).toString() == graph &&
             item->data(FramePlanNameRole).toString() == name) {
             return item;
@@ -691,6 +920,12 @@ void FramePlanGraphicsScene::resetGraph() {
     clear();
     selected_node_.reset();
     selected_resource_.reset();
+    session_node_positions_.clear();
+    current_model_.reset();
+    current_target_.reset();
+    current_depth_ = 1;
+    collapsed_groups_.clear();
+    current_group_scope_.reset();
     setSceneRect({});
     rebuilding_ = false;
     setProperty("pelicanGraph", QString{});
@@ -713,6 +948,11 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanPlanningProfile", QString{});
     setProperty("pelicanPlanningEndpoint", QString{});
     setProperty("pelicanCollapsedGroups", QStringList{});
+    setProperty("pelicanCurrentGroupScope", QString{});
+    setProperty("pelicanCurrentGroupScopeLabel", QString{});
+    setProperty("pelicanNonCollapsibleGroups", QStringList{});
+    setProperty("pelicanGroupFeedback", QString{});
+    setProperty("pelicanBoundaryStubCount", 0);
     setProperty("pelicanExecutionPlanState", QString{});
     setProperty("pelicanExecutionPlanReasonCode", QString{});
     setProperty("pelicanExecutionPlanReason", QString{});
@@ -722,25 +962,96 @@ void FramePlanGraphicsScene::resetGraph() {
 void FramePlanGraphicsScene::populate(
     const FramePlanModel &model,
     const std::optional<FramePlanNodeKey> &selected_target, int depth) {
-    const int normalized_depth = std::max(0, depth);
+    current_model_ = model;
+    current_target_ = selected_target;
+    current_depth_ = std::max(0, depth);
+    pruneGroupState();
+    renderCurrentGraph();
+}
+
+void FramePlanGraphicsScene::pruneGroupState() {
+    if (!current_model_) {
+        collapsed_groups_.clear();
+        current_group_scope_.reset();
+        return;
+    }
+
+    const auto groups = discoverGroups(*current_model_);
+    std::set<std::string, std::less<>> existing_groups;
+    std::set<std::string, std::less<>> collapsible_groups;
+    for (const auto &group : groups) {
+        existing_groups.insert(group.state_key);
+        if (group.collapsible) {
+            collapsible_groups.insert(group.state_key);
+        }
+    }
+    std::erase_if(collapsed_groups_, [&](const std::string &group_id) {
+        return !collapsible_groups.contains(group_id);
+    });
+    if (current_group_scope_ &&
+        !existing_groups.contains(*current_group_scope_)) {
+        current_group_scope_.reset();
+    }
+}
+
+void FramePlanGraphicsScene::renderCurrentGraph() {
+    if (!current_model_) {
+        return;
+    }
+    const FramePlanModel &model = *current_model_;
+    const int normalized_depth = current_depth_;
+    const std::vector<GroupDefinition> groups = discoverGroups(model);
+    const GroupDefinition *scope_group =
+        current_group_scope_ ? findGroup(groups, *current_group_scope_)
+                             : nullptr;
     const auto retained_node = selected_node_;
 
     const bool target_is_valid =
-        model.execution_plan.available() && selected_target &&
-        selected_target->graph == model.graph &&
+        model.execution_plan.available() && current_target_ &&
+        current_target_->graph == model.graph &&
         std::any_of(model.resources.begin(), model.resources.end(),
                     [&](const FramePlanResource &resource) {
-                        return resource.name == selected_target->name;
+                        return resource.name == current_target_->name;
                     });
-    selected_resource_ = target_is_valid ? selected_target : std::nullopt;
+    selected_resource_ = target_is_valid ? current_target_ : std::nullopt;
     const std::set<std::string, std::less<>> visible_names =
-        selected_resource_
-            ? subtreeNodeNames(model, selected_resource_->name,
-                               normalized_depth)
-            : std::set<std::string, std::less<>>{};
+        scope_group
+            ? std::set<std::string, std::less<>>{
+                  scope_group->members.begin(), scope_group->members.end()}
+            : selected_resource_
+                  ? subtreeNodeNames(model, selected_resource_->name,
+                                     normalized_depth)
+                  : std::set<std::string, std::less<>>{};
     const bool node_selection_survives =
         retained_node && retained_node->graph == model.graph &&
         visible_names.contains(retained_node->name);
+
+    const auto publish_group_properties = [&] {
+        QStringList collapsed;
+        for (const auto &group_id : collapsed_groups_) {
+            collapsed.push_back(qtext(group_id));
+        }
+        setProperty("pelicanCollapsedGroups", collapsed);
+        setProperty("pelicanCurrentGroupScope",
+                    current_group_scope_ ? qtext(*current_group_scope_)
+                                         : QString{});
+        setProperty("pelicanCurrentGroupScopeLabel",
+                    scope_group ? scope_group->label : QString{});
+
+        QStringList non_collapsible;
+        QString first_reason;
+        for (const auto &group : groups) {
+            if (group.collapsible) {
+                continue;
+            }
+            non_collapsible.push_back(qtext(group.state_key));
+            if (first_reason.isEmpty()) {
+                first_reason = group.reason;
+            }
+        }
+        setProperty("pelicanNonCollapsibleGroups", non_collapsible);
+        setProperty("pelicanGroupFeedback", first_reason);
+    };
 
     rebuilding_ = true;
     clear();
@@ -796,66 +1107,293 @@ void FramePlanGraphicsScene::populate(
         setProperty("pelicanNotAdoptedAliasCount", 0);
         setProperty("pelicanPlanningProfile", QString{});
         setProperty("pelicanPlanningEndpoint", QString{});
+        setProperty("pelicanBoundaryStubCount", 0);
         setProperty("pelicanExecutionPlanState",
                     QStringLiteral("unavailable"));
         setProperty("pelicanExecutionPlanReasonCode",
                     qtext(model.execution_plan.unavailable_reason_code));
         setProperty("pelicanExecutionPlanReason",
                     qtext(model.execution_plan.unavailable_reason));
+        publish_group_properties();
         publishStateProperties();
         return;
     }
 
     const std::map<std::string, int, std::less<>> node_columns =
         subtreeNodeColumns(model, visible_names);
-    std::map<int, std::vector<const FramePlanNode *>> levels;
+    std::map<std::string, const FramePlanNode *, std::less<>> nodes_by_name;
     for (const auto &node : model.nodes) {
-        if (visible_names.contains(node.name)) {
-            const auto found = node_columns.find(node.name);
-            levels[found != node_columns.end() ? found->second : 0]
-                .push_back(&node);
+        nodes_by_name.emplace(node.name, &node);
+    }
+    std::map<std::string, const GroupDefinition *, std::less<>>
+        group_for_node;
+    for (const auto &group : groups) {
+        for (const auto &member : group.members) {
+            group_for_node.emplace(member, &group);
         }
     }
-    for (auto &[level, nodes] : levels) {
+
+    std::map<std::string, VisibleEntity, std::less<>> entities;
+    std::map<std::string, std::string, std::less<>> entity_for_node;
+    if (!scope_group) {
+        for (const auto &group : groups) {
+            if (!group.collapsible ||
+                !collapsed_groups_.contains(group.state_key)) {
+                continue;
+            }
+            std::vector<std::string> visible_members;
+            for (const auto &member : group.members) {
+                if (visible_names.contains(member)) {
+                    visible_members.push_back(member);
+                }
+            }
+            if (visible_members.empty()) {
+                continue;
+            }
+
+            VisibleEntity entity;
+            entity.key = group.entity_name;
+            entity.label =
+                QStringLiteral("%1\n%2 nodes")
+                    .arg(group.label)
+                    .arg(static_cast<qulonglong>(group.members.size()));
+            entity.members = group.members;
+            entity.group_id = group.state_key;
+            entity.group = true;
+            entity.order = model.nodes.size();
+            entity.source_column = std::numeric_limits<int>::max();
+            std::set<std::string, std::less<>> sources;
+            for (const auto &member : group.members) {
+                const FramePlanNode &node = *nodes_by_name.at(member);
+                entity.order = std::min(entity.order, node.order);
+                sources.insert(node.source);
+            }
+            for (const auto &member : visible_members) {
+                entity.source_column =
+                    std::min(entity.source_column, node_columns.at(member));
+                entity_for_node.emplace(member, entity.key);
+            }
+            entity.source =
+                sources.size() == 1 ? *sources.begin() : std::string{"mixed"};
+            entities.emplace(entity.key, std::move(entity));
+        }
+    }
+
+    for (const auto &node : model.nodes) {
+        if (!visible_names.contains(node.name) ||
+            entity_for_node.contains(node.name)) {
+            continue;
+        }
+        std::string group_id;
+        if (const auto found = group_for_node.find(node.name);
+            found != group_for_node.end()) {
+            group_id = found->second->state_key;
+        }
+        entity_for_node.emplace(node.name, node.name);
+        entities.emplace(
+            node.name,
+            VisibleEntity{
+                .key = node.name,
+                .label = qtext(node.name),
+                .source = node.source,
+                .members = {node.name},
+                .group_id = std::move(group_id),
+                .order = node.order,
+                .source_column = node_columns.at(node.name),
+                .anchor = isAnchor(node),
+            });
+    }
+
+    std::map<std::string, std::string, std::less<>>
+        boundary_entity_for_node;
+    if (scope_group) {
+        struct BoundaryInfo {
+            bool incoming = false;
+            bool outgoing = false;
+        };
+        std::map<std::string, BoundaryInfo, std::less<>> boundary_info;
+        for (const auto &dependency : model.dependencies) {
+            const bool from_inside = visible_names.contains(dependency.from);
+            const bool to_inside = visible_names.contains(dependency.to);
+            if (from_inside == to_inside) {
+                continue;
+            }
+            if (from_inside) {
+                boundary_info[dependency.to].outgoing = true;
+            } else {
+                boundary_info[dependency.from].incoming = true;
+            }
+        }
+
+        int minimum_column = 0;
+        int maximum_column = 0;
+        if (!node_columns.empty()) {
+            minimum_column =
+                std::min_element(node_columns.begin(), node_columns.end(),
+                                 [](const auto &left, const auto &right) {
+                                     return left.second < right.second;
+                                 })
+                    ->second;
+            maximum_column =
+                std::max_element(node_columns.begin(), node_columns.end(),
+                                 [](const auto &left, const auto &right) {
+                                     return left.second < right.second;
+                                 })
+                    ->second;
+        }
+        std::set<std::string, std::less<>> occupied_names;
+        for (const auto &[name, node] : nodes_by_name) {
+            (void)node;
+            occupied_names.insert(name);
+        }
+        for (const auto &[key, entity] : entities) {
+            (void)entity;
+            occupied_names.insert(key);
+        }
+
+        for (const auto &[outside, info] : boundary_info) {
+            const std::string entity_name = uniqueSyntheticName(
+                "__pelican_boundary__:" + outside, occupied_names);
+            boundary_entity_for_node.emplace(outside, entity_name);
+            const QString direction =
+                info.incoming && info.outgoing
+                    ? QStringLiteral("incoming,outgoing")
+                    : info.incoming ? QStringLiteral("incoming")
+                                    : QStringLiteral("outgoing");
+            const QString label =
+                info.incoming && info.outgoing
+                    ? QStringLiteral("External: %1").arg(qtext(outside))
+                    : info.incoming
+                          ? QStringLiteral("From: %1").arg(qtext(outside))
+                          : QStringLiteral("To: %1").arg(qtext(outside));
+            const auto outside_node = nodes_by_name.find(outside);
+            entities.emplace(
+                entity_name,
+                VisibleEntity{
+                    .key = entity_name,
+                    .label = label,
+                    .source =
+                        outside_node == nodes_by_name.end()
+                            ? std::string{"external"}
+                            : outside_node->second->source,
+                    .boundary_target = outside,
+                    .boundary_direction = direction,
+                    .order =
+                        outside_node == nodes_by_name.end()
+                            ? model.nodes.size()
+                            : outside_node->second->order,
+                    .source_column =
+                        info.incoming ? minimum_column - 1
+                                      : maximum_column + 1,
+                    .boundary_stub = true,
+                });
+        }
+    }
+
+    std::vector<DependencyRecord> sorted_dependencies;
+    sorted_dependencies.reserve(model.dependencies.size());
+    for (const auto &dependency : model.dependencies) {
+        sorted_dependencies.push_back(
+            DependencyRecord{dependency.from, dependency.to,
+                             dependency.reason, dependency.resource});
+    }
+    std::ranges::sort(sorted_dependencies, {},
+                      [](const DependencyRecord &record) {
+                          return std::tie(record.from, record.to,
+                                          record.reason, record.resource);
+                      });
+
+    std::vector<DependencyRecord> visible_dependencies;
+    std::map<EntityPair, std::vector<DependencyRecord>> bundles;
+    for (const auto &dependency : sorted_dependencies) {
+        std::string from;
+        std::string to;
+        if (scope_group) {
+            const bool from_inside = visible_names.contains(dependency.from);
+            const bool to_inside = visible_names.contains(dependency.to);
+            if (!from_inside && !to_inside) {
+                continue;
+            }
+            from = from_inside
+                       ? entity_for_node.at(dependency.from)
+                       : boundary_entity_for_node.at(dependency.from);
+            to = to_inside ? entity_for_node.at(dependency.to)
+                           : boundary_entity_for_node.at(dependency.to);
+        } else {
+            if (!visible_names.contains(dependency.from) ||
+                !visible_names.contains(dependency.to)) {
+                continue;
+            }
+            from = entity_for_node.at(dependency.from);
+            to = entity_for_node.at(dependency.to);
+        }
+        visible_dependencies.push_back(dependency);
+        if (from == to) {
+            entities.at(from).internal_records.push_back(
+                recordIdentity(dependency));
+            continue;
+        }
+        bundles[{std::move(from), std::move(to)}].push_back(dependency);
+    }
+
+    std::map<int, std::vector<VisibleEntity *>> levels;
+    for (auto &[key, entity] : entities) {
+        (void)key;
+        levels[entity.source_column].push_back(&entity);
+    }
+    for (auto &[level, level_entities] : levels) {
         (void)level;
-        std::ranges::sort(nodes, {}, [](const FramePlanNode *node) {
-            return std::pair{node->order, node->name};
+        std::ranges::sort(level_entities, {}, [](const VisibleEntity *entity) {
+            return std::pair{entity->order, entity->key};
         });
     }
 
     std::map<std::string, QGraphicsPathItem *, std::less<>> node_items;
-    std::size_t column = 0;
-    for (const auto &[level, nodes] : levels) {
+    std::size_t displayed_column = 0;
+    qreal column_x = 0.0;
+    for (const auto &[level, level_entities] : levels) {
         (void)level;
-        for (std::size_t row = 0; row < nodes.size(); ++row) {
-            const FramePlanNode &node = *nodes[row];
-            const FramePlanNodeKey key{model.graph, node.name};
-            // A render graph is usually one long dependency chain, so a
-            // strict layering puts every node in its own column and the
-            // result is a single horizontal line. Wrap the columns into
-            // rows and stagger alternate columns so neighbours are not
-            // collinear and the curve between them stays visible. Both are
-            // pure functions of the column index, so the layout stays
-            // deterministic.
+        static constexpr std::array<qreal, 4> WavePhases{0.0, 1.0, 2.0,
+                                                         1.0};
+        const qreal wave =
+            WavePhases[displayed_column % WavePhases.size()] * StaggerOffset;
+        qreal row_y = wave;
+        qreal widest_entity = 0.0;
+        for (VisibleEntity *entity : level_entities) {
+            const qreal width =
+                entity->group
+                    ? GroupWidth
+                    : entity->boundary_stub ? BoundaryStubWidth : NodeWidth;
+            const qreal height =
+                entity->group
+                    ? GroupHeight
+                    : entity->boundary_stub ? BoundaryStubHeight : NodeHeight;
+            widest_entity = std::max(widest_entity, width);
+            const FramePlanNodeKey key{model.graph, entity->key};
             // x always grows with the topological column, so every edge
-            // points left to right. y rides a triangular wave across the
-            // columns, which gives the chain vertical spread without the
-            // wrapping that turns one edge backwards at each row break.
-            static constexpr std::array<qreal, 4> WavePhases{0.0, 1.0, 2.0,
-                                                             1.0};
-            const qreal wave =
-                WavePhases[column % WavePhases.size()] * StaggerOffset;
-            QPointF position{
-                static_cast<qreal>(column) * (NodeWidth + HorizontalGap),
-                wave + static_cast<qreal>(row) * (NodeHeight + VerticalGap)};
-            if (const auto retained = session_node_positions_.find(key);
-                retained != session_node_positions_.end()) {
-                position = retained->second;
+            // points left to right for expanded nodes. A collapsed group's
+            // source column is the minimum source column of its visible
+            // members, the explicit WP341 quotient-layout rule.
+            QPointF position{column_x, row_y};
+            if (!entity->boundary_stub) {
+                if (const auto retained = session_node_positions_.find(key);
+                    retained != session_node_positions_.end()) {
+                    position = retained->second;
+                }
             }
 
-            auto *item = new MovableNodeItem(
-                nodePath(isAnchor(node)),
-                [this, key](const QPointF &moved_position) {
+            QGraphicsPathItem *item = nullptr;
+            if (entity->boundary_stub) {
+                item = new QGraphicsPathItem{
+                    roundedEntityPath(BoundaryStubWidth, BoundaryStubHeight,
+                                      9.0)};
+            } else {
+                const QPainterPath path =
+                    entity->group
+                        ? roundedEntityPath(GroupWidth, GroupHeight, 13.0)
+                        : nodePath(entity->anchor);
+                item = new MovableNodeItem(
+                    path, [this, key](const QPointF &moved_position) {
                     if (rebuilding_) {
                         return;
                     }
@@ -867,57 +1405,103 @@ void FramePlanGraphicsScene::populate(
                     // loop, coalescing the requests made during one drag.
                     scheduleSceneRectUpdate();
                 });
+            }
             addItem(item);
+            entity->item = item;
             item->setPos(position);
             item->setZValue(2.0);
-            const QColor fill = sourceColor(node.source);
+            const QColor fill =
+                entity->group
+                    ? QColor{QStringLiteral("#7653a6")}
+                    : entity->boundary_stub
+                          ? QColor{QStringLiteral("#34404b")}
+                          : sourceColor(entity->source);
             item->setBrush(fill);
-            QPen outline{isAnchor(node)
+            QPen outline{entity->anchor
                              ? QColor{QStringLiteral("#d8e3ec")}
-                             : QColor{QStringLiteral("#edf2f6")}};
-            outline.setWidthF(1.3);
-            if (isAnchor(node)) {
+                             : entity->boundary_stub
+                                   ? QColor{QStringLiteral("#aeb9c3")}
+                                   : QColor{QStringLiteral("#edf2f6")}};
+            outline.setWidthF(entity->group ? 2.0 : 1.3);
+            if (entity->anchor || entity->boundary_stub) {
                 outline.setStyle(Qt::DashLine);
             }
             item->setPen(outline);
-            item->setFlag(QGraphicsItem::ItemIsSelectable, true);
-            item->setFlag(QGraphicsItem::ItemIsMovable, true);
-            item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
-            annotateIdentity(*item, FramePlanNodeItem, model.graph, node.name);
-            item->setData(FramePlanSourceRole, qtext(node.source));
+            if (!entity->boundary_stub) {
+                item->setFlag(QGraphicsItem::ItemIsMovable, true);
+                item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
+            }
+            item->setFlag(QGraphicsItem::ItemIsSelectable,
+                          !entity->group && !entity->boundary_stub);
+            const std::string kind =
+                entity->group
+                    ? FramePlanGroupItem
+                    : entity->boundary_stub ? FramePlanBoundaryStubItem
+                                            : FramePlanNodeItem;
+            annotateIdentity(*item, kind, model.graph, entity->key);
+            item->setData(FramePlanSourceRole, qtext(entity->source));
             item->setData(FramePlanColorRole, fill.name(QColor::HexRgb));
-            item->setData(FramePlanAnchorRole, isAnchor(node));
-            item->setData(FramePlanMembersRole, qlist({node.name}));
-            item->setData(FramePlanInternalEdgeRecordsRole, QStringList{});
+            item->setData(FramePlanAnchorRole, entity->anchor);
+            item->setData(FramePlanMembersRole, qlist(entity->members));
             item->setData(FramePlanSubtreeDepthRole, normalized_depth);
-            item->setToolTip(QStringLiteral("%1 / %2")
-                                 .arg(qtext(model.graph), qtext(node.name)));
-            addNodeLabel(*item, node, model.graph);
-            node_items.emplace(node.name, item);
+            if (entity->group) {
+                item->setData(FramePlanGroupIdRole,
+                              qtext(entity->group_id));
+                item->setData(FramePlanGroupCollapsibleRole, true);
+                item->setData(FramePlanInternalEdgeRecordsRole,
+                              qlist(entity->internal_records));
+                item->setToolTip(
+                    QStringLiteral(
+                        "%1\nDouble-click to enter this group. "
+                        "Right-click to expand it.")
+                        .arg(entity->label));
+                addCenteredEntityLabel(
+                    *item, entity->label, GroupWidth, GroupHeight,
+                    FramePlanGroupLabelItem, model.graph, entity->key);
+            } else if (entity->boundary_stub) {
+                item->setData(FramePlanBoundaryTargetRole,
+                              qtext(entity->boundary_target));
+                item->setData(FramePlanBoundaryDirectionRole,
+                              entity->boundary_direction);
+                item->setToolTip(
+                    QStringLiteral("%1 boundary connection to %2")
+                        .arg(entity->boundary_direction,
+                             qtext(entity->boundary_target)));
+                addCenteredEntityLabel(
+                    *item, entity->label, BoundaryStubWidth,
+                    BoundaryStubHeight, FramePlanBoundaryStubLabelItem,
+                    model.graph, entity->key);
+            } else {
+                const FramePlanNode &node =
+                    *nodes_by_name.at(entity->key);
+                const auto node_group = group_for_node.find(node.name);
+                if (node_group != group_for_node.end()) {
+                    item->setData(FramePlanGroupIdRole,
+                                  qtext(node_group->second->state_key));
+                    item->setData(FramePlanGroupCollapsibleRole,
+                                  node_group->second->collapsible);
+                    item->setData(FramePlanReasonRole,
+                                  node_group->second->reason);
+                }
+                QString tooltip =
+                    QStringLiteral("%1 / %2")
+                        .arg(qtext(model.graph), qtext(node.name));
+                if (node_group != group_for_node.end()) {
+                    tooltip += node_group->second->collapsible
+                                   ? QStringLiteral(
+                                         "\nRight-click to collapse %1.")
+                                         .arg(node_group->second->label)
+                                   : QStringLiteral("\n%1").arg(
+                                         node_group->second->reason);
+                }
+                item->setToolTip(tooltip);
+                addNodeLabel(*item, node, model.graph);
+                node_items.emplace(node.name, item);
+            }
+            row_y += height + VerticalGap;
         }
-        ++column;
-    }
-
-    std::vector<DependencyRecord> sorted_dependencies;
-    for (const auto &dependency : model.dependencies) {
-        if (visible_names.contains(dependency.from) &&
-            visible_names.contains(dependency.to)) {
-            sorted_dependencies.push_back(DependencyRecord{
-                dependency.from, dependency.to, dependency.reason,
-                dependency.resource});
-        }
-    }
-    std::ranges::sort(sorted_dependencies, {},
-                      [](const DependencyRecord &record) {
-                          return std::tie(record.from, record.to,
-                                          record.reason, record.resource);
-                      });
-
-    std::map<EntityPair, std::vector<DependencyRecord>> bundles;
-    for (const auto &dependency : sorted_dependencies) {
-        if (dependency.from != dependency.to) {
-            bundles[{dependency.from, dependency.to}].push_back(dependency);
-        }
+        column_x += widest_entity + HorizontalGap;
+        ++displayed_column;
     }
 
     std::size_t bundle_order = 0;
@@ -994,6 +1578,84 @@ void FramePlanGraphicsScene::populate(
         ++bundle_order;
     }
 
+    if (!scope_group) {
+        qreal warning_top =
+            items().empty() ? 0.0 : itemsBoundingRect().bottom() + 20.0;
+        for (const auto &group : groups) {
+            if (group.collapsible ||
+                std::ranges::none_of(group.members, [&](const auto &member) {
+                    return visible_names.contains(member);
+                })) {
+                continue;
+            }
+            const qreal warning_width = std::max(
+                GroupWarningWidth,
+                QFontMetricsF{QFont{}}.horizontalAdvance(group.reason) +
+                    24.0);
+            auto *warning = addRect(
+                QRectF{0.0, 0.0, warning_width, GroupWarningHeight},
+                QPen{QColor{QStringLiteral("#d68a32")}, 1.6},
+                QBrush{QColor{QStringLiteral("#2b2118")}});
+            warning->setPos(0.0, warning_top);
+            warning->setZValue(1.2);
+            annotateIdentity(*warning, FramePlanGroupWarningItem,
+                             model.graph, group.state_key);
+            warning->setData(FramePlanGroupIdRole,
+                             qtext(group.state_key));
+            warning->setData(FramePlanGroupCollapsibleRole, false);
+            warning->setData(FramePlanReasonRole, group.reason);
+            warning->setToolTip(group.reason);
+            auto *message =
+                new QGraphicsSimpleTextItem(group.reason, warning);
+            message->setBrush(QColor{QStringLiteral("#f6d09a")});
+            message->setPos(12.0, 14.0);
+            warning_top += GroupWarningHeight + 10.0;
+        }
+    }
+
+    if (scope_group) {
+        const QString breadcrumb_text =
+            QStringLiteral("Frame plan  /  %1  (click to return)")
+                .arg(scope_group->label);
+        QFont breadcrumb_font;
+        breadcrumb_font.setBold(true);
+        const qreal breadcrumb_width =
+            QFontMetricsF{breadcrumb_font}.horizontalAdvance(
+                breadcrumb_text) +
+            28.0;
+        const QRectF current_bounds = itemsBoundingRect();
+        auto *breadcrumb = new BreadcrumbItem(
+            QRectF{0.0, 0.0, breadcrumb_width, BreadcrumbHeight},
+            [this] {
+                QMetaObject::invokeMethod(
+                    this, [this] { leaveGroup(); },
+                    Qt::QueuedConnection);
+            });
+        addItem(breadcrumb);
+        breadcrumb->setPos(
+            current_bounds.isValid() ? current_bounds.left() : 0.0,
+            current_bounds.isValid()
+                ? current_bounds.top() - BreadcrumbHeight - 18.0
+                : 0.0);
+        breadcrumb->setZValue(3.0);
+        breadcrumb->setPen(
+            QPen{QColor{QStringLiteral("#8d72bd")}, 1.5});
+        breadcrumb->setBrush(QColor{QStringLiteral("#302641")});
+        breadcrumb->setAcceptedMouseButtons(Qt::LeftButton);
+        annotateIdentity(*breadcrumb, FramePlanBreadcrumbItem,
+                         model.graph, scope_group->state_key);
+        breadcrumb->setData(FramePlanGroupIdRole,
+                            qtext(scope_group->state_key));
+        breadcrumb->setToolTip(
+            QStringLiteral("Return to the outer frame-plan graph"));
+        auto *label =
+            new QGraphicsSimpleTextItem(breadcrumb_text, breadcrumb);
+        label->setFont(breadcrumb_font);
+        label->setBrush(QColor{QStringLiteral("#f3ecff")});
+        label->setPos(14.0, 7.0);
+        label->setAcceptedMouseButtons(Qt::NoButton);
+    }
+
     const qreal logical_bottom = items().empty() ? 0.0
                                                  : itemsBoundingRect().bottom();
     const PhysicalOverlaySummary physical_overlay = addPhysicalOverlay(
@@ -1021,9 +1683,9 @@ void FramePlanGraphicsScene::populate(
     setProperty("pelicanDependencyRecordCount",
                 static_cast<qulonglong>(model.dependencies.size()));
     setProperty("pelicanVisibleDependencyRecordCount",
-                static_cast<qulonglong>(sorted_dependencies.size()));
+                static_cast<qulonglong>(visible_dependencies.size()));
     setProperty("pelicanVisibleItemCount",
-                static_cast<qulonglong>(visible_names.size()));
+                static_cast<qulonglong>(entities.size()));
     setProperty("pelicanEdgeBundleCount",
                 static_cast<qulonglong>(bundles.size()));
     setProperty("pelicanCurveEdgeCount",
@@ -1045,11 +1707,166 @@ void FramePlanGraphicsScene::populate(
                 qtext(model.physical_plan.planning_profile));
     setProperty("pelicanPlanningEndpoint",
                 qtext(model.physical_plan.planning_endpoint));
-    setProperty("pelicanCollapsedGroups", QStringList{});
+    setProperty("pelicanBoundaryStubCount",
+                static_cast<qulonglong>(
+                    boundary_entity_for_node.size()));
     setProperty("pelicanExecutionPlanState", QStringLiteral("available"));
     setProperty("pelicanExecutionPlanReasonCode", QString{});
     setProperty("pelicanExecutionPlanReason", QString{});
+    publish_group_properties();
     publishStateProperties();
+}
+
+bool FramePlanGraphicsScene::collapseGroup(const QString &group_id) {
+    if (!current_model_ || current_group_scope_) {
+        return false;
+    }
+    const auto groups = discoverGroups(*current_model_);
+    const GroupDefinition *group =
+        findGroup(groups, group_id.toStdString());
+    if (group == nullptr) {
+        return false;
+    }
+    if (!group->collapsible) {
+        setProperty("pelicanGroupFeedback", group->reason);
+        return false;
+    }
+    if (!collapsed_groups_.insert(group->state_key).second) {
+        return false;
+    }
+    renderCurrentGraph();
+    return true;
+}
+
+bool FramePlanGraphicsScene::expandGroup(const QString &group_id) {
+    if (!current_model_ || current_group_scope_ ||
+        collapsed_groups_.erase(group_id.toStdString()) == 0) {
+        return false;
+    }
+    renderCurrentGraph();
+    return true;
+}
+
+bool FramePlanGraphicsScene::enterGroup(const QString &group_id) {
+    if (!current_model_ || current_group_scope_ ||
+        !collapsed_groups_.contains(group_id.toStdString())) {
+        return false;
+    }
+    const auto groups = discoverGroups(*current_model_);
+    const GroupDefinition *group =
+        findGroup(groups, group_id.toStdString());
+    if (group == nullptr || !group->collapsible) {
+        return false;
+    }
+    current_group_scope_ = group->state_key;
+    selected_node_.reset();
+    renderCurrentGraph();
+    return true;
+}
+
+bool FramePlanGraphicsScene::leaveGroup() {
+    if (!current_model_ || !current_group_scope_) {
+        return false;
+    }
+    current_group_scope_.reset();
+    selected_node_.reset();
+    renderCurrentGraph();
+    return true;
+}
+
+void FramePlanGraphicsScene::contextMenuEvent(
+    QGraphicsSceneContextMenuEvent *event) {
+    QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
+    while (semantic_item != nullptr) {
+        const QString kind = itemKind(*semantic_item);
+        if (kind == QLatin1String{FramePlanNodeItem} ||
+            kind == QLatin1String{FramePlanGroupItem}) {
+            break;
+        }
+        semantic_item = semantic_item->parentItem();
+    }
+    if (semantic_item == nullptr || current_group_scope_) {
+        QGraphicsScene::contextMenuEvent(event);
+        return;
+    }
+
+    const QString kind = itemKind(*semantic_item);
+    const QString group_id =
+        semantic_item->data(FramePlanGroupIdRole).toString();
+    if (group_id.isEmpty()) {
+        QGraphicsScene::contextMenuEvent(event);
+        return;
+    }
+
+    QMenu menu;
+    if (kind == QLatin1String{FramePlanGroupItem}) {
+        QAction *expand = menu.addAction(QStringLiteral("Expand group"));
+        connect(expand, &QAction::triggered, this,
+                [this, group_id] {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, group_id] { expandGroup(group_id); },
+                        Qt::QueuedConnection);
+                });
+    } else if (semantic_item
+                   ->data(FramePlanGroupCollapsibleRole)
+                   .toBool()) {
+        QAction *collapse =
+            menu.addAction(QStringLiteral("Collapse feature group"));
+        connect(collapse, &QAction::triggered, this,
+                [this, group_id] {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, group_id] { collapseGroup(group_id); },
+                        Qt::QueuedConnection);
+                });
+    } else {
+        QString reason =
+            semantic_item->data(FramePlanReasonRole).toString();
+        if (reason.isEmpty()) {
+            reason = QStringLiteral(
+                "This feature group cannot be collapsed.");
+        }
+        QAction *disabled = menu.addAction(reason);
+        disabled->setEnabled(false);
+    }
+    event->accept();
+    menu.exec(event->screenPos());
+}
+
+void FramePlanGraphicsScene::mouseDoubleClickEvent(
+    QGraphicsSceneMouseEvent *event) {
+    QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
+    while (semantic_item != nullptr &&
+           itemKind(*semantic_item) !=
+               QLatin1String{FramePlanGroupItem}) {
+        semantic_item = semantic_item->parentItem();
+    }
+    if (semantic_item == nullptr) {
+        QGraphicsScene::mouseDoubleClickEvent(event);
+        return;
+    }
+
+    const QString group_id =
+        semantic_item->data(FramePlanGroupIdRole).toString();
+    if (group_id.isEmpty()) {
+        QGraphicsScene::mouseDoubleClickEvent(event);
+        return;
+    }
+    event->accept();
+    QMetaObject::invokeMethod(
+        this, [this, group_id] { enterGroup(group_id); },
+        Qt::QueuedConnection);
+}
+
+void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Escape && current_group_scope_) {
+        event->accept();
+        QMetaObject::invokeMethod(
+            this, [this] { leaveGroup(); }, Qt::QueuedConnection);
+        return;
+    }
+    QGraphicsScene::keyPressEvent(event);
 }
 
 void FramePlanGraphicsScene::applySceneRectNow() {
