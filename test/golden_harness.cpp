@@ -8724,9 +8724,12 @@ RenderTargetReadback captureWp338Ssao(
     }
 }
 
+// Not under test/golden: that directory is an exact-set contract of PNG cases
+// (case.json + expected.png, test/golden/inventory.json), and a directory of
+// raw single-channel bytes cannot be expressed in it.
 std::filesystem::path wp338SsaoGoldenPath(
     std::string_view name) {
-    return sourceRoot() / "test" / "golden" /
+    return sourceRoot() / "test" / "fixtures" /
            "wp338_ssao" /
            (std::string{name} + ".r8");
 }
