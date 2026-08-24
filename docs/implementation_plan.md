@@ -10572,6 +10572,70 @@ provenance でグループを作ると**1 個の overlay が 2 グループに�
 依存: 無し。見積: 中。
 ---
 
+#### コードレビュー(codex、`f045358` 直後)の仕分け
+
+**判定 Reject。実害 5 件 + テストの偽陰性 2 件。全部直す(WP341a)。**
+**production は studio 内で閉じたまま。**
+
+**中核は証明された** —— 凸性判定について、
+**4 頂点の全有向グラフ(自己ループ込み)× サイズ 2 以上の全部分集合、
+計 720,896 ケースを独立の到達可能性判定と突き合わせて不一致 0。**
+BFS に上限も打ち切りも無く、自己ループ・孤立ノード・外部 cycle も `visited` で正しく終わる。
+
+**直すもの:**
+
+1. **グループ状態 ID が衝突する。**
+   `graph + '\x1f' + "feature:" + provider_feature` の**無エスケープ連結**なので、
+   `graph="g"` / `feature="x\u001ffeature:y"` と
+   `graph="g\u001ffeature:x"` / `feature="y"` が同じ ID になる。
+   JSON は `\u001f` を書けて、parser は文字列型しか検査しない。
+   **構造化キー `(graph, group_key)` にすること**
+2. **scope 中のグループが非凸になると、不正な scope に残る。**
+   `pruneGroupState()` は畳み状態を `collapsible_groups` で照合するのに、
+   **scope は `existing_groups` にしか照合していない**。
+   したがって畳み状態は消えるのに `pelicanCurrentGroupScope` が残り、
+   `enterGroup()` が新規には拒否する非凸グループの内部に、更新経由なら留まり続けられる。
+   **scope も `collapsible_groups` で照合し、非凸化したら強制的に外へ出して理由を出すこと**
+3. **位置の保存キーが安定していない。**
+   `entity->key`(その都度合成した表示名)を使っているので、
+   衝突ノードが消えて suffix が変わるとドラッグ位置を失い、
+   逆に消えた利用者ノードの位置をグループが継承する経路もある。
+   **`{graph, kind, 安定した group state key}` にし、表示名から切り離すこと**
+4. **畳んだメンバの選択が孤児になる。**
+   メンバを選択して畳むと `visible_names` にメンバ名が在るので `selected_node_` が保持されるが、
+   `node_items` にはグループしか入らない。
+   **scene の選択 item が 0 個なのに `pelicanSelectedNode` は隠れたメンバ名のまま**になり、
+   `rebuilding_` のせいで自然回復もしない。
+   **選択をクリアするか、グループ選択へ明示的に変換すること**
+5. **`Esc` はグラフに focus が在るときしか効かない。**
+   `QGraphicsScene::keyPressEvent()` だけで処理していて、widget 側に shortcut が無い。
+   **テスト自身が `view.viewport()->setFocus()` でこの穴を避けている。**
+   `FramePlanWidget` に `Qt::WidgetWithChildrenShortcut` の shortcut を置くこと
+6. **否定対照が「別 kind で残るメンバ」を見逃す。**
+   `nodeItem()` は `FramePlanNodeItem` だけを探すので、
+   **メンバ item を消さずに `FramePlanItemKindRole` を空や別 kind に変える変異**が通る。
+   さらに `annotatedSceneItems()` は kind が空の item を無視し、
+   比較基準を畳んだ**後**に取得している。
+   **kind 非依存で「メンバ名を持つ shape/label が 1 つも無い」ことを検査し、
+   畳む前の実 item 集合から商写像で作った期待集合と比較すること**
+7. **正常系が手組みモデルだけで、本番の provenance 経路を通っていない。**
+   `framePlanToJson()` が `provider_feature` を出さなくなる回帰でもテストが通る。
+   **同ファイルに `resolvedFramePlan()`(実際に compose→compile→plan→wire する)が既に在る。**
+   正常系は `cube_capture` / `planar_reflection` / `taa` のいずれかを実際に合成して検査すること。
+   **手組みモデルを許すのは非凸 fixture だけである**
+
+**台帳に残すもの(直さない):**
+
+- **グループ全体は 2 個以上でも、現在の subtree に 1 メンバしか見えない場合、
+  1 item をグループへ畳み、ラベルは全メンバ数を表示する。**
+  中へ入ると subtree 外だった全メンバへ表示が広がる。
+  **WP341 がこの挙動を明記していなかった。仕様として受け入れる**
+  (subtree 表示は「対象の近傍を見せる」`a460471` の意図であり、
+  グループはその外側のメンバも持つのが正しい)
+- `resetGraph()` は RPC の切断・再接続・failure から呼ばれるので、
+  **その経路でドラッグ位置が失われる。**WP341 が明示的に要求した挙動である
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
