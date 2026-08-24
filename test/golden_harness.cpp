@@ -8820,6 +8820,8 @@ void requireWp338SsaoGolden(
 
 constexpr std::uint32_t wp339RenderExtent = 64;
 constexpr std::uint32_t wp339HalfExtent = 32;
+constexpr std::uint32_t wp339NonSquareWidth = 64;
+constexpr std::uint32_t wp339NonSquareHeight = 48;
 
 enum class Wp339SsaoBlurScenario {
     flat,
@@ -8845,6 +8847,7 @@ struct Wp339SsaoBlurContract {
     bool cube = false;
     bool planar = false;
     bool cross_family = false;
+    bool non_square = false;
 };
 
 Wp339SsaoBlurContract wp339SsaoBlurContract(
@@ -8856,6 +8859,7 @@ Wp339SsaoBlurContract wp339SsaoBlurContract(
             .producer_target = "ssao_output",
             .blur_target = "ssao_blur",
             .blur_pass = "ssao_blur_pass",
+            .non_square = true,
         };
     case Wp339SsaoBlurScenario::half_resolution:
         return {
@@ -9081,13 +9085,24 @@ void writeWp339ProducerShader(
 
 layout(location = 0) out vec4 outColor;
 
+uint wp339Hash(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     uint layer = pelican_view_index();
-    uint low = 8u + 7u * layer;
-    uint high = 230u - 5u * layer;
-    uint stripe = (uint(pixel.x) + layer) & 1u;
-    uint value = stripe == 0u ? low : high;
+    uint xPattern = wp339Hash(
+        uint(pixel.x) + 0x9e3779b9u) >> 27u;
+    uint yPattern = wp339Hash(
+        uint(pixel.y) + 0x85ebca6bu) >> 27u;
+    uint value = 8u + 35u * layer +
+        xPattern + yPattern;
     float encoded = float(value) / 255.0;
     outColor = vec4(encoded, encoded, encoded, 1.0);
 }
@@ -9181,6 +9196,9 @@ void writeWp339SsaoBlurProject(
         if (contract.half_resolution) {
             override["width"] = wp339HalfExtent;
             override["height"] = wp339HalfExtent;
+        } else if (contract.non_square) {
+            override["width"] = wp339NonSquareWidth;
+            override["height"] = wp339NonSquareHeight;
         } else if (contract.cross_family) {
             override["width"] = wp339RenderExtent;
             override["height"] = wp339RenderExtent;
@@ -9432,9 +9450,9 @@ std::uint8_t wp339ProducerPixel(
     return producer.bytes.at(offset);
 }
 
-std::vector<std::uint8_t> wp339BoxKernel(
+std::vector<std::uint8_t> wp339IntegerStepKernel(
     const RenderTargetReadback &producer,
-    std::uint32_t layer) {
+    std::uint32_t layer, int step_x, int step_y) {
     std::vector<std::uint8_t> result(
         wp339LayerBytes(producer));
     for (std::uint32_t y = 0;
@@ -9446,8 +9464,10 @@ std::vector<std::uint8_t> wp339BoxKernel(
                 for (int ox = -2; ox <= 2; ++ox) {
                     sum += wp339ProducerPixel(
                         producer, layer,
-                        static_cast<int>(x) + ox,
-                        static_cast<int>(y) + oy);
+                        static_cast<int>(x) +
+                            ox * step_x,
+                        static_cast<int>(y) +
+                            oy * step_y);
                 }
             }
             result[static_cast<std::size_t>(y) *
@@ -9455,6 +9475,46 @@ std::vector<std::uint8_t> wp339BoxKernel(
                    x] = static_cast<std::uint8_t>(
                 std::lround(
                     static_cast<double>(sum) / 25.0));
+        }
+    }
+    return result;
+}
+
+std::vector<std::uint8_t> wp339BoxKernel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer) {
+    return wp339IntegerStepKernel(
+        producer, layer, 1, 1);
+}
+
+std::vector<std::uint8_t> wp339OddStepMutantKernel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer) {
+    return wp339IntegerStepKernel(
+        producer, layer, 3, 3);
+}
+
+std::vector<std::uint8_t> wp339HorizontalMutantKernel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer) {
+    std::vector<std::uint8_t> result(
+        wp339LayerBytes(producer));
+    for (std::uint32_t y = 0;
+         y < producer.extent.height; ++y) {
+        for (std::uint32_t x = 0;
+             x < producer.extent.width; ++x) {
+            std::uint32_t sum = 0;
+            for (int ox = -2; ox <= 2; ++ox) {
+                sum += wp339ProducerPixel(
+                    producer, layer,
+                    static_cast<int>(x) + ox,
+                    static_cast<int>(y));
+            }
+            result[static_cast<std::size_t>(y) *
+                       producer.extent.width +
+                   x] = static_cast<std::uint8_t>(
+                std::lround(
+                    static_cast<double>(sum) / 5.0));
         }
     }
     return result;
@@ -9516,9 +9576,52 @@ std::vector<std::uint8_t> wp339RenderExtentMutantKernel(
     return result;
 }
 
-std::uint32_t wp339MaxNeighborDelta(
-    const RenderTargetReadback &producer) {
-    std::uint32_t result = 0;
+std::vector<std::uint8_t> wp339SwappedExtentMutantKernel(
+    const RenderTargetReadback &producer,
+    std::uint32_t layer) {
+    std::vector<std::uint8_t> result(
+        wp339LayerBytes(producer));
+    const auto step_x =
+        static_cast<double>(producer.extent.width) /
+        producer.extent.height;
+    const auto step_y =
+        static_cast<double>(producer.extent.height) /
+        producer.extent.width;
+    for (std::uint32_t y = 0;
+         y < producer.extent.height; ++y) {
+        for (std::uint32_t x = 0;
+             x < producer.extent.width; ++x) {
+            double sum = 0.0;
+            for (int oy = -2; oy <= 2; ++oy) {
+                for (int ox = -2; ox <= 2; ++ox) {
+                    sum += wp339LinearProducerSample(
+                        producer, layer,
+                        static_cast<double>(x) +
+                            ox * step_x,
+                        static_cast<double>(y) +
+                            oy * step_y);
+                }
+            }
+            result[static_cast<std::size_t>(y) *
+                       producer.extent.width +
+                   x] = static_cast<std::uint8_t>(
+                std::lround(sum / 25.0));
+        }
+    }
+    return result;
+}
+
+struct Wp339LayerTolerance {
+    std::uint32_t dx = 0;
+    std::uint32_t dy = 0;
+    std::uint32_t value = 0;
+};
+
+std::vector<Wp339LayerTolerance> wp339LayerTolerances(
+    const RenderTargetReadback &producer,
+    std::uint32_t sub_texel_precision_bits) {
+    std::vector<Wp339LayerTolerance> result(
+        producer.layer_count);
     for (std::uint32_t layer = 0;
          layer < producer.layer_count; ++layer) {
         for (std::uint32_t y = 0;
@@ -9528,26 +9631,36 @@ std::uint32_t wp339MaxNeighborDelta(
                 const auto value = static_cast<int>(
                     wp339ProducerPixel(
                         producer, layer, x, y));
-                for (const auto [nx, ny] : {
-                         std::pair{
-                             static_cast<int>(x) + 1,
-                             static_cast<int>(y)},
-                         std::pair{
-                             static_cast<int>(x),
-                             static_cast<int>(y) + 1},
-                     }) {
-                    result = std::max(
-                        result,
-                        static_cast<std::uint32_t>(
-                            std::abs(
-                                value -
-                                static_cast<int>(
-                                    wp339ProducerPixel(
-                                        producer, layer,
-                                        nx, ny)))));
-                }
+                result[layer].dx = std::max(
+                    result[layer].dx,
+                    static_cast<std::uint32_t>(std::abs(
+                        value - static_cast<int>(
+                            wp339ProducerPixel(
+                                producer, layer,
+                                static_cast<int>(x) + 1,
+                                static_cast<int>(y))))));
+                result[layer].dy = std::max(
+                    result[layer].dy,
+                    static_cast<std::uint32_t>(std::abs(
+                        value - static_cast<int>(
+                            wp339ProducerPixel(
+                                producer, layer,
+                                static_cast<int>(x),
+                                static_cast<int>(y) + 1)))));
             }
         }
+    }
+    const auto precision_scale = std::ldexp(
+        1.0,
+        static_cast<int>(sub_texel_precision_bits));
+    for (auto &layer : result) {
+        layer.value =
+            1u + static_cast<std::uint32_t>(std::ceil(
+                     static_cast<double>(layer.dx) /
+                     precision_scale)) +
+            static_cast<std::uint32_t>(std::ceil(
+                static_cast<double>(layer.dy) /
+                precision_scale));
     }
     return result;
 }
@@ -9615,8 +9728,11 @@ void requireWp339SsaoBlurRelationship(
         captureWp339SsaoBlur(scenario);
     const auto expected_extent = contract.half_resolution
         ? vk::Extent2D{wp339HalfExtent, wp339HalfExtent}
-        : vk::Extent2D{wp339RenderExtent,
-                       wp339RenderExtent};
+        : contract.non_square
+            ? vk::Extent2D{wp339NonSquareWidth,
+                           wp339NonSquareHeight}
+            : vk::Extent2D{wp339RenderExtent,
+                           wp339RenderExtent};
     REQUIRE(capture.producer.extent == expected_extent);
     REQUIRE(capture.blur.extent == expected_extent);
     REQUIRE(capture.producer.format ==
@@ -9680,57 +9796,133 @@ void requireWp339SsaoBlurRelationship(
         }
     }
 
-    const auto max_neighbor_delta =
-        wp339MaxNeighborDelta(capture.producer);
-    const auto precision_scale = std::ldexp(
-        1.0,
-        static_cast<int>(
-            capture.sub_texel_precision_bits));
-    const auto tolerance =
-        1u + static_cast<std::uint32_t>(std::ceil(
-                 static_cast<double>(max_neighbor_delta) /
-                 precision_scale));
+    const auto tolerances = wp339LayerTolerances(
+        capture.producer,
+        capture.sub_texel_precision_bits);
     const auto distinct =
         wp339DistinctCounts(capture.producer);
+    std::vector<std::vector<std::uint8_t>> correct_kernels;
+    correct_kernels.reserve(capture.producer.layer_count);
+    for (std::uint32_t layer = 0;
+         layer < capture.producer.layer_count; ++layer) {
+        correct_kernels.push_back(
+            wp339BoxKernel(capture.producer, layer));
+    }
 
-    std::size_t maximum_kernel_separation = 0;
-    std::size_t separated_pixels = 0;
+    std::optional<std::size_t> minimum_layer_separation;
+    for (std::uint32_t left = 0;
+         left < capture.producer.layer_count; ++left) {
+        for (std::uint32_t right = left + 1;
+             right < capture.producer.layer_count; ++right) {
+            std::size_t pair_minimum =
+                std::numeric_limits<std::size_t>::max();
+            for (std::size_t pixel = 0;
+                 pixel < correct_kernels[left].size();
+                 ++pixel) {
+                pair_minimum = std::min(
+                    pair_minimum,
+                    static_cast<std::size_t>(std::abs(
+                        static_cast<int>(
+                            correct_kernels[left][pixel]) -
+                        static_cast<int>(
+                            correct_kernels[right][pixel]))));
+            }
+            const auto pair_tolerance = std::max(
+                tolerances[left].value,
+                tolerances[right].value);
+            CAPTURE(left, right, pair_minimum,
+                    pair_tolerance);
+            REQUIRE(pair_minimum > pair_tolerance);
+            minimum_layer_separation = std::min(
+                minimum_layer_separation.value_or(
+                    pair_minimum),
+                pair_minimum);
+        }
+    }
+
     const auto checked_layers =
         capture.blur.layer_count;
     const auto blur_layer_bytes =
         wp339LayerBytes(capture.blur);
+    REQUIRE(checked_layers <= correct_kernels.size());
+
+    std::ostringstream summary;
+    summary << "WP339_METRICS scenario=" << contract.name
+            << " extent=" << capture.producer.extent.width
+            << 'x' << capture.producer.extent.height
+            << " subTexelPrecisionBits="
+            << capture.sub_texel_precision_bits
+            << " layerMinSeparation=";
+    if (minimum_layer_separation.has_value()) {
+        summary << *minimum_layer_separation;
+    } else {
+        summary << "n/a";
+    }
+    std::cout << summary.str() << '\n';
+
     for (std::uint32_t layer = 0;
          layer < checked_layers; ++layer) {
-        const auto correct = wp339BoxKernel(
-            capture.producer, layer);
-        std::vector<std::uint8_t> mutant;
+        const auto &correct = correct_kernels[layer];
+        const auto tolerance = tolerances[layer].value;
+
+        struct MutantKernel {
+            std::string_view name;
+            std::vector<std::uint8_t> bytes;
+            std::size_t separated_pixels = 0;
+            std::size_t maximum_difference = 0;
+            std::size_t blur_different_pixels = 0;
+        };
+
+        // These negative controls are CPU proxies for plausible mutated
+        // shaders. The production render path is not run with a mutant.
+        std::vector<MutantKernel> mutants;
+        mutants.push_back({
+            "odd_step_3",
+            wp339OddStepMutantKernel(
+                capture.producer, layer),
+        });
+        mutants.push_back({
+            "horizontal_5x1",
+            wp339HorizontalMutantKernel(
+                capture.producer, layer),
+        });
         if (contract.half_resolution) {
-            mutant = wp339RenderExtentMutantKernel(
-                capture.producer, layer);
-            std::size_t layer_separated = 0;
-            std::size_t layer_maximum = 0;
+            mutants.push_back({
+                "render_extent",
+                wp339RenderExtentMutantKernel(
+                    capture.producer, layer),
+            });
+        }
+        if (contract.non_square) {
+            mutants.push_back({
+                "swapped_width_height",
+                wp339SwappedExtentMutantKernel(
+                    capture.producer, layer),
+            });
+        }
+
+        // Prove each CPU proxy is a live negative control before consulting
+        // the rendered blur. Otherwise a mutant comparison could pass vacuously.
+        for (auto &mutant : mutants) {
             for (std::size_t pixel = 0;
                  pixel < correct.size(); ++pixel) {
                 const auto difference =
                     static_cast<std::size_t>(std::abs(
                         static_cast<int>(correct[pixel]) -
-                        static_cast<int>(mutant[pixel])));
-                layer_maximum = std::max(
-                    layer_maximum, difference);
-                layer_separated +=
+                        static_cast<int>(
+                            mutant.bytes[pixel])));
+                mutant.maximum_difference = std::max(
+                    mutant.maximum_difference, difference);
+                mutant.separated_pixels +=
                     difference > tolerance ? 1u : 0u;
             }
-            CAPTURE(layer, layer_separated, layer_maximum,
-                    tolerance);
-            REQUIRE(layer_separated > 0);
-            separated_pixels += layer_separated;
-            maximum_kernel_separation = std::max(
-                maximum_kernel_separation,
-                layer_maximum);
+            CAPTURE(layer, std::string{mutant.name},
+                    mutant.separated_pixels,
+                    mutant.maximum_difference, tolerance);
+            REQUIRE(mutant.separated_pixels > 0);
         }
 
         std::size_t changed_from_producer = 0;
-        std::size_t differs_from_mutant = 0;
         for (std::size_t pixel = 0;
              pixel < blur_layer_bytes; ++pixel) {
             const auto blur_value =
@@ -9750,11 +9942,12 @@ void requireWp339SsaoBlurRelationship(
                         static_cast<int>(blur_value) -
                         static_cast<int>(correct[pixel])) <=
                     static_cast<int>(tolerance));
-            if (contract.half_resolution) {
-                differs_from_mutant +=
+            for (auto &mutant : mutants) {
+                mutant.blur_different_pixels +=
                     std::abs(
                         static_cast<int>(blur_value) -
-                        static_cast<int>(mutant[pixel])) >
+                        static_cast<int>(
+                            mutant.bytes[pixel])) >
                             static_cast<int>(tolerance)
                         ? 1u
                         : 0u;
@@ -9764,32 +9957,31 @@ void requireWp339SsaoBlurRelationship(
                 blur_layer_bytes, tolerance);
         REQUIRE(changed_from_producer * 4 >=
                 blur_layer_bytes);
-        if (contract.half_resolution) {
-            CAPTURE(layer, differs_from_mutant);
-            REQUIRE(differs_from_mutant > 0);
+        for (const auto &mutant : mutants) {
+            CAPTURE(layer, std::string{mutant.name},
+                    mutant.blur_different_pixels,
+                    tolerance);
+            REQUIRE(mutant.blur_different_pixels > 0);
+            std::cout
+                << "WP339_MUTANT scenario=" << contract.name
+                << " layer=" << layer
+                << " name=" << mutant.name
+                << " separatedPixels="
+                << mutant.separated_pixels
+                << " maxDifference="
+                << mutant.maximum_difference
+                << " blurDifferentPixels="
+                << mutant.blur_different_pixels << '\n';
         }
+        std::cout << "WP339_LAYER scenario=" << contract.name
+                  << " layer=" << layer
+                  << " Dx=" << tolerances[layer].dx
+                  << " Dy=" << tolerances[layer].dy
+                  << " tol=" << tolerance
+                  << " distinct=" << distinct[layer]
+                  << " changedFromProducer="
+                  << changed_from_producer << '\n';
     }
-
-    std::ostringstream metrics;
-    metrics << "WP339_METRICS scenario=" << contract.name
-            << " subTexelPrecisionBits="
-            << capture.sub_texel_precision_bits
-            << " tol=" << tolerance
-            << " maxNeighborDelta="
-            << max_neighbor_delta
-            << " distinct=";
-    for (std::size_t index = 0;
-         index < distinct.size(); ++index) {
-        if (index != 0) metrics << ',';
-        metrics << distinct[index];
-    }
-    if (contract.half_resolution) {
-        metrics << " separatedPixels="
-                << separated_pixels
-                << " maxKernelSeparation="
-                << maximum_kernel_separation;
-    }
-    std::cout << metrics.str() << '\n';
 }
 
 void writeWp339SsaoBlurIntegrationProject(
