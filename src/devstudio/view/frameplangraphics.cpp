@@ -63,7 +63,7 @@ using EntityPair = std::pair<std::string, std::string>;
 
 struct GroupDefinition {
     std::string key;
-    std::string state_key;
+    std::pair<std::string, std::string> state_key;
     std::string entity_name;
     std::string feature;
     QString label;
@@ -79,6 +79,7 @@ struct VisibleEntity {
     std::vector<std::string> members;
     std::vector<std::string> internal_records;
     std::string group_id;
+    std::string stable_group_key;
     std::string boundary_target;
     QString boundary_direction;
     std::size_t order = 0;
@@ -196,10 +197,22 @@ std::optional<std::string> groupingUnit(const FramePlanNode &node) {
     return "feature:" + node.provider_feature;
 }
 
-std::string groupStateKey(const FramePlanModel &model,
-                          const std::string &group_key) {
-    constexpr char separator = '\x1f';
-    return model.graph + separator + group_key;
+std::pair<std::string, std::string> groupStateKey(
+    const FramePlanModel &model, const std::string &group_key) {
+    return {model.graph, group_key};
+}
+
+// Group state is structural in memory. Qt properties and data roles need a
+// string representation, so encode both UTF-8 byte strings with explicit
+// lengths. Unlike a delimiter join, this remains injective when either input
+// contains control characters or delimiter-looking text.
+std::string groupStateId(
+    const std::pair<std::string, std::string> &state_key) {
+    const auto field = [](const std::string &value) {
+        return std::to_string(value.size()) + ":" + value;
+    };
+    return "group-state-v1:" + field(state_key.first) +
+           field(state_key.second);
 }
 
 QString nonConvexReason(
@@ -310,9 +323,19 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
 }
 
 const GroupDefinition *findGroup(const std::vector<GroupDefinition> &groups,
-                                 const std::string &state_key) {
+                                 const std::pair<std::string, std::string>
+                                     &state_key) {
     const auto found = std::ranges::find(groups, state_key,
                                          &GroupDefinition::state_key);
+    return found == groups.end() ? nullptr : &*found;
+}
+
+const GroupDefinition *findGroupById(
+    const std::vector<GroupDefinition> &groups, const QString &group_id) {
+    const auto found = std::ranges::find_if(
+        groups, [&](const GroupDefinition &group) {
+            return qtext(groupStateId(group.state_key)) == group_id;
+        });
     return found == groups.end() ? nullptr : &*found;
 }
 
@@ -926,6 +949,7 @@ void FramePlanGraphicsScene::resetGraph() {
     current_depth_ = 1;
     collapsed_groups_.clear();
     current_group_scope_.reset();
+    group_feedback_.clear();
     setSceneRect({});
     rebuilding_ = false;
     setProperty("pelicanGraph", QString{});
@@ -970,6 +994,7 @@ void FramePlanGraphicsScene::populate(
 }
 
 void FramePlanGraphicsScene::pruneGroupState() {
+    group_feedback_.clear();
     if (!current_model_) {
         collapsed_groups_.clear();
         current_group_scope_.reset();
@@ -977,20 +1002,26 @@ void FramePlanGraphicsScene::pruneGroupState() {
     }
 
     const auto groups = discoverGroups(*current_model_);
-    std::set<std::string, std::less<>> existing_groups;
-    std::set<std::string, std::less<>> collapsible_groups;
+    std::set<GroupStateKey> collapsible_groups;
     for (const auto &group : groups) {
-        existing_groups.insert(group.state_key);
         if (group.collapsible) {
             collapsible_groups.insert(group.state_key);
         }
     }
-    std::erase_if(collapsed_groups_, [&](const std::string &group_id) {
-        return !collapsible_groups.contains(group_id);
+    std::erase_if(collapsed_groups_, [&](const GroupStateKey &group_key) {
+        return !collapsible_groups.contains(group_key);
     });
-    if (current_group_scope_ &&
-        !existing_groups.contains(*current_group_scope_)) {
-        current_group_scope_.reset();
+    if (current_group_scope_) {
+        const GroupDefinition *scope =
+            findGroup(groups, *current_group_scope_);
+        if (scope == nullptr) {
+            current_group_scope_.reset();
+        } else if (!scope->collapsible) {
+            // An update can invalidate a scope that was convex when entered.
+            // Do not leave the scene in a state enterGroup() would reject.
+            group_feedback_ = scope->reason;
+            current_group_scope_.reset();
+        }
     }
 }
 
@@ -1024,17 +1055,26 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                   : std::set<std::string, std::less<>>{};
     const bool node_selection_survives =
         retained_node && retained_node->graph == model.graph &&
-        visible_names.contains(retained_node->name);
+        visible_names.contains(retained_node->name) &&
+        (scope_group != nullptr ||
+         std::ranges::none_of(groups, [&](const GroupDefinition &group) {
+             return group.collapsible &&
+                    collapsed_groups_.contains(group.state_key) &&
+                    std::ranges::find(group.members,
+                                      retained_node->name) !=
+                        group.members.end();
+         }));
 
     const auto publish_group_properties = [&] {
         QStringList collapsed;
-        for (const auto &group_id : collapsed_groups_) {
-            collapsed.push_back(qtext(group_id));
+        for (const auto &group_key : collapsed_groups_) {
+            collapsed.push_back(qtext(groupStateId(group_key)));
         }
         setProperty("pelicanCollapsedGroups", collapsed);
         setProperty("pelicanCurrentGroupScope",
-                    current_group_scope_ ? qtext(*current_group_scope_)
-                                         : QString{});
+                    current_group_scope_
+                        ? qtext(groupStateId(*current_group_scope_))
+                        : QString{});
         setProperty("pelicanCurrentGroupScopeLabel",
                     scope_group ? scope_group->label : QString{});
 
@@ -1044,13 +1084,16 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             if (group.collapsible) {
                 continue;
             }
-            non_collapsible.push_back(qtext(group.state_key));
+            non_collapsible.push_back(
+                qtext(groupStateId(group.state_key)));
             if (first_reason.isEmpty()) {
                 first_reason = group.reason;
             }
         }
         setProperty("pelicanNonCollapsibleGroups", non_collapsible);
-        setProperty("pelicanGroupFeedback", first_reason);
+        setProperty("pelicanGroupFeedback",
+                    group_feedback_.isEmpty() ? first_reason
+                                              : group_feedback_);
     };
 
     rebuilding_ = true;
@@ -1158,7 +1201,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     .arg(group.label)
                     .arg(static_cast<qulonglong>(group.members.size()));
             entity.members = group.members;
-            entity.group_id = group.state_key;
+            entity.group_id = groupStateId(group.state_key);
+            entity.stable_group_key = group.key;
             entity.group = true;
             entity.order = model.nodes.size();
             entity.source_column = std::numeric_limits<int>::max();
@@ -1187,7 +1231,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         std::string group_id;
         if (const auto found = group_for_node.find(node.name);
             found != group_for_node.end()) {
-            group_id = found->second->state_key;
+            group_id = groupStateId(found->second->state_key);
         }
         entity_for_node.emplace(node.name, node.name);
         entities.emplace(
@@ -1369,14 +1413,21 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     ? GroupHeight
                     : entity->boundary_stub ? BoundaryStubHeight : NodeHeight;
             widest_entity = std::max(widest_entity, width);
-            const FramePlanNodeKey key{model.graph, entity->key};
+            const std::string position_kind =
+                entity->group ? FramePlanGroupItem : FramePlanNodeItem;
+            const std::string stable_identity =
+                entity->group ? entity->stable_group_key : entity->key;
+            const auto position_key = std::tuple{
+                model.graph, position_kind, stable_identity};
+            const FramePlanNodeKey routing_key{model.graph, entity->key};
             // x always grows with the topological column, so every edge
             // points left to right for expanded nodes. A collapsed group's
             // source column is the minimum source column of its visible
             // members, the explicit WP341 quotient-layout rule.
             QPointF position{column_x, row_y};
             if (!entity->boundary_stub) {
-                if (const auto retained = session_node_positions_.find(key);
+                if (const auto retained =
+                        session_node_positions_.find(position_key);
                     retained != session_node_positions_.end()) {
                     position = retained->second;
                 }
@@ -1393,12 +1444,14 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                         ? roundedEntityPath(GroupWidth, GroupHeight, 13.0)
                         : nodePath(entity->anchor);
                 item = new MovableNodeItem(
-                    path, [this, key](const QPointF &moved_position) {
+                    path, [this, position_key,
+                           routing_key](const QPointF &moved_position) {
                     if (rebuilding_) {
                         return;
                     }
-                    session_node_positions_[key] = moved_position;
-                    rerouteConnectedBundles(*this, key.graph, key.name);
+                    session_node_positions_[position_key] = moved_position;
+                    rerouteConnectedBundles(*this, routing_key.graph,
+                                            routing_key.name);
                     // Growing the scene rect from inside itemChange re-enters
                     // this handler through Qt's view update, which recurses
                     // until the stack is exhausted. Defer it to the event
@@ -1477,7 +1530,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 const auto node_group = group_for_node.find(node.name);
                 if (node_group != group_for_node.end()) {
                     item->setData(FramePlanGroupIdRole,
-                                  qtext(node_group->second->state_key));
+                                  qtext(groupStateId(
+                                      node_group->second->state_key)));
                     item->setData(FramePlanGroupCollapsibleRole,
                                   node_group->second->collapsible);
                     item->setData(FramePlanReasonRole,
@@ -1599,9 +1653,10 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             warning->setPos(0.0, warning_top);
             warning->setZValue(1.2);
             annotateIdentity(*warning, FramePlanGroupWarningItem,
-                             model.graph, group.state_key);
+                             model.graph,
+                             groupStateId(group.state_key));
             warning->setData(FramePlanGroupIdRole,
-                             qtext(group.state_key));
+                             qtext(groupStateId(group.state_key)));
             warning->setData(FramePlanGroupCollapsibleRole, false);
             warning->setData(FramePlanReasonRole, group.reason);
             warning->setToolTip(group.reason);
@@ -1643,9 +1698,10 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         breadcrumb->setBrush(QColor{QStringLiteral("#302641")});
         breadcrumb->setAcceptedMouseButtons(Qt::LeftButton);
         annotateIdentity(*breadcrumb, FramePlanBreadcrumbItem,
-                         model.graph, scope_group->state_key);
+                         model.graph,
+                         groupStateId(scope_group->state_key));
         breadcrumb->setData(FramePlanGroupIdRole,
-                            qtext(scope_group->state_key));
+                            qtext(groupStateId(scope_group->state_key)));
         breadcrumb->setToolTip(
             QStringLiteral("Return to the outer frame-plan graph"));
         auto *label =
@@ -1723,43 +1779,52 @@ bool FramePlanGraphicsScene::collapseGroup(const QString &group_id) {
     }
     const auto groups = discoverGroups(*current_model_);
     const GroupDefinition *group =
-        findGroup(groups, group_id.toStdString());
+        findGroupById(groups, group_id);
     if (group == nullptr) {
         return false;
     }
     if (!group->collapsible) {
+        group_feedback_ = group->reason;
         setProperty("pelicanGroupFeedback", group->reason);
         return false;
     }
     if (!collapsed_groups_.insert(group->state_key).second) {
         return false;
     }
+    group_feedback_.clear();
     renderCurrentGraph();
     return true;
 }
 
 bool FramePlanGraphicsScene::expandGroup(const QString &group_id) {
-    if (!current_model_ || current_group_scope_ ||
-        collapsed_groups_.erase(group_id.toStdString()) == 0) {
+    if (!current_model_ || current_group_scope_) {
         return false;
     }
+    const auto groups = discoverGroups(*current_model_);
+    const GroupDefinition *group = findGroupById(groups, group_id);
+    if (group == nullptr ||
+        collapsed_groups_.erase(group->state_key) == 0) {
+        return false;
+    }
+    group_feedback_.clear();
     renderCurrentGraph();
     return true;
 }
 
 bool FramePlanGraphicsScene::enterGroup(const QString &group_id) {
-    if (!current_model_ || current_group_scope_ ||
-        !collapsed_groups_.contains(group_id.toStdString())) {
+    if (!current_model_ || current_group_scope_) {
         return false;
     }
     const auto groups = discoverGroups(*current_model_);
     const GroupDefinition *group =
-        findGroup(groups, group_id.toStdString());
-    if (group == nullptr || !group->collapsible) {
+        findGroupById(groups, group_id);
+    if (group == nullptr || !group->collapsible ||
+        !collapsed_groups_.contains(group->state_key)) {
         return false;
     }
     current_group_scope_ = group->state_key;
     selected_node_.reset();
+    group_feedback_.clear();
     renderCurrentGraph();
     return true;
 }
@@ -1770,6 +1835,7 @@ bool FramePlanGraphicsScene::leaveGroup() {
     }
     current_group_scope_.reset();
     selected_node_.reset();
+    group_feedback_.clear();
     renderCurrentGraph();
     return true;
 }

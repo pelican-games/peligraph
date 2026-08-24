@@ -5,6 +5,7 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QByteArray>
 #include <QColor>
 #include <QComboBox>
@@ -14,6 +15,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonObject>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -341,6 +343,14 @@ struct FramePlanWidget::Impl {
         logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         logical->setResizeAnchor(QGraphicsView::AnchorViewCenter);
         logical->setBackgroundBrush(QColor{QStringLiteral("#20262d")});
+        auto *leave_group = new QAction(&owner);
+        leave_group->setObjectName(
+            QStringLiteral("pelican.framePlanLeaveGroup"));
+        leave_group->setShortcut(QKeySequence{Qt::Key_Escape});
+        leave_group->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        owner.addAction(leave_group);
+        QObject::connect(leave_group, &QAction::triggered, &owner,
+                         [this] { logical_scene->leaveGroup(); });
         logical->setZoomObserver(
             [this](qreal scale, const QString &boundary) {
                 zoom_status->setText(

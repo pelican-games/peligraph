@@ -9,6 +9,8 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
+#include <utility>
 
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
@@ -111,12 +113,18 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanNodeKey> selected_resource_;
     // Deliberately owned only by the live scene.  Node positions are editor
     // session state, not QMainWindow workspace state and never reach disk.
-    std::map<FramePlanNodeKey, QPointF> session_node_positions_;
+    // Display names are deliberately absent from this key. In particular, a
+    // group's synthetic endpoint name may acquire or lose a collision suffix
+    // without changing the editor-session position that belongs to the group.
+    std::map<std::tuple<std::string, std::string, std::string>, QPointF>
+        session_node_positions_;
     std::optional<FramePlanModel> current_model_;
     std::optional<FramePlanNodeKey> current_target_;
     int current_depth_ = 1;
-    std::set<std::string, std::less<>> collapsed_groups_;
-    std::optional<std::string> current_group_scope_;
+    using GroupStateKey = std::pair<std::string, std::string>;
+    std::set<GroupStateKey> collapsed_groups_;
+    std::optional<GroupStateKey> current_group_scope_;
+    QString group_feedback_;
     // Never call this from inside itemChange: changing the scene rect makes
     // the view update, which moves the dragged item, which re-enters
     // itemChange. Schedule it instead; requests coalesce.
