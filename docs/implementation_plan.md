@@ -9787,78 +9787,65 @@ OFF 対応を作るのは WP211(dist-bake)であり、完了の前提ではな�
 **次は `ssao_blur.frag`**(`textureSize` の扱い)、
 **その次が `fullscreen.frag`**(条件付き shadow ソケット = 既定値と同時)。
 
-### WP339: `engine://ssao_blur` を生成 include へ移す(第 3 版)
+### WP339: `engine://ssao_blur` を生成 include へ移す(第 4 版)
 
 **設計は第 5 版の `### 完了までの順序` 段階 A・B。WP338(`1b20452`)の続き。**
 
 **§4 規則 11 の上段。仕様 + コード。**
 
-**初版・第 2 版はいずれも仕様レビューで破綻した。**
-**第 2 版で入れた「箱平均オラクル」は正しい方向だったが、
-測定条件が甘く、否定対照が木に残らない形だった。以下は訂正済みの版である。**
+**第 1〜3 版はいずれも敵対レビューで破綻した。**
+**第 4 版は Claude の 2 巡(計 8 レンズ)と codex の仕様レビュー 1 巡を経ている。**
+**codex は阻害的欠陥 3 件を含む 8 件を出した。以下はその訂正版である。**
 
 #### 前の版が壊れた理由(繰り返さないこと)
 
-1. **バイト一致は何も証明していなかった** —— port が 1 本なので resource の取り違えは
-   engine が名前付きで先に落とす(`renderingpassruntimecompiler.cpp:1945`)。
-   さらに 2 枚目の readback に `ssao_output` を渡す実装ミス 1 箇所で全条件が通る
-   (両者は同じ `R8_UNORM`・同じ extent)
-2. **サイズの変異が新規性を検査していなかった** —— 既存 6 構成はすべて
-   入力 extent == 描画解像度なので、`pelican_size_` を `render_resolution` に
-   すり替えた実装でも全部緑になる
-3. **逃げ道が開いていた** —— blur を multiview 候補から外すだけで array 経路を通らずに済む
-4. **「既存 golden を壊すな」と「同じレンダリングから 2 枚読め」が両立しなかった**
-5. **`±1` の許容が device 依存だった** —— linear サンプリングの重みは
-   `subTexelPrecisionBits`(Vulkan の下限は 4 bit)に量子化されるので、
-   4 bit の実装では系統誤差が 1〜2 LSB 出て ±1 を超える。**同じテストが device で通ったり落ちたりする**
-6. **否定対照が「手で patch」だったので、マージ後に木に何も残らなかった**
+1. **バイト一致は何も証明しなかった** —— port 1 本では resource の取り違えを
+   engine が名前付きで先に落とす。しかも 2 枚目の readback に `ssao_output` を
+   渡す実装ミス 1 箇所で全条件が通る(同じ `R8_UNORM`・同じ extent)
+2. **サイズの変異が検査できなかった** —— 全構成で入力 extent == 描画解像度だった
+3. **逃げ道が開いていた** —— blur を multiview 候補から外せば array 経路を通らずに済む
+4. **`±1` が device 依存だった** —— linear の重みは `subTexelPrecisionBits`
+   (Vulkan の下限 4 bit)に量子化される
+5. **`"address_mode"` は存在しない JSON キーだった** ——
+   parser が受理するのは `filter` と `address` だけで、
+   それ以外は `sampling has unknown field` で落ちる
+   (`src/project/shaderresourceport.cpp:145-160`)。
+   **指示どおり実装すると出荷 4 JSON が parse error になっていた**
+6. **AO 刺激の閾値に余裕が無かった** —— 既存 fixture の cube 層の distinct 数は
+   実測 **6, 7, 6, 7, 6, 23**。`distinct >= 6` は境界そのもので、
+   producer の浮動小数点 noise が device で 1 段変われば落ちる
+7. **`pass 名 → ShaderBundleId` の getter は一意にならなかった** ——
+   `ssao_blur_pass` は hybrid と example で重複し、graph variant ごとにも現れる
 
-#### 確認済みの事実(再調査不要。2 巡のレビューで独立に検算済み)
+#### 確認済みの事実(再調査不要。Claude 2 巡 + codex 1 巡で独立に検算済み)
 
 **1. `textureSize` は障害ではない。**
 
 `generateShaderResourcePortInclude`(`src/core/shader/shaderresourceinterface.cpp:621`)は
 `ivec2 pelican_size_<port>()` を **input attachment(`:213`)/ cube(`:237`)/
 2D(`:265`)/ 2D array(`:287`、`.xy` に正規化)** で発行する。
-sampled port では中身が `textureSize(pelican_resource_<port>, 0)` そのものである。
-
-**storage buffer port は `pelican_size_` を出さない**(`pelican_count_` のみ)。
-本 WP の port は combined image sampler なので影響しない。
+storage buffer port は出さない(`pelican_count_` のみ)が、本 WP の port は
+combined image sampler なので影響しない。
 
 **2. `ssao_blur.frag` は今日、array 変種でコンパイルが通らない。**
-
-実測(`glslang -I src/core/resources/shaders/include --target-env vulkan1.3 -S frag`。
-レビュー側でも逐語で再現済み):
 
 ```
 -DPELICAN_INPUT_0_LAYERED=1
   ERROR: ssao_blur.frag:17: '=' : cannot convert from
          ' temp 3-component vector of float' to ' temp highp 2-component vector of float'
-
 -DPELICAN_INPUT_0_LOCAL_READ=1
   ERROR: ssao_blur.frag:17: 'textureSize' : no matching overloaded function found
-
 (defines なし)  正常
 ```
 
-`textureSize(sampler2DArray)` は `ivec3` を返し、`subpassInput` に `textureSize` の overload は無い。
-**17 行目の 1 行が原因である。**
-
 **`PELICAN_INPUT_0_LAYERED` の発行条件は選言 2 つ**
-(`src/core/renderingpass/renderingpassruntimecompiler.cpp:1043-1058`):
+(`renderingpassruntimecompiler.cpp:1043-1058`):
+**multiview 実行 かつ `layered_2d_array`** / **`family_2d_array`(実行モードを問わない)**。
+**後者があるので XR 専用ではない。**
 
-- **multiview 実行 かつ `layered_2d_array`**
-- **`family_2d_array`(実行モードを問わない)**
-
-**後者があるので、この型エラーは XR 専用ではない。**
-二次 family の producer が書いた target を main family の `engine://ssao_blur` パスの
-`input` に繋ぐと flat のまま再現する
-(`src/project/targetrenderplanning.cpp:2486-2493`)。
-
-**出荷プロジェクトで到達するものは無い。**
-**しかし作者が標準パイプラインを XR multiview に持っていくか、
-二次 family の出力を繋ぐと、自分が書いていないエンジンシェーダーの GLSL 型エラーで落ちる。**
-**これは本取り組みが消そうとしている失敗そのものである。**
+**出荷プロジェクトで到達するものは無い。しかし作者が標準パイプラインを
+XR multiview に持っていくか、二次 family の出力を繋ぐと、
+自分が書いていないエンジンシェーダーの GLSL 型エラーで落ちる。**
 
 **3. 消費者は 4 ファイル。どれも入力 1 本。**
 
@@ -9871,10 +9858,9 @@ sampled port では中身が `textureSize(pelican_resource_<port>, 0)` そのも
 
 **4 つとも `input_footprints` も `push_constants` も `input_sampling` も持たない。**
 
-**到達する「プロジェクト」は 3 系統**: `projects/example`(直接)/
+到達する「プロジェクト」は `projects/example`(直接)/
 `projects/animgraph_demo`(`hybrid_v1` preset 継承)/ **`pelican project init` の生成物**。
-`sprite_demo` と `vrm_xr_demo` は使わない。
-**`vrm_xr_demo` は `ssao_blur` という名前の target を白でクリアしているだけ**
+`vrm_xr_demo` は `ssao_blur` という名前の target を白でクリアしているだけである
 (`projects/vrm_xr_demo/passes/main.json:10,14-15`)。**この非対称を壊さないこと。**
 
 **4. bake をやめる費用は 4 行。**
@@ -9891,33 +9877,32 @@ sampled port では中身が `textureSize(pelican_resource_<port>, 0)` そのも
 
 **5. `pelican_view.glsl` の include は捨ててよい。**
 `pelican_view_index()` は `pelican_frame.glsl:51-57` にあり、
-`ssao_blur.frag:6` が既に `pelican_frame.glsl` を include している。
-**`pelican_frame.glsl` は残すこと。**
+`ssao_blur.frag:6` が既に `pelican_frame.glsl` を include している。**frame は残すこと。**
 
-**6. 半解像度構成は作れる(レビューで確認済み)。**
+**6. 半解像度構成は作れる。**
 
 - `render_target_overrides` は `format` / `format_candidates` / `usage` / `width` / `height`
-  だけを受け付ける(`featurecompose.cpp:1656-1662` がそれ以外をキー名で拒否)
+  だけを受け付ける(`featurecompose.cpp:1656-1662`)
 - **`width`+`height` は `extent_scale` に優先する** ——
-  `rendertargetjsonparser.cpp:16-32` の `parseFixedExtent`(両方必須)が
-  `rendertargetcontainer.cpp:60-79` で `ResourceExtentKind::fixed` になる
-- **入力と出力の extent 不一致を engine は拒否しない** ——
-  `renderingpassvalidation.cpp:102-158` は output 同士しか比較しない
-- **`ssao_pass` / `ssao_blur_pass` は `resolution_domain` を書いていないので
-  `unclassified` になり**(`renderingpassjsonhelpers.cpp:204-218`)、
-  **`render_resolution` の算出に入らない**(`renderingsamplecount.cpp:1140-1215`)。
-  したがって AO を 32×32 にしても `render_resolution` は 64×64 のままである
+  `rendertargetjsonparser.cpp:16-32` → `rendertargetcontainer.cpp:60-79` で
+  `ResourceExtentKind::fixed` になる
+- **入力と出力の extent 不一致を engine は拒否しない**
+  (`renderingpassvalidation.cpp:102-158` は output 同士しか比較しない)
+- **`ssao_pass` / `ssao_blur_pass` は `unclassified`** なので
+  `render_resolution` の算出に入らない(`renderingsamplecount.cpp:1140-1215`)。
+  AO を 32×32 にしても `render_resolution` は 64×64 のままである
+- **必ず main view family に作ること。**二次 family では
+  `render_resolution` がその family 自身の raster extent に差し替えられ
+  (`src/core/vkcore/renderer.cpp:4644-4660`)、変異が結果を変えなくなる。
+  しかも family が 2 つの extent にまたがると `renderer.cpp:604-617` が名前付きで落ちる
 
-**7. その他、レビューが確認したこと。**
+**7. `sampling` の JSON キーは `filter` と `address` である。**
+`address_mode` は存在しない(`src/project/shaderresourceport.cpp:145-160`)。
+**本 WP は `sampling` を書かない**(下記)が、書くときのために記録する。
 
-- `ShaderBundle::virtual_includes` は production の compile 経路で埋まる
-  (`renderingpassruntimecompiler.cpp:1974-1992`)
-- 2 引数 accessor は 2D(非 array)でも生成される(`shaderresourceinterface.cpp:249-277`)
-- cube / planar の blur に `view: per_view` を与えても落ちない
-  (自分と同じ `view_family` の target を読むので `crosses_view_families` にならない)
-- cross-family に `per_view` を与えると名前付きで落ちる
-  (`shaderresourceinterface.cpp:578-585`、
-  `must declare family_array to consume a producer-owned view-family array`)
+**8. 既存の getter は `PassId` 鍵である。**
+`FullscreenPassContainer::inputSamplingForTesting(PassId)`
+(`src/core/fullscreenpass/fullscreenpasscontainer.hpp:133`)。
 
 #### 範囲
 
@@ -9925,177 +9910,172 @@ sampled port では中身が `textureSize(pelican_resource_<port>, 0)` そのも
 
 - `#include "pelican_view.glsl"` と `PELICAN_DECLARE_INPUT_0` を捨て、
   `#include "pelican_resource_ports.glsl"` を無条件 include にする
-- `textureSize(ssaoInput, 0)` → `pelican_size_<port>()`
+- `textureSize(ssaoInput, 0)` → **`pelican_size_<port>()`**
 - `PELICAN_TEXTURE_2D_0(ssaoInput, uv)` → **2 引数 accessor**
   `pelican_sample_<port>(uv, pelican_view_index())`
 
+**`pelican_size_<port>()` と `textureSize(pelican_resource_<port>, 0).xy` は
+生成コードとして同一である。**どちらでも挙動は変わらない。
+**前者を使うこと。ただしこれを検査するテストは作らない** ——
+挙動差が 0 なので、テストで縛る価値より足場の重さが勝つ。**diff レビューで見る。**
+
 **2. 4 消費者に `resource_ports` を足す**
 
-`"access": "sampled"` / **`"view": "per_view"`** /
-**`"sampling": {"filter": "nearest", "address_mode": "repeat"}` を明示すること。**
+`"access": "sampled"` と **`"view": "per_view"`** を明示すること。
 
-**`nearest` にする理由を書いておく** —— このシェーダーのタップは
-`inTexCoord + 整数 * texelSize` であり、**構造上つねに入力テクセル中心にある。**
-そこでは linear は数学的に補間しないが、**実機では重みが
-`subTexelPrecisionBits`(Vulkan の下限 4 bit)に量子化されるため、
-補間器が UV を 1 ULP ずらすだけで隣のテクセルが 1/16 混ざる。**
-`nearest` は `floor(u)` を採るのでこの誤差を吸収する。
-**決定性の原則に沿った宣言であり、同時に受け入れ条件の厳密計算を成立させる。**
+**`sampling` を書かないこと。**既定は `linear` / `repeat` であり
+(`renderingpass.hpp:227-233` / `shaderresourceport.hpp:81-89`)、
+**本 WP は出荷物のサンプリング挙動を変えない。**
+`nearest` にする案は検討したが、**旧出力の baseline を持たないので
+非回帰を証明できない**ため採らない。
+linear のぶんの誤差は受け入れ条件側で device limit から導出する。
 
-**移行前後で blur の出力が linear と nearest で変わらないことを実測して報告すること。**
-変わるなら報告し、勝手に決めないこと。
-
-**`input` は残す**(port は `input` に在る resource しか指せず、グラフの辺は `input` が作る)。
+**`input` は残す**(port は `input` に在る resource しか指せず、辺は `input` が作る)。
 
 **3. bake をやめる**(上の 4 行)
 
-**4. 追随させるもの**
+**4. `FullscreenPassContainer::fragmentShaderForTesting(PassId)` を足す**
+
+既存の `inputSamplingForTesting(PassId)` と同じ形。
+**pass 名から引く global map を作らないこと** ——
+`ssao_blur_pass` は複数プロジェクトと複数 graph variant に現れるので一意にならない。
+呼び出し側が `RenderingPassId` / graph variant + pass 名から `CompiledPass` を選び、
+その `pass_id` を使うこと。
+
+**5. 追随させるもの**
 
 - `docs/color_migration_manifest.json` に旧 sampler / binding 名が残っていれば
 - **`test/fixtures/devstudio/example_frame_plan.json`** ——
   `projects/example` の config を変えると engine が publish する frame plan が変わる。
-  このファイルは studio テストの入力として読まれるだけで再生成も比較もされないので、
-  **食い違っても誰も検出しない**
+  **このファイルは studio テストの入力として読まれるだけで再生成も比較もされないので、
+  食い違っても誰も検出しない**
 
 #### 受け入れ条件
 
-##### 既存の 6 枚には触らない。生成器を分ける
+##### 刺激は決定的な test producer が作る。実 SSAO には頼らない
 
-**`writeWp338SsaoProject` と `wp338SsaoContract` を変更しないこと。**
+**`ssao_output` 相当を書くのは、テスト所有の決定的な fragment シェーダーとすること。**
+
+**理由**: 実 SSAO producer は `sin` / `cos` ベースの浮動小数点 noise を使う
+(`src/core/resources/ssao.frag:36`)。既存 fixture の distinct 数は実測で
+**flat 24 / XR sequential 7 / XR multiview 7,7 / cube 6,7,6,7,6,23 / planar 8,7** ——
+**cube の 3 層は境界値そのもの**で、device が変われば blur が完全に正しくても落ちる。
+
+**producer の要件:**
+
+- **層ごとに異なる既知の pattern を書くこと。**
+  これで**層の取り違えが検出できるようになる** ——
+  既存 fixture では `cube.r8` の layer 1 と layer 3 が
+  4096 バイト全一致なので、face 1↔3 の入れ替えは原理的に見えなかった
+- **測って報告すること**: 層ごとの distinct 数、隣接テクセルの最大差、
+  および下記「正しい核と変異核の分離」
+
+**実 `engine://ssao` を producer にした構成は、別の integration smoke として 1 本だけ残すこと**
+(移行が実配線を壊していないことの確認)。**そちらに箱平均の厳密検査を課さないこと。**
+
+##### 主たるオラクル: 同じレンダリングの中で 2 枚読み、関係を検査する
+
+**golden 画像を 1 枚も作らないこと。**
+**`test/golden/` に新しいディレクトリを作らないこと**(そこは `case.json` +
+`expected.png` の exact-set 契約である)。
+**`writeWp338SsaoProject` / `wp338SsaoContract` を変更しないこと。**
 **`test/fixtures/wp338_ssao/` の 6 枚を 1 バイトも変えないこと。**
+**`PELICAN_UPDATE_WP338_SSAO_GOLDEN=1` を立てないこと**(自己充足形で、
+立てると WP338 の 6 枚が移行後の出力で上書きされ比較は緑のまま通る)。
 
-**理由**: WP338 のハーネスは `xr_multiview` と `planar` で blur パスを意図的に刈り取り、
-`planar` では SSAO パスの vertex を `project://shaders/wp338_fullscreen` に差し替えている
-(`test/golden_harness.cpp:8420-8436` / `:8457-8483`)。
-**blur を戻すとその構成は別物になり、6 枚は「移行前の像」でなくなる。**
+**blur 用の生成器を新設すること。**
 
-**本 WP は blur 用の生成器を新設すること**(例 `writeWp339SsaoBlurProject`)。
-**「移行前に測る」対象は新生成器の構成であって、WP338 の 6 構成ではない。**
+1 回のレンダリングから producer 出力と blur 出力の 2 枚を読む
+(`render_target_overrides` は map なので `TRANSFER_SRC` を 2 つ与えられる)。
 
-##### 新しい golden 画像を 1 枚も作らないこと
+**構成ごと・層ごとに:**
 
-- **移行前の像が存在しない構成がある**(array 変種はコンパイルが通らない)
-- **`PELICAN_UPDATE_WP338_SSAO_GOLDEN=1` は「書いてから比べる」自己充足形**であり、
-  立てると WP338 の 6 枚も移行後の出力で上書きされ、比較は緑のまま通る
+1. **producer の層が互いに相異なること**(決定的 pattern なので構成的に真。assert すること)
+2. **`|blur − producer| > tol` の画素が全画素の 25% 以上**
+3. **`blur[layer]` が `producer[layer]` の 5×5 箱平均(repeat 巻き戻し)と
+   `tol` 以内で一致すること**
 
-**`test/golden/` に新しいディレクトリを作らないこと。**
-そこは `case.json` + `expected.png` の exact-set 契約であり
-(`test/golden/inventory.json` / `test/golden_inventory.py`)、生バイトは表現できない。
-**WP338 の `.r8` は `test/fixtures/wp338_ssao/` に移設済みである。**
+**`tol` は推測せず device から導出すること:**
 
-##### 主たるオラクル: 同じレンダリングの中で、blur と入力の関係を検査する
+```
+tol = 1 + ceil(maxNeighborDelta / 2^subTexelPrecisionBits)
+```
 
-**1 回のレンダリングから 2 枚読む** —— AO target と blur target。
-`render_target_overrides` は map なので `TRANSFER_SRC` を 2 つ与えられる
-(`featurecompose.cpp:1643-1691`。usage は**追記**であり置換ではない)。
+`1` は float 25 加算と `R8_UNORM` 丸めのぶん。
+第 2 項は **linear サンプリングの重みが `subTexelPrecisionBits` に量子化されるぶん**である
+(Vulkan の下限は 4 bit)。`maxNeighborDelta` は producer の実バイトから測る。
+**`VkPhysicalDeviceLimits::subTexelPrecisionBits` の実測値と、
+構成ごとに算出した `tol` を報告すること。**
 
-**構成ごと・層ごとに次を要求する:**
+**3 が証明しないことも書いておく** ——
+これは「同一パス内で消費した層と書き込んだ層が一致する」ことしか示さない。
+**producer と blur に同じ view→layer 置換が掛かった場合は検出できない。**
 
-1. **`ao` の distinct 値が 6 以上**(既存 fixture の実測は層あたり 6〜24)
-2. **`|blur − ao| > 1` の画素が全画素の 25% 以上**
-   (既存 fixture の実測は 45%〜97%。`blur != ao` という不等号だけでは
-   1 画素 1 LSB で満たされてしまい、恒等写像への退化を検出しない)
-3. **`blur[layer]` が `ao[layer]` の 5×5 箱平均(repeat 巻き戻し)と ±1 以内で一致すること**
+##### 半解像度構成 —— 否定対照を木の中に残す
 
-**3 が本 WP の中核である。**golden を要さずに次を同時に押さえる:
-読んだ先が本当に blur であること / 入力が本当に AO であること /
-タップ間隔が正しいこと(= `pelican_size_` が効いていること)。
+**producer と blur を描画解像度より小さくした構成を 1 つ、main family に作ること**
+(描画 64×64 に対して両方 32×32。`render_target_overrides` の `width` / `height`)。
 
-**`±1` の内訳を明記すること** —— シェーダーの float 累算(相対 1e-6 桁)と
-`R8_UNORM` の丸め。**`nearest` を宣言することでサブテクセル量子化の項が消える。**
-**±1 で合わないなら、緩めずに報告すること。**
+**同じ producer readback から CPU で 2 つの核を計算する:**
 
-**3 が証明しないことも書いておく** —— これは「同一パス内で消費した層と
-書き込んだ層が一致する」ことしか示さない。
-**AO と blur に同じ view→layer 置換が掛かった場合は検出できない。**
-**そして `test/fixtures/wp338_ssao/cube.r8` は layer 1 と layer 3 が
-4096 バイト全一致である(実測)** —— cube の face 1 と 3 の入れ替えは原理的に見えない。
-**層の取り違え検出を過大に主張しないこと。**
-
-##### 半解像度構成 —— ここに否定対照を木の中で残す
-
-**上の 3 は、入力 extent == 描画解像度 のあいだは
-`pelican_size_` を `render_resolution` に置き換えても通る。**
-既存 6 構成はすべてそうである。
-
-**したがって、AO target と blur target の両方を描画解像度より小さくした構成を 1 つ足すこと。**
-
-- **必ず main view family に作ること。**
-  `hybrid_v1`(または `projects/example`)の `ssao_output` / `ssao_blur` を
-  `render_target_overrides` の `width` / `height` で 32×32 にする
-- **`cube_capture` / `planar_reflection` の `resolution` を下げる形にしてはならない** ——
-  二次 family では `pelicanResolution.render_resolution` が
-  **その family 自身の raster extent に差し替えられ**(`src/core/vkcore/renderer.cpp:4644-4660`)、
-  変異が 1 ビットも結果を変えなくなる。しかも family が 2 つの extent にまたがると
-  `renderer.cpp:604-617` が名前付きで落ちる
-- **AO と blur を同じ extent にすること。**そろえれば 3 の厳密計算がそのまま使える
-
-**否定対照は同じ TEST_CASE の中に置くこと。手 patch にしないこと。**
-
-同じ AO readback から CPU で 2 つの核を計算する:
-
-- **正しい核**: タップ間隔 `1/ao_extent`(= 1/32)の 5×5 箱平均
+- **正しい核**: タップ間隔 `1/producer_extent`(= 1/32)の 5×5 箱平均
 - **変異核**: タップ間隔 `1/render_extent`(= 1/64)。
-  タップは入力テクセル空間で `i+0.5 ± k/2` に落ち、
-  **`nearest` のもとで軸ごと `{i-1, i, i, i+1, i+1}` の 3 タップ非対称核**になる
+  タップが半テクセル位置に落ちるので、linear のもとで軸ごとに重み付き 3 タップ核になる
 
-そして次を要求する:
+**要求:**
 
-- **`blur` が正しい核と ±1 以内で一致すること**
+- **`blur` が正しい核と `tol` 以内で一致すること**
 - **`blur` が変異核と一致しないこと**
-- **2 つの核どうしが、層ごとに ±1 を超えて異なる画素を持つこと** ——
-  **これを先に assert しないと否定対照が空振りする。**
-  両方の核は対称で、定数と 1 次勾配を厳密に保存する。
-  **差を生むのは 2 階微分(曲率・エッジ)であって非一様性ではない。**
-  「`ao` が一様でないから変異は検出される」は成り立たない
+- **2 つの核どうしが層ごとに `tol` を超えて異なる画素を持つこと。
+  これを先に assert しないと否定対照が空振りする** ——
+  両方の核は対称で定数と 1 次勾配を厳密に保存するので、
+  **差を生むのは 2 階微分であって非一様性ではない。**
+  **producer の pattern は、この分離が `tol` を十分上回るように選ぶこと。分離量を報告すること**
 
-**これで `pelican_size_` が効いていることの回帰ガードが、rebuild 無しで木に残る。**
+##### array 経路を実際に通すこと(逃げ道を塞ぐ)
 
-##### array accessor を実際に通すこと(逃げ道を塞ぐ)
+**移行後は `PELICAN_INPUT_n_LAYERED` はこのシェーダーに効かない**(位置束縛マクロを捨てるため)。
+array かどうかを決めるのは `resolveShaderResourceImageViewDimension` である。
+**define の有無を検査して条件を満たしたつもりにならないこと。**
 
-**「移行後はコンパイルが通る」だけでは足りない。**
-
-**訂正: 移行後、`PELICAN_INPUT_n_LAYERED` はこのシェーダーに効かない**
-(位置束縛マクロを捨てるので)。**array かどうかを決めるのは
-`resolveShaderResourceImageViewDimension` である。**
 逃げ道の実体は「vertex を `project://` に差し替えると
 `vulkanrendercompilerprogram.cpp:103-108` の候補登録から外れ、
 `view.execution` が multiview にならず、
 `renderingpassruntimecompiler.cpp:1727-1741` の consumer が `graphics_sequential` になって
 `two_d` に落ちる」である。
 
-**したがって次を要求する:**
-
-- **少なくとも 1 構成で、blur の port の生成 include が `sampler2DArray` を宣言し、
-  かつ対応する `ShaderResourceInterfaceBinding.image_view_dimension == two_d_array`
-  であることを検査すること**
+- **blur の port の生成 include が `sampler2DArray` を宣言し、
+  対応する `ShaderResourceInterfaceBinding.image_view_dimension == two_d_array`
+  であることを検査すること**(範囲 4 の getter を使う)
 - **その構成で blur の vertex を `engine://fullscreen` のまま維持すること**
-- **その構成でも上の 3(箱平均)が層ごとに成立すること**
+- **その構成でも箱平均が層ごとに成立すること**
 
-**pass 名から shader bundle を引く手段が production に無い**
-(`engine://` の GLSL から作られた bundle は名前を持たない)。
-**`FullscreenPassContainer` か `RenderingPassContainer` に
-pass 名 → `ShaderBundleId` の `*ForTesting` getter を足すこと。範囲に含む。**
+##### 構成の一覧(実装者が決めないこと)
 
-##### `family_2d_array` 経路も 1 つ通すこと
+| # | 構成 | 何の証拠か |
+|---|---|---|
+| 1 | flat(main family、64×64) | 基準 |
+| 2 | **flat 半解像度**(producer / blur を 32×32) | **サイズ問い合わせの否定対照** |
+| 3 | XR sequential(2 view) | 出荷配線の非回帰 |
+| 4 | **XR multiview(2 layer)** | **array 経路。移行前はコンパイルが通らないはず** |
+| 5 | cube(6 face) | 出荷配線の非回帰。層ごとに異なる pattern |
+| 6 | planar(2 view) | 出荷配線の非回帰 |
+| 7 | **cross-family**(二次 family の target を main family の blur に繋ぐ) | **`family_2d_array` 分岐** |
 
-二次 family の target を main family の blur パスの `input` に繋ぐ構成を 1 つ作り:
+**7 について:**
 
-- **`view: per_view` のままなら名前付きで落ちること。**
-  期待する文言は
+- **`view: per_view` のままなら名前付きで落ちること。**期待文言は
   `must declare family_array to consume a producer-owned view-family array`
   (`shaderresourceinterface.cpp:578-585`)
 - **`family_array` を宣言すれば通り、`image_view_dimension == two_d_array` になること**
 - **箱平均は producer の層 0 についてのみ要求する。**
-  producer の extent と blur target の extent を
-  `render_target_overrides` の `width` / `height` で一致させたうえで検査すること。
-  **残りの層は本 WP の対象外である** ——
-  `pelican_view_index()` は producer family の層ではないので、意味が違う。記録に残すこと
+  producer と blur の extent を `width` / `height` で一致させたうえで検査すること。
+  **残りの層は本 WP の対象外**(`pelican_view_index()` は producer family の層ではない)
 
 ##### 移行前に測って報告すること
 
-**着手して最初に、新生成器の全構成に対して上の 1〜3 を移行前のビルドで走らせ、
-どれが通り、どれがコンパイルで落ちるかを報告すること。落ちたものはエラーを逐語で記録すること。**
+**着手して最初に、上記 7 構成に対して移行前のビルドでオラクルを走らせ、
+どれが通り、どれがコンパイルで落ちるかを報告すること。落ちたものはエラーを逐語で。**
 
 - **移行前に通った構成は、移行後も通ること**
 - **移行前に落ちた構成は、移行後に通ること**
@@ -10109,8 +10089,10 @@ pass 名 → `ShaderBundleId` の `*ForTesting` getter を足すこと。範囲�
   **使い捨ての clean worktree と新規 build ディレクトリ**で、
   生成器の graph(`build.ninja` / `*.vcxproj`)に
   `ssao_blur.frag.spv` を output とする custom-command edge が 0 件であること。
-  **`embed_shader` は `.spv` を source tree へ出力し `src/core/resources/.gitignore:1` の
-  `*.spv` で無視されるので、通常の作業木での存在検査は無効である**
+  **`embed_shader` は source tree へ出力し `src/core/resources/.gitignore:1` が無視するので、
+  通常の作業木での存在検査は無効である**
+- **4 パスの解決済み sampler が `linear` / `repeat` のままであることを
+  `inputSamplingForTesting(PassId)` で検査すること**(出荷挙動を変えていない証拠)
 - **出荷 4 プロジェクトと `pelican project init`**
 - **`RUNTIME_SHADER_COMPILER` の ON / OFF 両構成でビルドが通り、テストが緑**
 - **`uv run tools/doclink.py check` が緑**
@@ -10130,11 +10112,6 @@ pass 名 → `ShaderBundleId` の `*ForTesting` getter を足すこと。範囲�
 - **`1.0 / vec2(pelican_size_<port>())` という形は新しくない** ——
   出荷中の `standard_prefilter.comp` が既に踏んでいる(しかも `view: family_array`)。
   **新しいのは graphics(fragment)パスで踏むことである**
-- **既存 6 構成の AO 像は 4 種類しかない**(実測):
-  `example_flat.r8` と `hybrid_flat.r8` はバイト完全一致、
-  `xr_sequential.r8` は `xr_multiview.r8` の layer 1 とバイト完全一致。
-  **構成の数を被覆の広さとして数えないこと**
-- **本 WP は「黙って壊れる」経路を 1 つ開く。閉じるのは WP340 である**(下記)
 - **`agent/wp336`(未マージ、`31f0971`)は同じ `ssao_blur.frag` に
   `//! pelican.fullscreen v1` ヘッダを載せ、ソケット名 `ssaoInput` を宣言している。**
   本 WP はその宣言を削除し、名前を JSON 側の port 名へ移す。
@@ -10145,37 +10122,46 @@ pass 名 → `ShaderBundleId` の `*ForTesting` getter を足すこと。範囲�
 `fullscreen.frag` / 既定値・constant socket の機構 /
 `input` を `resource_ports` に畳む / 順序 / compute / WP211 /
 positional fallback を足す / binding allocator と descriptor writer の変更 /
-**input attachment の罠を閉じること(WP340)**
+**input attachment の罠を閉じること(WP340)** /
+**`pelican_size_<port>()` を使ったことをテストで縛ること**(生成コードが同一なので挙動差が 0)/
+**サンプリング既定値を `nearest` に変えること**(baseline が無く非回帰を証明できない)
 
 #### 既知の帰結
 
 **`engine://ssao_blur` は runtime shader compiler OFF で解決しなくなる。**
 `ssao` と同じ帰結であり、OFF 対応は WP211 の主題である。
 
-**本 WP は fail-fast を 1 点後退させる。WP340 が閉じる。**
+**訂正: input attachment の silent path を開けたのは本 WP ではなく WP338 である。**
 
 位置束縛マクロ時代、`ssao_blur` を input attachment に繋ぐ配線は
 コンパイルエラーで弾かれていた(`subpassInput` に `textureSize` が無い)。
-移行するとその防壁が消え、**`pelican_sample_` が uv を捨て、
-`pelican_size_` が描画解像度を返すので、5×5 が黙って同一ピクセル 25 回になる。**
+移行するとその防壁が消え、`pelican_sample_` が uv を捨て
+`pelican_size_` が描画解像度を返すので、5×5 が黙って同一ピクセル 25 回になる。
 **しかも desktop と tile-based で別の絵になる(決定性の破れ)。**
 
+**ただし `ssao.frag` は WP338 で既に同じ状態にある**(生成 include を使い、
+`pelican_sample_world(offset.xy, ...)` で再投影座標を読む)。
+**したがってこの経路は `1b20452` の時点で main に入っている。本 WP は 1 本広げるだけである。**
+
 **`access: "sampled"` はこれを止めない** ——
-ランタイムコンパイラは `local_reads[input]` が立っていれば
-port の `access` を読まずに descriptor を input attachment に落とす
+`local_reads[input]` が立てば port の `access` を読まずに input attachment に落ちる
 (`renderingpassruntimecompiler.cpp:1703` / `:1710-1712`)。
 
 **未宣言 read の既定は 2 通りある**(`logicalframegraphadapter.cpp:375-388`)——
 通常は `arbitrary` だが、**その resource が同じパスの `load_op: load` の
 attachment でもある場合は `same_pixel` になる。**
-つまり `input_footprints` を一切書かなくても罠に落ちる配線が存在する。
 
-**今日、出荷構成のどれもこの状態にない**(レビューで実測):
-`input_footprints` の `same_pixel` は 0 件、
-自分の `color_load_op: "load"` attachment を `input` にも持つ fullscreen / raster パスも 0 件。
+**今日、出荷構成のどれもこの状態にない**(実測):
+出荷 JSON の `input_footprints` は **0 件**、`same_pixel` も **0 件**、
+自分の `color_load_op: "load"` attachment を `input` にも持つ
+fullscreen / raster パスも **0 件**。
 
-**本 WP の後、pass 入力のサイズを問い合わせる位置束縛シェーダーは 1 本も残らない。**
-**ただし「サイズを手書きで問い合わせるシェーダー」は 5 本残る** ——
+**WP340 が閉じる。WP340 は本 WP に依存しない**(既存 resource port 経路への規則であり、
+blur の移行を必要としない)。**`fullscreen.frag` の移行より前に入れること** ——
+あれは gbuffer の attachment を読むパスであり、tile-local 融合の現実的な候補である。
+
+**本 WP の後、位置束縛マクロを使いながら pass 入力のサイズを問い合わせる
+シェーダーは 1 本も残らない。ただし「サイズを手書きで問い合わせるシェーダー」は 5 本残る** ——
 `layout(set = PELICAN_SET_PASS_INPUT, binding = N) uniform sampler2D` を手書きする第三の旧流儀:
 
 ```
@@ -10195,78 +10181,141 @@ src/core/resources/taa_resolve.frag:19,33
 
 ---
 
-### WP340: sampled と書いた入力が黙って input attachment になる経路を閉じる
+### WP340: 推論された `same_pixel` で tile-local に落ちる経路を閉じる(第 2 版)
 
-**WP339 が開ける穴を閉じる。§4 規則 11 の上段。仕様 + コード。**
+**§4 規則 11 の上段。仕様 + コード。**
 
-**`fullscreen.frag` の移行(次の大物)より前に入れること。**
-あれは gbuffer の attachment を読むパスであり、tile-local 融合の現実的な候補である。
+**WP339 に依存しない。`fullscreen.frag` の移行より前に入れること。**
+
+**初版は codex の仕様レビューで破綻した。**
+「`input_footprints` に**明示された** `same_pixel` かどうか」で分岐せよと書いたが、
+**その情報は指定した検査地点に届かない。**以下は訂正版である。
+
+#### 何が起きているか
+
+生成 include の image port が input attachment に解決されると、
+`pelican_sample_<port>` は **uv を捨て**、`pelican_size_<port>` は**描画解像度を返す。**
+`ssao_blur` の 5×5 は黙って同一ピクセル 25 回になり、
+**desktop と tile-based で別の絵が出る(決定性の破れ)。**
+
+**`access: "sampled"` はこれを止めない** ——
+`local_reads[input]` が立てば port の `access` を読まずに input attachment を選ぶ
+(`renderingpassruntimecompiler.cpp:1703` / `:1710-1712`)。
+
+**そして未宣言 read の既定は 2 通りある**(`logicalframegraphadapter.cpp:375`)——
+通常は `arbitrary` だが、**同じパスが `load_op: load` で持つ attachment を
+`input` にも書くと、`input_footprints` を書かなくても `same_pixel` になる。**
+
+#### 初版が破綻した理由
+
+**「明示宣言だったか」という provenance が、検査地点まで届いていない。**
+
+1. `input_footprints` は logical graph parser が読む
+   (`frameplanner.cpp:183` / `:747`)
+2. 未宣言の load attachment は `same_pixel` に変換される
+   (`logicalframegraphadapter.cpp:375`)
+3. **`LogicalResourceUse` は footprint の値しか持たない。provenance は無い**
+   (`logicalrendergraph.hpp:125`)
+4. runtime の `PassDefinition` にも明示性のフィールドは無い(`renderingpass.hpp:385`)
+5. `VulkanPhysicalScopePlan` は `local_reads` の resource 名しか持たない
+   (`targetrenderplanning.hpp:248` / `:478`)
+6. 最終地点で得られるのは attachment index から作った `bool local_reads[]` だけ
+   (`renderingpassruntimecompiler.cpp:1062`)
+
+**現在の型のままでは「明示 `same_pixel`」と「load から推論された `same_pixel`」は完全に同値である。**
+
+さらに、初版が要求した手組み `VulkanTargetPlan` テストは
+**JSON parser / 既定値付与 / logical graph / target planner をすべて迂回する。**
+テスト専用フィールドを立てれば通るので、本番 JSON からその値が届かなくても検出できない。
+
+#### purgeability の反例(初版が未決定のまま残していた)
+
+- `widest_read` は**全 use の最大**である(`targetrenderplanning.cpp:1636`)
+- `widest_read == same_pixel` なら tile-local 候補になり得る(`:2605`)
+- この eligibility は `sampled_access` を除外していない(`:2612`)
+
+**構成:**
+
+1. pass A が single-sample・`allow_tile_local` の resource `R` を書く
+2. fullscreen pass B が `R` を `input` と resource port に持ち、
+   同時に `R` を `color_load_op: load` で出力する。`input_footprints` は省略
+3. optional feature C に、`R` を `arbitrary` で読む別 pass を置く
+
+**C あり** → `widest_read == arbitrary` → materialized。エラーなし。
+**C を purge** → B の推論された `same_pixel` だけが残り、tile-local が選ばれ得る。
+
+**つまり「feature を外したら残存構成が新しく落ちる」という purgeability 違反である。**
+**本 WP はこれを未決定のまま残さない。**
 
 #### やること
 
-**`compileFullscreenResourceInterface`(fullscreen / generic raster 経路)だけに規則を置く:**
+**1. provenance を通す**
 
-> **`resource_ports` の image port が input attachment に解決されたとき、
-> そのパスがその resource に対して `input_footprints` で `same_pixel` を
-> 明示的に宣言していなければ、名前付きで落とす。**
+`LogicalReadFootprint`(または use)に **`authored` を足し、
+frameplanner → logical graph → target plan → runtime pass まで保持する。**
 
-エラーには pass 名・port 名・resource 名・**なぜそうなったか(local read)**を含めること。
+**2. eligibility を明示宣言だけに与える**
 
-**「`access: "sampled"` と宣言したら落とす」と書いてはならない** ——
-fullscreen / generic raster の image port は
-**パーサが既に effective access を sampled に強制している**ので、その条件は恒真であり、
-**`resource_ports` を持つ fullscreen パスから tile-local 融合を無条件に奪うことになる。**
-これは検査の追加ではなく機能の削除である。
+**fullscreen / generic raster の resource port については、
+tile-local eligibility を `authored == true` の `same_pixel` にだけ与える。**
+**推論された `same_pixel` は materialized fallback にする。**
 
-**明示宣言を鍵にすること。**作者が意図して tile-local を選んだ場合(`same_pixel` 宣言)は通り、
-**宣言なしで黙って input attachment に落ちる場合だけ落ちる。**
+**これで purgeability の反例は消える** —— feature C を外しても
+B の推論 `same_pixel` は eligibility を生まないので、materialized のままである。
+
+**3. runtime 側は不変条件の再検査にする**
+
+`compileFullscreenResourceInterface` では、
+**resource port が input attachment に解決されたのに `authored` な `same_pixel` が無い**なら、
+**planner と runtime の不整合として名前付きで落とす。**
+pass 名・port 名・resource 名・なぜそうなったかを含めること。
 
 #### やらないこと
 
 **material 経路に触れないこと。**
-material の image port は sampled を強制されたうえで、
-local read scope では同じ port が input attachment に解決されるのが**正しい挙動**として
-WP220 で実装・テストされている。
-**共通ヘルパに規則を入れると出荷パスが落ちる。**
-`materialpassinfojsonparser` / `surfacecompiler` / `renderingpasscontainer` の
-local-read ABI を変更しないこと。
+material parser は footprint を binding 自身に保持し、
+input attachment 時に runtime が `same_pixel` を検査している
+(`materialpassinfojsonparser.cpp:851` / `materialcontainer.cpp:4504`)。
+**WP220 の sampled / local-read 両 ABI 契約はそのまま保つこと。**
+`surfacecompiler` / `renderingpasscontainer` の local-read ABI も変更しないこと。
 
 `input_footprints` の語彙そのものの整理もしないこと。
 
 #### 受け入れ条件
 
+- **実 JSON から compose → lower → compile する end-to-end テストを 3 構成で書くこと**
+  (手組み plan テストは**代用にしない**。parser と既定値付与を迂回するため):
+  1. **footprint 省略 + tile-local 候補** → materialized になること
+  2. **明示 `same_pixel`** → tile-local が選ばれること(**機能を削っていない証拠**)
+  3. **non-local materialized plan** → `combined_image_sampler` に解決されること
 - **否定対照を同じテストの中に置くこと**(§4 規約 10)——
-  `compileRenderingPassRuntime` に
-  `representation = tile_local_attachment` と `scopes[].local_reads` を持つ
-  手組みの `VulkanTargetPlan` を渡す単体テスト
-  (先例: `test/renderingpass_helpers_test.cpp:4130-4250`)。
-  **肯定側では同じテストの中で、同じ port が local read でない plan では
-  `combined_image_sampler` に解決されることを、
-  実際の `ShaderResourceInterfaceBinding.descriptor` で検査すること**
-- **`same_pixel` を明示宣言した場合は通ること**(機能を削っていないことの証拠)
-- **出荷構成のどれもこのエラーに当たらないことを、config 由来の性質で機械的に示すこと** ——
-  tile-local は物理プロファイル依存の候補プランなので、
-  「CI の GPU で落ちなかった」は根拠にならない。次の 2 つを `rg` で示すこと:
-  - 出荷 JSON に `input_footprints` の `same_pixel` が 0 件
+  同じ port が local read でない plan では
+  `ShaderResourceInterfaceBinding.descriptor == combined_image_sampler` になることを
+  **実際の解決値**で検査すること
+- **purgeability を実際に測ること** ——
+  上の反例構成(optional broad-reader feature の ON / OFF)を実 JSON で組み、
+  **OFF でも新エラーにならず、materialized のままであること**を同じテストで検査する
+- **runtime の不変条件エラーが到達不能でないことを示すこと** ——
+  planner を迂回した手組み plan で 1 回だけ発火させ、文言を検査する
+- **出荷構成のどれもこのエラーに当たらないことを config 由来の性質で機械的に示すこと**
+  (tile-local は物理プロファイル依存の候補プランなので、
+  「CI の GPU で落ちなかった」は根拠にならない):
+  - 出荷 JSON の `input_footprints` が **0 件**(実測済み)
   - 自分の `color_load_op: "load"` attachment を `input` にも持つ
-    fullscreen / raster パスが 0 件
-- **purgeability を下げないこと。**
-  `widest_read` は**全読者の最大**なので、
-  **広い footprint を持つ読者を含む feature を外すと、同じ resource が tile-local に落ちうる。**
-  **feature を外したことで新エラーが出る構成が作れないか確かめ、
-  作れるならその場合の挙動を決めて書くこと**
+    fullscreen / raster パスが **0 件**(実測済み)
 - doclink 緑 / 出荷 4 プロジェクト / `pelican project init`
 
 #### 既知の帰結
 
-**fullscreen 経路では、`resource_ports` を持つパスは
+**fullscreen 経路では、resource port を持つパスは
 `same_pixel` を明示しないかぎり tile-local 融合の対象外になる。**
-**今日この融合に載っている出荷パスは 0 件である**(上の実測)。
+**今日この融合に載っている出荷パスは 0 件である。**
+
 **次に `fullscreen.frag` を port 化するとき、deferred lighting の gbuffer 融合を
 望むなら `same_pixel` を明示的に書くことになる。**
 推論された既定に頼るのをやめ、宣言に移すということである。
 
-依存: WP339。見積: 小。
+依存: 無し。見積: 中(provenance を 4 層に通すため、初版の「小」は誤りだった)。
 
 ### XR2b 分割 WP の逐語条件と所有権
 
