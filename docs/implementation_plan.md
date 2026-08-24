@@ -10181,6 +10181,64 @@ src/core/resources/taa_resolve.frag:19,33
 
 ---
 
+#### コードレビュー(codex、`f4ae961` 直後)の仕分け
+
+**受理不可 6 件。うち 2 件は Claude 側で算術を再現して確認した。**
+
+**直したもの(WP339a)** —— production は触らない。刺激と許容差だけ:
+
+- **周期 2 の一次元刺激では 5×5 核を証明できない。**
+  producer が x のみで変化し y 不変なので、**タップ間隔を 3 倍(任意の奇数倍)にしても、
+  y タップを全部捨てても、7 本の関係オラクルが正しい核と同一値を出す。**
+  parity の多重集合が一致するためである。layer 0 で正しい核・3 倍間隔とも `[97,141]`
+- **許容差が cube face の取り違えを通す。**
+  `tol` を全 layer の最大隣接差から 1 つだけ算出しているため、
+  `subTexelPrecisionBits <= 6` で `tol >= 5` になる。
+  一方 face 0 の箱平均は `[97,141]`、face 2 は `[101,141]` で**最大差 4**。
+  この機は bits=8(`tol=2`)なので隠れているだけである。
+  **Vulkan core の下限は 4 bit。**
+  加えて一般の 2D 刺激では bilinear の α/β が独立に量子化されるので、
+  上限は `Dx/2^b + Dy/2^b` であり、現在の一項式は 2D の上限になっていない
+
+**台帳に残すもの(直さない)**:
+
+- **input attachment 化すると blur が無音で恒等写像になる。**
+  `input_footprints: same_pixel` を 1 行足すか、
+  `ssao_output` を `color_load_op: "load"` の出力兼入力にすると到達する。
+  **WP340 の主題である。**codex の提案は「`ssaoInput` の必要 footprint を
+  `neighborhood/radius=2` として production contract に持たせ、
+  input attachment 化を名前付きで拒否する」——
+  **WP340 の provenance 案より、シェーダー側が必要な footprint を宣言するほうが素直かもしれない。
+  WP340 着手時にどちらを採るか決めること**
+- **8 本のテストは「生成 include を実際に使ったこと」を証明しない。**
+  `PELICAN_DECLARE_INPUT_0(pelican_resource_ssaoInput)` と
+  `textureSize(pelican_resource_ssaoInput, 0).xy` に書き換えると、
+  reflection の名前・型・次元が一致し、virtual include は
+  **実際に include されたかに関係なく bundle に保存される**(`shaderlibrary.cpp:335`)ので全部通る。
+  **挙動差は 0**(生成コードと同一の値になる)だが、
+  「シェーダーが binding を書かない」という性質そのものは守られていない。
+  塞ぐには ShaderCompiler が**実際に解決・消費した** virtual include を記録する必要があり、
+  **挙動差 0 の性質を守るための engine 改修としては費用が見合わない**
+- **fixture をテスト側が二系統で再構成している。**
+  `devstudio_frameplan_test.cpp:48`/`:108` の `capturedResponse()` が
+  raw fixture の `runtime_resolution` を上書きし、
+  graph test 7 本も `exampleFramePlan(true)` の値で上書きする。
+  **raw fixture の runtime extent を壊しても通る。**
+  WP339 が炙り出した既存のテスト設計問題であり、本 WP の範囲ではない
+- **port を持たない外部 config が汎用のシェーダーコンパイルエラーで落ちる。**
+  `engine://ssao_blur` はマニュアル記載の公開同梱シェーダーである
+  (`docs/manual/06_rendering.md:350`)。**WP338 の `engine://ssao` と同型。**
+  port 欠落を示す名前付き移行エラーが要る。**2 本まとめて別 WP で扱う**
+- **`RUNTIME_SHADER_COMPILER=OFF` の「8 本が緑」は実質 0 件だった** ——
+  `test/CMakeLists.txt:96` が OFF 時に CTest 登録前に return するため
+
+**fixture の意味差は「追加だけ」ではなかった**(36 件)——
+`usage` 追加 21 / `runtime_resolution` 追加 1 / `intent: automatic→sampled` 3 /
+`sampled_access: false→true` 3 / 派生 fingerprint 8。
+sampled 化は `gbuffer_normal` / `gbuffer_worldpos`(WP338)と `ssao_output`(WP339)で、
+**port を足したことの正しい帰結である。**nodes / barriers / extent に意味差は無い。
+---
+
 ### WP340: 推論された `same_pixel` で tile-local に落ちる経路を閉じる(第 2 版)
 
 **§4 規則 11 の上段。仕様 + コード。**
