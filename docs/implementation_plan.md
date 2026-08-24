@@ -10375,6 +10375,203 @@ input attachment 時に runtime が `same_pixel` を検査している
 
 依存: 無し。見積: 中(provenance を 4 層に通すため、初版の「小」は誤りだった)。
 
+### WP341: Frame Plan のノードを畳んで、中に入れるようにする
+
+**§4 規則 11 の下段(studio 内で閉じる・読み取りのみ・表示だけ)。コードレビューのみ。**
+**engine を一切変更しない。**
+
+#### 目的
+
+**合成が展開したノード群を 1 個のノードとして畳み、ダブルクリックで中に入って見られるようにする。**
+Blender のグループノードと同じ形である。
+
+#### 先に測った事実(再調査不要)
+
+**1. この機能は一度作られて、削除されている。**
+
+`a460471`(2026-08-18、「view a target and its immediate neighbourhood instead of the whole graph」)が
+`GroupDefinition` / `VisibleEntity` / `discoverGroups()` / `entityPath()` / `addEntityLabel()` を
+丸ごと落とした。**残骸が残っている:**
+
+```
+frameplangraphics.hpp:47,51    FramePlanGroupItem / FramePlanGroupLabelItem   誰も作らない
+frameplangraphics.cpp:715,1048 pelicanCollapsedGroups に常に空を書く
+frameplangraphics.cpp:891      FramePlanInternalEdgeRecordsRole に常に空を書く
+frameplangraphics.cpp:36,38    ColumnsPerRow / WrapRowHeight                  参照 0
+devstudio_frameplan_graph_test.cpp:1034-1035  「グループ item が空であること」を検査している
+```
+
+**テストが「この機能が存在しないこと」を検査している。**
+
+**旧実装には無かったもの**: ユーザーが畳む/開く操作、中に入る操作。
+**そして今は `mousePressEvent` / `mouseDoubleClickEvent` / `contextMenuEvent` が
+どこにも無く、`wheelEvent` のズームだけである。操作の入口ごと新設になる。**
+
+**2. 辺の付け替えは既存機構でほぼ足りる。**
+
+- **edge は幾何を一切持たない。**両端はノード名(`FramePlanFromNameRole` / `ToNameRole`)で、
+  描画のたびに両端 item の `sceneBoundingRect()` から計算する
+- `bundles` は `(from, to)` キーの map なので、
+  **端点をグループ名に書き換えるだけで並行 edge が 1 本に畳まれる**
+- **`from == to` になった内部 edge は 918 行で既に捨てられている**
+- `dependencyLabel` の `x N` 表記も既にある
+- 制約: `findNodeItem()` が `kind == "node"` でしか探さない。
+  グループ枠に `"node"` を名乗らせるか、この関数を広げるか
+
+**3. 配置は毎回再計算される。ただし穴が 2 つある。**
+
+- 座標はどこにも保存されず `populate()` のたびに全再計算。
+  列は `subtreeNodeColumns()` が `model.dependencies` 上で最長路緩和して自前計算する
+  (`node.level` は使えないとコメントで明示的に却下されている)
+- **穴 (a)**: ドラッグされたノードは `session_node_positions_` に入り、
+  **この map は `resetGraph()` でも `populate()` でも一度もクリアされない。
+  一度動かしたノードは永久に固定される。**
+- **穴 (b)**: 合成したグループ名は `model.dependencies` に存在しないので、
+  現状の `subtreeNodeColumns()` では**列を割り当てられない**
+
+**4. グループの単位は今日 `provider_feature` しか無い。ただしそれは代用である。**
+
+**本来の単位は subgraph replacement の region である。**
+`spliceReplacement`(`src/project/subgraphreplacementregistry.cpp:783`)が
+M ノードを落として N ノード(1..256)を挿す、リポジトリで唯一グラフのノード数を変える経路で、
+設計文書が「1→N fullscreen 展開」と名指しして済としている。
+**だが `regions` は frame plan の `nodes[]` に出ていない** ——
+`framePlanToJson` が出す 18 フィールドに無く、region は logical graph のノード /
+physical の lowering graph / physical scope にしか存在しない。
+**そして出荷 JSON での subgraph replacement 使用は 0 件で、組み込み provider は恒等である。**
+
+したがって本 WP は `provider_feature` を単位にする。**ただし単位の決定を 1 関数に閉じ込め、
+region が frame plan に出た時点で差し替えられる形にすること。**
+
+**5. 出荷 4 プロジェクトでは、既定で畳めるグループがほぼ無い。**
+
+参照している feature は全部 N=1 か 0 である
+(animgraph_demo = shadow_directional / sky_ambient / ui 各 1、example = ui 1、
+sprite_demo = sprite 0、vrm_xr_demo = 空)。
+**N≥2 になるのは:**
+
+- `cube_capture` を足すと 8 ノード / `planar_reflection` を足すと 14 ノード
+  (**両方とも凸であることを実測済み**)
+- **DevStudio が player を起動するときは常に `editor.json` overlay が付き、2 ノードになる**
+
+**落とし穴**: **overlay が展開した 2 ノードの `provider_feature` は
+`gizmo` / `picking` であって `editor` ではない。**
+provenance でグループを作ると**1 個の overlay が 2 グループに割れる。**
+これは仕様として受け入れる(feature 単位でのグループ化として正しい)。
+
+**6. devstudio は同名ノードを構造的に拒否する**(`frameplanmodel.cpp:581-584`)。
+グループ名が既存ノード名と衝突しないことを保証すること。
+
+#### やること
+
+**1. グループの単位を 1 関数に閉じる**
+
+`provider_feature` が非空のノードを、その値ごとに束ねる。
+**`provider_feature` を持たないノードはグループを作らない**(`source` では束ねないこと ——
+`project` で束ねると利用者が自分で書いたパスが 1 個に消える)。
+
+**2. 畳めるかを判定する。畳めないグループは畳まない**
+
+**グループ `S` が畳めるのは、`S` から出て `S` に戻る経路が無いとき(凸)に限る。**
+そうでない集合を 1 ノードにすると、商グラフに循環ができて順序について嘘をつく。
+
+**凸でないグループは展開のまま表示し、その理由を UI に出すこと。**
+黙って畳まないのは不可(fail-fast)。
+
+**3. 畳んだ表示**
+
+- グループ 1 個 = 1 個のノード item。**中のノード item は作らない**
+- 辺は端点をグループ名に書き換える(並行 edge の畳み込みと自己辺の除去は既存機構が行う)
+- **列の割り当て**: `subtreeNodeColumns()` はグループ名を知らない。
+  **グループの列 = メンバの列の最小値**とするなど、決め方を明示して実装すること
+
+**4. 中に入る / 出る**
+
+- **ダブルクリックで入る。**入ると**そのグループのメンバだけ**を表示する
+- **境界を跨ぐ辺は境界スタブとして表示する**(外の何に繋がっているかが分かること)
+- **出る手段を 2 つ用意する**: パンくず(現在のスコープを表示し、クリックで戻る)と `Esc`
+- **入れ子は本 WP では作らない**(今日の単位は 1 段しかない)
+
+**5. 状態**
+
+- 畳んだグループの集合と、現在のスコープを持つ
+- **既存の `pelicanCollapsedGroups` プロパティを使うこと**(常に空を書いている箇所を実装で置き換える)
+- **frame plan の更新をまたいで保つこと。**
+  更新後に消えたグループの状態は捨てること(孤児を残さない)
+
+**6. 残骸を片付ける**
+
+- `ColumnsPerRow` / `WrapRowHeight` を削除する(参照 0)
+- `FramePlanGroupItem` / `FramePlanGroupLabelItem` / `FramePlanInternalEdgeRecordsRole` は
+  **実装で使うか、使わないなら削除する。**空を書き続ける形を残さないこと
+- `devstudio_frameplan_graph_test.cpp:1034-1035` の
+  「グループ item が空であること」の検査を、実際の期待に置き換える
+
+**7. `session_node_positions_` のクリア**
+
+`resetGraph()` でクリアすること。
+**今日は一度ドラッグしたノードが永久に固定される。**
+畳み/展開でノード集合が変わるので、放置すると配置が壊れる。
+
+#### 受け入れ条件
+
+**否定対照を同じテストの中に置くこと**(§4 規約 10):
+
+- **畳む前**: メンバのノード item が `N` 個存在し、グループ item は 0 個
+- **畳んだ後**: メンバのノード item が 0 個、グループ item がちょうど 1 個
+- **同じテストの中で両方を実行し、item の実際の集合を比較すること。**
+  「グループ item が 1 個ある」だけでは、メンバが消えたことを検査していない
+
+**辺の正しさ**:
+
+- **畳む前と畳んだ後で、到達可能性が商グラフとして一致すること。**
+  外部ノード `u` からグループ `S` に辺があったなら、畳んだ後 `u → S` の辺がちょうど 1 本あること
+- **内部辺(`S` の中で閉じる辺)が畳んだ後に 0 本であること**
+- **並行辺が 1 本に畳まれ、`x N` 表記が付くこと**
+
+**凸性**:
+
+- **凸でないグループを含む frame plan を fixture で作り、それが畳まれないこと**、
+  かつ**理由が UI に出ること**を検査する。
+  実データで凸でない実例が作れないなら、**手組みの `FramePlanModel` で作ること**
+
+**スコープ**:
+
+- 入ると**メンバだけ**が表示され、外のノードが 0 個であること
+- **境界スタブが、外の実際の接続先の数だけ存在すること**
+- `Esc` とパンくずの両方で出られること
+- **出たあと、入る前と同じ item 集合に戻ること**
+
+**状態の保持**:
+
+- frame plan を更新しても畳んだ集合が保たれること
+- **更新で消えたグループの状態が捨てられること**(`pelicanCollapsedGroups` に孤児が残らない)
+
+**そのほか**:
+
+- **`session_node_positions_` が `resetGraph()` でクリアされること**を検査する
+- **`ColumnsPerRow` / `WrapRowHeight` がリポジトリから消えていること**
+- **`SKIP_DEVSTUDIO=ON` でビルドが通ること**
+- `uv run tools/doclink.py check` が緑
+
+#### やらないこと
+
+- **engine を変更しないこと。**`regions` を frame plan に出すのは別 WP(engine 側 = 上段)
+- 入れ子のグループ
+- グループの手動作成(利用者が任意のノードを選んで囲む)
+- subgraph replacement provider を書くこと
+- ノード配置アルゴリズムの作り替え
+
+#### 次
+
+**`regions` を frame plan の `nodes[]` に出す**(engine 側、§4 規則 11 の中段)。
+それが入ると本 WP の「単位を決める 1 関数」を region に差し替えられ、
+**subgraph replacement が展開した本物の 1→N がグループとして見えるようになる。**
+`for` はその provider として実装される。
+
+依存: 無し。見積: 中。
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
