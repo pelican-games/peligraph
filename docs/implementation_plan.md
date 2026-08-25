@@ -10647,6 +10647,124 @@ BFS に上限も打ち切りも無く、自己ループ・孤立ノード・外�
   **その経路でドラッグ位置が失われる。**WP341 が明示的に要求した挙動である
 ---
 
+### WP343: 作者が書いた region でグループを作る
+
+**§4 規則 11 の下段(studio 内で閉じる・読み取りのみ・表示だけ)。コードレビューのみ。**
+**engine を一切変更しない。WP341 の「単位を決める 1 関数」を差し替えるだけである。**
+
+#### 先に測った事実(再調査不要)
+
+**1. engine 変更は要らない。データは既に studio まで届いている。**
+
+```
+physical_target_plan.lowering_graph.nodes    30 件(example)
+frame plan の nodes と名前が一致              30 / 30
+各ノードが regions を持つ
+studio は既にパース済み                       frameplanmodel.cpp:800 → FramePlanLoweringNode::regions
+```
+
+**`framePlanToJson` の 18 フィールドに `regions` が無い**のは事実だが、
+**lowering graph 側に在り、名前で 1:1 に突き合わせられる。**
+`FramePlanPhysicalScope` にも regions が在る(`frameplanmodel.cpp:829`)。
+
+**2. `regions` は作者が書ける。今日から。**
+
+`parseOptionalRegionTags`(`renderingpassjsonhelpers.cpp:311`)が
+pass の `"regions"` を文字列配列として読む。
+検証は**空でないこと・`maximumLogicalRegionTagBytes` 以下・重複が無いこと**の 3 つ。
+render pass(`frameplanner.cpp:689`)と compute task(`:937`)の両方で読まれる。
+
+**出荷 JSON に `region` の記述は 1 件も無い。**
+
+**3. 全ノードに `legacy.<kind>` が自動で付く。**
+
+`logicalframegraphadapter.cpp:207-215` が
+`legacy.render` / `legacy.compute` / `legacy.anchor` /
+`legacy.snapshot_copy` / `legacy.output_transform` を必ず 1 つ足す。
+**実測分布(example): `legacy.render` 19 / `legacy.anchor` 8 /
+`legacy.snapshot_copy` 2 / `legacy.output_transform` 1。**
+
+**これはグループの単位として無意味である**(全 render パスが 1 個になる)。
+
+**4. 予約接頭辞の検査が無い。**
+
+`parseOptionalRegionTags` は `legacy.` で始まるタグを拒否しない。
+**作者が `legacy.render` と書けてしまう。**
+
+#### やること
+
+**1. グループの単位を「作者が書いた region tag」にする**
+
+WP341 が 1 関数に閉じ込めた単位決定を差し替える。
+
+- lowering graph のノードを**名前で** frame plan のノードに突き合わせ、その `regions` を読む
+- **`legacy.` で始まるタグを除外する**
+- 残ったタグごとにグループを作る
+
+**`provider_feature` によるグループは残すこと。**
+両方在るときの優先順位を決めて明記すること。
+
+**2. 1 ノードが複数の region に属する場合**
+
+**そのノードはグループ化しない。理由を UI に出すこと。**
+入れ子は WP341 の範囲外であり、重なり合うグループを同時に畳むのは意味が定まらない。
+**黙って片方を選ばないこと。**
+
+**3. 凸性は WP341 の判定をそのまま使う**
+
+作者が書く region は任意の集合なので、**非凸な region を書ける。**
+WP341 の「凸でないグループは畳まず理由を出す」がそのまま効くこと。
+
+#### 受け入れ条件
+
+**否定対照を同じテストの中に置くこと**(§4 規約 10):
+
+- **region を書く前**: グループ item 0 個、メンバのノード item が N 個
+- **書いた後**: グループ item 1 個、メンバのノード item 0 個
+- **同じテストの中で両方を実行し、item の実際の集合を比較すること**
+
+**本番経路を通すこと(ここを外さない):**
+
+- **正常系は実際の JSON に `"regions"` を書いて
+  compose → compile → plan → wire を通すこと。**
+  WP341 の `resolvedFramePlan()` / TAA fixture と同じ流儀
+- **手組みの `FramePlanModel` を許すのは、本番経路で作れない状態だけ** ——
+  非凸 region、複数 region への所属
+- **`legacy.*` が除外されることを、本番経路で実際に確かめること。**
+  `legacy.render` が 19 ノードに付いている構成で、
+  **それがグループにならないこと**
+
+**変異を実際に入れて落ちることを確かめ、報告すること:**
+
+- `legacy.` の除外を外す → `legacy.render` の 19 ノードが 1 グループに畳まれて落ちること
+- 名前の突き合わせを壊す(lowering node を別名で引く)→ グループが 0 個になって落ちること
+
+**そのほか:**
+
+- **複数 region に属するノードが畳まれず、理由が画面のテキストとして出ること**
+  (data role だけでなく)
+- **作者が `legacy.render` と書いた場合の挙動を決めて検査すること。**
+  除外されるなら、そのタグでグループを作れないことが利用者に分かること
+- `SKIP_DEVSTUDIO=ON` でビルドが通ること
+- `uv run tools/doclink.py check` が緑
+
+#### やらないこと
+
+- **engine を変更しないこと。**`regions` を frame plan の `nodes[]` に出すのは別 WP。
+  **lowering graph 経由で足りることが実測で分かっている**
+- 入れ子のグループ
+- studio からの region 編集(書き込み)
+- `legacy.` を engine 側で予約すること(engine 変更)
+
+#### 次
+
+**`regions` を利用者が書くと何が起きるかが見えるようになるので、
+subgraph replacement の provider を書く動機がそこで初めて立つ。**
+`for` はその provider として実装される。
+
+依存: WP341(マージ済み `f045358` / `a341fc2`)。見積: 小〜中。
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
