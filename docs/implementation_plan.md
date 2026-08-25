@@ -10765,6 +10765,55 @@ subgraph replacement の provider を書く動機がそこで初めて立つ。*
 依存: WP341(マージ済み `f045358` / `a341fc2`)。見積: 小〜中。
 ---
 
+#### コードレビュー(codex、`922a5bf` 直後)の仕分け
+
+**判定 Reject。実害 1 件 + テスト/契約の欠陥 4 件。全部直す(WP343a)。**
+**production は studio 内で閉じたまま。**
+
+**再発しなかったこと(重要)** —— `a341fc2` で直した 2 つの穴は今回踏んでいない:
+正常系は実 JSON → resolve → compile → plan → wire → physical plan を通り、
+`state == available` も直接検査している。メンバ消失検査も item kind 非依存である。
+
+**直すもの:**
+
+1. **【実害】lowering 情報の「不明」を「region なし」として扱っている。**
+   `loweringNode()` が見つからないとき、エラーにせず空の region 集合として
+   `provider_feature` へフォールバックする。
+   **具体例: preview variant は仕様上 `physical_target_plan` を持たない。**
+   したがって preview では**作者が書いた region が黙って消え**、
+   feature グループに見えるか 0 件になる。
+   **「region 情報が利用不能」という表示が無く、正常な feature fallback と区別できない。**
+   さらに **physical plan を一度読んだ後に `runtime_resolution` 不足で
+   `state = unavailable` になった場合は lowering nodes が残るので region grouping は動く** ——
+   **同じ unavailable でも内部の残骸の有無で挙動が変わっている**
+2. **優先順位テストが混在 membership を検査していない。**
+   fixture の region 集合と feature 集合が完全に同一なので、
+   **「region を持つノードを見つけたら同じ feature の全ノードを region group に入れる」
+   誤実装でも通る。**
+   本番経路で feature の一部だけに region を付けて検査すること
+3. **`legacy.` の境界変異が通り、prefix が二重管理されている。**
+   `LegacyRegionPrefix` を `"legacy"` に変える一文字変異が全テストを通り、
+   正当な `"legacy"` や `"legacy日本"` まで除外してしまう。
+   **prefix が判定用定数と tooltip に重複記述**されていて
+   「既定値の所在は一箇所」に反する。tooltip テストは実際の prefix 文字列を検査していない
+4. **compiler-OFF ビルドでもテストが ON の意味論を強制する。**
+   production fixture 2 つが `.runtime_shader_compiler_enabled = true` を固定しているので、
+   `-DPELICAN_RUNTIME_SHADER_COMPILER=OFF` でも ON 能力で resolve する。
+   **CMake は実際のマクロをテストへ渡している**(`test/CMakeLists.txt:257`)
+5. **手組みモデル 2 つが不可能な physical state を作っている。**
+   `nonConvexRegionGroupingModel()` と `overlappingRegionGroupingModel()` は
+   lowering nodes を入れるのに `physical_plan.state` を available にしていない。
+   通常の parser ではこの組合せは生成されない。
+   **これが finding 1 の「state を無視して内部 vector を読む」挙動を正当化している**
+
+**現在の `legacy.` 境界(実測)**:
+
+| 入力 | 扱い |
+|---|---|
+| `legacy.render` / `legacy.日本` / `legacy.` / `legacy.render ` | 除外 |
+| `legacy` / `Legacy.render` / `legacy日本` / ` legacy.render` / 空白だけ | authored region |
+
+parser は空文字だけを拒否し、trim も case-fold もしない。
 #### `-j16` の全数実行でだけ落ちるテスト(2026-08-25 観測)
 
 **通算およそ 12 回の全数実行で 3 回、毎回違うテストが 1 件だけ落ちた。
