@@ -374,6 +374,7 @@
   "compute_tasks": [
     {
       "name": "planar_reflection_filter_mip_1",
+      "regions": ["planar_reflection.prefilter"],
       "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
@@ -411,6 +412,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_2",
+      "regions": ["planar_reflection.prefilter"],
       "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
@@ -448,6 +450,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_3",
+      "regions": ["planar_reflection.prefilter"],
       "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
@@ -485,6 +488,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_4",
+      "regions": ["planar_reflection.prefilter"],
       "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
@@ -522,6 +526,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_5",
+      "regions": ["planar_reflection.prefilter"],
       "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],
@@ -559,6 +564,7 @@
     },
     {
       "name": "planar_reflection_filter_mip_6",
+      "regions": ["planar_reflection.prefilter"],
       "shader": "$prefilter_shader",
       "reads": ["planar_reflection_color"],
       "writes": ["planar_reflection_color"],

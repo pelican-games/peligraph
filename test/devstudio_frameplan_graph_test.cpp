@@ -318,6 +318,49 @@ const Json &taaGroupingFramePlan() {
     return wire;
 }
 
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+const Json &planarReflectionGroupingFramePlan() {
+    static const Json wire = [] {
+        Json authored{
+            {"pipeline",
+             {{"preset",
+               "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features",
+             Json::array(
+                 {{{"ref",
+                    "engine://features/planar_reflection.json"},
+                   {"parameters",
+                    {{"resolution", 64},
+                     {"plane_x", 0.0},
+                     {"plane_y", 2.0},
+                     {"plane_z", 0.0},
+                     {"plane_offset", -2.0},
+                     {"preserve_raster_winding", true},
+                     {"oblique_near_plane", true}}}}})},
+        };
+
+        auto resolved = Pelican::resolveRenderPipeline(
+            Pelican::RenderPipelineRequest{
+                .authored_config = std::move(authored),
+                .source_name = "wp344/planar_reflection.json",
+            },
+            Pelican::RenderEnvironmentCapabilities{
+                .runtime_shader_compiler_enabled =
+                    PELICAN_RUNTIME_SHADER_COMPILER != 0,
+                .graph_variant =
+                    Pelican::RenderPipelineGraphVariant::flat,
+            },
+            Pelican::RenderPipelineResolveDependencies{
+                .load_feature_json = loadEngineDocument,
+                .load_pipeline_json = loadEngineDocument,
+            });
+        return resolvedFramePlan(std::move(resolved),
+                                 "wp344/planar_reflection");
+    }();
+    return wire;
+}
+#endif
+
 Json &authoredRenderingPass(Json &authored, std::string_view name) {
     for (auto &group : authored.at("rendering_passes")) {
         for (auto &pass : group.at("passes")) {
@@ -2480,6 +2523,133 @@ TEST_CASE(
     REQUIRE(reason.contains(QStringLiteral("not convex")));
     REQUIRE(reason.contains(QStringLiteral("outside")));
     REQUIRE(visibleSceneTextContains(logical, reason));
+}
+
+TEST_CASE(
+    "WP344 shipped planar prefilter region collapses and opens through the production path",
+    "[devstudio][frame-plan][grouping][region][planar-reflection][wp344]") {
+#if !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    SKIP("WP344 planar_reflection is registered only with standard render algorithms");
+#else
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const StringSet members{
+        "planar_reflection_filter_mip_1",
+        "planar_reflection_filter_mip_2",
+        "planar_reflection_filter_mip_3",
+        "planar_reflection_filter_mip_4",
+        "planar_reflection_filter_mip_5",
+        "planar_reflection_filter_mip_6",
+    };
+
+    // The shipped feature reference is composed before resolve, compile,
+    // frame planning, execution wiring, and physical target planning. Studio
+    // then parses that wire document; no FramePlanModel is assembled by hand.
+    const Json &wire = planarReflectionGroupingFramePlan();
+    const StringSet actual_members =
+        wireRegionMembers(wire, "planar_reflection.prefilter");
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    std::vector<std::string> observed_member_orders;
+    for (const auto &node : model.nodes) {
+        if (actual_members.contains(node.name)) {
+            observed_member_orders.push_back(
+                node.name + "=" + std::to_string(node.order));
+        }
+    }
+    INFO("actual planar prefilter orders: "
+         << joinedValues(observed_member_orders).toStdString());
+    INFO(model.physical_plan.unavailable_reason);
+    REQUIRE(model.physical_plan.state ==
+            FramePlanPhysicalPlanState::available);
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+
+    FramePlanGraphicsScene logical;
+    logical.populate(model,
+                     FramePlanNodeKey{model.graph, "swapchain"}, 64);
+    QGraphicsItem *collapse_member =
+        nodeItem(logical, "planar_reflection_filter_mip_1");
+    REQUIRE(collapse_member != nullptr);
+    const QString group_id =
+        collapse_member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(group_id.isEmpty());
+    REQUIRE(sceneGroupMembers(logical, group_id) == actual_members);
+    const bool region_is_collapsible =
+        collapse_member->data(FramePlanGroupCollapsibleRole).toBool();
+    INFO("actual planar prefilter region member count: "
+         << actual_members.size());
+    INFO("actual planar prefilter region is convex/collapsible: "
+         << (region_is_collapsible ? "true" : "false"));
+    REQUIRE(region_is_collapsible);
+    REQUIRE(actual_members == members);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+
+    REQUIRE(logical.collapseGroup(group_id));
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 1);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupLabelItem).size() == 1);
+    for (const auto &member : members) {
+        // Kind-independent: a member shape or label with a blank/different
+        // FramePlanItemKindRole still fails this assertion.
+        REQUIRE(namedShapesAndLabels(logical, member).empty());
+    }
+
+    QGraphicsItem *group = singleGroupItem(logical);
+    REQUIRE(strings(group->data(FramePlanMembersRole)) == members);
+    const std::string group_name =
+        group->data(FramePlanNameRole).toString().toStdString();
+    REQUIRE(group_name ==
+            "__pelican_group__:region:planar_reflection.prefilter");
+
+    std::size_t entering_edges = 0;
+    std::size_t leaving_edges = 0;
+    std::vector<std::string> entering_sources;
+    std::vector<std::string> leaving_targets;
+    for (QGraphicsItem *edge :
+         itemsOfKind(logical, FramePlanEdgeItem)) {
+        const std::string from =
+            edge->data(FramePlanFromNameRole).toString().toStdString();
+        const std::string to =
+            edge->data(FramePlanToNameRole).toString().toStdString();
+        entering_edges += static_cast<std::size_t>(to == group_name);
+        leaving_edges += static_cast<std::size_t>(from == group_name);
+        if (to == group_name) {
+            entering_sources.push_back(from);
+        }
+        if (from == group_name) {
+            leaving_targets.push_back(
+                to + " [" +
+                edge->data(FramePlanEdgeRecordsRole)
+                    .toStringList()
+                    .join(QStringLiteral(", "))
+                    .toStdString() +
+                "]");
+        }
+    }
+    INFO("collapsed planar prefilter entering sources: "
+         << joinedValues(entering_sources).toStdString());
+    INFO("collapsed planar prefilter leaving targets: "
+         << joinedValues(leaving_targets).toStdString());
+    REQUIRE(entering_edges == 1);
+    REQUIRE(leaving_edges == 2);
+    REQUIRE(edgeItem(logical,
+                     "planar_reflection_forward_transparent",
+                     group_name) != nullptr);
+    REQUIRE(edgeItem(logical, group_name,
+                     "forward_transparent") != nullptr);
+    // In production composition, featurecompose.cpp:458 adds the output_transform terminal dependency.
+    REQUIRE(edgeItem(logical, group_name,
+                     "output_transform") != nullptr);
+
+    REQUIRE(logical.enterGroup(group_id));
+    REQUIRE(sceneNodeNames(logical) == members);
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(boundaryTargets(logical) ==
+            StringSet{"forward_transparent",
+                      "output_transform",
+                      "planar_reflection_forward_transparent"});
+    REQUIRE(itemsOfKind(logical, FramePlanBoundaryStubItem).size() == 3);
+    REQUIRE(logical.property("pelicanBoundaryStubCount").toULongLong() ==
+            3);
+#endif
 }
 
 TEST_CASE(
