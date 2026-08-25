@@ -748,6 +748,12 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         model.physical_plan.unavailable_reason_code =
             physical_validation.reason_code;
         model.physical_plan.unavailable_reason = physical_validation.reason();
+        model.physical_plan.lowering_graph_state =
+            FramePlanLoweringGraphState::unavailable;
+        model.physical_plan.lowering_graph_unavailable_reason_code =
+            physical_validation.reason_code;
+        model.physical_plan.lowering_graph_unavailable_reason =
+            physical_validation.reason();
     } else {
         const Json &physical = *physical_plan_json;
         model.physical_plan.state = FramePlanPhysicalPlanState::available;
@@ -831,6 +837,10 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                         value, "required_physical_features", context, true),
                 });
         }
+        model.physical_plan.lowering_graph_state =
+            FramePlanLoweringGraphState::available;
+        model.physical_plan.lowering_graph_unavailable_reason_code.clear();
+        model.physical_plan.lowering_graph_unavailable_reason.clear();
 
         if (const auto resolution = physical.find("resolution_plan");
             resolution != physical.end() && !resolution->is_null()) {

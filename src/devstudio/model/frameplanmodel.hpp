@@ -310,6 +310,11 @@ enum class FramePlanPhysicalPlanState {
     available,
 };
 
+enum class FramePlanLoweringGraphState {
+    unavailable,
+    available,
+};
+
 struct FramePlanPhysicalPlan {
     FramePlanPhysicalPlanState state =
         FramePlanPhysicalPlanState::unavailable;
@@ -328,6 +333,16 @@ struct FramePlanPhysicalPlan {
     std::string planning_endpoint;
     std::optional<std::size_t> output_width;
     std::optional<std::size_t> output_height;
+    // Lowering membership remains usable when only a later physical-plan
+    // projection (for example runtime resolution) is unavailable. Conversely,
+    // an absent physical plan must not look like a successfully joined graph
+    // with zero authored regions.
+    FramePlanLoweringGraphState lowering_graph_state =
+        FramePlanLoweringGraphState::unavailable;
+    std::string lowering_graph_unavailable_reason_code =
+        "physical_plan_missing";
+    std::string lowering_graph_unavailable_reason =
+        "physical_plan_missing: physical_target_plan was not published";
     std::vector<FramePlanLoweringNode> lowering_nodes;
     std::vector<FramePlanPhysicalScope> scopes;
     std::vector<FramePlanAliasGroup> alias_groups;
@@ -343,6 +358,11 @@ struct FramePlanPhysicalPlan {
 
     [[nodiscard]] bool available() const noexcept {
         return state == FramePlanPhysicalPlanState::available;
+    }
+
+    [[nodiscard]] bool loweringGraphAvailable() const noexcept {
+        return lowering_graph_state ==
+               FramePlanLoweringGraphState::available;
     }
 
     bool operator==(const FramePlanPhysicalPlan &) const = default;

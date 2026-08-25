@@ -71,7 +71,19 @@ struct GroupingUnit {
 
 struct GroupingDecision {
     std::optional<GroupingUnit> unit;
+    std::string diagnostic_key;
     QString reason;
+};
+
+enum class LoweringNodeLookupState {
+    found,
+    node_missing,
+    unavailable,
+};
+
+struct LoweringNodeLookup {
+    LoweringNodeLookupState state = LoweringNodeLookupState::unavailable;
+    const FramePlanLoweringNode *node = nullptr;
 };
 
 struct GroupDefinition {
@@ -206,17 +218,40 @@ bool isLegacyRegion(std::string_view region) {
     return region.starts_with(LegacyRegionPrefix);
 }
 
+QString legacyRegionPrefixText() {
+    return QString::fromUtf8(
+        LegacyRegionPrefix.data(),
+        static_cast<qsizetype>(LegacyRegionPrefix.size()));
+}
+
 // This exact-name join is the sole bridge from frame-plan nodes to the
 // physical lowering graph. The producer guarantees the two name sets match;
 // keeping the lookup here makes the grouping policy independent of all other
-// physical-plan machinery.
-const FramePlanLoweringNode *loweringNode(
+// physical-plan machinery. An unavailable graph, a valid graph with a broken
+// name join, and a successful join are deliberately distinct outcomes.
+LoweringNodeLookup loweringNode(
     const FramePlanModel &model, const FramePlanNode &node) {
+    if (!model.physical_plan.loweringGraphAvailable()) {
+        return {.state = LoweringNodeLookupState::unavailable};
+    }
     const auto found = std::ranges::find(
         model.physical_plan.lowering_nodes, node.name,
         &FramePlanLoweringNode::name);
-    return found == model.physical_plan.lowering_nodes.end() ? nullptr
-                                                             : &*found;
+    if (found == model.physical_plan.lowering_nodes.end()) {
+        return {.state = LoweringNodeLookupState::node_missing};
+    }
+    return {
+        .state = LoweringNodeLookupState::found,
+        .node = &*found,
+    };
+}
+
+QString regionGroupingUnavailableReason(const FramePlanModel &model) {
+    return QStringLiteral(
+               "region_grouping_unavailable: authored-region grouping "
+               "requires an available physical lowering graph (%1).")
+        .arg(qtext(
+            model.physical_plan.lowering_graph_unavailable_reason));
 }
 
 // This remains the only policy function that decides grouping membership.
@@ -226,18 +261,37 @@ const FramePlanLoweringNode *loweringNode(
 // would silently invent overlap/nesting semantics that the view does not have.
 GroupingDecision groupingUnit(const FramePlanModel &model,
                               const FramePlanNode &node) {
+    const LoweringNodeLookup lookup = loweringNode(model, node);
+    if (lookup.state == LoweringNodeLookupState::unavailable) {
+        return GroupingDecision{
+            .diagnostic_key = "region-grouping-unavailable",
+            .reason = regionGroupingUnavailableReason(model),
+        };
+    }
+    if (lookup.state == LoweringNodeLookupState::node_missing) {
+        return GroupingDecision{
+            .diagnostic_key = "lowering-node-missing:" + node.name,
+            .reason =
+                QStringLiteral(
+                    "region_grouping_node_missing: node \"%1\" has no "
+                    "matching lowering node; provider-feature fallback is "
+                    "disabled because authored-region membership is "
+                    "unknown.")
+                    .arg(qtext(node.name)),
+        };
+    }
+
     std::vector<std::string> authored_regions;
-    if (const FramePlanLoweringNode *lowered = loweringNode(model, node)) {
-        for (const auto &region : lowered->regions) {
-            if (!isLegacyRegion(region)) {
-                authored_regions.push_back(region);
-            }
+    for (const auto &region : lookup.node->regions) {
+        if (!isLegacyRegion(region)) {
+            authored_regions.push_back(region);
         }
     }
     std::ranges::sort(authored_regions);
 
     if (authored_regions.size() > 1) {
         return GroupingDecision{
+            .diagnostic_key = "multiple-regions:" + node.name,
             .reason =
                 QStringLiteral(
                     "Node \"%1\" belongs to multiple authored regions "
@@ -278,14 +332,16 @@ GroupingDecision groupingUnit(const FramePlanModel &model,
 
 QString ignoredLegacyRegionNotice(const FramePlanModel &model,
                                   const FramePlanNode &node) {
-    const FramePlanLoweringNode *lowered = loweringNode(model, node);
-    if (lowered == nullptr ||
-        std::ranges::none_of(lowered->regions, isLegacyRegion)) {
+    const LoweringNodeLookup lookup = loweringNode(model, node);
+    if (lookup.state != LoweringNodeLookupState::found ||
+        std::ranges::none_of(lookup.node->regions, isLegacyRegion)) {
         return {};
     }
     return QStringLiteral(
-        "Region tags beginning with \"legacy.\" are compatibility tags and "
-        "are ignored for grouping, including tags authored with that prefix.");
+               "Region tags beginning with \"%1\" are compatibility tags "
+               "and are ignored for grouping, including tags authored with "
+               "that prefix.")
+        .arg(legacyRegionPrefixText());
 }
 
 std::pair<std::string, std::string> groupStateKey(
@@ -367,11 +423,30 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
     std::map<std::string, std::vector<std::string>, std::less<>> members_by_key;
     std::map<std::string, GroupingUnit, std::less<>> units_by_key;
     std::vector<GroupDefinition> warnings;
+    if (!model.physical_plan.loweringGraphAvailable()) {
+        std::vector<std::string> members;
+        members.reserve(model.nodes.size());
+        for (const auto &node : model.nodes) {
+            members.push_back(node.name);
+        }
+        const std::string key = "diagnostic:region-grouping-unavailable";
+        warnings.push_back(GroupDefinition{
+            .key = key,
+            .state_key = groupStateKey(model, key),
+            .entity_name = "__pelican_group_warning__:lowering-unavailable",
+            .label = QStringLiteral("Authored regions unavailable"),
+            .members = std::move(members),
+            .collapsible = false,
+            .warning_only = true,
+            .reason = regionGroupingUnavailableReason(model),
+        });
+        return warnings;
+    }
     for (const auto &node : model.nodes) {
         GroupingDecision decision = groupingUnit(model, node);
         if (!decision.reason.isEmpty()) {
-            const std::string key =
-                "diagnostic:multiple-regions:" + node.name;
+            const std::string key = "diagnostic:" +
+                                    decision.diagnostic_key;
             warnings.push_back(GroupDefinition{
                 .key = key,
                 .state_key = groupStateKey(model, key),

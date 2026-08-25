@@ -313,8 +313,7 @@ const Json &taaGroupingFramePlan() {
                 .load_feature_json = loadEngineDocument,
                 .load_pipeline_json = loadEngineDocument,
             });
-        return resolvedFramePlan(std::move(resolved), "wp341a_taa",
-                                 false);
+        return resolvedFramePlan(std::move(resolved), "wp341a_taa");
     }();
     return wire;
 }
@@ -436,7 +435,8 @@ Json resolvedWp343Example(
             .source_name = std::string{label} + "/example.json",
         },
         Pelican::RenderEnvironmentCapabilities{
-            .runtime_shader_compiler_enabled = true,
+            .runtime_shader_compiler_enabled =
+                PELICAN_RUNTIME_SHADER_COMPILER != 0,
             .graph_variant = Pelican::RenderPipelineGraphVariant::flat,
         },
         Pelican::RenderPipelineResolveDependencies{
@@ -459,58 +459,156 @@ const Json &authoredRegionFramePlan() {
     return wire;
 }
 
-const Json &authoredLegacyRegionFramePlan() {
-    static const Json wire = resolvedWp343Example(
-        // legacy.render is deliberately authored even though the adapter also
-        // supplies it. The second authored legacy tag proves this input made
-        // it through composition and was not merely the automatic tag.
-        std::vector<std::string>{"legacy.render",
-                                 "legacy.wp343_authored"},
-        "wp343/authored_legacy_region");
-    return wire;
+const std::vector<std::pair<std::string, bool>> &
+legacyRegionBoundaryCases() {
+    static const std::vector<std::pair<std::string, bool>> cases{
+        {"legacy.x", false},
+        {"legacy.日本", false},
+        {"legacy.", false},
+        {"legacy.render ", false},
+        {"legacy", true},
+        {"Legacy.x", true},
+        {"legacy日本", true},
+        {" legacy.x", true},
+        {"   ", true},
+    };
+    return cases;
 }
 
-const Json &cubeCaptureRegionFramePlan() {
+const Json &legacyRegionBoundaryFramePlan() {
     static const Json wire = [] {
-        Json authored = readJson(
-            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
-            "example" / "passes" / "main_rendering_config.json");
-        authored["features"] = Json::array(
-            {"engine://features/cube_capture.json"});
-
-        const auto region_feature_loader = [](std::string_view reference) {
-            Json feature = Json::parse(loadEngineDocument(reference));
-            if (reference == "engine://features/cube_capture.json") {
-                for (auto &entry : feature.at("passes")) {
-                    // This is still feature JSON consumed by the production
-                    // composer; it is not a post-hoc model mutation.
-                    auto &pass = entry.at("pass");
-                    pass.erase("inherit_bindings_from");
-                    pass["regions"] =
-                        Json::array({"wp343.cube_capture"});
-                }
+        Json authored = wp343GroupingAuthoredExample();
+        auto &passes = authored.at("rendering_passes").at(0).at("passes");
+        const std::size_t required = legacyRegionBoundaryCases().size() * 2;
+        if (passes.size() < required) {
+            throw std::runtime_error(
+                "WP343 legacy boundary fixture has too few passes");
+        }
+        std::size_t pass_index = 0;
+        for (const auto &[region, authored_region] :
+             legacyRegionBoundaryCases()) {
+            (void)authored_region;
+            for (int member = 0; member < 2; ++member) {
+                passes.at(pass_index++)["regions"] =
+                    Json::array({region});
             }
-            return feature.dump();
-        };
+        }
 
         auto resolved = Pelican::resolveRenderPipeline(
             Pelican::RenderPipelineRequest{
                 .authored_config = std::move(authored),
-                .source_name = "wp343/cube_capture_region.json",
+                .source_name = "wp343/legacy_boundary.json",
             },
             Pelican::RenderEnvironmentCapabilities{
-                .runtime_shader_compiler_enabled = true,
-                .graph_variant =
-                    Pelican::RenderPipelineGraphVariant::flat,
+                .runtime_shader_compiler_enabled =
+                    PELICAN_RUNTIME_SHADER_COMPILER != 0,
+                .graph_variant = Pelican::RenderPipelineGraphVariant::flat,
             },
             Pelican::RenderPipelineResolveDependencies{
-                .load_feature_json = region_feature_loader,
+                .load_feature_json = loadEngineDocument,
                 .load_pipeline_json = loadEngineDocument,
             });
         return resolvedFramePlan(std::move(resolved),
-                                 "wp343/cube_capture_region");
+                                 "wp343/legacy_boundary");
     }();
     return wire;
+}
+
+constexpr std::array<std::string_view, 4> MixedFeatureNodes{
+    "wp343_mixed_a", "wp343_mixed_b", "wp343_mixed_c",
+    "wp343_mixed_d"};
+
+Json mixedMembershipFeature(bool overlapping) {
+    Json feature{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "wp343_mixed_membership"},
+        {"runtime_shader_compiler", "optional"},
+        {"render_targets", Json::array()},
+        {"passes", Json::array()},
+    };
+
+    for (std::size_t index = 0; index < MixedFeatureNodes.size(); ++index) {
+        const std::string name{MixedFeatureNodes[index]};
+        const std::string output = name + "_output";
+        feature["render_targets"].push_back({
+            {"name", output},
+            {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"},
+            {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+            {"role", "color"},
+            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+        });
+
+        Json pass{
+            {"name", name},
+            {"type", "fullscreen"},
+            {"output", {{"color", output}, {"depth", nullptr}}},
+            {"shader",
+             {{"vertex", "engine://fullscreen"},
+              {"fragment", "engine://fullscreen"}}},
+        };
+        if (index != 0) {
+            pass["input"] = Json::array(
+                {std::string{MixedFeatureNodes[index - 1]} + "_output"});
+        }
+        if (index == 0 || index == 1) {
+            pass["regions"] = Json::array({"wp343.mixed"});
+        }
+        if (overlapping && index == 1) {
+            pass["regions"].push_back("wp343.second");
+        }
+        feature["passes"].push_back({
+            {"insert", index == 0
+                           ? "end"
+                           : "after:" +
+                                 std::string{MixedFeatureNodes[index - 1]}},
+            {"pass", std::move(pass)},
+        });
+    }
+    return feature;
+}
+
+Json resolvedMixedMembershipFramePlan(bool overlapping) {
+    Json authored = readJson(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example" / "passes" / "main_rendering_config.json");
+    constexpr std::string_view feature_reference =
+        "engine://features/wp343_mixed_membership.json";
+    authored["features"] =
+        Json::array({std::string{feature_reference}});
+
+    auto resolved = Pelican::resolveRenderPipeline(
+        Pelican::RenderPipelineRequest{
+            .authored_config = std::move(authored),
+            .source_name = overlapping
+                               ? "wp343/mixed_overlap.json"
+                               : "wp343/mixed_priority.json",
+        },
+        Pelican::RenderEnvironmentCapabilities{
+            .runtime_shader_compiler_enabled =
+                PELICAN_RUNTIME_SHADER_COMPILER != 0,
+            .graph_variant = Pelican::RenderPipelineGraphVariant::flat,
+        },
+        Pelican::RenderPipelineResolveDependencies{
+            .load_feature_json =
+                [overlapping, feature_reference](std::string_view reference) {
+                if (reference != feature_reference) {
+                    return loadEngineDocument(reference);
+                }
+                return mixedMembershipFeature(overlapping).dump();
+            },
+            .load_pipeline_json = loadEngineDocument,
+        });
+    return resolvedFramePlan(
+        std::move(resolved),
+        overlapping ? "wp343/mixed_overlap" : "wp343/mixed_priority");
+}
+
+const Json &mixedMembershipFramePlan(bool overlapping) {
+    static const Json priority = resolvedMixedMembershipFramePlan(false);
+    static const Json overlap = resolvedMixedMembershipFramePlan(true);
+    return overlapping ? overlap : priority;
 }
 
 StringSet wireFeatureMembers(const Json &wire,
@@ -538,21 +636,6 @@ StringSet wireRegionMembers(const Json &wire, std::string_view region) {
         }
     }
     return members;
-}
-
-std::vector<std::string> wireNodeRegions(const Json &wire,
-                                         std::string_view node_name) {
-    const auto &nodes = wire.at("physical_target_plan")
-                            .at("lowering_graph")
-                            .at("nodes");
-    const auto found = std::ranges::find_if(nodes, [&](const Json &node) {
-        return node.at("name").get<std::string>() == node_name;
-    });
-    if (found == nodes.end()) {
-        throw std::runtime_error("WP343 wire has no lowering node named " +
-                                 std::string{node_name});
-    }
-    return found->at("regions").get<std::vector<std::string>>();
 }
 
 Json independentOpportunityFramePlan(
@@ -811,6 +894,18 @@ QGraphicsItem *nodeItem(QGraphicsScene &value, std::string_view name) {
         }
     }
     return nullptr;
+}
+
+StringSet sceneGroupMembers(QGraphicsScene &value,
+                            const QString &group_id) {
+    StringSet members;
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanNodeItem)) {
+        if (item->data(FramePlanGroupIdRole).toString() == group_id) {
+            members.insert(
+                item->data(FramePlanNameRole).toString().toStdString());
+        }
+    }
+    return members;
 }
 
 QGraphicsItem *edgeItem(QGraphicsScene &value, std::string_view from,
@@ -1146,11 +1241,24 @@ FramePlanLoweringNode groupingLoweringNode(
     };
 }
 
+void makeGroupingPhysicalPlanAvailable(FramePlanModel &model) {
+    model.physical_plan.state = FramePlanPhysicalPlanState::available;
+    model.physical_plan.unavailable_reason_code.clear();
+    model.physical_plan.unavailable_reason.clear();
+    model.physical_plan.graph = model.graph;
+    model.physical_plan.lowering_graph_state =
+        FramePlanLoweringGraphState::available;
+    model.physical_plan.lowering_graph_unavailable_reason_code.clear();
+    model.physical_plan.lowering_graph_unavailable_reason.clear();
+}
+
 FramePlanModel nonConvexGroupingModel() {
     FramePlanModel model;
     model.graph = "non_convex_grouping_graph";
     model.execution_plan.state =
         FramePlanExecutionPlanState::available;
+    model.execution_plan.unavailable_reason_code.clear();
+    model.execution_plan.unavailable_reason.clear();
     model.execution_plan.graph = model.graph;
 
     FramePlanResource focus;
@@ -1167,6 +1275,11 @@ FramePlanModel nonConvexGroupingModel() {
         {"inside_a", "outside", "pelican.dependency.leave@1", "leave"},
         {"outside", "inside_b", "pelican.dependency.return@1", "return"},
     };
+    makeGroupingPhysicalPlanAvailable(model);
+    for (const auto &node : model.nodes) {
+        model.physical_plan.lowering_nodes.push_back(
+            groupingLoweringNode(node.name, {"legacy.render"}));
+    }
     return model;
 }
 
@@ -1174,6 +1287,7 @@ FramePlanModel nonConvexRegionGroupingModel() {
     FramePlanModel model = nonConvexGroupingModel();
     model.graph = "non_convex_region_grouping_graph";
     model.execution_plan.graph = model.graph;
+    makeGroupingPhysicalPlanAvailable(model);
     for (auto &node : model.nodes) {
         node.provider_feature.clear();
         node.source = "project";
@@ -1195,6 +1309,8 @@ FramePlanModel overlappingRegionGroupingModel() {
     model.graph = "overlapping_region_grouping_graph";
     model.execution_plan.state =
         FramePlanExecutionPlanState::available;
+    model.execution_plan.unavailable_reason_code.clear();
+    model.execution_plan.unavailable_reason.clear();
     model.execution_plan.graph = model.graph;
 
     FramePlanResource focus;
@@ -1206,6 +1322,7 @@ FramePlanModel overlappingRegionGroupingModel() {
         groupingNode("alpha_peer", 2),
         groupingNode("beta_peer", 3),
     };
+    makeGroupingPhysicalPlanAvailable(model);
     model.physical_plan.lowering_nodes = {
         groupingLoweringNode(
             "overlap", {"legacy.render", "wp343.alpha", "wp343.beta"}),
@@ -1960,6 +2077,7 @@ TEST_CASE(
     INFO(without_model.physical_plan.unavailable_reason);
     REQUIRE(without_model.physical_plan.state ==
             FramePlanPhysicalPlanState::available);
+    REQUIRE(without_model.physical_plan.loweringGraphAvailable());
     FramePlanGraphicsScene without_scene;
     without_scene.populate(
         without_model,
@@ -2009,6 +2127,7 @@ TEST_CASE(
     INFO(with_model.physical_plan.unavailable_reason);
     REQUIRE(with_model.physical_plan.state ==
             FramePlanPhysicalPlanState::available);
+    REQUIRE(with_model.physical_plan.loweringGraphAvailable());
     FramePlanGraphicsScene with_scene;
     with_scene.populate(
         with_model, FramePlanNodeKey{with_model.graph, "swapchain"}, 64);
@@ -2051,63 +2170,230 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP343 authored region wins over provider feature on the production path",
+    "WP343 mixed production membership splits one feature by authored region priority",
     "[devstudio][frame-plan][grouping][region][feature][priority][wp343]") {
     (void)application();
-    const Json &wire = cubeCaptureRegionFramePlan();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = mixedMembershipFramePlan(false);
+    const StringSet region_members{"wp343_mixed_a", "wp343_mixed_b"};
+    const StringSet fallback_members{"wp343_mixed_c", "wp343_mixed_d"};
     const StringSet feature_members =
-        wireFeatureMembers(wire, "cube_capture");
-    REQUIRE(feature_members.size() == 8);
-    REQUIRE(wireRegionMembers(wire, "wp343.cube_capture") ==
-            feature_members);
+        wireFeatureMembers(wire, "wp343_mixed_membership");
+    REQUIRE(feature_members ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_b",
+                      "wp343_mixed_c", "wp343_mixed_d"});
+    REQUIRE(wireRegionMembers(wire, "wp343.mixed") ==
+            region_members);
+
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+    FramePlanGraphicsScene logical;
+    logical.populate(
+        model,
+        FramePlanNodeKey{model.graph, "wp343_mixed_d_output"}, 64);
+
+    QGraphicsItem *a = nodeItem(logical, "wp343_mixed_a");
+    QGraphicsItem *c = nodeItem(logical, "wp343_mixed_c");
+    REQUIRE(a != nullptr);
+    REQUIRE(c != nullptr);
+    const QString region_group_id =
+        a->data(FramePlanGroupIdRole).toString();
+    const QString feature_group_id =
+        c->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(region_group_id.isEmpty());
+    REQUIRE_FALSE(feature_group_id.isEmpty());
+    REQUIRE(region_group_id != feature_group_id);
+
+    // The actual scene membership, not just the selected label, is the
+    // negative control against absorbing the whole feature into the region.
+    REQUIRE(sceneGroupMembers(logical, region_group_id) == region_members);
+    REQUIRE(sceneGroupMembers(logical, feature_group_id) ==
+            fallback_members);
+    REQUIRE(logical.collapseGroup(region_group_id));
+    REQUIRE(logical.collapseGroup(feature_group_id));
+
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 2);
+    for (QGraphicsItem *group :
+         itemsOfKind(logical, FramePlanGroupItem)) {
+        const QString id =
+            group->data(FramePlanGroupIdRole).toString();
+        if (id == region_group_id) {
+            REQUIRE(strings(group->data(FramePlanMembersRole)) ==
+                    region_members);
+        } else {
+            REQUIRE(id == feature_group_id);
+            REQUIRE(strings(group->data(FramePlanMembersRole)) ==
+                    fallback_members);
+        }
+    }
+    REQUIRE(visibleSceneTextContains(
+        logical, QStringLiteral("Region: wp343.mixed")));
+    REQUIRE(visibleSceneTextContains(
+        logical,
+        QStringLiteral("Feature: wp343_mixed_membership")));
+}
+
+TEST_CASE(
+    "WP343 lowering lookup distinguishes found nodes from missing nodes and unavailable graphs",
+    "[devstudio][frame-plan][grouping][region][availability][wp343a]") {
+    (void)application();
+
+    // A later runtime-resolution failure makes the overall physical view
+    // unavailable, but the already validated lowering graph remains a known,
+    // usable source of authored-region membership.
+    Json runtime_missing = authoredRegionFramePlan();
+    runtime_missing.erase("runtime_resolution");
+    const FramePlanModel residual =
+        buildFramePlanModel(runtime_missing.dump());
+    REQUIRE_FALSE(residual.physical_plan.available());
+    REQUIRE(residual.physical_plan.unavailable_reason_code ==
+            "physical_plan_runtime_resolution_missing");
+    REQUIRE(residual.physical_plan.loweringGraphAvailable());
+    REQUIRE(residual.physical_plan.lowering_graph_unavailable_reason.empty());
+
+    FramePlanGraphicsScene residual_scene;
+    residual_scene.populate(
+        residual, FramePlanNodeKey{residual.graph, "swapchain"}, 64);
+    QGraphicsItem *residual_member =
+        nodeItem(residual_scene, "HorizontalBlur_0");
+    REQUIRE(residual_member != nullptr);
+    const QString residual_group_id =
+        residual_member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(residual_group_id.isEmpty());
+    REQUIRE(sceneGroupMembers(residual_scene, residual_group_id) ==
+            StringSet{"HorizontalBlur_0", "VerticalBlur_0"});
+    REQUIRE_FALSE(visibleSceneTextContains(
+        residual_scene, QStringLiteral("region_grouping_unavailable")));
+
+    // A valid graph with one broken exact-name join is a third state. Even
+    // though A has provider_feature, it must not be absorbed by that feature.
+    FramePlanModel missing_node = buildFramePlanModel(
+        mixedMembershipFramePlan(false).dump());
+    const auto authored_a = std::ranges::find(
+        missing_node.nodes, std::string{"wp343_mixed_a"},
+        &FramePlanNode::name);
+    REQUIRE(authored_a != missing_node.nodes.end());
+    REQUIRE(authored_a->provider_feature ==
+            "wp343_mixed_membership");
+    std::erase_if(
+        missing_node.physical_plan.lowering_nodes,
+        [](const FramePlanLoweringNode &node) {
+            return node.name == "wp343_mixed_a";
+        });
+    REQUIRE(missing_node.physical_plan.loweringGraphAvailable());
+
+    FramePlanGraphicsScene missing_scene;
+    missing_scene.populate(
+        missing_node,
+        FramePlanNodeKey{missing_node.graph,
+                         "wp343_mixed_d_output"},
+        64);
+    QGraphicsItem *missing =
+        nodeItem(missing_scene, "wp343_mixed_a");
+    REQUIRE(missing != nullptr);
+    REQUIRE(missing->data(FramePlanGroupIdRole).toString().isEmpty());
+    const auto warnings =
+        itemsOfKind(missing_scene, FramePlanGroupWarningItem);
+    REQUIRE(warnings.size() == 1);
+    const QString missing_reason =
+        warnings.front()->data(FramePlanReasonRole).toString();
+    REQUIRE(missing_reason.contains(
+        QStringLiteral("region_grouping_node_missing")));
+    REQUIRE(missing_reason.contains(
+        QStringLiteral("wp343_mixed_a")));
+    REQUIRE(visibleSceneTextContains(missing_scene, missing_reason));
+}
+
+TEST_CASE(
+    "WP343 a multi-region production node joins neither region nor feature fallback",
+    "[devstudio][frame-plan][grouping][region][feature][priority][overlap][wp343]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = mixedMembershipFramePlan(true);
+    REQUIRE(wireFeatureMembers(wire, "wp343_mixed_membership") ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_b",
+                      "wp343_mixed_c", "wp343_mixed_d"});
+    REQUIRE(wireRegionMembers(wire, "wp343.mixed") ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_b"});
+    REQUIRE(wireRegionMembers(wire, "wp343.second") ==
+            StringSet{"wp343_mixed_b"});
 
     const FramePlanModel model = buildFramePlanModel(wire.dump());
     FramePlanGraphicsScene logical;
     logical.populate(
-        model, FramePlanNodeKey{model.graph, "cube_capture_color"}, 64);
-    QGraphicsItem *member =
-        nodeItem(logical, "cube_capture_geometry");
-    REQUIRE(member != nullptr);
-    REQUIRE(logical.collapseGroup(
-        member->data(FramePlanGroupIdRole).toString()));
+        model,
+        FramePlanNodeKey{model.graph, "wp343_mixed_d_output"}, 64);
 
-    QGraphicsItem *group = singleGroupItem(logical);
-    REQUIRE(strings(group->data(FramePlanMembersRole)) ==
-            feature_members);
-    REQUIRE(group->data(FramePlanNameRole).toString() ==
-            QStringLiteral(
-                "__pelican_group__:region:wp343.cube_capture"));
-    REQUIRE(visibleSceneTextContains(
-        logical, QStringLiteral("Region: wp343.cube_capture")));
+    QGraphicsItem *a = nodeItem(logical, "wp343_mixed_a");
+    QGraphicsItem *b = nodeItem(logical, "wp343_mixed_b");
+    QGraphicsItem *c = nodeItem(logical, "wp343_mixed_c");
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    REQUIRE(a->data(FramePlanGroupIdRole).toString().isEmpty());
+    REQUIRE(b->data(FramePlanGroupIdRole).toString().isEmpty());
+    const QString fallback_group_id =
+        c->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(fallback_group_id.isEmpty());
+    REQUIRE(sceneGroupMembers(logical, fallback_group_id) ==
+            StringSet{"wp343_mixed_c", "wp343_mixed_d"});
+    REQUIRE(logical.collapseGroup(fallback_group_id));
+    REQUIRE(strings(singleGroupItem(logical)->data(
+                FramePlanMembersRole)) ==
+            StringSet{"wp343_mixed_c", "wp343_mixed_d"});
+    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_a").size() == 2);
+    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_b").size() == 2);
+
+    const auto warnings =
+        itemsOfKind(logical, FramePlanGroupWarningItem);
+    REQUIRE(warnings.size() == 1);
+    const QString reason =
+        warnings.front()->data(FramePlanReasonRole).toString();
+    REQUIRE(reason.contains(QStringLiteral("wp343_mixed_b")));
+    REQUIRE(reason.contains(QStringLiteral("wp343.mixed")));
+    REQUIRE(reason.contains(QStringLiteral("wp343.second")));
+    REQUIRE(visibleSceneTextContains(logical, reason));
 }
 
 TEST_CASE(
-    "WP343 authored legacy.render remains ignored and explains the policy in the UI",
-    "[devstudio][frame-plan][grouping][region][legacy][wp343]") {
+    "WP343 legacy prefix boundary is byte-exact on the production path",
+    "[devstudio][frame-plan][grouping][region][legacy][boundary][wp343]") {
     (void)application();
-    const Json &wire = authoredLegacyRegionFramePlan();
-    const StringSet members{"HorizontalBlur_0", "VerticalBlur_0"};
-    for (const auto &member : members) {
-        const auto regions = wireNodeRegions(wire, member);
-        REQUIRE(StringSet{regions.begin(), regions.end()} ==
-                StringSet{"legacy.render", "legacy.wp343_authored"});
-    }
-
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = legacyRegionBoundaryFramePlan();
     const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
     FramePlanGraphicsScene logical;
     logical.populate(model,
                      FramePlanNodeKey{model.graph, "swapchain"}, 64);
-    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
-    REQUIRE(itemsOfKind(logical, FramePlanGroupWarningItem).empty());
-    for (const auto &member : members) {
-        QGraphicsItem *item = nodeItem(logical, member);
-        REQUIRE(item != nullptr);
-        REQUIRE(item->data(FramePlanGroupIdRole).toString().isEmpty());
-        REQUIRE(item->toolTip().contains(
-            QStringLiteral("ignored for grouping")));
-        REQUIRE(item->toolTip().contains(
-            QStringLiteral("authored with that prefix")));
-        REQUIRE(namedShapesAndLabels(logical, member).size() == 2);
+
+    for (const auto &[region, authored] : legacyRegionBoundaryCases()) {
+        CAPTURE(region, authored);
+        const StringSet members = wireRegionMembers(wire, region);
+        REQUIRE(members.size() == 2);
+        QString group_id;
+        for (const auto &member : members) {
+            QGraphicsItem *item = nodeItem(logical, member);
+            REQUIRE(item != nullptr);
+            const QString actual_id =
+                item->data(FramePlanGroupIdRole).toString();
+            if (authored) {
+                REQUIRE_FALSE(actual_id.isEmpty());
+                if (group_id.isEmpty()) {
+                    group_id = actual_id;
+                }
+                REQUIRE(actual_id == group_id);
+            } else {
+                REQUIRE(actual_id.isEmpty());
+            }
+            REQUIRE(item->toolTip().contains(
+                QStringLiteral("\"legacy.\"")));
+            REQUIRE(item->toolTip().contains(
+                QStringLiteral("ignored for grouping")));
+        }
+        if (authored) {
+            REQUIRE(sceneGroupMembers(logical, group_id) == members);
+        }
     }
 }
 
@@ -2118,6 +2404,11 @@ TEST_CASE(
     // This overlap cannot be produced by a valid collapsed production scene,
     // so WP343 explicitly permits a hand-built model for this case only.
     const FramePlanModel model = overlappingRegionGroupingModel();
+    REQUIRE(model.physical_plan.available());
+    REQUIRE(model.physical_plan.graph == model.graph);
+    REQUIRE(model.physical_plan.unavailable_reason_code.empty());
+    REQUIRE(model.physical_plan.unavailable_reason.empty());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
     FramePlanGraphicsScene logical;
     logical.populate(model, FramePlanNodeKey{model.graph, "focus"}, 1);
 
@@ -2155,6 +2446,11 @@ TEST_CASE(
     // production planner cannot emit this fixture reliably. The graph shape
     // is the same WP341 leave-and-return counterexample.
     const FramePlanModel model = nonConvexRegionGroupingModel();
+    REQUIRE(model.physical_plan.available());
+    REQUIRE(model.physical_plan.graph == model.graph);
+    REQUIRE(model.physical_plan.unavailable_reason_code.empty());
+    REQUIRE(model.physical_plan.unavailable_reason.empty());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
     FramePlanGraphicsScene logical;
     logical.populate(model, FramePlanNodeKey{model.graph, "focus"}, 1);
 
@@ -3449,6 +3745,12 @@ TEST_CASE(
     const Json preview = animgraphFramePlan(
         true, Pelican::RenderPipelineGraphVariant::preview);
     REQUIRE_FALSE(preview.contains("physical_target_plan"));
+    const FramePlanModel preview_model =
+        buildFramePlanModel(preview.dump());
+    REQUIRE_FALSE(preview_model.physical_plan.loweringGraphAvailable());
+    REQUIRE(preview_model.physical_plan
+                .lowering_graph_unavailable_reason_code ==
+            "physical_plan_missing");
     widget.receiveResult(QByteArray::fromStdString(preview.dump()));
     QApplication::processEvents();
     REQUIRE(logical.property("pelicanGraph").toString() ==
@@ -3465,6 +3767,22 @@ TEST_CASE(
                 .toString() == QStringLiteral("unavailable"));
     REQUIRE(preview_context.front()->toolTip().contains(
         QStringLiteral("physical_plan_missing")));
+    const auto grouping_unavailable =
+        itemsOfKind(logical, FramePlanGroupWarningItem);
+    REQUIRE(grouping_unavailable.size() == 1);
+    const QString grouping_reason =
+        grouping_unavailable.front()
+            ->data(FramePlanReasonRole)
+            .toString();
+    REQUIRE(grouping_reason.contains(
+        QStringLiteral("region_grouping_unavailable")));
+    REQUIRE(grouping_reason.contains(
+        QStringLiteral("physical_plan_missing")));
+    REQUIRE(visibleSceneTextContains(logical, grouping_reason));
+    for (QGraphicsItem *item :
+         itemsOfKind(logical, FramePlanNodeItem)) {
+        REQUIRE(item->data(FramePlanGroupIdRole).toString().isEmpty());
+    }
 
 #if PELICAN_WITH_OPENXR
     const Json xr = animgraphFramePlan(
