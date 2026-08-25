@@ -10871,10 +10871,17 @@ parser は空文字だけを拒否し、trim も case-fold もしない。
 6 ノード、order 24-29 で連続、凸
 内部辺 5        mip_1 → 2 → 3 → 4 → 5 → 6 の鎖
 入る辺 1        planar_reflection_forward_transparent → mip_1
-出る辺 1        mip_6 → forward_transparent
+出る辺 2        forward_transparent と output_transform
 ```
 
-**畳むとちょうど 1 ノード、入る辺 1 本・出る辺 1 本になる。**
+**畳むと 1 ノード、入る辺 1 本・出る辺 2 本、境界スタブ 3 本になる。**
+
+**訂正(着手時に判明)**: 初版は「出る辺 1 本・スタブ 2 本」と書いていた。**誤りである。**
+`featurecompose.cpp:458` が **feature 合成時に全 compute task から
+`output_transform` への終端依存を自動追加する。**
+初版の測定は `--dump-frame-plan` の `barriers`(resource の read-after-write)から取っており、
+**終端依存は順序の辺であって barrier ではないので出ていなかった。**
+**1 つの表現を測って別の表現について断定した誤りである。**
 
 - **`regions` は fingerprint に入らない**(`logicalrendergraph.cpp` に該当なし)
 - **出荷 golden に `regions` は 1 件も無い**
@@ -10903,9 +10910,10 @@ parser は空文字だけを拒否し、trim も case-fold もしない。
 - **畳めること**(凸である)
 - **畳んだ後、グループ item が 1 個、メンバの shape / label が 0 件**
   (**kind 非依存で検査すること**)
-- **畳んだ後、グループに入る辺が 1 本、出る辺が 1 本であること**
-- **中に入ると 6 件が見え、外のノードが 0 件、境界スタブが 2 本
-  (`planar_reflection_forward_transparent` と `forward_transparent`)であること**
+- **畳んだ後、グループに入る辺が 1 本、出る辺が 2 本であること**
+  (`forward_transparent` と `output_transform`)
+- **中に入ると 6 件が見え、外のノードが 0 件、境界スタブが 3 本
+  (`planar_reflection_forward_transparent` / `forward_transparent` / `output_transform`)であること**
 
 **変異を実際に入れて落ちることを確かめ、報告すること:**
 
