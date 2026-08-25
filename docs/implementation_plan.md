@@ -10765,6 +10765,40 @@ subgraph replacement の provider を書く動機がそこで初めて立つ。*
 依存: WP341(マージ済み `f045358` / `a341fc2`)。見積: 小〜中。
 ---
 
+#### `-j16` の全数実行でだけ落ちるテスト(2026-08-25 観測)
+
+**通算およそ 12 回の全数実行で 3 回、毎回違うテストが 1 件だけ落ちた。
+どれも単独では通り(それぞれ 3/3)、部分集合の並列でも通る。**
+
+| 回 | テスト | ファイル |
+|---|---|---|
+| 1 | `WP334b production project-open waits for engine context...` | `devstudio_fullscreen_pass_test.cpp` |
+| 2 | `WP335 parameterized feature entries stay byte-exact...` | `renderconfigeditor_test.cpp` |
+| 3 | `WP332 no-op preserves bytes generation and apply count...` | `renderconfigeditor_test.cpp` |
+
+**調べて潰した線:**
+
+- **`TemporaryConfig` のディレクトリ名衝突ではない**(`renderconfigeditor_test.cpp:98-120`)。
+  steady_clock の seed + プロセス内 atomic で作り、
+  `create_directory` が失敗したら 100 回まで名前を変えて再試行する
+- **順序依存ではない** —— `WP33[0-9]` を `-j16` で回すと通る
+- **作業木を汚していない** —— 失敗後も `git status` は clean
+
+**未検証の仮説:**
+
+- ctest は TEST_CASE ごとに**別プロセス**を起動し、これらは同じ実行ファイルである。
+  したがって**プロセス間で共有されるもの(実質ファイルシステム)**が疑わしい
+- 観測時のディスク使用率は 90%。`-j16` で GPU テストも同時に走るため、
+  一時ディレクトリの圧迫やウイルス対策のスキャンによる一過性の失敗も切れていない
+
+**扱い:** 全数を 1 回落ちたら**同じテストを単独で回して確かめること。**
+単独で通るなら本件である。**「全数緑」を主張する前に 2 回回すこと。**
+
+**失敗時の assertion をまだ捕まえられていない** ——
+`build/Testing/Temporary/LastTest.log` は次の実行で上書きされるので、
+再現したら**その場で保存すること。**
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
