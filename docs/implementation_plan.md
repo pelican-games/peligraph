@@ -10239,141 +10239,152 @@ sampled 化は `gbuffer_normal` / `gbuffer_worldpos`(WP338)と `ssao_output`(WP3
 **port を足したことの正しい帰結である。**nodes / barriers / extent に意味差は無い。
 ---
 
-### WP340: 推論された `same_pixel` で tile-local に落ちる経路を閉じる(第 2 版)
+### WP340: 取り下げ。扉は開いたまま記録する(第 3 版)
 
-**§4 規則 11 の上段。仕様 + コード。**
+**着手しない。コードを 1 行も変えない。**
+**替わりに立てるのは `### WP342: アクセサを分ける` である。**
 
-**WP339 に依存しない。`fullscreen.frag` の移行より前に入れること。**
-
-**初版は codex の仕様レビューで破綻した。**
-「`input_footprints` に**明示された** `same_pixel` かどうか」で分岐せよと書いたが、
-**その情報は指定した検査地点に届かない。**以下は訂正版である。
-
-#### 何が起きているか
+#### 何を塞ごうとしていたか
 
 生成 include の image port が input attachment に解決されると、
-`pelican_sample_<port>` は **uv を捨て**、`pelican_size_<port>` は**描画解像度を返す。**
-`ssao_blur` の 5×5 は黙って同一ピクセル 25 回になり、
-**desktop と tile-based で別の絵が出る(決定性の破れ)。**
+`pelican_sample_<port>` は **uv を捨てて** `subpassLoad` になり、
+`pelican_size_<port>` は**描画解像度**を返す(読んでいる target の extent ではない)。
+`ssao_blur` の 5×5 が黙って同一ピクセル 25 回になり、
+**desktop と tile-based で別の絵が出る。**
 
-**`access: "sampled"` はこれを止めない** ——
-`local_reads[input]` が立てば port の `access` を読まずに input attachment を選ぶ
-(`renderingpassruntimecompiler.cpp:1703` / `:1710-1712`)。
+位置束縛マクロ時代は `subpassInput` に `textureSize` が無いのでコンパイルで弾かれていた。
+**WP338 / WP339 がその偶然の防壁を外した。**
 
-**そして未宣言 read の既定は 2 通りある**(`logicalframegraphadapter.cpp:375`)——
-通常は `arbitrary` だが、**同じパスが `load_op: load` で持つ attachment を
-`input` にも書くと、`input_footprints` を書かなくても `same_pixel` になる。**
+#### 4 案を立てて 4 案とも退けた
 
-#### 初版が破綻した理由
+| 案 | 退けた理由 |
+|---|---|
+| **A** provenance を 4 層に通す | `LogicalResourceUse` が footprint の**値**しか持たず、provenance が検査点に届かない |
+| **C** port を持つ read の既定を `arbitrary` に | 出荷 4 箇所が throw(`writes` にしかない resource を port が名指している)/ `appendReadFootprint` は**rank の最大**なので作者の `same_pixel` が黙って捨てられる / **scope 融合**にも及び、出荷の `lit_color` の read-modify-write が実際に使っている |
+| **D** input attachment で uv 版 accessor を出さない | 生成 10 本のうち **`subpassLoad` を呼ぶのは uv 版 4 本だけ**。消すと読む手段が消え、未参照 port は reflection 検証が throw。sampled 側に 0 引数版が無く**両 variant で通るソースが存在しない**。spvlink の stub と `template_exports` が uv 版を無条件に要求 |
+| **B1 / B2** port が footprint を持ち、descriptor が決まる地点で照合 | **三脚(出荷を壊さない / purgeability / 情報が届く)は B2 なら満たす。**それでも採らない —— 下記 |
 
-**「明示宣言だったか」という provenance が、検査地点まで届いていない。**
+**B1 は情報が検査点に届く**(`renderingpassruntimecompiler.cpp:1679` で `port` は束縛済み、
+`PassDefinition` が `resource_ports` を丸ごと持つので logical graph を通らない)。
+**同じ検査は material 経路に既に 2 箇所出荷されている**
+(`materialcontainer.cpp:2959-2966` と `:4535-4544`、
+`material pass selected a local attachment for a non-same-pixel input`)。
+**しかし B1 単体は purgeability を壊す** ——
+広い footprint で読む optional feature を purge すると、
+残った構成が**新規にハードエラー**になる。
 
-1. `input_footprints` は logical graph parser が読む
-   (`frameplanner.cpp:183` / `:747`)
-2. 未宣言の load attachment は `same_pixel` に変換される
-   (`logicalframegraphadapter.cpp:375`)
-3. **`LogicalResourceUse` は footprint の値しか持たない。provenance は無い**
-   (`logicalrendergraph.hpp:125`)
-4. runtime の `PassDefinition` にも明示性のフィールドは無い(`renderingpass.hpp:385`)
-5. `VulkanPhysicalScopePlan` は `local_reads` の resource 名しか持たない
-   (`targetrenderplanning.hpp:248` / `:478`)
-6. 最終地点で得られるのは attachment index から作った `bool local_reads[]` だけ
-   (`renderingpassruntimecompiler.cpp:1062`)
+#### B2 を採らない理由(ここが本題)
 
-**現在の型のままでは「明示 `same_pixel`」と「load から推論された `same_pixel`」は完全に同値である。**
+**台帳が 2026-08-23 に既に方向を決めており、B2 はそれを逆走する。**
 
-さらに、初版が要求した手組み `VulkanTargetPlan` テストは
-**JSON parser / 既定値付与 / logical graph / target planner をすべて迂回する。**
-テスト専用フィールドを立てれば通るので、本番 JSON からその値が届かなくても検出できない。
+- `:5864` **「footprint はソケットが持つ(契約ではない)」**
+- `:6411` **「footprint は 3 箇所に分かれている。ここを畳むのが仕事の実体」**
+- `:6489-6493` **「扉は 2 枚ある。塞ぐなら 2 枚とも塞ぐこと」**
+- `:6502-6505` **「アクセサを分けること(本命)。
+  オフセット版を呼んだシェーダーは構造的に local read へ落とせなくなる。
+  宣言を信じる代わりに、シェーダーが選んだアクセサが宣言になる」**
 
-#### purgeability の反例(初版が未決定のまま残していた)
+**B2 は footprint の宣言場所を 3 → 4 に増やす。**
+そして **B2 が値を差し込む地点(`frameplanner.cpp:753` の直前)は
+`agent/wp336`(`31f0971`)が既に占有している** ——
+同ブランチの diff は `@@ -747,9 +826,43 @@ parseRenderNodeFromJson` を触っている。
 
-- `widest_read` は**全 use の最大**である(`targetrenderplanning.cpp:1636`)
-- `widest_read == same_pixel` なら tile-local 候補になり得る(`:2605`)
-- この eligibility は `sampled_access` を除外していない(`:2612`)
+**さらに B1/B2 が塞ぐのは 2 枚の扉のうち 1 枚の一部だけである** ——
+`resource_ports` を持つ fullscreen / raster に限られ、次は開いたまま:
 
-**構成:**
+- **port を持たない fullscreen / raster** —— descriptor 型は port と無関係に
+  `local_reads` の bool から決まり、位置束縛マクロ側も
+  `PELICAN_TEXTURE_2D_0` が local read 時に `subpassLoad` になって uv を捨てる。
+  **出荷 GPU テストの local_consumer が今この経路を使っている**
+- **material の `screen_inputs`** —— `opaque_depth` / `scene_depth` / `linear_view_depth` の
+  組み込み契約が `same_pixel` を持ち、作者は footprint を 1 文字も書かない。
+  しかも `linear_view_depth` の生成コードは**捨てた uv を `inverse(projection)` の中で使い続ける**。
+  `projects/example/shaders/depth_fade.surface` が出荷でこれを使っている
+- **`material_resources.footprint`** —— 台帳が数えている 2 枚目の扉
 
-1. pass A が single-sample・`allow_tile_local` の resource `R` を書く
-2. fullscreen pass B が `R` を `input` と resource port に持ち、
-   同時に `R` を `color_load_op: load` で出力する。`input_footprints` は省略
-3. optional feature C に、`R` を `arbitrary` で読む別 pass を置く
+#### 受け入れ条件が今の seam では書けない
 
-**C あり** → `widest_read == arbitrary` → materialized。エラーなし。
-**C を purge** → B の推論された `same_pixel` だけが残り、tile-local が選ばれ得る。
+WP340 の各版が要求した
+「実 JSON から compose → lower → compile して
+`ShaderResourceInterfaceBinding.descriptor` の**実解決値**を検査する」は**現状書けない**:
 
-**つまり「feature を外したら残存構成が新しく落ちる」という purgeability 違反である。**
-**本 WP はこれを未決定のまま残さない。**
+- `compileFullscreenResourceInterface` は
+  `renderingpassruntimecompiler.cpp` の**無名 namespace 内**でヘッダに出ていない
+- 末尾が `validateFullscreenSamplingCapabilities` を呼び、
+  その中が `GET_MODULE(VulkanManageCore).getPhysDevice()` を触るので**device 無しでは通らない**
 
-#### やること
+**受け入れ条件をコードに当てずに書いていた。**
 
-**1. provenance を通す**
+#### 今日この扉が安全である根拠は、既に木の中で毎回走っている
 
-`LogicalReadFootprint`(または use)に **`authored` を足し、
-frameplanner → logical graph → target plan → runtime pass まで保持する。**
+出荷 JSON 81 本、output を持つパス 57 本で:
+**自分の color/depth 出力を `input` にも持つパスが 0 件、
+`input_footprints` / `read_footprints` / `same_pixel` / `allow_tile_local` が
+リポジトリ中の全 `.json` で 0 件、`pass_overrides` が `input` を足す 10 箇所も基底パスの出力と交差しない。**
 
-**2. eligibility を明示宣言だけに与える**
+そして **tile-local を全部有効にした device facts で出荷 `example` / `animgraph_demo` を通す
+device 無しテストが既に在り**、golden が
+`materialized_image 63` / `tile_local_attachment 0` /
+`selected_candidate = materialized_plan@1` で固定されている。
+**WP340 が「config 由来で機械的に示せ」と要求したものは、毎回の ctest で走っている。**
 
-**fullscreen / generic raster の resource port については、
-tile-local eligibility を `authored == true` の `same_pixel` にだけ与える。**
-**推論された `same_pixel` は materialized fallback にする。**
+#### 開けるときの条件
 
-**これで purgeability の反例は消える** —— feature C を外しても
-B の推論 `same_pixel` は eligibility を生まないので、materialized のままである。
+**次のどちらかが起きたら再検討する:**
 
-**3. runtime 側は不変条件の再検査にする**
+- **機械的反証** —— 上の golden が動く。
+  つまり出荷構成のどれかが tile-local を選ぶようになる
+- **WP342(アクセサを分ける)に着手する** —— そちらが 2 枚とも閉じる
 
-`compileFullscreenResourceInterface` では、
-**resource port が input attachment に解決されたのに `authored` な `same_pixel` が無い**なら、
-**planner と runtime の不整合として名前付きで落とす。**
-pass 名・port 名・resource 名・なぜそうなったかを含めること。
+**`fullscreen.frag` の移行より前に WP342 を入れること。**
+deferred lighting は gbuffer の attachment を読むので tile-local 融合の現実的な候補である。
 
-#### やらないこと
+---
 
-**material 経路に触れないこと。**
-material parser は footprint を binding 自身に保持し、
-input attachment 時に runtime が `same_pixel` を検査している
-(`materialpassinfojsonparser.cpp:851` / `materialcontainer.cpp:4504`)。
-**WP220 の sampled / local-read 両 ABI 契約はそのまま保つこと。**
-`surfacecompiler` / `renderingpasscontainer` の local-read ABI も変更しないこと。
+### WP342: アクセサを分ける(宣言ではなくシェーダーが選ぶ)
 
-`input_footprints` の語彙そのものの整理もしないこと。
+**台帳 `:6502-6505` が本命と名指ししている形。WP340 の替わり。**
+**§4 規則 11 の上段。仕様 + コード。着手時に仕様を書く。**
 
-#### 受け入れ条件
+#### 骨子
 
-- **実 JSON から compose → lower → compile する end-to-end テストを 3 構成で書くこと**
-  (手組み plan テストは**代用にしない**。parser と既定値付与を迂回するため):
-  1. **footprint 省略 + tile-local 候補** → materialized になること
-  2. **明示 `same_pixel`** → tile-local が選ばれること(**機能を削っていない証拠**)
-  3. **non-local materialized plan** → `combined_image_sampler` に解決されること
-- **否定対照を同じテストの中に置くこと**(§4 規約 10)——
-  同じ port が local read でない plan では
-  `ShaderResourceInterfaceBinding.descriptor == combined_image_sampler` になることを
-  **実際の解決値**で検査すること
-- **purgeability を実際に測ること** ——
-  上の反例構成(optional broad-reader feature の ON / OFF)を実 JSON で組み、
-  **OFF でも新エラーにならず、materialized のままであること**を同じテストで検査する
-- **runtime の不変条件エラーが到達不能でないことを示すこと** ——
-  planner を迂回した手組み plan で 1 回だけ発火させ、文言を検査する
-- **出荷構成のどれもこのエラーに当たらないことを config 由来の性質で機械的に示すこと**
-  (tile-local は物理プロファイル依存の候補プランなので、
-  「CI の GPU で落ちなかった」は根拠にならない):
-  - 出荷 JSON の `input_footprints` が **0 件**(実測済み)
-  - 自分の `color_load_op: "load"` attachment を `input` にも持つ
-    fullscreen / raster パスが **0 件**(実測済み)
-- doclink 緑 / 出荷 4 プロジェクト / `pelican project init`
+**同一ピクセル読みとオフセット読みで、シェーダー側の関数を別にする。**
 
-#### 既知の帰結
+```
+pelican_load_<port>()          同一ピクセル。input attachment でも sampled でも成立
+pelican_sample_<port>(uv, ...) オフセット。input attachment には解決させない
+```
 
-**fullscreen 経路では、resource port を持つパスは
-`same_pixel` を明示しないかぎり tile-local 融合の対象外になる。**
-**今日この融合に載っている出荷パスは 0 件である。**
+**オフセット版を呼んだシェーダーは、構造的に local read へ落とせなくなる。**
+**宣言を信じる代わりに、シェーダーが選んだアクセサが宣言になる。**
 
-**次に `fullscreen.frag` を port 化するとき、deferred lighting の gbuffer 融合を
-望むなら `same_pixel` を明示的に書くことになる。**
-推論された既定に頼るのをやめ、宣言に移すということである。
+#### 案 D の再演にならない理由
 
-依存: 無し。見積: 中(provenance を 4 層に通すため、初版の「小」は誤りだった)。
+**D は uv 版を「消す」案だったので、attachment を読む手段が無くなり、
+両 variant で通るソースも存在しなくなった。**
+
+**WP342 は sampled 側に 0 引数版(`texelFetch` + `gl_FragCoord`)を「足す」。**
+したがって:
+
+- input attachment 側は `pelican_load_` だけを出す(読む手段は残る)
+- sampled 側は `pelican_load_` と `pelican_sample_` の両方を出す
+- **`pelican_load_` だけを呼ぶシェーダーは両 variant で通る**(material の両 ABI 契約が保たれる)
+- **`pelican_sample_` を呼んだシェーダーは input attachment に解決されない**
+
+#### 着手時に決めること
+
+- **2 枚目の扉(`material_resources.footprint` と `input_footprints`)をどう閉じるか。**
+  台帳 `:6489-6493` が「塞ぐなら 2 枚とも」と決めている
+- **位置束縛マクロ経路**(`PELICAN_TEXTURE_2D_0` も uv を捨てる)をどうするか。
+  出荷 GPU テストの local_consumer が使っている
+- **`screen_inputs` の組み込み `same_pixel`** —— `linear_view_depth` は
+  **捨てた uv を `inverse(projection)` の中で使い続けている**。これは今日すでに誤りではないか
+- **受け入れ条件を書ける seam** —— `compileFullscreenResourceInterface` は
+  無名 namespace 内で device を要求する。**先に seam を作らないと条件が書けない**
+- 出荷 `.surface` 9 本 + `openpbr` 系と、spvlink の stub / `template_exports` への波及
+
+依存: 無し。見積: 大。
+---
 
 ### WP341: Frame Plan のノードを畳んで、中に入れるようにする
 
