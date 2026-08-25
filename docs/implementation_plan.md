@@ -10848,6 +10848,100 @@ parser は空文字だけを拒否し、trim も case-fold もしない。
 再現したら**その場で保存すること。**
 ---
 
+### WP344: 出荷の prefilter 鎖に region を書く
+
+**§4 規則 11 の中段**(出荷の engine feature JSON を変更する)。**仕様 + コード。**
+**studio の実装は変更しない。WP343 の機構が出荷内容で初めて何かを表示するようにする。**
+
+#### なぜこれか
+
+**`planar_reflection` の `filter_mip_1..6` は、feature JSON の `compute_tasks` に
+6 個手で書かれた繰り返しである。**あなたが挙げた「`for` の扱い」の実物であり、
+**今日それを 1 個の宣言に畳むことはできない**
+(subgraph replacement は fullscreen 限定で compute に乗らない)。
+
+**しかし畳んで「見る」ことは今日できる** —— `regions` は compute task でも読まれる
+(`frameplanner.cpp:936`)。
+
+#### 測ってある事実(再調査不要)
+
+**6 件はグループとして理想的な形をしている**(実測):
+
+```
+6 ノード、order 24-29 で連続、凸
+内部辺 5        mip_1 → 2 → 3 → 4 → 5 → 6 の鎖
+入る辺 1        planar_reflection_forward_transparent → mip_1
+出る辺 1        mip_6 → forward_transparent
+```
+
+**畳むとちょうど 1 ノード、入る辺 1 本・出る辺 1 本になる。**
+
+- **`regions` は fingerprint に入らない**(`logicalrendergraph.cpp` に該当なし)
+- **出荷 golden に `regions` は 1 件も無い**
+- テストは feature を ref で参照しており、JSON をバイト単位で検査していない
+
+#### やること
+
+**1. `src/core/resources/features/planar_reflection.json` の
+`compute_tasks` 6 件に `"regions": ["planar_reflection.prefilter"]` を足す**
+
+**それだけである。**他のフィールドを変更しないこと。
+
+**2. 出荷内容でグループが出ることを検査する**
+
+#### 受け入れ条件
+
+**本番経路を通すこと:**
+
+- **実際に `planar_reflection` feature を合成して**
+  resolve → compile → plan → wire → physical plan → studio model → scene を通す
+- **手組みの `FramePlanModel` を使わないこと**(本 WP は出荷内容の検査である)
+
+**検査すること:**
+
+- **グループのメンバがちょうど 6 件で、`filter_mip_1..6` と完全一致すること**
+- **畳めること**(凸である)
+- **畳んだ後、グループ item が 1 個、メンバの shape / label が 0 件**
+  (**kind 非依存で検査すること**)
+- **畳んだ後、グループに入る辺が 1 本、出る辺が 1 本であること**
+- **中に入ると 6 件が見え、外のノードが 0 件、境界スタブが 2 本
+  (`planar_reflection_forward_transparent` と `forward_transparent`)であること**
+
+**変異を実際に入れて落ちることを確かめ、報告すること:**
+
+- **6 件のうち 1 件から `regions` を外す** → メンバが 5 件になって落ちること。
+  **そのとき残り 5 件が依然として凸であることも確認し、報告すること**
+  (凸性が壊れて畳めなくなるのか、5 件のグループになるのか)
+
+**そのほか:**
+
+- **出荷 4 プロジェクトと `pelican project init`**
+- **`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` の ON / OFF 両構成**
+  (`planar_reflection` は ON でしか登録されない)
+- **既存の planar 実行テストを壊さないこと** ——
+  `GoldenHarness::runPlanarReflection()`(`test/golden_harness.cpp:9183`)は
+  `execution_trace` のノード名を**厳密一致**で検査する(件数 15)
+- `uv run tools/doclink.py check` が緑
+- `uv run test/golden_inventory.py` が緑
+
+#### やらないこと
+
+- **studio の実装を変更しないこと**(WP343 / WP343a の機構をそのまま使う)
+- 他の feature に region を書くこと
+- `filter_mip` を 1 個の宣言に畳むこと(**それは 1→N provider の仕事で、
+  compute に乗らないので engine 側の作業が要る**)
+
+#### 次
+
+**これで「出荷内容にグループが出る」状態になる。**
+その次は **1→N provider** だが、**畳みたい鎖(compute)と機構(fullscreen 限定)が
+交差しない**ので、先に engine 側の判断が要る ——
+subgraph replacement を compute に広げるか、feature が `graph_transforms` を
+要求できるようにするか。
+
+依存: WP343a(マージ済み `287ff81`)。見積: 小。
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
