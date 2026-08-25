@@ -30,6 +30,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -61,14 +62,26 @@ constexpr qreal LogicalUnavailableHeight = 140.0;
 
 using EntityPair = std::pair<std::string, std::string>;
 
+struct GroupingUnit {
+    std::string key;
+    std::string entity_base;
+    QString label;
+    QString subject;
+};
+
+struct GroupingDecision {
+    std::optional<GroupingUnit> unit;
+    QString reason;
+};
+
 struct GroupDefinition {
     std::string key;
     std::pair<std::string, std::string> state_key;
     std::string entity_name;
-    std::string feature;
     QString label;
     std::vector<std::string> members;
     bool collapsible = true;
+    bool warning_only = false;
     QString reason;
 };
 
@@ -187,14 +200,92 @@ QStringList qlist(const std::vector<std::string> &values) {
     return result;
 }
 
-// This is deliberately the only policy function that decides grouping
-// membership. When frame-plan regions are published, replacing this function
-// is sufficient; source/project provenance must not leak in as a fallback.
-std::optional<std::string> groupingUnit(const FramePlanNode &node) {
-    if (node.provider_feature.empty()) {
-        return std::nullopt;
+constexpr std::string_view LegacyRegionPrefix = "legacy.";
+
+bool isLegacyRegion(std::string_view region) {
+    return region.starts_with(LegacyRegionPrefix);
+}
+
+// This exact-name join is the sole bridge from frame-plan nodes to the
+// physical lowering graph. The producer guarantees the two name sets match;
+// keeping the lookup here makes the grouping policy independent of all other
+// physical-plan machinery.
+const FramePlanLoweringNode *loweringNode(
+    const FramePlanModel &model, const FramePlanNode &node) {
+    const auto found = std::ranges::find(
+        model.physical_plan.lowering_nodes, node.name,
+        &FramePlanLoweringNode::name);
+    return found == model.physical_plan.lowering_nodes.end() ? nullptr
+                                                             : &*found;
+}
+
+// This remains the only policy function that decides grouping membership.
+// One authored region takes precedence over provider provenance. A feature is
+// the compatibility fallback only when there is no authored region. Multiple
+// authored regions deliberately suppress both choices because choosing either
+// would silently invent overlap/nesting semantics that the view does not have.
+GroupingDecision groupingUnit(const FramePlanModel &model,
+                              const FramePlanNode &node) {
+    std::vector<std::string> authored_regions;
+    if (const FramePlanLoweringNode *lowered = loweringNode(model, node)) {
+        for (const auto &region : lowered->regions) {
+            if (!isLegacyRegion(region)) {
+                authored_regions.push_back(region);
+            }
+        }
     }
-    return "feature:" + node.provider_feature;
+    std::ranges::sort(authored_regions);
+
+    if (authored_regions.size() > 1) {
+        return GroupingDecision{
+            .reason =
+                QStringLiteral(
+                    "Node \"%1\" belongs to multiple authored regions "
+                    "(\"%2\") and is not grouped: nested or overlapping "
+                    "groups are not supported.")
+                    .arg(qtext(node.name),
+                         qlist(authored_regions)
+                             .join(QStringLiteral("\", \""))),
+        };
+    }
+    if (authored_regions.size() == 1) {
+        const std::string &region = authored_regions.front();
+        return GroupingDecision{
+            .unit = GroupingUnit{
+                .key = "region:" + region,
+                .entity_base = "__pelican_group__:region:" + region,
+                .label =
+                    QStringLiteral("Region: %1").arg(qtext(region)),
+                .subject =
+                    QStringLiteral("Region \"%1\"").arg(qtext(region)),
+            },
+        };
+    }
+    if (node.provider_feature.empty()) {
+        return {};
+    }
+    return GroupingDecision{
+        .unit = GroupingUnit{
+            .key = "feature:" + node.provider_feature,
+            .entity_base = "__pelican_group__:" + node.provider_feature,
+            .label = QStringLiteral("Feature: %1")
+                         .arg(qtext(node.provider_feature)),
+            .subject = QStringLiteral("Feature \"%1\"")
+                           .arg(qtext(node.provider_feature)),
+        },
+    };
+}
+
+QString ignoredLegacyRegionNotice(const FramePlanModel &model,
+                                  const FramePlanNode &node) {
+    const FramePlanLoweringNode *lowered = loweringNode(model, node);
+    if (lowered == nullptr ||
+        std::ranges::none_of(lowered->regions, isLegacyRegion)) {
+        return {};
+    }
+    return QStringLiteral(
+        "Region tags beginning with \"legacy.\" are compatibility tags and "
+        "are ignored for grouping, including tags authored with that prefix.");
 }
 
 std::pair<std::string, std::string> groupStateKey(
@@ -216,7 +307,7 @@ std::string groupStateId(
 }
 
 QString nonConvexReason(
-    const FramePlanModel &model, const std::string &feature,
+    const FramePlanModel &model, const QString &subject,
     const std::set<std::string, std::less<>> &members) {
     std::map<std::string, std::vector<std::string>, std::less<>> adjacency;
     for (const auto &dependency : model.dependencies) {
@@ -257,10 +348,10 @@ QString nonConvexReason(
         for (const auto &destination : outgoing->second) {
             if (members.contains(destination)) {
                 return QStringLiteral(
-                           "Feature \"%1\" cannot be collapsed because it is "
+                           "%1 cannot be collapsed because it is "
                            "not convex: a dependency path leaves member \"%2\", "
                            "passes through \"%3\", and returns to member \"%4\".")
-                    .arg(qtext(feature), qtext(exit_member.at(outside)),
+                    .arg(subject, qtext(exit_member.at(outside)),
                          qtext(outside), qtext(destination));
             }
             if (visited.insert(destination).second) {
@@ -274,14 +365,31 @@ QString nonConvexReason(
 
 std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
     std::map<std::string, std::vector<std::string>, std::less<>> members_by_key;
-    std::map<std::string, std::string, std::less<>> feature_by_key;
+    std::map<std::string, GroupingUnit, std::less<>> units_by_key;
+    std::vector<GroupDefinition> warnings;
     for (const auto &node : model.nodes) {
-        const auto unit = groupingUnit(node);
-        if (!unit) {
+        GroupingDecision decision = groupingUnit(model, node);
+        if (!decision.reason.isEmpty()) {
+            const std::string key =
+                "diagnostic:multiple-regions:" + node.name;
+            warnings.push_back(GroupDefinition{
+                .key = key,
+                .state_key = groupStateKey(model, key),
+                .entity_name = "__pelican_group_warning__:" + node.name,
+                .label = QStringLiteral("Node: %1").arg(qtext(node.name)),
+                .members = {node.name},
+                .collapsible = false,
+                .warning_only = true,
+                .reason = std::move(decision.reason),
+            });
             continue;
         }
-        members_by_key[*unit].push_back(node.name);
-        feature_by_key.emplace(*unit, node.provider_feature);
+        if (!decision.unit) {
+            continue;
+        }
+        members_by_key[decision.unit->key].push_back(node.name);
+        units_by_key.emplace(decision.unit->key,
+                             std::move(*decision.unit));
     }
 
     std::set<std::string, std::less<>> occupied_names;
@@ -295,12 +403,13 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
             continue;
         }
         std::ranges::sort(members);
-        const std::string &feature = feature_by_key.at(key);
+        const GroupingUnit &unit = units_by_key.at(key);
         const std::set<std::string, std::less<>> member_set{members.begin(),
                                                             members.end()};
-        const QString reason = nonConvexReason(model, feature, member_set);
+        const QString reason =
+            nonConvexReason(model, unit.subject, member_set);
 
-        const std::string base_name = "__pelican_group__:" + feature;
+        const std::string &base_name = unit.entity_base;
         std::string entity_name = base_name;
         std::size_t suffix = 2;
         while (occupied_names.contains(entity_name)) {
@@ -312,13 +421,13 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
             .key = key,
             .state_key = groupStateKey(model, key),
             .entity_name = std::move(entity_name),
-            .feature = feature,
-            .label = QStringLiteral("Feature: %1").arg(qtext(feature)),
+            .label = unit.label,
             .members = std::move(members),
             .collapsible = reason.isEmpty(),
             .reason = reason,
         });
     }
+    groups.insert(groups.end(), warnings.begin(), warnings.end());
     return groups;
 }
 
@@ -1171,6 +1280,9 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     std::map<std::string, const GroupDefinition *, std::less<>>
         group_for_node;
     for (const auto &group : groups) {
+        if (group.warning_only) {
+            continue;
+        }
         for (const auto &member : group.members) {
             group_for_node.emplace(member, &group);
         }
@@ -1548,6 +1660,11 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                                    : QStringLiteral("\n%1").arg(
                                          node_group->second->reason);
                 }
+                const QString legacy_notice =
+                    ignoredLegacyRegionNotice(model, node);
+                if (!legacy_notice.isEmpty()) {
+                    tooltip += QStringLiteral("\n%1").arg(legacy_notice);
+                }
                 item->setToolTip(tooltip);
                 addNodeLabel(*item, node, model.graph);
                 node_items.emplace(node.name, item);
@@ -1878,7 +1995,7 @@ void FramePlanGraphicsScene::contextMenuEvent(
                    ->data(FramePlanGroupCollapsibleRole)
                    .toBool()) {
         QAction *collapse =
-            menu.addAction(QStringLiteral("Collapse feature group"));
+            menu.addAction(QStringLiteral("Collapse group"));
         connect(collapse, &QAction::triggered, this,
                 [this, group_id] {
                     QMetaObject::invokeMethod(
@@ -1890,8 +2007,7 @@ void FramePlanGraphicsScene::contextMenuEvent(
         QString reason =
             semantic_item->data(FramePlanReasonRole).toString();
         if (reason.isEmpty()) {
-            reason = QStringLiteral(
-                "This feature group cannot be collapsed.");
+            reason = QStringLiteral("This group cannot be collapsed.");
         }
         QAction *disabled = menu.addAction(reason);
         disabled->setEnabled(false);
