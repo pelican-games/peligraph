@@ -10341,49 +10341,189 @@ deferred lighting は gbuffer の attachment を読むので tile-local 融合�
 
 ---
 
-### WP342: アクセサを分ける(宣言ではなくシェーダーが選ぶ)
+### WP342: 取り下げ。負担の置き場所が違った(第 2 版)
 
-**台帳 `:6502-6505` が本命と名指ししている形。WP340 の替わり。**
-**§4 規則 11 の上段。仕様 + コード。着手時に仕様を書く。**
+**着手しない。替わりに立てるのは `### WP345:` である。**
 
-#### 骨子
+#### なぜ取り下げるか
 
-**同一ピクセル読みとオフセット読みで、シェーダー側の関数を別にする。**
+**アクセサを分ける案は、シェーダー作者に「自分がどう読むか」を名乗らせる。**
+**ぼかしを書く人はタイルメモリを知る必要が無いし、知りたくもない。**
+負担を、恩恵を受けない側に置いている。
+
+**そして自然に書くと誰も融合を選ばない** ——
+fullscreen パスで自分のピクセルを読むのも `texture(v, inTexCoord)` なので、
+**素直に書けば全員が「どこでも読む」側を呼ぶ。**負担だけ増えて効果が出ない。
+
+#### 台帳の決定との関係
+
+`:6502-6505` の**向きは正しかった** ——「宣言を信じない」。
+**しかし文言(シェーダーが選んだアクセサが宣言になる)は実装不能である。**
+
+**物理プランはシェーダーを一度も見ずに確定する:**
+
+- `compileRenderingTargetPlans` はシェーダーも shader library も PathResolver も受け取らない
+- `FrameGraphNodeDefinition` にシェーダー名も `resource_ports` も無い
+- `compileRenderingPassRuntime` は `target_plans` が出来た**後**に回る
+- `surfacecompiler.hpp:28-30` が逆向きの契約を明記している
+
+実装できるのは「宣言と食い違ったら落とす」までで、
+**それは B1 を潰した purgeability の反論をそのまま継承する**
+(広い footprint で読む optional feature を purge すると残りが新規にハードエラー)。
+しかも診断が shaderc のエラーになる分だけ悪い。
+
+#### 届く範囲も狭かった
+
+- **tile-local に入る経路は 2 つではなく 5 つ。**
+  5 枚目は作者が 1 文字も書かない暗黙経路で、**対応するアクセサが存在しない**
+- **fullscreen が入力を読む流儀は 3 種類**あり、生成 port はその 1 つ。
+  **出荷 `projects/example` の fullscreen 21 パス中 12 パス**(bloom 鎖)は
+  `layout(set = PELICAN_SET_PASS_INPUT) uniform sampler2D` の手書きで、
+  **分けるべきアクセサが存在しない**
+  (救い: その流儀は黙って壊れず大きく落ちる。
+   tile_local を選んだ RT は SAMPLED usage を剥がされる)
+
+---
+
+### WP345: 推論をやめる。融合は宣言と組み込み契約だけから
+
+**§4 規則 11 の上段(engine の挙動が変わる)。仕様 + コード。**
+
+#### 決めたこと(利用者の判断・2026-08-25)
 
 ```
-pelican_load_<port>()          同一ピクセル。input attachment でも sampled でも成立
-pelican_sample_<port>(uv, ...) オフセット。input attachment には解決させない
+シェーダー作者   ぼかしを書く。タイルメモリを知らない。何も宣言しない
+パス作者         融合してほしいなら「同じピクセルしか読まない」と書く
+エンジン         言われたときだけ融合する。推論しない
 ```
 
-**オフセット版を呼んだシェーダーは、構造的に local read へ落とせなくなる。**
-**宣言を信じる代わりに、シェーダーが選んだアクセサが宣言になる。**
+**負担を、恩恵を受ける側(パス作者)に置く。**
 
-#### 案 D の再演にならない理由
+#### 塞ぐもの
 
-**D は uv 版を「消す」案だったので、attachment を読む手段が無くなり、
-両 variant で通るソースも存在しなくなった。**
+`logicalframegraphadapter.cpp:376-389` が、
+**`load` attachment かつ `reads` にある resource の footprint を
+`same_pixel` と推論する。**作者は 1 文字も書いていない。
 
-**WP342 は sampled 側に 0 引数版(`texelFetch` + `gl_FragCoord`)を「足す」。**
-したがって:
+そこから tile-local が選ばれると、生成 accessor は uv を捨て、
+**5×5 のぼかしが黙って同一ピクセル 25 回になる。**
+**desktop と tile-based で別の絵が出る。**
 
-- input attachment 側は `pelican_load_` だけを出す(読む手段は残る)
-- sampled 側は `pelican_load_` と `pelican_sample_` の両方を出す
-- **`pelican_load_` だけを呼ぶシェーダーは両 variant で通る**(material の両 ABI 契約が保たれる)
-- **`pelican_sample_` を呼んだシェーダーは input attachment に解決されない**
+#### 実測(再調査不要)
 
-#### 着手時に決めること
+```
+出荷 JSON の明示 same_pixel        0 件
+出荷 JSON の input_footprints      0 件
+load-op 推論が発火する出荷パス      0 件
+```
 
-- **2 枚目の扉(`material_resources.footprint` と `input_footprints`)をどう閉じるか。**
-  台帳 `:6489-6493` が「塞ぐなら 2 枚とも」と決めている
-- **位置束縛マクロ経路**(`PELICAN_TEXTURE_2D_0` も uv を捨てる)をどうするか。
-  出荷 GPU テストの local_consumer が使っている
-- **`screen_inputs` の組み込み `same_pixel`** —— `linear_view_depth` は
-  **捨てた uv を `inverse(projection)` の中で使い続けている**。これは今日すでに誤りではないか
-- **受け入れ条件を書ける seam** —— `compileFullscreenResourceInterface` は
-  無名 namespace 内で device を要求する。**先に seam を作らないと条件が書けない**
-- 出荷 `.surface` 9 本 + `openpbr` 系と、spvlink の stub / `template_exports` への波及
+**最後の数は `input` だけでなく `screen_inputs` / `material_resources` /
+`surface_resources` / `reads` も含めて数えた。**
+`color_load_op` / `depth_load_op` が `load` の出荷パスは 12 本あるが、
+**自分がロードする attachment を読んでもいるパスは 1 本も無い。**
 
-依存: 無し。見積: 大。
+**したがってこの推論を外しても、今日の出荷内容は 1 ビットも変わらない。**
+
+いま同一ピクセル読みとして成立しているのは
+**`screen_inputs` の組み込み契約**(`opaque_color` / `opaque_depth` /
+`scene_depth` / `linear_view_depth`)だけで、
+**それは構造的に正しい** —— 透過パスが背後の不透明色を自分のピクセルで読む定義そのものである。
+
+#### やること
+
+1. **`load` attachment からの `same_pixel` 推論をやめる。**
+   宣言が無ければ `arbitrary` にする
+2. **融合の資格は「明示宣言」と「組み込み契約」からのみ与える**
+3. **宣言とシェーダーが食い違ったら警告を出す**(下記の限界を承知の上で)
+
+#### 警告の限界を仕様に明記すること
+
+**食い違いの検出は、食い違いが害を生む構成でしか起きない。**
+
+作者が `same_pixel` と書いたのにシェーダーが実際は隣を読んでいても、
+**それが分かるのは融合が選ばれたときだけである。**
+**desktop では融合が選ばれないので警告も出ない。**
+開発機で気づけず、tile-based で初めて出る。
+
+**したがって守っているのは「宣言しない限り融合しない」のほうであり、
+警告は追加の保険である。仕様にそう書くこと。**
+
+#### purgeability(ここが 4 案潰れた理由の解消)
+
+```
+潰れた案(B1/WP342): feature を外す → 融合が可能になる → 誰も宣言していないパスが新規にエラー
+本案:                feature を外す → 融合が可能になる → 宣言した人のパスだけが融合される
+```
+
+**融合されるのは「安全だと誰かが保証したパス」だけになるので、
+外したことで新しい失敗が生まれない。**
+
+#### 受け入れ条件
+
+**本番経路を通すこと。手組み plan で parser と既定値付与を迂回しないこと。**
+
+- **推論が消えたことの否定対照を同じテストの中に置く:**
+  同じ resource について、**明示宣言があるとき**と**無いとき**を
+  同じテストで compose → lower → plan まで通し、
+  **前者だけが `widest_read == same_pixel` になること**を実際の解決値で検査する
+- **出荷 4 プロジェクトの物理プランが 1 ビットも変わらないこと。**
+  **tile-local を全部有効にした device 無しテスト**(golden が
+  `materialized_image 63` / `tile_local_attachment 0` /
+  `selected_candidate = materialized_plan@1` で固定されているもの)が
+  **変更前後で同一であること**
+- **`screen_inputs` の組み込み契約が引き続き `same_pixel` を持つこと**
+- **警告が出る構成を 1 つ作り、実際に出ることを検査する。**
+  **そのとき「desktop では出ない」ことも同じテストで示すこと**
+  (警告の限界が仕様であることを、テストが記録する)
+- 出荷 4 プロジェクトと `pelican project init` / doclink 緑
+
+#### やらないこと
+
+- アクセサを分けること(WP342、取り下げ)
+- `material_resources.footprint` と `input_footprints` の語彙整理
+- 位置束縛マクロ経路と手書き sampler 流儀
+- `pelican_size_` の修正(**WP346。独立に直せる**)
+
+依存: 無し。見積: 中。
+
+---
+
+### WP346: tile-local のとき `pelican_size_` が嘘をつく
+
+**§4 規則 11 の上段。仕様 + コード。WP345 と独立。**
+
+#### 何が起きているか
+
+生成 accessor は input attachment のとき:
+
+```glsl
+ivec2 pelican_size_<port>() { return ivec2(pelicanResolution.render_resolution.xy); }
+```
+
+**フレーム全体の描画解像度を返す。**
+
+**しかし tile-local scope の extent は `getLocalReadScopeTargetExtent` が
+scope の attachment 群から導き、全 attachment の一致を要求し、
+フレーム解像度を一度も参照しない。**
+
+**出荷 `projects/example` には `extent_scale` が
+0.5 / 0.25 / 0.125 / 0.0625 の RT が 8 本ある。**
+**そこで local read が起きれば、最大 16 倍ずれた数字がシェーダーに返る。**
+
+#### やること
+
+**`pelican_size_` が、その port が実際に読む対象の extent を返すようにする。**
+
+`pelican_size_lod_` も同じ。
+
+#### 受け入れ条件
+
+- **描画解像度と異なる extent を持つ構成で、
+  `pelican_size_` が正しい値を返すことを実際の解決値で検査する**
+- **その構成で、修正前の値(描画解像度)と異なることを同じテストで示すこと**
+- 出荷 4 プロジェクト / doclink 緑
+
+依存: 無し。見積: 小〜中。
 ---
 
 ### WP341: Frame Plan のノードを畳んで、中に入れるようにする
