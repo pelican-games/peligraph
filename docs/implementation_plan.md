@@ -11090,6 +11090,131 @@ subgraph replacement を compute に広げるか、feature が `graph_transforms
 依存: WP343a(マージ済み `287ff81`)。見積: 小。
 ---
 
+### WP347: 見えている部分木の同期を辺に描く
+
+**§4 規則 11 の下段(studio 内で閉じる・読み取りのみ・表示だけ)。コードレビューのみ。**
+**engine を一切変更しない。**
+
+#### 名乗れる範囲を先に決める
+
+**「同期を見せる」とは名乗らない。「いま見えている部分木の同期を見せる」である。**
+
+**Frame Plan のグラフはフレームグラフ全体ではない** ——
+選択した 1 リソースの、深さ制限つき**部分木**である。
+**両端のどちらかが可視窓の外にある依存は捨てられるので、
+「辺が無いのにバリアが在る」は例外ではなく通常状態である。**
+ターゲット未選択ならノード 0 件、それでも `model.barriers` は満杯のまま。
+
+#### 測ってある事実(再調査不要)
+
+**1. studio は既にバリアを持っている。**
+
+- `FramePlanBarrier` は 4 フィールド: `kind` / `resource` / `from` / `to`
+  (`frameplanmodel.hpp:95-102`)。engine 側と完全に同じで、落としているものは無い
+- **ノードごとに `incoming_barriers` / `outgoing_barriers`**(`:89-90`)——
+  `model.barriers` への添字。**studio の `buildFramePlanModel` が埋めている**
+  (engine からは送られてこない)
+
+**2. 辺はバリアから引かれていない。**
+
+- **辺は `execution_plan.dependencies` から引かれ、ノード対ごとに束ねられる**
+- **`barriers` は root 直下、`dependencies` は `execution_plan` の中** —— 取得元が違う
+- **`dependencies ⊇ barriers`** —— 1 本のバリアは必ず 1 本の dependency になるが、
+  逆は成り立たない(`explicit_after` / `explicit_before` / `snapshot_after` は
+  resource が空でバリアを持たない)
+- **`execution_plan` が unavailable だと `dependencies` は空のまま**、
+  **`barriers` は在る**
+
+**3. 種別は少ない。**
+
+- **バリアの kind は 2 つだけ**: `read_after_write` / `write_after_write`
+  (enum ではなく素の `std::string`)
+- **dependency の reason は 5 つ**: 上の 2 つ + `explicit_after` / `explicit_before` /
+  `snapshot_after`
+
+**4. 同期の実質は publish されていない。**
+
+**stage mask / access mask / layout 遷移 / queue family / by-region は 1 つも
+publish されていない。**実行時に `renderer.cpp` と `render_pass_executor.cpp` で
+ハードコードされている。
+
+**publish されていて、かつ意味のあるもの:**
+
+- **「by-region 相当」の論理情報**(footprint = `same_pixel` かつ intent = attachment)
+- **そのバリアが融合 scope に吸収されるか**(physical の `scopes.local_reads`)
+
+**5. いまバリアが出ている場所は 3 つ。**
+
+`frameplangraphics.cpp` に `barrier` の語は**1 件も無い**。
+出ているのは frameplanwidget の Barriers タブ / Passes 詳細ツリー / ステータス行。
+
+**6. 畳んだグループの内部バリアは辺にならない。**
+`internal_records` の文字列に退避する(WP341 の機構)。
+
+#### やること
+
+**1. 辺にバリアの情報を出す**
+
+辺は既にラベル箱とテキストを持つ(`x N` 表記)。そこに:
+
+- **その辺が持つバリアの kind**(`read_after_write` / `write_after_write`)
+- **バリアを持たない依存**(`explicit_after` / `explicit_before` / `snapshot_after`)を
+  **バリアのある辺と区別できるようにする**。
+  **順序だけの辺と、同期を伴う辺は違うものである**
+- **融合 scope に吸収されるバリア**を区別する
+
+**2. 見えていないバリアを黙らせない**
+
+**可視窓の外に落ちたバリアの件数を出すこと。**
+「同期が無い」と「同期が見えていない」を区別できること。
+
+**`execution_plan` が unavailable のとき、
+`barriers` は在るのに辺が 1 本も無い状態になる。そこも明示すること。**
+
+**3. publish されていないものを描かないこと**
+
+stage / access / layout / queue family は**無い**。
+**「同期を見せている」と誤解させる表示をしないこと。**
+出せるのは kind と、by-region 相当と、融合吸収の 3 つだけである。
+
+#### 受け入れ条件
+
+**本番経路を通すこと。手組みの `FramePlanModel` を許すのは、
+本番経路で作れない状態だけ。**
+
+**否定対照を同じテストの中に置くこと:**
+
+- **バリアを持つ辺と、順序だけの辺(`explicit_after` など)を
+  同じ frame plan の中に作り、両者の表示が異なることを検査する**
+- **kind 非依存で item を数えないこと** ——
+  WP341a の `namedShapesAndLabels` の流儀に従う
+
+**見えていないバリア:**
+
+- **可視窓を狭めて(depth を下げて)、窓の外に落ちたバリアの件数が
+  実際に表示されることを検査する**
+- **ターゲット未選択でノード 0 件のとき、`model.barriers` が満杯であることと、
+  その旨が表示されることを検査する**
+
+**融合との組み合わせ:**
+
+- **畳んだグループの内部バリアが辺として出ず、
+  かつ「内部に N 本ある」ことが分かることを検査する**
+
+**そのほか:**
+
+- `SKIP_DEVSTUDIO=ON` でビルドが通ること
+- `uv run tools/doclink.py check` が緑
+
+#### やらないこと
+
+- **engine を変更しないこと。**stage / access / layout を publish するのは別 WP(上段)
+- 実行時間の表示(別件。`gpu_timing` は studio の player で有効にできない)
+- Barriers タブ / 詳細ツリーの作り替え
+
+依存: WP341 / WP343(マージ済み)。見積: 小〜中。
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
