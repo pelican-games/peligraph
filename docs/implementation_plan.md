@@ -11215,6 +11215,92 @@ stage / access / layout / queue family は**無い**。
 依存: WP341 / WP343(マージ済み)。見積: 小〜中。
 ---
 
+### WP348: 複数ノードのループを実際に走らせて測る
+
+**§4 規則 11 の中段(engine の挙動は変えないが、engine の振る舞いを観測する)。仕様 + コード。**
+**production コードを変更しない。出荷 JSON も変更しない。**
+
+#### なぜこれが要るか
+
+**`for` をどう設計するかの判断材料が、いま「読んだコード」しか無い。**
+
+**出荷で走っているループは `animgraph_demo` の `shadow_directional` ただ 1 つで、
+その family のノードは 1 個である。**
+つまり **scope-major のループ分裂を、出荷構成が一度も非退化に実行していない。**
+
+**`cube_capture` は唯一の非退化なループ本体**(8 ノード・N=6)だが、
+**出荷宣言 0 件。**`planar_reflection` も `clustered_lighting` も 0 件。
+
+**誰も複数ノードのループを走らせたことがない。**
+
+#### 測ってある事実(再調査不要)
+
+- **スケジューラは scope-major** ——
+  `for i {A;B;C}` ではなく `for i{A}; for i{B}; for i{C}` の**ループ分裂**。
+  `buildLogicalFrameViewFamilySchedule` が execution_index × scope_node の二重ループで
+  N×M 個の `LogicalFrameNodeInvocation` を push し、**全部同じ `node_index` を指す**
+- **反復間にバリアが入らない** ——
+  `addWriteAfterWriteBarriers` は**異なるノード間しか歩かず**、
+  `validateWritesAreOrdered` は `j=i+1` なので**同一ノードの自己 WAW を構造上見られない**
+- **`cube_capture` は自前で `render_targets` を宣言している**ので、
+  features に 1 行足すだけで有効になる。**engine 改変不要**
+- **これらは全部 CPU 側の計画である。**device 無しで観測できる
+
+#### やること
+
+**テストの中で `hybrid_v1` + `cube_capture` を合成し、本番経路を通して観測する。**
+
+**出荷プロジェクトを変更しないこと** —— WP343 / WP344 の fixture と同じ流儀で、
+テストが config を組んで `resolveRenderPipeline` から通すこと。
+
+**まず測って報告すること。数字を先に決めないこと。**
+
+1. **invocation 列の形** ——
+   `LogicalFrameNodeInvocation` の列を実際に取り出し、
+   **`for i{A}; for i{B}` なのか `for i {A;B}` なのか**を実物で示せ。
+   **8 ノード × 6 view の 48 invocation がどの順に並ぶか**
+2. **各中間資源の層数** ——
+   `$capture/cube` family の資源が何層で確保されるか。**6 層か、1 層か**
+3. **反復間のバリア** ——
+   **同じノードの反復 i と i+1 のあいだにバリアが在るか。**
+   `model.barriers` と `execution_plan.dependencies` の両方で確かめよ。
+   **WP347 が入ったので、辺の表示からも確認できる**
+
+**測った結果を assertion として固定すること。**
+**ただし「こうなるはず」で書かず、測った値を書くこと。**
+**予想と違ったら、その旨を報告に明記すること。**
+
+#### 受け入れ条件
+
+**本番経路を通すこと。手組みの `FramePlanModel` を使わないこと。**
+
+- **上の 3 点それぞれについて、実測値を assertion で固定していること**
+- **`cube_capture` の 8 ノードがグループとして畳めること**(WP343 の機構)——
+  **凸かどうかも実測し、報告すること**
+- **device 無しで走ること**(GPU を要求しないこと)
+- **`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` では `SKIP`**(`SUCCEED` ではなく)
+- **`PELICAN_RUNTIME_SHADER_COMPILER=OFF` でも成立すること。
+  成立しないなら `SKIP` し、理由を報告すること**
+- `uv run tools/doclink.py check` が緑
+
+#### やらないこと
+
+- **production コードを変更しないこと**
+- **出荷 JSON を変更しないこと**(有効化はテストの中だけ)
+- ループ機構を作ること / 直すこと
+- 反復間バリアを足すこと
+
+#### 次
+
+**この測定が `for` の設計の出発点になる。**
+特に **3 番(反復間バリア)** が、
+「ループエリアの中に複数ノードを入れる」を設計するときの最初の判断になる ——
+**鎖のループ(FFT・ブラー)は反復間の同期を要求するが、
+今日のエンジンは同一ノードの自己 WAW を構造上見られない。**
+
+依存: WP343 / WP347(マージ済み)。見積: 小。
+---
+
 ### XR2b 分割 WP の逐語条件と所有権
 
 初回レビューの逐語条件:
