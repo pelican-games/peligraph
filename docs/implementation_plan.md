@@ -12594,3 +12594,170 @@ golden テストが回帰を機械的に守る。
 完了条件: WPN の受け入れ基準 + §0 の共通規則。
 逸脱・不明点があれば実装せずに質問すること。
 ```
+
+### WP351: ノードごとの GPU 実行時間を、グラフのノードの上に出す
+
+**§4 規則 11 の中段(`pelican_project` / 複数経路)。仕様レビュー + コードレビュー。**
+**engine を変更する。**
+
+#### 目的
+
+**利用者が求めたのは「パスにおけるノードごとの実行時間の表示」であり、**
+**「あくまで数フレームの平均でいい」と明示されている。**
+WP347 が同期(バリア)の辺を描いたので、**残るのは時間の側だけである。**
+
+#### 先に測った事実(再調査不要。すべて本 WP 執筆時に読んで確かめた)
+
+**1. `gpu_timing` はパスを 1 つも宣言しない。**
+
+`src/core/resources/features/gpu_timing.json` の中身は
+`schema` / `version` / `name` の 3 フィールドのみで、`passes` も `compute_tasks` も無い。
+
+**したがって studio の overlay に足しても frame plan は変わらない ——
+ノードも辺も増えない。** WP341/343/347/349/350 のグラフテストが動かない根拠はこれである。
+**この前提が崩れたら(足したらノードが増えたら)、実装を進めず報告すること。**
+
+**2. 有効化は起動時にしかできない。その理由まで辿ってある。**
+
+```
+src/core/vkcore/renderer.cpp:298
+    isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr
+```
+
+**renderer の構築時に、feature の有無でモジュールを作るか決めている。**
+`src/core/vkcore/renderer_config.cpp:68-71` が `gpu_timing` の要求モジュールを
+`RenderTiming` と宣言し、`runtimeModuleInitialized<RenderTiming>` で
+**「既に初期化されているか」を見る。**
+だから後から足すと `src/core/communication/renderconfigeditor.cpp:510` の
+`restart_required_feature` で弾かれる。**これは正しい挙動であって、直す対象ではない。**
+
+**3. studio の player の overlay は今 2 つしか持っていない。**
+
+`src/core/resources/features/editor.json` は
+`engine://features/gizmo.json` と `engine://features/picking.json` のみ。
+**ここに `gpu_timing` を足すのが、起動時に有効化する唯一の素直な経路である。**
+
+**4. 欲しい集計は既に内部に在る。ただし平均ではない。**
+
+- `GpuTimingNodeRow`(`src/core/vkcore/rendertiming.hpp:65`)が
+  view / node_ordinal / node_kind / node_name / `barriers_ms` / `body_ms` を持つ
+- `latestNodeRows()`(同 `:180`)を imgui が
+  `src/core/imgui/imguisystem.cpp:139-175` の表で既に描いている
+- **しかしこれは `gpu_history.back()`、すなわち最新 1 フレームだけである**
+  (`src/core/vkcore/rendertiming.cpp:438-481`)。
+  `statusJson()` が出す `"nodes"` も同じ 1 フレームである
+
+**利用者が言った「数フレームの平均」は、今どこにも存在しない。それを作るのが本 WP の中核である。**
+
+**5. 履歴は 120 フレーム分ある。**
+
+`gpu_timing_history_capacity = 120`(`src/core/vkcore/rendertiming.hpp:17`)。
+**窓平均の材料は足りている。**
+
+**6. studio は `get_status` を一度も呼んでいない。**
+
+`get_status`(`src/core/communication/rpcserver.cpp:1143`)の呼び手は
+`test/rpc_color_contract_test.cpp:217` と `tools/pelican_rpc.py:146` だけで、
+**`src/devstudio/` に 1 件も無い。**
+
+**したがって `get_status` に相乗りする理由が無い。**
+`get_status` は `logical_frame_history` を 120 件、identity 文字列込みで積むので重い
+(**過去の作業で 1.91 MiB/call と報告されているが、私は自分で測っていない。
+実装時に自分で測って報告すること**)。
+**表示のために周期的に叩く口としては不適である。**
+
+#### やること
+
+**1. 窓平均を作る(engine)**
+
+`RenderTiming` に、**直近 N フレームにわたる per-node 平均**を持たせる。
+
+- 鍵は既存の `NodeKey` と同じ `(view_index, node_ordinal, node_kind, node_name)`
+  (`rendertiming.cpp:445-447` に既にある)
+- **`barriers_ms` と `body_ms` を別々に平均すること。**WP347 が同期を辺に描いたので、
+  **バリアの時間と本体の時間が分かれていることに意味がある**
+- **N は固定値を 1 箇所に置くこと。**`gpu_timing_history_capacity` を使い切らず、
+  **数フレーム(例えば 30)にすること** —— 利用者の要求は「数フレームの平均」である
+- **履歴が N に満たない間は、実際に使ったフレーム数を一緒に返すこと。**
+  「まだ 3 フレームしか無い」と「30 フレームの平均」を利用者が区別できること
+
+**2. 軽い RPC を 1 本足す(engine)**
+
+**`get_status` を変更しないこと。**新しい口を足す。
+
+- 返すのは per-node の平均行の配列と、使ったフレーム数、対応状況(`supported` / `reason`)
+- **`logical_frame_history` を含めないこと。**これが軽さの根拠である
+- **`gpu_timing` が無効なときも、エラーではなく「無効である」と分かる形で返すこと。**
+  studio が「時間が取れない理由」を出せること
+- **応答の実測バイト数を報告すること**(数 KB に収まっていること)
+
+**3. studio の overlay に `gpu_timing` を足す**
+
+`src/core/resources/features/editor.json` に `engine://features/gpu_timing.json` を足す。
+
+- **これは studio が起動する player にだけ効く。出荷プロジェクトの config は変えない**
+- **パージ性を下げないこと** —— `gpu_timing` が出荷ビルドから purge できる状態を保つ。
+  **overlay に足すことがそれを妨げないことを、根拠付きで報告すること**
+
+**4. ノードの上に出す(studio)**
+
+- WP347 の同期表示と**同じノードの上**に、平均の `body_ms` と `barriers_ms` を出す
+- **名前で突き合わせること。**突き合わないノードがあれば、
+  **黙って 0 を出さず「時間が取れていない」と分かる表示にすること**
+- **周期は studio 側が決める。**フレームごとに引かないこと(平均なので不要)
+- **無効なとき / 未対応の GPU のときに、理由が出ること**
+
+#### 受け入れ条件
+
+**否定対照を同じテストの中に置くこと(§4 規約 10)。**
+**それぞれについて「何を取り消したら落ちるか」を書くこと。**
+
+**平均であること:**
+
+- **同じノードに、値の異なるフレームを複数投入し、
+  平均が「最新フレームの値」とも「最初のフレームの値」とも異なることを検査すること。**
+  最新 1 フレームを返す実装に差し替えたら落ちること
+- **`barriers_ms` と `body_ms` が別々に平均されていること** ——
+  片方だけ変化させ、もう片方が動かないこと
+- **窓 N を超えた古いフレームが平均に入らないこと** ——
+  N+1 フレーム目を入れたとき、1 フレーム目の寄与が消えること
+- **履歴が N 未満のときに、返るフレーム数が実際の件数であること**
+
+**軽さ:**
+
+- **新 RPC の応答に `logical_frame_history` が含まれないこと**を構造として検査すること
+- **`get_status` の応答が本 WP の前後で変わらないこと** ——
+  既存の契約テストが通ること
+
+**frame plan が変わらないこと(1 の前提):**
+
+- **`editor.json` に `gpu_timing` を足す前と後で、
+  frame plan のノード集合と辺集合が完全に一致することを、同じテストの中で比較すること。**
+  **これが本 WP で最も重要な検査である。**足したらノードが増えるなら設計が崩れる
+
+**無効なとき:**
+
+- `gpu_timing` が無効な player に対して新 RPC を呼び、
+  **エラーではなく「無効」と分かる応答が返ること**
+- **studio がその理由を表示すること**(0 を出さないこと)
+
+**そのほか:**
+
+- **`SKIP_DEVSTUDIO=ON` でビルドが通ること**
+- `uv run tools/doclink.py check` が緑
+- **GPU 込みで 1 回全数を回すこと**
+
+#### やらないこと
+
+- **`get_status` の中身を変えること**
+- **CPU 側の時間を出すこと**(本 WP は GPU タイムスタンプだけ)
+- 出荷プロジェクトの config に `gpu_timing` を足すこと
+- 時間の履歴グラフ / 折れ線の表示(平均の数値だけでよい)
+- `for` / ループの表現(別 WP)
+
+#### 次
+
+**`for` の表現。**WP348 が「複数ノードのループ本体は今の出荷内容に存在しない」ことを
+実測で示したので、**設計から作ることになる。**
+
+依存: WP347。見積: 中。
