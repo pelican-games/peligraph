@@ -424,6 +424,10 @@ resolveMaterialResourceInterface(
         shader_library.get(
             info.frag_shader)
             .compiler_resource_interface;
+    const auto &surface_resources =
+        shader_library.get(
+            info.frag_shader)
+            .surface_resource_interface;
 
     std::vector<ShaderResourceInterfaceBinding>
         result;
@@ -479,6 +483,23 @@ resolveMaterialResourceInterface(
                 "material resource port '" +
                 port.name +
                 "' input attachment must be fragment-only");
+        }
+        const auto generated = std::find_if(
+            surface_resources.begin(),
+            surface_resources.end(),
+            [&](const auto &binding) {
+                return binding.port.name ==
+                       port.name;
+            });
+        if (input_attachment &&
+            (generated ==
+                 surface_resources.end() ||
+             !generated
+                  ->input_attachment_extent)) {
+            throw std::runtime_error(
+                "material resource port '" +
+                port.name +
+                "' input attachment has no generated resolved extent");
         }
         result.push_back(
             ShaderResourceInterfaceBinding{
@@ -544,6 +565,11 @@ resolveMaterialResourceInterface(
                                       none,
                 .input_attachment_index =
                     found->input_attachment_index,
+                .input_attachment_extent =
+                    input_attachment
+                        ? generated
+                              ->input_attachment_extent
+                        : std::nullopt,
                 .buffer_element = port.element,
                 .expected_stages =
                     materialResourceStages(port.stage),
@@ -2887,6 +2913,27 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
+static void appendSurfaceResourceLocalReadDefines(
+    std::vector<std::string> &defines,
+    std::size_t resource_index,
+    std::uint32_t input_attachment_index,
+    const std::optional<vk::Extent2D> &extent,
+    std::string_view resource_name) {
+    if (!extent) {
+        throw std::runtime_error(
+            "material resource port '" +
+            std::string{resource_name} +
+            "' input attachment has no resolved extent");
+    }
+    const auto generated =
+        makeSurfaceResourceLocalReadDefines(
+            resource_index,
+            input_attachment_index, *extent);
+    defines.insert(
+        defines.end(), generated.begin(),
+        generated.end());
+}
+
 static std::vector<MaterialPassRenderingBinding>
 materialBindingsForGeneration(
     const RendererRuntimeGeneration &generation,
@@ -3033,6 +3080,11 @@ materialBindingsForGeneration(
                         },
                         .input_attachment_index =
                             attachment,
+                        .input_attachment_extent =
+                            attachment
+                                ? compiled.rendering
+                                      .local_read_extent
+                                : std::nullopt,
                         .view_dimension =
                             view_dimension,
                         .descriptor_dimension =
@@ -3105,6 +3157,8 @@ resolveGenerationShaderInputs(
     for (std::size_t input_index = 0;
          input_index < inputs.size(); ++input_index) {
         std::optional<std::uint32_t> expected;
+        std::optional<vk::Extent2D>
+            expected_extent;
         auto expected_view =
             PassInputViewDimension::shared_2d;
         auto expected_descriptor_dimension =
@@ -3128,6 +3182,8 @@ resolveGenerationShaderInputs(
             if (!initialized) {
                 expected =
                     found->input_attachment_index;
+                expected_extent =
+                    found->input_attachment_extent;
                 expected_view =
                     found->view_dimension;
                 expected_descriptor_dimension =
@@ -3139,6 +3195,8 @@ resolveGenerationShaderInputs(
             }
             if (expected !=
                     found->input_attachment_index ||
+                expected_extent !=
+                    found->input_attachment_extent ||
                 expected_view !=
                     found->view_dimension ||
                 expected_descriptor_dimension !=
@@ -3170,6 +3228,8 @@ resolveGenerationShaderInputs(
         }
         result[input_index].input_attachment_index =
             expected;
+        result[input_index].input_attachment_extent =
+            expected_extent;
         result[input_index].view_dimension =
             expected_view;
         result[input_index].descriptor_dimension =
@@ -3524,11 +3584,14 @@ MaterialContainer::prepareRuntimeGenerationReload(
                 }
                 if (current
                         ->input_attachment_index) {
-                    current_physical_defines.push_back(
-                        makeSurfaceResourceLocalReadDefine(
-                            resource_index,
-                            *current
-                                 ->input_attachment_index));
+                    appendSurfaceResourceLocalReadDefines(
+                        current_physical_defines,
+                        resource_index,
+                        *current
+                             ->input_attachment_index,
+                        current
+                            ->input_attachment_extent,
+                        declared.name);
                 } else if (
                     current->image_view_dimension ==
                     ReflectedImageViewDimension::
@@ -3570,6 +3633,11 @@ MaterialContainer::prepareRuntimeGenerationReload(
                               combined_image_sampler;
                 candidate->input_attachment_index =
                     attachment;
+                candidate->input_attachment_extent =
+                    attachment
+                        ? physical
+                              .input_attachment_extent
+                        : std::nullopt;
                 candidate->image_view_dimension =
                     cube
                         ? ReflectedImageViewDimension::
@@ -3589,10 +3657,12 @@ MaterialContainer::prepareRuntimeGenerationReload(
                         : ShaderResourcePortView::
                               shared_2d;
                 if (attachment) {
-                    candidate_physical_defines.push_back(
-                        makeSurfaceResourceLocalReadDefine(
-                            resource_index,
-                            *attachment));
+                    appendSurfaceResourceLocalReadDefines(
+                        candidate_physical_defines,
+                        resource_index, *attachment,
+                        physical
+                            .input_attachment_extent,
+                        declared.name);
                 } else if (cube) {
                     candidate_physical_defines.push_back(
                         makeSurfaceResourceCubeDefine(

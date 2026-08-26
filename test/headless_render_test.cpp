@@ -634,14 +634,21 @@ const char *localReadCopyFragmentShader() {
     return R"glsl(
 #version 450
 #extension GL_GOOGLE_include_directive : enable
-#include "pelican_sets.glsl"
-#include "pelican_view.glsl"
-PELICAN_DECLARE_INPUT_0(inputColor);
+#include "pelican_resource_ports.glsl"
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 void main() {
-    vec4 value =
-        PELICAN_TEXTURE_2D_0(inputColor, inUV);
+    ivec2 target_size = pelican_size_input_color();
+    ivec2 target_size_lod = pelican_size_lod_input_color(0);
+    ivec2 old_frame_size =
+        ivec2(pelicanResolution.render_resolution.xy);
+    if (any(notEqual(target_size, ivec2(16, 16))) ||
+        any(notEqual(target_size_lod, target_size)) ||
+        all(equal(target_size, old_frame_size))) {
+        outColor = vec4(1.0, 0.0, 1.0, 1.0);
+        return;
+    }
+    vec4 value = pelican_sample_input_color(inUV);
     outColor = vec4(value.b, value.g, value.r, 1.0);
 }
 )glsl";
@@ -1232,14 +1239,14 @@ nlohmann::json localReadRenderingConfig() {
   "render_targets": [
     {
       "name": "local_source",
-      "extent_scale": 1.0,
+      "extent_scale": 0.5,
       "format": "R8G8B8A8_UNORM",
       "format_class": "data",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
     },
     {
       "name": "local_output",
-      "extent_scale": 1.0,
+      "extent_scale": 0.5,
       "format": "R8G8B8A8_UNORM",
       "format_class": "data",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
@@ -1252,6 +1259,7 @@ nlohmann::json localReadRenderingConfig() {
         {
           "name": "local_producer",
           "type": "fullscreen",
+          "resolution_domain": "independent",
           "output": {"color": "local_source", "depth": null},
           "shader": {
             "vertex": "shaders/local_read_fullscreen",
@@ -1261,11 +1269,17 @@ nlohmann::json localReadRenderingConfig() {
         {
           "name": "local_consumer",
           "type": "fullscreen",
+          "resolution_domain": "independent",
           "input": ["local_source"],
           "input_footprints": {
             "local_source": "same_pixel"
           },
           "output": {"color": "local_output", "depth": null},
+          "resource_ports": {
+            "input_color": {
+              "resource": "local_source"
+            }
+          },
           "shader": {
             "vertex": "shaders/local_read_fullscreen",
             "fragment": "shaders/local_read_copy"
@@ -3289,6 +3303,12 @@ TEST_CASE(
             GET_MODULE(RenderTargetContainer)
                 .getMetadata(source);
         REQUIRE(
+            source_metadata.extent ==
+            vk::Extent2D{16, 16});
+        REQUIRE(
+            source_metadata.extent !=
+            launch.headless_extent);
+        REQUIRE(
             source_metadata.storage_mode ==
             RenderTargetStorageMode::
                 tile_local_attachment);
@@ -3345,10 +3365,88 @@ TEST_CASE(
             program->rendering_pass
                 .passes.at(2)
                 .rendering.local_read_scope);
+        const auto &consumer_pass =
+            program->rendering_pass
+                .passes.at(1);
+        REQUIRE(
+            consumer_pass.rendering
+                .local_read_extent ==
+            source_metadata.extent);
+        const auto resource_interface =
+            GET_MODULE(FullscreenPassContainer)
+                .resourceInterfaceForTesting(
+                    consumer_pass.pass_id);
+        REQUIRE(resource_interface.size() == 1);
+        REQUIRE(
+            resource_interface.front().descriptor ==
+            ShaderResourceDescriptorKind::
+                input_attachment);
+        REQUIRE(
+            resource_interface.front()
+                .input_attachment_extent ==
+            source_metadata.extent);
+        const auto fragment_shader =
+            GET_MODULE(FullscreenPassContainer)
+                .fragmentShaderForTesting(
+                    consumer_pass.pass_id);
+        const auto &fragment_bundle =
+            GET_MODULE(ShaderLibrary)
+                .get(fragment_shader);
+        const auto generated_include =
+            std::find_if(
+                fragment_bundle.virtual_includes.begin(),
+                fragment_bundle.virtual_includes.end(),
+                [](const auto &include) {
+                    return include.first ==
+                           "pelican_resource_ports.glsl";
+                });
+        REQUIRE(
+            generated_include !=
+            fragment_bundle.virtual_includes.end());
+        const auto active_size =
+            generated_include->second.find(
+                "ivec2 pelican_size_input_color() { return ivec2(16, 16); }");
+        REQUIRE(active_size != std::string::npos);
+        const auto inactive_begin =
+            generated_include->second.find(
+                "#else", active_size);
+        REQUIRE(inactive_begin != std::string::npos);
+        const auto inactive_end =
+            generated_include->second.find(
+                "#endif", inactive_begin);
+        REQUIRE(inactive_end != std::string::npos);
+        const auto inactive_accessors =
+            generated_include->second.substr(
+                inactive_begin,
+                inactive_end - inactive_begin);
+        REQUIRE(
+            inactive_accessors.find(
+                "ivec2 pelican_size_input_color() { return ivec2(16, 16); }") !=
+            std::string::npos);
+        REQUIRE(
+            inactive_accessors.find(
+                "ivec2 pelican_size_lod_input_color(int lod) { return ivec2(16, 16); }") !=
+            std::string::npos);
 
         engine_time.advance();
         renderer.render();
         vkcore.waitIdle();
+        bool observed_old_frame_size = false;
+        for (std::uint32_t frame = 0;
+             frame < in_flight_frames_num;
+             ++frame) {
+            const auto &resolution =
+                GET_MODULE(FrameResources)
+                    .slotResolutionForTesting(
+                        frame, 0);
+            if (resolution.render_resolution.x ==
+                    32.0f &&
+                resolution.render_resolution.y ==
+                    32.0f) {
+                observed_old_frame_size = true;
+            }
+        }
+        REQUIRE(observed_old_frame_size);
         const auto pixels =
             GET_MODULE(RenderTarget)
                 .readbackLastFrameRGBA8();

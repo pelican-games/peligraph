@@ -192,6 +192,29 @@ void writeImageSubresourceAccessors(
            << "u; }\n";
 }
 
+void writeInputAttachmentSizeAccessors(
+    std::ostringstream &stream,
+    const ShaderResourceInterfaceBinding &binding) {
+    if (!binding.input_attachment_extent ||
+        binding.input_attachment_extent->width == 0 ||
+        binding.input_attachment_extent->height == 0) {
+        throw std::runtime_error(
+            "Shader resource port '" +
+            binding.port.name +
+            "' input attachment has no resolved extent");
+    }
+    const auto extent =
+        *binding.input_attachment_extent;
+    stream << "ivec2 pelican_size_"
+           << binding.port.name
+           << "() { return ivec2(" << extent.width
+           << ", " << extent.height << "); }\n"
+           << "ivec2 pelican_size_lod_"
+           << binding.port.name
+           << "(int lod) { return ivec2(" << extent.width
+           << ", " << extent.height << "); }\n";
+}
+
 void writeInputAttachmentAccessors(
     std::ostringstream &stream,
     const ShaderResourceInterfaceBinding &binding,
@@ -209,12 +232,10 @@ void writeInputAttachmentAccessors(
         << variable << "); }\n"
         << "vec4 pelican_sample_lod_" << name
         << "(vec2 uv, uint view_index, float lod) { return subpassLoad("
-        << variable << "); }\n"
-        << "ivec2 pelican_size_" << name
-        << "() { return ivec2(pelicanResolution.render_resolution.xy); }\n"
-        << "ivec2 pelican_size_lod_" << name
-        << "(int lod) { return ivec2(pelicanResolution.render_resolution.xy); }\n"
-        << "uint pelican_mip_count_" << name
+        << variable << "); }\n";
+    writeInputAttachmentSizeAccessors(
+        stream, binding);
+    stream << "uint pelican_mip_count_" << name
         << "() { return 1u; }\n"
         << "uint pelican_view_count_" << name
         << "() { return pelican_view_count(); }\n";
@@ -479,12 +500,10 @@ void writeInactiveStageAccessors(
                << "vec4 pelican_sample_lod_" << name
                << "(vec2 uv, float lod) { return vec4(0.0); }\n"
                << "vec4 pelican_sample_lod_" << name
-               << "(vec2 uv, uint view_index, float lod) { return vec4(0.0); }\n"
-               << "ivec2 pelican_size_" << name
-               << "() { return ivec2(0); }\n"
-               << "ivec2 pelican_size_lod_" << name
-               << "(int lod) { return ivec2(0); }\n"
-               << "uint pelican_mip_count_" << name
+               << "(vec2 uv, uint view_index, float lod) { return vec4(0.0); }\n";
+        writeInputAttachmentSizeAccessors(
+            stream, binding);
+        stream << "uint pelican_mip_count_" << name
                << "() { return 1u; }\n"
                << "uint pelican_view_count_" << name
                << "() { return 0u; }\n";

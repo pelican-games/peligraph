@@ -3763,6 +3763,8 @@ TEST_CASE(
 
     CompiledPassRenderingContract rendering;
     rendering.local_read_scope = true;
+    rendering.local_read_extent =
+        vk::Extent2D{48, 24};
     rendering.color_attachments = {
         source, output};
     rendering.color_attachment_locations = {
@@ -3792,6 +3794,9 @@ TEST_CASE(
     REQUIRE(
         local.front().input_attachment_index ==
         1u);
+    REQUIRE(
+        local.front().input_attachment_extent ==
+        rendering.local_read_extent);
 
     auto sampled_rendering = rendering;
     sampled_rendering.local_read_scope = false;
@@ -4233,6 +4238,9 @@ TEST_CASE(
             unusedPhysicalAttachmentMapping});
     REQUIRE(
         lighting_contract.local_read_scope);
+    REQUIRE(
+        lighting_contract.local_read_extent ==
+        vk::Extent2D{64, 64});
     const auto expected_scope_operations =
         std::vector<PassAttachmentOperations>{
             {

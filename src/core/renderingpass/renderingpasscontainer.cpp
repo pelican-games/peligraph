@@ -336,6 +336,11 @@ RenderingPassContainer::materialPassRenderingBindings(
                                             },
                                             .input_attachment_index =
                                                 attachment,
+                                            .input_attachment_extent =
+                                                attachment
+                                                    ? compiled.rendering
+                                                          .local_read_extent
+                                                    : std::nullopt,
                                             .view_dimension =
                                                 view_dimension,
                                             .descriptor_dimension =
@@ -410,6 +415,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
     for (std::size_t input_index = 0;
          input_index < inputs.size(); ++input_index) {
         std::optional<std::uint32_t> expected;
+        std::optional<vk::Extent2D>
+            expected_extent;
         auto expected_view =
             PassInputViewDimension::shared_2d;
         auto expected_descriptor_dimension =
@@ -433,6 +440,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
             if (!initialized) {
                 expected =
                     found->input_attachment_index;
+                expected_extent =
+                    found->input_attachment_extent;
                 expected_view =
                     found->view_dimension;
                 expected_descriptor_dimension =
@@ -444,6 +453,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
             }
             if (expected !=
                     found->input_attachment_index ||
+                expected_extent !=
+                    found->input_attachment_extent ||
                 expected_view !=
                     found->view_dimension ||
                 expected_descriptor_dimension !=
@@ -452,7 +463,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
                     "material shader input '" +
                     inputs[input_index].name +
                     "' resolves to different sampled/local-read ABIs "
-                    "or image-view ABIs across render graph variants: '" +
+                    "or input-attachment extent/image-view ABIs across "
+                    "render graph variants: '" +
                     expected_pass + "' (view " +
                     std::to_string(
                         static_cast<int>(
@@ -475,6 +487,8 @@ RenderingPassContainer::materialPassShaderInputBindings(
         }
         result[input_index].input_attachment_index =
             expected;
+        result[input_index].input_attachment_extent =
+            expected_extent;
         result[input_index].view_dimension =
             expected_view;
         result[input_index].descriptor_dimension =

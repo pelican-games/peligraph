@@ -38,6 +38,7 @@ struct MaterialPassShaderInputRequest {
 struct MaterialPassShaderInputBinding {
     MaterialPassShaderInputRequest input;
     std::optional<std::uint32_t> input_attachment_index;
+    std::optional<vk::Extent2D> input_attachment_extent;
     // Physical shader-visible image shape selected by the active graph.
     // The surface compiler uses this independently from the logical port
     // declaration so the same authored algorithm can target a scalar 2D

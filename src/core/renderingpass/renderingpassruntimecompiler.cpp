@@ -581,6 +581,59 @@ bool hasMaterializedAttachmentOperations(
                VulkanResourceRepresentation::external;
 }
 
+vk::Extent2D resolveLocalReadScopeExtent(
+    const CompiledPassRenderingContract &rendering,
+    const RenderTargetMetadataResolver *metadata) {
+    if (metadata == nullptr) {
+        throw std::runtime_error(
+            "tile-local physical scope requires render-target metadata "
+            "to resolve its attachment extent");
+    }
+    std::optional<vk::Extent2D> result;
+    const auto include =
+        [&](const RasterAttachmentView &attachment) {
+            if (isSwapchainRenderTarget(
+                    attachment.target)) {
+                throw std::runtime_error(
+                    "tile-local physical scopes do not yet support "
+                    "the frame target");
+            }
+            if (!isConcreteRenderTarget(
+                    attachment.target)) {
+                return;
+            }
+            auto extent =
+                metadata->get(
+                    attachment.target)
+                    .extent;
+            if (attachment.subresource) {
+                const auto mip =
+                    attachment.subresource
+                        ->base_mip_level;
+                extent = vk::Extent2D{
+                    std::max(1u, extent.width >> mip),
+                    std::max(1u, extent.height >> mip),
+                };
+            }
+            if (result && *result != extent) {
+                throw std::runtime_error(
+                    "tile-local physical scope attachments have "
+                    "different resolved extents");
+            }
+            result = extent;
+        };
+    for (const auto &attachment :
+         rendering.color_attachments) {
+        include(attachment);
+    }
+    include(rendering.depth_attachment);
+    if (!result) {
+        throw std::runtime_error(
+            "tile-local physical scope has no concrete attachment");
+    }
+    return *result;
+}
+
 CompiledPassRenderingContract
 compilePassRenderingContract(
     const RenderingPassDefinition &definition,
@@ -667,6 +720,11 @@ compilePassRenderingContract(
                     node->output_depth;
             }
         }
+    }
+    if (result.local_read_scope) {
+        result.local_read_extent =
+            resolveLocalReadScopeExtent(
+                result, metadata);
     }
 
     if (result.fused_rendering_scope) {
@@ -1716,6 +1774,8 @@ compileFullscreenResourceInterface(
                     .input_attachment_index =
                         static_cast<std::uint32_t>(
                             input),
+                    .input_attachment_extent =
+                        rendering.local_read_extent,
                     .expected_stages =
                         vk::ShaderStageFlagBits::
                             eFragment,

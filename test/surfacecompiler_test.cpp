@@ -1177,10 +1177,12 @@ void pelican_surface_v1(
 }
 )surface",
         source_name);
-    const std::vector<std::string> local_defines{
-        makeSurfaceScreenInputLocalReadDefine(0, 3),
-        makeSurfaceResourceLocalReadDefine(0, 5),
-    };
+    auto local_defines =
+        makeSurfaceResourceLocalReadDefines(
+            0, 5, vk::Extent2D{96, 54});
+    local_defines.insert(
+        local_defines.begin(),
+        makeSurfaceScreenInputLocalReadDefine(0, 3));
     const auto local = composeSurfaceShaders(
         surface, source_name,
         SurfacePass::forward, local_defines);
@@ -1196,6 +1198,10 @@ void pelican_surface_v1(
         local.resource_interface.front()
             .input_attachment_index ==
         5u);
+    REQUIRE(
+        local.resource_interface.front()
+            .input_attachment_extent ==
+        vk::Extent2D{96, 54});
     const auto params = std::find_if(
         local.virtual_includes.begin(),
         local.virtual_includes.end(),
@@ -1215,6 +1221,27 @@ void pelican_surface_v1(
         std::string::npos);
     REQUIRE(
         params->second.find("subpassLoad") !=
+        std::string::npos);
+    const auto active_size =
+        params->second.find(
+            "ivec2 pelican_size_gbuffer_normal() { return ivec2(96, 54); }");
+    REQUIRE(active_size != std::string::npos);
+    const auto inactive_begin =
+        params->second.find("#else", active_size);
+    REQUIRE(inactive_begin != std::string::npos);
+    const auto inactive_end =
+        params->second.find("#endif", inactive_begin);
+    REQUIRE(inactive_end != std::string::npos);
+    const auto inactive = params->second.substr(
+        inactive_begin,
+        inactive_end - inactive_begin);
+    REQUIRE(
+        inactive.find(
+            "ivec2 pelican_size_gbuffer_normal() { return ivec2(96, 54); }") !=
+        std::string::npos);
+    REQUIRE(
+        inactive.find(
+            "ivec2 pelican_size_lod_gbuffer_normal(int lod) { return ivec2(96, 54); }") !=
         std::string::npos);
 
     const auto sampled = composeSurfaceShaders(
@@ -1279,27 +1306,29 @@ void pelican_surface_v1(
             "uniform samplerCube "
             "pelican_resource_gbuffer_normal") !=
         std::string::npos);
+    auto local_layered_defines =
+        makeSurfaceResourceLocalReadDefines(
+            0, 5, vk::Extent2D{96, 54});
+    local_layered_defines.push_back(
+        makeSurfaceResourceLayeredDefine(0));
     REQUIRE_THROWS_WITH(
         composeSurfaceShaders(
             surface, source_name,
             SurfacePass::forward,
-            {
-                makeSurfaceResourceLocalReadDefine(
-                    0, 5),
-                makeSurfaceResourceLayeredDefine(0),
-            }),
+            local_layered_defines),
         Catch::Matchers::ContainsSubstring(
             "cannot select input-attachment and layered sampled "
             "ABIs simultaneously"));
+    auto local_cube_defines =
+        makeSurfaceResourceLocalReadDefines(
+            0, 5, vk::Extent2D{96, 54});
+    local_cube_defines.push_back(
+        makeSurfaceResourceCubeDefine(0));
     REQUIRE_THROWS_WITH(
         composeSurfaceShaders(
             surface, source_name,
             SurfacePass::forward,
-            {
-                makeSurfaceResourceLocalReadDefine(
-                    0, 5),
-                makeSurfaceResourceCubeDefine(0),
-            }),
+            local_cube_defines),
         Catch::Matchers::ContainsSubstring(
             "cannot select input-attachment and cube sampled "
             "ABIs simultaneously"));

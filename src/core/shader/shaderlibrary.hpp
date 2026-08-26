@@ -46,6 +46,11 @@ struct ShaderBundle {
     // lowered authored ports.
     std::vector<ShaderResourceInterfaceBinding>
         compiler_resource_interface;
+    // Full generated surface resource ABI, including authored ports. Some
+    // physical facts (notably input-attachment extent) are not recoverable
+    // from SPIR-V reflection and must remain attached to the bundle.
+    std::vector<ShaderResourceInterfaceBinding>
+        surface_resource_interface;
     // Present only for generated material fragment shaders. This identity is
     // carried into material registration instead of being reconstructed from
     // attachment formats.

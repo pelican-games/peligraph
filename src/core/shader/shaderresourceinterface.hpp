@@ -48,6 +48,8 @@ struct ShaderResourceInterfaceBinding {
         ReflectedImageViewDimension::two_d;
     std::optional<std::uint32_t>
         input_attachment_index;
+    std::optional<vk::Extent2D>
+        input_attachment_extent;
     vk::Format storage_format = vk::Format::eUndefined;
     ShaderResourceBufferElement buffer_element =
         ShaderResourceBufferElement::unsigned_integer;

@@ -41,6 +41,11 @@ std::string makeSurfaceScreenInputLocalReadDefine(
 std::string makeSurfaceResourceLocalReadDefine(
     std::size_t resource,
     std::uint32_t input_attachment_index);
+std::vector<std::string>
+makeSurfaceResourceLocalReadDefines(
+    std::size_t resource,
+    std::uint32_t input_attachment_index,
+    vk::Extent2D input_attachment_extent);
 std::string makeSurfaceResourceLayeredDefine(
     std::size_t resource);
 std::string makeSurfaceResourceCubeDefine(

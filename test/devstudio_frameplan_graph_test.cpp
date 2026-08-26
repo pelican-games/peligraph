@@ -2528,7 +2528,9 @@ TEST_CASE(
 TEST_CASE(
     "WP344 shipped planar prefilter region collapses and opens through the production path",
     "[devstudio][frame-plan][grouping][region][planar-reflection][wp344]") {
-#if !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    SKIP("WP344 production composition requires the runtime shader compiler");
+#elif !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
     SKIP("WP344 planar_reflection is registered only with standard render algorithms");
 #else
     (void)application();

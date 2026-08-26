@@ -568,6 +568,8 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
     fragment_bundle.compiler_resource_interface =
         compilerOwnedSurfaceResourceInterface(
             composition, surface);
+    fragment_bundle.surface_resource_interface =
+        composition.resource_interface;
     if (composition.material_output_schema) {
         validateFragmentOutputSchema(
             fragment_bundle.reflection,
@@ -764,6 +766,8 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
         fragment.compiler_resource_interface =
             compilerOwnedSurfaceResourceInterface(
                 composition, surface->second);
+        fragment.surface_resource_interface =
+            composition.resource_interface;
         if (effective_output_schema) {
             validateFragmentOutputSchema(
                 fragment.reflection,
@@ -867,11 +871,23 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
                 material.screen_inputs.size() + index;
             if (physical_inputs[physical_index]
                     .input_attachment_index) {
-                defines.push_back(
-                    makeSurfaceResourceLocalReadDefine(
+                const auto &physical =
+                    physical_inputs[physical_index];
+                if (!physical.input_attachment_extent) {
+                    throw std::runtime_error(
+                        "material resource port '" +
+                        physical.input.name +
+                        "' input attachment has no resolved extent");
+                }
+                const auto local_defines =
+                    makeSurfaceResourceLocalReadDefines(
                         image_resource_indices[index],
-                        *physical_inputs[physical_index]
-                             .input_attachment_index));
+                        *physical.input_attachment_index,
+                        *physical.input_attachment_extent);
+                defines.insert(
+                    defines.end(),
+                    local_defines.begin(),
+                    local_defines.end());
             } else if (
                 physical_inputs[physical_index]
                         .descriptor_dimension ==

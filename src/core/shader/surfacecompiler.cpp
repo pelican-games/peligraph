@@ -29,6 +29,27 @@ std::string makeSurfaceResourceLocalReadDefine(
            std::to_string(input_attachment_index);
 }
 
+std::vector<std::string>
+makeSurfaceResourceLocalReadDefines(
+    std::size_t resource,
+    std::uint32_t input_attachment_index,
+    vk::Extent2D input_attachment_extent) {
+    const auto prefix =
+        std::string{
+            surfaceResourceLocalReadDefinePrefix} +
+        std::to_string(resource);
+    return {
+        makeSurfaceResourceLocalReadDefine(
+            resource, input_attachment_index),
+        prefix + "_LOCAL_READ_WIDTH=" +
+            std::to_string(
+                input_attachment_extent.width),
+        prefix + "_LOCAL_READ_HEIGHT=" +
+            std::to_string(
+                input_attachment_extent.height),
+    };
+}
+
 std::string makeSurfaceResourceLayeredDefine(
     std::size_t resource) {
     return std::string{
@@ -51,12 +72,10 @@ constexpr std::string_view materialOutputsIncludeName =
     "__pelican_material_outputs.glsl";
 
 std::optional<std::uint32_t>
-physicalLocalReadIndex(
+physicalUnsignedDefine(
     std::span<const std::string> defines,
-    std::string_view prefix, std::size_t index) {
-    const auto key =
-        std::string{prefix} +
-        std::to_string(index) + "_LOCAL_READ=";
+    const std::string &key,
+    std::string_view description) {
     std::optional<std::uint32_t> result;
     for (const auto &define : defines) {
         if (!define.starts_with(key)) {
@@ -64,25 +83,67 @@ physicalLocalReadIndex(
         }
         if (result) {
             throw std::runtime_error(
-                "surface physical local-read define is duplicated: " +
-                key);
+                "surface physical " +
+                std::string{description} +
+                " define is duplicated: " + key);
         }
         const auto encoded =
-            std::string_view{define}.substr(key.size());
+            std::string_view{define}.substr(
+                key.size());
         std::uint32_t value = 0;
-        const auto [end, error] = std::from_chars(
-            encoded.data(),
-            encoded.data() + encoded.size(), value);
+        const auto [end, error] =
+            std::from_chars(
+                encoded.data(),
+                encoded.data() +
+                    encoded.size(),
+                value);
         if (error != std::errc{} ||
-            end != encoded.data() + encoded.size()) {
+            end != encoded.data() +
+                       encoded.size()) {
             throw std::runtime_error(
-                "surface physical local-read define has an invalid "
-                "input-attachment index: " +
+                "surface physical " +
+                std::string{description} +
+                " define has an invalid unsigned value: " +
                 define);
         }
         result = value;
     }
     return result;
+}
+
+std::optional<std::uint32_t>
+physicalLocalReadIndex(
+    std::span<const std::string> defines,
+    std::string_view prefix, std::size_t index) {
+    const auto key =
+        std::string{prefix} +
+        std::to_string(index) + "_LOCAL_READ=";
+    return physicalUnsignedDefine(
+        defines, key, "local-read");
+}
+
+vk::Extent2D physicalLocalReadExtent(
+    std::span<const std::string> defines,
+    std::size_t index) {
+    const auto prefix =
+        std::string{
+            surfaceResourceLocalReadDefinePrefix} +
+        std::to_string(index) +
+        "_LOCAL_READ_";
+    const auto width = physicalUnsignedDefine(
+        defines, prefix + "WIDTH=",
+        "local-read width");
+    const auto height = physicalUnsignedDefine(
+        defines, prefix + "HEIGHT=",
+        "local-read height");
+    if (!width || !height || *width == 0 ||
+        *height == 0) {
+        throw std::runtime_error(
+            "surface resource local-read ABI has no positive resolved "
+            "extent at resource index " +
+            std::to_string(index));
+    }
+    return {*width, *height};
 }
 
 bool physicalLayeredResource(
@@ -408,6 +469,12 @@ makeSurfaceResourceInterface(
                                 : ReflectedImageViewDimension::none,
                 .input_attachment_index =
                     local_read,
+                .input_attachment_extent =
+                    local_read
+                        ? std::optional{
+                              physicalLocalReadExtent(
+                                  defines, index)}
+                        : std::nullopt,
                 .buffer_element = port.element,
                 .expected_stages =
                     resourceStages(port.stage),

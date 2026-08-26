@@ -1918,6 +1918,7 @@
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shadercompiler.hpp|`shadercompiler.hpp`": "struct ShaderCompileOptions {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shaderlibrary.cpp|`load/reload`": "if (spirv.empty()) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shaderlibrary.hpp|`ShaderBundle`": "struct ShaderBundle {",
+    "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shaderlibrary.hpp|`ShaderLibrary`": "DECLARE_MODULE(ShaderLibrary) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shaderlibrary.hpp|`shaderlibrary.hpp`": "std::optional<MaterialOutputSchema>",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shaderreflection.cpp|`reflect()`": "ShaderReflection reflect(std::span<const uint32_t> spirv) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/shader/shaderreflection.hpp|`shaderreflection.hpp`": "other,",
