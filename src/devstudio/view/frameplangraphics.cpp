@@ -59,6 +59,8 @@ constexpr qreal PhysicalResourceHeight = 92.0;
 constexpr qreal PhysicalOutcomeHeight = 34.0;
 constexpr qreal LogicalUnavailableWidth = 960.0;
 constexpr qreal LogicalUnavailableHeight = 176.0;
+constexpr std::size_t ImpracticalConvexHullAdditionalNodes = 24;
+constexpr std::size_t ImpracticalConvexHullGraphSize = 16;
 
 using EntityPair = std::pair<std::string, std::string>;
 
@@ -94,6 +96,7 @@ struct GroupDefinition {
     std::vector<std::string> members;
     bool collapsible = true;
     bool warning_only = false;
+    bool session_group = false;
     QString reason;
 };
 
@@ -113,6 +116,7 @@ struct VisibleEntity {
     int source_column = 0;
     bool anchor = false;
     bool group = false;
+    bool session_group = false;
     bool boundary_stub = false;
     QGraphicsPathItem *item = nullptr;
 };
@@ -195,6 +199,27 @@ class BreadcrumbItem final : public QGraphicsRectItem {
 
   private:
     Clicked clicked_;
+};
+
+class ConvexHullProposalItem final : public QGraphicsRectItem {
+  public:
+    using Accepted = std::function<void()>;
+
+    ConvexHullProposalItem(const QRectF &rect, Accepted accepted)
+        : QGraphicsRectItem{rect}, accepted_{std::move(accepted)} {}
+
+  protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && accepted_) {
+            event->accept();
+            accepted_();
+            return;
+        }
+        QGraphicsRectItem::mousePressEvent(event);
+    }
+
+  private:
+    Accepted accepted_;
 };
 
 QString qtext(const std::string &value) {
@@ -526,6 +551,125 @@ QString nonConvexReason(
     return {};
 }
 
+struct ConvexHullResult {
+    std::vector<std::string> members;
+    std::vector<std::string> missing;
+    bool impractical = false;
+    bool covers_entire_graph = false;
+};
+
+// Keep nonConvexReason() above unchanged: it is the exhaustively checked
+// convexity decision. The hull is derived from the same reachability rule. A
+// node is forced into the hull exactly when the selection can reach it and it
+// can reach the selection, i.e. it lies on a leave-and-return path. The
+// intersection is already closed under paths, so no iterative approximation
+// or alternate convexity predicate is involved.
+ConvexHullResult convexHull(
+    const FramePlanModel &model,
+    const std::set<std::string, std::less<>> &selected) {
+    std::map<std::string, std::vector<std::string>, std::less<>> adjacency;
+    std::map<std::string, std::vector<std::string>, std::less<>> reverse;
+    for (const auto &dependency : model.dependencies) {
+        adjacency[dependency.from].push_back(dependency.to);
+        reverse[dependency.to].push_back(dependency.from);
+    }
+    const auto normalize = [](auto &edges) {
+        for (auto &[from, destinations] : edges) {
+            (void)from;
+            std::ranges::sort(destinations);
+            destinations.erase(
+                std::unique(destinations.begin(), destinations.end()),
+                destinations.end());
+        }
+    };
+    normalize(adjacency);
+    normalize(reverse);
+
+    const auto reachable = [&](const auto &edges) {
+        std::set<std::string, std::less<>> visited = selected;
+        std::queue<std::string> frontier;
+        for (const auto &member : selected) {
+            frontier.push(member);
+        }
+        while (!frontier.empty()) {
+            std::string node = std::move(frontier.front());
+            frontier.pop();
+            const auto outgoing = edges.find(node);
+            if (outgoing == edges.end()) {
+                continue;
+            }
+            for (const auto &destination : outgoing->second) {
+                if (visited.insert(destination).second) {
+                    frontier.push(destination);
+                }
+            }
+        }
+        return visited;
+    };
+
+    const auto forward = reachable(adjacency);
+    const auto backward = reachable(reverse);
+    ConvexHullResult result;
+    for (const auto &node : model.nodes) {
+        if (!forward.contains(node.name) ||
+            !backward.contains(node.name)) {
+            continue;
+        }
+        result.members.push_back(node.name);
+        if (!selected.contains(node.name)) {
+            result.missing.push_back(node.name);
+        }
+    }
+    std::ranges::sort(result.members);
+    std::ranges::sort(result.missing);
+    result.covers_entire_graph =
+        !model.nodes.empty() && result.members.size() == model.nodes.size();
+    const bool dominates_large_graph =
+        model.nodes.size() >= ImpracticalConvexHullGraphSize &&
+        result.members.size() * 4 >= model.nodes.size() * 3;
+    result.impractical =
+        result.missing.size() >= ImpracticalConvexHullAdditionalNodes ||
+        dominates_large_graph;
+    return result;
+}
+
+QString convexHullProposalText(const ConvexHullResult &hull,
+                               std::size_t graph_node_count) {
+    QStringList quoted_missing;
+    for (const auto &member : hull.missing) {
+        quoted_missing.push_back(
+            QStringLiteral("\"%1\"").arg(qtext(member)));
+    }
+    const QString names =
+        quoted_missing.join(QStringLiteral(", "));
+    if (!hull.impractical) {
+        return QStringLiteral(
+                   "Selection is not convex. Include %1 %2 to make it "
+                   "convex (%3 additional; %4 total). Click to accept this "
+                   "convex hull.")
+            .arg(hull.missing.size() == 1 ? QStringLiteral("node")
+                                          : QStringLiteral("nodes"),
+                 names)
+            .arg(static_cast<qulonglong>(hull.missing.size()))
+            .arg(static_cast<qulonglong>(hull.members.size()));
+    }
+
+    QString scale =
+        QStringLiteral(
+            "The convex hull is probably impractical: it would add %1 "
+            "nodes (%2 total out of %3).")
+            .arg(static_cast<qulonglong>(hull.missing.size()))
+            .arg(static_cast<qulonglong>(hull.members.size()))
+            .arg(static_cast<qulonglong>(graph_node_count));
+    if (hull.covers_entire_graph) {
+        scale += QStringLiteral(" It covers the entire graph.");
+    }
+    return QStringLiteral(
+               "Selection is not convex. %1 Missing nodes: %2. Click to "
+               "accept this convex hull anyway.")
+        .arg(scale, names);
+}
+
 std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
     std::map<std::string, std::vector<std::string>, std::less<>> members_by_key;
     std::map<std::string, GroupingUnit, std::less<>> units_by_key;
@@ -611,6 +755,81 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
     }
     groups.insert(groups.end(), warnings.begin(), warnings.end());
     return groups;
+}
+
+std::vector<GroupDefinition> discoverGroups(
+    const FramePlanModel &model,
+    const std::map<std::pair<std::string, std::string>,
+                   std::vector<std::string>> &session_groups) {
+    std::vector<GroupDefinition> configured = discoverGroups(model);
+    std::set<std::string, std::less<>> occupied_names;
+    for (const auto &node : model.nodes) {
+        occupied_names.insert(node.name);
+    }
+    for (const auto &group : configured) {
+        occupied_names.insert(group.entity_name);
+    }
+
+    std::set<std::string, std::less<>> session_members;
+    std::vector<GroupDefinition> session_definitions;
+    for (const auto &[state_key, stored_members] : session_groups) {
+        if (state_key.first != model.graph || stored_members.size() < 2) {
+            continue;
+        }
+        std::vector<std::string> members = stored_members;
+        std::ranges::sort(members);
+        members.erase(std::unique(members.begin(), members.end()),
+                      members.end());
+        session_members.insert(members.begin(), members.end());
+
+        std::string number = state_key.second;
+        constexpr std::string_view prefix = "session:";
+        if (number.starts_with(prefix)) {
+            number.erase(0, prefix.size());
+        }
+        const QString label =
+            QStringLiteral("Session group %1").arg(qtext(number));
+        const std::set<std::string, std::less<>> member_set{
+            members.begin(), members.end()};
+        const QString reason = nonConvexReason(
+            model,
+            QStringLiteral("Session group \"%1\"").arg(qtext(number)),
+            member_set);
+
+        const std::string base_name =
+            "__pelican_session_group__:" + number;
+        std::string entity_name = base_name;
+        std::size_t suffix = 2;
+        while (occupied_names.contains(entity_name)) {
+            entity_name = base_name + "#" + std::to_string(suffix++);
+        }
+        occupied_names.insert(entity_name);
+        session_definitions.push_back(GroupDefinition{
+            .key = state_key.second,
+            .state_key = state_key,
+            .entity_name = std::move(entity_name),
+            .label = label,
+            .members = std::move(members),
+            .collapsible = reason.isEmpty(),
+            .session_group = true,
+            .reason = reason,
+        });
+    }
+
+    // Priority is explicit session group > authored region > provider
+    // feature. groupingUnit() already establishes the latter two. Suppress a
+    // whole lower-priority group on any overlap instead of displaying a
+    // misleading partial authored region. Removing the session group reveals
+    // the config-derived group unchanged.
+    std::erase_if(configured, [&](const GroupDefinition &group) {
+        return !group.warning_only &&
+               std::ranges::any_of(group.members, [&](const auto &member) {
+                   return session_members.contains(member);
+               });
+    });
+    session_definitions.insert(session_definitions.end(), configured.begin(),
+                               configured.end());
+    return session_definitions;
 }
 
 const GroupDefinition *findGroup(const std::vector<GroupDefinition> &groups,
@@ -1367,6 +1586,9 @@ void FramePlanGraphicsScene::resetGraph() {
     current_depth_ = 1;
     collapsed_groups_.clear();
     current_group_scope_.reset();
+    session_groups_.clear();
+    next_session_group_id_ = 1;
+    convex_hull_proposal_.reset();
     group_feedback_.clear();
     setSceneRect({});
     rebuilding_ = false;
@@ -1394,6 +1616,11 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanCurrentGroupScopeLabel", QString{});
     setProperty("pelicanNonCollapsibleGroups", QStringList{});
     setProperty("pelicanGroupFeedback", QString{});
+    setProperty("pelicanSessionGroups", QStringList{});
+    setProperty("pelicanConvexHullProposalMembers", QStringList{});
+    setProperty("pelicanConvexHullProposalMissingMembers", QStringList{});
+    setProperty("pelicanConvexHullProposalImpractical", false);
+    setProperty("pelicanConvexHullProposalText", QString{});
     setProperty("pelicanBoundaryStubCount", 0);
     setProperty("pelicanBarrierRecordCount", 0);
     setProperty("pelicanVisibleBarrierRecordCount", 0);
@@ -1413,6 +1640,10 @@ void FramePlanGraphicsScene::populate(
     current_model_ = model;
     current_target_ = selected_target;
     current_depth_ = std::max(0, depth);
+    // A proposal describes one exact plan snapshot. A normal frame-plan
+    // refresh may change reachability even when every selected name survives,
+    // so never carry the suggestion across populate().
+    convex_hull_proposal_.reset();
     pruneGroupState();
     renderCurrentGraph();
 }
@@ -1422,10 +1653,36 @@ void FramePlanGraphicsScene::pruneGroupState() {
     if (!current_model_) {
         collapsed_groups_.clear();
         current_group_scope_.reset();
+        session_groups_.clear();
+        convex_hull_proposal_.reset();
         return;
     }
 
-    const auto groups = discoverGroups(*current_model_);
+    std::set<std::string, std::less<>> model_nodes;
+    for (const auto &node : current_model_->nodes) {
+        model_nodes.insert(node.name);
+    }
+    for (auto group = session_groups_.begin();
+         group != session_groups_.end();) {
+        const bool wrong_graph =
+            group->first.first != current_model_->graph;
+        const bool missing_member = std::ranges::any_of(
+            group->second, [&](const auto &member) {
+                return !model_nodes.contains(member);
+            });
+        if (!wrong_graph && !missing_member && group->second.size() >= 2) {
+            ++group;
+            continue;
+        }
+        const auto position_key = std::tuple{
+            group->first.first, std::string{FramePlanGroupItem},
+            group->first.second};
+        session_node_positions_.erase(position_key);
+        group = session_groups_.erase(group);
+    }
+
+    const auto groups =
+        discoverGroups(*current_model_, session_groups_);
     std::set<GroupStateKey> collapsible_groups;
     for (const auto &group : groups) {
         if (group.collapsible) {
@@ -1455,7 +1712,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     }
     const FramePlanModel &model = *current_model_;
     const int normalized_depth = current_depth_;
-    const std::vector<GroupDefinition> groups = discoverGroups(model);
+    const std::vector<GroupDefinition> groups =
+        discoverGroups(model, session_groups_);
     const GroupDefinition *scope_group =
         current_group_scope_ ? findGroup(groups, *current_group_scope_)
                              : nullptr;
@@ -1528,6 +1786,34 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         setProperty("pelicanGroupFeedback",
                     group_feedback_.isEmpty() ? first_reason
                                               : group_feedback_);
+
+        QStringList session_group_ids;
+        for (const auto &[state_key, members] : session_groups_) {
+            (void)members;
+            if (state_key.first == model.graph) {
+                session_group_ids.push_back(
+                    qtext(groupStateId(state_key)));
+            }
+        }
+        setProperty("pelicanSessionGroups", session_group_ids);
+        setProperty(
+            "pelicanConvexHullProposalMembers",
+            convex_hull_proposal_
+                ? qlist(convex_hull_proposal_->hull_members)
+                : QStringList{});
+        setProperty(
+            "pelicanConvexHullProposalMissingMembers",
+            convex_hull_proposal_
+                ? qlist(convex_hull_proposal_->missing_members)
+                : QStringList{});
+        setProperty(
+            "pelicanConvexHullProposalImpractical",
+            convex_hull_proposal_ &&
+                convex_hull_proposal_->impractical);
+        setProperty("pelicanConvexHullProposalText",
+                    convex_hull_proposal_
+                        ? convex_hull_proposal_->message
+                        : QString{});
     };
 
     rebuilding_ = true;
@@ -1665,6 +1951,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             entity.group_id = groupStateId(group.state_key);
             entity.stable_group_key = group.key;
             entity.group = true;
+            entity.session_group = group.session_group;
             entity.order = model.nodes.size();
             entity.source_column = std::numeric_limits<int>::max();
             std::set<std::string, std::less<>> sources;
@@ -2005,6 +2292,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 item->setData(FramePlanGroupIdRole,
                               qtext(entity->group_id));
                 item->setData(FramePlanGroupCollapsibleRole, true);
+                item->setData(FramePlanSessionGroupRole,
+                              entity->session_group);
                 item->setData(FramePlanInternalEdgeRecordsRole,
                               qlist(entity->internal_records));
                 item->setData(
@@ -2046,6 +2335,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                                       node_group->second->state_key)));
                     item->setData(FramePlanGroupCollapsibleRole,
                                   node_group->second->collapsible);
+                    item->setData(FramePlanSessionGroupRole,
+                                  node_group->second->session_group);
                     item->setData(FramePlanReasonRole,
                                   node_group->second->reason);
                 }
@@ -2221,6 +2512,45 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             message->setPos(12.0, 14.0);
             warning_top += GroupWarningHeight + 10.0;
         }
+
+        if (convex_hull_proposal_ &&
+            convex_hull_proposal_->graph == model.graph) {
+            const qreal proposal_width = std::max(
+                GroupWarningWidth,
+                QFontMetricsF{QFont{}}.horizontalAdvance(
+                    convex_hull_proposal_->message) +
+                    24.0);
+            auto *proposal = new ConvexHullProposalItem(
+                QRectF{0.0, 0.0, proposal_width, GroupWarningHeight},
+                [this] {
+                    QMetaObject::invokeMethod(
+                        this, [this] { acceptConvexHullProposal(); },
+                        Qt::QueuedConnection);
+                });
+            addItem(proposal);
+            proposal->setPos(0.0, warning_top);
+            proposal->setZValue(1.3);
+            proposal->setPen(
+                QPen{QColor{QStringLiteral("#8d72bd")}, 1.8});
+            proposal->setBrush(
+                QColor{QStringLiteral("#302641")});
+            proposal->setAcceptedMouseButtons(Qt::LeftButton);
+            annotateIdentity(*proposal, FramePlanConvexHullProposalItem,
+                             model.graph, "convex-hull-proposal");
+            proposal->setData(FramePlanReasonRole,
+                              convex_hull_proposal_->message);
+            proposal->setData(
+                FramePlanConvexHullMissingMembersRole,
+                qlist(convex_hull_proposal_->missing_members));
+            proposal->setData(
+                FramePlanConvexHullImpracticalRole,
+                convex_hull_proposal_->impractical);
+            proposal->setToolTip(convex_hull_proposal_->message);
+            auto *message = new QGraphicsSimpleTextItem(
+                convex_hull_proposal_->message, proposal);
+            message->setBrush(QColor{QStringLiteral("#f3ecff")});
+            message->setPos(12.0, 14.0);
+        }
     }
 
     if (scope_group) {
@@ -2333,7 +2663,8 @@ bool FramePlanGraphicsScene::collapseGroup(const QString &group_id) {
     if (!current_model_ || current_group_scope_) {
         return false;
     }
-    const auto groups = discoverGroups(*current_model_);
+    const auto groups =
+        discoverGroups(*current_model_, session_groups_);
     const GroupDefinition *group =
         findGroupById(groups, group_id);
     if (group == nullptr) {
@@ -2356,7 +2687,8 @@ bool FramePlanGraphicsScene::expandGroup(const QString &group_id) {
     if (!current_model_ || current_group_scope_) {
         return false;
     }
-    const auto groups = discoverGroups(*current_model_);
+    const auto groups =
+        discoverGroups(*current_model_, session_groups_);
     const GroupDefinition *group = findGroupById(groups, group_id);
     if (group == nullptr ||
         collapsed_groups_.erase(group->state_key) == 0) {
@@ -2371,7 +2703,8 @@ bool FramePlanGraphicsScene::enterGroup(const QString &group_id) {
     if (!current_model_ || current_group_scope_) {
         return false;
     }
-    const auto groups = discoverGroups(*current_model_);
+    const auto groups =
+        discoverGroups(*current_model_, session_groups_);
     const GroupDefinition *group =
         findGroupById(groups, group_id);
     if (group == nullptr || !group->collapsible ||
@@ -2398,6 +2731,166 @@ bool FramePlanGraphicsScene::leaveGroup() {
     return true;
 }
 
+bool FramePlanGraphicsScene::installSessionGroup(
+    std::vector<std::string> members) {
+    if (!current_model_ || current_group_scope_ || members.size() < 2) {
+        return false;
+    }
+    std::ranges::sort(members);
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    if (members.size() < 2) {
+        return false;
+    }
+
+    std::set<std::string, std::less<>> model_nodes;
+    for (const auto &node : current_model_->nodes) {
+        model_nodes.insert(node.name);
+    }
+    if (std::ranges::any_of(members, [&](const auto &member) {
+            return !model_nodes.contains(member);
+        })) {
+        group_feedback_ = QStringLiteral(
+            "The frame plan changed before the session group could be "
+            "created.");
+        setProperty("pelicanGroupFeedback", group_feedback_);
+        return false;
+    }
+    if (std::ranges::any_of(
+            session_groups_, [&](const auto &existing) {
+                return std::ranges::any_of(
+                    existing.second, [&](const auto &existing_member) {
+                        return std::ranges::find(members, existing_member) !=
+                               members.end();
+                    });
+            })) {
+        group_feedback_ = QStringLiteral(
+            "Nested or overlapping session groups are not supported; "
+            "remove the existing session group first.");
+        setProperty("pelicanGroupFeedback", group_feedback_);
+        return false;
+    }
+
+    const std::set<std::string, std::less<>> member_set{members.begin(),
+                                                        members.end()};
+    const QString convexity = nonConvexReason(
+        *current_model_, QStringLiteral("The selected nodes"), member_set);
+    if (!convexity.isEmpty()) {
+        group_feedback_ = convexity;
+        setProperty("pelicanGroupFeedback", group_feedback_);
+        return false;
+    }
+
+    const GroupStateKey state_key{
+        current_model_->graph,
+        "session:" + std::to_string(next_session_group_id_++)};
+    session_groups_.emplace(state_key, std::move(members));
+    collapsed_groups_.insert(state_key);
+    convex_hull_proposal_.reset();
+    group_feedback_.clear();
+    renderCurrentGraph();
+    return true;
+}
+
+bool FramePlanGraphicsScene::createGroupFromSelection() {
+    if (!current_model_ || current_group_scope_ ||
+        selected_nodes_.size() < 2) {
+        return false;
+    }
+
+    std::set<std::string, std::less<>> selected;
+    for (const auto &node : selected_nodes_) {
+        if (node.graph != current_model_->graph) {
+            return false;
+        }
+        selected.insert(node.name);
+    }
+    const QString convexity = nonConvexReason(
+        *current_model_, QStringLiteral("The selected nodes"), selected);
+    if (convexity.isEmpty()) {
+        return installSessionGroup(
+            std::vector<std::string>{selected.begin(), selected.end()});
+    }
+
+    const ConvexHullResult hull = convexHull(*current_model_, selected);
+    if (hull.missing.empty()) {
+        // This should be unreachable when nonConvexReason() reports a
+        // leave-and-return path, but fail visibly instead of manufacturing a
+        // group if a malformed model ever violates that invariant.
+        group_feedback_ = convexity;
+        setProperty("pelicanGroupFeedback", group_feedback_);
+        return false;
+    }
+    const QString proposal_text =
+        convexHullProposalText(hull, current_model_->nodes.size());
+    convex_hull_proposal_ = ConvexHullProposalState{
+        .graph = current_model_->graph,
+        .selected_members = {selected.begin(), selected.end()},
+        .hull_members = hull.members,
+        .missing_members = hull.missing,
+        .impractical = hull.impractical,
+        .message = proposal_text,
+    };
+    group_feedback_ = proposal_text;
+    renderCurrentGraph();
+    return false;
+}
+
+bool FramePlanGraphicsScene::acceptConvexHullProposal() {
+    if (!current_model_ || current_group_scope_ ||
+        !convex_hull_proposal_ ||
+        convex_hull_proposal_->graph != current_model_->graph) {
+        return false;
+    }
+
+    const std::set<std::string, std::less<>> selected{
+        convex_hull_proposal_->selected_members.begin(),
+        convex_hull_proposal_->selected_members.end()};
+    const ConvexHullResult current_hull = convexHull(*current_model_, selected);
+    if (current_hull.members != convex_hull_proposal_->hull_members ||
+        current_hull.missing != convex_hull_proposal_->missing_members) {
+        convex_hull_proposal_.reset();
+        group_feedback_ = QStringLiteral(
+            "The frame plan changed; create the convex-hull proposal again.");
+        renderCurrentGraph();
+        return false;
+    }
+    const std::set<std::string, std::less<>> hull_members{
+        current_hull.members.begin(), current_hull.members.end()};
+    if (!nonConvexReason(*current_model_,
+                         QStringLiteral("The proposed convex hull"),
+                         hull_members)
+             .isEmpty()) {
+        group_feedback_ = QStringLiteral(
+            "The proposed members are no longer convex.");
+        setProperty("pelicanGroupFeedback", group_feedback_);
+        return false;
+    }
+    return installSessionGroup(current_hull.members);
+}
+
+bool FramePlanGraphicsScene::removeSessionGroup(const QString &group_id) {
+    const auto found = std::ranges::find_if(
+        session_groups_, [&](const auto &entry) {
+            return qtext(groupStateId(entry.first)) == group_id;
+        });
+    if (!current_model_ || found == session_groups_.end()) {
+        return false;
+    }
+
+    const GroupStateKey state_key = found->first;
+    session_groups_.erase(found);
+    collapsed_groups_.erase(state_key);
+    if (current_group_scope_ == state_key) {
+        current_group_scope_.reset();
+    }
+    session_node_positions_.erase(std::tuple{
+        state_key.first, std::string{FramePlanGroupItem}, state_key.second});
+    convex_hull_proposal_.reset();
+    group_feedback_.clear();
+    renderCurrentGraph();
+    return true;
+}
+
 void FramePlanGraphicsScene::contextMenuEvent(
     QGraphicsSceneContextMenuEvent *event) {
     QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
@@ -2417,12 +2910,42 @@ void FramePlanGraphicsScene::contextMenuEvent(
     const QString kind = itemKind(*semantic_item);
     const QString group_id =
         semantic_item->data(FramePlanGroupIdRole).toString();
-    if (group_id.isEmpty()) {
-        QGraphicsScene::contextMenuEvent(event);
-        return;
+    QMenu menu;
+    if (kind == QLatin1String{FramePlanNodeItem}) {
+        const FramePlanNodeKey clicked{
+            semantic_item->data(FramePlanGraphRole).toString().toStdString(),
+            semantic_item->data(FramePlanNameRole).toString().toStdString(),
+        };
+        if (selected_nodes_.size() >= 2 &&
+            selected_nodes_.contains(clicked)) {
+            QAction *create = menu.addAction(
+                QStringLiteral("Create session group from selection"));
+            connect(create, &QAction::triggered, this, [this] {
+                QMetaObject::invokeMethod(
+                    this, [this] { createGroupFromSelection(); },
+                    Qt::QueuedConnection);
+            });
+        }
+        if (convex_hull_proposal_) {
+            QAction *accept = menu.addAction(
+                QStringLiteral("Accept proposed convex hull"));
+            connect(accept, &QAction::triggered, this, [this] {
+                QMetaObject::invokeMethod(
+                    this, [this] { acceptConvexHullProposal(); },
+                    Qt::QueuedConnection);
+            });
+        }
     }
 
-    QMenu menu;
+    const std::vector<GroupDefinition> groups =
+        current_model_
+            ? discoverGroups(*current_model_, session_groups_)
+            : std::vector<GroupDefinition>{};
+    const GroupDefinition *group =
+        group_id.isEmpty() ? nullptr : findGroupById(groups, group_id);
+    const bool session_group =
+        group != nullptr && session_groups_.contains(group->state_key);
+
     if (kind == QLatin1String{FramePlanGroupItem}) {
         QAction *expand = menu.addAction(QStringLiteral("Expand group"));
         connect(expand, &QAction::triggered, this,
@@ -2432,7 +2955,8 @@ void FramePlanGraphicsScene::contextMenuEvent(
                         [this, group_id] { expandGroup(group_id); },
                         Qt::QueuedConnection);
                 });
-    } else if (semantic_item
+    } else if (group != nullptr &&
+               semantic_item
                    ->data(FramePlanGroupCollapsibleRole)
                    .toBool()) {
         QAction *collapse =
@@ -2444,7 +2968,7 @@ void FramePlanGraphicsScene::contextMenuEvent(
                         [this, group_id] { collapseGroup(group_id); },
                         Qt::QueuedConnection);
                 });
-    } else {
+    } else if (group != nullptr) {
         QString reason =
             semantic_item->data(FramePlanReasonRole).toString();
         if (reason.isEmpty()) {
@@ -2452,6 +2976,24 @@ void FramePlanGraphicsScene::contextMenuEvent(
         }
         QAction *disabled = menu.addAction(reason);
         disabled->setEnabled(false);
+    }
+
+    if (session_group) {
+        QAction *remove =
+            menu.addAction(QStringLiteral("Remove session group"));
+        connect(remove, &QAction::triggered, this,
+                [this, group_id] {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, group_id] {
+                            removeSessionGroup(group_id);
+                        },
+                        Qt::QueuedConnection);
+                });
+    }
+    if (menu.actions().isEmpty()) {
+        QGraphicsScene::contextMenuEvent(event);
+        return;
     }
     event->accept();
     menu.exec(event->screenPos());

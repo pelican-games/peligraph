@@ -11,6 +11,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
@@ -62,6 +63,11 @@ inline constexpr int FramePlanFusedBarrierCountRole = Qt::UserRole + 3096;
 inline constexpr int FramePlanInternalBarrierCountRole = Qt::UserRole + 3097;
 inline constexpr int FramePlanInternalFusedBarrierCountRole =
     Qt::UserRole + 3098;
+inline constexpr int FramePlanSessionGroupRole = Qt::UserRole + 3099;
+inline constexpr int FramePlanConvexHullMissingMembersRole =
+    Qt::UserRole + 3100;
+inline constexpr int FramePlanConvexHullImpracticalRole =
+    Qt::UserRole + 3101;
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";
@@ -72,6 +78,8 @@ inline constexpr auto FramePlanGroupLabelItem = "group_label";
 inline constexpr auto FramePlanBoundaryStubItem = "boundary_stub";
 inline constexpr auto FramePlanBoundaryStubLabelItem = "boundary_stub_label";
 inline constexpr auto FramePlanGroupWarningItem = "group_warning";
+inline constexpr auto FramePlanConvexHullProposalItem =
+    "convex_hull_proposal";
 inline constexpr auto FramePlanBreadcrumbItem = "group_breadcrumb";
 inline constexpr auto FramePlanEdgeLabelItem = "edge_label";
 inline constexpr auto FramePlanPhysicalContextItem = "physical_context";
@@ -103,6 +111,15 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     bool expandGroup(const QString &group_id);
     bool enterGroup(const QString &group_id);
     bool leaveGroup();
+
+    // A session group is made from the live WP349 selection and never leaves
+    // this scene. A non-convex selection records a visible convex-hull
+    // proposal instead of creating a group; accepting that proposal installs
+    // the rechecked hull. Only session groups can be removed here -- authored
+    // regions and provider-feature groups remain read-only config views.
+    bool createGroupFromSelection();
+    bool acceptConvexHullProposal();
+    bool removeSessionGroup(const QString &group_id);
 
     [[nodiscard]] const std::optional<FramePlanNodeKey> &selectedNode() const
         noexcept {
@@ -142,6 +159,17 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     using GroupStateKey = std::pair<std::string, std::string>;
     std::set<GroupStateKey> collapsed_groups_;
     std::optional<GroupStateKey> current_group_scope_;
+    std::map<GroupStateKey, std::vector<std::string>> session_groups_;
+    std::size_t next_session_group_id_ = 1;
+    struct ConvexHullProposalState {
+        std::string graph;
+        std::vector<std::string> selected_members;
+        std::vector<std::string> hull_members;
+        std::vector<std::string> missing_members;
+        bool impractical = false;
+        QString message;
+    };
+    std::optional<ConvexHullProposalState> convex_hull_proposal_;
     QString group_feedback_;
     // Never call this from inside itemChange: changing the scene rect makes
     // the view update, which moves the dragged item, which re-enters
@@ -154,6 +182,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
 
     void renderCurrentGraph();
     void pruneGroupState();
+    bool installSessionGroup(std::vector<std::string> members);
     void recordSelection();
     void publishStateProperties();
 };

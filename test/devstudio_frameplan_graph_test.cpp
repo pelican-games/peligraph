@@ -738,7 +738,12 @@ constexpr std::array<std::string_view, 4> MixedFeatureNodes{
     "wp343_mixed_a", "wp343_mixed_b", "wp343_mixed_c",
     "wp343_mixed_d"};
 
-Json mixedMembershipFeature(bool overlapping) {
+Json mixedMembershipFeature(
+    bool overlapping,
+    std::size_t node_count = MixedFeatureNodes.size()) {
+    if (node_count < 2 || node_count > MixedFeatureNodes.size()) {
+        throw std::runtime_error("WP343 mixed fixture node count is invalid");
+    }
     Json feature{
         {"schema", "pelican.render_feature"},
         {"version", 1},
@@ -748,7 +753,7 @@ Json mixedMembershipFeature(bool overlapping) {
         {"passes", Json::array()},
     };
 
-    for (std::size_t index = 0; index < MixedFeatureNodes.size(); ++index) {
+    for (std::size_t index = 0; index < node_count; ++index) {
         const std::string name{MixedFeatureNodes[index]};
         const std::string output = name + "_output";
         feature["render_targets"].push_back({
@@ -789,7 +794,9 @@ Json mixedMembershipFeature(bool overlapping) {
     return feature;
 }
 
-Json resolvedMixedMembershipFramePlan(bool overlapping) {
+Json resolvedMixedMembershipFramePlan(
+    bool overlapping,
+    std::size_t node_count = MixedFeatureNodes.size()) {
     Json authored = readJson(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
@@ -798,12 +805,16 @@ Json resolvedMixedMembershipFramePlan(bool overlapping) {
     authored["features"] =
         Json::array({std::string{feature_reference}});
 
+    const std::string label =
+        overlapping
+            ? "wp343/mixed_overlap"
+            : node_count == MixedFeatureNodes.size()
+                  ? "wp343/mixed_priority"
+                  : "wp350/mixed_member_removed";
     auto resolved = Pelican::resolveRenderPipeline(
         Pelican::RenderPipelineRequest{
             .authored_config = std::move(authored),
-            .source_name = overlapping
-                               ? "wp343/mixed_overlap.json"
-                               : "wp343/mixed_priority.json",
+            .source_name = label + ".json",
         },
         Pelican::RenderEnvironmentCapabilities{
             .runtime_shader_compiler_enabled =
@@ -812,23 +823,112 @@ Json resolvedMixedMembershipFramePlan(bool overlapping) {
         },
         Pelican::RenderPipelineResolveDependencies{
             .load_feature_json =
-                [overlapping, feature_reference](std::string_view reference) {
+                [overlapping, node_count,
+                 feature_reference](std::string_view reference) {
                 if (reference != feature_reference) {
                     return loadEngineDocument(reference);
                 }
-                return mixedMembershipFeature(overlapping).dump();
+                return mixedMembershipFeature(overlapping, node_count).dump();
             },
             .load_pipeline_json = loadEngineDocument,
         });
-    return resolvedFramePlan(
-        std::move(resolved),
-        overlapping ? "wp343/mixed_overlap" : "wp343/mixed_priority");
+    return resolvedFramePlan(std::move(resolved), label);
 }
 
 const Json &mixedMembershipFramePlan(bool overlapping) {
     static const Json priority = resolvedMixedMembershipFramePlan(false);
     static const Json overlap = resolvedMixedMembershipFramePlan(true);
     return overlapping ? overlap : priority;
+}
+
+const Json &sessionGroupMemberRemovedFramePlan() {
+    static const Json wire = resolvedMixedMembershipFramePlan(false, 3);
+    return wire;
+}
+
+constexpr std::size_t Wp350LargeHullNodeCount = 30;
+
+std::string wp350LargeHullNodeName(std::size_t index) {
+    return "wp350_large_hull_" + std::to_string(index);
+}
+
+Json wp350LargeHullFeature() {
+    Json feature{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "wp350_large_hull"},
+        {"runtime_shader_compiler", "optional"},
+        {"render_targets", Json::array()},
+        {"passes", Json::array()},
+    };
+    for (std::size_t index = 0; index < Wp350LargeHullNodeCount; ++index) {
+        const std::string name = wp350LargeHullNodeName(index);
+        const std::string output = name + "_output";
+        feature["render_targets"].push_back({
+            {"name", output},
+            {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"},
+            {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+            {"role", "color"},
+            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+        });
+        Json pass{
+            {"name", name},
+            {"type", "fullscreen"},
+            {"output", {{"color", output}, {"depth", nullptr}}},
+            {"shader",
+             {{"vertex", "engine://fullscreen"},
+              {"fragment", "engine://fullscreen"}}},
+        };
+        if (index != 0) {
+            pass["input"] = Json::array(
+                {wp350LargeHullNodeName(index - 1) + "_output"});
+        }
+        feature["passes"].push_back({
+            {"insert", index == 0
+                           ? "end"
+                           : "after:" +
+                                 wp350LargeHullNodeName(index - 1)},
+            {"pass", std::move(pass)},
+        });
+    }
+    return feature;
+}
+
+const Json &wp350LargeHullFramePlan() {
+    static const Json wire = [] {
+        Json authored = readJson(
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+            "example" / "passes" / "main_rendering_config.json");
+        constexpr std::string_view feature_reference =
+            "engine://features/wp350_large_hull.json";
+        authored["features"] =
+            Json::array({std::string{feature_reference}});
+        auto resolved = Pelican::resolveRenderPipeline(
+            Pelican::RenderPipelineRequest{
+                .authored_config = std::move(authored),
+                .source_name = "wp350/large_hull.json",
+            },
+            Pelican::RenderEnvironmentCapabilities{
+                .runtime_shader_compiler_enabled =
+                    PELICAN_RUNTIME_SHADER_COMPILER != 0,
+                .graph_variant =
+                    Pelican::RenderPipelineGraphVariant::flat,
+            },
+            Pelican::RenderPipelineResolveDependencies{
+                .load_feature_json =
+                    [feature_reference](std::string_view reference) {
+                    if (reference != feature_reference) {
+                        return loadEngineDocument(reference);
+                    }
+                    return wp350LargeHullFeature().dump();
+                },
+                .load_pipeline_json = loadEngineDocument,
+            });
+        return resolvedFramePlan(std::move(resolved),
+                                 "wp350/large_hull");
+    }();
+    return wire;
 }
 
 constexpr std::string_view Wp347Producer = "wp347_fused_producer";
@@ -3903,6 +4003,297 @@ TEST_CASE(
     REQUIRE(logical.leaveGroup());
     REQUIRE(logical.selectedItems().empty());
     REQUIRE(logical.selectedNodes().empty());
+}
+
+TEST_CASE(
+    "WP350 a convex production selection becomes a removable session group and coexists with authored regions",
+    "[devstudio][frame-plan][grouping][selection][production][wp350][negative-contrast]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const std::filesystem::path config_path =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example" / "passes" / "main_rendering_config.json";
+    const std::string config_before = readText(config_path);
+    const Json &wire = mixedMembershipFramePlan(false);
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.execution_plan.available());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+
+    FramePlanGraphicsScene logical;
+    logical.populate(
+        model,
+        FramePlanNodeKey{model.graph, "wp343_mixed_d_output"}, 64);
+    const SceneItemSet before_items = annotatedSceneItems(logical);
+    QGraphicsItem *c = nodeItem(logical, "wp343_mixed_c");
+    QGraphicsItem *d = nodeItem(logical, "wp343_mixed_d");
+    REQUIRE(c != nullptr);
+    REQUIRE(d != nullptr);
+    c->setSelected(true);
+    d->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{"wp343_mixed_c", "wp343_mixed_d"});
+
+    // Exercise the production context-menu entry fed by WP349's live
+    // multiple selection. Creation immediately uses WP341's collapsed form.
+    triggerContextAction(logical, *c,
+                         QStringLiteral("Create session group"));
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 1);
+    QGraphicsItem *session_group = singleGroupItem(logical);
+    REQUIRE(session_group->data(FramePlanSessionGroupRole).toBool());
+    REQUIRE(strings(session_group->data(FramePlanMembersRole)) ==
+            StringSet{"wp343_mixed_c", "wp343_mixed_d"});
+    const QString session_group_id =
+        session_group->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(session_group_id.isEmpty());
+    REQUIRE(strings(logical.property("pelicanSessionGroups")) ==
+            StringSet{session_group_id.toStdString()});
+    const StringSet session_members{"wp343_mixed_c", "wp343_mixed_d"};
+    const std::string session_group_name =
+        session_group->data(FramePlanNameRole).toString().toStdString();
+    REQUIRE(annotatedSceneItems(logical) ==
+            quotientSceneItems(before_items, session_members, model.graph,
+                               session_group_name));
+    for (const auto &member : {"wp343_mixed_c", "wp343_mixed_d"}) {
+        // Kind-independent negative control: neither the member shape nor its
+        // label may survive under a blank or changed item kind.
+        REQUIRE(namedShapesAndLabels(logical, member).empty());
+    }
+
+    REQUIRE(logical.enterGroup(session_group_id));
+    REQUIRE(sceneNodeNames(logical) ==
+            StringSet{"wp343_mixed_c", "wp343_mixed_d"});
+    REQUIRE(logical.leaveGroup());
+
+    // The authored wp343.mixed region is disjoint from this session group.
+    // Both use the same quotient machinery and can be collapsed together.
+    QGraphicsItem *authored_member =
+        nodeItem(logical, "wp343_mixed_a");
+    REQUIRE(authored_member != nullptr);
+    const QString authored_group_id =
+        authored_member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(authored_group_id.isEmpty());
+    REQUIRE_FALSE(
+        authored_member->data(FramePlanSessionGroupRole).toBool());
+    REQUIRE(logical.collapseGroup(authored_group_id));
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).size() == 2);
+    REQUIRE(std::ranges::count_if(
+                itemsOfKind(logical, FramePlanGroupItem),
+                [](QGraphicsItem *item) {
+                    return item->data(FramePlanSessionGroupRole).toBool();
+                }) == 1);
+
+    REQUIRE(logical.expandGroup(authored_group_id));
+    REQUIRE(logical.removeSessionGroup(session_group_id));
+    REQUIRE(logical.property("pelicanSessionGroups")
+                .toStringList()
+                .isEmpty());
+    REQUIRE(annotatedSceneItems(logical) == before_items);
+
+    // On overlap, the live session operation has priority over the authored
+    // region. Removing it reveals the exact authored grouping again.
+    FramePlanGraphicsScene priority;
+    priority.populate(
+        model,
+        FramePlanNodeKey{model.graph, "wp343_mixed_d_output"}, 64);
+    QGraphicsItem *a = nodeItem(priority, "wp343_mixed_a");
+    QGraphicsItem *b = nodeItem(priority, "wp343_mixed_b");
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    const QString original_region_id =
+        a->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(original_region_id.isEmpty());
+    a->setSelected(true);
+    b->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(priority.createGroupFromSelection());
+    QGraphicsItem *priority_group = singleGroupItem(priority);
+    REQUIRE(priority_group->data(FramePlanSessionGroupRole).toBool());
+    REQUIRE(strings(priority_group->data(FramePlanMembersRole)) ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_b"});
+    const QString priority_session_id =
+        priority_group->data(FramePlanGroupIdRole).toString();
+    REQUIRE(priority_session_id != original_region_id);
+    REQUIRE(priority.removeSessionGroup(priority_session_id));
+    a = nodeItem(priority, "wp343_mixed_a");
+    REQUIRE(a != nullptr);
+    REQUIRE(a->data(FramePlanGroupIdRole).toString() ==
+            original_region_id);
+    REQUIRE_FALSE(a->data(FramePlanSessionGroupRole).toBool());
+
+    // Frame Plan remains a read-only view: the real project config is read
+    // byte-for-byte again after every grouping, scope, and removal operation.
+    REQUIRE(readText(config_path) == config_before);
+}
+
+TEST_CASE(
+    "WP350 a non-convex production selection visibly proposes and accepts its named convex hull",
+    "[devstudio][frame-plan][grouping][selection][convex-hull][production][wp350][negative-contrast]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const FramePlanModel model =
+        buildFramePlanModel(mixedMembershipFramePlan(false).dump());
+    FramePlanGraphicsScene logical;
+    logical.populate(
+        model,
+        FramePlanNodeKey{model.graph, "wp343_mixed_d_output"}, 64);
+    const SceneItemSet before_items = annotatedSceneItems(logical);
+    QGraphicsItem *a = nodeItem(logical, "wp343_mixed_a");
+    QGraphicsItem *c = nodeItem(logical, "wp343_mixed_c");
+    REQUIRE(a != nullptr);
+    REQUIRE(c != nullptr);
+    a->setSelected(true);
+    c->setSelected(true);
+    QApplication::processEvents();
+
+    // A -> B -> C is not convex without B. It must not silently create the
+    // two-member group; instead the actual visible banner names B.
+    REQUIRE_FALSE(logical.createGroupFromSelection());
+    REQUIRE(logical.property("pelicanSessionGroups")
+                .toStringList()
+                .isEmpty());
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    const auto proposals =
+        itemsOfKind(logical, FramePlanConvexHullProposalItem);
+    REQUIRE(proposals.size() == 1);
+    const QString proposal_text =
+        proposals.front()->data(FramePlanReasonRole).toString();
+    REQUIRE(proposal_text.contains(QStringLiteral("not convex")));
+    REQUIRE(proposal_text.contains(
+        QStringLiteral("wp343_mixed_b")));
+    REQUIRE(visibleSceneTextContains(logical, proposal_text));
+    REQUIRE(visibleSceneTextContains(
+        logical, QStringLiteral("wp343_mixed_b")));
+    REQUIRE(strings(proposals.front()->data(
+                FramePlanConvexHullMissingMembersRole)) ==
+            StringSet{"wp343_mixed_b"});
+    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_a").size() == 2);
+    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_c").size() == 2);
+
+    REQUIRE(logical.acceptConvexHullProposal());
+    REQUIRE(itemsOfKind(logical, FramePlanConvexHullProposalItem).empty());
+    QGraphicsItem *group = singleGroupItem(logical);
+    REQUIRE(group->data(FramePlanSessionGroupRole).toBool());
+    REQUIRE(group->data(FramePlanGroupCollapsibleRole).toBool());
+    REQUIRE(strings(group->data(FramePlanMembersRole)) ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_b",
+                      "wp343_mixed_c"});
+    const QString group_id =
+        group->data(FramePlanGroupIdRole).toString();
+    for (const auto &member : {"wp343_mixed_a", "wp343_mixed_b",
+                               "wp343_mixed_c"}) {
+        REQUIRE(namedShapesAndLabels(logical, member).empty());
+    }
+
+    REQUIRE(logical.removeSessionGroup(group_id));
+    REQUIRE(annotatedSceneItems(logical) == before_items);
+}
+
+TEST_CASE(
+    "WP350 an impractically large production convex hull reports names and counts",
+    "[devstudio][frame-plan][grouping][selection][convex-hull][large][production][wp350]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = wp350LargeHullFramePlan();
+    REQUIRE(wireFeatureMembers(wire, "wp350_large_hull").size() ==
+            Wp350LargeHullNodeCount);
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    FramePlanGraphicsScene logical;
+    logical.populate(
+        model,
+        FramePlanNodeKey{
+            model.graph,
+            wp350LargeHullNodeName(Wp350LargeHullNodeCount - 1) +
+                "_output"},
+        64);
+    QGraphicsItem *first =
+        nodeItem(logical, wp350LargeHullNodeName(0));
+    QGraphicsItem *last = nodeItem(
+        logical,
+        wp350LargeHullNodeName(Wp350LargeHullNodeCount - 1));
+    REQUIRE(first != nullptr);
+    REQUIRE(last != nullptr);
+    first->setSelected(true);
+    last->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE_FALSE(logical.createGroupFromSelection());
+
+    const auto proposals =
+        itemsOfKind(logical, FramePlanConvexHullProposalItem);
+    REQUIRE(proposals.size() == 1);
+    REQUIRE(proposals.front()
+                ->data(FramePlanConvexHullImpracticalRole)
+                .toBool());
+    const QStringList missing =
+        proposals.front()
+            ->data(FramePlanConvexHullMissingMembersRole)
+            .toStringList();
+    REQUIRE(missing.size() >=
+            static_cast<qsizetype>(Wp350LargeHullNodeCount - 2));
+    const QString text =
+        proposals.front()->data(FramePlanReasonRole).toString();
+    REQUIRE(text.contains(QStringLiteral("probably impractical")));
+    REQUIRE(text.contains(QStringLiteral("Missing nodes")));
+    REQUIRE(text.contains(QString::number(missing.size())));
+    REQUIRE(text.contains(QString::fromStdString(
+        wp350LargeHullNodeName(1))));
+    REQUIRE(visibleSceneTextContains(logical, text));
+}
+
+TEST_CASE(
+    "WP350 session groups survive ordinary updates and disappear with a missing member and scope",
+    "[devstudio][frame-plan][grouping][selection][state][production][wp350]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const FramePlanModel original =
+        buildFramePlanModel(mixedMembershipFramePlan(false).dump());
+    FramePlanGraphicsScene logical;
+    const FramePlanNodeKey original_target{
+        original.graph, "wp343_mixed_d_output"};
+    logical.populate(original, original_target, 64);
+    QGraphicsItem *c = nodeItem(logical, "wp343_mixed_c");
+    QGraphicsItem *d = nodeItem(logical, "wp343_mixed_d");
+    REQUIRE(c != nullptr);
+    REQUIRE(d != nullptr);
+    c->setSelected(true);
+    d->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(logical.createGroupFromSelection());
+    const QString group_id =
+        singleGroupItem(logical)->data(FramePlanGroupIdRole).toString();
+    REQUIRE(logical.enterGroup(group_id));
+
+    // The same production plan is a normal refresh: membership, collapse,
+    // and current scope all remain session state.
+    logical.populate(original, original_target, 64);
+    REQUIRE(logical.property("pelicanCurrentGroupScope").toString() ==
+            group_id);
+    REQUIRE(strings(logical.property("pelicanSessionGroups")) ==
+            StringSet{group_id.toStdString()});
+    REQUIRE(sceneNodeNames(logical) ==
+            StringSet{"wp343_mixed_c", "wp343_mixed_d"});
+
+    // This second model also passed resolve -> compile -> plan -> wire, but D
+    // no longer exists. The whole session group is discarded (not shrunk),
+    // its scope is exited, and no collapsed/scope orphan remains.
+    const FramePlanModel updated = buildFramePlanModel(
+        sessionGroupMemberRemovedFramePlan().dump());
+    REQUIRE(updated.graph == original.graph);
+    logical.populate(
+        updated,
+        FramePlanNodeKey{updated.graph, "wp343_mixed_c_output"}, 64);
+    REQUIRE(logical.property("pelicanSessionGroups")
+                .toStringList()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanCollapsedGroups")
+                .toStringList()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanCurrentGroupScope")
+                .toString()
+                .isEmpty());
+    REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
+    REQUIRE(nodeItem(logical, "wp343_mixed_d") == nullptr);
+    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_c").size() == 2);
 }
 
 TEST_CASE(
