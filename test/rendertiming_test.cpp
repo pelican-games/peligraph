@@ -80,20 +80,54 @@ TEST_CASE("GPU timing node averages use multiple frames and keep subranges indep
             frame, "flat", 0, 4, "render", "lit", barriers_ms,
             body_ms, true};
     };
-    const std::vector<GpuTimingNodeFrame> frames{
+    const std::vector<GpuTimingNodeFrame> body_varied_frames{
         {10, "flat", {row(10, 4.0, 2.0)}},
         {11, "flat", {row(11, 4.0, 8.0)}},
+    };
+
+    const auto body_varied = averageGpuTimingNodeFrames(body_varied_frames);
+    REQUIRE(body_varied.frame_count == 2);
+    REQUIRE(body_varied.nodes.size() == 1);
+    const auto &body_node = body_varied.nodes.front();
+    REQUIRE(body_node.sample_count == 2);
+    REQUIRE(body_node.body_ms == Catch::Approx(5.0));
+    REQUIRE(body_node.body_ms != Catch::Approx(2.0));
+    REQUIRE(body_node.body_ms != Catch::Approx(8.0));
+    REQUIRE(body_node.barriers_ms == Catch::Approx(4.0));
+
+    const std::vector<GpuTimingNodeFrame> barriers_varied_frames{
+        {20, "flat", {row(20, 2.0, 7.0)}},
+        {21, "flat", {row(21, 8.0, 7.0)}},
+    };
+    const auto barriers_varied =
+        averageGpuTimingNodeFrames(barriers_varied_frames);
+    REQUIRE(barriers_varied.frame_count == 2);
+    REQUIRE(barriers_varied.nodes.size() == 1);
+    const auto &barriers_node = barriers_varied.nodes.front();
+    REQUIRE(barriers_node.sample_count == 2);
+    REQUIRE(barriers_node.barriers_ms == Catch::Approx(5.0));
+    REQUIRE(barriers_node.barriers_ms != Catch::Approx(2.0));
+    REQUIRE(barriers_node.barriers_ms != Catch::Approx(8.0));
+    REQUIRE(barriers_node.body_ms == Catch::Approx(7.0));
+}
+
+TEST_CASE("GPU timing node averages divide by samples when a node is absent from a frame",
+          "[gpu-timing][average][sample-count][wp351a]") {
+    const std::vector<GpuTimingNodeFrame> frames{
+        {30, "flat", {}},
+        {31,
+         "flat",
+         {GpuTimingNodeRow{31, "flat", 0, 4, "render", "lit",
+                           9.0, 12.0, true}}},
     };
 
     const auto average = averageGpuTimingNodeFrames(frames);
     REQUIRE(average.frame_count == 2);
     REQUIRE(average.nodes.size() == 1);
     const auto &node = average.nodes.front();
-    REQUIRE(node.sample_count == 2);
-    REQUIRE(node.body_ms == Catch::Approx(5.0));
-    REQUIRE(node.body_ms != Catch::Approx(2.0));
-    REQUIRE(node.body_ms != Catch::Approx(8.0));
-    REQUIRE(node.barriers_ms == Catch::Approx(4.0));
+    REQUIRE(node.sample_count == 1);
+    REQUIRE(node.barriers_ms == Catch::Approx(9.0));
+    REQUIRE(node.body_ms == Catch::Approx(12.0));
 }
 
 TEST_CASE("GPU timing node averages discard frames older than the fixed window",

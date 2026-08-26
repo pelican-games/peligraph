@@ -83,7 +83,8 @@ Studio や profiler のような道具が必要とする feature は、ゲーム
   "name": "editor",
   "features": [
     "engine://features/gizmo.json",
-    "engine://features/picking.json"
+    "engine://features/picking.json",
+    "engine://features/gpu_timing.json"
   ]
 }
 ```
@@ -160,7 +161,7 @@ write等がある場合だけでよい。純粋passへeffect boilerplateを要�
 | 機能 | fragment の中身 | シェーダ合流(define) | 備考 |
 |------|----------------|----------------------|------|
 | デバッグ描画 | line 用 pass + 頂点ストリーム | なし(専用シェーダのみ) | CPU 側 API(`DebugDraw` モジュール)は feature 不参照時 no-op。最も独立性が高く**実証第 1 号に最適** |
-| GPU 計測 | パスなし(フラグのみの fragment) | なし | timestamp query をパス境界に挿入。結果は quill ログ + 将来 rpc `get_gpu_timings`。「アセットでなくエンジン機構」だが有効化 UX を features に統一 |
+| GPU 計測 | パスなし(フラグのみの fragment) | なし | timestamp query をパス境界に挿入。結果は quill ログ + RPC `get_gpu_timing`。「アセットでなくエンジン機構」だが有効化 UX を features に統一 |
 | HDR / トーンマップ | tonemap pass + RT overrides(RGBA16F 化) | `PELICAN_FEATURE_HDR`(出力の意味論) | RT override の実証。EXR(WP26)と接続 |
 | shadow(v1: directional 1 灯) | depth-only pass + shadow map RT | `PELICAN_FEATURE_SHADOW`(lighting でサンプリング)+ light UBO 拡張 | シェーダ合流の実証・**最難**。cascade は v2 |
 | sky + solid ambient | `scene_depth` を読む背景 pass + runtime 色/強度 | `PELICAN_FEATURE_SKY_AMBIENT` + LightUBO radiance | WP240b。単色の可視性 fallback。IBL / cubemap / irradiance / BRDF LUT は別 feature |

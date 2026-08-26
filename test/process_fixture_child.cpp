@@ -21,6 +21,25 @@ std::string childMode() {
 #endif
 }
 
+std::string rpcStringField(const std::string &request,
+                           std::string_view field) {
+    const std::string prefix = "\"" + std::string{field} + "\":\"";
+    const std::size_t begin = request.find(prefix);
+    if (begin == std::string::npos) return {};
+    const std::size_t value_begin = begin + prefix.size();
+    const std::size_t end = request.find('"', value_begin);
+    if (end == std::string::npos) return {};
+    return request.substr(value_begin, end - value_begin);
+}
+
+long long rpcIntegerField(const std::string &request,
+                          std::string_view field) {
+    const std::string prefix = "\"" + std::string{field} + "\":";
+    const std::size_t begin = request.find(prefix);
+    if (begin == std::string::npos) return 0;
+    return std::stoll(request.substr(begin + prefix.size()));
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -54,6 +73,28 @@ int main(int argc, char *argv[]) {
             << R"json({"jsonrpc":"2.0","id":1,"result":{"contract":1,"hit":null}})json"
             << '\n'
             << std::flush;
+        return 0;
+    }
+    if (argc >= 2 && std::string_view{argv[1]} == "rpc-loop") {
+        std::string request;
+        while (std::getline(std::cin, request)) {
+            const long long id = rpcIntegerField(request, "id");
+            const std::string method = rpcStringField(request, "method");
+            std::cerr << "rpc-loop-request:id=" << id
+                      << ",method=" << method << '\n'
+                      << std::flush;
+            if (method == "get_gpu_timing") {
+                std::cout
+                    << "{\"id\":" << id
+                    << R"json(,"jsonrpc":"2.0","result":{"enabled":false,"frame_count":0,"nodes":[],"reason":"wp351a_fixture_response","schema":"pelican.gpu_timing_node_averages","supported":false,"version":1,"window_size":30}})json"
+                    << '\n'
+                    << std::flush;
+            } else {
+                std::cout << "{\"id\":" << id
+                          << ",\"jsonrpc\":\"2.0\",\"result\":{}}\n"
+                          << std::flush;
+            }
+        }
         return 0;
     }
     return 2;

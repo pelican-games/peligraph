@@ -511,7 +511,7 @@ dist_debug/pelican_studio.exe
 
 `--free-camera [blender|unity]`、`--feature-overlay`、`--input-action-overlay` は Studio 固有機能ではなく、いずれも同じ
 `pelican_player` の公開引数です。したがって素の player や profiler からも同じ起動時 overlay を
-使えます。Studio が必要とする bundle の内容(gizmo + picking)は
+使えます。Studio が必要とする bundle の内容(gizmo + picking + GPU timing)は
 `engine://features/editor.json` だけが所有し、Studio source は個別 feature URI の一覧を持ちません。
 overlay はメモリ上だけにあり、project / scene JSON や入力 profile を保存しません。
 

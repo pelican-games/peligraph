@@ -1179,6 +1179,13 @@ target_compile_definitions(pelican_test_atlas_descriptor_pool_test PRIVATE
 
 add_executable(pelican_test_process_fixture_child process_fixture_child.cpp)
 set_target_properties(pelican_test_process_fixture_child PROPERTIES CXX_STANDARD 20)
+if(TARGET pelican_test_devstudio_frameplan_graph_test)
+  target_compile_definitions(pelican_test_devstudio_frameplan_graph_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_frameplan_graph_test
+    pelican_test_process_fixture_child)
+endif()
 
 if(TARGET pelican_studio_viewport)
   # Qt imported targets are directory-scoped; make the public viewport

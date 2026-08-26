@@ -17,6 +17,11 @@ if(NOT DEFINED RENDERDOC_REASON)
     set(RENDERDOC_REASON "renderdoc_not_injected")
 endif()
 
+# The disabled response is an ASCII-only fixed-schema object measured at about
+# 200 bytes. 4 KiB leaves over 20x room for additive status fields while still
+# enforcing WP351's "a few KiB" polling budget and rejecting attached history.
+set(WP351_GPU_TIMING_RESPONSE_MAX_BYTES 4096)
+
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY
     "${OUT_DIR}/project/assets"
@@ -247,8 +252,13 @@ function(validate_rpc_stdout stdout label)
     endif()
     string(LENGTH "${line0}" get_status_response_bytes)
     string(LENGTH "${line21}" get_gpu_timing_response_bytes)
+    if(get_gpu_timing_response_bytes GREATER
+       WP351_GPU_TIMING_RESPONSE_MAX_BYTES)
+        message(FATAL_ERROR
+            "${label}: disabled get_gpu_timing response was ${get_gpu_timing_response_bytes} bytes; limit is ${WP351_GPU_TIMING_RESPONSE_MAX_BYTES} bytes")
+    endif()
     file(WRITE "${OUT_DIR}/wp351_rpc_response_sizes.json"
-        "{\"get_status_bytes\":${get_status_response_bytes},\"get_gpu_timing_disabled_bytes\":${get_gpu_timing_response_bytes}}\n")
+        "{\"get_status_bytes\":${get_status_response_bytes},\"get_gpu_timing_disabled_bytes\":${get_gpu_timing_response_bytes},\"get_gpu_timing_max_bytes\":${WP351_GPU_TIMING_RESPONSE_MAX_BYTES}}\n")
 endfunction()
 
 function(normalize_rpc_stdout stdout output_var)

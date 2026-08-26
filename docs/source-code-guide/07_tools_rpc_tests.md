@@ -377,9 +377,9 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`runEngineRpcServer()`](../../src/core/communication/rpcserver.cpp) に集約されています。現在 **46 メソッド**で、うち 23 が編集系です。
+engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1112) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L39) に集約されています。現在 **57 メソッド**で、実行制御・診断系が 28、編集系が 29 です。数え方は、両関数内で `server.setHandler()` に渡す一意な公開 method 文字列を 1 メソッドとします。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。
 
-#### 実行制御・診断系(23)
+#### 実行制御・診断系(28)
 
 | method | 実装行 | 状態変更 |
 |---|---|---|
@@ -403,6 +403,10 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L1519) | planner の JSON を返す |
 | `pick_object` | [ID 読み出し](../../src/core/communication/rpcserver.cpp) | feature が作った `picking_id` の左上原点座標を同期読み出しし、同一フレーム token を WP258 の宣言 identity へ解決 |
 | `set_gizmo` | [表示要求](../../src/core/communication/rpcserver.cpp) | 宣言または runtime object のタグ付き selection と mode をギズモ表示へ設定。`selection:null` で解除 |
+| `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L1590) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
+| `get_modal_transform` | [modal 状態](../../src/core/communication/rpcserver.cpp#L1676) | player 側 modal transform の現在 snapshot を返す |
+| `cancel_modal_transform` | [modal cancel](../../src/core/communication/rpcserver.cpp#L1688) | player 側 modal transform に cancel を要求する |
+| `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L1712) | operation / revision が一致する modal transform snapshot を acknowledge する |
 | `query_gizmo_handle` | [状態なし hit query](../../src/core/communication/rpcserver.cpp) | リクエスト自身の selection/mode/物理 pixel を共通投影幾何へ渡し、contract 2 の `content_scale` と、handle に ID/axis/射影方向/論理 px 当たり変化量または `null` を返す |
 | `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L1843) | 最後の frame を PNG 保存 |
 
@@ -419,7 +423,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 `set_seed` と replay は役割が別です。`set_seed` は `DeterministicRng` の種を撒き直すだけで、時間の刻みも入力も固定しません。再現可能な実行は「seed」「fixed step の時間」「記録済み入力」の3つが揃って初めて成立し、後ろ2つを与えるのが `start_input_replay` です。
 
-#### 編集系(23) ✅実装済み(WP153〜WP172)
+#### 編集系(29) ✅実装済み(WP153〜WP172)
 
 すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L302) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L225) です。
 
@@ -439,6 +443,12 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `edit` | [コマンド適用](../../src/core/communication/rpcserver.cpp#L1324) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
 | `undo` / `redo` | [`internal::selectInputProfile()`](../../src/core/communication/rpcserver.cpp#L1327) / [redo の登録](../../src/core/communication/rpcserver.cpp#L1330) | actor 単位 |
 | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L117) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L126) | preview ticket(lease)の発行・更新・確定・破棄 |
+| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L129) | authored feature 構成と編集 token を返す |
+| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L132) | 追加可能な render feature の catalog を返す |
+| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L135) | render feature 構成を編集する |
+| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L138) | authored pass 編集に必要な target / resource context を返す |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L141) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L144) | authored pass を削除する |
 | `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L147) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1348) | 非同期結果取得 |
 | `query_journal` | [journal 照会](../../src/core/communication/rpcserver.cpp#L1351) | ジャーナル照会 |
 
@@ -610,7 +620,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1930) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L1937) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 

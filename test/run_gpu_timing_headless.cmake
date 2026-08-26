@@ -126,6 +126,7 @@ file(WRITE "${rpc_script}"
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"step_frame\",\"params\":{}}\n"
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"step_frame\",\"params\":{}}\n"
     "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"get_status\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"get_gpu_timing\",\"params\":{}}\n"
 )
 execute_process(
     COMMAND "${PLAYER}"
@@ -151,4 +152,30 @@ if(NOT rpc_stdout MATCHES [=["schema_version":2,"supported":true]=] OR
    NOT rpc_stdout MATCHES [=["subrange":"body"]=] OR
    NOT rpc_stdout MATCHES [=["create_count":1]=])
     message(FATAL_ERROR "get_status.gpu_timing omitted identity, subranges, or pool reuse counters\nstdout:\n${rpc_stdout}")
+endif()
+
+# Select the fifth protocol line so no similarly named field in get_status can
+# satisfy the dedicated lightweight-RPC contract by accident.
+string(REPLACE "\r\n" "\n" rpc_normalized "${rpc_stdout}")
+string(REPLACE "\r" "\n" rpc_normalized "${rpc_normalized}")
+string(REGEX REPLACE "\n$" "" rpc_trimmed "${rpc_normalized}")
+string(REPLACE ";" "\\;" rpc_list_safe "${rpc_trimmed}")
+string(REPLACE "\n" ";" rpc_lines "${rpc_list_safe}")
+list(LENGTH rpc_lines rpc_line_count)
+if(NOT rpc_line_count EQUAL 5)
+    message(FATAL_ERROR "gpu timing RPC run expected 5 response lines, got ${rpc_line_count}\nstdout:\n${rpc_stdout}")
+endif()
+list(GET rpc_lines 4 gpu_timing_line)
+if(NOT gpu_timing_line MATCHES [=["id":5]=] OR
+   NOT gpu_timing_line MATCHES [=["schema":"pelican\.gpu_timing_node_averages"]=] OR
+   NOT gpu_timing_line MATCHES [=["version":1]=] OR
+   NOT gpu_timing_line MATCHES [=["enabled":true]=] OR
+   NOT gpu_timing_line MATCHES [=["supported":true]=] OR
+   NOT gpu_timing_line MATCHES [=["reason":"enabled"]=] OR
+   NOT gpu_timing_line MATCHES [=["window_size":30]=] OR
+   NOT gpu_timing_line MATCHES [=["frame_count":1]=] OR
+   NOT gpu_timing_line MATCHES [=["nodes":\[\{]=] OR
+   NOT gpu_timing_line MATCHES [=["sample_count":1]=] OR
+   gpu_timing_line MATCHES "logical_frame_history")
+    message(FATAL_ERROR "enabled get_gpu_timing did not traverse the lightweight production RPC handler:\n${gpu_timing_line}")
 endif()

@@ -1,4 +1,23 @@
+#include "enginefailuremodel.hpp"
+#include "engineprocess.hpp"
+#include "nativewindowhost.hpp"
+#include "viewportgeometry.hpp"
+
+#include <QElapsedTimer>
+#include <QPoint>
+#include <QSet>
+#include <QStringList>
+#include <QWidget>
+
+#include <optional>
+
+// EmbeddedViewport is final and intentionally has no production test seam.
+// Expose only this test translation unit's existing process/readiness members
+// so the widget can be exercised through its real RPC transport.
+#define private public
 #include "embeddedviewport.hpp"
+#undef private
+
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
 
@@ -39,6 +58,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QSignalSpy>
 #include <QStringList>
 #include <QTest>
 #include <QTimer>
@@ -78,6 +98,16 @@ QApplication &application() {
     static char *arguments[] = {application_name};
     static QApplication instance{argument_count, arguments};
     return instance;
+}
+
+template <typename Predicate>
+bool waitUntil(Predicate predicate, int timeout_ms) {
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (!predicate() && elapsed.elapsed() < timeout_ms) {
+        QTest::qWait(10);
+    }
+    return predicate();
 }
 
 std::string readText(const std::filesystem::path &path) {
@@ -2658,7 +2688,89 @@ TEST_CASE(
     REQUIRE(poll->interval() == 1000);
     REQUIRE(widget.property("pelicanGpuTimingPollIntervalMs").toInt() ==
             1000);
-    REQUIRE_FALSE(poll->isActive());
+}
+
+TEST_CASE(
+    "WP351a Studio GPU timing poll traverses the timer and request-id routing",
+    "[devstudio][frame-plan][gpu-timing][rpc][poll][wp351a]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    QString transport_log;
+    QObject::connect(
+        &viewport, &EmbeddedViewport::engineStandardErrorReceived,
+        [&](const QString &text) { transport_log += text; });
+
+    QString error;
+    REQUIRE(viewport.process_.start(
+        {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH),
+         {QStringLiteral("rpc-loop")}, {}},
+        &error));
+    REQUIRE(error.isEmpty());
+    REQUIRE(viewport.process_.waitForStarted(5000));
+    viewport.rpc_ready_ = true;
+
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(
+        QByteArray::fromStdString(exampleFramePlan(true).dump()));
+    subtreeDepth(widget).setValue(64);
+    QApplication::processEvents();
+
+    const auto timing_item = [&]() -> QGraphicsSimpleTextItem * {
+        for (QGraphicsItem *item : scene(widget).items()) {
+            if (item->data(FramePlanGpuTimingNodeNameRole).isValid()) {
+                return dynamic_cast<QGraphicsSimpleTextItem *>(item);
+            }
+        }
+        return nullptr;
+    };
+    REQUIRE(timing_item() != nullptr);
+
+    auto *poll = widget.findChild<QTimer *>(
+        QStringLiteral("pelican.gpuTimingPollTimer"));
+    REQUIRE(poll != nullptr);
+    REQUIRE(poll->interval() == 1000);
+    REQUIRE(poll->isActive());
+    QSignalSpy timeout_spy{poll, &QTimer::timeout};
+
+    const QString fixture_reason =
+        QStringLiteral("wp351a_fixture_response");
+    (void)waitUntil(
+        [&] {
+            auto *item = timing_item();
+            return item != nullptr &&
+                   item->data(FramePlanReasonRole).toString() ==
+                       fixture_reason;
+        },
+        3000);
+    auto *routed_item = timing_item();
+    REQUIRE(routed_item != nullptr);
+    const QString routed_state =
+        routed_item->data(FramePlanGpuTimingStateRole).toString();
+    const QString routed_reason =
+        routed_item->data(FramePlanReasonRole).toString();
+    INFO("routed GPU timing state=" << routed_state.toStdString()
+                                      << " reason="
+                                      << routed_reason.toStdString());
+    INFO("fixture transport log=" << transport_log.toStdString());
+    REQUIRE(routed_state == QStringLiteral("unavailable"));
+    REQUIRE(routed_reason == fixture_reason);
+
+    const auto gpu_request_count = [&] {
+        return transport_log.count(
+            QStringLiteral("method=get_gpu_timing"));
+    };
+    (void)waitUntil(
+        [&] {
+            return timeout_spy.count() >= 1 &&
+                   gpu_request_count() >= 2;
+        },
+        3000);
+    INFO("QTimer timeout count=" << timeout_spy.count());
+    INFO("observed get_gpu_timing request count="
+         << gpu_request_count());
+    INFO("fixture transport log=" << transport_log.toStdString());
+    REQUIRE(timeout_spy.count() >= 1);
+    REQUIRE(gpu_request_count() >= 2);
 }
 
 TEST_CASE(
