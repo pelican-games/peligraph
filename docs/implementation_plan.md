@@ -12761,3 +12761,131 @@ src/core/vkcore/renderer.cpp:298
 実測で示したので、**設計から作ることになる。**
 
 依存: WP347。見積: 中。
+
+#### 敵対監査(WP351 直後、6 本を独立に反証)の仕分け
+
+**実装は正しい。落ちているのは全部テストである。**
+6 主張のうち 2 本(frame plan 不変 / パージ性)は反証できず、
+**frame plan 不変は監査側が実際に変異させて確かめた** ——
+`gpu_timing.json` に gizmo 由来のパスを 1 つ足してリビルドしたら
+`featurecompose_test.cpp` が **33 対 32** で落ち、戻したら通った。
+**本 WP で一番効く検査が、推論ではなく実測で裏付けられた。**
+
+残り 4 本が挙げた穴のうち、**実際に機能を殺したまま緑になる変異が 3 つ**ある。以下が WP351a。
+
+### WP351a: 緑のまま機能を殺せる 3 つの穴を塞ぐ
+
+**§4 規則 11 の中段。仕様レビュー + コードレビュー。**
+**production コードは原則として変更しない。穴はテスト側にある。**
+
+#### 穴 1: barriers が平均されていることを、何も検査していない
+
+**全テストで `barriers_ms` が窓内の全フレームにわたって一定である。**
+
+- `test/rendertiming_test.cpp:84-85` —— barriers は両フレームとも `4.0`。動くのは body だけ(`2.0`→`8.0`)
+- `test/rendertiming_test.cpp:106-113` —— barriers は窓内 30 フレーム全部 `6.0`。
+  外れ値 `6000.0` は index 0、すなわち**窓の外**にある
+- `test/golden_harness.cpp` の GPU 側は件数しか見ていない(値の assert が無い)
+- `test/run_rpc_headless.cmake` は**無効経路しか通らない**
+
+**緑のまま殺せる変異(監査側が両方走らせて出力一致を確認済み):**
+`src/core/vkcore/rendertiming.cpp:180` の
+`aggregate.barriers_ms_total += node.barriers_ms;` を
+`aggregate.barriers_ms_total = node.barriers_ms * (aggregate.row.sample_count + 1);`
+にすると、除算後に**最新フレームの barriers がそのまま出る** ——
+すなわち WP351 が無くそうとした「最新 1 フレーム」に barriers だけ戻る。**全テストが通る。**
+
+**WP351 の受け入れ条件は「片方だけ変化させ、もう片方が動かないこと」と書いてある。
+body 側しか変化させていない。**
+
+**やること**: **窓内で barriers を変化させ、body を固定した対照を足すこと。**
+両方向とも否定対照を置くこと(`!=` を上下の実値に対して)。
+
+#### 穴 2: `get_gpu_timing` の有効経路と studio の配線が、どこも通っていない
+
+`get_gpu_timing` が出てくるのは `rpcserver.cpp` / `frameplanwidget.cpp:750` /
+`run_rpc_headless.cmake` / docs だけである。
+そして **`run_rpc_headless.cmake` は `--feature-overlay` 無しで player を起動する**ので、
+その新ブロックは **`enabled:false` の stub しか見ていない。**
+有効側の唯一のテスト `golden_harness.cpp` は `nodeAverageJson()` を**プロセス内で**呼び、
+**RPC を渡らない。**
+
+**緑のまま殺せる変異が 3 つある:**
+
+1. `src/core/communication/rpcserver.cpp:1299-1302` の三項を潰して
+   常に `disabledGpuTimingNodeAverageStatusJson()` を返す ——
+   **studio の全ノードが永久に `feature_not_enabled` になる**
+2. `src/devstudio/view/frameplanwidget.cpp:412-413` の
+   `QObject::connect(gpu_timing_poll, &QTimer::timeout, ...)` を消す ——
+   timer は残り、名前も interval 1000 も残り、テストは緑。
+   **実機では connect 時の 1 回だけ要求が出て、そのとき履歴は空。
+   全ノードが `waiting for samples · 0/30f` のまま固まる**
+3. `frameplanwidget.cpp:760-763` の `pending_gpu_timing_request` の振り分けを消す ——
+   後続の `if (request_id != pending_request) return;` が全応答を捨て、
+   **`waiting for RPC` のまま固まる**
+
+**なぜ気づけないか**: テストが `receiveGpuTimingResult()` から直接注入していて、
+`requestGpuTiming()` も id の振り分けも QTimer も**素通りしている。**
+
+**さらに polling の assert が構造的に反転している。**
+`test/devstudio_frameplan_graph_test.cpp:2661` は `REQUIRE_FALSE(poll->isActive())`。
+既定構築の `EmbeddedViewport` は `rpcReady()` が false なので
+`gpu_timing_poll->start()` が**そもそも走らない**。
+**timer の設定を検査していて、timer が発火することを検査していない。**
+
+**やること:**
+
+- **有効経路を本番経路で通すこと。`test/run_gpu_timing_headless.cmake` に置く場所が既にある** ——
+  そこは `:64` で `"features": ["engine://features/gpu_timing.json"]` を指定して
+  player を起動し、RPC で叩いている。**そこに `get_gpu_timing` を足せば、
+  実ハンドラを有効状態で通る**(`logical_frame_history` が無いことも、
+  そこで初めて RPC の継ぎ目で検査できる)
+- **studio 側は、timer の発火が実際に要求を出すことと、
+  id による振り分けが応答を届けることを検査すること。**
+  `receiveGpuTimingResult()` の注入だけで済ませないこと
+- **反転した assert を直すこと** —— `rpcReady()` が true の状況を作るか、
+  発火を直接観測するか。**「動いていないこと」を検査したまま残さないこと**
+
+#### 穴 3: 「軽さ」を測っているが、閾値が無い
+
+`test/run_rpc_headless.cmake:248-251` は `string(LENGTH ...)` を 2 回して
+`file(WRITE .../wp351_rpc_response_sizes.json ...)` するだけで、**比較していない。**
+**応答が 1 MiB になっても何も落ちない。**
+
+**やること**: 閾値を置いて超えたら落とすこと。**数字の根拠を書くこと。**
+
+#### そのほか(docs、機能ではない)
+
+**`uv run tools/doclink.py check` は `#L<行>` しか見ず、散文も件数も読まない。**
+だから以下が緑のまま通った。
+
+- `docs/source-code-guide/07_tools_rpc_tests.md:380` は **46 メソッド**、`:382` は **(23)**。
+  表は既にそれより多い
+- `docs/source-code-guide/08_class_interface_index.md:293` は本 WP が `43`→`44` に書き換えたが、
+  **07 の 46 とも食い違う**
+- **数を仕様に書かない。コードから数えて、両文書を一致させること。**
+  数え方(何を 1 メソッドと数えるか)を明記すること
+- `docs/manual/10_tools.md:515` は overlay の中身を「gizmo + picking」と書いており**今は嘘**
+- `docs/design_render_feature_modules.md:79-89` は `editor.json` を**逐語で複製**していて、
+  `gpu_timing` の行が無い
+
+#### 受け入れ条件
+
+**穴 1〜3 のそれぞれについて、上に書いた変異を実際に当てて落ちることを確かめること。**
+**「落ちるはず」ではなく、当てて、落ちたことを報告すること。**当てたら必ず戻すこと。
+
+- **穴 2 の変異 3 つは、3 つとも別々に当てて、3 つとも落ちること**
+- **既存の緑を緩めないこと。**特に `featurecompose_test.cpp` の frame plan 不変検査は
+  本 WP 群で最も効く検査なので、触らないこと
+
+#### やらないこと
+
+- **production の挙動を変えること。**穴はテストにある
+  (閾値の追加と、docs の訂正だけが例外)
+- 除数を `sample_count` から `frame_count` に変えること ——
+  **どちらが正しいかは別の判断であり、本 WP では決めない。
+  ただし「窓内の一部フレームにしか居ないノード」を 1 件テストに足し、
+  現在の意味を固定すること**
+- `for` / ループの表現
+
+依存: WP351。見積: 小〜中。
