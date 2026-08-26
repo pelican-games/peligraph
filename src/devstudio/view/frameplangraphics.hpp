@@ -53,6 +53,15 @@ inline constexpr int FramePlanGroupIdRole = Qt::UserRole + 3088;
 inline constexpr int FramePlanGroupCollapsibleRole = Qt::UserRole + 3089;
 inline constexpr int FramePlanBoundaryTargetRole = Qt::UserRole + 3090;
 inline constexpr int FramePlanBoundaryDirectionRole = Qt::UserRole + 3091;
+inline constexpr int FramePlanBarrierKindsRole = Qt::UserRole + 3092;
+inline constexpr int FramePlanBarrierCountRole = Qt::UserRole + 3093;
+inline constexpr int FramePlanOrderOnlyCountRole = Qt::UserRole + 3094;
+inline constexpr int FramePlanSamePixelAttachmentCountRole =
+    Qt::UserRole + 3095;
+inline constexpr int FramePlanFusedBarrierCountRole = Qt::UserRole + 3096;
+inline constexpr int FramePlanInternalBarrierCountRole = Qt::UserRole + 3097;
+inline constexpr int FramePlanInternalFusedBarrierCountRole =
+    Qt::UserRole + 3098;
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";

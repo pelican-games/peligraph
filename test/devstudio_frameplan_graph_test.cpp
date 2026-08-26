@@ -654,6 +654,116 @@ const Json &mixedMembershipFramePlan(bool overlapping) {
     return overlapping ? overlap : priority;
 }
 
+constexpr std::string_view Wp347Producer = "wp347_fused_producer";
+constexpr std::string_view Wp347Consumer = "wp347_fused_consumer";
+constexpr std::string_view Wp347Ordered = "wp347_ordered_tail";
+constexpr std::string_view Wp347Tile = "wp347_tile";
+constexpr std::string_view Wp347Intermediate = "wp347_intermediate";
+constexpr std::string_view Wp347Output = "wp347_output";
+constexpr std::string_view Wp347Region = "wp347.fused_pair";
+
+Json wp347BarrierFeature() {
+    const auto fullscreen_shader = [] {
+        return Json{{"vertex", "engine://fullscreen"},
+                    {"fragment", "engine://fullscreen"}};
+    };
+    return Json{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "wp347_barrier_visibility"},
+        {"runtime_shader_compiler", "optional"},
+        {"render_targets",
+         Json::array(
+             {{{"name", Wp347Tile},
+               {"extent_scale", 1.0},
+               {"format", "R16G16B16A16_SFLOAT"},
+               {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+               {"role", "color"},
+               {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+              {{"name", Wp347Output},
+               {"extent_scale", 1.0},
+               {"format", "R16G16B16A16_SFLOAT"},
+               {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+               {"role", "color"},
+               {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+              {{"name", Wp347Intermediate},
+               {"extent_scale", 1.0},
+               {"format", "R16G16B16A16_SFLOAT"},
+               {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+               {"role", "color"},
+               {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}})},
+        {"passes",
+         Json::array(
+             {{{"insert", "end"},
+               {"pass",
+                {{"name", Wp347Producer},
+                 {"type", "fullscreen"},
+                 {"input", Json::array({"lit_color"})},
+                 {"input_footprints", {{"lit_color", "arbitrary"}}},
+                 {"regions", Json::array({Wp347Region})},
+                 {"output", {{"color", Wp347Tile}, {"depth", nullptr}}},
+                 {"shader", fullscreen_shader()}}}},
+              {{"insert", std::string{"after:"} +
+                              std::string{Wp347Producer}},
+               {"pass",
+                {{"name", Wp347Consumer},
+                 {"type", "fullscreen"},
+                 {"input", Json::array({Wp347Tile})},
+                 {"input_footprints", {{Wp347Tile, "same_pixel"}}},
+                 {"regions", Json::array({Wp347Region})},
+                 {"output",
+                  {{"color", Wp347Intermediate}, {"depth", nullptr}}},
+                 {"shader", fullscreen_shader()}}}},
+              {{"insert", std::string{"after:"} +
+                              std::string{Wp347Consumer}},
+               {"pass",
+                {{"name", Wp347Ordered},
+                 {"type", "fullscreen"},
+                 {"after", Json::array({Wp347Producer})},
+                 {"input", Json::array({Wp347Intermediate})},
+                 {"input_footprints",
+                  {{Wp347Intermediate, "arbitrary"}}},
+                 {"output", {{"color", Wp347Output}, {"depth", nullptr}}},
+                 {"shader", fullscreen_shader()}}}}})},
+    };
+}
+
+const Json &wp347BarrierFramePlan() {
+    static const Json wire = [] {
+        Json authored = readJson(
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+            "example" / "passes" / "main_rendering_config.json");
+        constexpr std::string_view feature_reference =
+            "engine://features/wp347_barrier_visibility.json";
+        authored["features"] =
+            Json::array({std::string{feature_reference}});
+
+        auto resolved = Pelican::resolveRenderPipeline(
+            Pelican::RenderPipelineRequest{
+                .authored_config = std::move(authored),
+                .source_name = "wp347/barrier_visibility.json",
+            },
+            Pelican::RenderEnvironmentCapabilities{
+                .runtime_shader_compiler_enabled =
+                    PELICAN_RUNTIME_SHADER_COMPILER != 0,
+                .graph_variant = Pelican::RenderPipelineGraphVariant::flat,
+            },
+            Pelican::RenderPipelineResolveDependencies{
+                .load_feature_json =
+                    [feature_reference](std::string_view reference) {
+                        if (reference == feature_reference) {
+                            return wp347BarrierFeature().dump();
+                        }
+                        return loadEngineDocument(reference);
+                    },
+                .load_pipeline_json = loadEngineDocument,
+            });
+        return resolvedFramePlan(std::move(resolved),
+                                 "wp347/barrier_visibility");
+    }();
+    return wire;
+}
+
 StringSet wireFeatureMembers(const Json &wire,
                              std::string_view feature) {
     StringSet members;
@@ -840,6 +950,15 @@ QSpinBox &subtreeDepth(FramePlanWidget &widget) {
         throw std::runtime_error("frame-plan depth control was not installed");
     }
     return *spin;
+}
+
+QLabel &framePlanStatus(FramePlanWidget &widget) {
+    auto *status = widget.findChild<QLabel *>(
+        QStringLiteral("pelican.framePlanStatus"));
+    if (status == nullptr) {
+        throw std::runtime_error("frame-plan status label was not installed");
+    }
+    return *status;
 }
 
 QGraphicsView &logicalView(FramePlanWidget &widget) {
@@ -1153,6 +1272,41 @@ std::vector<QGraphicsItem *> namedShapesAndLabels(
         }
     }
     return result;
+}
+
+std::vector<QGraphicsItem *> edgeShapesAndLabels(
+    QGraphicsScene &value, std::string_view from, std::string_view to) {
+    const QString expected_from = QString::fromUtf8(
+        from.data(), static_cast<qsizetype>(from.size()));
+    const QString expected_to = QString::fromUtf8(
+        to.data(), static_cast<qsizetype>(to.size()));
+    std::vector<QGraphicsItem *> result;
+    for (QGraphicsItem *item : value.items()) {
+        if (item->data(FramePlanFromNameRole).toString() != expected_from ||
+            item->data(FramePlanToNameRole).toString() != expected_to) {
+            continue;
+        }
+        if (dynamic_cast<QGraphicsPathItem *>(item) != nullptr ||
+            dynamic_cast<QGraphicsRectItem *>(item) != nullptr ||
+            dynamic_cast<QGraphicsSimpleTextItem *>(item) != nullptr) {
+            result.push_back(item);
+        }
+    }
+    return result;
+}
+
+QString edgeVisibleText(QGraphicsScene &value, std::string_view from,
+                        std::string_view to) {
+    QStringList labels;
+    for (QGraphicsItem *item : edgeShapesAndLabels(value, from, to)) {
+        if (const auto *text =
+                dynamic_cast<const QGraphicsSimpleTextItem *>(item);
+            text != nullptr && text->isVisible()) {
+            labels.push_back(text->text());
+        }
+    }
+    REQUIRE(labels.size() == 1);
+    return labels.front();
 }
 
 bool visibleSceneTextContains(QGraphicsScene &value,
@@ -2523,6 +2677,255 @@ TEST_CASE(
     REQUIRE(reason.contains(QStringLiteral("not convex")));
     REQUIRE(reason.contains(QStringLiteral("outside")));
     REQUIRE(visibleSceneTextContains(logical, reason));
+}
+
+TEST_CASE(
+    "WP347 production edges distinguish barriers order-only dependencies and fused absorption",
+    "[devstudio][frame-plan][barrier-visibility][grouping][wp347][negative-contrast]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = wp347BarrierFramePlan();
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    const StringSet members{std::string{Wp347Producer},
+                            std::string{Wp347Consumer}};
+    REQUIRE(model.execution_plan.available());
+    REQUIRE(model.physical_plan.available());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+    REQUIRE(wireRegionMembers(wire, Wp347Region) == members);
+    REQUIRE_FALSE(model.barriers.empty());
+
+    const auto consumer = std::ranges::find(
+        model.nodes, std::string{Wp347Consumer}, &FramePlanNode::name);
+    REQUIRE(consumer != model.nodes.end());
+    const auto tile_use = std::ranges::find(
+        consumer->resource_uses, std::string{Wp347Tile},
+        &FramePlanResourceUse::resource);
+    REQUIRE(tile_use != consumer->resource_uses.end());
+    REQUIRE(tile_use->footprint == "same_pixel");
+
+    const auto same_pixel_attachment_barrier = std::ranges::find_if(
+        model.barriers, [&](const FramePlanBarrier &barrier) {
+            const auto destination = std::ranges::find(
+                model.nodes, barrier.to, &FramePlanNode::name);
+            return destination != model.nodes.end() &&
+                   std::ranges::any_of(
+                       destination->resource_uses,
+                       [&](const FramePlanResourceUse &use) {
+                           return use.resource == barrier.resource &&
+                                  use.footprint == "same_pixel" &&
+                                  use.intent == "attachment";
+                       });
+        });
+    REQUIRE(same_pixel_attachment_barrier != model.barriers.end());
+
+    const auto fused_scope = std::ranges::find_if(
+        model.physical_plan.scopes,
+        [&](const FramePlanPhysicalScope &scope) {
+            return std::ranges::includes(
+                       StringSet{scope.nodes.begin(), scope.nodes.end()},
+                       members) &&
+                   std::ranges::find(scope.local_reads,
+                                     std::string{Wp347Tile}) !=
+                       scope.local_reads.end();
+        });
+    REQUIRE(fused_scope != model.physical_plan.scopes.end());
+
+    const auto internal_barrier = [&](const FramePlanBarrier &barrier) {
+        return members.contains(barrier.from) &&
+               members.contains(barrier.to);
+    };
+    const std::size_t internal_barrier_count =
+        static_cast<std::size_t>(
+            std::ranges::count_if(model.barriers, internal_barrier));
+    REQUIRE(internal_barrier_count > 0);
+    const std::size_t internal_fused_count =
+        static_cast<std::size_t>(std::ranges::count_if(
+            model.barriers, [&](const FramePlanBarrier &barrier) {
+                return internal_barrier(barrier) &&
+                       std::ranges::find(fused_scope->local_reads,
+                                         barrier.resource) !=
+                           fused_scope->local_reads.end();
+            }));
+    REQUIRE(internal_fused_count > 0);
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1200, 800);
+    widget.show();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText(
+        QString::fromStdString(std::string{Wp347Output}));
+    subtreeDepth(widget).setValue(64);
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+    auto *logical_scene = dynamic_cast<FramePlanGraphicsScene *>(&logical);
+    REQUIRE(logical_scene != nullptr);
+
+    for (const auto &member : members) {
+        REQUIRE(namedShapesAndLabels(logical, member).size() == 2);
+    }
+
+    // These searches are deliberately independent of FramePlanItemKindRole.
+    // A mutation that merely renames or clears an edge item's kind still has
+    // to preserve the actual shape and visible label distinction.
+    const auto barrier_items = edgeShapesAndLabels(
+        logical, Wp347Producer, Wp347Consumer);
+    const auto order_items = edgeShapesAndLabels(
+        logical, Wp347Producer, Wp347Ordered);
+    REQUIRE_FALSE(barrier_items.empty());
+    REQUIRE_FALSE(order_items.empty());
+    const QString barrier_text = edgeVisibleText(
+        logical, Wp347Producer, Wp347Consumer);
+    const QString order_text = edgeVisibleText(
+        logical, Wp347Producer, Wp347Ordered);
+    REQUIRE(barrier_text != order_text);
+    REQUIRE(barrier_text.contains(QStringLiteral("barrier")));
+    for (const auto &barrier : model.barriers) {
+        if (barrier.from == Wp347Producer &&
+            barrier.to == Wp347Consumer) {
+            REQUIRE(barrier_text.contains(
+                QString::fromStdString(barrier.kind)));
+        }
+    }
+    REQUIRE(barrier_text.contains(
+        QStringLiteral("absorbed in fused scope")));
+    REQUIRE_FALSE(barrier_text.contains(QStringLiteral("stage")));
+    REQUIRE_FALSE(barrier_text.contains(QStringLiteral("layout")));
+    REQUIRE(order_text.contains(
+        QStringLiteral("order only: explicit_after")));
+    REQUIRE_FALSE(order_text.contains(QStringLiteral("barrier")));
+
+    const auto by_region_items = edgeShapesAndLabels(
+        logical, same_pixel_attachment_barrier->from,
+        same_pixel_attachment_barrier->to);
+    REQUIRE_FALSE(by_region_items.empty());
+    const QString by_region_text = edgeVisibleText(
+        logical, same_pixel_attachment_barrier->from,
+        same_pixel_attachment_barrier->to);
+    REQUIRE(by_region_text.contains(QStringLiteral("barrier")));
+    REQUIRE(by_region_text.contains(
+        QStringLiteral("same-pixel attachment")));
+    REQUIRE_FALSE(by_region_text.contains(QStringLiteral("stage")));
+    REQUIRE_FALSE(by_region_text.contains(QStringLiteral("layout")));
+
+    QGraphicsItem *member = nodeItem(logical, Wp347Producer);
+    REQUIRE(member != nullptr);
+    const QString group_id =
+        member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(group_id.isEmpty());
+    REQUIRE(logical_scene->collapseGroup(group_id));
+
+    for (const auto &name : members) {
+        REQUIRE(namedShapesAndLabels(logical, name).empty());
+    }
+    REQUIRE(edgeShapesAndLabels(logical, Wp347Producer,
+                                Wp347Consumer)
+                .empty());
+    QGraphicsItem *group = singleGroupItem(logical);
+    REQUIRE(group->data(FramePlanInternalBarrierCountRole).toULongLong() ==
+            internal_barrier_count);
+    REQUIRE(group->data(FramePlanInternalFusedBarrierCountRole)
+                .toULongLong() == internal_fused_count);
+    REQUIRE(logical.property("pelicanInternalBarrierRecordCount")
+                .toULongLong() == internal_barrier_count);
+    REQUIRE(visibleSceneTextContains(
+        logical,
+        QStringLiteral("internal barriers: %1")
+            .arg(static_cast<qulonglong>(internal_barrier_count))));
+    REQUIRE(visibleSceneTextContains(
+        logical, QStringLiteral("absorbed in fused scope: %1")
+                     .arg(static_cast<qulonglong>(internal_fused_count))));
+}
+
+TEST_CASE(
+    "WP347 production subtree reports outside unselected and unavailable barriers",
+    "[devstudio][frame-plan][barrier-visibility][window][wp347][negative-contrast]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = wp347BarrierFramePlan();
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.execution_plan.available());
+    REQUIRE_FALSE(model.barriers.empty());
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1200, 800);
+    widget.show();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QComboBox &selector = targetSelector(widget);
+    QSpinBox &depth = subtreeDepth(widget);
+    selector.setCurrentText(
+        QString::fromStdString(std::string{Wp347Output}));
+    depth.setValue(1);
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+
+    const StringSet narrow_nodes = sceneNodeNames(logical);
+    const std::size_t expected_outside =
+        static_cast<std::size_t>(std::ranges::count_if(
+            model.barriers, [&](const FramePlanBarrier &barrier) {
+                return !narrow_nodes.contains(barrier.from) ||
+                       !narrow_nodes.contains(barrier.to);
+            }));
+    REQUIRE(expected_outside > 0);
+    REQUIRE(logical.property("pelicanBarrierRecordCount").toULongLong() ==
+            model.barriers.size());
+    REQUIRE(logical.property("pelicanOutsideBarrierRecordCount")
+                .toULongLong() == expected_outside);
+    const QString outside_phrase =
+        QStringLiteral("%1 outside the current window")
+            .arg(static_cast<qulonglong>(expected_outside));
+    REQUIRE(logical.property("pelicanBarrierCoverage")
+                .toString()
+                .contains(outside_phrase));
+    REQUIRE(framePlanStatus(widget).text().contains(outside_phrase));
+
+    selector.setCurrentIndex(-1);
+    QApplication::processEvents();
+    REQUIRE(sceneNodeNames(logical).empty());
+    for (const auto &node : model.nodes) {
+        REQUIRE(namedShapesAndLabels(logical, node.name).empty());
+    }
+    REQUIRE(model.barriers == buildFramePlanModel(wire.dump()).barriers);
+    REQUIRE(logical.property("pelicanBarrierRecordCount").toULongLong() ==
+            model.barriers.size());
+    REQUIRE(logical.property("pelicanVisibleBarrierRecordCount")
+                .toULongLong() == 0);
+    REQUIRE(logical.property("pelicanOutsideBarrierRecordCount")
+                .toULongLong() == model.barriers.size());
+    const QString no_target_phrase =
+        QStringLiteral("%1 outside the current window (no target selected)")
+            .arg(static_cast<qulonglong>(model.barriers.size()));
+    REQUIRE(logical.property("pelicanBarrierCoverage")
+                .toString()
+                .contains(no_target_phrase));
+    REQUIRE(framePlanStatus(widget).text().contains(no_target_phrase));
+
+    Json missing_execution = wire;
+    missing_execution.erase("execution_plan");
+    const FramePlanModel unavailable_model =
+        buildFramePlanModel(missing_execution.dump());
+    REQUIRE_FALSE(unavailable_model.execution_plan.available());
+    REQUIRE(unavailable_model.dependencies.empty());
+    REQUIRE(unavailable_model.barriers == model.barriers);
+    widget.receiveResult(
+        QByteArray::fromStdString(missing_execution.dump()));
+    QApplication::processEvents();
+
+    REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
+            QStringLiteral("unavailable"));
+    REQUIRE(logical.property("pelicanVisibleBarrierRecordCount")
+                .toULongLong() == 0);
+    REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
+    const QString unavailable_phrase =
+        QStringLiteral(
+            "%1 cannot be placed because the execution plan is unavailable")
+            .arg(static_cast<qulonglong>(model.barriers.size()));
+    REQUIRE(logical.property("pelicanBarrierCoverage")
+                .toString()
+                .contains(unavailable_phrase));
+    REQUIRE(visibleSceneTextContains(logical, unavailable_phrase));
+    REQUIRE(framePlanStatus(widget).text().contains(unavailable_phrase));
 }
 
 TEST_CASE(

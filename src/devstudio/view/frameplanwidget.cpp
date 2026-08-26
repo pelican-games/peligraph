@@ -725,9 +725,11 @@ struct FramePlanWidget::Impl {
                       .arg(text(selected_target->name))
                       .arg(depth->value())
                 : owner.tr("no target selected");
+        const QString barrier_summary =
+            logical_scene->property("pelicanBarrierCoverage").toString();
         status->setText(
             owner.tr("%1 | %2 | %3%4 passes/tasks (%5 compute), %6, "
-                     "%7 resources, %8 barriers | %9 | %10 response | "
+                     "%7 resources | %8 | %9 | %10 response | "
                      "refreshed %11. Snapshot updates "
                      "only when the engine connects or Refresh is pressed; it "
                      "is not polled per frame.")
@@ -736,7 +738,7 @@ struct FramePlanWidget::Impl {
                 .arg(static_cast<qulonglong>(compute_count))
                 .arg(execution_summary)
                 .arg(static_cast<qulonglong>(model->resources.size()))
-                .arg(static_cast<qulonglong>(model->barriers.size()))
+                .arg(barrier_summary)
                 .arg(physical_summary, byteCount(model->response_bytes),
                      QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
     }

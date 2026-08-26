@@ -41,7 +41,7 @@ namespace {
 constexpr qreal NodeWidth = 240.0;
 constexpr qreal NodeHeight = 64.0;
 constexpr qreal GroupWidth = 260.0;
-constexpr qreal GroupHeight = 76.0;
+constexpr qreal GroupHeight = 96.0;
 constexpr qreal BoundaryStubWidth = 210.0;
 constexpr qreal BoundaryStubHeight = 54.0;
 constexpr qreal HorizontalGap = 88.0;
@@ -57,8 +57,8 @@ constexpr qreal PhysicalPanelMinimumWidth = 760.0;
 constexpr qreal PhysicalHeaderHeight = 76.0;
 constexpr qreal PhysicalResourceHeight = 92.0;
 constexpr qreal PhysicalOutcomeHeight = 34.0;
-constexpr qreal LogicalUnavailableWidth = 640.0;
-constexpr qreal LogicalUnavailableHeight = 140.0;
+constexpr qreal LogicalUnavailableWidth = 960.0;
+constexpr qreal LogicalUnavailableHeight = 176.0;
 
 using EntityPair = std::pair<std::string, std::string>;
 
@@ -103,6 +103,8 @@ struct VisibleEntity {
     std::string source;
     std::vector<std::string> members;
     std::vector<std::string> internal_records;
+    std::size_t internal_barrier_count = 0;
+    std::size_t internal_fused_barrier_count = 0;
     std::string group_id;
     std::string stable_group_key;
     std::string boundary_target;
@@ -120,6 +122,31 @@ struct DependencyRecord {
     std::string to;
     std::string reason;
     std::string resource;
+    std::optional<std::size_t> barrier_index;
+    std::string barrier_kind;
+    bool same_pixel_attachment = false;
+    bool fused_scope_absorbed = false;
+};
+
+struct DependencySummary {
+    std::set<std::string, std::less<>> barrier_kinds;
+    std::set<std::string, std::less<>> order_reasons;
+    std::set<std::string, std::less<>> resources;
+    std::size_t barrier_count = 0;
+    std::size_t order_only_count = 0;
+    std::size_t same_pixel_attachment_count = 0;
+    std::size_t fused_barrier_count = 0;
+    QString label;
+};
+
+struct BarrierCoverage {
+    std::size_t total = 0;
+    std::size_t on_edges = 0;
+    std::size_t inside_collapsed_groups = 0;
+    std::size_t outside_window = 0;
+    std::size_t unmatched = 0;
+    bool execution_available = false;
+    bool target_selected = false;
 };
 
 struct PhysicalOverlaySummary {
@@ -203,6 +230,18 @@ std::string recordIdentity(const DependencyRecord &dependency) {
            dependency.reason + separator + dependency.resource;
 }
 
+std::string dependencyReasonKind(std::string_view reason) {
+    const std::size_t marker = reason.rfind('.');
+    const std::size_t start =
+        marker == std::string_view::npos ? 0 : marker + 1;
+    const std::size_t version = reason.rfind('@');
+    const std::size_t end =
+        version == std::string_view::npos || version < start
+            ? reason.size()
+            : version;
+    return std::string{reason.substr(start, end - start)};
+}
+
 QStringList qlist(const std::vector<std::string> &values) {
     QStringList result;
     result.reserve(static_cast<qsizetype>(values.size()));
@@ -210,6 +249,74 @@ QStringList qlist(const std::vector<std::string> &values) {
         result.push_back(qtext(value));
     }
     return result;
+}
+
+bool isSamePixelAttachmentBarrier(const FramePlanModel &model,
+                                  const FramePlanBarrier &barrier) {
+    const auto destination = std::ranges::find(
+        model.nodes, barrier.to, &FramePlanNode::name);
+    return destination != model.nodes.end() &&
+           std::ranges::any_of(
+               destination->resource_uses,
+               [&](const FramePlanResourceUse &use) {
+                   return use.resource == barrier.resource &&
+                          use.footprint == "same_pixel" &&
+                          use.intent == "attachment";
+               });
+}
+
+bool isFusedScopeBarrier(const FramePlanModel &model,
+                         const FramePlanBarrier &barrier) {
+    return std::ranges::any_of(
+        model.physical_plan.scopes,
+        [&](const FramePlanPhysicalScope &scope) {
+            return std::ranges::find(scope.nodes, barrier.from) !=
+                       scope.nodes.end() &&
+                   std::ranges::find(scope.nodes, barrier.to) !=
+                       scope.nodes.end() &&
+                   std::ranges::find(scope.local_reads, barrier.resource) !=
+                       scope.local_reads.end();
+        });
+}
+
+std::vector<DependencyRecord> dependencyRecords(
+    const FramePlanModel &model) {
+    std::vector<bool> claimed_barriers(model.barriers.size(), false);
+    std::vector<DependencyRecord> records;
+    records.reserve(model.dependencies.size());
+    for (const auto &dependency : model.dependencies) {
+        DependencyRecord record{
+            .from = dependency.from,
+            .to = dependency.to,
+            .reason = dependency.reason,
+            .resource = dependency.resource,
+        };
+        const std::string reason_kind =
+            dependencyReasonKind(dependency.reason);
+        for (std::size_t index = 0; index < model.barriers.size(); ++index) {
+            const FramePlanBarrier &barrier = model.barriers[index];
+            if (claimed_barriers[index] || barrier.from != dependency.from ||
+                barrier.to != dependency.to ||
+                barrier.resource != dependency.resource ||
+                barrier.kind != reason_kind) {
+                continue;
+            }
+            claimed_barriers[index] = true;
+            record.barrier_index = index;
+            record.barrier_kind = barrier.kind;
+            record.same_pixel_attachment =
+                isSamePixelAttachmentBarrier(model, barrier);
+            record.fused_scope_absorbed =
+                isFusedScopeBarrier(model, barrier);
+            break;
+        }
+        records.push_back(std::move(record));
+    }
+    std::ranges::sort(records, {}, [](const DependencyRecord &record) {
+        return std::tie(record.from, record.to, record.reason,
+                        record.resource);
+    });
+    return records;
 }
 
 constexpr std::string_view LegacyRegionPrefix = "legacy.";
@@ -679,36 +786,154 @@ void addCenteredEntityLabel(QGraphicsPathItem &item, const QString &text,
     annotateIdentity(*label, kind, graph, name);
 }
 
-QString dependencyLabel(const std::vector<DependencyRecord> &records) {
-    std::set<std::string, std::less<>> resources;
-    std::set<std::string, std::less<>> reasons;
+DependencySummary dependencySummary(
+    const std::vector<DependencyRecord> &records) {
+    DependencySummary summary;
     for (const auto &record : records) {
         if (!record.resource.empty()) {
-            resources.insert(record.resource);
+            summary.resources.insert(record.resource);
         }
-        reasons.insert(record.reason);
+        if (record.barrier_index) {
+            ++summary.barrier_count;
+            summary.barrier_kinds.insert(record.barrier_kind);
+            summary.same_pixel_attachment_count +=
+                static_cast<std::size_t>(record.same_pixel_attachment);
+            summary.fused_barrier_count +=
+                static_cast<std::size_t>(record.fused_scope_absorbed);
+        } else {
+            ++summary.order_only_count;
+            summary.order_reasons.insert(
+                dependencyReasonKind(record.reason));
+        }
     }
+
     QStringList parts;
-    for (const auto &resource : resources) {
-        parts.push_back(qtext(resource));
-    }
-    if (parts.isEmpty()) {
-        for (const auto &reason : reasons) {
-            const auto marker = reason.rfind('.');
-            const auto version = reason.rfind('@');
-            parts.push_back(qtext(reason.substr(
-                marker == std::string::npos ? 0 : marker + 1,
-                version == std::string::npos
-                    ? std::string::npos
-                    : version - (marker == std::string::npos ? 0
-                                                              : marker + 1))));
+    if (summary.barrier_count != 0) {
+        QStringList kinds;
+        for (const auto &kind : summary.barrier_kinds) {
+            kinds.push_back(qtext(kind));
         }
+        parts.push_back(
+            summary.barrier_count == 1
+                ? QStringLiteral("barrier: %1").arg(
+                      kinds.join(QStringLiteral(", ")))
+                : QStringLiteral("barriers (%1): %2")
+                      .arg(static_cast<qulonglong>(summary.barrier_count))
+                      .arg(kinds.join(QStringLiteral(", "))));
     }
-    QString label = parts.join(QStringLiteral(", "));
+
+    if (!summary.resources.empty()) {
+        QStringList resources;
+        for (const auto &resource : summary.resources) {
+            resources.push_back(qtext(resource));
+        }
+        parts.push_back(
+            summary.resources.size() == 1
+                ? QStringLiteral("resource: %1").arg(resources.front())
+                : QStringLiteral("resources: %1").arg(
+                      resources.join(QStringLiteral(", "))));
+    }
+
+    if (summary.same_pixel_attachment_count != 0) {
+        QString marker = QStringLiteral("same-pixel attachment");
+        if (summary.same_pixel_attachment_count != 1 ||
+            summary.barrier_count != 1) {
+            marker += QStringLiteral(" (%1)").arg(
+                static_cast<qulonglong>(
+                    summary.same_pixel_attachment_count));
+        }
+        parts.push_back(std::move(marker));
+    }
+
+    if (summary.fused_barrier_count != 0) {
+        QString marker = QStringLiteral("absorbed in fused scope");
+        if (summary.fused_barrier_count != 1 ||
+            summary.barrier_count != 1) {
+            marker += QStringLiteral(" (%1)").arg(
+                static_cast<qulonglong>(summary.fused_barrier_count));
+        }
+        parts.push_back(std::move(marker));
+    }
+
+    if (summary.order_only_count != 0) {
+        QStringList reasons;
+        for (const auto &reason : summary.order_reasons) {
+            reasons.push_back(qtext(reason));
+        }
+        QString marker = QStringLiteral("order only: %1").arg(
+            reasons.join(QStringLiteral(", ")));
+        if (summary.order_only_count != 1) {
+            marker += QStringLiteral(" (%1)").arg(
+                static_cast<qulonglong>(summary.order_only_count));
+        }
+        parts.push_back(std::move(marker));
+    }
+
+    summary.label = parts.join(QStringLiteral(" · "));
     if (records.size() > 1) {
-        label += QStringLiteral("  x%1").arg(records.size());
+        summary.label += QStringLiteral("  x%1").arg(records.size());
     }
-    return label;
+    return summary;
+}
+
+QString barrierCoverageText(const BarrierCoverage &coverage) {
+    if (!coverage.execution_available) {
+        return QStringLiteral(
+                   "Visible-subtree barriers: 0/%1 on edges; %1 cannot be "
+                   "placed because the execution plan is unavailable.")
+            .arg(static_cast<qulonglong>(coverage.total));
+    }
+    if (coverage.total == 0) {
+        return QStringLiteral(
+            "Visible-subtree barriers: 0/0 on edges; no barriers were "
+            "published.");
+    }
+
+    QStringList details;
+    if (coverage.inside_collapsed_groups != 0) {
+        details.push_back(
+            QStringLiteral("%1 inside collapsed groups")
+                .arg(static_cast<qulonglong>(
+                    coverage.inside_collapsed_groups)));
+    }
+    if (coverage.outside_window != 0) {
+        QString outside = QStringLiteral("%1 outside the current window")
+                              .arg(static_cast<qulonglong>(
+                                  coverage.outside_window));
+        if (!coverage.target_selected) {
+            outside += QStringLiteral(" (no target selected)");
+        }
+        details.push_back(std::move(outside));
+    }
+    if (coverage.unmatched != 0) {
+        details.push_back(
+            QStringLiteral("%1 could not be matched to dependencies")
+                .arg(static_cast<qulonglong>(coverage.unmatched)));
+    }
+    if (details.isEmpty()) {
+        details.push_back(QStringLiteral("none hidden"));
+    }
+    return QStringLiteral("Visible-subtree barriers: %1/%2 on edges; %3.")
+        .arg(static_cast<qulonglong>(coverage.on_edges))
+        .arg(static_cast<qulonglong>(coverage.total))
+        .arg(details.join(QStringLiteral("; ")));
+}
+
+void publishBarrierCoverage(QGraphicsScene &scene,
+                            const BarrierCoverage &coverage) {
+    scene.setProperty("pelicanBarrierRecordCount",
+                      static_cast<qulonglong>(coverage.total));
+    scene.setProperty("pelicanVisibleBarrierRecordCount",
+                      static_cast<qulonglong>(coverage.on_edges));
+    scene.setProperty(
+        "pelicanInternalBarrierRecordCount",
+        static_cast<qulonglong>(coverage.inside_collapsed_groups));
+    scene.setProperty("pelicanOutsideBarrierRecordCount",
+                      static_cast<qulonglong>(coverage.outside_window));
+    scene.setProperty("pelicanUnmatchedBarrierRecordCount",
+                      static_cast<qulonglong>(coverage.unmatched));
+    scene.setProperty("pelicanBarrierCoverage",
+                      barrierCoverageText(coverage));
 }
 
 struct CurveGeometry {
@@ -1161,6 +1386,12 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanNonCollapsibleGroups", QStringList{});
     setProperty("pelicanGroupFeedback", QString{});
     setProperty("pelicanBoundaryStubCount", 0);
+    setProperty("pelicanBarrierRecordCount", 0);
+    setProperty("pelicanVisibleBarrierRecordCount", 0);
+    setProperty("pelicanInternalBarrierRecordCount", 0);
+    setProperty("pelicanOutsideBarrierRecordCount", 0);
+    setProperty("pelicanUnmatchedBarrierRecordCount", 0);
+    setProperty("pelicanBarrierCoverage", QString{});
     setProperty("pelicanExecutionPlanState", QString{});
     setProperty("pelicanExecutionPlanReasonCode", QString{});
     setProperty("pelicanExecutionPlanReason", QString{});
@@ -1286,6 +1517,14 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
 
     if (!model.execution_plan.available()) {
         selected_resource_.reset();
+        const BarrierCoverage barrier_coverage{
+            .total = model.barriers.size(),
+            .unmatched = model.barriers.size(),
+            .execution_available = false,
+            .target_selected = current_target_.has_value(),
+        };
+        const QString coverage_text =
+            barrierCoverageText(barrier_coverage);
         auto *panel = addRect(
             QRectF{0.0, 0.0, LogicalUnavailableWidth,
                    LogicalUnavailableHeight},
@@ -1300,7 +1539,10 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                        qtext(model.execution_plan.unavailable_reason_code));
         panel->setData(FramePlanReasonRole,
                        qtext(model.execution_plan.unavailable_reason));
-        panel->setToolTip(qtext(model.execution_plan.unavailable_reason));
+        panel->setToolTip(
+            QStringLiteral("%1\n%2")
+                .arg(qtext(model.execution_plan.unavailable_reason),
+                     coverage_text));
 
         auto *title = new QGraphicsSimpleTextItem(
             QStringLiteral("Logical graph unavailable"), panel);
@@ -1314,6 +1556,10 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             qtext(model.execution_plan.unavailable_reason), panel);
         reason->setBrush(QColor{QStringLiteral("#efb366")});
         reason->setPos(18.0, 66.0);
+        auto *coverage = new QGraphicsSimpleTextItem(
+            coverage_text, panel);
+        coverage->setBrush(QColor{QStringLiteral("#f6d09a")});
+        coverage->setPos(18.0, 106.0);
 
         setSceneRect(panel->sceneBoundingRect().adjusted(-30.0, -30.0, 30.0,
                                                          30.0));
@@ -1341,6 +1587,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     qtext(model.execution_plan.unavailable_reason_code));
         setProperty("pelicanExecutionPlanReason",
                     qtext(model.execution_plan.unavailable_reason));
+        publishBarrierCoverage(*this, barrier_coverage);
         publish_group_properties();
         publishStateProperties();
         return;
@@ -1521,21 +1768,26 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         }
     }
 
-    std::vector<DependencyRecord> sorted_dependencies;
-    sorted_dependencies.reserve(model.dependencies.size());
-    for (const auto &dependency : model.dependencies) {
-        sorted_dependencies.push_back(
-            DependencyRecord{dependency.from, dependency.to,
-                             dependency.reason, dependency.resource});
+    const std::vector<DependencyRecord> sorted_dependencies =
+        dependencyRecords(model);
+
+    std::set<std::size_t> outside_barriers;
+    for (std::size_t index = 0; index < model.barriers.size(); ++index) {
+        const FramePlanBarrier &barrier = model.barriers[index];
+        const bool from_inside = visible_names.contains(barrier.from);
+        const bool to_inside = visible_names.contains(barrier.to);
+        const bool belongs_to_window =
+            scope_group ? from_inside || to_inside
+                        : from_inside && to_inside;
+        if (!belongs_to_window) {
+            outside_barriers.insert(index);
+        }
     }
-    std::ranges::sort(sorted_dependencies, {},
-                      [](const DependencyRecord &record) {
-                          return std::tie(record.from, record.to,
-                                          record.reason, record.resource);
-                      });
 
     std::vector<DependencyRecord> visible_dependencies;
     std::map<EntityPair, std::vector<DependencyRecord>> bundles;
+    std::set<std::size_t> edge_barriers;
+    std::set<std::size_t> internal_barriers;
     for (const auto &dependency : sorted_dependencies) {
         std::string from;
         std::string to;
@@ -1562,10 +1814,35 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         if (from == to) {
             entities.at(from).internal_records.push_back(
                 recordIdentity(dependency));
+            if (dependency.barrier_index) {
+                internal_barriers.insert(*dependency.barrier_index);
+                ++entities.at(from).internal_barrier_count;
+                entities.at(from).internal_fused_barrier_count +=
+                    static_cast<std::size_t>(
+                        dependency.fused_scope_absorbed);
+            }
             continue;
+        }
+        if (dependency.barrier_index) {
+            edge_barriers.insert(*dependency.barrier_index);
         }
         bundles[{std::move(from), std::move(to)}].push_back(dependency);
     }
+
+    const std::size_t classified_barriers =
+        edge_barriers.size() + internal_barriers.size() +
+        outside_barriers.size();
+    const BarrierCoverage barrier_coverage{
+        .total = model.barriers.size(),
+        .on_edges = edge_barriers.size(),
+        .inside_collapsed_groups = internal_barriers.size(),
+        .outside_window = outside_barriers.size(),
+        .unmatched = classified_barriers <= model.barriers.size()
+                         ? model.barriers.size() - classified_barriers
+                         : 0,
+        .execution_available = true,
+        .target_selected = selected_resource_.has_value(),
+    };
 
     std::map<int, std::vector<VisibleEntity *>> levels;
     for (auto &[key, entity] : entities) {
@@ -1685,18 +1962,39 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             item->setData(FramePlanMembersRole, qlist(entity->members));
             item->setData(FramePlanSubtreeDepthRole, normalized_depth);
             if (entity->group) {
+                QString visible_label = entity->label;
+                if (entity->internal_barrier_count != 0) {
+                    visible_label +=
+                        QStringLiteral("\ninternal barriers: %1")
+                            .arg(static_cast<qulonglong>(
+                                entity->internal_barrier_count));
+                    if (entity->internal_fused_barrier_count != 0) {
+                        visible_label +=
+                            QStringLiteral(" · absorbed in fused scope: %1")
+                                .arg(static_cast<qulonglong>(
+                                    entity->internal_fused_barrier_count));
+                    }
+                }
                 item->setData(FramePlanGroupIdRole,
                               qtext(entity->group_id));
                 item->setData(FramePlanGroupCollapsibleRole, true);
                 item->setData(FramePlanInternalEdgeRecordsRole,
                               qlist(entity->internal_records));
+                item->setData(
+                    FramePlanInternalBarrierCountRole,
+                    static_cast<qulonglong>(
+                        entity->internal_barrier_count));
+                item->setData(
+                    FramePlanInternalFusedBarrierCountRole,
+                    static_cast<qulonglong>(
+                        entity->internal_fused_barrier_count));
                 item->setToolTip(
                     QStringLiteral(
                         "%1\nDouble-click to enter this group. "
                         "Right-click to expand it.")
-                        .arg(entity->label));
+                        .arg(visible_label));
                 addCenteredEntityLabel(
-                    *item, entity->label, GroupWidth, GroupHeight,
+                    *item, visible_label, GroupWidth, GroupHeight,
                     FramePlanGroupLabelItem, model.graph, entity->key);
             } else if (entity->boundary_stub) {
                 item->setData(FramePlanBoundaryTargetRole,
@@ -1753,10 +2051,35 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     std::size_t bundle_order = 0;
     std::size_t resource_overlay_count = 0;
     for (const auto &[endpoints, records] : bundles) {
+        const DependencySummary summary = dependencySummary(records);
+        const bool order_only = summary.barrier_count == 0;
+        const bool has_fused_barrier = summary.fused_barrier_count != 0;
+        const QColor edge_color =
+            order_only
+                ? QColor{QStringLiteral("#7d8994")}
+                : has_fused_barrier
+                      ? QColor{QStringLiteral("#8d72bd")}
+                      : QColor{QStringLiteral("#3f83b5")};
+        const QColor label_outline =
+            order_only
+                ? QColor{QStringLiteral("#9aa7b4")}
+                : has_fused_barrier
+                      ? QColor{QStringLiteral("#8d72bd")}
+                      : QColor{QStringLiteral("#4f8fb9")};
+        const QColor label_fill =
+            order_only
+                ? QColor{QStringLiteral("#f5f7f9")}
+                : has_fused_barrier
+                      ? QColor{QStringLiteral("#f2ecfb")}
+                      : QColor{QStringLiteral("#eaf4fb")};
+
         auto *edge = addPath(QPainterPath{});
         edge->setZValue(0.0);
-        QPen edge_pen{QColor{QStringLiteral("#748394")}};
-        edge_pen.setWidthF(1.6);
+        QPen edge_pen{edge_color};
+        edge_pen.setWidthF(order_only ? 1.4 : 1.9);
+        if (order_only) {
+            edge_pen.setStyle(Qt::DashLine);
+        }
         edge->setPen(edge_pen);
         edge->setBrush(Qt::NoBrush);
         annotateIdentity(*edge, FramePlanEdgeItem, model.graph,
@@ -1768,32 +2091,47 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         edge->setData(FramePlanSubtreeDepthRole, normalized_depth);
 
         std::vector<std::string> identities;
-        std::set<std::string, std::less<>> resources;
         for (const auto &record : records) {
             identities.push_back(recordIdentity(record));
-            if (!record.resource.empty()) {
-                resources.insert(record.resource);
-            }
         }
-        edge->setData(FramePlanEdgeRecordsRole, qlist(identities));
-        edge->setData(
-            FramePlanResourcesRole,
-            qlist(std::vector<std::string>{resources.begin(), resources.end()}));
-        if (!resources.empty()) {
+        const std::vector<std::string> resources{
+            summary.resources.begin(), summary.resources.end()};
+        const std::vector<std::string> barrier_kinds{
+            summary.barrier_kinds.begin(), summary.barrier_kinds.end()};
+        const auto publish_dependency_data = [&](QGraphicsItem &item) {
+            item.setData(FramePlanEdgeRecordsRole, qlist(identities));
+            item.setData(FramePlanResourcesRole, qlist(resources));
+            item.setData(FramePlanBarrierKindsRole,
+                         qlist(barrier_kinds));
+            item.setData(FramePlanBarrierCountRole,
+                         static_cast<qulonglong>(summary.barrier_count));
+            item.setData(FramePlanOrderOnlyCountRole,
+                         static_cast<qulonglong>(summary.order_only_count));
+            item.setData(
+                FramePlanSamePixelAttachmentCountRole,
+                static_cast<qulonglong>(
+                    summary.same_pixel_attachment_count));
+            item.setData(FramePlanFusedBarrierCountRole,
+                         static_cast<qulonglong>(
+                             summary.fused_barrier_count));
+            item.setToolTip(summary.label);
+        };
+        publish_dependency_data(*edge);
+        if (!summary.resources.empty()) {
             ++resource_overlay_count;
         }
 
         auto *arrow = addPolygon(
-            QPolygonF{}, QPen{QColor{QStringLiteral("#748394")}},
-            QBrush{QColor{QStringLiteral("#748394")}});
+            QPolygonF{}, QPen{edge_color}, QBrush{edge_color});
         arrow->setZValue(0.5);
         annotateIdentity(*arrow, FramePlanEdgeArrowItem, model.graph,
                          endpoints.first + "->" + endpoints.second);
         annotateEndpoints(*arrow, endpoints);
         arrow->setData(FramePlanBundleOrderRole,
                        static_cast<qulonglong>(bundle_order));
+        publish_dependency_data(*arrow);
 
-        const QString label_text = dependencyLabel(records);
+        const QString &label_text = summary.label;
         QFont label_font;
         label_font.setPointSizeF(8.5);
         const qreal label_width = std::max(
@@ -1801,21 +2139,19 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             QFontMetricsF{label_font}.horizontalAdvance(label_text) + 14.0);
         auto *label_box = addRect(
             QRectF{0.0, 0.0, label_width, EdgeLabelHeight},
-            QPen{QColor{QStringLiteral("#9aa7b4")}},
-            QBrush{QColor{QStringLiteral("#f5f7f9")}});
+            QPen{label_outline}, QBrush{label_fill});
         label_box->setZValue(1.0);
         annotateIdentity(*label_box, FramePlanEdgeLabelItem, model.graph,
                          endpoints.first + "->" + endpoints.second);
         annotateEndpoints(*label_box, endpoints);
-        label_box->setData(FramePlanEdgeRecordsRole, qlist(identities));
-        label_box->setData(
-            FramePlanResourcesRole,
-            qlist(std::vector<std::string>{resources.begin(), resources.end()}));
         label_box->setData(FramePlanBundleOrderRole,
                            static_cast<qulonglong>(bundle_order));
+        publish_dependency_data(*label_box);
         auto *label = new QGraphicsSimpleTextItem(label_text, label_box);
         label->setFont(label_font);
         label->setBrush(QColor{QStringLiteral("#263441")});
+        annotateEndpoints(*label, endpoints);
+        publish_dependency_data(*label);
         const QRectF text_bounds = label->boundingRect();
         label->setPos((label_width - text_bounds.width()) / 2.0,
                       (EdgeLabelHeight - text_bounds.height()) / 2.0);
@@ -1961,6 +2297,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     setProperty("pelicanExecutionPlanState", QStringLiteral("available"));
     setProperty("pelicanExecutionPlanReasonCode", QString{});
     setProperty("pelicanExecutionPlanReason", QString{});
+    publishBarrierCoverage(*this, barrier_coverage);
     publish_group_properties();
     publishStateProperties();
 }
