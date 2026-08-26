@@ -86,6 +86,7 @@ inline constexpr auto FramePlanLogicalUnavailableItem = "logical_unavailable";
 class FramePlanGraphicsScene final : public QGraphicsScene {
   public:
     explicit FramePlanGraphicsScene(QObject *parent = nullptr);
+    ~FramePlanGraphicsScene() override;
 
     // The selected target is the root resource.  Depth zero intentionally has
     // no pass nodes; depth one is exactly unique(writers U readers).  Further
@@ -107,6 +108,10 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         noexcept {
         return selected_node_;
     }
+    [[nodiscard]] const std::set<FramePlanNodeKey> &selectedNodes() const
+        noexcept {
+        return selected_nodes_;
+    }
     [[nodiscard]] const std::optional<FramePlanNodeKey> &selectedResource() const
         noexcept {
         return selected_resource_;
@@ -118,7 +123,11 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     void keyPressEvent(QKeyEvent *event) override;
 
   private:
+    // selected_node_ is the compatibility/primary selection consumed by the
+    // existing details widget and pelicanSelectedNode property. The complete
+    // selection is retained separately for rubber-band and Ctrl selection.
     std::optional<FramePlanNodeKey> selected_node_;
+    std::set<FramePlanNodeKey> selected_nodes_;
     std::optional<FramePlanNodeKey> selected_resource_;
     // Deliberately owned only by the live scene.  Node positions are editor
     // session state, not QMainWindow workspace state and never reach disk.

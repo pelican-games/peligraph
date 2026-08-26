@@ -3682,6 +3682,230 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP349 rubber band and Ctrl selection move exactly the selected production nodes",
+    "[devstudio][frame-plan][selection][drag][production][wp349]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = mixedMembershipFramePlan(false);
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.execution_plan.available());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+    REQUIRE(wireFeatureMembers(wire, "wp343_mixed_membership") ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_b",
+                      "wp343_mixed_c", "wp343_mixed_d"});
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1400, 900);
+    widget.show();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText(
+        QStringLiteral("wp343_mixed_d_output"));
+    subtreeDepth(widget).setValue(64);
+    QApplication::processEvents();
+
+    auto *logical_scene =
+        dynamic_cast<FramePlanGraphicsScene *>(&scene(widget));
+    REQUIRE(logical_scene != nullptr);
+    FramePlanGraphicsScene &logical = *logical_scene;
+    QGraphicsView &view = logicalView(widget);
+    QWidget *const viewport_widget = view.viewport();
+    REQUIRE(viewport_widget != nullptr);
+    REQUIRE(view.dragMode() == QGraphicsView::RubberBandDrag);
+
+    constexpr std::string_view first_name = "wp343_mixed_a";
+    constexpr std::string_view second_name = "wp343_mixed_b";
+    constexpr std::string_view third_name = "wp343_mixed_c";
+    const StringSet moved_names{std::string{first_name},
+                                std::string{second_name},
+                                std::string{third_name}};
+    QGraphicsItem *first = nodeItem(logical, first_name);
+    QGraphicsItem *second = nodeItem(logical, second_name);
+    QGraphicsItem *third = nodeItem(logical, third_name);
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    REQUIRE(third != nullptr);
+
+    // Put two nodes in an isolated vertical pair so a real rubber-band gesture
+    // has an unambiguous expected result independent of layout evolution.
+    const QRectF original_bounds = logical.itemsBoundingRect();
+    const QPointF cluster_origin{original_bounds.right() + 480.0,
+                                 original_bounds.top() + 120.0};
+    first->setPos(cluster_origin);
+    second->setPos(cluster_origin + QPointF{0.0, 130.0});
+    third->setPos(cluster_origin + QPointF{350.0, 65.0});
+    QApplication::processEvents();
+
+    const QRectF rubber_band =
+        first->sceneBoundingRect()
+            .united(second->sceneBoundingRect())
+            .adjusted(-12.0, -12.0, 12.0, 12.0);
+    const QRectF cluster =
+        rubber_band.united(third->sceneBoundingRect()).adjusted(
+            -30.0, -30.0, 30.0, 30.0);
+    view.centerOn(cluster.center());
+    QApplication::processEvents();
+    const QPoint band_start = view.mapFromScene(rubber_band.topLeft());
+    const QPoint band_end = view.mapFromScene(rubber_band.bottomRight());
+    REQUIRE(viewport_widget->rect().contains(band_start));
+    REQUIRE(viewport_widget->rect().contains(band_end));
+    QTest::mousePress(viewport_widget, Qt::LeftButton, Qt::NoModifier,
+                      band_start);
+    QTest::mouseMove(viewport_widget, (band_start + band_end) / 2, 1);
+    QTest::mouseMove(viewport_widget, band_end, 1);
+    QTest::mouseRelease(viewport_widget, Qt::LeftButton, Qt::NoModifier,
+                        band_end);
+    QApplication::processEvents();
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{std::string{first_name}, std::string{second_name}});
+    REQUIRE(logical.selectedNodes().size() == 2);
+
+    // The legacy property remains exactly the clicked node for a single
+    // selection. Ctrl+click then adds, removes, and re-adds nodes.
+    logical.clearSelection();
+    QApplication::processEvents();
+    const auto click_node = [&](QGraphicsItem &item,
+                                Qt::KeyboardModifiers modifiers) {
+        view.centerOn(cluster.center());
+        QApplication::processEvents();
+        const QPoint at =
+            view.mapFromScene(item.sceneBoundingRect().center());
+        REQUIRE(viewport_widget->rect().contains(at));
+        QTest::mouseClick(viewport_widget, Qt::LeftButton, modifiers, at);
+        QApplication::processEvents();
+    };
+    click_node(*first, Qt::NoModifier);
+    REQUIRE(logical.property("pelicanSelectedNode").toString() ==
+            QString::fromUtf8(first_name.data(),
+                              static_cast<qsizetype>(first_name.size())));
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{std::string{first_name}});
+    click_node(*second, Qt::ControlModifier);
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{std::string{first_name}, std::string{second_name}});
+    click_node(*second, Qt::ControlModifier);
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{std::string{first_name}});
+    click_node(*second, Qt::ControlModifier);
+    click_node(*third, Qt::ControlModifier);
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            moved_names);
+    REQUIRE(logical.selectedNodes().size() == moved_names.size());
+
+    const auto before_positions = sceneNodePositions(logical);
+    REQUIRE(before_positions.size() > moved_names.size());
+    const QPoint press =
+        view.mapFromScene(first->sceneBoundingRect().center());
+    const QPoint drag_offset{82, 54};
+    REQUIRE(viewport_widget->rect().contains(press));
+    REQUIRE(viewport_widget->rect().contains(press + drag_offset));
+    const QPointF expected_delta =
+        view.mapToScene(press + drag_offset) - view.mapToScene(press);
+    QTest::mousePress(viewport_widget, Qt::LeftButton, Qt::NoModifier,
+                      press);
+    for (int step = 1; step <= 4; ++step) {
+        QTest::mouseMove(viewport_widget,
+                         press + drag_offset * step / 4, 1);
+    }
+    QTest::mouseRelease(viewport_widget, Qt::LeftButton, Qt::NoModifier,
+                        press + drag_offset);
+    QApplication::processEvents();
+
+    const auto moved_positions = sceneNodePositions(logical);
+    REQUIRE(moved_positions.size() == before_positions.size());
+    for (const auto &[name, before] : before_positions) {
+        CAPTURE(name);
+        const QPointF actual_delta = moved_positions.at(name) - before;
+        if (moved_names.contains(name)) {
+            // Positive control: every selected node moves by the drag delta.
+            REQUIRE(QLineF{actual_delta, expected_delta}.length() < 0.01);
+        } else {
+            // Negative control in the same test: no unselected node moves.
+            REQUIRE(moved_positions.at(name) == before);
+        }
+    }
+
+    // A normal frame-plan refresh rebuilds every item. Session positions keep
+    // using the existing {graph, kind, stable identity} key across that update.
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    REQUIRE(targetSelector(widget).currentText() ==
+            QStringLiteral("wp343_mixed_d_output"));
+    REQUIRE(sceneNodePositions(logical) == moved_positions);
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            moved_names);
+}
+
+TEST_CASE(
+    "WP349 collapse removes only hidden members from a multiple selection and scope changes clear it",
+    "[devstudio][frame-plan][selection][grouping][production][wp349]") {
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
+    const Json &wire = mixedMembershipFramePlan(false);
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.execution_plan.available());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1200, 760);
+    widget.show();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText(
+        QStringLiteral("wp343_mixed_d_output"));
+    subtreeDepth(widget).setValue(64);
+    QApplication::processEvents();
+
+    auto *logical_scene =
+        dynamic_cast<FramePlanGraphicsScene *>(&scene(widget));
+    REQUIRE(logical_scene != nullptr);
+    FramePlanGraphicsScene &logical = *logical_scene;
+    QGraphicsItem *outside = nodeItem(logical, "wp343_mixed_c");
+    QGraphicsItem *member = nodeItem(logical, "wp343_mixed_a");
+    REQUIRE(outside != nullptr);
+    REQUIRE(member != nullptr);
+    const QString group_id =
+        member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(group_id.isEmpty());
+    REQUIRE(member->data(FramePlanGroupCollapsibleRole).toBool());
+
+    outside->setSelected(true);
+    member->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{"wp343_mixed_a", "wp343_mixed_c"});
+    REQUIRE(logical.property("pelicanSelectedNode").toString() ==
+            QStringLiteral("wp343_mixed_a"));
+
+    REQUIRE(logical.collapseGroup(group_id));
+    QApplication::processEvents();
+    REQUIRE(nodeItem(logical, "wp343_mixed_a") == nullptr);
+    outside = nodeItem(logical, "wp343_mixed_c");
+    REQUIRE(outside != nullptr);
+    REQUIRE(outside->isSelected());
+    REQUIRE(logical.selectedItems().size() == 1);
+    REQUIRE(logical.selectedNodes().size() == 1);
+    REQUIRE(strings(logical.property("pelicanSelectedNodes")) ==
+            StringSet{"wp343_mixed_c"});
+    REQUIRE(logical.property("pelicanSelectedNode").toString() ==
+            QStringLiteral("wp343_mixed_c"));
+    REQUIRE(logical.property("pelicanSelectedGraph").toString() ==
+            QString::fromStdString(model.graph));
+
+    REQUIRE(logical.enterGroup(group_id));
+    REQUIRE(logical.selectedItems().empty());
+    REQUIRE(logical.selectedNodes().empty());
+    REQUIRE(logical.property("pelicanSelectedNodes")
+                .toStringList()
+                .isEmpty());
+    REQUIRE(logical.property("pelicanSelectedNode").toString().isEmpty());
+    REQUIRE(logical.property("pelicanSelectedGraph").toString().isEmpty());
+    REQUIRE(logical.leaveGroup());
+    REQUIRE(logical.selectedItems().empty());
+    REQUIRE(logical.selectedNodes().empty());
+}
+
+TEST_CASE(
     "WP341 collapsed state survives updates, drops orphans, and reset clears dragged positions",
     "[devstudio][frame-plan][grouping][state][drag][wp341]") {
     (void)application();

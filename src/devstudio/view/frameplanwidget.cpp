@@ -339,7 +339,7 @@ struct FramePlanWidget::Impl {
         logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
         logical->setRenderHint(QPainter::Antialiasing, true);
-        logical->setDragMode(QGraphicsView::ScrollHandDrag);
+        logical->setDragMode(QGraphicsView::RubberBandDrag);
         logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         logical->setResizeAnchor(QGraphicsView::AnchorViewCenter);
         logical->setBackgroundBrush(QColor{QStringLiteral("#20262d")});

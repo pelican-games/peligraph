@@ -1347,10 +1347,19 @@ FramePlanGraphicsScene::FramePlanGraphicsScene(QObject *parent)
     resetGraph();
 }
 
+FramePlanGraphicsScene::~FramePlanGraphicsScene() {
+    // QGraphicsScene clears selected items in its base destructor. Do it while
+    // this class's selection members still exist, with the signal handler
+    // guarded, because a multiple selection otherwise emits during teardown.
+    rebuilding_ = true;
+    clear();
+}
+
 void FramePlanGraphicsScene::resetGraph() {
     rebuilding_ = true;
     clear();
     selected_node_.reset();
+    selected_nodes_.clear();
     selected_resource_.reset();
     session_node_positions_.clear();
     current_model_.reset();
@@ -1450,7 +1459,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     const GroupDefinition *scope_group =
         current_group_scope_ ? findGroup(groups, *current_group_scope_)
                              : nullptr;
-    const auto retained_node = selected_node_;
+    const auto retained_primary_node = selected_node_;
+    const auto retained_nodes = selected_nodes_;
 
     const bool target_is_valid =
         model.execution_plan.available() && current_target_ &&
@@ -1468,17 +1478,26 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                   ? subtreeNodeNames(model, selected_resource_->name,
                                      normalized_depth)
                   : std::set<std::string, std::less<>>{};
-    const bool node_selection_survives =
-        retained_node && retained_node->graph == model.graph &&
-        visible_names.contains(retained_node->name) &&
-        (scope_group != nullptr ||
-         std::ranges::none_of(groups, [&](const GroupDefinition &group) {
-             return group.collapsible &&
-                    collapsed_groups_.contains(group.state_key) &&
-                    std::ranges::find(group.members,
-                                      retained_node->name) !=
-                        group.members.end();
-         }));
+    const auto node_selection_survives = [&](const FramePlanNodeKey &node) {
+        if (node.graph != model.graph ||
+            !visible_names.contains(node.name)) {
+            return false;
+        }
+        return scope_group != nullptr ||
+               std::ranges::none_of(
+                   groups, [&](const GroupDefinition &group) {
+                       return group.collapsible &&
+                              collapsed_groups_.contains(group.state_key) &&
+                              std::ranges::find(group.members, node.name) !=
+                                  group.members.end();
+                   });
+    };
+    std::set<FramePlanNodeKey> surviving_nodes;
+    for (const auto &node : retained_nodes) {
+        if (node_selection_survives(node)) {
+            surviving_nodes.insert(node);
+        }
+    }
 
     const auto publish_group_properties = [&] {
         QStringList collapsed;
@@ -1513,7 +1532,15 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
 
     rebuilding_ = true;
     clear();
-    selected_node_ = node_selection_survives ? retained_node : std::nullopt;
+    selected_nodes_ = std::move(surviving_nodes);
+    if (retained_primary_node &&
+        selected_nodes_.contains(*retained_primary_node)) {
+        selected_node_ = retained_primary_node;
+    } else {
+        selected_node_ = selected_nodes_.empty()
+                             ? std::nullopt
+                             : std::optional{*selected_nodes_.begin()};
+    }
 
     if (!model.execution_plan.available()) {
         selected_resource_.reset();
@@ -2245,8 +2272,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     const PhysicalOverlaySummary physical_overlay = addPhysicalOverlay(
         *this, model, logical_bottom, selected_resource_);
 
-    if (selected_node_) {
-        if (const auto found = node_items.find(selected_node_->name);
+    for (const auto &selected_node : selected_nodes_) {
+        if (const auto found = node_items.find(selected_node.name);
             found != node_items.end()) {
             found->second->setSelected(true);
         }
@@ -2353,6 +2380,7 @@ bool FramePlanGraphicsScene::enterGroup(const QString &group_id) {
     }
     current_group_scope_ = group->state_key;
     selected_node_.reset();
+    selected_nodes_.clear();
     group_feedback_.clear();
     renderCurrentGraph();
     return true;
@@ -2364,6 +2392,7 @@ bool FramePlanGraphicsScene::leaveGroup() {
     }
     current_group_scope_.reset();
     selected_node_.reset();
+    selected_nodes_.clear();
     group_feedback_.clear();
     renderCurrentGraph();
     return true;
@@ -2481,25 +2510,53 @@ void FramePlanGraphicsScene::recordSelection() {
     if (rebuilding_) {
         return;
     }
-    selected_node_.reset();
+    std::set<FramePlanNodeKey> current_nodes;
     for (QGraphicsItem *item : selectedItems()) {
         if (itemKind(*item) != QLatin1String{FramePlanNodeItem}) {
             continue;
         }
-        selected_node_ = FramePlanNodeKey{
+        current_nodes.insert(FramePlanNodeKey{
             item->data(FramePlanGraphRole).toString().toStdString(),
             item->data(FramePlanNameRole).toString().toStdString(),
-        };
-        break;
+        });
+    }
+
+    std::optional<FramePlanNodeKey> newly_selected;
+    std::size_t newly_selected_count = 0;
+    for (const auto &node : current_nodes) {
+        if (!selected_nodes_.contains(node)) {
+            newly_selected = node;
+            ++newly_selected_count;
+        }
+    }
+    selected_nodes_ = std::move(current_nodes);
+    if (selected_nodes_.empty()) {
+        selected_node_.reset();
+    } else if (selected_nodes_.size() == 1) {
+        selected_node_ = *selected_nodes_.begin();
+    } else if (newly_selected_count == 1) {
+        // Ctrl+clicking a node makes that addition the primary selection, so
+        // the existing single-node details panel follows the user's click.
+        selected_node_ = newly_selected;
+    } else if (!selected_node_ ||
+               !selected_nodes_.contains(*selected_node_)) {
+        // Rubber-band selection has no distinguished click target. Its
+        // primary node is deterministic instead of depending on Qt item order.
+        selected_node_ = *selected_nodes_.begin();
     }
     publishStateProperties();
 }
 
 void FramePlanGraphicsScene::publishStateProperties() {
+    QStringList selected_nodes;
+    for (const auto &node : selected_nodes_) {
+        selected_nodes.push_back(qtext(node.name));
+    }
     setProperty("pelicanSelectedGraph",
                 selected_node_ ? qtext(selected_node_->graph) : QString{});
     setProperty("pelicanSelectedNode",
                 selected_node_ ? qtext(selected_node_->name) : QString{});
+    setProperty("pelicanSelectedNodes", selected_nodes);
     setProperty("pelicanSelectedTarget",
                 selected_resource_ ? qtext(selected_resource_->name)
                                    : QString{});
