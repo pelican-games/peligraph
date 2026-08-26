@@ -12889,3 +12889,108 @@ body 側しか変化させていない。**
 - `for` / ループの表現
 
 依存: WP351。見積: 小〜中。
+
+### WP351b: 中身のあるタイミング応答が、エンジンの死と重なると studio が落ちる
+
+**§4 規則 11 の中段。仕様レビュー + コードレビュー。**
+
+#### 事実(すべて自分で測った。再調査不要)
+
+**`devstudio_engine_failure_test` の
+`Studio receives the running example fatal text while RPC stdout stays framed` が
+WP351 以降、確定的に SEGFAULT する。**
+
+```
+単独実行 5 回 / 5 回 失敗   フレークではない
+assertions 18 中 17 通過     期待どおりの致命エラー検出は壊れていない
+test/devstudio_engine_failure_test.cpp:386 の直後で落ちる
+```
+
+**:386 は `REQUIRE(normal.rpc_received);` である。その次にあるのは
+`stopped_loop.exec()`、すなわちエンジンが死ぬのを待つ区間である。**
+
+**SIGSEGV は Catch2 が拾っている。落ちているのは studio(テスト)プロセスであって、
+player の子プロセスではない。**
+
+**原因の所在を実験で割ってある:**
+
+| 構成 | 結果 |
+|---|---|
+| `editor.json` に `gpu_timing` あり(WP351 の状態) | **SEGFAULT** |
+| `editor.json` から `gpu_timing` だけ外す | **Passed** |
+
+**どちらもビルド成功(exit 0 / エラー 0)を確認した上での結果である。**
+**ビルドが失敗したまま走らせた測定は 3 回あり、すべて破棄した。**
+
+**この 2 つが繋がる筋は 1 本しかない。**
+`gpu_timing` が無効なら `get_gpu_timing` は `nodes: []` の stub を返し、
+studio は「利用不可」経路へ逃げる。**有効にして初めて、
+studio は中身のある応答を受けてラベルを作る経路に入る。**
+
+**したがってバグは studio 側の受け取りにある。**
+`RenderTiming` 側ではない(player は落ちていない)。
+
+**有力な形**(ただし**確定していない。実装者が特定すること**):
+`showEngineFailure`(`src/devstudio/view/frameplanwidget.cpp:710` 付近)は
+`pending_gpu_timing_request = 0` にし、`gpu_timing_poll->stop()` し、
+`model.reset()` と `clearTrees()` を行う。
+**そこへ飛行中だった応答が遅れて着く。**
+
+**注意**: `showEngineFailure` は
+`if (!fatal_error_line.isEmpty())` の内側でしか呼ばれない
+(`frameplanwidget.cpp:594-600`)。**fatal 行が空のまま終了する経路では
+poll が止まらない。**これも候補である。
+
+#### やること
+
+**1. 落ちている場所を特定すること。推測で直さないこと。**
+
+**どの参照が死んでいるのかを、実際に観測して報告すること。**
+デバッガでも、計測用の出力でも、手段は問わない。
+**「たぶんここ」で直して落ちなくなった、では受け付けない。**
+
+**2. 直すこと。**
+
+**エンジンが死んだあと、あるいは widget が畳まれたあとに
+タイミング応答が着いても安全であること。**
+
+**3. 検査すること。**
+
+**`devstudio_engine_failure_test` が通ることは前提であって、検査ではない。**
+そのテストは 46 秒かかる GPU テストで、原因を指していない。
+
+**「エンジンが死んだあとに中身のある応答が着く」ことを直接組み立てるテストを書くこと。**
+WP351a が `test/process_fixture_child.cpp` に `rpc-loop` を足し、
+`test/devstudio_frameplan_graph_test.cpp` で実 `EngineProcess` を使う形を作ってある。
+**その上に組めるはずである。**
+
+**否定対照(§4 規約 10): 直す前のコードでそのテストが落ちることを確かめること。**
+**落ちなければ、そのテストは原因を捉えていない。書き直すこと。**
+
+#### 受け入れ条件
+
+- **落ちている参照を名指しで報告すること**(file:line と、観測した方法)
+- **新しいテストが、修正前のコードで落ちること**を実際に確かめて報告すること
+- `devstudio_engine_failure_test` が通ること
+- **`editor.json` から `gpu_timing` を外して逃げないこと。**
+  外せば通るのは測定済みであり、それは修正ではない
+- **全数 2 回**(§ フレーク手順)
+- `uv run tools/doclink.py check` が緑
+
+#### やらないこと
+
+- `gpu_timing` を overlay から外すこと
+- polling の周期や窓 N を変えること
+- `RenderTiming`(player 側)を触ること —— player は落ちていない
+
+#### 記録: 測定の手順について
+
+**ビルド失敗を見ずにテスト結果を読んだ測定を、本件で 3 回やった**
+(`LNK1104` ×2、`LNK1168` ×1)。
+いずれも**止めたバックグラウンド実行の子プロセスが exe を掴んでいた**ためで、
+`TaskStop` はプロセスツリーを落としきらない。
+
+**以後、ビルドの終了コードを確認してからしかテストを回さないこと。
+重い実行を止めたら残存プロセスを確認すること。**
+
+依存: WP351、WP351a。見積: 小。
