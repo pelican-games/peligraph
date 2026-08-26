@@ -160,10 +160,9 @@ DECLARE_MODULE(RenderTiming) {
     std::uint64_t dropped_samples = 0;
 
     std::deque<GpuHistoryFrame> gpu_history;
-    nlohmann::json published_status;
     std::vector<GpuTimingViewRow> published_latest_views;
     std::vector<GpuTimingNodeRow> published_latest_nodes;
-    GpuTimingNodeAverageSnapshot published_node_average;
+    std::size_t last_snapshot_history_frame_visits = 0;
 
     std::uint64_t cpu_frame_count = 0;
     double cpu_update_ms_total = 0.0;
@@ -178,6 +177,7 @@ DECLARE_MODULE(RenderTiming) {
     bool collectGpuRange(std::size_t pending_index, bool wait);
     void collectGpuResults(bool wait);
     void addGpuSample(GpuSample sample);
+    GpuTimingNodeFrame makeNodeFrame(const GpuHistoryFrame &frame) const;
     void publishSnapshot();
     std::string formatGpuAverages() const;
     void logAndReset();
@@ -203,12 +203,8 @@ DECLARE_MODULE(RenderTiming) {
     void recordCpuFrame(CpuFrameDurations durations);
     void flush();
 
-    nlohmann::json statusJson() const { return published_status; }
-    nlohmann::json nodeAverageJson() const {
-        return gpuTimingNodeAverageStatusJson(
-            published_node_average, true, gpu_timestamps_supported,
-            supportReason());
-    }
+    nlohmann::json statusJson() const;
+    nlohmann::json nodeAverageJson() const;
     bool timestampsSupported() const noexcept { return gpu_timestamps_supported; }
     std::string_view supportReason() const noexcept {
         return gpu_timestamps_supported ? "enabled"
@@ -225,6 +221,12 @@ DECLARE_MODULE(RenderTiming) {
     }
     std::uint32_t lastFrameQueryCountForTesting() const { return last_frame_query_count; }
     std::uint64_t queryPoolCreateCountForTesting() const { return query_pool_create_count; }
+    std::size_t historyFrameCountForTesting() const noexcept {
+        return gpu_history.size();
+    }
+    std::size_t lastSnapshotHistoryFrameVisitsForTesting() const noexcept {
+        return last_snapshot_history_frame_visits;
+    }
     std::size_t pendingRangeCountForTesting() const;
     bool allGpuQueriesCollectedForTesting() const {
         return pendingRangeCountForTesting() == 0 && !active_gpu_range.has_value();

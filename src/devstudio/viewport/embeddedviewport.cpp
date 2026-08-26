@@ -278,12 +278,15 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                         .arg(process_id)
                         .arg(exit_kind)
                         .arg(exit_code));
-                emit engineRpcBecameUnavailable(
-                    tr("The engine viewport process stopped."));
-                if (const auto failure =
-                        engine_failure_model_.finishRun(exit_code)) {
-                    emit engineProcessExitedWithFailure(
-                        failure->fatal_error_line);
+                const auto failure =
+                    engine_failure_model_.finishRun(exit_code);
+                if (!shutting_down_) {
+                    emit engineRpcBecameUnavailable(
+                        tr("The engine viewport process stopped."));
+                    if (failure) {
+                        emit engineProcessExitedWithFailure(
+                            failure->fatal_error_line);
+                    }
                 }
                 if (restart_after_stop_ && !shutting_down_) {
                     restart_after_stop_ = false;
@@ -306,7 +309,9 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         restart_button_->setEnabled(true);
         stop_button_->setEnabled(false);
         status_->setText(message);
-        emit engineRpcBecameUnavailable(message);
+        if (!shutting_down_) {
+            emit engineRpcBecameUnavailable(message);
+        }
     });
     connect(&process_, &EngineProcess::outputReceived,
             this, &EmbeddedViewport::engineOutputReceived);

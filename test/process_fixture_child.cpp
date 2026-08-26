@@ -43,6 +43,10 @@ long long rpcIntegerField(const std::string &request,
 } // namespace
 
 int main(int argc, char *argv[]) {
+    if (childMode() == "viewport-hang") {
+        std::cout << "viewport-hang-ready\n" << std::flush;
+        for (;;) std::this_thread::sleep_for(std::chrono::seconds{1});
+    }
     if (argc >= 2 && std::string_view{argv[1]} == "psd-extract") {
         if (childMode() == "hang") {
             std::cout << "importer-stdout-marker\n" << std::flush;

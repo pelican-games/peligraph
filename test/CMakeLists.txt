@@ -214,6 +214,8 @@ endif()
 
 if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   find_package(Qt6 REQUIRED COMPONENTS Core Test Widgets)
+  add_executable(pelican_test_wp351b_live_child process_fixture_child.cpp)
+  set_target_properties(pelican_test_wp351b_live_child PROPERTIES CXX_STANDARD 20)
   pelican_define_test(devstudio_engine_failure_test QT GPU GOLDEN
     pelican_studio_viewport
     pelican_studio_frame_plan
@@ -236,8 +238,11 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_compile_definitions(pelican_test_devstudio_engine_failure_test PRIVATE
     PELICAN_WP298_PLAYER="$<TARGET_FILE:pelican_player>"
     PELICAN_WP298_EXAMPLE_PROJECT="${pelican_wp298_example_project}"
+    PELICAN_WP351B_LIVE_CHILD="$<TARGET_FILE:pelican_test_wp351b_live_child>"
   )
-  add_dependencies(pelican_test_devstudio_engine_failure_test pelican_player)
+  add_dependencies(pelican_test_devstudio_engine_failure_test
+    pelican_player
+    pelican_test_wp351b_live_child)
 
   pelican_define_test(devstudio_frameplan_graph_test QT QT_OFFSCREEN
     pelican_studio_viewport

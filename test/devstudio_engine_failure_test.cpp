@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QLabel>
+#include <QObject>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -183,25 +184,31 @@ void observeViewport(EmbeddedViewport &viewport,
                      ViewportObservation &observation,
                      QEventLoop &ready_loop,
                      QEventLoop &rpc_loop,
-                     QEventLoop &stopped_loop) {
+                     QEventLoop &stopped_loop,
+                     QObject &connection_context) {
     QObject::connect(
         &viewport, &EmbeddedViewport::engineOutputReceived,
+        &connection_context,
         [&](const QString &output) { observation.studio_output += output; });
     QObject::connect(
         &viewport, &EmbeddedViewport::engineStandardErrorReceived,
+        &connection_context,
         [&](const QString &output) { observation.standard_error += output; });
     QObject::connect(
         &viewport, &EmbeddedViewport::engineProcessExitedWithFailure,
+        &connection_context,
         [&](const QString &fatal_error_line) {
             observation.fatal_error_line = fatal_error_line;
         });
     QObject::connect(
-        &viewport, &EmbeddedViewport::engineRpcBecameAvailable, [&] {
+        &viewport, &EmbeddedViewport::engineRpcBecameAvailable,
+        &connection_context, [&] {
             observation.rpc_available = true;
             ready_loop.quit();
         });
     QObject::connect(
         &viewport, &EmbeddedViewport::inspectorRpcSucceeded,
+        &connection_context,
         [&](qint64, const QByteArray &result_json) {
             observation.rpc_received = true;
             observation.rpc_result =
@@ -210,6 +217,7 @@ void observeViewport(EmbeddedViewport &viewport,
         });
     QObject::connect(
         &viewport, &EmbeddedViewport::engineRpcBecameUnavailable,
+        &connection_context,
         [&](const QString &) {
             observation.stopped = true;
             ready_loop.quit();
@@ -218,7 +226,86 @@ void observeViewport(EmbeddedViewport &viewport,
         });
 }
 
+bool waitForLiveFixtureChild(EmbeddedViewport &viewport) {
+    bool ready = false;
+    QEventLoop loop;
+    QObject::connect(
+        &viewport, &EmbeddedViewport::engineOutputReceived, &loop,
+        [&](const QString &output) {
+            if (!output.contains(QStringLiteral("viewport-hang-ready"))) {
+                return;
+            }
+            ready = true;
+            loop.quit();
+        });
+    viewport.openProject(QDir::tempPath());
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    if (!ready) {
+        loop.exec();
+    }
+    return ready;
+}
+
 } // namespace
+
+TEST_CASE("Embedded viewport suppresses RPC-unavailable while destroying a live child",
+          "[devstudio][process][lifetime][wp351b]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_wp351b_shutdown_signal_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+    EnvironmentVariableGuard player_path{
+        "PELICAN_STUDIO_PLAYER",
+        QByteArray{PELICAN_WP351B_LIVE_CHILD}};
+    EnvironmentVariableGuard child_mode{
+        "PELICAN_WP173_CHILD_MODE", QByteArray{"viewport-hang"}};
+    EnvironmentVariableGuard player_arguments{
+        "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{}};
+
+    int unavailable_count = 0;
+    QObject receiver;
+    {
+        EmbeddedViewport viewport;
+        QObject::connect(
+            &viewport, &EmbeddedViewport::engineRpcBecameUnavailable,
+            &receiver,
+            [&](const QString &) { ++unavailable_count; });
+        REQUIRE(waitForLiveFixtureChild(viewport));
+    }
+
+    REQUIRE(unavailable_count == 0);
+}
+
+TEST_CASE("Viewport observation disconnects before a live child outlives its local scope",
+          "[devstudio][process][lifetime][wp351b]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_wp351b_observer_lifetime_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+    EnvironmentVariableGuard player_path{
+        "PELICAN_STUDIO_PLAYER",
+        QByteArray{PELICAN_WP351B_LIVE_CHILD}};
+    EnvironmentVariableGuard child_mode{
+        "PELICAN_WP173_CHILD_MODE", QByteArray{"viewport-hang"}};
+    EnvironmentVariableGuard player_arguments{
+        "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{}};
+
+    ViewportObservation observation;
+    QEventLoop ready_loop;
+    QEventLoop rpc_loop;
+    QEventLoop stopped_loop;
+    EmbeddedViewport viewport;
+    {
+        QObject connection_context;
+        observeViewport(viewport, observation, ready_loop, rpc_loop,
+                        stopped_loop, connection_context);
+        REQUIRE(waitForLiveFixtureChild(viewport));
+    }
+
+    emit viewport.engineRpcBecameUnavailable(
+        QStringLiteral("post-observation lifetime probe"));
+    REQUIRE_FALSE(observation.stopped);
+}
 
 TEST_CASE("Engine failure model keeps recent stderr and contrasts clean exits",
           "[devstudio][failure][negative-contrast][wp298]") {
@@ -315,7 +402,9 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         QEventLoop ready_loop;
         QEventLoop rpc_loop;
         QEventLoop stopped_loop;
-        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop);
+        QObject connection_context;
+        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop,
+                        connection_context);
 
         viewport.resize(640, 480);
         viewport.show();
@@ -368,7 +457,9 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         QEventLoop ready_loop;
         QEventLoop rpc_loop;
         QEventLoop stopped_loop;
-        observeViewport(viewport, normal, ready_loop, rpc_loop, stopped_loop);
+        QObject connection_context;
+        observeViewport(viewport, normal, ready_loop, rpc_loop, stopped_loop,
+                        connection_context);
 
         viewport.resize(640, 480);
         viewport.show();

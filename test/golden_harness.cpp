@@ -12281,17 +12281,26 @@ void GoldenHarness::runGpuTimingRing() {
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     auto &renderer = GET_MODULE(Renderer);
     auto &target = GET_MODULE(RenderTarget);
+    auto &timing = GET_MODULE(RenderTiming);
 
     std::vector<std::uint8_t> first_pixels;
+    std::optional<std::size_t> first_snapshot_frame_visits;
+    std::size_t first_snapshot_history_count = 0;
     for (std::uint64_t frame = 1; frame <= 122; ++frame) {
         time.advance();
         renderer.render();
         if (frame == 1) first_pixels = target.readbackLastFrameRGBA8();
+        if (!first_snapshot_frame_visits &&
+            timing.historyFrameCountForTesting() != 0) {
+            first_snapshot_frame_visits =
+                timing.lastSnapshotHistoryFrameVisitsForTesting();
+            first_snapshot_history_count =
+                timing.historyFrameCountForTesting();
+        }
     }
     const auto final_pixels = target.readbackLastFrameRGBA8();
     REQUIRE(final_pixels == first_pixels);
 
-    auto &timing = GET_MODULE(RenderTiming);
     timing.flush();
     const auto status = timing.statusJson();
     const auto plan = renderer.currentFramePlanOrderForTesting();
@@ -12299,6 +12308,9 @@ void GoldenHarness::runGpuTimingRing() {
     REQUIRE(timing.allGpuQueriesCollectedForTesting());
     REQUIRE(status.at("history_capacity") == 120);
     REQUIRE(status.at("history_count") == 120);
+    REQUIRE(first_snapshot_frame_visits == 1);
+    REQUIRE(first_snapshot_history_count < gpu_timing_history_capacity);
+    REQUIRE(timing.lastSnapshotHistoryFrameVisitsForTesting() == 1);
     REQUIRE(status.at("dropped_samples") == 0);
     REQUIRE(status.at("logical_frame_history")
                 .size() == 120);
