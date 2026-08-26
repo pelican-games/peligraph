@@ -3,10 +3,12 @@
 #include "frameplanwidget.hpp"
 
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "../src/core/renderingpass/viewexecutionscheduler.hpp"
 #include "../src/project/executionplan.hpp"
 #include "../src/project/frameresolutionwire.hpp"
 #include "../src/project/renderpipeline.hpp"
@@ -358,6 +360,181 @@ const Json &planarReflectionGroupingFramePlan() {
                                  "wp344/planar_reflection");
     }();
     return wire;
+}
+#endif
+
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS && \
+    PELICAN_RUNTIME_SHADER_COMPILER
+constexpr std::string_view Wp348CubeRegion =
+    "wp348.cube_capture_loop";
+
+struct Wp348CubeCaptureMeasurement {
+    Json wire;
+    std::vector<Pelican::FrameGraphExecutionNode> execution_nodes;
+    std::vector<Pelican::LogicalFrameNodeInvocation> invocations;
+    std::vector<std::string> view_ids;
+};
+
+const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
+    static const Wp348CubeCaptureMeasurement measurement = [] {
+        Json authored{
+            {"pipeline",
+             {{"preset",
+               "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features",
+             Json::array(
+                 {{{"ref",
+                    "engine://features/cube_capture.json"},
+                   {"parameters", {{"resolution", 64}}}}})},
+        };
+
+        constexpr std::string_view feature_reference =
+            "engine://features/cube_capture.json";
+        auto resolved = Pelican::resolveRenderPipeline(
+            Pelican::RenderPipelineRequest{
+                .authored_config = std::move(authored),
+                .source_name = "wp348/cube_capture_measurement.json",
+            },
+            Pelican::RenderEnvironmentCapabilities{
+                .runtime_shader_compiler_enabled = true,
+                .graph_variant =
+                    Pelican::RenderPipelineGraphVariant::flat,
+            },
+            Pelican::RenderPipelineResolveDependencies{
+                .load_feature_json =
+                    [feature_reference](std::string_view reference) {
+                        if (reference != feature_reference) {
+                            return loadEngineDocument(reference);
+                        }
+                        Json feature =
+                            Json::parse(loadEngineDocument(reference));
+                        for (auto &entry : feature.at("passes")) {
+                            // Region authoring remains on the production
+                            // feature-composition input side. The shipped
+                            // feature and every shipping config stay intact.
+                            entry.at("pass")["regions"] =
+                                Json::array({Wp348CubeRegion});
+                        }
+                        return feature.dump();
+                    },
+                .load_pipeline_json = loadEngineDocument,
+            });
+
+        for (auto &target :
+             resolved.normalized_config.at("render_targets")) {
+            if (target.value("format_class", std::string{}) ==
+                "display") {
+                target["width"] = 160;
+                target["height"] = 90;
+            }
+        }
+        const Pelican::CompiledRenderPipeline compiled =
+            Pelican::compileRenderPipeline(resolved);
+        const auto graphs =
+            Pelican::parseFrameGraphDefinitionsFromConfigJson(
+                resolved.normalized_config);
+        if (graphs.size() != 1) {
+            throw std::runtime_error(
+                "WP348 fixture must resolve exactly one frame graph");
+        }
+        const Pelican::FramePlan plan =
+            Pelican::planFrameGraph(graphs.front());
+        Json wire = Pelican::framePlanToJson(plan, &compiled);
+        const Pelican::FrameExecutionPlan execution =
+            Pelican::compileFrameExecutionPlan(
+                graphs.front(), plan,
+                Pelican::ExecutionEndpoint{
+                    .id = "device:0",
+                    .endpoint_class =
+                        Pelican::ExecutionEndpointClass::device,
+                    .backend = "vulkan",
+                });
+        wire["execution_plan"] =
+            Pelican::frameExecutionPlanToJson(execution);
+
+        const auto targets =
+            Pelican::parseRenderTargetDefinitionsFromJson(
+                resolved.normalized_config);
+        const auto physical = Pelican::compileRenderingTargetPlans(
+            graphs, targets, compiled.sample_count_policy,
+            vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(),
+            std::nullopt, std::nullopt, compiled.target_planning,
+            compiled.vulkan_plan_pins,
+            compiled.vulkan_physical_fragments);
+        if (physical.plans.size() != 1) {
+            throw std::runtime_error(
+                "WP348 fixture must compile exactly one physical target plan");
+        }
+        const auto &target_plan = *physical.plans.front();
+        wire["physical_target_plan"] =
+            Pelican::vulkanTargetPlanToJson(target_plan);
+        publishRuntimeResolution(
+            wire, target_plan,
+            Pelican::ResolvedResourceExtent{160, 90});
+
+        // compileExecution() builds this same plan-ordered name/family
+        // projection before the production renderer calls the scheduler. The
+        // scheduler observes vector position as invocation.node_index; the
+        // runtime-only pass id stored in FrameGraphExecutionNode::index is not
+        // consulted here.
+        std::vector<Pelican::FrameGraphExecutionNode> execution_nodes;
+        execution_nodes.reserve(plan.nodes.size());
+        for (const auto &node : plan.nodes) {
+            execution_nodes.push_back(
+                Pelican::FrameGraphExecutionNode{
+                    .kind = node.kind,
+                    .name = node.name,
+                    .index = 0,
+                    .incoming_barriers = {},
+                    .view_family = node.view_family,
+                });
+        }
+
+        const Pelican::RenderViewFamily cube_views =
+            Pelican::buildCubeCaptureViewFamily({});
+        const std::array families{
+            Pelican::LogicalFrameViewFamilyCardinality{
+                Pelican::mainRenderViewFamilyId,
+                target_plan.view_execution_plan.view_count},
+            Pelican::LogicalFrameViewFamilyCardinality{
+                Pelican::cubeCaptureRenderViewFamilyId,
+                static_cast<std::uint32_t>(cube_views.views.size())},
+        };
+        auto invocations =
+            Pelican::buildLogicalFrameViewFamilySchedule(
+                execution_nodes, target_plan, families);
+        std::vector<std::string> view_ids;
+        view_ids.reserve(cube_views.views.size());
+        for (const auto &view : cube_views.views) {
+            view_ids.push_back(view.view_id);
+        }
+
+        return Wp348CubeCaptureMeasurement{
+            .wire = std::move(wire),
+            .execution_nodes = std::move(execution_nodes),
+            .invocations = std::move(invocations),
+            .view_ids = std::move(view_ids),
+        };
+    }();
+    return measurement;
+}
+
+std::string describeWp348Invocation(
+    const Wp348CubeCaptureMeasurement &measurement,
+    const Pelican::LogicalFrameNodeInvocation &invocation) {
+    const auto &node =
+        measurement.execution_nodes.at(invocation.node_index);
+    const std::string &view_id =
+        measurement.view_ids.at(invocation.view_index);
+    return node.name + "[node=" +
+           std::to_string(invocation.node_index) + ",scope=" +
+           std::to_string(invocation.scope_index) + ",scope_node=" +
+           std::to_string(invocation.scope_node_index) + "/" +
+           std::to_string(invocation.scope_node_count) + ",view=" +
+           std::to_string(invocation.view_index) + ":" + view_id +
+           ",execution=" +
+           std::to_string(invocation.execution_index) + "/" +
+           std::to_string(invocation.execution_count) + "]";
 }
 #endif
 
@@ -3054,6 +3231,213 @@ TEST_CASE(
     REQUIRE(itemsOfKind(logical, FramePlanBoundaryStubItem).size() == 3);
     REQUIRE(logical.property("pelicanBoundaryStubCount").toULongLong() ==
             3);
+#endif
+}
+
+TEST_CASE(
+    "WP348 cube capture measures the non-degenerate view-family loop on the production path",
+    "[devstudio][frame-plan][view-family][grouping][wp348]") {
+#if !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    SKIP("WP348 cube_capture execution is supplied by the standard render algorithms package");
+#elif !PELICAN_RUNTIME_SHADER_COMPILER
+    SKIP("WP348 cube_capture declares the runtime shader compiler as required");
+#else
+    (void)application();
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER,
+            PELICAN_WITH_STANDARD_RENDER_ALGORITHMS);
+    const Wp348CubeCaptureMeasurement &measurement =
+        wp348CubeCaptureMeasurement();
+    const FramePlanModel model =
+        buildFramePlanModel(measurement.wire.dump());
+    const StringSet members =
+        wireRegionMembers(measurement.wire, Wp348CubeRegion);
+    const StringSet expected_members{
+        "cube_capture_geometry",
+        "cube_capture_ssao",
+        "cube_capture_ssao_blur",
+        "cube_capture_lighting",
+        "cube_capture_forward_opaque",
+        "cube_capture_snapshot_opaque_color",
+        "cube_capture_snapshot_opaque_depth",
+        "cube_capture_forward_transparent",
+    };
+    REQUIRE(model.execution_plan.available());
+    REQUIRE(model.physical_plan.available());
+    REQUIRE(model.physical_plan.loweringGraphAvailable());
+    REQUIRE(members == expected_members);
+
+    std::vector<std::string> cube_invocations;
+    for (const auto &invocation : measurement.invocations) {
+        if (invocation.view_family ==
+            Pelican::cubeCaptureRenderViewFamilyId) {
+            cube_invocations.push_back(
+                describeWp348Invocation(measurement, invocation));
+        }
+    }
+    const std::array<std::string_view, 8> expected_node_order{
+        "cube_capture_geometry",
+        "cube_capture_ssao",
+        "cube_capture_ssao_blur",
+        "cube_capture_lighting",
+        "cube_capture_forward_opaque",
+        "cube_capture_snapshot_opaque_color",
+        "cube_capture_snapshot_opaque_depth",
+        "cube_capture_forward_transparent",
+    };
+    const std::array<std::string_view, 6> expected_view_order{
+        "$face/+x", "$face/-x", "$face/+y",
+        "$face/-y", "$face/+z", "$face/-z",
+    };
+    const std::vector<std::string> expected_view_ids{
+        expected_view_order.begin(), expected_view_order.end()};
+    REQUIRE(measurement.view_ids == expected_view_ids);
+
+    // These literals are the observed 48-column schedule, not a scheduler
+    // oracle. A node-major/view-major reversal, scope fusion, or different
+    // node_index now changes at least one complete invocation record.
+    std::vector<std::string> expected_invocations;
+    expected_invocations.reserve(48);
+    for (std::size_t node_index = 0;
+         node_index < expected_node_order.size(); ++node_index) {
+        for (std::size_t view_index = 0;
+             view_index < expected_view_order.size(); ++view_index) {
+            expected_invocations.push_back(
+                std::string{expected_node_order[node_index]} +
+                "[node=" + std::to_string(node_index) +
+                ",scope=" + std::to_string(node_index) +
+                ",scope_node=0/1,view=" +
+                std::to_string(view_index) + ":" +
+                std::string{expected_view_order[view_index]} +
+                ",execution=" + std::to_string(view_index) +
+                "/6]");
+        }
+    }
+    INFO("WP348 measured invocations: "
+         << joinedValues(cube_invocations).toStdString());
+    REQUIRE(cube_invocations.size() == 48);
+    REQUIRE(cube_invocations == expected_invocations);
+
+    std::vector<std::string> cube_resources;
+    for (const auto &resource : model.resources) {
+        if (resource.name.starts_with("cube_capture_")) {
+            cube_resources.push_back(
+                resource.name + "[layers=" +
+                std::to_string(resource.array_layers) + ",layout=" +
+                resource.view_layout + "]");
+        }
+    }
+    const std::vector<std::string> expected_cube_resources{
+        "cube_capture_albedo[layers=6,layout=sequential_2d]",
+        "cube_capture_ao[layers=6,layout=sequential_2d]",
+        "cube_capture_ao_blur[layers=6,layout=sequential_2d]",
+        "cube_capture_color[layers=6,layout=sequential_2d]",
+        "cube_capture_depth[layers=6,layout=sequential_2d]",
+        "cube_capture_emissive[layers=6,layout=sequential_2d]",
+        "cube_capture_material[layers=6,layout=sequential_2d]",
+        "cube_capture_normal[layers=6,layout=sequential_2d]",
+        "cube_capture_opaque_color[layers=6,layout=sequential_2d]",
+        "cube_capture_opaque_depth[layers=6,layout=sequential_2d]",
+        "cube_capture_worldpos[layers=6,layout=sequential_2d]",
+    };
+    INFO("WP348 measured physical resources: "
+         << joinedValues(cube_resources).toStdString());
+    REQUIRE(cube_resources == expected_cube_resources);
+
+    const auto repeated_node_barrier = [&members](const auto &record) {
+        return record.from == record.to &&
+               members.contains(record.from);
+    };
+    const std::size_t repeated_node_barriers =
+        static_cast<std::size_t>(std::ranges::count_if(
+            model.barriers, repeated_node_barrier));
+    const Json &wire_dependencies =
+        measurement.wire.at("execution_plan").at("dependencies");
+    const std::size_t repeated_node_dependencies =
+        static_cast<std::size_t>(std::ranges::count_if(
+            wire_dependencies, [&members](const Json &dependency) {
+                const std::string from =
+                    dependency.at("from").get<std::string>();
+                return from ==
+                           dependency.at("to").get<std::string>() &&
+                       members.contains(from);
+            }));
+    INFO("WP348 measured same-node model.barriers: "
+         << repeated_node_barriers);
+    INFO("WP348 measured same-node execution_plan.dependencies: "
+         << repeated_node_dependencies);
+    REQUIRE(model.dependencies.size() == wire_dependencies.size());
+    REQUIRE(repeated_node_barriers == 0);
+    REQUIRE(repeated_node_dependencies == 0);
+
+    std::vector<std::string> full_boundary_dependencies;
+    StringSet full_entering_sources;
+    StringSet full_leaving_targets;
+    for (const auto &dependency : model.dependencies) {
+        const bool from_inside = members.contains(dependency.from);
+        const bool to_inside = members.contains(dependency.to);
+        if (from_inside == to_inside) {
+            continue;
+        }
+        full_boundary_dependencies.push_back(
+            dependency.from + " -> " + dependency.to + " [" +
+            dependency.reason + "," + dependency.resource + "]");
+        if (to_inside) {
+            full_entering_sources.insert(dependency.from);
+        } else {
+            full_leaving_targets.insert(dependency.to);
+        }
+    }
+    INFO("WP348 measured full quotient boundary dependencies: "
+         << joinedValues(full_boundary_dependencies).toStdString());
+    REQUIRE(full_boundary_dependencies.size() == 9);
+    REQUIRE(full_entering_sources.empty());
+    REQUIRE(full_leaving_targets ==
+            StringSet{"__anchor_sprite", "deferred_geometry"});
+
+    FramePlanGraphicsScene logical;
+    logical.populate(
+        model,
+        FramePlanNodeKey{model.graph, "cube_capture_color"}, 64);
+    QGraphicsItem *member =
+        nodeItem(logical, "cube_capture_geometry");
+    REQUIRE(member != nullptr);
+    const QString group_id =
+        member->data(FramePlanGroupIdRole).toString();
+    REQUIRE_FALSE(group_id.isEmpty());
+    REQUIRE(sceneGroupMembers(logical, group_id) == members);
+    const bool convex =
+        member->data(FramePlanGroupCollapsibleRole).toBool();
+    INFO("WP348 measured region convexity: "
+         << (convex ? "true" : "false"));
+    REQUIRE(convex);
+    REQUIRE(logical.collapseGroup(group_id));
+
+    QGraphicsItem *group = singleGroupItem(logical);
+    REQUIRE(strings(group->data(FramePlanMembersRole)) == members);
+    REQUIRE(group->data(FramePlanNameRole).toString() ==
+            QStringLiteral(
+                "__pelican_group__:region:wp348.cube_capture_loop"));
+    for (const auto &name : members) {
+        REQUIRE(namedShapesAndLabels(logical, name).empty());
+    }
+    // cube_capture_color's resource subtree contains only the region. The
+    // full quotient has the two measured exits above, but both destinations
+    // are outside this visible window, so WP347 draws no outer edge here.
+    REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
+
+    REQUIRE(logical.enterGroup(group_id));
+    REQUIRE(sceneNodeNames(logical) == members);
+    REQUIRE(boundaryTargets(logical) ==
+            StringSet{"__anchor_sprite", "deferred_geometry"});
+    const auto boundary_stubs =
+        itemsOfKind(logical, FramePlanBoundaryStubItem);
+    REQUIRE(boundary_stubs.size() == 2);
+    REQUIRE(logical.property("pelicanBoundaryStubCount").toULongLong() ==
+            2);
+    for (QGraphicsItem *stub : boundary_stubs) {
+        REQUIRE(stub->data(FramePlanBoundaryDirectionRole).toString() ==
+                QStringLiteral("outgoing"));
+    }
 #endif
 }
 
