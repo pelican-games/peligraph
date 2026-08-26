@@ -972,8 +972,83 @@ QPainterPath roundedEntityPath(qreal width, qreal height, qreal radius) {
     return path;
 }
 
+void applyGpuTimingLabel(QGraphicsSimpleTextItem &label,
+                         const FramePlanGpuTimingSnapshot &snapshot,
+                         std::string_view node_name, bool anchor) {
+    label.setData(FramePlanGpuTimingBodyMsRole, QVariant{});
+    label.setData(FramePlanGpuTimingBarriersMsRole, QVariant{});
+    label.setData(FramePlanGpuTimingSampleCountRole, QVariant{});
+    label.setData(FramePlanGpuTimingFrameCountRole,
+                  static_cast<qulonglong>(snapshot.frame_count));
+    label.setData(FramePlanGpuTimingWindowSizeRole,
+                  static_cast<qulonglong>(snapshot.window_size));
+    label.setData(FramePlanReasonRole, qtext(snapshot.reason));
+
+    QString text;
+    QString state;
+    if (!snapshot.received) {
+        state = QStringLiteral("waiting");
+        text = QStringLiteral("GPU timing: waiting for RPC");
+    } else if (!snapshot.enabled || !snapshot.supported) {
+        state = QStringLiteral("unavailable");
+        text = QStringLiteral("GPU timing unavailable: %1")
+                   .arg(qtext(snapshot.reason));
+    } else if (snapshot.nodes.empty()) {
+        state = QStringLiteral("waiting");
+        text = QStringLiteral("GPU timing: waiting for samples · %1/%2f")
+                   .arg(static_cast<qulonglong>(snapshot.frame_count))
+                   .arg(static_cast<qulonglong>(snapshot.window_size));
+    } else {
+        const auto found = std::ranges::find(
+            snapshot.nodes, node_name, &FramePlanGpuTimingRow::node_name);
+        if (found == snapshot.nodes.end()) {
+            state = QStringLiteral("node_not_timed");
+            label.setData(FramePlanReasonRole,
+                          QStringLiteral("node_not_timed"));
+            text = QStringLiteral(
+                "GPU timing unavailable: node_not_timed");
+        } else {
+            label.setData(FramePlanGpuTimingBarriersMsRole,
+                          found->barriers_ms);
+            label.setData(FramePlanGpuTimingSampleCountRole,
+                          static_cast<qulonglong>(found->sample_count));
+            if (found->body_supported) {
+                state = QStringLiteral("measured");
+                label.setData(FramePlanGpuTimingBodyMsRole,
+                              found->body_ms);
+                text = QStringLiteral(
+                           "body %1 | barriers %2 ms · %3/%4f")
+                           .arg(found->body_ms, 0, 'f', 3)
+                           .arg(found->barriers_ms, 0, 'f', 3)
+                           .arg(static_cast<qulonglong>(
+                               found->sample_count))
+                           .arg(static_cast<qulonglong>(
+                               snapshot.window_size));
+            } else {
+                state = QStringLiteral("body_unsupported");
+                label.setData(FramePlanReasonRole,
+                              QStringLiteral("no_gpu_work"));
+                text = QStringLiteral(
+                           "body unsupported | barriers %1 ms · %2/%3f")
+                           .arg(found->barriers_ms, 0, 'f', 3)
+                           .arg(static_cast<qulonglong>(
+                               found->sample_count))
+                           .arg(static_cast<qulonglong>(
+                               snapshot.window_size));
+            }
+        }
+    }
+    label.setData(FramePlanGpuTimingStateRole, state);
+    label.setText(text);
+    label.setToolTip(text);
+    const QRectF bounds = label.boundingRect();
+    label.setPos(anchor ? 43.0 : (NodeWidth - bounds.width()) / 2.0,
+                 34.0);
+}
+
 void addNodeLabel(QGraphicsPathItem &item, const FramePlanNode &node,
-                  const std::string &graph) {
+                  const std::string &graph,
+                  const FramePlanGpuTimingSnapshot &gpu_timing) {
     auto *label = new QGraphicsSimpleTextItem(qtext(node.name), &item);
     label->setBrush(QColor{QStringLiteral("#f7f9fb")});
     QFont font = label->font();
@@ -981,12 +1056,20 @@ void addNodeLabel(QGraphicsPathItem &item, const FramePlanNode &node,
     label->setFont(font);
     const QRectF bounds = label->boundingRect();
     if (isAnchor(node)) {
-        label->setPos(43.0, (NodeHeight - bounds.height()) / 2.0);
+        label->setPos(43.0, 7.0);
     } else {
         label->setPos((NodeWidth - bounds.width()) / 2.0,
-                      (NodeHeight - bounds.height()) / 2.0);
+                      7.0);
     }
     annotateIdentity(*label, FramePlanNodeLabelItem, graph, node.name);
+
+    auto *timing = new QGraphicsSimpleTextItem(&item);
+    timing->setBrush(QColor{QStringLiteral("#d6e8b5")});
+    QFont timing_font = timing->font();
+    timing_font.setPointSizeF(8.0);
+    timing->setFont(timing_font);
+    timing->setData(FramePlanGpuTimingNodeNameRole, qtext(node.name));
+    applyGpuTimingLabel(*timing, gpu_timing, node.name, isAnchor(node));
 }
 
 void addCenteredEntityLabel(QGraphicsPathItem &item, const QString &text,
@@ -1632,6 +1715,29 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanExecutionPlanReasonCode", QString{});
     setProperty("pelicanExecutionPlanReason", QString{});
     publishStateProperties();
+}
+
+void FramePlanGraphicsScene::setGpuTiming(
+    FramePlanGpuTimingSnapshot snapshot) {
+    gpu_timing_ = std::move(snapshot);
+    for (QGraphicsItem *item : items()) {
+        const QVariant node_name =
+            item->data(FramePlanGpuTimingNodeNameRole);
+        if (!node_name.isValid()) {
+            continue;
+        }
+        auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(item);
+        if (label == nullptr) {
+            continue;
+        }
+        const bool anchor =
+            label->parentItem() != nullptr &&
+            label->parentItem()->data(FramePlanAnchorRole).toBool();
+        applyGpuTimingLabel(
+            *label, gpu_timing_,
+            node_name.toString().toStdString(),
+            anchor);
+    }
 }
 
 void FramePlanGraphicsScene::populate(
@@ -2357,7 +2463,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     tooltip += QStringLiteral("\n%1").arg(legacy_notice);
                 }
                 item->setToolTip(tooltip);
-                addNodeLabel(*item, node, model.graph);
+                addNodeLabel(*item, node, model.graph, gpu_timing_);
                 node_items.emplace(node.name, item);
             }
             row_y += height + VerticalGap;

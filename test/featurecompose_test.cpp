@@ -4,6 +4,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
@@ -20,6 +21,7 @@
 #include <fstream>
 #include <iterator>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2954,7 +2956,7 @@ TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary
 }
 
 TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
-          "[render-feature][overlay][editor][wp289]") {
+          "[render-feature][overlay][editor][wp289][wp351]") {
     const auto base = readJson(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
@@ -2971,15 +2973,44 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
 
     const std::vector<std::string> overlays{
         std::string{editorFeatureOverlayReference}};
-    const auto effective = applyRenderFeatureOverlays(
-        base, overlays, loadEngineFeature);
+    const auto editor_overlay = nlohmann::json::parse(
+        loadEngineFeature(editorFeatureOverlayReference));
+    REQUIRE(editor_overlay.at("features") ==
+            nlohmann::json::array(
+                {"engine://features/gizmo.json",
+                 "engine://features/picking.json",
+                 "engine://features/gpu_timing.json"}));
+
+    auto editor_before_gpu_timing = editor_overlay;
+    auto &features_before_gpu_timing =
+        editor_before_gpu_timing.at("features");
+    const auto gpu_timing = std::find(
+        features_before_gpu_timing.begin(),
+        features_before_gpu_timing.end(),
+        nlohmann::json("engine://features/gpu_timing.json"));
+    REQUIRE(gpu_timing != features_before_gpu_timing.end());
+    features_before_gpu_timing.erase(gpu_timing);
+
+    const auto apply_editor = [&](const nlohmann::json &overlay) {
+        return applyRenderFeatureOverlays(
+            base, overlays,
+            [&](std::string_view reference) {
+                REQUIRE(std::string{reference} ==
+                        std::string{editorFeatureOverlayReference});
+                return overlay.dump();
+            });
+    };
+    const auto before_gpu_timing =
+        apply_editor(editor_before_gpu_timing);
+    const auto effective = apply_editor(editor_overlay);
     REQUIRE(base.at("features") == nlohmann::json::array(
                                       {"engine://features/ui.json"}));
     REQUIRE(effective.at("features") ==
             nlohmann::json::array(
                 {"engine://features/ui.json",
                  "engine://features/gizmo.json",
-                 "engine://features/picking.json"}));
+                 "engine://features/picking.json",
+                 "engine://features/gpu_timing.json"}));
 
     const auto baseline = composeRenderFeatureConfig(
         base, RenderFeatureComposeDependencies{loadEngineFeature, true});
@@ -2988,7 +3019,52 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
         RenderFeatureComposeDependencies{loadEngineFeature, true});
     REQUIRE(baseline.feature_names == std::vector<std::string>{"ui"});
     REQUIRE(enabled.feature_names ==
-            std::vector<std::string>{"ui", "gizmo", "picking"});
+            std::vector<std::string>{"ui", "gizmo", "picking",
+                                     "gpu_timing"});
+
+    struct FramePlanTopology {
+        std::set<std::tuple<std::string, std::string>> nodes;
+        std::set<std::tuple<std::string, std::string, std::string,
+                            std::string>> edges;
+    };
+    const auto topology = [](const nlohmann::json &config) {
+        const auto composition = composeRenderFeatureConfig(
+            config,
+            RenderFeatureComposeDependencies{loadEngineFeature, true});
+        const auto graphs =
+            parseFrameGraphDefinitionsFromConfigJson(composition.config);
+        REQUIRE(graphs.size() == 1);
+        const auto plan = planFrameGraph(graphs.front());
+        const auto execution = compileFrameExecutionPlan(
+            graphs.front(), plan,
+            ExecutionEndpoint{
+                .id = "device:0",
+                .endpoint_class = ExecutionEndpointClass::device,
+                .backend = "vulkan",
+            });
+        FramePlanTopology result;
+        for (const auto &node : plan.nodes) {
+            result.nodes.emplace(node.name,
+                                 framePlanNodeKindName(node.kind));
+        }
+        for (const auto &edge : execution.dependencies) {
+            result.edges.emplace(edge.from, edge.to, edge.reason,
+                                 edge.resource);
+        }
+        return result;
+    };
+
+    const auto authored_topology = topology(base);
+    const auto before_gpu_timing_topology = topology(before_gpu_timing);
+    const auto with_gpu_timing_topology = topology(effective);
+    // Negative controls: path-owning editor features must be visible to both
+    // set comparisons.  The marker-only gpu_timing feature must be invisible.
+    REQUIRE(authored_topology.nodes != before_gpu_timing_topology.nodes);
+    REQUIRE(authored_topology.edges != before_gpu_timing_topology.edges);
+    REQUIRE(with_gpu_timing_topology.nodes ==
+            before_gpu_timing_topology.nodes);
+    REQUIRE(with_gpu_timing_topology.edges ==
+            before_gpu_timing_topology.edges);
 
     const auto has_pass = [](const nlohmann::json &config,
                              std::string_view name) {

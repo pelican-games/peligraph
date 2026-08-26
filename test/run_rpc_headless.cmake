@@ -107,6 +107,7 @@ file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[1.0,1.0,1.0]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":19,\"method\":\"capture_gpu\",\"params\":{}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"get_gpu_timing\",\"params\":{}}\n"
 )
 
 function(validate_rpc_stdout stdout label)
@@ -122,8 +123,8 @@ function(validate_rpc_stdout stdout label)
     string(REPLACE ";" "\\;" list_safe "${trimmed}")
     string(REPLACE "\n" ";" lines "${list_safe}")
     list(LENGTH lines line_count)
-    if(NOT line_count EQUAL 21)
-        message(FATAL_ERROR "${label}: expected 21 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
+    if(NOT line_count EQUAL 22)
+        message(FATAL_ERROR "${label}: expected 22 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
     endif()
 
     foreach(line IN LISTS lines)
@@ -153,6 +154,7 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 18 line18)
     list(GET lines 19 line19)
     list(GET lines 20 line20)
+    list(GET lines 21 line21)
 
     if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["xr":\{"active":false.*"timing":\{.*"wait_frame_count":0.*"view_configuration":null\}]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=] OR NOT line0 MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":false,"history_capacity":120]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
@@ -231,6 +233,22 @@ function(validate_rpc_stdout stdout label)
     if(NOT line20 MATCHES [=["id":19]=] OR NOT line20 MATCHES [=["code":-32010]=] OR NOT line20 MATCHES "\"reason\":\"${RENDERDOC_REASON}\"" OR NOT line20 MATCHES [=["source":"rpc"]=])
         message(FATAL_ERROR "${label}: uninjected capture_gpu did not return the named RenderDoc error:\n${line20}")
     endif()
+    if(NOT line21 MATCHES [=["id":20]=] OR
+       NOT line21 MATCHES [=["schema":"pelican\.gpu_timing_node_averages"]=] OR
+       NOT line21 MATCHES [=["version":1]=] OR
+       NOT line21 MATCHES [=["enabled":false]=] OR
+       NOT line21 MATCHES [=["supported":false]=] OR
+       NOT line21 MATCHES [=["reason":"feature_not_enabled"]=] OR
+       NOT line21 MATCHES [=["window_size":30]=] OR
+       NOT line21 MATCHES [=["frame_count":0]=] OR
+       NOT line21 MATCHES [=["nodes":\[\]]=] OR
+       line21 MATCHES "logical_frame_history")
+        message(FATAL_ERROR "${label}: disabled get_gpu_timing response violated the light contract:\n${line21}")
+    endif()
+    string(LENGTH "${line0}" get_status_response_bytes)
+    string(LENGTH "${line21}" get_gpu_timing_response_bytes)
+    file(WRITE "${OUT_DIR}/wp351_rpc_response_sizes.json"
+        "{\"get_status_bytes\":${get_status_response_bytes},\"get_gpu_timing_disabled_bytes\":${get_gpu_timing_response_bytes}}\n")
 endfunction()
 
 function(normalize_rpc_stdout stdout output_var)

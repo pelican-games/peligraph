@@ -4,6 +4,7 @@
   "name": "editor",
   "features": [
     "engine://features/gizmo.json",
-    "engine://features/picking.json"
+    "engine://features/picking.json",
+    "engine://features/gpu_timing.json"
   ]
 }

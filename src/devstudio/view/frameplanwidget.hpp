@@ -25,6 +25,7 @@ class FramePlanWidget final : public QWidget {
     // deterministic widget tests.  Successful input always flows through the
     // same populate() path.
     void receiveResult(const QByteArray &result_json);
+    void receiveGpuTimingResult(const QByteArray &result_json);
 
     ToolLayoutSnapshot toolLayoutSnapshot() const;
     bool restoreToolLayout(const ToolLayoutSnapshot &snapshot);

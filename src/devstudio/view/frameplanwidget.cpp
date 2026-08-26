@@ -15,6 +15,9 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -28,12 +31,14 @@
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -43,6 +48,118 @@ namespace PelicanStudio {
 namespace {
 
 constexpr auto ToolTabIdProperty = "pelicanToolTabId";
+constexpr int GpuTimingPollIntervalMs = 1000;
+
+std::size_t gpuTimingCount(const QJsonObject &object,
+                           const QString &field) {
+    const QJsonValue value = object.value(field);
+    const double number = value.toDouble(-1.0);
+    if (!value.isDouble() || !std::isfinite(number) || number < 0.0 ||
+        std::trunc(number) != number ||
+        number > static_cast<double>(
+                     std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error(
+            QStringLiteral("get_gpu_timing %1 must be a non-negative integer")
+                .arg(field)
+                .toStdString());
+    }
+    return static_cast<std::size_t>(number);
+}
+
+double gpuTimingDuration(const QJsonObject &object,
+                         const QString &field) {
+    const QJsonValue value = object.value(field);
+    const double number = value.toDouble(-1.0);
+    if (!value.isDouble() || !std::isfinite(number) || number < 0.0) {
+        throw std::runtime_error(
+            QStringLiteral("get_gpu_timing %1 must be a non-negative number")
+                .arg(field)
+                .toStdString());
+    }
+    return number;
+}
+
+FramePlanGpuTimingSnapshot parseGpuTimingResult(
+    const QByteArray &result_json) {
+    QJsonParseError parse_error;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(result_json, &parse_error);
+    if (parse_error.error != QJsonParseError::NoError ||
+        !document.isObject()) {
+        throw std::runtime_error(
+            "get_gpu_timing result must be a JSON object");
+    }
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("schema")).toString() !=
+            QStringLiteral("pelican.gpu_timing_node_averages") ||
+        gpuTimingCount(object, QStringLiteral("version")) != 1) {
+        throw std::runtime_error(
+            "get_gpu_timing result has an unsupported schema or version");
+    }
+    const QJsonValue enabled = object.value(QStringLiteral("enabled"));
+    const QJsonValue supported = object.value(QStringLiteral("supported"));
+    const QJsonValue reason = object.value(QStringLiteral("reason"));
+    const QJsonValue nodes = object.value(QStringLiteral("nodes"));
+    if (!enabled.isBool() || !supported.isBool() || !reason.isString() ||
+        reason.toString().isEmpty() || !nodes.isArray()) {
+        throw std::runtime_error(
+            "get_gpu_timing result has invalid state fields");
+    }
+
+    FramePlanGpuTimingSnapshot result;
+    result.received = true;
+    result.enabled = enabled.toBool();
+    result.supported = supported.toBool();
+    result.reason = reason.toString().toStdString();
+    result.window_size =
+        gpuTimingCount(object, QStringLiteral("window_size"));
+    result.frame_count =
+        gpuTimingCount(object, QStringLiteral("frame_count"));
+    if (result.window_size == 0 ||
+        result.frame_count > result.window_size) {
+        throw std::runtime_error(
+            "get_gpu_timing result has an invalid frame window");
+    }
+
+    const QJsonArray rows = nodes.toArray();
+    result.nodes.reserve(static_cast<std::size_t>(rows.size()));
+    for (const QJsonValue &value : rows) {
+        if (!value.isObject()) {
+            throw std::runtime_error(
+                "get_gpu_timing nodes entries must be objects");
+        }
+        const QJsonObject row = value.toObject();
+        const QString node_kind =
+            row.value(QStringLiteral("node_kind")).toString();
+        const QString node_name =
+            row.value(QStringLiteral("node_name")).toString();
+        const QJsonValue body_supported =
+            row.value(QStringLiteral("body_supported"));
+        if (node_kind.isEmpty() || node_name.isEmpty() ||
+            !body_supported.isBool()) {
+            throw std::runtime_error(
+                "get_gpu_timing node identity is invalid");
+        }
+        const auto view_index =
+            gpuTimingCount(row, QStringLiteral("view_index"));
+        const auto sample_count =
+            gpuTimingCount(row, QStringLiteral("sample_count"));
+        if (view_index >
+                std::numeric_limits<std::uint32_t>::max() ||
+            sample_count == 0 || sample_count > result.frame_count) {
+            throw std::runtime_error(
+                "get_gpu_timing node counts are invalid");
+        }
+        result.nodes.push_back(FramePlanGpuTimingRow{
+            static_cast<std::uint32_t>(view_index),
+            gpuTimingCount(row, QStringLiteral("node_ordinal")),
+            node_kind.toStdString(), node_name.toStdString(),
+            gpuTimingDuration(row, QStringLiteral("barriers_ms")),
+            gpuTimingDuration(row, QStringLiteral("body_ms")),
+            body_supported.toBool(), sample_count});
+    }
+    return result;
+}
 
 const QStringList &defaultToolTabOrder() {
     static const QStringList order{
@@ -263,6 +380,7 @@ struct FramePlanWidget::Impl {
     QComboBox *target = nullptr;
     QSpinBox *depth = nullptr;
     QLabel *zoom_status = nullptr;
+    QTimer *gpu_timing_poll = nullptr;
     QTabWidget *tabs = nullptr;
     QSplitter *logical_splitter = nullptr;
     FramePlanGraphicsView *logical = nullptr;
@@ -278,12 +396,21 @@ struct FramePlanWidget::Impl {
     QPlainTextEdit *raw_json = nullptr;
     std::optional<FramePlanModel> model;
     qint64 pending_request = 0;
+    qint64 pending_gpu_timing_request = 0;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
         auto *layout = new QVBoxLayout(&owner);
         layout->setContentsMargins(6, 6, 6, 6);
         layout->setSpacing(6);
+        gpu_timing_poll = new QTimer(&owner);
+        gpu_timing_poll->setObjectName(
+            QStringLiteral("pelican.gpuTimingPollTimer"));
+        gpu_timing_poll->setInterval(GpuTimingPollIntervalMs);
+        owner.setProperty("pelicanGpuTimingPollIntervalMs",
+                          GpuTimingPollIntervalMs);
+        QObject::connect(gpu_timing_poll, &QTimer::timeout, &owner,
+                         [this] { requestGpuTiming(); });
 
         auto *toolbar = new QHBoxLayout;
         refresh = new QPushButton(owner.tr("Refresh"), &owner);
@@ -452,9 +579,13 @@ struct FramePlanWidget::Impl {
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable,
                          &owner, [this] {
                              pending_request = 0;
+                             pending_gpu_timing_request = 0;
                              model.reset();
                              clearTrees();
+                             logical_scene->setGpuTiming({});
                              requestRefresh();
+                             requestGpuTiming();
+                             gpu_timing_poll->start();
                          });
         QObject::connect(
             &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, &owner,
@@ -481,6 +612,8 @@ struct FramePlanWidget::Impl {
 
         if (viewport.rpcReady()) {
             requestRefresh();
+            requestGpuTiming();
+            gpu_timing_poll->start();
         } else {
             showUnavailable(owner.tr(
                 "pelican_player is not running. Open a project to start the "
@@ -549,8 +682,14 @@ struct FramePlanWidget::Impl {
 
     void showUnavailable(const QString &reason) {
         pending_request = 0;
+        pending_gpu_timing_request = 0;
+        gpu_timing_poll->stop();
         model.reset();
         clearTrees();
+        logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
+            .received = true,
+            .reason = reason.toStdString(),
+        });
         refresh->setEnabled(false);
         status->setStyleSheet(QStringLiteral("color: #b36b00;"));
         status->setText(owner.tr("Frame plan unavailable: %1 Start or restart "
@@ -571,6 +710,8 @@ struct FramePlanWidget::Impl {
 
     void showEngineFailure(const QString &fatal_error_line) {
         pending_request = 0;
+        pending_gpu_timing_request = 0;
+        gpu_timing_poll->stop();
         model.reset();
         clearTrees();
         refresh->setEnabled(false);
@@ -599,12 +740,46 @@ struct FramePlanWidget::Impl {
         status->setText(owner.tr("Requesting the current frame plan..."));
     }
 
+    void requestGpuTiming() {
+        if (pending_gpu_timing_request != 0 ||
+            !viewport.rpcReady()) {
+            return;
+        }
+        QString error;
+        pending_gpu_timing_request = viewport.requestRpc(
+            QStringLiteral("get_gpu_timing"), QJsonObject{}, &error);
+        if (pending_gpu_timing_request == 0) {
+            logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
+                .received = true,
+                .reason = error.toStdString(),
+            });
+        }
+    }
+
     void receiveRpcResult(qint64 request_id, const QByteArray &result_json) {
+        if (request_id == pending_gpu_timing_request) {
+            pending_gpu_timing_request = 0;
+            consumeGpuTimingResult(result_json);
+            return;
+        }
         if (request_id != pending_request) {
             return;
         }
         pending_request = 0;
         owner.receiveResult(result_json);
+    }
+
+    void consumeGpuTimingResult(const QByteArray &result_json) {
+        try {
+            logical_scene->setGpuTiming(
+                parseGpuTimingResult(result_json));
+        } catch (const std::exception &error) {
+            logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
+                .received = true,
+                .reason = std::string{"invalid_response: "} +
+                          error.what(),
+            });
+        }
     }
 
     void consumeResult(const QByteArray &result_json) {
@@ -650,6 +825,14 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveFailure(qint64 request_id, const QString &message) {
+        if (request_id == pending_gpu_timing_request) {
+            pending_gpu_timing_request = 0;
+            logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
+                .received = true,
+                .reason = message.toStdString(),
+            });
+            return;
+        }
         if (request_id != pending_request) {
             return;
         }
@@ -1278,6 +1461,11 @@ FramePlanWidget::~FramePlanWidget() = default;
 
 void FramePlanWidget::receiveResult(const QByteArray &result_json) {
     impl_->consumeResult(result_json);
+}
+
+void FramePlanWidget::receiveGpuTimingResult(
+    const QByteArray &result_json) {
+    impl_->consumeGpuTimingResult(result_json);
 }
 
 ToolLayoutSnapshot FramePlanWidget::toolLayoutSnapshot() const {

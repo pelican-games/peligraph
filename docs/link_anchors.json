@@ -1491,6 +1491,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorruntimefactory.hpp|`makeEditorRuntimeService()`": "std::unique_ptr<EditorCommandService> makeEditorRuntimeService(",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|1 tick 進行": "server.setHandler(\"step_frame\", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|GPU 捕捉": "return nlohmann::json{",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|GPU 時間平均": "server.setHandler(\"get_gpu_timing\", [](const nlohmann::json &params) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`EngineRpcEndpoint::EngineRpcEndpoint()`": "EngineRpcEndpoint::EngineRpcEndpoint(std::istream &input_stream,",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`EngineRpcEndpoint::run()`": "void EngineRpcEndpoint::run() {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/rpcserver.cpp|`RpcServer::handleLine()` の `std::exception` catch": "error.what()));",

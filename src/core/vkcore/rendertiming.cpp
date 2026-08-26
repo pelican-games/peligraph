@@ -18,6 +18,8 @@ namespace {
 
 constexpr auto log_interval = std::chrono::seconds{1};
 constexpr std::uint32_t timestamp_queries_per_node = 4;
+using NodeKey = std::tuple<std::uint32_t, std::size_t, std::string,
+                           std::string>;
 
 std::uint32_t timestampValidBits(vk::PhysicalDevice physical_device,
                                  std::uint32_t graphics_queue_family) {
@@ -138,6 +140,94 @@ nlohmann::json disabledGpuTimingStatusJson() {
                          {"max_nodes", 0}, {"query_capacity", 0},
                          {"create_count", 0}, {"pending_ranges", 0}}},
     };
+}
+
+GpuTimingNodeAverageSnapshot averageGpuTimingNodeFrames(
+    std::span<const GpuTimingNodeFrame> frames, std::size_t window) {
+    if (window == 0) {
+        throw std::invalid_argument(
+            "GPU timing node average window must be non-zero");
+    }
+
+    struct Aggregate {
+        GpuTimingNodeAverageRow row;
+        double barriers_ms_total = 0.0;
+        double body_ms_total = 0.0;
+    };
+
+    GpuTimingNodeAverageSnapshot result;
+    result.frame_count = std::min(window, frames.size());
+    const auto first = frames.end() -
+                       static_cast<std::ptrdiff_t>(result.frame_count);
+    std::map<NodeKey, Aggregate> aggregates;
+    for (auto frame = first; frame != frames.end(); ++frame) {
+        for (const auto &node : frame->nodes) {
+            const NodeKey key{node.view_index, node.node_ordinal,
+                              node.node_kind, node.node_name};
+            auto [found, inserted] = aggregates.try_emplace(key);
+            auto &aggregate = found->second;
+            if (inserted) {
+                aggregate.row = GpuTimingNodeAverageRow{
+                    node.logical_frame, node.graph_variant, node.view_index,
+                    node.node_ordinal, node.node_kind, node.node_name,
+                    0.0, 0.0, node.body_supported, 0};
+            } else {
+                aggregate.row.logical_frame = node.logical_frame;
+                aggregate.row.graph_variant = node.graph_variant;
+                aggregate.row.body_supported =
+                    aggregate.row.body_supported && node.body_supported;
+            }
+            aggregate.barriers_ms_total += node.barriers_ms;
+            aggregate.body_ms_total += node.body_ms;
+            ++aggregate.row.sample_count;
+        }
+    }
+
+    result.nodes.reserve(aggregates.size());
+    for (auto &[_, aggregate] : aggregates) {
+        const auto divisor =
+            static_cast<double>(aggregate.row.sample_count);
+        aggregate.row.barriers_ms =
+            aggregate.barriers_ms_total / divisor;
+        aggregate.row.body_ms = aggregate.body_ms_total / divisor;
+        result.nodes.push_back(std::move(aggregate.row));
+    }
+    return result;
+}
+
+nlohmann::json gpuTimingNodeAverageStatusJson(
+    const GpuTimingNodeAverageSnapshot &snapshot, bool enabled,
+    bool supported, std::string_view reason) {
+    auto nodes = nlohmann::json::array();
+    for (const auto &row : snapshot.nodes) {
+        nodes.push_back({
+            {"logical_frame", row.logical_frame},
+            {"graph_variant", row.graph_variant},
+            {"view_index", row.view_index},
+            {"node_ordinal", row.node_ordinal},
+            {"node_kind", row.node_kind},
+            {"node_name", row.node_name},
+            {"barriers_ms", row.barriers_ms},
+            {"body_ms", row.body_ms},
+            {"body_supported", row.body_supported},
+            {"sample_count", row.sample_count},
+        });
+    }
+    return nlohmann::json{
+        {"schema", "pelican.gpu_timing_node_averages"},
+        {"version", 1},
+        {"enabled", enabled},
+        {"supported", supported},
+        {"reason", std::string{reason}},
+        {"window_size", gpu_timing_node_average_window},
+        {"frame_count", snapshot.frame_count},
+        {"nodes", std::move(nodes)},
+    };
+}
+
+nlohmann::json disabledGpuTimingNodeAverageStatusJson() {
+    return gpuTimingNodeAverageStatusJson(
+        {}, false, false, "feature_not_enabled");
 }
 
 RenderTiming::RenderTiming()
@@ -364,6 +454,8 @@ void RenderTiming::collectGpuResults(bool wait) {
 void RenderTiming::publishSnapshot() {
     published_latest_views.clear();
     published_latest_nodes.clear();
+    std::vector<GpuTimingNodeFrame> node_frames;
+    node_frames.reserve(gpu_history.size());
     nlohmann::json nodes = nlohmann::json::array();
     for (auto &frame : gpu_history) {
         std::sort(frame.samples.begin(), frame.samples.end(), [](const auto &left, const auto &right) {
@@ -374,7 +466,41 @@ void RenderTiming::publishSnapshot() {
                             right.identity.node_kind, right.identity.node_name,
                             right.identity.subrange);
         });
-        for (const auto &sample : frame.samples) nodes.push_back(sampleJson(sample));
+        std::map<NodeKey, GpuTimingNodeRow> frame_node_rows;
+        for (const auto &sample : frame.samples) {
+            nodes.push_back(sampleJson(sample));
+            const NodeKey node_key{sample.identity.view_index,
+                                   sample.identity.node_ordinal,
+                                   sample.identity.node_kind,
+                                   sample.identity.node_name};
+            auto [found, inserted] = frame_node_rows.try_emplace(
+                node_key,
+                GpuTimingNodeRow{
+                    frame.logical_frame, frame.graph_variant,
+                    sample.identity.view_index,
+                    sample.identity.node_ordinal,
+                    sample.identity.node_kind,
+                    sample.identity.node_name});
+            auto &node_row = found->second;
+            if (sample.identity.subrange ==
+                GpuTimingSubrange::barriers) {
+                node_row.barriers_ms = sample.ms;
+            } else {
+                node_row.body_ms = sample.ms;
+                node_row.body_supported = sample.supported;
+            }
+        }
+        GpuTimingNodeFrame node_frame{
+            frame.logical_frame, frame.graph_variant, {}};
+        node_frame.nodes.reserve(frame_node_rows.size());
+        for (auto &[_, row] : frame_node_rows) {
+            node_frame.nodes.push_back(std::move(row));
+        }
+        node_frames.push_back(std::move(node_frame));
+    }
+    published_node_average = averageGpuTimingNodeFrames(node_frames);
+    if (!node_frames.empty()) {
+        published_latest_nodes = node_frames.back().nodes;
     }
 
     struct LogicalFrameAggregate {
@@ -438,9 +564,6 @@ void RenderTiming::publishSnapshot() {
     if (!gpu_history.empty()) {
         const auto &latest = gpu_history.back();
         std::map<std::uint32_t, GpuTimingViewRow> rows;
-        using NodeKey = std::tuple<std::uint32_t, std::size_t, std::string,
-                                   std::string>;
-        std::map<NodeKey, GpuTimingNodeRow> node_rows;
         for (const auto &sample : latest.samples) {
             auto [found, inserted] = rows.try_emplace(
                 sample.identity.view_index,
@@ -455,29 +578,11 @@ void RenderTiming::publishSnapshot() {
             }
             row.total_ms += sample.ms;
 
-            const NodeKey node_key{sample.identity.view_index,
-                                   sample.identity.node_ordinal,
-                                   sample.identity.node_kind,
-                                   sample.identity.node_name};
-            auto [node_found, node_inserted] = node_rows.try_emplace(
-                node_key,
-                GpuTimingNodeRow{
-                    latest.logical_frame, latest.graph_variant,
-                    sample.identity.view_index, sample.identity.node_ordinal,
-                    sample.identity.node_kind, sample.identity.node_name});
-            auto &node_row = node_found->second;
-            if (sample.identity.subrange == GpuTimingSubrange::barriers) {
-                node_row.barriers_ms = sample.ms;
-            } else {
-                node_row.body_ms = sample.ms;
-                node_row.body_supported = sample.supported;
-            }
         }
         for (const auto &[_, row] : rows) {
             published_latest_views.push_back(row);
             logical_frame_total_sum_views_ms += row.total_ms;
         }
-        for (const auto &[_, row] : node_rows) published_latest_nodes.push_back(row);
     }
 
     nlohmann::json views = nlohmann::json::array();

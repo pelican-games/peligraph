@@ -1328,16 +1328,16 @@ frame/<logical_frame>/graph/<variant>/view/<view_index>/node/<ordinal>:<kind>:<n
 
 | 型 | 内容 |
 |---|---|
-| [`GpuTimingSubrange`](../../src/core/vkcore/rendertiming.hpp#L25) | `barriers` / `body` |
-| [`GpuTimingRangeIdentity`](../../src/core/vkcore/rendertiming.hpp#L32) | `logical_frame` + `graph_variant` + `view_index` |
-| [`GpuTimingSampleIdentity`](../../src/core/vkcore/rendertiming.hpp#L45) | 上記 + `node_ordinal` / `node_kind` / `node_name` / `subrange` |
-| [`GpuTimingViewRow`](../../src/core/vkcore/rendertiming.hpp#L55) / [`GpuTimingNodeRow`](../../src/core/vkcore/rendertiming.hpp#L65) | 集計出力の行 |
+| [`GpuTimingSubrange`](../../src/core/vkcore/rendertiming.hpp#L27) | `barriers` / `body` |
+| [`GpuTimingRangeIdentity`](../../src/core/vkcore/rendertiming.hpp#L34) | `logical_frame` + `graph_variant` + `view_index` |
+| [`GpuTimingSampleIdentity`](../../src/core/vkcore/rendertiming.hpp#L47) | 上記 + `node_ordinal` / `node_kind` / `node_name` / `subrange` |
+| [`GpuTimingViewRow`](../../src/core/vkcore/rendertiming.hpp#L57) / [`GpuTimingNodeRow`](../../src/core/vkcore/rendertiming.hpp#L67) | 集計出力の行 |
 
-履歴容量は [`gpu_timing_history_capacity = 120`](../../src/core/vkcore/rendertiming.hpp#L17) です。
+履歴容量は [`gpu_timing_history_capacity = 120`](../../src/core/vkcore/rendertiming.hpp#L18) です。
 
-[`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.hpp#L77) は `makeFrameGraphDebugLabel()` の結果へ `/barriers` または `/body` を足すだけです([`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.cpp#L75))。つまり **RenderDoc のラベルと GPU timing のサンプル名は同一命名規約** です。
+[`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.hpp#L111) は `makeFrameGraphDebugLabel()` の結果へ `/barriers` または `/body` を足すだけです([`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.cpp#L77))。つまり **RenderDoc のラベルと GPU timing のサンプル名は同一命名規約** です。
 
-帰属の規範は [`gpuTimingAttributionContractJson()`](../../src/core/vkcore/rendertiming.hpp#L78)(無効時は [`disabledGpuTimingStatusJson()`](../../src/core/vkcore/rendertiming.hpp#L79))が JSON として出します。`barriers` は「compile 済み incoming barrier」、`body` は「node 自身の image/resource transition と描画・dispatch」です。
+帰属の規範は [`gpuTimingAttributionContractJson()`](../../src/core/vkcore/rendertiming.hpp#L112)(無効時は [`disabledGpuTimingStatusJson()`](../../src/core/vkcore/rendertiming.hpp#L113))が JSON として出します。`barriers` は「compile 済み incoming barrier」、`body` は「node 自身の image/resource transition と描画・dispatch」です。
 
 fixture は [`test/fixtures/gpu_timing_attribution.json`](../../test/fixtures/gpu_timing_attribution.json)、テストは [`test/rendertiming_test.cpp`](../../test/rendertiming_test.cpp) と [`test/golden_timing_test.cpp`](../../test/golden_timing_test.cpp) です。
 

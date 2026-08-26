@@ -2534,6 +2534,134 @@ void requireNoReference(QGraphicsScene &value, std::string_view node,
 } // namespace
 
 TEST_CASE(
+    "WP351 Studio shows averaged GPU timing and explicit unavailable states on frame-plan nodes",
+    "[devstudio][frame-plan][gpu-timing][wp351][negative-contrast]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(
+        QByteArray::fromStdString(exampleFramePlan(true).dump()));
+    subtreeDepth(widget).setValue(64);
+    QApplication::processEvents();
+
+    auto &logical = scene(widget);
+    const auto node_names = sceneNodeNames(logical);
+    REQUIRE_FALSE(node_names.empty());
+    const std::string node_name = *node_names.begin();
+    const auto timing_item = [&]() -> QGraphicsSimpleTextItem * {
+        for (QGraphicsItem *item : logical.items()) {
+            if (item->data(FramePlanGpuTimingNodeNameRole)
+                    .toString()
+                    .toStdString() ==
+                node_name) {
+                return dynamic_cast<QGraphicsSimpleTextItem *>(item);
+            }
+        }
+        return nullptr;
+    };
+    REQUIRE(timing_item() != nullptr);
+    REQUIRE(timing_item()->parentItem() != nullptr);
+    REQUIRE(timing_item()->parentItem()
+                ->data(FramePlanItemKindRole)
+                .toString() == QLatin1String{FramePlanNodeItem});
+    REQUIRE_FALSE(
+        timing_item()->data(FramePlanItemKindRole).isValid());
+    REQUIRE(timing_item()->data(FramePlanGpuTimingStateRole).toString() !=
+            QStringLiteral("measured"));
+    REQUIRE_FALSE(
+        timing_item()->data(FramePlanGpuTimingBodyMsRole).isValid());
+
+    const auto response = [&](bool enabled, bool supported,
+                              std::string reason, Json nodes,
+                              std::size_t frame_count = 3) {
+        return QByteArray::fromStdString(Json{
+            {"schema", "pelican.gpu_timing_node_averages"},
+            {"version", 1},
+            {"enabled", enabled},
+            {"supported", supported},
+            {"reason", std::move(reason)},
+            {"window_size", 30},
+            {"frame_count", frame_count},
+            {"nodes", std::move(nodes)},
+        }.dump());
+    };
+
+    // Negative name-join control: a valid timing row for a different node
+    // must never turn into a numeric zero on the visible node.
+    widget.receiveGpuTimingResult(response(
+        true, true, "enabled",
+        Json::array({Json{
+            {"logical_frame", 8}, {"graph_variant", "flat"},
+            {"view_index", 0}, {"node_ordinal", 99},
+            {"node_kind", "render"}, {"node_name", "not_in_plan"},
+            {"barriers_ms", 0.25}, {"body_ms", 1.5},
+            {"body_supported", true}, {"sample_count", 3},
+        }})));
+    REQUIRE(timing_item()->data(FramePlanGpuTimingStateRole).toString() ==
+            QStringLiteral("node_not_timed"));
+    REQUIRE(timing_item()->data(FramePlanReasonRole).toString() ==
+            QStringLiteral("node_not_timed"));
+    REQUIRE_FALSE(
+        timing_item()->data(FramePlanGpuTimingBodyMsRole).isValid());
+    REQUIRE_FALSE(timing_item()->text().contains(QStringLiteral("0.000")));
+
+    widget.receiveGpuTimingResult(response(
+        true, true, "enabled",
+        Json::array({Json{
+            {"logical_frame", 9}, {"graph_variant", "flat"},
+            {"view_index", 0}, {"node_ordinal", 2},
+            {"node_kind", "render"}, {"node_name", node_name},
+            {"barriers_ms", 0.25}, {"body_ms", 1.5},
+            {"body_supported", true}, {"sample_count", 3},
+        }})));
+    REQUIRE(timing_item()->data(FramePlanGpuTimingStateRole).toString() ==
+            QStringLiteral("measured"));
+    REQUIRE(timing_item()->data(FramePlanGpuTimingBodyMsRole).toDouble() ==
+            1.5);
+    REQUIRE(
+        timing_item()->data(FramePlanGpuTimingBarriersMsRole).toDouble() ==
+        0.25);
+    REQUIRE(timing_item()->data(FramePlanGpuTimingSampleCountRole)
+                .toULongLong() == 3);
+    REQUIRE(timing_item()->data(FramePlanGpuTimingFrameCountRole)
+                .toULongLong() == 3);
+    REQUIRE(timing_item()->data(FramePlanGpuTimingWindowSizeRole)
+                .toULongLong() == 30);
+    REQUIRE(timing_item()->text().contains(QStringLiteral("body 1.500")));
+    REQUIRE(timing_item()->text().contains(
+        QStringLiteral("barriers 0.250")));
+    REQUIRE(timing_item()->text().contains(QStringLiteral("3/30f")));
+
+    widget.receiveGpuTimingResult(response(
+        false, false, "feature_not_enabled", Json::array(), 0));
+    REQUIRE(timing_item()->data(FramePlanGpuTimingStateRole).toString() ==
+            QStringLiteral("unavailable"));
+    REQUIRE(timing_item()->data(FramePlanReasonRole).toString() ==
+            QStringLiteral("feature_not_enabled"));
+    REQUIRE(timing_item()->text().contains(
+        QStringLiteral("feature_not_enabled")));
+    REQUIRE_FALSE(
+        timing_item()->data(FramePlanGpuTimingBodyMsRole).isValid());
+    REQUIRE_FALSE(timing_item()->text().contains(QStringLiteral("0.000")));
+
+    widget.receiveGpuTimingResult(response(
+        true, false, "graphics_queue_timestamps_unsupported",
+        Json::array(), 0));
+    REQUIRE(timing_item()->data(FramePlanReasonRole).toString() ==
+            QStringLiteral("graphics_queue_timestamps_unsupported"));
+    REQUIRE(timing_item()->text().contains(
+        QStringLiteral("graphics_queue_timestamps_unsupported")));
+
+    auto *poll = widget.findChild<QTimer *>(
+        QStringLiteral("pelican.gpuTimingPollTimer"));
+    REQUIRE(poll != nullptr);
+    REQUIRE(poll->interval() == 1000);
+    REQUIRE(widget.property("pelicanGpuTimingPollIntervalMs").toInt() ==
+            1000);
+    REQUIRE_FALSE(poll->isActive());
+}
+
+TEST_CASE(
     "WP343 authored region replaces its real nodes after the production wire path",
     "[devstudio][frame-plan][grouping][region][wp343][negative-contrast]") {
     (void)application();

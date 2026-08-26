@@ -6,6 +6,7 @@
 #include <QPointF>
 
 #include <map>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -68,6 +69,13 @@ inline constexpr int FramePlanConvexHullMissingMembersRole =
     Qt::UserRole + 3100;
 inline constexpr int FramePlanConvexHullImpracticalRole =
     Qt::UserRole + 3101;
+inline constexpr int FramePlanGpuTimingStateRole = Qt::UserRole + 3102;
+inline constexpr int FramePlanGpuTimingBodyMsRole = Qt::UserRole + 3103;
+inline constexpr int FramePlanGpuTimingBarriersMsRole = Qt::UserRole + 3104;
+inline constexpr int FramePlanGpuTimingSampleCountRole = Qt::UserRole + 3105;
+inline constexpr int FramePlanGpuTimingFrameCountRole = Qt::UserRole + 3106;
+inline constexpr int FramePlanGpuTimingWindowSizeRole = Qt::UserRole + 3107;
+inline constexpr int FramePlanGpuTimingNodeNameRole = Qt::UserRole + 3108;
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";
@@ -90,6 +98,26 @@ inline constexpr auto FramePlanParallelOverlayItem = "parallel_overlay";
 inline constexpr auto FramePlanPhysicalEmptyItem = "physical_empty";
 inline constexpr auto FramePlanPhysicalSelectionItem = "physical_selection";
 inline constexpr auto FramePlanLogicalUnavailableItem = "logical_unavailable";
+struct FramePlanGpuTimingRow {
+    std::uint32_t view_index = 0;
+    std::size_t node_ordinal = 0;
+    std::string node_kind;
+    std::string node_name;
+    double barriers_ms = 0.0;
+    double body_ms = 0.0;
+    bool body_supported = true;
+    std::size_t sample_count = 0;
+};
+
+struct FramePlanGpuTimingSnapshot {
+    bool received = false;
+    bool enabled = false;
+    bool supported = false;
+    std::string reason = "waiting_for_rpc";
+    std::size_t window_size = 0;
+    std::size_t frame_count = 0;
+    std::vector<FramePlanGpuTimingRow> nodes;
+};
 
 class FramePlanGraphicsScene final : public QGraphicsScene {
   public:
@@ -103,6 +131,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
                   const std::optional<FramePlanNodeKey> &selected_target,
                   int depth);
     void resetGraph();
+    void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
 
     // These are the state-changing operations used by the scene's context
     // menu, double-click, breadcrumb, and Escape handlers. Group ids are read
@@ -155,6 +184,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         session_node_positions_;
     std::optional<FramePlanModel> current_model_;
     std::optional<FramePlanNodeKey> current_target_;
+    FramePlanGpuTimingSnapshot gpu_timing_;
     int current_depth_ = 1;
     using GroupStateKey = std::pair<std::string, std::string>;
     std::set<GroupStateKey> collapsed_groups_;

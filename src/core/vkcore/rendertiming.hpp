@@ -6,6 +6,7 @@
 #include <deque>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -15,6 +16,7 @@
 namespace Pelican {
 
 inline constexpr std::size_t gpu_timing_history_capacity = 120;
+inline constexpr std::size_t gpu_timing_node_average_window = 30;
 
 struct CpuFrameDurations {
     double update_ms = 0.0;
@@ -74,6 +76,38 @@ struct GpuTimingNodeRow {
     bool body_supported = true;
 };
 
+struct GpuTimingNodeFrame {
+    std::uint64_t logical_frame = 0;
+    std::string graph_variant;
+    std::vector<GpuTimingNodeRow> nodes;
+};
+
+struct GpuTimingNodeAverageRow {
+    std::uint64_t logical_frame = 0;
+    std::string graph_variant;
+    std::uint32_t view_index = 0;
+    std::size_t node_ordinal = 0;
+    std::string node_kind;
+    std::string node_name;
+    double barriers_ms = 0.0;
+    double body_ms = 0.0;
+    bool body_supported = true;
+    std::size_t sample_count = 0;
+};
+
+struct GpuTimingNodeAverageSnapshot {
+    std::size_t frame_count = 0;
+    std::vector<GpuTimingNodeAverageRow> nodes;
+};
+
+GpuTimingNodeAverageSnapshot averageGpuTimingNodeFrames(
+    std::span<const GpuTimingNodeFrame> frames,
+    std::size_t window = gpu_timing_node_average_window);
+nlohmann::json gpuTimingNodeAverageStatusJson(
+    const GpuTimingNodeAverageSnapshot &snapshot, bool enabled,
+    bool supported, std::string_view reason);
+nlohmann::json disabledGpuTimingNodeAverageStatusJson();
+
 std::string makeGpuTimingSampleLabel(const GpuTimingSampleIdentity &identity);
 nlohmann::json gpuTimingAttributionContractJson();
 nlohmann::json disabledGpuTimingStatusJson();
@@ -129,6 +163,7 @@ DECLARE_MODULE(RenderTiming) {
     nlohmann::json published_status;
     std::vector<GpuTimingViewRow> published_latest_views;
     std::vector<GpuTimingNodeRow> published_latest_nodes;
+    GpuTimingNodeAverageSnapshot published_node_average;
 
     std::uint64_t cpu_frame_count = 0;
     double cpu_update_ms_total = 0.0;
@@ -169,6 +204,11 @@ DECLARE_MODULE(RenderTiming) {
     void flush();
 
     nlohmann::json statusJson() const { return published_status; }
+    nlohmann::json nodeAverageJson() const {
+        return gpuTimingNodeAverageStatusJson(
+            published_node_average, true, gpu_timestamps_supported,
+            supportReason());
+    }
     bool timestampsSupported() const noexcept { return gpu_timestamps_supported; }
     std::string_view supportReason() const noexcept {
         return gpu_timestamps_supported ? "enabled"

@@ -12320,6 +12320,20 @@ void GoldenHarness::runGpuTimingRing() {
     REQUIRE(status.at("query_pool").at("range_slots") == 1);
     REQUIRE(status.at("query_pool").at("pending_ranges") == 0);
 
+    const auto node_average = timing.nodeAverageJson();
+    REQUIRE(node_average.at("enabled").get<bool>());
+    REQUIRE(node_average.at("supported").get<bool>());
+    REQUIRE(node_average.at("window_size") ==
+            gpu_timing_node_average_window);
+    REQUIRE(node_average.at("frame_count") ==
+            gpu_timing_node_average_window);
+    REQUIRE(node_average.at("nodes").size() == plan.size());
+    REQUIRE_FALSE(node_average.contains("logical_frame_history"));
+    for (const auto &node : node_average.at("nodes")) {
+        REQUIRE(node.at("sample_count") ==
+                gpu_timing_node_average_window);
+    }
+
     GET_MODULE(VulkanManageCore).waitIdle();
     std::filesystem::remove_all(root);
 }

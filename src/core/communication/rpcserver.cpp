@@ -1293,6 +1293,15 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         };
     });
 
+    server.setHandler("get_gpu_timing", [](const nlohmann::json &params) {
+        requireObjectParams(params, "get_gpu_timing");
+        const auto *render_timing =
+            FastModuleContainer::tryGet<RenderTiming>();
+        return render_timing != nullptr
+                   ? render_timing->nodeAverageJson()
+                   : disabledGpuTimingNodeAverageStatusJson();
+    });
+
     configureEditorRpcHandlers(
         server, editor_rpc,
         EditorRpcHandlerHooks{
