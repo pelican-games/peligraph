@@ -253,6 +253,149 @@ struct ParsedRenderTargetResolvers {
     }
 };
 
+nlohmann::json wp352FiveColorConfig() {
+    return nlohmann::json::parse(R"json({
+      "render_targets": [
+        {"name":"gbuffer_albedo","extent_scale":1.0,"format":"B8G8R8A8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_normal","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_material","extent_scale":1.0,"format":"R8G8B8A8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_worldpos","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"g_emissive","extent_scale":1.0,"format":"R8G8B8A8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"offscreen_depth","extent_scale":1.0,"format":"D32_SFLOAT","usage":["DEPTH_STENCIL_ATTACHMENT"]}
+      ],
+      "rendering_passes": [{
+        "name": "main",
+        "passes": [{
+          "name": "gbuffer_pass",
+          "type": "material",
+          "output": {
+            "color": [
+              "gbuffer_albedo",
+              "gbuffer_normal",
+              "gbuffer_material",
+              "gbuffer_worldpos",
+              "g_emissive"
+            ],
+            "depth": "offscreen_depth"
+          }
+        }]
+      }]
+    })json");
+}
+
+std::vector<FrameGraphNodeDefinition> wp352NodesFromBothPlannerInputs(
+    const nlohmann::json &config) {
+    std::vector<FrameGraphNodeDefinition> result;
+
+    const auto raw_graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    if (raw_graphs.size() != 1 ||
+        raw_graphs.front().nodes.size() != 1) {
+        throw std::runtime_error(
+            "WP352 raw planner fixture must contain one node");
+    }
+    result.push_back(raw_graphs.front().nodes.front());
+
+    const ParsedRenderTargetResolvers resolvers{config};
+    const auto definitions =
+        parseRenderingPassDefinitionsFromConfigJson(
+            config, resolvers.nameResolver(),
+            resolvers.metadataResolver());
+    if (definitions.size() != 1) {
+        throw std::runtime_error(
+            "WP352 typed planner fixture must contain one pass set");
+    }
+    const auto typed_graph =
+        makeFrameGraphDefinition(definitions.front());
+    if (typed_graph.nodes.size() != 1) {
+        throw std::runtime_error(
+            "WP352 typed planner fixture must contain one node");
+    }
+    result.push_back(typed_graph.nodes.front());
+    return result;
+}
+
+std::string loadEngineJsonForWp352(std::string_view reference) {
+    constexpr std::string_view prefix = "engine://";
+    if (!reference.starts_with(prefix)) {
+        throw std::runtime_error(
+            "WP352 shipping config expected engine reference: " +
+            std::string{reference});
+    }
+    return engineResourceOrThrow(
+        reference.substr(prefix.size()));
+}
+
+void materializeAttachmentOperations(
+    nlohmann::json &encoded,
+    const std::string &load_op,
+    const std::string &store_op) {
+    if (encoded.is_null()) return;
+    if (encoded.is_array()) {
+        for (auto &entry : encoded) {
+            materializeAttachmentOperations(
+                entry, load_op, store_op);
+        }
+        return;
+    }
+    if (encoded.is_string()) {
+        const auto target = encoded.get<std::string>();
+        encoded = {
+            {"target", target},
+            {"load_op", load_op},
+            {"store_op", store_op},
+        };
+        return;
+    }
+    if (!encoded.is_object()) {
+        throw std::runtime_error(
+            "WP352 shipping output is not an attachment");
+    }
+    if (!encoded.contains("load_op")) {
+        encoded["load_op"] = load_op;
+    }
+    if (!encoded.contains("store_op")) {
+        encoded["store_op"] = store_op;
+    }
+}
+
+nlohmann::json materializeShippingAttachmentOperations(
+    nlohmann::json config) {
+    for (auto &pass_set : config.at("rendering_passes")) {
+        for (auto &pass : pass_set.at("passes")) {
+            if (!pass.contains("output")) continue;
+            auto &output = pass.at("output");
+            const auto type =
+                pass.value("type", std::string{});
+            const auto color_load =
+                pass.value(
+                    "color_load_op",
+                    type == "ui" || type == "imgui"
+                        ? std::string{"Load"}
+                        : std::string{"Clear"});
+            const auto color_store =
+                pass.value(
+                    "color_store_op",
+                    std::string{"Store"});
+            const auto depth_load =
+                pass.value(
+                    "depth_load_op",
+                    std::string{"Clear"});
+            const auto depth_store =
+                pass.value(
+                    "depth_store_op",
+                    std::string{"DontCare"});
+            materializeAttachmentOperations(
+                output.at("color"),
+                color_load, color_store);
+            materializeAttachmentOperations(
+                output.at("depth"),
+                depth_load, depth_store);
+        }
+    }
+    return config;
+}
+
 } // namespace
 
 TEST_CASE("frame planner preserves existing rendering config order", "[frameplanner]") {
@@ -1437,6 +1580,244 @@ TEST_CASE(
     REQUIRE_THROWS(
         parseFrameGraphDefinitionFromJson(
             malformed));
+}
+
+TEST_CASE(
+    "WP352 resolves attachment operations per output in both planner inputs",
+    "[frameplanner][attachment-operations][wp352]") {
+    const auto require_color_state = [](
+        const FrameGraphNodeDefinition &node,
+        const std::vector<std::size_t> &loaded_indices) {
+        REQUIRE(node.attachments.size() == 6);
+        REQUIRE(node.reads.size() == loaded_indices.size());
+        REQUIRE(
+            node.read_footprints.size() ==
+            loaded_indices.size());
+        for (std::size_t index = 0; index < 5; ++index) {
+            const auto &attachment =
+                node.attachments.at(index);
+            REQUIRE(
+                attachment.aspect ==
+                FrameGraphAttachmentAspect::color);
+            const bool loaded =
+                std::find(
+                    loaded_indices.begin(),
+                    loaded_indices.end(), index) !=
+                loaded_indices.end();
+            CHECK(
+                attachment.load_op ==
+                (loaded
+                     ? FrameGraphAttachmentLoadOp::load
+                     : FrameGraphAttachmentLoadOp::clear));
+            CHECK(
+                attachment.store_op ==
+                (loaded
+                     ? FrameGraphAttachmentStoreOp::discard
+                     : FrameGraphAttachmentStoreOp::store));
+            CHECK(
+                (std::find(
+                     node.reads.begin(), node.reads.end(),
+                     attachment.resource) != node.reads.end()) ==
+                loaded);
+            const auto footprint = std::find_if(
+                node.read_footprints.begin(),
+                node.read_footprints.end(),
+                [&](const auto &candidate) {
+                    return candidate.resource ==
+                           attachment.resource;
+                });
+            CHECK(
+                (footprint != node.read_footprints.end()) ==
+                loaded);
+            if (loaded) {
+                CHECK(
+                    footprint->footprint.kind ==
+                    LogicalReadFootprintKind::same_pixel);
+            }
+        }
+    };
+
+    // No authored operation: the historical color defaults are
+    // Clear/Store, so no color output is inferred as a read.
+    const auto defaults = wp352FiveColorConfig();
+    const auto default_nodes =
+        wp352NodesFromBothPlannerInputs(defaults);
+    REQUIRE(default_nodes.size() == 2);
+    for (const auto &node : default_nodes) {
+        require_color_state(node, {});
+    }
+
+    // Pass-wide Load is the compatibility control: all five color outputs
+    // become same-pixel reads, preserving the pre-WP352 behavior.
+    auto pass_wide = defaults;
+    auto &pass_wide_pass =
+        pass_wide["rendering_passes"][0]["passes"][0];
+    pass_wide_pass["color_load_op"] = "Load";
+    pass_wide_pass["color_store_op"] = "DontCare";
+    const auto pass_wide_nodes =
+        wp352NodesFromBothPlannerInputs(pass_wide);
+    REQUIRE(pass_wide_nodes.size() == 2);
+    for (const auto &node : pass_wide_nodes) {
+        require_color_state(node, {0, 1, 2, 3, 4});
+    }
+
+    // The attachment contradicts the pass-wide Clear/Store values. Only its
+    // target becomes a read and receives same_pixel; the other four do not.
+    auto per_attachment = defaults;
+    auto &attachment_pass =
+        per_attachment["rendering_passes"][0]["passes"][0];
+    attachment_pass["color_load_op"] = "Clear";
+    attachment_pass["color_store_op"] = "Store";
+    attachment_pass["output"]["color"][0] = {
+        {"target", "gbuffer_albedo"},
+        {"load_op", "Load"},
+        {"store_op", "DontCare"},
+    };
+    const auto attachment_nodes =
+        wp352NodesFromBothPlannerInputs(per_attachment);
+    REQUIRE(attachment_nodes.size() == 2);
+    for (const auto &node : attachment_nodes) {
+        require_color_state(node, {0});
+    }
+
+    const auto require_depth_state = [](
+        const FrameGraphNodeDefinition &node,
+        bool loaded) {
+        REQUIRE(node.attachments.size() == 6);
+        const auto &depth = node.attachments.back();
+        REQUIRE(
+            depth.aspect ==
+            FrameGraphAttachmentAspect::depth);
+        CHECK(
+            depth.load_op ==
+            (loaded
+                 ? FrameGraphAttachmentLoadOp::load
+                 : FrameGraphAttachmentLoadOp::clear));
+        CHECK(
+            depth.store_op ==
+            (loaded
+                 ? FrameGraphAttachmentStoreOp::store
+                 : FrameGraphAttachmentStoreOp::discard));
+        CHECK(node.reads.size() == (loaded ? 1 : 0));
+        CHECK(
+            (std::find(
+                 node.reads.begin(), node.reads.end(),
+                 depth.resource) != node.reads.end()) ==
+            loaded);
+        CHECK(
+            node.read_footprints.size() ==
+            (loaded ? 1 : 0));
+        if (loaded) {
+            CHECK(
+                node.read_footprints.front().resource ==
+                depth.resource);
+            CHECK(
+                node.read_footprints.front().footprint.kind ==
+                LogicalReadFootprintKind::same_pixel);
+        }
+    };
+
+    // Depth exercises the same default, pass-wide, and conflicting
+    // attachment precedence without relying on the color assertions above.
+    for (const auto &node : default_nodes) {
+        require_depth_state(node, false);
+    }
+    auto depth_pass_wide = defaults;
+    auto &depth_pass =
+        depth_pass_wide["rendering_passes"][0]["passes"][0];
+    depth_pass["depth_load_op"] = "Load";
+    depth_pass["depth_store_op"] = "Store";
+    for (const auto &node :
+         wp352NodesFromBothPlannerInputs(depth_pass_wide)) {
+        require_depth_state(node, true);
+    }
+    auto depth_attachment = defaults;
+    auto &depth_attachment_pass =
+        depth_attachment["rendering_passes"][0]["passes"][0];
+    depth_attachment_pass["depth_load_op"] = "Clear";
+    depth_attachment_pass["depth_store_op"] = "DontCare";
+    depth_attachment_pass["output"]["depth"] = {
+        {"target", "offscreen_depth"},
+        {"load_op", "Load"},
+        {"store_op", "Store"},
+    };
+    for (const auto &node :
+         wp352NodesFromBothPlannerInputs(depth_attachment)) {
+        require_depth_state(node, true);
+    }
+
+    auto unknown_attachment_field = defaults;
+    unknown_attachment_field["rendering_passes"][0]
+                            ["passes"][0]
+                            ["output"]["color"][0] = {
+        {"target", "gbuffer_albedo"},
+        {"clear", nlohmann::json::array({0, 0, 0, 1})},
+    };
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphDefinitionsFromConfigJson(
+            unknown_attachment_field),
+        Catch::Matchers::ContainsSubstring(
+            "unknown field 'clear'"));
+}
+
+TEST_CASE(
+    "WP352 keeps all four shipping project frame plans unchanged",
+    "[frameplanner][attachment-operations][wp352][shipping]") {
+    const std::array shipping_configs{
+        "projects/animgraph_demo/passes/main.json",
+        "projects/example/passes/main_rendering_config.json",
+        "projects/sprite_demo/passes/main.json",
+        "projects/vrm_xr_demo/passes/main.json",
+    };
+    const auto dependencies =
+        RenderFeatureComposeDependencies{
+            .load_feature_json = loadEngineJsonForWp352,
+            .runtime_shader_compiler_enabled = true,
+            .load_pipeline_json = loadEngineJsonForWp352,
+        };
+
+    std::size_t compared_projects = 0;
+    std::size_t compared_plans = 0;
+    for (const auto *relative_path : shipping_configs) {
+        INFO(relative_path);
+        const auto composed = composeRenderFeatureConfig(
+            readJson(sourceRoot() / relative_path),
+            dependencies);
+        const auto resolved =
+            resolveRenderTargetFormatClassesV2(
+                composed.config,
+                vk::Format::eB8G8R8A8Srgb,
+                vk::Extent2D{160, 90}, false);
+        const auto before_graphs =
+            parseFrameGraphDefinitionsFromConfigJson(
+                resolved);
+        const auto after_graphs =
+            parseFrameGraphDefinitionsFromConfigJson(
+                materializeShippingAttachmentOperations(
+                    resolved));
+        REQUIRE_FALSE(before_graphs.empty());
+        REQUIRE(before_graphs.size() == after_graphs.size());
+        for (std::size_t graph_index = 0;
+             graph_index < before_graphs.size();
+             ++graph_index) {
+            const auto before = framePlanToJson(
+                planFrameGraph(before_graphs[graph_index]));
+            const auto after = framePlanToJson(
+                planFrameGraph(after_graphs[graph_index]));
+
+            // nodes includes each node's reads/writes; barriers and levels
+            // cover the data/control dependency topology. The final equality
+            // intentionally checks every other serialized plan field too.
+            REQUIRE(before.at("nodes") == after.at("nodes"));
+            REQUIRE(before.at("barriers") == after.at("barriers"));
+            REQUIRE(before.at("levels") == after.at("levels"));
+            REQUIRE(before == after);
+            ++compared_plans;
+        }
+        ++compared_projects;
+    }
+    REQUIRE(compared_projects == 4);
+    REQUIRE(compared_plans == 4);
 }
 
 TEST_CASE(

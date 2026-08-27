@@ -53,9 +53,16 @@ void parsePassAttachmentOptionsFromJson(PassDefinition &pass_def, const nlohmann
                 output_names.begin(),
                 output_names.end(),
                 [&](const auto &name) {
-                    return name.is_string() &&
-                           name.get_ref<
-                               const std::string &>() ==
+                    if (name.is_string()) {
+                        return name.get_ref<
+                                   const std::string &>() ==
+                               field.key();
+                    }
+                    return name.is_object() &&
+                           name.contains("target") &&
+                           name.at("target").is_string() &&
+                           name.at("target")
+                                   .get_ref<const std::string &>() ==
                                field.key();
                 });
             if (found == output_names.end()) {

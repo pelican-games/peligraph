@@ -81,22 +81,36 @@ inline constexpr bool isSwapchainRenderTarget(GlobalRenderTargetId rt_id) {
 struct RasterAttachmentView {
     GlobalRenderTargetId target = noRenderTargetId();
     std::optional<ImageSubresourceRange> subresource;
+    std::optional<vk::AttachmentLoadOp> load_op;
+    std::optional<vk::AttachmentStoreOp> store_op;
 
     RasterAttachmentView() = default;
     RasterAttachmentView(GlobalRenderTargetId target_id)
         : target{target_id} {}
     RasterAttachmentView(
         GlobalRenderTargetId target_id,
-        std::optional<ImageSubresourceRange> range)
+        std::optional<ImageSubresourceRange> range,
+        std::optional<vk::AttachmentLoadOp> attachment_load_op =
+            std::nullopt,
+        std::optional<vk::AttachmentStoreOp> attachment_store_op =
+            std::nullopt)
         : target{target_id},
-          subresource{std::move(range)} {}
+          subresource{std::move(range)},
+          load_op{attachment_load_op},
+          store_op{attachment_store_op} {}
 
     operator GlobalRenderTargetId() const noexcept {
         return target;
     }
 
     bool operator==(
-        const RasterAttachmentView &) const = default;
+        const RasterAttachmentView &other) const {
+        // Attachment operations describe a pass use, not the image view's
+        // identity. Physical scopes intentionally coalesce the same target
+        // and subresource even when successive passes use different ops.
+        return target == other.target &&
+               subresource == other.subresource;
+    }
     bool operator<(
         const RasterAttachmentView &other) const {
         if (target.value != other.target.value) {
@@ -348,6 +362,20 @@ struct PassAttachmentOperations {
         const PassAttachmentOperations &) const = default;
 };
 
+inline PassAttachmentOperations resolveAttachmentOperations(
+    std::optional<vk::AttachmentLoadOp> attachment_load_op,
+    std::optional<vk::AttachmentStoreOp> attachment_store_op,
+    std::optional<vk::AttachmentLoadOp> pass_load_op,
+    std::optional<vk::AttachmentStoreOp> pass_store_op,
+    PassAttachmentOperations defaults) {
+    return {
+        attachment_load_op.value_or(
+            pass_load_op.value_or(defaults.load_op)),
+        attachment_store_op.value_or(
+            pass_store_op.value_or(defaults.store_op)),
+    };
+}
+
 struct PhysicalColorClearValue {
     MaterialOutputNumericClass numeric_class =
         MaterialOutputNumericClass::floating;
@@ -455,20 +483,31 @@ struct PassDefinition {
     PassAttachmentOperations colorAttachmentOperations(
         std::size_t index) const {
         if (physical_color_attachment_operations.empty()) {
-            return {
+            const auto &attachment = output_color.at(index);
+            return resolveAttachmentOperations(
+                attachment.load_op,
+                attachment.store_op,
                 color_load_op,
                 color_store_op,
-            };
+                PassAttachmentOperations{
+                    vk::AttachmentLoadOp::eClear,
+                    vk::AttachmentStoreOp::eStore,
+                });
         }
         return physical_color_attachment_operations.at(index);
     }
 
     PassAttachmentOperations depthAttachmentOperations() const {
         return physical_depth_attachment_operations.value_or(
-            PassAttachmentOperations{
+            resolveAttachmentOperations(
+                output_depth.load_op,
+                output_depth.store_op,
                 depth_load_op,
                 depth_store_op,
-            });
+                PassAttachmentOperations{
+                    vk::AttachmentLoadOp::eClear,
+                    vk::AttachmentStoreOp::eDontCare,
+                }));
     }
 
     PhysicalColorClearValue colorClearValue(

@@ -40,13 +40,17 @@ RasterAttachmentView parseRasterAttachment(
     std::string_view role) {
     std::string name;
     std::optional<ImageSubresourceRange> subresource;
+    std::optional<vk::AttachmentLoadOp> load_op;
+    std::optional<vk::AttachmentStoreOp> store_op;
     if (encoded.is_string()) {
         name = encoded.get<std::string>();
     } else if (encoded.is_object()) {
         for (auto field = encoded.begin();
              field != encoded.end(); ++field) {
             if (field.key() != "target" &&
-                field.key() != "subresource") {
+                field.key() != "subresource" &&
+                field.key() != "load_op" &&
+                field.key() != "store_op") {
                 throw std::runtime_error(
                     std::string{role} +
                     " output has unknown field '" +
@@ -65,6 +69,18 @@ RasterAttachmentView parseRasterAttachment(
         validateRasterSubresource(
             subresource,
             std::string{role} + " output");
+        if (encoded.contains("load_op")) {
+            load_op = stringToLoadOp(
+                parseStringField(
+                    encoded, "load_op",
+                    std::string{role} + " output"));
+        }
+        if (encoded.contains("store_op")) {
+            store_op = stringToStoreOp(
+                parseStringField(
+                    encoded, "store_op",
+                    std::string{role} + " output"));
+        }
     } else {
         throw std::runtime_error(
             std::string{role} +
@@ -78,13 +94,15 @@ RasterAttachmentView parseRasterAttachment(
                 "Swapchain output cannot select a subresource");
         }
         return RasterAttachmentView{
-            swapchainRenderTargetId()};
+            swapchainRenderTargetId(), std::nullopt,
+            load_op, store_op};
     }
     return RasterAttachmentView{
         resolveRenderTarget(
             rt_resolver, name,
             std::string{role}),
-        std::move(subresource)};
+        std::move(subresource),
+        load_op, store_op};
 }
 
 } // namespace

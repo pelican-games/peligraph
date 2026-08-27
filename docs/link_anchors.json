@@ -1165,6 +1165,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`transitiveClosure()`": "std::vector<std::vector<bool>> transitiveClosure(std::vector<std::vector<bool>> reachability) {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`validateWritesAreOrdered()`": "void validateWritesAreOrdered(const FrameGraphDefinition &definition,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`validateWritesAreOrdered()`|#1": "void validateWritesAreOrdered(const FrameGraphDefinition &definition,",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.cpp|`添付ごとの実効 load_op`": "pass.colorAttachmentOperations(color_index);",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/frameplanner.hpp|`FrameGraphDefinition`": "struct FrameGraphDefinition {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|`compileLogicalFrameGraphShadow()`": "CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|footprint の既定選択": "const auto declared =",

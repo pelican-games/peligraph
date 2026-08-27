@@ -2051,6 +2051,92 @@ TEST_CASE(
             "Swapchain output cannot select"));
 }
 
+TEST_CASE(
+    "WP352 output attachments accept the pass operation spellings without widening their keys",
+    "[renderingpass][attachment-operations][wp352]") {
+    const auto resolver =
+        RenderTargetNameResolver{
+            [](const std::string &name) {
+                if (name == "color") {
+                    return GlobalRenderTargetId{3};
+                }
+                if (name == "depth") {
+                    return GlobalRenderTargetId{4};
+                }
+                return noRenderTargetId();
+            }};
+    const std::vector<std::pair<
+        std::string, vk::AttachmentLoadOp>> load_cases{
+        {"Clear", vk::AttachmentLoadOp::eClear},
+        {"clear", vk::AttachmentLoadOp::eClear},
+        {"Load", vk::AttachmentLoadOp::eLoad},
+        {"load", vk::AttachmentLoadOp::eLoad},
+        {"DontCare", vk::AttachmentLoadOp::eDontCare},
+        {"dont_care", vk::AttachmentLoadOp::eDontCare},
+        {"dontCare", vk::AttachmentLoadOp::eDontCare},
+    };
+    for (const auto &[spelling, expected] : load_cases) {
+        CAPTURE(spelling);
+        const auto color = parseColorOutputTargetsFromJson(
+            resolver,
+            {{{"target", "color"},
+              {"load_op", spelling}}});
+        REQUIRE(color.size() == 1);
+        REQUIRE(color.front().load_op == expected);
+        const auto depth = parseDepthOutputTargetFromJson(
+            resolver,
+            {{"target", "depth"},
+             {"load_op", spelling}});
+        REQUIRE(depth.load_op == expected);
+    }
+
+    const std::vector<std::pair<
+        std::string, vk::AttachmentStoreOp>> store_cases{
+        {"Store", vk::AttachmentStoreOp::eStore},
+        {"store", vk::AttachmentStoreOp::eStore},
+        {"DontCare", vk::AttachmentStoreOp::eDontCare},
+        {"dont_care", vk::AttachmentStoreOp::eDontCare},
+        {"dontCare", vk::AttachmentStoreOp::eDontCare},
+    };
+    for (const auto &[spelling, expected] : store_cases) {
+        CAPTURE(spelling);
+        const auto color = parseColorOutputTargetsFromJson(
+            resolver,
+            {{{"target", "color"},
+              {"store_op", spelling}}});
+        REQUIRE(color.size() == 1);
+        REQUIRE(color.front().store_op == expected);
+        const auto depth = parseDepthOutputTargetFromJson(
+            resolver,
+            {{"target", "depth"},
+             {"store_op", spelling}});
+        REQUIRE(depth.store_op == expected);
+    }
+
+    REQUIRE_THROWS_WITH(
+        parseColorOutputTargetsFromJson(
+            resolver,
+            {{{"target", "color"},
+              {"clear", nlohmann::json::array(
+                            {0, 0, 0, 1})}}}),
+        Catch::Matchers::ContainsSubstring(
+            "unknown field 'clear'"));
+    REQUIRE_THROWS_WITH(
+        parseDepthOutputTargetFromJson(
+            resolver,
+            {{"target", "depth"},
+             {"unknown", true}}),
+        Catch::Matchers::ContainsSubstring(
+            "unknown field 'unknown'"));
+    REQUIRE_THROWS_WITH(
+        parseColorOutputTargetsFromJson(
+            resolver,
+            {{{"target", "color"},
+              {"load_op", "preserve_somehow"}}}),
+        Catch::Matchers::ContainsSubstring(
+            "Unknown attachment load op"));
+}
+
 TEST_CASE("rendering pass target JSON parser rejects malformed pass outputs", "[renderingpass]") {
     const auto resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
 
@@ -2771,7 +2857,9 @@ TEST_CASE(
         {"output",
          {{"color",
            nlohmann::json::array(
-               {"albedo", "object_id"})},
+               {"albedo",
+                {{"target", "object_id"},
+                 {"load_op", "Load"}}})},
           {"depth", "depth"}}},
         {"clear_color", {0.0, 0.0, 0.0, 1.0}},
         {"clear_colors",

@@ -543,12 +543,11 @@ FrameGraphAttachmentStoreOp frameGraphAttachmentStoreOp(
     }
 }
 
-vk::AttachmentLoadOp parseAttachmentLoadOp(
+std::optional<vk::AttachmentLoadOp> parseOptionalAttachmentLoadOp(
     const nlohmann::json &pass_json,
-    std::string_view field,
-    vk::AttachmentLoadOp fallback) {
+    std::string_view field) {
     if (!pass_json.contains(field)) {
-        return fallback;
+        return std::nullopt;
     }
     return stringToLoadOp(
         parseStringField(
@@ -556,12 +555,11 @@ vk::AttachmentLoadOp parseAttachmentLoadOp(
             "frame graph pass"));
 }
 
-vk::AttachmentStoreOp parseAttachmentStoreOp(
+std::optional<vk::AttachmentStoreOp> parseOptionalAttachmentStoreOp(
     const nlohmann::json &pass_json,
-    std::string_view field,
-    vk::AttachmentStoreOp fallback) {
+    std::string_view field) {
     if (!pass_json.contains(field)) {
-        return fallback;
+        return std::nullopt;
     }
     return stringToStoreOp(
         parseStringField(
@@ -572,6 +570,8 @@ vk::AttachmentStoreOp parseAttachmentStoreOp(
 struct ParsedRasterAttachment {
     std::string resource;
     std::optional<ImageSubresourceRange> subresource;
+    std::optional<vk::AttachmentLoadOp> load_op;
+    std::optional<vk::AttachmentStoreOp> store_op;
 };
 
 ParsedRasterAttachment parseRasterAttachmentReference(
@@ -584,7 +584,9 @@ ParsedRasterAttachment parseRasterAttachmentReference(
         for (auto field = encoded.begin();
              field != encoded.end(); ++field) {
             if (field.key() != "target" &&
-                field.key() != "subresource") {
+                field.key() != "subresource" &&
+                field.key() != "load_op" &&
+                field.key() != "store_op") {
                 throw std::runtime_error(
                     std::string{context} +
                     " has unknown field '" +
@@ -610,6 +612,12 @@ ParsedRasterAttachment parseRasterAttachmentReference(
                 std::string{context} +
                 ".subresource must select exactly one mip level");
         }
+        result.load_op =
+            parseOptionalAttachmentLoadOp(
+                encoded, "load_op");
+        result.store_op =
+            parseOptionalAttachmentStoreOp(
+                encoded, "store_op");
     } else {
         throw std::runtime_error(
             std::string{context} +
@@ -810,21 +818,28 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
             node.writes, attachment.resource);
     }
 
-    const auto color_load = parseAttachmentLoadOp(
-        pass_json, "color_load_op",
+    const auto color_load = parseOptionalAttachmentLoadOp(
+        pass_json, "color_load_op");
+    const auto color_store = parseOptionalAttachmentStoreOp(
+        pass_json, "color_store_op");
+    const auto depth_load = parseOptionalAttachmentLoadOp(
+        pass_json, "depth_load_op");
+    const auto depth_store = parseOptionalAttachmentStoreOp(
+        pass_json, "depth_store_op");
+    const auto color_defaults = PassAttachmentOperations{
         overlay_pass
             ? vk::AttachmentLoadOp::eLoad
-            : vk::AttachmentLoadOp::eClear);
-    const auto color_store = parseAttachmentStoreOp(
-        pass_json, "color_store_op",
-        vk::AttachmentStoreOp::eStore);
-    const auto depth_load = parseAttachmentLoadOp(
-        pass_json, "depth_load_op",
-        vk::AttachmentLoadOp::eClear);
-    const auto depth_store = parseAttachmentStoreOp(
-        pass_json, "depth_store_op",
-        vk::AttachmentStoreOp::eDontCare);
+            : vk::AttachmentLoadOp::eClear,
+        vk::AttachmentStoreOp::eStore,
+    };
+    const auto depth_defaults = PassAttachmentOperations{
+        vk::AttachmentLoadOp::eClear,
+        vk::AttachmentStoreOp::eDontCare,
+    };
     for (const auto &attachment : color_outputs) {
+        const auto operations = resolveAttachmentOperations(
+            attachment.load_op, attachment.store_op,
+            color_load, color_store, color_defaults);
         node.attachments.push_back(
             FrameGraphAttachmentDefinition{
                 .resource = attachment.resource,
@@ -834,13 +849,25 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
                     FrameGraphAttachmentAspect::color,
                 .load_op =
                     frameGraphAttachmentLoadOp(
-                        color_load),
+                        operations.load_op),
                 .store_op =
                     frameGraphAttachmentStoreOp(
-                        color_store),
+                        operations.store_op),
             });
+        if (operations.load_op ==
+            vk::AttachmentLoadOp::eLoad) {
+            appendUnique(
+                node.reads, attachment.resource);
+            appendReadFootprint(
+                node, attachment.resource,
+                {LogicalReadFootprintKind::same_pixel,
+                 std::nullopt});
+        }
     }
     for (const auto &attachment : depth_outputs) {
+        const auto operations = resolveAttachmentOperations(
+            attachment.load_op, attachment.store_op,
+            depth_load, depth_store, depth_defaults);
         node.attachments.push_back(
             FrameGraphAttachmentDefinition{
                 .resource = attachment.resource,
@@ -850,25 +877,13 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
                     FrameGraphAttachmentAspect::depth,
                 .load_op =
                     frameGraphAttachmentLoadOp(
-                        depth_load),
+                        operations.load_op),
                 .store_op =
                     frameGraphAttachmentStoreOp(
-                        depth_store),
+                        operations.store_op),
             });
-    }
-
-    if (color_load == vk::AttachmentLoadOp::eLoad) {
-        for (const auto &attachment : color_outputs) {
-            appendUnique(
-                node.reads, attachment.resource);
-            appendReadFootprint(
-                node, attachment.resource,
-                {LogicalReadFootprintKind::same_pixel,
-                 std::nullopt});
-        }
-    }
-    if (depth_load == vk::AttachmentLoadOp::eLoad) {
-        for (const auto &attachment : depth_outputs) {
+        if (operations.load_op ==
+            vk::AttachmentLoadOp::eLoad) {
             appendUnique(
                 node.reads, attachment.resource);
             appendReadFootprint(
@@ -1162,7 +1177,13 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         }
     }
     appendUnique(node.reads, pass.input_buffers);
-    for (const auto &attachment : pass.output_color) {
+    for (std::size_t color_index = 0;
+         color_index < pass.output_color.size();
+         ++color_index) {
+        const auto &attachment =
+            pass.output_color[color_index];
+        const auto operations =
+            pass.colorAttachmentOperations(color_index);
         const auto target = attachment.target;
         const auto resource =
             renderTargetResourceName(target);
@@ -1177,11 +1198,19 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
                         FrameGraphAttachmentAspect::color,
                     .load_op =
                         frameGraphAttachmentLoadOp(
-                            pass.color_load_op),
+                            operations.load_op),
                     .store_op =
                         frameGraphAttachmentStoreOp(
-                            pass.color_store_op),
+                            operations.store_op),
                 });
+        }
+        if (operations.load_op ==
+            vk::AttachmentLoadOp::eLoad) {
+            appendUnique(node.reads, resource);
+            appendReadFootprint(
+                node, resource,
+                {LogicalReadFootprintKind::same_pixel,
+                 std::nullopt});
         }
     }
     if (pass.isMaterial()) {
@@ -1250,6 +1279,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         renderTargetResourceName(pass.output_depth);
     appendUnique(node.writes, depth_resource);
     if (!depth_resource.empty()) {
+        const auto operations =
+            pass.depthAttachmentOperations();
         node.attachments.push_back(
             FrameGraphAttachmentDefinition{
                 .resource = depth_resource,
@@ -1259,34 +1290,19 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
                     FrameGraphAttachmentAspect::depth,
                 .load_op =
                     frameGraphAttachmentLoadOp(
-                        pass.depth_load_op),
+                        operations.load_op),
                 .store_op =
                     frameGraphAttachmentStoreOp(
-                        pass.depth_store_op),
+                        operations.store_op),
             });
-    }
-
-    if (pass.color_load_op == vk::AttachmentLoadOp::eLoad) {
-        for (const auto &attachment :
-             pass.output_color) {
-            const auto target = attachment.target;
-            const auto resource =
-                renderTargetResourceName(target);
-            appendUnique(node.reads, resource);
+        if (operations.load_op ==
+            vk::AttachmentLoadOp::eLoad) {
+            appendUnique(node.reads, depth_resource);
             appendReadFootprint(
-                node, resource,
+                node, depth_resource,
                 {LogicalReadFootprintKind::same_pixel,
                  std::nullopt});
         }
-    }
-    if (pass.depth_load_op == vk::AttachmentLoadOp::eLoad) {
-        const auto resource =
-            renderTargetResourceName(pass.output_depth);
-        appendUnique(node.reads, resource);
-        appendReadFootprint(
-            node, resource,
-            {LogicalReadFootprintKind::same_pixel,
-             std::nullopt});
     }
     return node;
 }
