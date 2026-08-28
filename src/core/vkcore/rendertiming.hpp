@@ -54,6 +54,19 @@ struct GpuTimingSampleIdentity {
     GpuTimingSubrange subrange = GpuTimingSubrange::barriers;
 };
 
+struct GpuTimingSample {
+    GpuTimingSampleIdentity identity;
+    bool supported = true;
+    std::string reason;
+    double ms = 0.0;
+};
+
+struct GpuTimingHistoryFrame {
+    std::uint64_t logical_frame = 0;
+    std::string graph_variant;
+    std::vector<GpuTimingSample> samples;
+};
+
 struct GpuTimingViewRow {
     std::uint64_t logical_frame = 0;
     std::string graph_variant;
@@ -81,6 +94,26 @@ struct GpuTimingNodeFrame {
     std::string graph_variant;
     std::vector<GpuTimingNodeRow> nodes;
 };
+
+struct GpuTimingPublishedSnapshot {
+    std::vector<GpuTimingViewRow> latest_views;
+    std::vector<GpuTimingNodeRow> latest_nodes;
+    std::size_t history_frame_visits = 0;
+};
+
+struct GpuTimingStatusProjection {
+    nlohmann::json logical_frame_averages;
+    nlohmann::json logical_frame_history;
+    nlohmann::json views;
+    nlohmann::json nodes;
+    double logical_frame_total_sum_views_ms = 0.0;
+};
+
+GpuTimingPublishedSnapshot publishLatestGpuTimingSnapshot(
+    const std::deque<GpuTimingHistoryFrame> &history);
+GpuTimingStatusProjection projectGpuTimingStatus(
+    const std::deque<GpuTimingHistoryFrame> &history,
+    std::span<const GpuTimingViewRow> latest_views);
 
 struct GpuTimingNodeAverageRow {
     std::uint64_t logical_frame = 0;
@@ -132,19 +165,6 @@ DECLARE_MODULE(RenderTiming) {
         std::uint64_t samples = 0;
     };
 
-    struct GpuSample {
-        GpuTimingSampleIdentity identity;
-        bool supported = true;
-        std::string reason;
-        double ms = 0.0;
-    };
-
-    struct GpuHistoryFrame {
-        std::uint64_t logical_frame = 0;
-        std::string graph_variant;
-        std::vector<GpuSample> samples;
-    };
-
     vk::Device device;
     double timestamp_period_ns = 1.0;
     std::uint32_t timestamp_valid_bits = 0;
@@ -159,7 +179,7 @@ DECLARE_MODULE(RenderTiming) {
     std::uint64_t query_pool_create_count = 0;
     std::uint64_t dropped_samples = 0;
 
-    std::deque<GpuHistoryFrame> gpu_history;
+    std::deque<GpuTimingHistoryFrame> gpu_history;
     std::vector<GpuTimingViewRow> published_latest_views;
     std::vector<GpuTimingNodeRow> published_latest_nodes;
     std::size_t last_snapshot_history_frame_visits = 0;
@@ -176,8 +196,9 @@ DECLARE_MODULE(RenderTiming) {
     vk::UniqueQueryPool createTimestampQueryPool(std::uint32_t query_count) const;
     bool collectGpuRange(std::size_t pending_index, bool wait);
     void collectGpuResults(bool wait);
-    void addGpuSample(GpuSample sample);
-    GpuTimingNodeFrame makeNodeFrame(const GpuHistoryFrame &frame) const;
+    void addGpuSample(GpuTimingSample sample);
+    GpuTimingNodeFrame makeNodeFrame(
+        const GpuTimingHistoryFrame &frame) const;
     void publishSnapshot();
     std::string formatGpuAverages() const;
     void logAndReset();

@@ -357,14 +357,23 @@ struct RenderPassViewInvocation {
 };
 
 struct PassAttachmentOperations {
-    vk::AttachmentLoadOp load_op =
-        vk::AttachmentLoadOp::eClear;
-    vk::AttachmentStoreOp store_op =
-        vk::AttachmentStoreOp::eStore;
+    vk::AttachmentLoadOp load_op;
+    vk::AttachmentStoreOp store_op;
 
     bool operator==(
         const PassAttachmentOperations &) const = default;
 };
+
+enum class PassAttachmentAspect : std::uint8_t {
+    color,
+    depth,
+};
+
+// The sole authority for omitted attachment operations.  Every raw, typed,
+// and pass-type-specific path asks this function instead of spelling out
+// Vulkan defaults locally.
+PassAttachmentOperations defaultPassAttachmentOperations(
+    RenderPassType pass_type, PassAttachmentAspect aspect);
 
 inline PassAttachmentOperations resolveAttachmentOperations(
     std::optional<vk::AttachmentLoadOp> attachment_load_op,
@@ -415,7 +424,9 @@ enum class RenderResolutionDomain : std::uint8_t {
 };
 
 struct PassDefinition {
-    PassDefinition() : output_depth{noRenderTargetId()} {}
+    PassDefinition() : output_depth{noRenderTargetId()} {
+        applyDefaultAttachmentOperations(RenderPassType::material);
+    }
 
     std::string name;
 
@@ -433,13 +444,14 @@ struct PassDefinition {
         mainRenderViewFamilyId};
 
     PassInfo pass_info = MaterialPassInfo{};
+    RenderPassType pass_type = RenderPassType::material;
     std::optional<std::string> requested_implementation_provider;
     std::optional<PassImplementationSelection> implementation_selection;
 
-    vk::AttachmentLoadOp color_load_op = vk::AttachmentLoadOp::eClear;
-    vk::AttachmentStoreOp color_store_op = vk::AttachmentStoreOp::eStore;
-    vk::AttachmentLoadOp depth_load_op = vk::AttachmentLoadOp::eClear;
-    vk::AttachmentStoreOp depth_store_op = vk::AttachmentStoreOp::eDontCare;
+    vk::AttachmentLoadOp color_load_op;
+    vk::AttachmentStoreOp color_store_op;
+    vk::AttachmentLoadOp depth_load_op;
+    vk::AttachmentStoreOp depth_store_op;
     // Runtime-only physical overrides. Authored JSON retains the compact
     // pass-wide defaults above; the target-plan compiler expands them to
     // individual attachments and may safely override selected entries.
@@ -484,6 +496,18 @@ struct PassDefinition {
     bool isImGui() const { return std::holds_alternative<ImGuiPassInfo>(pass_info); }
 #endif
 
+    void applyDefaultAttachmentOperations(RenderPassType type) {
+        pass_type = type;
+        const auto color = defaultPassAttachmentOperations(
+            type, PassAttachmentAspect::color);
+        const auto depth = defaultPassAttachmentOperations(
+            type, PassAttachmentAspect::depth);
+        color_load_op = color.load_op;
+        color_store_op = color.store_op;
+        depth_load_op = depth.load_op;
+        depth_store_op = depth.store_op;
+    }
+
     PassAttachmentOperations colorAttachmentOperations(
         std::size_t index) const {
         if (physical_color_attachment_operations.empty()) {
@@ -493,10 +517,8 @@ struct PassDefinition {
                 attachment.store_op,
                 color_load_op,
                 color_store_op,
-                PassAttachmentOperations{
-                    vk::AttachmentLoadOp::eClear,
-                    vk::AttachmentStoreOp::eStore,
-                });
+                defaultPassAttachmentOperations(
+                    pass_type, PassAttachmentAspect::color));
         }
         return physical_color_attachment_operations.at(index);
     }
@@ -508,10 +530,8 @@ struct PassDefinition {
                 output_depth.store_op,
                 depth_load_op,
                 depth_store_op,
-                PassAttachmentOperations{
-                    vk::AttachmentLoadOp::eClear,
-                    vk::AttachmentStoreOp::eDontCare,
-                }));
+                defaultPassAttachmentOperations(
+                    pass_type, PassAttachmentAspect::depth)));
     }
 
     PhysicalColorClearValue colorClearValue(

@@ -2,10 +2,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -180,6 +185,138 @@ TEST_CASE("GPU timing average RPC projection is light and reports disabled state
     REQUIRE(disabled.at("frame_count") == 0);
     REQUIRE(disabled.at("nodes").empty());
     REQUIRE_FALSE(disabled.contains("logical_frame_history"));
+}
+
+TEST_CASE(
+    "WP355 status totals match the pre-WP351b destructive canonical sort bit for bit",
+    "[gpu-timing][status][wp355][canonical-order][bit-exact]") {
+    const auto sample = [](std::size_t ordinal, std::string name,
+                           GpuTimingSubrange subrange, double ms) {
+        return GpuTimingSample{
+            .identity =
+                GpuTimingSampleIdentity{
+                    42, "flat", 0, ordinal, "render",
+                    std::move(name), subrange},
+            .supported = true,
+            .ms = ms,
+        };
+    };
+
+    // Declaration order is red_after_blue (ordinal 0), blue_first
+    // (ordinal 1), while execution order is blue then red, matching the
+    // explicit-order golden fixture.  All values are non-negative GPU times.
+    GpuTimingHistoryFrame frame{
+        .logical_frame = 42,
+        .graph_variant = "flat",
+        .samples = {
+            sample(1, "blue_first", GpuTimingSubrange::barriers, 1.0e16),
+            sample(1, "blue_first", GpuTimingSubrange::body, 1.0),
+            sample(0, "red_after_blue", GpuTimingSubrange::barriers, 1.0),
+            sample(0, "red_after_blue", GpuTimingSubrange::body, 1.0),
+        },
+    };
+    const auto bits = [](double value) {
+        return std::bit_cast<std::uint64_t>(value);
+    };
+    constexpr std::uint64_t execution_order_bits =
+        0x4341c37937e08000ULL;
+    constexpr std::uint64_t parent_canonical_bits =
+        0x4341c37937e08002ULL;
+
+    double execution_total = 0.0;
+    for (const auto &entry : frame.samples) {
+        execution_total += entry.ms;
+    }
+    REQUIRE(bits(execution_total) == execution_order_bits);
+
+    // This is the exact destructive comparator and subsequent addition order
+    // from git show 29a0615^:src/core/vkcore/rendertiming.cpp.
+    auto parent_samples = frame.samples;
+    std::sort(
+        parent_samples.begin(), parent_samples.end(),
+        [](const auto &left, const auto &right) {
+            return std::tie(left.identity.view_index,
+                            left.identity.node_ordinal,
+                            left.identity.node_kind,
+                            left.identity.node_name,
+                            left.identity.subrange) <
+                   std::tie(right.identity.view_index,
+                            right.identity.node_ordinal,
+                            right.identity.node_kind,
+                            right.identity.node_name,
+                            right.identity.subrange);
+        });
+    double parent_total = 0.0;
+    for (const auto &entry : parent_samples) {
+        parent_total += entry.ms;
+    }
+    REQUIRE(bits(parent_total) == parent_canonical_bits);
+    REQUIRE(bits(parent_total) != bits(execution_total));
+
+    const std::deque<GpuTimingHistoryFrame> history{frame};
+    const auto latest = publishLatestGpuTimingSnapshot(history);
+    const auto status = projectGpuTimingStatus(
+        history,
+        std::span<const GpuTimingViewRow>{latest.latest_views});
+    CAPTURE(bits(status.logical_frame_history.at(0).at("total_ms")
+                     .get<double>()),
+            bits(status.logical_frame_averages.at(0)
+                     .at("average_total_ms")
+                     .get<double>()),
+            bits(latest.latest_views.at(0).total_ms),
+            bits(status.logical_frame_total_sum_views_ms));
+    CHECK(bits(status.logical_frame_history.at(0).at("total_ms")
+                   .get<double>()) == parent_canonical_bits);
+    CHECK(bits(status.logical_frame_averages.at(0)
+                   .at("average_total_ms")
+                   .get<double>()) == parent_canonical_bits);
+    CHECK(bits(latest.latest_views.at(0).total_ms) ==
+          parent_canonical_bits);
+    CHECK(bits(status.views.at(0).at("total_ms").get<double>()) ==
+          parent_canonical_bits);
+    CHECK(bits(status.logical_frame_total_sum_views_ms) ==
+          parent_canonical_bits);
+
+    REQUIRE(status.nodes.size() == 4);
+    REQUIRE(status.nodes.at(0).at("node_name") == "red_after_blue");
+    REQUIRE(status.nodes.at(0).at("subrange") == "barriers");
+    REQUIRE(status.nodes.at(1).at("node_name") == "red_after_blue");
+    REQUIRE(status.nodes.at(1).at("subrange") == "body");
+    REQUIRE(status.nodes.at(2).at("node_name") == "blue_first");
+    REQUIRE(status.nodes.at(2).at("subrange") == "barriers");
+    REQUIRE(status.nodes.at(3).at("node_name") == "blue_first");
+    REQUIRE(status.nodes.at(3).at("subrange") == "body");
+}
+
+TEST_CASE(
+    "WP355 latest GPU timing publisher reports its real one-frame traversal",
+    "[gpu-timing][status][wp355][history-visits][negative-contrast]") {
+    std::deque<GpuTimingHistoryFrame> history;
+    for (std::uint64_t logical_frame = 1;
+         logical_frame <= gpu_timing_history_capacity; ++logical_frame) {
+        history.push_back(GpuTimingHistoryFrame{
+            .logical_frame = logical_frame,
+            .graph_variant = "flat",
+            .samples = {
+                GpuTimingSample{
+                    .identity = GpuTimingSampleIdentity{
+                        logical_frame, "flat", 0, 0, "render", "present",
+                        GpuTimingSubrange::body},
+                    .supported = true,
+                    .ms = static_cast<double>(logical_frame),
+                },
+            },
+        });
+    }
+
+    const auto snapshot = publishLatestGpuTimingSnapshot(history);
+    REQUIRE(snapshot.history_frame_visits == 1);
+    REQUIRE(snapshot.latest_nodes.size() == 1);
+    REQUIRE(snapshot.latest_nodes.front().logical_frame ==
+            gpu_timing_history_capacity);
+    REQUIRE(snapshot.latest_views.size() == 1);
+    REQUIRE(snapshot.latest_views.front().logical_frame ==
+            gpu_timing_history_capacity);
 }
 
 } // namespace Pelican

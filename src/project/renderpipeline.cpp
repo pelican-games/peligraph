@@ -1,6 +1,7 @@
 #include "renderpipeline.hpp"
 #include "featurecompose.hpp"
 #include "passfieldownership.hpp"
+#include "rasterpass.hpp"
 #include "renderresourcename.hpp"
 
 #include <algorithm>
@@ -33,7 +34,18 @@ void validatePassFieldOwnershipInConfig(
             continue;
         }
         for (const auto &pass : *passes) {
-            validatePassFieldOwnership(pass, capabilities, context);
+            const auto type =
+                validatePassFieldOwnership(pass, capabilities, context);
+            if ((type == RenderPassType::fullscreen ||
+                 type == RenderPassType::output_transform) &&
+                pass.contains("raster_state")) {
+                const auto name =
+                    pass.contains("name") && pass.at("name").is_string()
+                        ? pass.at("name").get<std::string>()
+                        : std::string{"<unnamed>"};
+                (void)parseFullscreenRasterFixedFunctionState(
+                    pass, "Fullscreen pass '" + name + "'");
+            }
         }
     }
 }

@@ -346,6 +346,28 @@ RasterFixedFunctionState parseRasterFixedFunctionState(
     return result;
 }
 
+RasterFixedFunctionState parseFullscreenRasterFixedFunctionState(
+    const nlohmann::json &pass,
+    std::string_view context) {
+    const auto found = pass.find("raster_state");
+    if (found != pass.end() && found->is_object()) {
+        for (const auto &[key, value] : found->items()) {
+            (void)value;
+            if (key.starts_with("depth_")) {
+                throw std::runtime_error(
+                    std::string{context} +
+                    " raster_state does not support depth field '" +
+                    key + "'");
+            }
+        }
+    }
+    auto result = parseRasterFixedFunctionState(
+        pass, 1, context);
+    validateRasterFixedFunctionState(
+        result, 1, false, context);
+    return result;
+}
+
 std::string_view rasterPrimitiveTopologyName(
     RasterPrimitiveTopology topology) {
     switch (topology) {

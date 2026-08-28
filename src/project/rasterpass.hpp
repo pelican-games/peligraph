@@ -132,6 +132,14 @@ RasterFixedFunctionState parseRasterFixedFunctionState(
     std::size_t color_attachment_count,
     std::string_view context = "raster pass");
 
+// Fullscreen and output-transform passes share the portable raster grammar,
+// but deliberately do not own a depth attachment.  Keep the JSON-level depth
+// prohibition beside the shared parser so project resolution and runtime
+// parsing reject the same authored document.
+RasterFixedFunctionState parseFullscreenRasterFixedFunctionState(
+    const nlohmann::json &pass,
+    std::string_view context = "fullscreen pass");
+
 void validateRasterFixedFunctionState(
     const RasterFixedFunctionState &state,
     std::size_t color_attachment_count,

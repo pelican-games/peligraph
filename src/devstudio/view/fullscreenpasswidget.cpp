@@ -5,6 +5,7 @@
 
 #include "passfieldownership.hpp"
 #include "passshapepolicy.hpp"
+#include "rasterpass.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -131,6 +132,7 @@ struct FullscreenPassWidget::Impl {
     QLineEdit *name = nullptr;
     QLineEdit *vertex_shader = nullptr;
     QLineEdit *fragment_shader = nullptr;
+    QPlainTextEdit *raster_state = nullptr;
     QComboBox *input_candidate = nullptr;
     QPushButton *add_input = nullptr;
     QPushButton *add_history_input = nullptr;
@@ -289,6 +291,17 @@ struct FullscreenPassWidget::Impl {
         fragment_shader->setPlaceholderText(
             owner.tr("enter a stem; assets are not enumerated here"));
         form->addRow(owner.tr("Fragment shader stem"), fragment_shader);
+
+        raster_state = new QPlainTextEdit(&owner);
+        raster_state->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.rasterState"));
+        raster_state->setPlaceholderText(owner.tr(
+            "Optional raster_state JSON, for example "
+            "{\"color_attachments\":[{\"blend\":\"additive\"}]}"));
+        raster_state->setLineWrapMode(QPlainTextEdit::NoWrap);
+        raster_state->setMaximumHeight(92);
+        form->addRow(owner.tr("Raster state (JSON, optional)"),
+                     raster_state);
         layout->addLayout(form);
 
         auto *targets = new QGroupBox(owner.tr("Frame-plan targets"), &owner);
@@ -459,6 +472,8 @@ struct FullscreenPassWidget::Impl {
                          [this] { updateDraft(); });
         QObject::connect(fragment_shader, &QLineEdit::textChanged, &owner,
                          [this] { updateDraft(); });
+        QObject::connect(raster_state, &QPlainTextEdit::textChanged, &owner,
+                         [this] { updateDraft(); });
         QObject::connect(depth, &QComboBox::currentTextChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(
@@ -559,6 +574,13 @@ struct FullscreenPassWidget::Impl {
                 {"vertex", vertex_shader->text().toStdString()},
                 {"fragment", fragment_shader->text().toStdString()},
             };
+        }
+        const auto raster_text =
+            raster_state->toPlainText().trimmed();
+        if (fullscreenOwns("raster_state") &&
+            !raster_text.isEmpty()) {
+            draft["raster_state"] = Json::parse(
+                raster_text.toUtf8().constData());
         }
         return draft;
     }
@@ -736,7 +758,21 @@ struct FullscreenPassWidget::Impl {
         if (updating) {
             return;
         }
-        const Json draft = draftJson();
+        Json draft;
+        try {
+            draft = draftJson();
+        } catch (const std::exception &error) {
+            json->setPlainText(
+                owner.tr("Invalid raster_state JSON: %1")
+                    .arg(QString::fromUtf8(error.what())));
+            setAxis(*field_ownership, owner.tr("Field ownership"),
+                    "invalid",
+                    owner.tr("raster_state is not valid JSON: %1")
+                        .arg(QString::fromUtf8(error.what())));
+            updateValidationSummary();
+            updateAuthoringButtons();
+            return;
+        }
         json->setPlainText(QString::fromStdString(draft.dump(2)));
 
         const QString graph_name =
@@ -754,6 +790,11 @@ struct FullscreenPassWidget::Impl {
             (void)Pelican::validatePassFieldOwnership(
                 draft, Pelican::PassFieldOwnershipCapabilities{},
                 "fullscreen pass form draft");
+            if (draft.contains("raster_state")) {
+                (void)Pelican::parseFullscreenRasterFixedFunctionState(
+                    draft, "Fullscreen pass '" +
+                               draft.at("name").get<std::string>() + "'");
+            }
             setAxis(*field_ownership, owner.tr("Field ownership"), "valid",
                     owner.tr("generated type-owned fields come from "
                              "passFieldOwnershipTable()."));
@@ -1393,6 +1434,7 @@ struct FullscreenPassWidget::Impl {
         name->clear();
         vertex_shader->clear();
         fragment_shader->clear();
+        raster_state->clear();
         inputs->clear();
         colors->clear();
         depth->setCurrentIndex(-1);

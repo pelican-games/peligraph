@@ -1563,10 +1563,16 @@ TEST_CASE(
     REQUIRE(
         graph.nodes.at(1).attachments.front().load_op ==
         FrameGraphAttachmentLoadOp::load);
+    REQUIRE(
+        graph.nodes.at(1).attachments.front().store_op ==
+        FrameGraphAttachmentStoreOp::store);
 #if PELICAN_WITH_IMGUI
     REQUIRE(
         graph.nodes.at(2).attachments.front().load_op ==
         FrameGraphAttachmentLoadOp::load);
+    REQUIRE(
+        graph.nodes.at(2).attachments.front().store_op ==
+        FrameGraphAttachmentStoreOp::store);
 #endif
 
     auto malformed = nlohmann::json::parse(R"json({
@@ -1680,6 +1686,40 @@ TEST_CASE(
         require_color_state(node, {0});
     }
 
+    // Reverse the old contrast: an attachment Clear/DontCare must override a
+    // pass-wide Load/Store.  This catches implementations that only honor an
+    // attachment override when that override is Load.
+    auto reverse_color = defaults;
+    auto &reverse_color_pass =
+        reverse_color["rendering_passes"][0]["passes"][0];
+    reverse_color_pass["color_load_op"] = "Load";
+    reverse_color_pass["color_store_op"] = "Store";
+    reverse_color_pass["output"]["color"][0] = {
+        {"target", "gbuffer_albedo"},
+        {"load_op", "Clear"},
+        {"store_op", "DontCare"},
+    };
+    for (const auto &node :
+         wp352NodesFromBothPlannerInputs(reverse_color)) {
+        REQUIRE(node.attachments.at(0).load_op ==
+                FrameGraphAttachmentLoadOp::clear);
+        REQUIRE(node.attachments.at(0).store_op ==
+                FrameGraphAttachmentStoreOp::discard);
+        REQUIRE(std::find(node.reads.begin(), node.reads.end(),
+                          "gbuffer_albedo") == node.reads.end());
+        REQUIRE(std::none_of(
+            node.read_footprints.begin(), node.read_footprints.end(),
+            [](const auto &footprint) {
+                return footprint.resource == "gbuffer_albedo";
+            }));
+        for (std::size_t index = 1; index < 5; ++index) {
+            REQUIRE(node.attachments.at(index).load_op ==
+                    FrameGraphAttachmentLoadOp::load);
+            REQUIRE(node.attachments.at(index).store_op ==
+                    FrameGraphAttachmentStoreOp::store);
+        }
+    }
+
     const auto require_depth_state = [](
         const FrameGraphNodeDefinition &node,
         bool loaded) {
@@ -1746,6 +1786,30 @@ TEST_CASE(
         require_depth_state(node, true);
     }
 
+    auto reverse_depth = defaults;
+    auto &reverse_depth_pass =
+        reverse_depth["rendering_passes"][0]["passes"][0];
+    reverse_depth_pass["depth_load_op"] = "Load";
+    reverse_depth_pass["depth_store_op"] = "Store";
+    reverse_depth_pass["output"]["depth"] = {
+        {"target", "offscreen_depth"},
+        {"load_op", "Clear"},
+        {"store_op", "DontCare"},
+    };
+    for (const auto &node :
+         wp352NodesFromBothPlannerInputs(reverse_depth)) {
+        const auto &depth = node.attachments.back();
+        REQUIRE(depth.load_op == FrameGraphAttachmentLoadOp::clear);
+        REQUIRE(depth.store_op == FrameGraphAttachmentStoreOp::discard);
+        REQUIRE(std::find(node.reads.begin(), node.reads.end(),
+                          "offscreen_depth") == node.reads.end());
+        REQUIRE(std::none_of(
+            node.read_footprints.begin(), node.read_footprints.end(),
+            [](const auto &footprint) {
+                return footprint.resource == "offscreen_depth";
+            }));
+    }
+
     auto unknown_attachment_field = defaults;
     unknown_attachment_field["rendering_passes"][0]
                             ["passes"][0]
@@ -1758,6 +1822,40 @@ TEST_CASE(
             unknown_attachment_field),
         Catch::Matchers::ContainsSubstring(
             "unknown field 'clear'"));
+}
+
+TEST_CASE(
+    "WP355 attachment operations require a corresponding output in raw and typed planners",
+    "[frameplanner][attachment-operations][wp355][missing-output]") {
+    const std::string expected =
+        "Pass 'gbuffer_pass' field 'depth_load_op' requires a non-empty "
+        "output.depth attachment";
+    for (const auto missing_depth :
+         {nlohmann::json(nullptr), nlohmann::json::array()}) {
+        auto invalid = wp352FiveColorConfig();
+        auto &pass = invalid["rendering_passes"][0]["passes"][0];
+        pass["output"]["depth"] = missing_depth;
+        pass["depth_load_op"] = "Load";
+
+        REQUIRE_THROWS_WITH(
+            parseFrameGraphDefinitionsFromConfigJson(invalid), expected);
+        const ParsedRenderTargetResolvers resolvers{invalid};
+        REQUIRE_THROWS_WITH(
+            parseRenderingPassDefinitionsFromConfigJson(
+                invalid, resolvers.nameResolver(),
+                resolvers.metadataResolver()),
+            expected);
+    }
+
+    auto valid = wp352FiveColorConfig();
+    valid["rendering_passes"][0]["passes"][0]
+         ["depth_load_op"] = "Load";
+    const auto nodes = wp352NodesFromBothPlannerInputs(valid);
+    REQUIRE(nodes.size() == 2);
+    for (const auto &node : nodes) {
+        REQUIRE(node.attachments.back().load_op ==
+                FrameGraphAttachmentLoadOp::load);
+    }
 }
 
 TEST_CASE(

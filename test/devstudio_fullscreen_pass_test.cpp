@@ -20,6 +20,7 @@
 #include <QByteArray>
 #include <QComboBox>
 #include <QDir>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -322,6 +323,13 @@ void driveFromDeclaration(FullscreenPassWidget &form,
     required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment")
         .setText(QString::fromStdString(
             declaration.at("shader").at("fragment").get<std::string>()));
+    auto &raster_state = required<QPlainTextEdit>(
+        form, "pelican.fullscreenPass.rasterState");
+    raster_state.setPlainText(
+        declaration.contains("raster_state")
+            ? QString::fromStdString(
+                  declaration.at("raster_state").dump())
+            : QString{});
     for (const auto &input : declaration.at("input")) {
         chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
                         "pelican.fullscreenPass.addInput",
@@ -630,6 +638,9 @@ void clearDraftThroughControls(FullscreenPassWidget &form) {
         .clear();
     required<QLineEdit>(form,
                         "pelican.fullscreenPass.shader.fragment")
+        .clear();
+    required<QPlainTextEdit>(
+        form, "pelican.fullscreenPass.rasterState")
         .clear();
     for (const auto &[list_name, remove_name] :
          std::array{
@@ -1189,6 +1200,108 @@ TEST_CASE(
                 .toString() ==
             QStringLiteral(
                 "project://passes/authoring/pass-probe.json"));
+}
+
+TEST_CASE(
+    "WP355 fullscreen form saves additive raster state distinctly from omission",
+    "[devstudio][fullscreen-pass][wp355][raster-state][save][resolve]") {
+    (void)application();
+    const Json plan = minimalFramePlan(
+        "blend_graph",
+        Json::array({resource("swapchain", "frame_target", "engine")}));
+    const Json context{
+        {"source_digest", {{"hex", std::string(64, 'c')}}},
+        {"config_kind", "direct"},
+        {"graphs",
+         Json::array({
+             {{"name", "blend_graph"},
+              {"passes", Json::array()},
+              {"anchor_candidates",
+               Json::array({{{"position", 0},
+                              {"insert", "append"}}})}},
+         })},
+        {"managed_fragments", Json::array()},
+    };
+    const Json additive_state{
+        {"cull", "none"},
+        {"color_attachments",
+         Json::array({{{"blend", "additive"},
+                       {"write_mask", "rg"}}})},
+    };
+
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, context);
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    driveShapeDraft(form, {}, {"swapchain"}, std::nullopt);
+    auto &raster_state = required<QPlainTextEdit>(
+        form, "pelican.fullscreenPass.rasterState");
+    auto &save = required<QPushButton>(
+        form, "pelican.fullscreenPass.save");
+    const auto saved_pass = [&]() {
+        REQUIRE(save.isEnabled());
+        save.click();
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("add_authored_pass"));
+        const QJsonDocument document{
+            authoring.requests.back()
+                .params.value(QStringLiteral("pass"))
+                .toObject()};
+        return Json::parse(
+            document.toJson(QJsonDocument::Compact).toStdString());
+    };
+    const auto finish_save = [&](std::string ticket) {
+        authoring.succeed(
+            authoring.requests.back().id,
+            {{"ticket", ticket}, {"status", "accepted"}});
+        QApplication::processEvents();
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("get_edit_result"));
+        authoring.succeed(
+            authoring.requests.back().id,
+            {{"ticket", ticket},
+             {"status", "committed"},
+             {"committed", true},
+             {"published_generation", 2}});
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("get_render_authoring_context"));
+        authoring.succeed(authoring.requests.back().id, context);
+    };
+
+    raster_state.setPlainText(
+        QString::fromStdString(additive_state.dump()));
+    const Json additive_pass = saved_pass();
+    finish_save("wp355-additive");
+    raster_state.clear();
+    const Json omitted_pass = saved_pass();
+    REQUIRE(additive_pass.at("raster_state") == additive_state);
+    REQUIRE_FALSE(omitted_pass.contains("raster_state"));
+
+    const auto resolve_saved = [](const Json &pass) {
+        const Json config{
+            {"render_targets", Json::array()},
+            {"rendering_passes",
+             Json::array({
+                 {{"name", "blend_graph"},
+                  {"passes", Json::array({pass})}},
+             })},
+        };
+        return Pelican::resolveRenderPipeline(
+                   Pelican::RenderPipelineRequest{
+                       config, "WP355 saved fullscreen form"},
+                   Pelican::RenderEnvironmentCapabilities{})
+            .normalized_config;
+    };
+    const Json additive_resolved = resolve_saved(additive_pass);
+    const Json omitted_resolved = resolve_saved(omitted_pass);
+    REQUIRE(additive_resolved != omitted_resolved);
+    REQUIRE(findPass(additive_resolved, "blend_graph", "shape_case")
+                .at("raster_state") == additive_state);
+    REQUIRE_FALSE(
+        findPass(omitted_resolved, "blend_graph", "shape_case")
+            .contains("raster_state"));
 }
 
 TEST_CASE(

@@ -1,5 +1,6 @@
 #include "frameplanner.hpp"
 #include "passfieldownershipcapabilities.hpp"
+#include "passattachmentoptionsjsonparser.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/imagesubresourcejson.hpp"
@@ -686,6 +687,8 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     FrameGraphNodeDefinition node;
     node.name = requireString(pass_json, "name", "pass");
+    validatePassAttachmentOperationsHaveOutputs(
+        pass_json, node.name);
     node.declaration_index = declaration_index;
     node.view_family =
         parseRenderViewFamilyId(
@@ -803,9 +806,6 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     node.resolution_domain =
         parseRenderResolutionDomain(
             pass_json, renderPassTypeName(type), node.name);
-    const bool overlay_pass =
-        type == RenderPassType::ui ||
-        type == RenderPassType::imgui;
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
     const auto depth_outputs = parseOutputDepth(output);
@@ -826,16 +826,12 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         pass_json, "depth_load_op");
     const auto depth_store = parseOptionalAttachmentStoreOp(
         pass_json, "depth_store_op");
-    const auto color_defaults = PassAttachmentOperations{
-        overlay_pass
-            ? vk::AttachmentLoadOp::eLoad
-            : vk::AttachmentLoadOp::eClear,
-        vk::AttachmentStoreOp::eStore,
-    };
-    const auto depth_defaults = PassAttachmentOperations{
-        vk::AttachmentLoadOp::eClear,
-        vk::AttachmentStoreOp::eDontCare,
-    };
+    const auto color_defaults =
+        defaultPassAttachmentOperations(
+            type, PassAttachmentAspect::color);
+    const auto depth_defaults =
+        defaultPassAttachmentOperations(
+            type, PassAttachmentAspect::depth);
     for (const auto &attachment : color_outputs) {
         const auto operations = resolveAttachmentOperations(
             attachment.load_op, attachment.store_op,

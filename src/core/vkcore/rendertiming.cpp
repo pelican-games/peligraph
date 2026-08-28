@@ -64,6 +64,61 @@ nlohmann::json sampleJson(const Sample &sample) {
     };
 }
 
+std::vector<const GpuTimingSample *> canonicalSamplePointers(
+    const GpuTimingHistoryFrame &frame) {
+    std::vector<const GpuTimingSample *> result;
+    result.reserve(frame.samples.size());
+    for (const auto &sample : frame.samples) {
+        result.push_back(&sample);
+    }
+    std::sort(
+        result.begin(), result.end(),
+        [](const auto *left, const auto *right) {
+            return std::tie(left->identity.view_index,
+                            left->identity.node_ordinal,
+                            left->identity.node_kind,
+                            left->identity.node_name,
+                            left->identity.subrange) <
+                   std::tie(right->identity.view_index,
+                            right->identity.node_ordinal,
+                            right->identity.node_kind,
+                            right->identity.node_name,
+                            right->identity.subrange);
+        });
+    return result;
+}
+
+GpuTimingNodeFrame makeGpuTimingNodeFrame(
+    const GpuTimingHistoryFrame &frame) {
+    std::map<NodeKey, GpuTimingNodeRow> rows;
+    for (const auto &sample : frame.samples) {
+        const NodeKey key{sample.identity.view_index,
+                          sample.identity.node_ordinal,
+                          sample.identity.node_kind,
+                          sample.identity.node_name};
+        auto [found, inserted] = rows.try_emplace(
+            key,
+            GpuTimingNodeRow{
+                frame.logical_frame, frame.graph_variant,
+                sample.identity.view_index, sample.identity.node_ordinal,
+                sample.identity.node_kind, sample.identity.node_name});
+        auto &row = found->second;
+        if (sample.identity.subrange == GpuTimingSubrange::barriers) {
+            row.barriers_ms = sample.ms;
+        } else {
+            row.body_ms = sample.ms;
+            row.body_supported = sample.supported;
+        }
+    }
+
+    GpuTimingNodeFrame result{frame.logical_frame, frame.graph_variant, {}};
+    result.nodes.reserve(rows.size());
+    for (auto &[_, row] : rows) {
+        result.nodes.push_back(std::move(row));
+    }
+    return result;
+}
+
 } // namespace
 
 std::string_view gpuTimingSubrangeName(GpuTimingSubrange subrange) noexcept {
@@ -140,6 +195,134 @@ nlohmann::json disabledGpuTimingStatusJson() {
                          {"max_nodes", 0}, {"query_capacity", 0},
                          {"create_count", 0}, {"pending_ranges", 0}}},
     };
+}
+
+GpuTimingPublishedSnapshot publishLatestGpuTimingSnapshot(
+    const std::deque<GpuTimingHistoryFrame> &history) {
+    GpuTimingPublishedSnapshot result;
+    if (history.empty()) return result;
+
+    // This loop intentionally contains one frame.  The measured visit count
+    // belongs to the traversal itself, so widening first to history.begin()
+    // truthfully reports an eager full-history publisher.
+    const auto first = std::prev(history.end());
+    for (auto frame = first; frame != history.end(); ++frame) {
+        ++result.history_frame_visits;
+        result.latest_nodes = makeGpuTimingNodeFrame(*frame).nodes;
+
+        std::map<std::uint32_t, GpuTimingViewRow> rows;
+        const auto ordered_samples =
+            canonicalSamplePointers(*frame);
+        const std::span<const GpuTimingSample *const> sample_span{
+            ordered_samples};
+        for (const auto *sample : sample_span) {
+            auto [found, inserted] = rows.try_emplace(
+                sample->identity.view_index,
+                GpuTimingViewRow{
+                    frame->logical_frame, frame->graph_variant,
+                    sample->identity.view_index,
+                    viewLabel(frame->graph_variant,
+                              sample->identity.view_index)});
+            auto &row = found->second;
+            if (sample->identity.subrange ==
+                GpuTimingSubrange::barriers) {
+                row.barriers_ms += sample->ms;
+            } else {
+                row.body_ms += sample->ms;
+            }
+            row.total_ms += sample->ms;
+        }
+        result.latest_views.clear();
+        result.latest_views.reserve(rows.size());
+        for (const auto &[_, row] : rows) {
+            result.latest_views.push_back(row);
+        }
+    }
+    return result;
+}
+
+GpuTimingStatusProjection projectGpuTimingStatus(
+    const std::deque<GpuTimingHistoryFrame> &history,
+    std::span<const GpuTimingViewRow> latest_views) {
+    GpuTimingStatusProjection result{
+        .logical_frame_averages = nlohmann::json::array(),
+        .logical_frame_history = nlohmann::json::array(),
+        .views = nlohmann::json::array(),
+        .nodes = nlohmann::json::array(),
+    };
+
+    for (const auto &frame : history) {
+        const auto ordered_samples =
+            canonicalSamplePointers(frame);
+        const std::span<const GpuTimingSample *const> sample_span{
+            ordered_samples};
+        for (const auto *sample : sample_span) {
+            result.nodes.push_back(sampleJson(*sample));
+        }
+    }
+
+    struct LogicalFrameAggregate {
+        double total_ms = 0.0;
+        double min_ms = std::numeric_limits<double>::max();
+        double max_ms = 0.0;
+        std::uint64_t frame_count = 0;
+    };
+    std::map<std::string, LogicalFrameAggregate>
+        logical_frame_aggregates;
+    for (const auto &frame : history) {
+        double total_ms = 0.0;
+        std::uint64_t supported_samples = 0;
+        const auto ordered_samples =
+            canonicalSamplePointers(frame);
+        const std::span<const GpuTimingSample *const> sample_span{
+            ordered_samples};
+        for (const auto *sample : sample_span) {
+            if (!sample->supported) continue;
+            total_ms += sample->ms;
+            ++supported_samples;
+        }
+        result.logical_frame_history.push_back({
+            {"logical_frame", frame.logical_frame},
+            {"graph_variant", frame.graph_variant},
+            {"total_ms", total_ms},
+            {"supported_sample_count", supported_samples},
+        });
+        auto &aggregate =
+            logical_frame_aggregates[frame.graph_variant];
+        aggregate.total_ms += total_ms;
+        aggregate.min_ms =
+            std::min(aggregate.min_ms, total_ms);
+        aggregate.max_ms =
+            std::max(aggregate.max_ms, total_ms);
+        ++aggregate.frame_count;
+    }
+    for (const auto &[graph_variant, aggregate] :
+         logical_frame_aggregates) {
+        result.logical_frame_averages.push_back({
+            {"graph_variant", graph_variant},
+            {"frame_count", aggregate.frame_count},
+            {"average_total_ms",
+             aggregate.total_ms /
+                 static_cast<double>(aggregate.frame_count)},
+            {"min_total_ms", aggregate.min_ms},
+            {"max_total_ms", aggregate.max_ms},
+        });
+    }
+
+    for (const auto &row : latest_views) {
+        result.logical_frame_total_sum_views_ms +=
+            row.total_ms;
+        result.views.push_back({
+            {"logical_frame", row.logical_frame},
+            {"graph_variant", row.graph_variant},
+            {"view_index", row.view_index},
+            {"label", row.label},
+            {"barriers_ms", row.barriers_ms},
+            {"body_ms", row.body_ms},
+            {"total_ms", row.total_ms},
+        });
+    }
+    return result;
 }
 
 GpuTimingNodeAverageSnapshot averageGpuTimingNodeFrames(
@@ -369,14 +552,14 @@ void RenderTiming::cancelGpuRange() {
     active_gpu_range.reset();
 }
 
-void RenderTiming::addGpuSample(GpuSample sample) {
+void RenderTiming::addGpuSample(GpuTimingSample sample) {
     auto frame = std::find_if(gpu_history.begin(), gpu_history.end(), [&](const auto &candidate) {
         return candidate.logical_frame == sample.identity.logical_frame &&
                candidate.graph_variant == sample.identity.graph_variant;
     });
     if (frame == gpu_history.end()) {
         if (gpu_history.size() == gpu_timing_history_capacity) gpu_history.pop_front();
-        gpu_history.push_back(GpuHistoryFrame{
+        gpu_history.push_back(GpuTimingHistoryFrame{
             sample.identity.logical_frame, sample.identity.graph_variant, {}});
         frame = std::prev(gpu_history.end());
     }
@@ -423,7 +606,7 @@ bool RenderTiming::collectGpuRange(std::size_t pending_index, bool wait) {
             const auto end_tick = results[(query + 1) * 2];
             const bool supported = subrange != GpuTimingSubrange::body ||
                                    node.body_supported;
-            addGpuSample(GpuSample{
+            addGpuSample(GpuTimingSample{
                 GpuTimingSampleIdentity{
                     pending->identity.logical_frame, pending->identity.graph_variant,
                     pending->identity.view_index, node.node_ordinal, node.node_kind,
@@ -450,69 +633,19 @@ void RenderTiming::collectGpuResults(bool wait) {
 }
 
 GpuTimingNodeFrame RenderTiming::makeNodeFrame(
-    const GpuHistoryFrame &frame) const {
-    std::map<NodeKey, GpuTimingNodeRow> rows;
-    for (const auto &sample : frame.samples) {
-        const NodeKey key{sample.identity.view_index,
-                          sample.identity.node_ordinal,
-                          sample.identity.node_kind,
-                          sample.identity.node_name};
-        auto [found, inserted] = rows.try_emplace(
-            key,
-            GpuTimingNodeRow{
-                frame.logical_frame, frame.graph_variant,
-                sample.identity.view_index, sample.identity.node_ordinal,
-                sample.identity.node_kind, sample.identity.node_name});
-        auto &row = found->second;
-        if (sample.identity.subrange == GpuTimingSubrange::barriers) {
-            row.barriers_ms = sample.ms;
-        } else {
-            row.body_ms = sample.ms;
-            row.body_supported = sample.supported;
-        }
-    }
-
-    GpuTimingNodeFrame result{frame.logical_frame, frame.graph_variant, {}};
-    result.nodes.reserve(rows.size());
-    for (auto &[_, row] : rows) {
-        result.nodes.push_back(std::move(row));
-    }
-    return result;
+    const GpuTimingHistoryFrame &frame) const {
+    return makeGpuTimingNodeFrame(frame);
 }
 
 void RenderTiming::publishSnapshot() {
-    published_latest_views.clear();
-    published_latest_nodes.clear();
-    last_snapshot_history_frame_visits = 0;
-    if (gpu_history.empty()) {
-        return;
-    }
-
-    // Per-frame publication is deliberately bounded by the newest logical
-    // frame. Full history JSON and the N-frame average are RPC-time products.
-    const auto &latest = gpu_history.back();
-    ++last_snapshot_history_frame_visits;
-    published_latest_nodes = makeNodeFrame(latest).nodes;
-
-    std::map<std::uint32_t, GpuTimingViewRow> rows;
-    for (const auto &sample : latest.samples) {
-        auto [found, inserted] = rows.try_emplace(
-            sample.identity.view_index,
-            GpuTimingViewRow{latest.logical_frame, latest.graph_variant,
-                             sample.identity.view_index,
-                             viewLabel(latest.graph_variant,
-                                       sample.identity.view_index)});
-        auto &row = found->second;
-        if (sample.identity.subrange == GpuTimingSubrange::barriers) {
-            row.barriers_ms += sample.ms;
-        } else {
-            row.body_ms += sample.ms;
-        }
-        row.total_ms += sample.ms;
-    }
-    for (const auto &[_, row] : rows) {
-        published_latest_views.push_back(row);
-    }
+    auto snapshot =
+        publishLatestGpuTimingSnapshot(gpu_history);
+    published_latest_views =
+        std::move(snapshot.latest_views);
+    published_latest_nodes =
+        std::move(snapshot.latest_nodes);
+    last_snapshot_history_frame_visits =
+        snapshot.history_frame_visits;
 }
 
 nlohmann::json RenderTiming::nodeAverageJson() const {
@@ -531,88 +664,9 @@ nlohmann::json RenderTiming::nodeAverageJson() const {
 }
 
 nlohmann::json RenderTiming::statusJson() const {
-    nlohmann::json nodes = nlohmann::json::array();
-    for (const auto &frame : gpu_history) {
-        std::vector<const GpuSample *> ordered_samples;
-        ordered_samples.reserve(frame.samples.size());
-        for (const auto &sample : frame.samples) {
-            ordered_samples.push_back(&sample);
-        }
-        std::sort(
-            ordered_samples.begin(), ordered_samples.end(),
-            [](const auto *left, const auto *right) {
-                return std::tie(left->identity.view_index,
-                                left->identity.node_ordinal,
-                                left->identity.node_kind,
-                                left->identity.node_name,
-                                left->identity.subrange) <
-                       std::tie(right->identity.view_index,
-                                right->identity.node_ordinal,
-                                right->identity.node_kind,
-                                right->identity.node_name,
-                                right->identity.subrange);
-            });
-        for (const auto *sample : ordered_samples) {
-            nodes.push_back(sampleJson(*sample));
-        }
-    }
-
-    struct LogicalFrameAggregate {
-        double total_ms = 0.0;
-        double min_ms = std::numeric_limits<double>::max();
-        double max_ms = 0.0;
-        std::uint64_t frame_count = 0;
-    };
-    nlohmann::json logical_frame_history = nlohmann::json::array();
-    std::map<std::string, LogicalFrameAggregate> logical_frame_aggregates;
-    for (const auto &frame : gpu_history) {
-        double total_ms = 0.0;
-        std::uint64_t supported_samples = 0;
-        for (const auto &sample : frame.samples) {
-            if (!sample.supported) continue;
-            total_ms += sample.ms;
-            ++supported_samples;
-        }
-        logical_frame_history.push_back({
-            {"logical_frame", frame.logical_frame},
-            {"graph_variant", frame.graph_variant},
-            {"total_ms", total_ms},
-            {"supported_sample_count", supported_samples},
-        });
-        auto &aggregate = logical_frame_aggregates[frame.graph_variant];
-        aggregate.total_ms += total_ms;
-        aggregate.min_ms = std::min(aggregate.min_ms, total_ms);
-        aggregate.max_ms = std::max(aggregate.max_ms, total_ms);
-        ++aggregate.frame_count;
-    }
-    nlohmann::json logical_frame_averages = nlohmann::json::array();
-    for (const auto &[graph_variant, aggregate] :
-         logical_frame_aggregates) {
-        logical_frame_averages.push_back({
-            {"graph_variant", graph_variant},
-            {"frame_count", aggregate.frame_count},
-            {"average_total_ms",
-             aggregate.total_ms /
-                 static_cast<double>(aggregate.frame_count)},
-            {"min_total_ms", aggregate.min_ms},
-            {"max_total_ms", aggregate.max_ms},
-        });
-    }
-
-    double logical_frame_total_sum_views_ms = 0.0;
-    nlohmann::json views = nlohmann::json::array();
-    for (const auto &row : published_latest_views) {
-        logical_frame_total_sum_views_ms += row.total_ms;
-        views.push_back({
-            {"logical_frame", row.logical_frame},
-            {"graph_variant", row.graph_variant},
-            {"view_index", row.view_index},
-            {"label", row.label},
-            {"barriers_ms", row.barriers_ms},
-            {"body_ms", row.body_ms},
-            {"total_ms", row.total_ms},
-        });
-    }
+    auto projection = projectGpuTimingStatus(
+        gpu_history,
+        std::span<const GpuTimingViewRow>{published_latest_views});
     const auto query_capacity =
         static_cast<std::uint64_t>(configured_frame_slots) *
         configured_range_slots * queries_per_range;
@@ -626,12 +680,14 @@ nlohmann::json RenderTiming::statusJson() const {
         {"history_capacity", gpu_timing_history_capacity},
         {"history_count", gpu_history.size()},
         {"dropped_samples", dropped_samples},
-        {"logical_frame_averages", std::move(logical_frame_averages)},
-        {"logical_frame_history", std::move(logical_frame_history)},
+        {"logical_frame_averages",
+         std::move(projection.logical_frame_averages)},
+        {"logical_frame_history",
+         std::move(projection.logical_frame_history)},
         {"logical_frame_total_sum_views_ms",
-         logical_frame_total_sum_views_ms},
-        {"views", std::move(views)},
-        {"nodes", std::move(nodes)},
+         projection.logical_frame_total_sum_views_ms},
+        {"views", std::move(projection.views)},
+        {"nodes", std::move(projection.nodes)},
         {"query_pool",
          {{"frame_slots", configured_frame_slots},
           {"range_slots", configured_range_slots},

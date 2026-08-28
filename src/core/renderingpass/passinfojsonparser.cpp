@@ -15,17 +15,10 @@ RenderPassType parsePassTypeFromJson(
     const auto pass_type = validatePassFieldOwnership(
         pass_json, buildPassFieldOwnershipCapabilities());
     pass_def.pass_info = makePassInfo(pass_type);
+    pass_def.applyDefaultAttachmentOperations(pass_type);
     pass_def.resolution_domain =
         parseRenderResolutionDomain(
             pass_json, renderPassTypeName(pass_type), pass_def.name);
-
-    if (pass_def.isUi()
-#if PELICAN_WITH_IMGUI
-        || pass_def.isImGui()
-#endif
-    ) {
-        pass_def.color_load_op = vk::AttachmentLoadOp::eLoad;
-    }
     return pass_type;
 }
 

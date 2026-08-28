@@ -998,6 +998,75 @@ TEST_CASE(
             "'gpu_draw_source'"));
 }
 
+TEST_CASE(
+    "WP355 project resolve and preview validate nested fullscreen raster state",
+    "[wp355][render-pipeline][preview][raster-state][fail-fast]") {
+    auto authored = baseConfig();
+    auto &pass = authored["rendering_passes"][0]["passes"][0];
+    pass["type"] = "fullscreen";
+    pass["shader"] = {
+        {"vertex", "engine://fullscreen"},
+        {"fragment", "engine://fullscreen"},
+    };
+    pass["raster_state"] = {
+        {"color_attachments",
+         Json::array({{{"blend", "not_a_blend_mode"}}})},
+    };
+
+    const auto resolve = [&](const Json &config) {
+        return resolveRenderPipeline(
+            RenderPipelineRequest{config, "WP355 raster fixture"},
+            RenderEnvironmentCapabilities{});
+    };
+    const auto preview = [&](const Json &config) {
+        return precompilePreviewGraph(
+            config.dump(),
+            [](std::string_view) -> std::string {
+                throw std::runtime_error(
+                    "WP355 inline fixture must not load a feature");
+            },
+            false);
+    };
+
+    REQUIRE_THROWS_WITH(
+        resolve(authored),
+        Catch::Matchers::ContainsSubstring(
+            "Fullscreen pass 'scene' raster_state color_attachments[0] "
+            "blend"));
+    REQUIRE_THROWS_WITH(
+        preview(authored),
+        Catch::Matchers::ContainsSubstring(
+            "Fullscreen pass 'scene' raster_state color_attachments[0] "
+            "blend"));
+
+    pass["raster_state"] = {{"depth_compare", "always"}};
+    const std::string depth_error =
+        "Fullscreen pass 'scene' raster_state does not support depth field "
+        "'depth_compare'";
+    REQUIRE_THROWS_WITH(resolve(authored), depth_error);
+    REQUIRE_THROWS_WITH(preview(authored), depth_error);
+
+    pass["raster_state"] = {
+        {"color_attachments",
+         Json::array({{{"blend", "additive"},
+                       {"write_mask", "rgba"}}})},
+    };
+    const auto resolved = resolve(authored);
+    const Json *resolved_scene = nullptr;
+    for (const auto &graph :
+         resolved.normalized_config.at("rendering_passes")) {
+        for (const auto &candidate : graph.at("passes")) {
+            if (candidate.value("name", std::string{}) == "scene") {
+                resolved_scene = &candidate;
+            }
+        }
+    }
+    REQUIRE(resolved_scene != nullptr);
+    REQUIRE(resolved_scene->at("raster_state") ==
+            pass.at("raster_state"));
+    REQUIRE_NOTHROW(preview(authored));
+}
+
 TEST_CASE("WP180 preview precompile resolves presets through the shared boundary",
           "[wp180][render-pipeline][resolve][preview]") {
     auto preview_config = baseConfig();

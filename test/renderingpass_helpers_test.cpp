@@ -1905,6 +1905,7 @@ TEST_CASE("pass info JSON parser reads pass type and applies UI defaults", "[ren
 
     REQUIRE(pass_def.isUi());
     REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
+    REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
 }
 
 TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen passes", "[renderingpass]") {
@@ -3095,6 +3096,21 @@ TEST_CASE("pass attachment options parser preserves defaults when fields are omi
     REQUIRE(pass_def.clear_color[3] == 1.0);
     REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eClear);
     REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
+    REQUIRE(pass_def.depth_load_op == vk::AttachmentLoadOp::eClear);
+    REQUIRE(pass_def.depth_store_op == vk::AttachmentStoreOp::eDontCare);
+    pass_def.output_color = {GlobalRenderTargetId{0}};
+    pass_def.output_depth = GlobalRenderTargetId{1};
+    REQUIRE((pass_def.colorAttachmentOperations(0) ==
+             PassAttachmentOperations{vk::AttachmentLoadOp::eClear,
+                                      vk::AttachmentStoreOp::eStore}));
+    REQUIRE((pass_def.depthAttachmentOperations() ==
+             PassAttachmentOperations{vk::AttachmentLoadOp::eClear,
+                                      vk::AttachmentStoreOp::eDontCare}));
+
+    const auto ui_color = defaultPassAttachmentOperations(
+        RenderPassType::ui, PassAttachmentAspect::color);
+    REQUIRE(ui_color.load_op == vk::AttachmentLoadOp::eLoad);
+    REQUIRE(ui_color.store_op == vk::AttachmentStoreOp::eStore);
 }
 
 TEST_CASE("material pass info parser applies explicit material range", "[renderingpass]") {

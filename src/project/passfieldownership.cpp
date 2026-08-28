@@ -53,6 +53,7 @@ constexpr std::array fullscreen_authoring_projection_fields{
     "input"sv,
     "output"sv,
     "shader"sv,
+    "raster_state"sv,
 };
 
 constexpr std::array ownership_table{
