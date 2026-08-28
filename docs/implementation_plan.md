@@ -13562,77 +13562,141 @@ region の保存も、同じ 1 本の RPC(既存 authored pass への field 設�
 生成先行フロー)。特化ノードが生成フローに乗ると
 「composite ノードを置く → 雛形シェーダが即座に開く」という体験になる。
 
-### WP354: ノードが走らせるシェーダを frame plan が運ぶ
+### WP354: ノードが走らせるシェーダの、宣言・実効・出所を frame plan が運ぶ
 
-**§4 規則 11 の中段(`pelican_project` / 複数経路)。仕様レビュー + コードレビュー。**
+**§4 規則 11 の中段。仕様レビュー + コードレビュー。**
+**本節は codex の仕様レビューで 1 度不合格になり、書き直されている(9 指摘、複数が破綻判定)。**
+**末尾に初版の何が壊れたかを残す。**
 
-#### 目的
+#### 位置づけ
 
-**studio のノードからシェーダへ飛べるようにする第一歩。**
-エンジンは著作 config で最初から知っているが、表示用の投影(`framePlanToJson`)が
-運んでいないため、studio はノードがどのシェーダを走らせるか構造的に知り得ない。
+**これは G0(可読性)の原則 1・2 を shader に適用する最初の実装である:**
+「すべての事実が出所を持つ」「実効値を表示し、著作値と違えば両方見せる」。
+**初版はこの原則に自分で違反していた** —— 著作 JSON の verbatim echo は
+「実際に走るシェーダ」ではない。shader は typed parser が既定を解決し
+(`passinfojsonparser.cpp:77`)、**その後 provider が上書きする**
+(`renderingpassconfigregistration.cpp:425` → `passimplementationregistry.cpp:891`)。
 
-#### 事実(本 WP 執筆時に確認。再調査不要)
+#### 事実(初版の誤りを訂正済み)
 
-- **`framePlanToJson` の現行フィールドは 23 個で、`shader` は無い**
-- 著作側: fullscreen/output_transform は `shader.{vertex,fragment}` 必須、
-  raster は `shader.{implementation,vertex,fragment}`、compute は `shader` 文字列
-  または `ray_tracing.{raygen,miss,closesthit}`、
-  shadow_depth/velocity/picking は**省略可で engine:// 既定にフォールバック**、
-  material / anchor / snapshot_copy / ui / imgui は**シェーダを持たない**
-  (material のシェーダは material システム側の所有)
-- 参照は 2 種: `engine://…`(バイナリに埋め込み。ファイルとして開けない)と
-  プロジェクト相対(`projects/sprite_demo/shaders/` 等。実在する慣行)
-- planner は `frameplanner.cpp:675-882` で pass JSON を自前で読んでいる
-- **studio には設定永続化が無い**(QSettings 使用 0 件)。本 WP では作らない
+- **shader 参照は拡張子なしの stem である**(`shaderreference.cpp:65` が明示拡張子を拒否)。
+  実行側が stage に応じて `.vert` 等を付け、runtime compiler OFF では `.spv` を試す
+  (`shaderreference.cpp:22`、`shaderlibrary.cpp:436`)。
+  **stem を `QDesktopServices` に渡しても開けない**
+- 参照の種類は 2 つではない: `engine://` / `user://` / project scheme /
+  **asset-store mount**(`projectpathresolver.cpp:564`、`:633`)
+- **stem→stage 拡張子の規則は core にある。**studio が core を直接使えば D0 違反、
+  複製すれば第二の流儀。**`pelican_project` の共有 resolver に置くこと**
+- material pass はシェーダを「持たない」のではない —— **surface ごとの material shader を
+  複数走らせる**(`projectmaterialasset.cpp:115`)。単数の pass shader という
+  データモデル自体が material には合わない
+- shader を持つ型は初版の列挙より多い: debug_draw / debug_text / gizmo は必須、
+  velocity / picking は `skinned_vertex` を持ち、ray tracing の `miss` / `closesthit` は
+  **配列も受理**(`computetask.cpp:1109`)。output_transform は compose 時に
+  shader 付きで合成される(`featurecompose.cpp:294`)
+- **既存 fixture が壊れる対象は 4 件**(`frameplanner_test.cpp:980 / 1141 / 1178 / 1310`、
+  いずれも JSON 完全一致検査)+ studio の captured RPC fixture
+  (`test/fixtures/devstudio/README.md:3`「無加工で捕捉」)
+- 消費側は加算キーに寛容(ImGui PlanViewer / dump smoke / RPC smoke / studio parser、
+  レビューで全数確認済み)。**壊れるのは完全一致 fixture だけ**
+- (初版の誤り 2 件の訂正)「23 フィールド」は数え方が不成立
+  (node 直下 18 / metadata 語彙 17 / top-level 別)。
+  「studio に設定永続化なし」は誤り —— tool layout の保存が既にある
+  (`toollayoutpreset.cpp:251`)。QSettings 不使用のみが事実
 
 #### やること
 
-**1. engine: 著作された参照をそのまま投影に写す(加算のみ)**
+**1. engine: 解決済みの型付き投影を出す(raw JSON の再解釈をしない)**
 
-- 各ノードについて、pass JSON の `shader` があれば**そのまま**(verbatim)
-  frame plan のノードへ出す。`ray_tracing` も同様に verbatim
-- **無ければフィールドごと出さない。**planner が既定を発明しないこと ——
-  shadow_depth 等の「省略時 engine:// 既定」を planner が複製すると
-  既定値の所在が 2 箇所になる。**表示側が「省略(エンジン既定)」と表示する**
-- 既存 23 フィールドに一切触らない
+各ノードに、**authoritative な解決結果**から:
 
-**2. studio: 表示と「開く」**
+```
+shader: { stages: [ { stage,            vertex / fragment / compute / skinned_vertex /
+                                        raygen / miss[] / closesthit[]
+                      declared_ref?,    著作されていれば(stem のまま)
+                      effective_ref,    実際に走る参照
+                      origin } ] }      authored | engine_default | provider | generated
+```
 
-- ノード詳細に shader 行を出す(vertex / fragment / compute / ray_tracing の各参照)
-- **プロジェクト相対参照**: OS の関連付けで開くアクション
-  (`QDesktopServices`。エディタ指定の設定は作らない)
-- **`engine://` 参照**: 開くアクションは無効にし、**理由を表示する**
-  (埋め込みリソースでありファイルが無い)。黙って何も起きないボタンにしない
-- **シェーダ欄が無いノード**: 「非該当」または「省略(エンジン既定)」を
-  ノード種別に応じて表示。空欄にしない
+- **material pass**: `shader_resolution: "material_owned"` を**正の状態として**出す
+  (stage 配列は v1 では出さない。drill-through は別 WP)。「非該当」と混同しない
+- **フィールド不在は anchor / snapshot_copy だけ**(shader の意味を持たない型)
+- **全 15 型 × 全 stage の表を実装時に完成させ、報告すること**(ui / imgui / 各 debug 型
+  の扱いを含む。仕様が列挙しきれていない型を黙って落とさない)
+
+**2. engine: 開くための参照を別に出す**
+
+- `source_open_ref`: **拡張子を含む決定的なソースパス**。
+  stem→stage 規則を `pelican_project` の共有 resolver に置き、engine がそれで解決して出す
+- 埋め込み(`engine://`)・生成物は `null` + **名前付き理由**
+- asset-store mount は mount 解決後のパス
+
+**3. studio: 表示と「開く」**
+
+- declared と effective が**違うときは両方**表示(G0 原則 2)。origin をバッジで
+- 「開く」は `source_open_ref` があるときだけ有効。無いときは無効 + 理由表示
+- material は「material 所有」と表示(ボタンなし)
 
 #### 受け入れ条件
 
-**否定対照を同じテストの中に置くこと(§4 規約 10)。**
+**本番配線を通すこと(初版の最大の弱点):**
 
-- **shader を著作した各種別(fullscreen / raster / compute / ray_tracing /
-  明示 shader の shadow_depth)で参照が現れ、
-  material / anchor / snapshot_copy で現れないこと**を同一テスト内で比較する
-- **省略した shadow_depth で、planner が engine:// 既定を発明していないこと**
-  (フィールドが無いこと)——「既定値の所在は 1 箇所」の検査
-- **既存 23 フィールドが不変であること**(出荷 4 プロジェクトの frame plan を
-  前後比較。shader / ray_tracing 以外の差分ゼロ)
-- studio: **プロジェクト相対で開くアクションが有効、engine:// で無効 + 理由表示**を
-  同一テスト内で両方実行。「開く」は `QDesktopServices` 呼び出しの継ぎ目で検査し、
-  **実際に外部プロセスを起動しない**こと
-- `uv run tools/doclink.py check` が緑、`SKIP_DEVSTUDIO=ON` でビルドが通ること
-- 全数 2 回(GPU はエージェントに走らせない)
+- **同じ実在 config を production の compile/resolve →
+  `currentFramePlanJson`(または `get_frame_plan` handler)→ `FramePlanModel` →
+  widget の action seam まで一気に通し、表示値を解決済み PassDefinition と照合すること。**
+  engine unit test で helper を直叩きし、studio test で手書き JSON を渡す形は
+  **両方あっても本番配線の証明にならない**
+
+**同一テスト内の対照(§4 規約 10):**
+
+- **著作あり / provider 上書き(既存 fixture `passimplementationregistry_test.cpp:52,108,334`
+  を使う)/ 省略既定(shadow_depth: declared 無し + effective=engine:// + origin=engine_default)/
+  material_owned / 不在(anchor, snapshot_copy)を、同じテストの中で全部比較すること**
+- **省略既定の検査は「フィールドが無いこと」ではなく
+  「実際に解決された値が effective に出ること」**(初版はここが規約 10 違反だった)
+
+**fixture の規律:**
+
+- 壊れる fixture(上記 4 件 + studio captured)を列挙して更新する
+- **単なる再生成ではなく: 新キーを投影から除去すると旧 fixture と完全一致すること**を
+  検査する(加算のみの構造的証明)
+
+**開く参照:**
+
+- **呼び出し回数ではなく、正確なパスを検査すること**:
+  project stem(→ 拡張子付き実パス)/ `engine://`(null + 理由)/ asset-store mount /
+  **runtime compiler ON と OFF の両方**
+- `QDesktopServices` の seam は「呼ばれた」ではなく「何で呼ばれたか」を検査
+
+**構成:**
+
+- **`SKIP_DEVSTUDIO=OFF` を明示的にビルドしてテストも回すこと**
+  (ON は studio の変更をビルドしない検査である)
+- runtime compiler ON/OFF の matrix
+- **preview は対象外と明記する**(`previewgraph.hpp:17` は FramePlan を持たない)
+- 全数 2 回、doclink 緑、GPU はエージェントに走らせない
 
 #### やらないこと
 
-- 雛形シェーダの生成(生成先行フロー。別 WP —— 共有 RPC の設計が要る)
-- 既存パスへフィールドを書き込む RPC(region 永続化と共有。別 WP)
-- 参照の解決検査(ファイル実在・compile 可否)。v1 は著作値の表示だけ
-- QSettings / エディタ指定の設定
-- material のシェーダ表示(所有が material システム側。別の話)
+- 雛形生成 / 既存パスへの書き込み RPC / QSettings(初版と同じ)
+- **material の drill-through**(surface shader の列挙。別 WP。ただし
+  「material_owned」を正の状態として出すところまでは本 WP)
+- 参照先ファイルの存在検査を engine で行うこと(open 時に studio が名前付きエラー)
 
-依存: 無し(WP353 と独立)。見積: 小。
+#### 仕様レビューで壊れた初版(記録)
+
+| 初版 | どう壊れたか |
+|---|---|
+| 著作値を verbatim で写す | **G0 原則への自己違反。**provider 上書きと省略既定の解決後が「実際に走るシェーダ」 |
+| 「プロジェクト相対なら OS で開ける」 | **参照は拡張子なしの stem。そのままでは開けない** |
+| material は「非該当」 | **全出荷プロジェクトの主要経路を偽陰性にする。**material_owned を正の状態に |
+| 「現行 23 フィールド」 | 数え方が不成立(node 18 / metadata 17 / top-level 別)。**数を書くなら数え方を書く** |
+| 「参照は 2 種」 | user:// / project scheme / asset-store mount を落としていた |
+| 「設定永続化なし」 | tool layout の保存が既にある。QSettings 不使用のみが事実 |
+| fixture 影響の列挙なし | 完全一致 fixture 4 件 + studio captured が確実に壊れる |
+| 配線の証明なし | helper 直叩き + 手書き JSON で全条件が通ってしまう |
+
+依存: 無し(WP353 と独立)。見積: **中**(初版の「小」は誤り)。
 
 ### 設計ノート: オブジェクトモデルの現在地とプレファブの方向(2026-08-28、実測調査)
 
