@@ -14027,3 +14027,46 @@ UB_k': coarser を bilinear 1 tap で出力し、One/One で V_{k-1} へその�
 - tent filter 等の品質向上(bilinear 1 tap。最小の標準形に留める)
 
 依存: WP352、WP353、WP355。見積: 中。
+
+#### コードレビュー(134f9a3 = WP355)の仕分け
+
+**元 6 指摘は実質閉鎖**(判定表はレビュー本文)。旧拒否→新受理ゼロ、出荷 68 JSON /
+129 pass 走査で plan 全一致、WP325 期待値は完全一致 6 フィールドで「緩め」ではない。
+
+**直す(WP355a。この連鎖はここで打ち切る):**
+
+1. **[実害] 出力の無い `clear_color` / `clear_colors` が依然黙って消える**
+   (load/store と同型の穴。`shadow_depth` + `clear_color` が無音)。
+   raw/typed 共通で non-empty `output.color` を要求し名前付きエラー
+2. **[新規弱化] `PassAttachmentOperations{}` の意味が変わった**
+   (initializer 削除で value-init が Load/Store、default-init は未初期化 enum)。
+   default constructor を消し、明示 constructor を必須にする
+3. **[規約 10] studio の否定対照が JSON 差分しか見ていない**
+   (core parser の代入や pipeline 適用を消しても緑)。
+   同テスト内で共有パーサが解決した `RasterFixedFunctionState` を additive/omitted
+   両方について比較する
+4. **[防御] 同一 `GpuTimingSampleIdentity` の重複が canonical 順で未定義**
+   (出荷到達性は未確認だが API として穴)。フレーム内重複を名前付きで拒否
+5. **[安価な fail-fast] typed 直接構築で `pass_info` と `pass_type` / 既定値が乖離できる**
+   —— constructor 再設計はせず、**planner 側で pass_type と pass_info variant の
+   整合を検証して名前付きエラー**にする(無音の乖離を fail-fast に変える最小手)
+
+**台帳に書くだけ:**
+
+- typed 構築の factory 化(pass_info / type / 既定値の不可分設定)は本丸だが
+  再設計規模。上記 5 の検証が穴を音に変えるので保留
+- OFF 構成(`PELICAN_RUNTIME_SHADER_COMPILER=OFF` / `SKIP_DEVSTUDIO=ON`)の
+  **実行**は統合側の恒常的な穴。headless の blend 画素テストは ON 専用のまま
+
+### WP355a: レビュー残余 5 件(実害 1・弱化 1・対照 1・防御 2)
+
+**§0 中段。仕様は上の仕分けで足りる。マージ後の §10 レビューは行い、
+そこで出た指摘は直さず台帳に書く(連鎖打ち切り)。**
+
+各件とも: 変異を実際に当てて落ちることを確かめること
+(1: clear_color 付き shadow_depth が named error / 2: `PassAttachmentOperations{}` が
+コンパイル不能 / 3: core 側の代入を消すと studio テストが落ちる /
+4: 重複 identity 注入が named error / 5: 乖離構築が named error)。
+全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成ビルド、GPU はエージェント外。
+
+依存: WP355。見積: 小。
