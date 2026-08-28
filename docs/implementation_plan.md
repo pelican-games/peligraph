@@ -13562,141 +13562,128 @@ region の保存も、同じ 1 本の RPC(既存 authored pass への field 設�
 生成先行フロー)。特化ノードが生成フローに乗ると
 「composite ノードを置く → 雛形シェーダが即座に開く」という体験になる。
 
-### WP354: ノードが走らせるシェーダの、宣言・実効・出所を frame plan が運ぶ
+### WP354: パス所有シェーダの宣言・実効・出所を frame plan が運ぶ
 
-**§4 規則 11 の中段。仕様レビュー + コードレビュー。**
-**本節は codex の仕様レビューで 1 度不合格になり、書き直されている(9 指摘、複数が破綻判定)。**
-**末尾に初版の何が壊れたかを残す。**
+**§4 規則 11 の中段。仕様レビュー + コードレビュー。見積: 大。**
+**本節は 2 度不合格になった第 3 版である(初版 9 指摘 → 第 2 版 10 指摘)。**
+**末尾に両版の判定表を残す。**
 
-#### 位置づけ
+#### 題名の限定(第 2 版からの変更)
 
-**これは G0(可読性)の原則 1・2 を shader に適用する最初の実装である:**
-「すべての事実が出所を持つ」「実効値を表示し、著作値と違えば両方見せる」。
-**初版はこの原則に自分で違反していた** —— 著作 JSON の verbatim echo は
-「実際に走るシェーダ」ではない。shader は typed parser が既定を解決し
-(`passinfojsonparser.cpp:77`)、**その後 provider が上書きする**
-(`renderingpassconfigregistration.cpp:425` → `passimplementationregistry.cpp:891`)。
+**「パスが所有する」シェーダに限る。**material pass は surface ごとの material shader を
+複数走らせる(`projectmaterialasset.cpp:115`)ため、「実際に走る全シェーダ」の G0 完全形には
+**material drill-through(別 WP)が必須依存**である。本 WP は
+`shader_resolution: "material_owned"` を正の状態として出すところまで。
 
-#### 事実(初版の誤りを訂正済み)
+#### 実装の位置(第 2 版の最大の欠陥への答え)
 
-- **shader 参照は拡張子なしの stem である**(`shaderreference.cpp:65` が明示拡張子を拒否)。
-  実行側が stage に応じて `.vert` 等を付け、runtime compiler OFF では `.spv` を試す
-  (`shaderreference.cpp:22`、`shaderlibrary.cpp:436`)。
-  **stem を `QDesktopServices` に渡しても開けない**
-- 参照の種類は 2 つではない: `engine://` / `user://` / project scheme /
-  **asset-store mount**(`projectpathresolver.cpp:564`、`:633`)
-- **stem→stage 拡張子の規則は core にある。**studio が core を直接使えば D0 違反、
-  複製すれば第二の流儀。**`pelican_project` の共有 resolver に置くこと**
-- material pass はシェーダを「持たない」のではない —— **surface ごとの material shader を
-  複数走らせる**(`projectmaterialasset.cpp:115`)。単数の pass shader という
-  データモデル自体が material には合わない
-- shader を持つ型は初版の列挙より多い: debug_draw / debug_text / gizmo は必須、
-  velocity / picking は `skinned_vertex` を持ち、ray tracing の `miss` / `closesthit` は
-  **配列も受理**(`computetask.cpp:1109`)。output_transform は compose 時に
-  shader 付きで合成される(`featurecompose.cpp:294`)
-- **既存 fixture が壊れる対象は 4 件**(`frameplanner_test.cpp:980 / 1141 / 1178 / 1310`、
-  いずれも JSON 完全一致検査)+ studio の captured RPC fixture
-  (`test/fixtures/devstudio/README.md:3`「無加工で捕捉」)
-- 消費側は加算キーに寛容(ImGui PlanViewer / dump smoke / RPC smoke / studio parser、
-  レビューで全数確認済み)。**壊れるのは完全一致 fixture だけ**
-- (初版の誤り 2 件の訂正)「23 フィールド」は数え方が不成立
-  (node 直下 18 / metadata 語彙 17 / top-level 別)。
-  「studio に設定永続化なし」は誤り —— tool layout の保存が既にある
-  (`toollayoutpreset.cpp:251`)。QSettings 不使用のみが事実
+**投影の組み立て点は renderer である。planner ではない。**
+
+- planner の `framePlanToJson` には raw config しか流れず、解決済み PassDefinition が無い
+  (`frameplanner.hpp:168`)。**raw planner 経路の fixture(`frameplanner_test.cpp:980` 等)は
+  本 WP で変わらない。変わったら raw JSON を写している証拠であり、実装の欠陥である。
+  これを否定対照として明文化する**
+- shader の解決済み値は renderer が pipeline 登録時に持つ。
+  **`currentFramePlanJson` の組み立てで、frame plan に shader 投影を合流させる**
+- **declared_ref は provider 上書きで失われる**ので、typed parse の時点で
+  PassDefinition に捕捉して運ぶ(加算フィールド)。effective は provider 解決後の値
+
+#### wire schema(完全形。曖昧な実装が「適合」を主張できないように)
+
+ノードに `shader_resolution` を必ず出す(値は stable code):
+
+```json
+// 通常(fullscreen 等)
+"shader_resolution": { "state": "resolved",
+  "stages": [
+    { "stage": "vertex",   "declared_ref": "shaders/fullscreen", "effective_ref": "shaders/fixture_fullscreen",
+      "origin": "provider", "source_open_ref": "shaders/fixture_fullscreen.vert" },
+    { "stage": "fragment", "effective_ref": "engine://ssao",
+      "origin": "engine_default", "source_open_ref": null, "source_open_reason": "embedded_engine_resource" } ] }
+// material
+"shader_resolution": { "state": "material_owned" }
+// shader を持たない型(anchor / snapshot_copy)
+"shader_resolution": { "state": "not_applicable" }
+```
+
+- `state` ∈ `resolved | material_owned | not_applicable`。**排他。**`stages` は resolved のみ
+- `stage` ∈ `vertex | skinned_vertex | fragment | compute | raygen | miss | closesthit`。
+  **ray の配列は `{stage:"miss", index:0}` 形式で 1 要素 1 エントリ、authored 順**
+- `origin` ∈ `authored | engine_default | provider | generated`
+- `declared_ref` は authored があるときだけ。`effective_ref` は必須
+- `source_open_ref` は**拡張子付きの開けるパス**または null。null のとき
+  `source_open_reason` ∈ `embedded_engine_resource | generated | source_not_found` 必須
+- **未知の state / origin / reason を studio は名前付きエラーで拒否する**(黙って握らない)
 
 #### やること
 
-**1. engine: 解決済みの型付き投影を出す(raw JSON の再解釈をしない)**
-
-各ノードに、**authoritative な解決結果**から:
-
-```
-shader: { stages: [ { stage,            vertex / fragment / compute / skinned_vertex /
-                                        raygen / miss[] / closesthit[]
-                      declared_ref?,    著作されていれば(stem のまま)
-                      effective_ref,    実際に走る参照
-                      origin } ] }      authored | engine_default | provider | generated
-```
-
-- **material pass**: `shader_resolution: "material_owned"` を**正の状態として**出す
-  (stage 配列は v1 では出さない。drill-through は別 WP)。「非該当」と混同しない
-- **フィールド不在は anchor / snapshot_copy だけ**(shader の意味を持たない型)
-- **全 15 型 × 全 stage の表を実装時に完成させ、報告すること**(ui / imgui / 各 debug 型
-  の扱いを含む。仕様が列挙しきれていない型を黙って落とさない)
-
-**2. engine: 開くための参照を別に出す**
-
-- `source_open_ref`: **拡張子を含む決定的なソースパス**。
-  stem→stage 規則を `pelican_project` の共有 resolver に置き、engine がそれで解決して出す
-- 埋め込み(`engine://`)・生成物は `null` + **名前付き理由**
-- asset-store mount は mount 解決後のパス
-
-**3. studio: 表示と「開く」**
-
-- declared と effective が**違うときは両方**表示(G0 原則 2)。origin をバッジで
-- 「開く」は `source_open_ref` があるときだけ有効。無いときは無効 + 理由表示
-- material は「material 所有」と表示(ボタンなし)
+1. **PassDefinition に declared 捕捉を加算**(typed parser で。raw 再解釈をしない)
+2. **renderer の `currentFramePlanJson` で投影を合流**(上記 schema)
+3. **stem→stage 拡張子の規則を `pelican_project` の共有 resolver へ**、
+   `source_open_ref` を engine が解決(`user://` / `project://` / mount / root 未設定の
+   名前付きエラーを含む)
+4. **studio**: 表示(declared ≠ effective なら両方 + origin バッジ)、
+   開く(`source_open_ref` があるときだけ有効。無効時は reason を表示)
+5. manual 更新
 
 #### 受け入れ条件
 
-**本番配線を通すこと(初版の最大の弱点):**
+**配線(production 経路のみで証明):**
 
-- **同じ実在 config を production の compile/resolve →
-  `currentFramePlanJson`(または `get_frame_plan` handler)→ `FramePlanModel` →
-  widget の action seam まで一気に通し、表示値を解決済み PassDefinition と照合すること。**
-  engine unit test で helper を直叩きし、studio test で手書き JSON を渡す形は
-  **両方あっても本番配線の証明にならない**
+- **実在 config + 実 provider 登録**(手組み PassDefinition の helper 直叩きは配線の証明に
+  ならない —— 第 2 版が誤って既存 unit fixture を「本番」と呼んだ)で、
+  compile → `currentFramePlanJson`(または `get_frame_plan` handler)→ `FramePlanModel` →
+  widget action seam を 1 テストで通す
+- **mutation 条件: provider 解決の呼び出しを外すと同じテストが落ちること**を確かめる
+- 同一テスト内対照: authored / provider 上書き / 省略既定(shadow_depth:
+  declared 無し + effective=engine://shadow_depth + origin=engine_default)/
+  material_owned / not_applicable
 
-**同一テスト内の対照(§4 規約 10):**
+**fixture(第 2 版の「除去で旧一致」は持続不能だったため定義し直す):**
 
-- **著作あり / provider 上書き(既存 fixture `passimplementationregistry_test.cpp:52,108,334`
-  を使う)/ 省略既定(shadow_depth: declared 無し + effective=engine:// + origin=engine_default)/
-  material_owned / 不在(anchor, snapshot_copy)を、同じテストの中で全部比較すること**
-- **省略既定の検査は「フィールドが無いこと」ではなく
-  「実際に解決された値が effective に出ること」**(初版はここが規約 10 違反だった)
+- **`*.pre_wp354.json` の不変 baseline を別ファイルで保存し、updater の上書き対象から外す**
+- **通常 CI で `stripWp354(現行) == pre_wp354` を検査**(加算のみの構造的証明が
+  fixture 更新後も生き続ける)
+- **raw planner 経路の fixture(8 件の exact 呼び出しのうち planner 系)は変わらないこと**
+  そのものを検査する(上記トリップワイヤ)
 
-**fixture の規律:**
+**開く参照(正確なパスで):**
 
-- 壊れる fixture(上記 4 件 + studio captured)を列挙して更新する
-- **単なる再生成ではなく: 新キーを投影から除去すると旧 fixture と完全一致すること**を
-  検査する(加算のみの構造的証明)
+- unprefixed project stem / `project://` 明示 / `user://` / mount / `engine://`(null+reason)/
+  root 未設定(名前付きエラー)の**全種を正例・負例で**
+- **runtime compiler OFF は「同じ名前付き失敗」を比較対象にする**
+  (project shader の checked-in `.spv` は存在しない。OFF で pipeline が立たない構成は
+  WP353 と同じ流儀で named failure の一致を検査)
 
-**開く参照:**
+**variant matrix:**
 
-- **呼び出し回数ではなく、正確なパスを検査すること**:
-  project stem(→ 拡張子付き実パス)/ `engine://`(null + 理由)/ asset-store mount /
-  **runtime compiler ON と OFF の両方**
-- `QDesktopServices` の seam は「呼ばれた」ではなく「何で呼ばれたか」を検査
+- `SKIP_DEVSTUDIO=OFF` のビルド + テスト実行 / runtime compiler ON/OFF /
+  **`PELICAN_WITH_IMGUI` ON/OFF**(`ImGuiPassInfo` は条件付き型)/
+  **`PELICAN_WITH_OPENXR` + flat/xr**(xr は pass 名が `#xr` 化され velocity/ui が抜ける)
+- preview は対象外(明記)
 
-**構成:**
-
-- **`SKIP_DEVSTUDIO=OFF` を明示的にビルドしてテストも回すこと**
-  (ON は studio の変更をビルドしない検査である)
-- runtime compiler ON/OFF の matrix
-- **preview は対象外と明記する**(`previewgraph.hpp:17` は FramePlan を持たない)
-- 全数 2 回、doclink 緑、GPU はエージェントに走らせない
+そのほか: 全数 2 回、doclink 緑、GPU はエージェントに走らせない。
 
 #### やらないこと
 
-- 雛形生成 / 既存パスへの書き込み RPC / QSettings(初版と同じ)
-- **material の drill-through**(surface shader の列挙。別 WP。ただし
-  「material_owned」を正の状態として出すところまでは本 WP)
-- 参照先ファイルの存在検査を engine で行うこと(open 時に studio が名前付きエラー)
+- material drill-through(必須の後続 WP として名指し)/ 生成 / 書き込み RPC / QSettings
+- planner(`framePlanToJson`)への shader 追加 —— **してはいけない**(上記)
 
-#### 仕様レビューで壊れた初版(記録)
+#### 判定表(2 回のレビューの記録)
 
-| 初版 | どう壊れたか |
-|---|---|
-| 著作値を verbatim で写す | **G0 原則への自己違反。**provider 上書きと省略既定の解決後が「実際に走るシェーダ」 |
-| 「プロジェクト相対なら OS で開ける」 | **参照は拡張子なしの stem。そのままでは開けない** |
-| material は「非該当」 | **全出荷プロジェクトの主要経路を偽陰性にする。**material_owned を正の状態に |
-| 「現行 23 フィールド」 | 数え方が不成立(node 18 / metadata 17 / top-level 別)。**数を書くなら数え方を書く** |
-| 「参照は 2 種」 | user:// / project scheme / asset-store mount を落としていた |
-| 「設定永続化なし」 | tool layout の保存が既にある。QSettings 不使用のみが事実 |
-| fixture 影響の列挙なし | 完全一致 fixture 4 件 + studio captured が確実に壊れる |
-| 配線の証明なし | helper 直叩き + 手書き JSON で全条件が通ってしまう |
+| 指摘 | 初版 | 第 2 版 | 第 3 版での答え |
+|---|---|---|---|
+| verbatim は走るものでない | 発生 | 部分解消 | declared を parse 時に捕捉、effective は provider 後。組立は renderer |
+| stem は開けない | 発生 | 部分解消 | source_open_ref を schema で必須化、全参照種を条件に |
+| material 偽陰性 | 発生 | 部分解消 | 題名を限定、drill-through を必須依存に |
+| 数の主張(23/9件) | 発生 | 再発(表 8 行) | 数を書くとき数え方を書く。判定表を完全化 |
+| 参照種の欠落 | 発生 | 再発(条件側) | user:// / project:// を正例・負例で条件化 |
+| fixture 前提 | 発生 | **逆転**(planner 経路は変わらないが正) | 不変 baseline + トリップワイヤ |
+| 配線の証明 | 発生 | 再発(unit fixture を本番と誤認) | 実 config + 実 provider + mutation 条件 |
+| wire schema 未定義 | — | 発生 | 完全形を本文に規定 |
+| variant matrix | 発生 | 再発(ImGui/XR 欠落) | 4 軸を明記 |
 
-依存: 無し(WP353 と独立)。見積: **中**(初版の「小」は誤り)。
+依存: 無し(実装は WP353 回収後)。見積: **大**(初版「小」→ 第 2 版「中」→ 実態)。
 
 ### 設計ノート: オブジェクトモデルの現在地とプレファブの方向(2026-08-28、実測調査)
 
