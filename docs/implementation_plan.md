@@ -13952,103 +13952,102 @@ subgraph 置換機構(これらは著作面であり検査面ではない)。
 
 依存: WP355。見積: 小。
 
-### WP357: bloom の upsample 鎖を、標準形の加算 blend に置き換える(第 2 版)
+### WP357: bloom の upsample 鎖を、標準形の加算 blend に置き換える(第 3 版)
 
-**§4 規則 11 の上段。仕様レビューで 1 度不合格(6 指摘)。末尾に何が壊れたかを残す。**
+**§4 規則 11 の上段。仕様レビュー 2 巡不合格(6+6 指摘)。**
+**第 2 巡の指摘には処方箋が付属しており、本版はそれを採る。ここで仕様レビューは打ち切り、
+残余は §10 コードレビューで受ける。末尾に両巡の記録。**
 **利用者判断: A(見た目の変化を標準形への移行として受け入れる)。**
 
-#### 数式(量子化前の係数として)
+#### 数式(量子化前の係数。検算 2 回済み)
 
-```
-旧: 2·V3 + 4·(V2+V1+V0)     UB_k: coarser + 2·current、蓄積先 H_k
-新: 2·(V3+V2+V1+V0)          UB_k': coarser を One/One でその場加算、×2 は最終 1 回
-```
-
-**この係数は理想線形演算の話である。**出荷 LDR の実体は `B8G8R8A8_SRGB` で、
-**各段に clamp・sRGB encode・8bit 丸め・次段 decode が入り、レベル間は bilinear upsample を挟む**。
-sRGB blend は仕様上 linear 空間で行われる(旧 shader 加算も linear。ここは等価)ので、
-差の源は空間×量子化のみ。**CPU oracle はこれを段ごとに模倣すること**(§受け入れ)。
+旧 `2·V3 + 4·(V2+V1+V0)` → 新 `2·ΣV`。sRGB blend は linear 空間(仕様確認済み)。
+差の源は空間(bilinear)× 段ごとの量子化。
 
 #### やること
 
-1. 新シェーダ `bloom_upsample.frag`(入力 1 本を bilinear で出すだけ)。
-   既存の登録手順 + **`.frag` と `.frag.spv` の双方の embed ID**
-2. `projects/example/passes/main_rendering_config.json` の UpsampleBlend_1..3:
-   - 入力は coarser 1 本(V_3→V_2 / V_2→V_1 / V_1→V_0)、出力添付に `"load_op": "Load"`
-   - blend は**この正確な JSON**(第 1 版はパーサが受けないキーを書いていた):
+1. `bloom_upsample.frag`(1 入力 bilinear)。**`.frag` と `.frag.spv` 両方の embed ID 登録**
+2. UpsampleBlend_1..3 の書き換え:
+   - 入力 coarser 1 本、出力添付に `"load_op": "Load"`
+   - **pass-wide `color_load_op` は削除する**(添付 `load_op` だけを残す。二重指定を残さない)
+   - blend: `{"color":{"src":"one","dst":"one","op":"add"},"alpha":{"src":"one","dst":"one","op":"add"}}`
+3. FinalBloomComposite の入力 1 を H_0 → V_0
+4. fixture / golden / **色移行台帳** の更新(§閉包)
 
-```json
-"raster_state": { "color_attachments": [ { "blend": {
-  "color": { "src": "one", "dst": "one", "op": "add" },
-  "alpha": { "src": "one", "dst": "one", "op": "add" } } } ] }
-```
+#### 受け入れ条件(第 2 巡の処方箋を採用)
 
-3. FinalBloomComposite は構造維持、入力 1 を H_0 → 蓄積済み V_0 に差し替え
-4. fixture / golden の更新(§閉包リスト)
+**oracle(「一致」を不等式で定義する):**
 
-#### 受け入れ条件
+- oracle は test-support の**単一 API に抽出**(現行 `color_pipeline_test.cpp` の関数群は
+  anonymous namespace で再利用不能)。入力: 実 device の `subTexelPrecisionBits` /
+  実 extent(160×90 なら 80×45 / 40×22 / 20×11 / 10×5。scale は段ごと切り捨て)/
+  pixel center 座標 / address mode
+- **LDR sRGB8**: 各 V 段の encoded byte を「±1 storage code + device 由来の
+  2D filter 上限 `dx/2^b + dy/2^b`」で比較(WP339a の既存流儀。
+  `golden_harness.cpp:9311, 9620` の機構を使う)
+- **HDR は `R16G16B16A16_SFLOAT`**(「R16F」ではない): 隣接する合法 binary16 と
+  合法 blend 精度から許容区間を作る。Inf/overflow は刺激から除外
+- RGB のみ sRGB 変換、**alpha は線形として別計算**
 
-**CPU oracle(第 1 版の「係数一致」を量子化込みに強化):**
+**刺激(一様画像では bilinear / address mode / 座標の誤りが隠れる):**
 
-- oracle は **段ごとの sRGB encode/round/decode(既存 `color_pipeline_test.cpp:15` の
-  oracle を再利用)と bilinear upsample を模倣**する
-- 入力 2 系統: **(a) 飽和しないレベル別 basis**(係数 2·ΣV の方向を証明)、
-  **(b) 飽和する入力**(入れ子量子化まで GPU と一致することを証明)。
-  (a) だけでは飽和で旧新差が消える LDR の反例がある
-- LDR sRGB8 と **HDR R16F** で別 oracle
+- 本番 UB 3 パスを保った**派生 test config** + 決定的 producer が各 V 段へ
+  **非一様 2D パターン**(端・内部・x/y gradient)を注入(中間段は本番入力から到達不能のため)
+- **test 側で V0..V2 に `TRANSFER_SRC` を足し、各 UB 直後を readback**
+  (最終画素だけでは段間の誤差相殺を許す)
+- `input_sampling` は派生 config で明示(linear/repeat)。**oracle は repeat の端回り込みを
+  模倣する**(既定 sampler は repeat であり、端画素で反対端が混ざる)。
+  実 physical sampler も検査
 
-**本番配線の証明(第 1 版の抜け穴: 3 パスの raster_state を省いても通せた):**
+**本番配線(3 本まとめての変異は 2 本の未配線を見逃す):**
 
-- `passfieldownership_test` の 35 本 manifest を
-  **「32 本は raster_state 省略」+「UB 3 本は明示 One/One」に分割**し、
-  3 本の pass identity・`blend_enabled`・**RGB/alpha 全係数を exact 検査**
-  (係数の exact 検査は `"additive"` preset(src=SrcAlpha)への誤置換も静的に拒否する。
-  LDR 画素では blur の alpha=1 のため preset 差が見えない、が実測済みのため)
-- **同じ本番 config から `raster_state` だけを剥いだ変異を描画し、画素差があること**
-- LDR / HDR × `PELICAN_RUNTIME_SHADER_COMPILER` ON/OFF の matrix。
-  **XR は範囲外と明記**(出荷 XR config にこの鎖は無い)
+- 各 UB について **physical `GraphicsPipelineDesc`**(shader identity / sampler / load /
+  RGB・alpha 全 blend 係数)を既存 testing accessor で exact 検査
+- **「UB1 だけ剥ぐ」「UB2 だけ剥ぐ」「UB3 だけ剥ぐ」の 3 変異を個別に**実行し、
+  各回で解決値と期待画素の両方を検査
+- manifest 検査: 32 本は raster_state 省略 / UB 3 本は明示 One/One、かつ
+  **`contains("color_load_op") == false`**。Load 変異は添付 field だけを削る
+- 係数 exact 検査が `"additive"`(SrcAlpha)誤置換を静的に拒否
 
-**`load_op` の意味(第 1 版の否定対照は不成立だった):**
+**`load_op` の意味:**
 
-- **本番 graph では `load_op` を外しても順序は消えない**
-  (down 鎖経由の推移到達 + planner の WAW barrier)。
-  変異の正しい期待は **「UB の reads から V が落ち、RAW が WAW に変わる」**であり、
-  plan fixture でそれを固定する
-- **Load の宛先寄与は画素で証明する**: 迂回経路の無い最小 2 パス graph を別に組み、
-  Load 有 = 蓄積 / Load 無 = 上書き の画素差を検査する
+- 本番 graph の変異: 「reads から落ち、RAW が WAW に変わる」を plan fixture で固定
+- **最小 2 パス graph(第 2 版の形は no-Load 側が plan 不能だった)**:
+  両 variant に明示 `after: "A"`(順序だけ運び画素を運ばない)。B は入力・port・history 無し、
+  定数 shader、discard 無し。差は添付の `Load` 対 `Clear`(clear 値 RGBA=0,0,0,0 明示)のみ。
+  covered center pixel で Load 側 = `quantize(D+S)`、Clear 側 = `quantize(S)` を実値検査
 
-**fixture / golden の閉包(レビューが列挙済み。全件更新 or 不変を明記):**
+**閉包(第 2 巡で追加確定した分を含む):**
 
-更新: `engine_resources.json`(新シェーダ ID)/ `frameplanner/plans/example_main_render.json` /
-`fixtures/devstudio/example_frame_plan.json` / `devstudio_frameplan_graph_test.cpp:2091` 系
-(H→UB 三辺の削除)/ `renderer_execution_traces.json` の skeletal_toon・usd0b subtree /
-golden `skeletal_toon` `usd0b_static_geometry` の PNG + `inventory.json` SHA +
-`wp73_rgba8_hashes.json`。
-**不変の対照**: `canonical_frame_plan_trace.txt`(pass 順は変わらない)は**再生成せず**
-一致のままであること。
+更新: `engine_resources.json` / `frameplanner/plans/example_main_render.json` /
+`fixtures/devstudio/example_frame_plan.json` / `devstudio_frameplan_graph_test.cpp`
+(**H→UB の 3 辺削除 + UB 鎖の resource を H2/H1/H0 → V2/V1/V0 に 3 置換 +
+records 100 → 97 を数値で固定**)/ `renderer_execution_traces.json` の 2 subtree /
+golden 2 PNG + `inventory.json` SHA + `wp73_rgba8_hashes.json` /
+**`docs/color_migration_manifest.json`**(新 shader・蓄積変更・3 pass 項目。
+golden 差分承認の照合先である機械可読台帳。第 2 版はこれを落としていた)。
+不変対照: `canonical_frame_plan_trace.txt`(pass 順不変)と
+**`devstudio_fullscreen_pass_test`**(UpsampleBlend_3 を選択する直接 consumer)。
 
+- matrix: LDR sRGB8 / HDR SFLOAT × compiler ON/OFF。XR 範囲外(鎖が無いことを確認済み)
 - 全数 2 回、doclink 緑、`SKIP_DEVSTUDIO` 両構成、GPU はエージェント外
 
 #### やらないこと
 
-FinalBloomComposite の blend 化 / down 鎖の変更 / intensity のパラメータ化 /
-tent filter / XR 対応。
+FinalBloomComposite の blend 化 / down 鎖変更 / intensity パラメータ化 / tent filter /
+本番 config の `input_sampling` 変更(派生 test config のみ)。
 
-#### 仕様レビューで壊れた第 1 版(記録)
+#### 2 巡のレビュー記録
 
-| 第 1 版 | どう壊れたか |
-|---|---|
-| blend JSON のキー | `src_factor` 等はパーサが受けない。**文字どおり実装すると起動しない** |
-| 「load_op を外すと順序保証が消える」 | 推移到達 + WAW barrier で順序は残る。**代理条件だった** |
-| 「新数式と CPU 一致」 | 理想線形のみ。sRGB の段ごと量子化と bilinear を模倣しないと oracle にならない。飽和で差が消える反例あり |
-| 配線の証明なし | 3 パスの raster_state を剥いでも全条件が通った |
-| fixture 閉包が仕様外 | レビューが 10 件 + 不変対照 1 件を列挙。仕様に固定した |
-| matrix 不足 | HDR R16F と compiler ON/OFF が欠落。XR の範囲外宣言も無かった |
+第 1 巡: blend JSON がパーサ不受理 / Load 対照が推移順序で不成立 / oracle が理想線形のみ /
+3 本剥ぎの抜け穴 / 閉包 10 件未列挙 / matrix 不足。
+第 2 巡: 「GPU 一致」に一意解なし(device 依存精度)/ 一様 basis の隠蔽 /
+3 本まとめ変異が 2 本を見逃す / 最小 graph の no-Load 側が plan 不能
+(WAW barrier は順序決定の後)/ pass-wide キー残存の二重指定 / 色移行台帳の欠落。
+**両巡で壊れなかった**: 理想係数 / Load→reads 推論の実在 / sRGB linear blend /
+XR 範囲外 / purgeability / D0 / pass 順不変。
 
-レビューが壊せなかった点: 理想係数 2/4→2/2 の検算 / Load→reads 推論の実在(両経路)/
-sRGB blend が linear 空間である事(Vulkan 仕様引用つき)/ purgeability / D0。
-
-依存: WP352、WP353、WP355。見積: 中〜大(oracle の分だけ第 1 版より大きい)。
+依存: WP352、WP353、WP355。見積: **大**(oracle と段別 readback の分)。
 
 #### コードレビュー(134f9a3 = WP355)の仕分け
 
