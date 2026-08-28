@@ -14312,4 +14312,31 @@ leaf の値検証(project/prefab 用)と core の実行時検証(behavior params
 - behavior / event の実行時検証の置き換え(共通 corpus で監視するに留める)
 - 型語彙の拡張(object 種別等はプレファブ U1 で)
 
+#### 第 3 版レビュー(9 指摘)への修正 — v4 差分。仕様レビューは 3 巡で打ち切り、残余は §10
+
+**構造は生存**(写像方式・D0・corpus 実装可能性はレビューが壊せなかった)。以下を採る:
+
+1. **Studio の第三の語彙表を leaf に置換する**(見落としていた所有者)。
+   widget 固有の UI 制約だけを Studio に残し、`i8=127` 成功 / `i8=128` 拒否を
+   同じ production-preflight テストで検査
+2. **「production RPC path で未知文字列」を分割**(engine 側に到達経路が無い):
+   無効 ordinal は fake registration 経由の engine `get_components` 応答生成で /
+   未知 wire 文字列は **Studio の応答取込経路**で。曖昧語は排除
+3. **corpus を 2 種に分割**: 値 corpus は**全 17 型を持つ typed test behavior を登録し
+   `canonicalize_params` 経由**(core 側 API を名指し)。schema 宣言 corpus は
+   leaf 単独とし、core 側の宣言不正は consteval のため**共有しないと明記**
+4. **oracle の主張を限定 + 深化**: 「値受理集合の oracle」と明記した上で、
+   canonicalized JSON・default 補完・**解決値**(例: f32 16777217 → 16777216)・
+   拒否時の安定エラー分類と path まで同テストで比較
+5. **写像は 17 組を個別に意味固定**(対交換 `I8↔U8` の mutation で落ちること)。
+   当該 target に switch-enum の warning-as-error(/we4061 /we4062 相当)。
+   RPC fixture に全 17 型を必ず含める
+6. **wire fixture は WP354a の流儀で**: 親版の named SHA を shared clone で取得し、
+   **`RpcServer::run` の実 bytes(envelope + 改行込み、全 17 型)**を出所ファイル付きで
+   固定。実装側からの再生成禁止。さらに **sentinel resolver seam**(拒否 resolver に
+   差し替えると実 RPC 出力が変わる/名前付きエラー)で、新配線が実際に使われることを観測
+   (grep は配線証明にならない)
+7. **event 経路を第三の比較対象に追加**(15 型。型は alias なので安い)。
+   「監視する」という宙に浮いた記述を条件化
+
 依存: 無し。見積: 小〜中(v3 で ABI 面が消えたため)。
