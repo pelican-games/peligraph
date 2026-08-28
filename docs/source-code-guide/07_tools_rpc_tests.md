@@ -377,7 +377,7 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1112) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L39) に集約されています。現在 **57 メソッド**で、実行制御・診断系が 28、編集系が 29 です。数え方は、両関数内で `server.setHandler()` に渡す一意な公開 method 文字列を 1 メソッドとします。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。
+engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1112) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L45) に集約されています。現在 **57 メソッド**で、実行制御・診断系が 28、編集系が 29 です。数え方は、両関数内で `server.setHandler()` に渡す一意な公開 method 文字列を 1 メソッドとします。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。
 
 #### 実行制御・診断系(28)
 
@@ -437,19 +437,19 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `import_scene_snapshot` | [取り込み](../../src/core/communication/rpcserver.cpp#L1278) | digest 検証つき置換 |
 | `save_scene` | [原子的保存](../../src/core/communication/rpcserver.cpp#L1286) | 原子的な全文書保存 |
 | `open_editor_session` / `resume_editor_session` | [session 開始](../../src/core/communication/rpcserver.cpp#L1306) / [session 再開](../../src/core/communication/rpcserver.cpp#L1130) | actor 登録・再接続 |
-| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L1312) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L99) | 編集ゲート判定 |
+| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L1312) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L105) | 編集ゲート判定 |
 | `eval_preview` | [局所評価](../../src/core/communication/rpcserver.cpp#L1318) | 公開せずリクエストローカルに評価 |
-| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L105) | preview グラフでキャプチャ(第6章 §6.19) |
+| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L111) | preview グラフでキャプチャ(第6章 §6.19) |
 | `edit` | [コマンド適用](../../src/core/communication/rpcserver.cpp#L1324) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
 | `undo` / `redo` | [`internal::selectInputProfile()`](../../src/core/communication/rpcserver.cpp#L1327) / [redo の登録](../../src/core/communication/rpcserver.cpp#L1330) | actor 単位 |
-| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L117) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L126) | preview ticket(lease)の発行・更新・確定・破棄 |
-| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L129) | authored feature 構成と編集 token を返す |
-| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L132) | 追加可能な render feature の catalog を返す |
-| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L135) | render feature 構成を編集する |
-| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L138) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L141) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L144) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L147) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1348) | 非同期結果取得 |
+| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L123) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L132) | preview ticket(lease)の発行・更新・確定・破棄 |
+| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L135) | authored feature 構成と編集 token を返す |
+| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L138) | 追加可能な render feature の catalog を返す |
+| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L141) | render feature 構成を編集する |
+| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L144) | authored pass 編集に必要な target / resource context を返す |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L147) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L150) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L153) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1348) | 非同期結果取得 |
 | `query_journal` | [journal 照会](../../src/core/communication/rpcserver.cpp#L1351) | ジャーナル照会 |
 
 > 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L1581) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L1652) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L1676))
@@ -620,7 +620,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2025) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2054) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -894,7 +894,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L349) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L356) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.

@@ -31,6 +31,8 @@ add_library(pelican_project
     renderfeatureoverlay.cpp
     renderpipeline.cpp
     samplecountplanning.cpp
+    schemawire.cpp
+    schemawire.hpp
     sceneformat.cpp
     shadersourceresolver.cpp
     shaderresourceport.cpp
@@ -50,4 +52,4 @@ target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
 )
 target_include_directories(pelican_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pelican_project PUBLIC nlohmann_json PRIVATE picosha2)
+target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)

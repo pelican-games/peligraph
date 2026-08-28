@@ -224,6 +224,35 @@ if(TARGET pelican_studio_gizmo_model)
   pelican_define_test(devstudio_gizmo_test pelican_studio_gizmo_model)
 endif()
 
+pelican_define_test(schema_vocabulary_test
+  pelican_project
+  pelican_schema_core_adapter
+)
+
+add_test(
+  NAME schema_leaf_independent_consumer
+  COMMAND ${CMAKE_COMMAND}
+    "-DPELICAN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+    "-DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/schema_leaf_consumer_build"
+    "-DNLOHMANN_INCLUDE_DIR=${nlohmann_SOURCE_DIR}/include"
+    "-DGENERATOR=${CMAKE_GENERATOR}"
+    "-DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+    "-DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+    "-DTEST_CONFIG=$<CONFIG>"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_schema_leaf_consumer.cmake
+)
+
+pelican_define_test(schema_rpc_test pelican_core pelican_schema_core_adapter)
+target_compile_definitions(pelican_test_schema_rpc_test PRIVATE
+  PELICAN_WP358_RPC_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp358/get_components.pre_wp358.ndjson"
+)
+
+pelican_define_test(schema_value_oracle_test pelican_core pelican_schema_leaf)
+if(MSVC)
+  target_compile_options(pelican_test_schema_value_oracle_test PRIVATE
+    /constexpr:depth2048)
+endif()
+
 if(TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_frameplan_test
     pelican_studio_frame_plan

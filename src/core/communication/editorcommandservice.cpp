@@ -1,4 +1,5 @@
 #include "editorcommandservice.hpp"
+#include "schemavocabularyadapter.hpp"
 
 #include "renderconfigeditor.hpp"
 #include "../loader/basicconfig.hpp"
@@ -62,31 +63,10 @@ std::uint64_t exactUnsignedInteger(const Json &value, std::string_view path) {
     return result;
 }
 
-std::string_view schemaTypeName(StructFieldType type) noexcept {
-    switch (type) {
-    case StructFieldType::I8: return "i8";
-    case StructFieldType::I16: return "i16";
-    case StructFieldType::I32: return "i32";
-    case StructFieldType::I64: return "i64";
-    case StructFieldType::U8: return "u8";
-    case StructFieldType::U16: return "u16";
-    case StructFieldType::U32: return "u32";
-    case StructFieldType::U64: return "u64";
-    case StructFieldType::F32: return "f32";
-    case StructFieldType::F64: return "f64";
-    case StructFieldType::Vec2: return "vec2";
-    case StructFieldType::Vec3: return "vec3";
-    case StructFieldType::Vec4: return "vec4";
-    case StructFieldType::Quat: return "quat";
-    case StructFieldType::String: return "string";
-    case StructFieldType::Bool: return "bool";
-    case StructFieldType::Enum: return "enum";
-    }
-    return "unknown";
-}
-
-OrderedJson schemaFieldJson(const StructFieldSchema &field) {
-    OrderedJson result{{"name", field.name}, {"type", schemaTypeName(field.type)}};
+OrderedJson schemaFieldJson(
+    const StructFieldSchema &field,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
+    OrderedJson result{{"name", field.name}, {"type", resolver(field.type)}};
     std::visit(
         [&](const auto &range) {
             using Range = std::decay_t<decltype(range)>;
@@ -103,6 +83,17 @@ OrderedJson schemaFieldJson(const StructFieldSchema &field) {
         }
     }
     return result;
+}
+
+EditorCommandRpcAdapter::SchemaTypeNameResolver
+schemaTypeResolverOrDefault(
+    EditorCommandRpcAdapter::SchemaTypeNameResolver resolver) {
+    if (!resolver) {
+        resolver = [](StructFieldType type) {
+            return internal::schemaTypeName(type);
+        };
+    }
+    return resolver;
 }
 
 EditorSceneTreeRequest parseSceneTreeRequest(const Json &params) {
@@ -916,7 +907,9 @@ void EditorCommandService::synchronizePreviewWatch() const noexcept {
     }
 }
 
-OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
+OrderedJson editorComponentQueryJson(
+    const EditorComponentQueryResult &component,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
     OrderedJson result{{"name", component.name},
                        {"component_index", component.component_index},
                        {"authored_json", component.authored_json}};
@@ -932,7 +925,8 @@ OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
     if (component.schema_state == EditorComponentSchemaState::Available) {
         result["schema"]["fields"] = OrderedJson::array();
         for (const auto &field : component.schema_fields) {
-            result["schema"]["fields"].push_back(schemaFieldJson(field));
+            result["schema"]["fields"].push_back(
+                schemaFieldJson(field, resolver));
         }
     }
     result["pending"] = component.pending;
@@ -955,6 +949,11 @@ OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
         };
     }
     return result;
+}
+
+OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
+    const auto resolver = schemaTypeResolverOrDefault({});
+    return editorComponentQueryJson(component, resolver);
 }
 
 OrderedJson editorQueryJson(const EditorSceneRevisionResult &revision) {
@@ -995,7 +994,9 @@ OrderedJson editorQueryJson(const EditorSceneRevisionResult &revision) {
     return result;
 }
 
-OrderedJson editorQueryJson(const EditorObjectQueryResult &object) {
+OrderedJson editorObjectQueryJson(
+    const EditorObjectQueryResult &object,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
     OrderedJson result{{"scene_revision", object.scene_revision.value},
                        {"authoring_object_id", object.authoring_object_id.value},
                        {"declaration_index", object.declaration_index}};
@@ -1007,16 +1008,31 @@ OrderedJson editorQueryJson(const EditorObjectQueryResult &object) {
     }
     result["components"] = OrderedJson::array();
     for (const auto &component : object.components) {
-        result["components"].push_back(editorQueryJson(component));
+        result["components"].push_back(
+            editorComponentQueryJson(component, resolver));
+    }
+    return result;
+}
+
+OrderedJson editorQueryJson(const EditorObjectQueryResult &object) {
+    const auto resolver = schemaTypeResolverOrDefault({});
+    return editorObjectQueryJson(object, resolver);
+}
+
+OrderedJson editorSceneQueryJson(
+    const EditorSceneTreeResult &scene,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
+    OrderedJson result{{"scene_revision", scene.scene_revision.value}, {"scene_id", scene.scene_id}};
+    result["objects"] = OrderedJson::array();
+    for (const auto &object : scene.objects) {
+        result["objects"].push_back(editorObjectQueryJson(object, resolver));
     }
     return result;
 }
 
 OrderedJson editorQueryJson(const EditorSceneTreeResult &scene) {
-    OrderedJson result{{"scene_revision", scene.scene_revision.value}, {"scene_id", scene.scene_id}};
-    result["objects"] = OrderedJson::array();
-    for (const auto &object : scene.objects) result["objects"].push_back(editorQueryJson(object));
-    return result;
+    const auto resolver = schemaTypeResolverOrDefault({});
+    return editorSceneQueryJson(scene, resolver);
 }
 
 OrderedJson editorQueryJson(const EditorListAssetsResult &assets) {
@@ -1063,8 +1079,21 @@ OrderedJson editorQueryJson(const SaveSceneResult &save) {
     };
 }
 
+EditorCommandRpcAdapter::EditorCommandRpcAdapter(
+    const EditorCommandService &service, SchemaTypeNameResolver resolver)
+    : service_{service},
+      schema_type_name_resolver_{
+          schemaTypeResolverOrDefault(std::move(resolver))} {}
+
+EditorCommandRpcAdapter::EditorCommandRpcAdapter(
+    EditorCommandService &service, SchemaTypeNameResolver resolver)
+    : service_{service}, mutable_service_{&service},
+      schema_type_name_resolver_{
+          schemaTypeResolverOrDefault(std::move(resolver))} {}
+
 OrderedJson EditorCommandRpcAdapter::sceneTree(const Json &params) const {
-    return editorQueryJson(service_.sceneTree(parseSceneTreeRequest(params)));
+    return editorSceneQueryJson(service_.sceneTree(parseSceneTreeRequest(params)),
+                                schema_type_name_resolver_);
 }
 
 OrderedJson EditorCommandRpcAdapter::getSceneRevision(const Json &params) const {
@@ -1074,7 +1103,9 @@ OrderedJson EditorCommandRpcAdapter::getSceneRevision(const Json &params) const 
 }
 
 OrderedJson EditorCommandRpcAdapter::getComponents(const Json &params) const {
-    return editorQueryJson(service_.getComponents(parseGetComponentsRequest(params)));
+    return editorObjectQueryJson(
+        service_.getComponents(parseGetComponentsRequest(params)),
+        schema_type_name_resolver_);
 }
 
 OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {

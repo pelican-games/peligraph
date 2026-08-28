@@ -440,6 +440,7 @@ endif()
 
 # main
 ## pelican lib
+add_subdirectory(src/schema)
 add_subdirectory(src/project)
 add_subdirectory(src/core)
 if(PELICAN_WITH_SPIRV_LINK)

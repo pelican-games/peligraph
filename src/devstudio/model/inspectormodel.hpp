@@ -2,6 +2,8 @@
 
 #include "project.hpp"
 
+#include <schema.hpp>
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -31,6 +33,7 @@ struct InspectorWidgetDescriptor {
     std::string component_slot;
     std::size_t component_index = 0;
     std::string json_pointer;
+    Pelican::Schema::FieldDeclaration schema;
     InspectorWidgetKind kind = InspectorWidgetKind::StringInput;
     std::size_t columns = 1;
     std::optional<double> range_min;

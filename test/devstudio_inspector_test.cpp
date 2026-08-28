@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -427,6 +428,61 @@ TEST_CASE("Devstudio inspector derives every widget kind from RPC schema",
     REQUIRE(PelicanStudio::inspectorJsonPointer(
                 "params.weights[2].a/b~c") ==
             "/params/weights/2/a~1b~0c");
+}
+
+TEST_CASE("WP358 Studio production preflight takes I8 bounds from the leaf",
+          "[devstudio][inspector][schema][wp358]") {
+    Json component{
+        {"name", "schema_fixture"},
+        {"component_index", 0},
+        {"authored_json", {{"i8", 127}}},
+        {"schema",
+         {{"state", "available"},
+          {"fields", Json::array({{{"name", "i8"}, {"type", "i8"}}})}}},
+    };
+
+    auto plan = PelicanStudio::makeInspectorWidgetPlan(component, 99);
+    REQUIRE(plan.size() == 1);
+    REQUIRE(plan.front().value == 127);
+    REQUIRE(plan.front().value_matches_schema);
+
+    component["authored_json"]["i8"] = 128;
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 99);
+    REQUIRE(plan.size() == 1);
+    REQUIRE(plan.front().value == 128);
+    REQUIRE_FALSE(plan.front().value_matches_schema);
+}
+
+TEST_CASE("WP358 Studio response ingestion reports unknown leaf type by name and path",
+          "[devstudio][inspector][schema][rpc][wp358]") {
+    InspectorHarness harness;
+    harness.model.selectObject(OutlinerObjectKey{
+        .scene_id = "main",
+        .declaration_index = 2,
+    });
+    harness.model.startSession();
+    const auto session = harness.take("open_editor_session");
+    harness.reply(session,
+                  {{"actor_id", 9},
+                   {"display_name", "Pelican Studio Inspector"}});
+    const auto tree = harness.take("scene_tree");
+    harness.reply(tree, sceneTreeResult());
+    const auto components = harness.take("get_components");
+    auto response = componentResult();
+    response["components"][0]["schema"]["fields"][0]["type"] =
+        "future_vector";
+    harness.reply(components, response);
+
+    REQUIRE_FALSE(harness.model.snapshot());
+    REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Error);
+    REQUIRE(harness.model.notice().message.find(
+                "schema_error[unknown_type_name]") != std::string::npos);
+    REQUIRE(harness.model.notice().message.find("schema field.type") !=
+            std::string::npos);
+    REQUIRE(harness.model.notice().message.find("future_vector") !=
+            std::string::npos);
+    std::cout << "WP358_STUDIO_UNKNOWN_STRING="
+              << harness.model.notice().message << '\n';
 }
 
 TEST_CASE("Devstudio inspector resolves declaration identity before querying components",

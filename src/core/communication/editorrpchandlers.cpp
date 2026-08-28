@@ -3,6 +3,7 @@
 #include "editorcommandservice.hpp"
 #include "editorpreviewservice.hpp"
 #include "rpcserver.hpp"
+#include "schemavocabularyadapter.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -29,6 +30,11 @@ template <class Invoke> nlohmann::json invokeEditorRpc(Invoke &&invoke) {
         nlohmann::json data{{"code", editorCommandErrorCodeName(error.code())}};
         if (error.detail()) data["detail"] = *error.detail();
         throw JsonRpcHandlerError{rpc_code, error.what(), std::move(data)};
+    } catch (const internal::SchemaTypeMappingError &error) {
+        throw JsonRpcHandlerError{
+            JsonRpcErrorCodes::applicationError, error.what(),
+            nlohmann::json{{"code", internal::schemaTypeMappingErrorCodeName(
+                                       error.code())}}};
     } catch (const std::invalid_argument &error) {
         throw JsonRpcHandlerError{JsonRpcErrorCodes::invalidParams, error.what()};
     }

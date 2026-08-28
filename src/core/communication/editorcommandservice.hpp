@@ -302,11 +302,18 @@ class EditorCommandService {
 class EditorCommandRpcAdapter {
     const EditorCommandService &service_;
     EditorCommandService *mutable_service_ = nullptr;
+    std::function<std::string(StructFieldType)> schema_type_name_resolver_;
 
   public:
-    explicit EditorCommandRpcAdapter(const EditorCommandService &service) : service_{service} {}
-    explicit EditorCommandRpcAdapter(EditorCommandService &service)
-        : service_{service}, mutable_service_{&service} {}
+    using SchemaTypeNameResolver =
+        std::function<std::string(StructFieldType)>;
+
+    explicit EditorCommandRpcAdapter(
+        const EditorCommandService &service,
+        SchemaTypeNameResolver resolver = {});
+    explicit EditorCommandRpcAdapter(
+        EditorCommandService &service,
+        SchemaTypeNameResolver resolver = {});
 
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneRevision(const nlohmann::json &params) const;

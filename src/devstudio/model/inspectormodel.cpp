@@ -1,10 +1,12 @@
 #include "inspectormodel.hpp"
 
+#include <schemawire.hpp>
+
 #include <algorithm>
 #include <array>
-#include <cmath>
-#include <limits>
+#include <concepts>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -17,29 +19,29 @@ using Json = nlohmann::json;
 constexpr std::uint64_t MaximumExactJsonInteger = 9007199254740991ULL;
 
 struct SchemaWidgetRule {
-    std::string_view type;
+    Pelican::Schema::FieldType type;
     InspectorWidgetKind kind;
     std::size_t columns;
 };
 
 constexpr std::array SchemaWidgetRules{
-    SchemaWidgetRule{"i8", InspectorWidgetKind::SignedIntegerDrag, 1},
-    SchemaWidgetRule{"i16", InspectorWidgetKind::SignedIntegerDrag, 1},
-    SchemaWidgetRule{"i32", InspectorWidgetKind::SignedIntegerDrag, 1},
-    SchemaWidgetRule{"i64", InspectorWidgetKind::SignedIntegerDrag, 1},
-    SchemaWidgetRule{"u8", InspectorWidgetKind::UnsignedIntegerDrag, 1},
-    SchemaWidgetRule{"u16", InspectorWidgetKind::UnsignedIntegerDrag, 1},
-    SchemaWidgetRule{"u32", InspectorWidgetKind::UnsignedIntegerDrag, 1},
-    SchemaWidgetRule{"u64", InspectorWidgetKind::UnsignedIntegerDrag, 1},
-    SchemaWidgetRule{"f32", InspectorWidgetKind::FloatingPointDrag, 1},
-    SchemaWidgetRule{"f64", InspectorWidgetKind::FloatingPointDrag, 1},
-    SchemaWidgetRule{"bool", InspectorWidgetKind::BooleanCheckbox, 1},
-    SchemaWidgetRule{"enum", InspectorWidgetKind::EnumCombo, 1},
-    SchemaWidgetRule{"string", InspectorWidgetKind::StringInput, 1},
-    SchemaWidgetRule{"vec2", InspectorWidgetKind::VectorDrag, 2},
-    SchemaWidgetRule{"vec3", InspectorWidgetKind::VectorDrag, 3},
-    SchemaWidgetRule{"vec4", InspectorWidgetKind::VectorDrag, 4},
-    SchemaWidgetRule{"quat", InspectorWidgetKind::QuaternionDrag, 4},
+    SchemaWidgetRule{Pelican::Schema::FieldType::I8, InspectorWidgetKind::SignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::I16, InspectorWidgetKind::SignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::I32, InspectorWidgetKind::SignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::I64, InspectorWidgetKind::SignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::U8, InspectorWidgetKind::UnsignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::U16, InspectorWidgetKind::UnsignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::U32, InspectorWidgetKind::UnsignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::U64, InspectorWidgetKind::UnsignedIntegerDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::F32, InspectorWidgetKind::FloatingPointDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::F64, InspectorWidgetKind::FloatingPointDrag, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::Bool, InspectorWidgetKind::BooleanCheckbox, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::Enum, InspectorWidgetKind::EnumCombo, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::String, InspectorWidgetKind::StringInput, 1},
+    SchemaWidgetRule{Pelican::Schema::FieldType::Vec2, InspectorWidgetKind::VectorDrag, 2},
+    SchemaWidgetRule{Pelican::Schema::FieldType::Vec3, InspectorWidgetKind::VectorDrag, 3},
+    SchemaWidgetRule{Pelican::Schema::FieldType::Vec4, InspectorWidgetKind::VectorDrag, 4},
+    SchemaWidgetRule{Pelican::Schema::FieldType::Quat, InspectorWidgetKind::QuaternionDrag, 4},
 };
 
 std::string escapeJsonPointerSegment(std::string_view segment) {
@@ -125,64 +127,27 @@ std::optional<std::uint64_t> optionalUnsigned(const Json &object,
                                std::string{name} + "'");
 }
 
-const SchemaWidgetRule &widgetRule(std::string_view type) {
+const SchemaWidgetRule &widgetRule(Pelican::Schema::FieldType type) {
     const auto rule = std::find_if(
         SchemaWidgetRules.begin(), SchemaWidgetRules.end(),
         [type](const SchemaWidgetRule &candidate) {
             return candidate.type == type;
         });
     if (rule == SchemaWidgetRules.end()) {
-        throw std::runtime_error("unsupported inspector schema type: " +
-                                 std::string{type});
+        throw std::logic_error("leaf schema type has no inspector widget rule");
     }
     return *rule;
 }
 
-bool finiteNumber(const Json &value) {
-    return value.is_number() && std::isfinite(value.get<double>());
-}
-
-bool scalarWithinRange(const Json &value,
-                       const InspectorWidgetDescriptor &descriptor) {
-    if (!finiteNumber(value)) {
-        return false;
-    }
-    const double number = value.get<double>();
-    return (!descriptor.range_min || number >= *descriptor.range_min) &&
-           (!descriptor.range_max || number <= *descriptor.range_max);
-}
-
 bool valueMatchesDescriptor(const Json &value,
                             const InspectorWidgetDescriptor &descriptor) {
-    switch (descriptor.kind) {
-    case InspectorWidgetKind::SignedIntegerDrag:
-        return value.is_number_integer() && scalarWithinRange(value, descriptor);
-    case InspectorWidgetKind::UnsignedIntegerDrag:
-        return (value.is_number_unsigned() ||
-                (value.is_number_integer() && value.get<std::int64_t>() >= 0)) &&
-               scalarWithinRange(value, descriptor);
-    case InspectorWidgetKind::FloatingPointDrag:
-        return scalarWithinRange(value, descriptor);
-    case InspectorWidgetKind::BooleanCheckbox:
-        return value.is_boolean();
-    case InspectorWidgetKind::EnumCombo:
-        return value.is_string() &&
-               std::find(descriptor.enum_values.begin(),
-                         descriptor.enum_values.end(),
-                         value.get_ref<const std::string &>()) !=
-                   descriptor.enum_values.end();
-    case InspectorWidgetKind::StringInput:
-        return value.is_string();
-    case InspectorWidgetKind::VectorDrag:
-    case InspectorWidgetKind::QuaternionDrag:
-        if (!value.is_array() || value.size() != descriptor.columns) {
-            return false;
-        }
-        return std::all_of(value.begin(), value.end(), [&](const Json &item) {
-            return scalarWithinRange(item, descriptor);
-        });
+    try {
+        (void)Pelican::Schema::resolveValue(descriptor.schema, value,
+                                            descriptor.json_pointer);
+        return true;
+    } catch (const Pelican::Schema::Error &) {
+        return false;
     }
-    return false;
 }
 
 std::string resultErrorCode(const Json &result) {
@@ -292,16 +257,16 @@ makeInspectorWidgetPlan(const Json &component,
     std::vector<InspectorWidgetDescriptor> result;
     result.reserve(fields.size());
     for (const Json &field : fields) {
-        const std::string field_name =
-            requiredString(field, "name", "schema field");
-        const std::string field_type =
-            requiredString(field, "type", "schema field");
-        const SchemaWidgetRule &rule = widgetRule(field_type);
+        auto declaration =
+            Pelican::parseSchemaFieldDeclaration(field, "schema field");
+        const std::string field_name = declaration.name;
+        const SchemaWidgetRule &rule = widgetRule(declaration.type);
         InspectorWidgetDescriptor descriptor{
             .field_name = field_name,
             .component_slot = component_name,
             .component_index = component_index,
             .json_pointer = pointer_prefix + inspectorJsonPointer(field_name),
+            .schema = declaration,
             .kind = rule.kind,
             .columns = rule.columns,
             .behavior_attachment_handle =
@@ -314,35 +279,17 @@ makeInspectorWidgetPlan(const Json &component,
             std::to_string(authoring_object_id) + ":" + component_name + ":" +
             std::to_string(component_index) + ":" + descriptor.json_pointer;
 
-        if (const auto range = field.find("range"); range != field.end()) {
-            if (!range->is_array() || range->size() != 2 ||
-                !finiteNumber((*range)[0]) || !finiteNumber((*range)[1])) {
-                throw std::runtime_error("schema field range must contain two finite numbers");
-            }
-            descriptor.range_min = (*range)[0].get<double>();
-            descriptor.range_max = (*range)[1].get<double>();
-            if (*descriptor.range_min > *descriptor.range_max) {
-                throw std::runtime_error("schema field range minimum exceeds maximum");
-            }
-        }
-        if (const auto unit = field.find("unit"); unit != field.end()) {
-            if (!unit->is_string()) {
-                throw std::runtime_error("schema field unit must be a string");
-            }
-            descriptor.unit = unit->get<std::string>();
-        }
-        if (rule.kind == InspectorWidgetKind::EnumCombo) {
-            const Json &values = requiredField(field, "enum", "enum schema field");
-            if (!values.is_array() || values.empty()) {
-                throw std::runtime_error("enum schema field requires values");
-            }
-            for (const Json &value : values) {
-                if (!value.is_string()) {
-                    throw std::runtime_error("enum schema values must be strings");
+        std::visit(
+            [&](const auto &range) {
+                using Range = std::decay_t<decltype(range)>;
+                if constexpr (!std::same_as<Range, std::monostate>) {
+                    descriptor.range_min = static_cast<double>(range.min);
+                    descriptor.range_max = static_cast<double>(range.max);
                 }
-                descriptor.enum_values.push_back(value.get<std::string>());
-            }
-        }
+            },
+            declaration.range);
+        descriptor.unit = declaration.unit;
+        descriptor.enum_values = declaration.enum_values;
 
         try {
             descriptor.value =

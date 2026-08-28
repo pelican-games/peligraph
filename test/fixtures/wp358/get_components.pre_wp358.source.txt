@@ -1,0 +1,56 @@
+WP358 parent wire-fixture provenance
+====================================
+
+Named parent SHA
+----------------
+145b5ab2fde9bbee0620a0c1217ab8cdf55c44a7
+
+Capture source
+--------------
+test/fixtures/wp358/capture_parent_rpc.cpp
+SHA-256: 7B53B71282236DC03D93AA35ED5BEE00E86369D7148BF74BE2B992608D23593F
+
+Procedure
+---------
+1. `git clone --shared . .wp358-parent-capture-tree`
+2. Verify `git -C .wp358-parent-capture-tree rev-parse HEAD` equals the named
+   parent SHA and `rev-parse --is-shallow-repository` is `false`.
+3. Copy the capture source above into the shared clone and add only the
+   one-shot `pelican_wp358_parent_capture` executable to the clone's
+   `test/CMakeLists.txt`.
+4. Configure with the WP358 feature flags (SPIR-V link, Studio, OpenXR, and
+   standard render algorithms enabled). Existing locally populated sources at
+   `C:/src/pelican2/build/_deps/*-src` were supplied through
+   the matching `FETCHCONTENT_SOURCE_DIR_*` variables; no dependency revision
+   was changed.
+5. Build `pelican_wp358_parent_capture` in Release and run:
+
+       pelican_wp358_parent_capture.exe capture.clean-parent.ndjson
+
+6. Verify the clone has no tracked diff under `src/core/userpublic` at capture
+   time. The source registers seven behavior names whose combined response
+   contains all 17 current schema types, feeds one newline-terminated
+   `get_components` request to `RpcServer::run`, and writes `output.str()` in
+   binary mode. Thus the fixture contains the JSON-RPC envelope and the
+   response newline produced by `RpcServer::run`.
+
+Parent defect and wire-only fixture seam
+----------------------------------------
+The named parent cannot register a typed behavior containing vec2, vec3, vec4,
+or quat: `src/core/userpublic/details/schema/structfieldjson.hpp` lines
+321/326/331 construct each scalar component with a braced JSON initializer,
+which creates an array and is rejected as "must be a number" while computing
+the registration fingerprint. The capture source leaves the parent tree
+unchanged. It first registers four typed scalar placeholders, then replaces
+only those four process-local `BehaviorRegistration` schema/canonicalizer
+entries with Vec2/Vec3/Vec4/Quat wire fixtures. The registry lookup,
+`EditorCommandService`, `get_components` handler, JSON-RPC envelope, and
+`RpcServer::run` output path are all production parent code.
+
+Captured bytes
+--------------
+test/fixtures/wp358/get_components.pre_wp358.ndjson
+Byte count: 3605
+Last byte: 0x0A
+SHA-256: 8F5AC06031D34F9070E243E6143DFB094AB452D0B7CCE61BD6525F4104F56B63
+
