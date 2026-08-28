@@ -14217,3 +14217,49 @@ golden が書かれない / 5: 片側だけ刺激を変えると hash 不一致�
 全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成、GPU は本 WP も実行可(直列)。
 
 依存: WP357。見積: 中。
+
+### WP358(= リファクタ R4): 型語彙を leaf へ移し、offline 検証から届くようにする
+
+**§4 規則 11 の中段。仕様レビュー + コードレビュー。プレファブ U1 の前提。**
+
+#### 事実(プレファブ設計レビュー 2 巡で確定済み)
+
+- `StructFieldType` の enum は `src/core/userpublic/details/schema/structfieldschema.hpp:19-39`
+  にあり、**型名への文字列変換は core の RPC 実装内**(`editorcommandservice.cpp:65-106`)
+- 依存方向は **core → `pelican_project`**(逆は不可)。studio は project のみリンク
+- したがって **project 層(offline の文書検証、将来のプレファブ parameter 検証)から
+  型語彙に届かない**。変換が RPC 実装に埋まっているため二重実装しか道が無い
+
+#### やること
+
+1. 型 enum・文字列変換・parameter JSON 検証(値の型/range/enum/unit 検査)を
+   **`pelican_project` 配下(または両者の下の leaf)へ移す**
+2. core の `StructFieldSchema` はそれを**使う側**に回る
+3. **`editorcommandservice.cpp` の変換は移設先の呼び出しに置き換える**(複製を残さない)
+
+#### 地雷(先に名指しする)
+
+- **`structfieldschema.hpp` は game DLL の SDK 面である**(behavior の `Params::schema` が使う)。
+  **DLL のソース互換を壊さないこと**: `userpublic` 側の header は移設先への
+  forwarding include として残し、既存の behavior コード(fixture 3 種 +
+  projects/*/code)が**無変更でコンパイルできる**ことを検査する
+- schema fingerprint(reload の漂流検知)が**移設の前後でバイト同一**であること。
+  変わると全 behavior が「schema 漂流」と誤検知される
+- 型名の文字列(RPC の schema_fields が返す語彙)が 1 文字も変わらないこと
+  (studio の widget 生成が読む)
+
+#### 受け入れ条件
+
+- **移設先の関数を project 層のテストから直接呼べること**(offline 検証の成立証明)
+- **behavior fixture(wp155/162/179)と 4 project の code/ が無変更でビルドされること**
+- **schema fingerprint の前後一致**を、実 behavior 登録で検査(変異: 語彙を 1 つ
+  変えると fingerprint が変わって検知される、も同じテストで)
+- RPC の `schema_fields` 出力がバイト不変(既存 captured fixture との一致)
+- 変換の複製が残っていないこと(旧実装の grep 0 件)
+- 全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成、GPU はエージェント外
+
+#### やらないこと
+
+プレファブ本体 / bindable inventory(U1 側)/ 型語彙の拡張(object 種別等は U1 で)。
+
+依存: 無し。見積: 小〜中。
