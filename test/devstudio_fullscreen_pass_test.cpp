@@ -337,17 +337,26 @@ void driveFromDeclaration(FullscreenPassWidget &form,
                         input.get_ref<const std::string &>());
     }
     const auto &color = declaration.at("output").at("color");
-    if (color.is_array()) {
-        for (const auto &entry : color) {
-            chooseCandidate(form, "pelican.fullscreenPass.colorTarget",
-                            "pelican.fullscreenPass.addColor",
-                            entry.get_ref<const std::string &>());
-        }
-    } else if (!color.is_null()) {
+    bool has_attachment_object = color.is_object();
+    const auto add_color = [&](const Json &entry) {
+        has_attachment_object = has_attachment_object || entry.is_object();
+        const auto &target = entry.is_object() ? entry.at("target") : entry;
         chooseCandidate(form, "pelican.fullscreenPass.colorTarget",
                         "pelican.fullscreenPass.addColor",
-                        color.get_ref<const std::string &>());
+                        target.get_ref<const std::string &>());
+    };
+    if (color.is_array()) {
+        for (const auto &entry : color) {
+            add_color(entry);
+        }
+    } else if (!color.is_null()) {
+        add_color(color);
     }
+    required<QPlainTextEdit>(
+        form, "pelican.fullscreenPass.colorAttachmentReferences")
+        .setPlainText(has_attachment_object
+                          ? QString::fromStdString(color.dump())
+                          : QString{});
     setDepth(form, declaration.at("output").at("depth"));
     QApplication::processEvents();
 }
@@ -642,6 +651,9 @@ void clearDraftThroughControls(FullscreenPassWidget &form) {
         .clear();
     required<QPlainTextEdit>(
         form, "pelican.fullscreenPass.rasterState")
+        .clear();
+    required<QPlainTextEdit>(
+        form, "pelican.fullscreenPass.colorAttachmentReferences")
         .clear();
     for (const auto &[list_name, remove_name] :
          std::array{

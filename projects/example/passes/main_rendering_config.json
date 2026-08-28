@@ -346,44 +346,86 @@
         {
           "name": "UpsampleBlend_3",
           "type": "fullscreen",
-          "output": { "color": ["Bloom_Downsample_H_2_RT"], "depth": null },
-          "input": ["Bloom_Upsample_V_3_RT", "Bloom_Upsample_V_2_RT"],
+          "output": {
+            "color": [
+              { "target": "Bloom_Upsample_V_2_RT", "load_op": "Load" }
+            ],
+            "depth": null
+          },
+          "input": ["Bloom_Upsample_V_3_RT"],
           "shader": {
             "vertex": "engine://fullscreen",
-            "fragment": "engine://bloom_composite"
+            "fragment": "engine://bloom_upsample"
           },
           "clear_color": [0.0, 0.0, 0.0, 0.0],
-          "color_load_op": "Load"
+          "raster_state": {
+            "color_attachments": [
+              {
+                "blend": {
+                  "color": { "src": "one", "dst": "one", "op": "add" },
+                  "alpha": { "src": "one", "dst": "one", "op": "add" }
+                }
+              }
+            ]
+          }
         },
         {
           "name": "UpsampleBlend_2",
           "type": "fullscreen",
-          "output": { "color": ["Bloom_Downsample_H_1_RT"], "depth": null },
-          "input": ["Bloom_Downsample_H_2_RT", "Bloom_Upsample_V_1_RT"],
+          "output": {
+            "color": [
+              { "target": "Bloom_Upsample_V_1_RT", "load_op": "Load" }
+            ],
+            "depth": null
+          },
+          "input": ["Bloom_Upsample_V_2_RT"],
           "shader": {
             "vertex": "engine://fullscreen",
-            "fragment": "engine://bloom_composite"
+            "fragment": "engine://bloom_upsample"
           },
           "clear_color": [0.0, 0.0, 0.0, 0.0],
-          "color_load_op": "Load"
+          "raster_state": {
+            "color_attachments": [
+              {
+                "blend": {
+                  "color": { "src": "one", "dst": "one", "op": "add" },
+                  "alpha": { "src": "one", "dst": "one", "op": "add" }
+                }
+              }
+            ]
+          }
         },
         {
           "name": "UpsampleBlend_1",
           "type": "fullscreen",
-          "output": { "color": ["Bloom_Downsample_H_0_RT"], "depth": null },
-          "input": ["Bloom_Downsample_H_1_RT", "Bloom_Upsample_V_0_RT"],
+          "output": {
+            "color": [
+              { "target": "Bloom_Upsample_V_0_RT", "load_op": "Load" }
+            ],
+            "depth": null
+          },
+          "input": ["Bloom_Upsample_V_1_RT"],
           "shader": {
             "vertex": "engine://fullscreen",
-            "fragment": "engine://bloom_composite"
+            "fragment": "engine://bloom_upsample"
           },
           "clear_color": [0.0, 0.0, 0.0, 0.0],
-          "color_load_op": "Load"
+          "raster_state": {
+            "color_attachments": [
+              {
+                "blend": {
+                  "color": { "src": "one", "dst": "one", "op": "add" },
+                  "alpha": { "src": "one", "dst": "one", "op": "add" }
+                }
+              }
+            ]
+          }
         },
         {
           "name": "FinalBloomComposite",
           "type": "fullscreen",
           "output": { "color": ["swapchain"], "depth": null },
-          "input": ["lit_color", "Bloom_Downsample_H_0_RT"],
+          "input": ["lit_color", "Bloom_Upsample_V_0_RT"],
           "shader": {
             "vertex": "engine://fullscreen",
             "fragment": "engine://bloom_composite"

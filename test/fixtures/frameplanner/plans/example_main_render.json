@@ -157,15 +157,9 @@
       "to": "UpsampleBlend_3"
     },
     {
-      "from": "HorizontalBlur_2",
-      "kind": "read_after_write",
-      "resource": "Bloom_Downsample_H_2_RT",
-      "to": "UpsampleBlend_3"
-    },
-    {
       "from": "UpsampleBlend_3",
       "kind": "read_after_write",
-      "resource": "Bloom_Downsample_H_2_RT",
+      "resource": "Bloom_Upsample_V_2_RT",
       "to": "UpsampleBlend_2"
     },
     {
@@ -175,27 +169,15 @@
       "to": "UpsampleBlend_2"
     },
     {
-      "from": "HorizontalBlur_1",
-      "kind": "read_after_write",
-      "resource": "Bloom_Downsample_H_1_RT",
-      "to": "UpsampleBlend_2"
-    },
-    {
       "from": "UpsampleBlend_2",
       "kind": "read_after_write",
-      "resource": "Bloom_Downsample_H_1_RT",
+      "resource": "Bloom_Upsample_V_1_RT",
       "to": "UpsampleBlend_1"
     },
     {
       "from": "VerticalBlur_0",
       "kind": "read_after_write",
       "resource": "Bloom_Upsample_V_0_RT",
-      "to": "UpsampleBlend_1"
-    },
-    {
-      "from": "HorizontalBlur_0",
-      "kind": "read_after_write",
-      "resource": "Bloom_Downsample_H_0_RT",
       "to": "UpsampleBlend_1"
     },
     {
@@ -207,7 +189,7 @@
     {
       "from": "UpsampleBlend_1",
       "kind": "read_after_write",
-      "resource": "Bloom_Downsample_H_0_RT",
+      "resource": "Bloom_Upsample_V_0_RT",
       "to": "FinalBloomComposite"
     }
   ],
@@ -526,12 +508,11 @@
       "order": 16,
       "reads": [
         "Bloom_Upsample_V_3_RT",
-        "Bloom_Upsample_V_2_RT",
-        "Bloom_Downsample_H_2_RT"
+        "Bloom_Upsample_V_2_RT"
       ],
       "reads_history": [],
       "writes": [
-        "Bloom_Downsample_H_2_RT"
+        "Bloom_Upsample_V_2_RT"
       ]
     },
     {
@@ -541,13 +522,12 @@
       "name": "UpsampleBlend_2",
       "order": 17,
       "reads": [
-        "Bloom_Downsample_H_2_RT",
-        "Bloom_Upsample_V_1_RT",
-        "Bloom_Downsample_H_1_RT"
+        "Bloom_Upsample_V_2_RT",
+        "Bloom_Upsample_V_1_RT"
       ],
       "reads_history": [],
       "writes": [
-        "Bloom_Downsample_H_1_RT"
+        "Bloom_Upsample_V_1_RT"
       ]
     },
     {
@@ -557,13 +537,12 @@
       "name": "UpsampleBlend_1",
       "order": 18,
       "reads": [
-        "Bloom_Downsample_H_1_RT",
-        "Bloom_Upsample_V_0_RT",
-        "Bloom_Downsample_H_0_RT"
+        "Bloom_Upsample_V_1_RT",
+        "Bloom_Upsample_V_0_RT"
       ],
       "reads_history": [],
       "writes": [
-        "Bloom_Downsample_H_0_RT"
+        "Bloom_Upsample_V_0_RT"
       ]
     },
     {
@@ -574,7 +553,7 @@
       "order": 19,
       "reads": [
         "lit_color",
-        "Bloom_Downsample_H_0_RT",
+        "Bloom_Upsample_V_0_RT",
         "swapchain"
       ],
       "reads_history": [],

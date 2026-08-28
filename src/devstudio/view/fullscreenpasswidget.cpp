@@ -142,6 +142,7 @@ struct FullscreenPassWidget::Impl {
     QPushButton *add_color = nullptr;
     QListWidget *colors = nullptr;
     QPushButton *remove_color = nullptr;
+    QPlainTextEdit *color_attachment_references = nullptr;
     QComboBox *depth = nullptr;
     QPushButton *clear_depth = nullptr;
     QLabel *field_ownership = nullptr;
@@ -378,6 +379,20 @@ struct FullscreenPassWidget::Impl {
         target_layout->addWidget(remove_input, 4, 0);
         target_layout->addWidget(remove_color, 4, 1);
         target_layout->addWidget(add_history_input, 5, 0);
+        color_attachment_references = new QPlainTextEdit(targets);
+        color_attachment_references->setObjectName(QStringLiteral(
+            "pelican.fullscreenPass.colorAttachmentReferences"));
+        color_attachment_references->setPlaceholderText(owner.tr(
+            "Optional output.color JSON for attachment objects, for example "
+            "[{\"target\":\"color\",\"load_op\":\"Load\"}]. Targets must "
+            "match the selected color outputs in order."));
+        color_attachment_references->setLineWrapMode(QPlainTextEdit::NoWrap);
+        color_attachment_references->setMaximumHeight(92);
+        target_layout->addWidget(
+            new QLabel(owner.tr("Color attachment references (JSON, optional)"),
+                       targets),
+            6, 0, 1, 3);
+        target_layout->addWidget(color_attachment_references, 7, 0, 1, 3);
         layout->addWidget(targets);
 
         auto *validation = new QGroupBox(owner.tr("Validation axes"), &owner);
@@ -474,6 +489,9 @@ struct FullscreenPassWidget::Impl {
                          [this] { updateDraft(); });
         QObject::connect(raster_state, &QPlainTextEdit::textChanged, &owner,
                          [this] { updateDraft(); });
+        QObject::connect(color_attachment_references,
+                         &QPlainTextEdit::textChanged, &owner,
+                         [this] { updateDraft(); });
         QObject::connect(depth, &QComboBox::currentTextChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(
@@ -556,13 +574,49 @@ struct FullscreenPassWidget::Impl {
     }
 
     Json draftJson() const {
+        const auto selected_colors = selectedSequence(*colors);
+        Json color_output = selected_colors;
+        const auto attachment_text =
+            color_attachment_references->toPlainText().trimmed();
+        if (!attachment_text.isEmpty()) {
+            Json encoded = Json::parse(attachment_text.toUtf8().constData());
+            const Json entries = encoded.is_array()
+                                     ? encoded
+                                     : Json::array({encoded});
+            if (entries.size() != selected_colors.size()) {
+                throw std::runtime_error(
+                    "output.color attachment JSON count must match the "
+                    "selected color output count");
+            }
+            for (std::size_t index = 0; index < entries.size(); ++index) {
+                const Json &entry = entries.at(index);
+                std::string target;
+                if (entry.is_string()) {
+                    target = entry.get<std::string>();
+                } else if (entry.is_object() && entry.contains("target") &&
+                           entry.at("target").is_string()) {
+                    target = entry.at("target").get<std::string>();
+                } else {
+                    throw std::runtime_error(
+                        "each output.color attachment JSON entry requires a "
+                        "string target");
+                }
+                if (target != selected_colors.at(index)) {
+                    throw std::runtime_error(
+                        "output.color attachment JSON targets must match the "
+                        "selected color outputs in order");
+                }
+            }
+            color_output = std::move(encoded);
+        }
+
         Json draft = Json::object();
         draft["name"] = name->text().toStdString();
         draft["type"] = std::string{Pelican::renderPassTypeName(
             Pelican::RenderPassType::fullscreen)};
         draft["input"] = selectedSequence(*inputs);
         draft["output"] = Json{
-            {"color", selectedSequence(*colors)},
+            {"color", std::move(color_output)},
             {"depth", depth->currentIndex() < 0
                           ? Json(nullptr)
                           : Json(depth->currentText().toStdString())},
@@ -763,11 +817,11 @@ struct FullscreenPassWidget::Impl {
             draft = draftJson();
         } catch (const std::exception &error) {
             json->setPlainText(
-                owner.tr("Invalid raster_state JSON: %1")
+                owner.tr("Invalid authored JSON: %1")
                     .arg(QString::fromUtf8(error.what())));
             setAxis(*field_ownership, owner.tr("Field ownership"),
                     "invalid",
-                    owner.tr("raster_state is not valid JSON: %1")
+                    owner.tr("An authored JSON field is invalid: %1")
                         .arg(QString::fromUtf8(error.what())));
             updateValidationSummary();
             updateAuthoringButtons();
@@ -1435,6 +1489,7 @@ struct FullscreenPassWidget::Impl {
         vertex_shader->clear();
         fragment_shader->clear();
         raster_state->clear();
+        color_attachment_references->clear();
         inputs->clear();
         colors->clear();
         depth->setCurrentIndex(-1);

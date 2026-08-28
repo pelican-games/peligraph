@@ -242,12 +242,38 @@
     {"path/field":"dcc/blender_pelican2_bridge and other DCC capture scripts","old_encoding":"absent from this repository at baseline; only planned in docs/dcc_integration_qa_2026-06-12.md:28-45,258-277","new_encoding":"future/external DCC consumers must treat metadata-less PNG as encoded sRGB contract 2","expected_change":"visual_review","reason":"No script exists to edit or test in this worktree; external consumers require coordinated migration documentation."},
     {"path/field":"named render-target snapshot API","old_encoding":"absent from src/projects/test at baseline (no image-snapshot implementation)","new_encoding":"when implemented, return named RT bytes with explicit RT-format encoding metadata","expected_change":"analytic","reason":"Design v4 includes this consumer, but C0 found no current implementation."}
   ],
+  "implemented_migrations": [
+    {
+      "work_package": "WP357",
+      "decision": "accept_standard_form_visual_change",
+      "shader": {
+        "path": "src/core/resources/bloom_upsample.frag",
+        "embedded_ids": ["bloom_upsample.frag", "bloom_upsample.frag.spv"],
+        "sampled_inputs": 1,
+        "operation": "bilinear_sample"
+      },
+      "accumulation": {
+        "domain": "linear_before_storage_quantization",
+        "old": "2*V3 + 4*(V2+V1+V0)",
+        "new": "2*(V3+V2+V1+V0)",
+        "expected_change": "visual_review",
+        "reason": "Each upsample now contributes one sampled coarser level through One/One attachment blending instead of re-reading the horizontal and vertical branches."
+      },
+      "passes": [
+        {"name":"UpsampleBlend_3","input":"Bloom_Upsample_V_3_RT","loaded_output":"Bloom_Upsample_V_2_RT","load_op":"Load","color_blend":{"src":"one","dst":"one","op":"add"},"alpha_blend":{"src":"one","dst":"one","op":"add"}},
+        {"name":"UpsampleBlend_2","input":"Bloom_Upsample_V_2_RT","loaded_output":"Bloom_Upsample_V_1_RT","load_op":"Load","color_blend":{"src":"one","dst":"one","op":"add"},"alpha_blend":{"src":"one","dst":"one","op":"add"}},
+        {"name":"UpsampleBlend_1","input":"Bloom_Upsample_V_1_RT","loaded_output":"Bloom_Upsample_V_0_RT","load_op":"Load","color_blend":{"src":"one","dst":"one","op":"add"},"alpha_blend":{"src":"one","dst":"one","op":"add"}}
+      ],
+      "golden_approval_cases": ["skeletal_toon", "usd0b_static_geometry"],
+      "oracle_api": "evaluateBloomUpsampleOracle"
+    }
+  ],
   "coverage": {
-    "embedded_fragment_shader_files": 21,
-    "declared_shader_outputs": 25,
+    "embedded_fragment_shader_files": 22,
+    "declared_shader_outputs": 26,
     "main_config_render_targets": 18,
     "main_config_passes": 18,
-    "declared_sampler_slots": 36,
+    "declared_sampler_slots": 37,
     "engine_feature_json_files": 5,
     "feature_fixture_json_files": 5,
     "unresolved_before_c1": [

@@ -795,7 +795,44 @@ pelican_struct_schema_compile_fixture(fail_behavior_required TRUE)
 pelican_struct_schema_compile_fixture(fail_behavior_enum_values TRUE)
 pelican_struct_schema_compile_fixture(fail_component_implicit TRUE)
 pelican_struct_schema_compile_fixture(fail_component_codec TRUE)
-add_library(pelican_golden_harness STATIC golden_harness.cpp)
+add_library(pelican_bloom_upsample_test_support STATIC
+    bloom_upsample_oracle.cpp)
+set_target_properties(pelican_bloom_upsample_test_support
+    PROPERTIES CXX_STANDARD 20)
+target_include_directories(pelican_bloom_upsample_test_support PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(pelican_golden_harness STATIC
+    golden_harness.cpp
+    golden_bloom_upsample_harness.cpp)
+set(pelican_wp357_shader_sources
+    fixtures/wp357/wp357_seed_V0.frag
+    fixtures/wp357/wp357_seed_V1.frag
+    fixtures/wp357/wp357_seed_V2.frag
+    fixtures/wp357/wp357_seed_V3.frag
+    fixtures/wp357/wp357_destination.frag
+    fixtures/wp357/wp357_source.frag)
+set(pelican_wp357_shader_output_dir
+    "${CMAKE_CURRENT_BINARY_DIR}/wp357_precompiled_shaders")
+set(pelican_wp357_shader_outputs)
+foreach(wp357_shader IN LISTS pelican_wp357_shader_sources)
+    get_filename_component(wp357_shader_name "${wp357_shader}" NAME)
+    set(wp357_shader_output
+        "${pelican_wp357_shader_output_dir}/${wp357_shader_name}.spv")
+    add_custom_command(
+        OUTPUT "${wp357_shader_output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${pelican_wp357_shader_output_dir}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
+                --target-env=${PELICAN_SHADER_TARGET_ENV}
+                -o "${wp357_shader_output}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/${wp357_shader}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${wp357_shader}"
+        VERBATIM)
+    list(APPEND pelican_wp357_shader_outputs "${wp357_shader_output}")
+endforeach()
+add_custom_target(pelican_wp357_precompiled_shaders
+    DEPENDS ${pelican_wp357_shader_outputs})
+add_dependencies(pelican_golden_harness pelican_wp357_precompiled_shaders)
 set_target_properties(pelican_golden_harness PROPERTIES CXX_STANDARD 20)
 target_include_directories(pelican_golden_harness PRIVATE ${Vulkan_INCLUDE_DIRS})
 if(MSVC)
@@ -812,6 +849,7 @@ target_compile_definitions(pelican_golden_harness PRIVATE
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
+    PELICAN_WP357_PRECOMPILED_SHADER_DIR="${pelican_wp357_shader_output_dir}"
 )
 target_link_libraries(pelican_golden_harness PRIVATE
     Catch2::Catch2
@@ -823,6 +861,7 @@ target_link_libraries(pelican_golden_harness PRIVATE
     stb
     glm
     picosha2
+    pelican_bloom_upsample_test_support
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_golden_harness PRIVATE pelican_shaderc)
@@ -843,6 +882,11 @@ foreach(golden_test_source IN LISTS pelican_golden_test_sources)
         pelican_copy_test_shaderc_runtime(pelican_test_${golden_test_source})
     endif()
 endforeach()
+pelican_define_test(golden_bloom_upsample_test GROUP golden_bloom_upsample_runtime
+    GOLDEN GPU pelican_golden_harness)
+if(PELICAN_RUNTIME_SHADER_COMPILER AND COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_golden_bloom_upsample_test)
+endif()
 pelican_define_test(gltf_fragment_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -924,7 +968,8 @@ target_compile_definitions(pelican_test_projectionjitter_test PRIVATE
 target_compile_definitions(pelican_test_temporal_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(color_pipeline_test GROUP view_temporal pelican_core glm)
+pelican_define_test(color_pipeline_test GROUP view_temporal pelican_core glm
+                    pelican_bloom_upsample_test_support)
 pelican_define_test(rpc_color_contract_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})
 target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE

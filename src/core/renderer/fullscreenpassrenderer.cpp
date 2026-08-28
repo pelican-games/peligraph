@@ -3,6 +3,8 @@
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "frameresources.hpp"
 
+#include <algorithm>
+
 namespace Pelican {
 
 FullscreenPassRenderer::FullscreenPassRenderer() {}
@@ -18,7 +20,27 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
     dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
 
     if (!pass_def.isGenericRaster()) {
-        cmd_buf.draw(6, 1, 0, 0);
+        const auto &raster_state = pass_def.fullscreenInfo().raster_state;
+        const bool has_fixed_function_blend =
+            raster_state &&
+            std::ranges::any_of(
+                raster_state->color_attachments,
+                [](const auto &attachment) {
+                    return attachment.blend.enabled;
+                });
+        const bool uses_engine_oversized_triangle =
+            pass_def.fullscreenInfo().vert_shader.ref ==
+            "engine://fullscreen";
+        // The engine shader's first three procedural vertices form one
+        // oversized triangle; vertices 3..5 overlap part of it. Preserve the
+        // legacy six-vertex path for opaque compatibility and for project
+        // vertex shaders that define an ordinary two-triangle quad. An
+        // explicitly blended engine fullscreen pass must apply its source
+        // contribution exactly once.
+        cmd_buf.draw(has_fixed_function_blend && uses_engine_oversized_triangle
+                         ? 3
+                         : 6,
+                     1, 0, 0);
         return;
     }
     std::visit(

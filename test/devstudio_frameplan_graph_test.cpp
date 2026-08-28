@@ -2094,13 +2094,10 @@ const std::vector<ExpectedDependency> &expectedExpandedDependencies() {
                 "HorizontalBlur_" + std::to_string(index);
             const std::string vertical =
                 "VerticalBlur_" + std::to_string(index);
-            const std::string upsample =
-                "UpsampleBlend_" + std::to_string(index + 1);
             const std::string resource =
                 "Bloom_Downsample_H_" + std::to_string(index) + "_RT";
             add(horizontal, vertical, explicit_after);
             add(horizontal, vertical, read_after_write, resource);
-            add(horizontal, upsample, read_after_write, resource);
             add(horizontal, "__anchor_pelican_ui", explicit_after);
         }
         add("HorizontalBlur_3", "VerticalBlur_3", explicit_after);
@@ -2135,7 +2132,7 @@ const std::vector<ExpectedDependency> &expectedExpandedDependencies() {
                     ? std::string{"FinalBloomComposite"}
                     : "UpsampleBlend_" + std::to_string(index - 1);
             const std::string resource =
-                "Bloom_Downsample_H_" + std::to_string(index - 1) +
+                "Bloom_Upsample_V_" + std::to_string(index - 1) +
                 "_RT";
             add(from, to, explicit_after);
             add(from, to, read_after_write, resource);
@@ -2145,9 +2142,9 @@ const std::vector<ExpectedDependency> &expectedExpandedDependencies() {
         add("FinalBloomComposite", "pelican_ui", read_after_write,
             "display");
 
-        if (result.size() != 100) {
+        if (result.size() != 97) {
             throw std::logic_error(
-                "independent WP316 dependency expectation must contain 100 records");
+                "independent WP357 dependency expectation must contain 97 records");
         }
         return result;
     }();
@@ -5144,7 +5141,7 @@ TEST_CASE(
         StringSet{},
         StringSet{"HighLuminanceExtraction", "HorizontalBlur_0"},
         StringSet{"FinalBloomComposite", "HighLuminanceExtraction",
-                  "HorizontalBlur_0", "UpsampleBlend_1", "VerticalBlur_0",
+                  "HorizontalBlur_0", "VerticalBlur_0",
                   "__snapshot_opaque_color", "forward_transparent",
                   "lighting_pass"},
     };
@@ -5155,7 +5152,7 @@ TEST_CASE(
         REQUIRE(sceneNodeNames(logical) == expected_by_depth[value]);
         REQUIRE(logical.property("pelicanSubtreeDepth").toInt() == value);
     }
-    REQUIRE(expected_by_depth[2].size() == 8);
+    REQUIRE(expected_by_depth[2].size() == 7);
     REQUIRE(expected_by_depth[2].size() < wire.at("nodes").size());
 }
 

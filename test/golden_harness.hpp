@@ -39,5 +39,7 @@ void runSsaoBlurCubeOracle();
 void runSsaoBlurPlanarOracle();
 void runSsaoBlurCrossFamilyOracle();
 void runSsaoBlurIntegrationSmoke();
+void runBloomUpsampleOracle();
+void runBloomLoadSemantics();
 
 } // namespace Pelican::GoldenHarness

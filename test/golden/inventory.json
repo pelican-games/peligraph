@@ -387,7 +387,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "a706cde88594080e44781e2610b78be47b44afb5ed1a274e61a95ba980756d63",
+      "expected_png_sha256": "67bc6d0c1de3a98e43de0b5a0556e3e8a492f28e63abb26bc4b0ce52ed3c4dec",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -791,7 +791,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "b087f559cdb1ea7c75a47e946228003d58489cbf56c84e1f5898c4bd19893073",
+      "expected_png_sha256": "dc93902a9a6a8a1ba0cfdb1833ec7a54efeebb6941dfb29855eced21fcaabc91",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [

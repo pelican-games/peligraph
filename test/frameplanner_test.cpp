@@ -986,6 +986,159 @@ TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "example_main_render.json");
 }
 
+TEST_CASE(
+    "WP357 production bloom attachment loads own the destination dependency",
+    "[frameplanner][attachment-operations][wp357][shipping]") {
+    const auto shipping =
+        readJson(sourceRoot() / "projects" / "example" / "passes" /
+                 "main_rendering_config.json");
+    const std::array stages{
+        std::array<std::string_view, 4>{
+            "UpsampleBlend_3", "VerticalBlur_2",
+            "Bloom_Upsample_V_3_RT", "Bloom_Upsample_V_2_RT"},
+        std::array<std::string_view, 4>{
+            "UpsampleBlend_2", "VerticalBlur_1",
+            "Bloom_Upsample_V_2_RT", "Bloom_Upsample_V_1_RT"},
+        std::array<std::string_view, 4>{
+            "UpsampleBlend_1", "VerticalBlur_0",
+            "Bloom_Upsample_V_1_RT", "Bloom_Upsample_V_0_RT"},
+    };
+
+    const auto find_node = [](const FramePlan &plan,
+                              std::string_view name) {
+        return std::find_if(
+            plan.nodes.begin(), plan.nodes.end(),
+            [&](const auto &node) { return node.name == name; });
+    };
+    const auto find_barrier = [](const FramePlan &plan,
+                                 std::string_view from,
+                                 std::string_view to,
+                                 std::string_view resource) {
+        return std::find_if(
+            plan.barriers.begin(), plan.barriers.end(),
+            [&](const auto &barrier) {
+                return barrier.from == from && barrier.to == to &&
+                       barrier.resource == resource;
+            });
+    };
+
+    const auto canonical_graphs =
+        parseFrameGraphDefinitionsFromConfigJson(shipping);
+    REQUIRE(canonical_graphs.size() == 1);
+    const auto canonical = planFrameGraph(canonical_graphs.front());
+    for (const auto &stage : stages) {
+        const auto node = find_node(canonical, stage[0]);
+        REQUIRE(node != canonical.nodes.end());
+        CHECK(node->reads ==
+              std::vector<std::string>{std::string{stage[2]},
+                                       std::string{stage[3]}});
+        CHECK(node->writes ==
+              std::vector<std::string>{std::string{stage[3]}});
+        const auto barrier =
+            find_barrier(canonical, stage[1], stage[0], stage[3]);
+        REQUIRE(barrier != canonical.barriers.end());
+        CHECK(barrier->kind == "read_after_write");
+    }
+
+    for (const auto &peeled : stages) {
+        auto mutant = shipping;
+        auto &passes = mutant["rendering_passes"][0]["passes"];
+        const auto pass = std::find_if(
+            passes.begin(), passes.end(), [&](const auto &candidate) {
+                return candidate.value("name", std::string{}) == peeled[0];
+            });
+        REQUIRE(pass != passes.end());
+        REQUIRE(pass->at("output").at("color").at(0).erase("load_op") == 1);
+
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(mutant);
+        REQUIRE(graphs.size() == 1);
+        const auto plan = planFrameGraph(graphs.front());
+        const auto node = find_node(plan, peeled[0]);
+        REQUIRE(node != plan.nodes.end());
+        CHECK(node->reads ==
+              std::vector<std::string>{std::string{peeled[2]}});
+        CHECK(node->writes ==
+              std::vector<std::string>{std::string{peeled[3]}});
+        const auto barrier =
+            find_barrier(plan, peeled[1], peeled[0], peeled[3]);
+        REQUIRE(barrier != plan.barriers.end());
+        CHECK(barrier->kind == "write_after_write");
+
+        for (const auto &unchanged : stages) {
+            if (unchanged[0] == peeled[0]) continue;
+            const auto unchanged_node = find_node(plan, unchanged[0]);
+            REQUIRE(unchanged_node != plan.nodes.end());
+            CHECK(std::find(unchanged_node->reads.begin(),
+                            unchanged_node->reads.end(), unchanged[3]) !=
+                  unchanged_node->reads.end());
+        }
+    }
+}
+
+TEST_CASE(
+    "WP357 minimal two-pass load and clear variants are explicitly ordered",
+    "[frameplanner][attachment-operations][wp357][minimal]") {
+    const auto make_graph = [](std::string_view load_op) {
+        auto graph = nlohmann::json::parse(R"json({
+          "name": "wp357_load_semantics",
+          "render_targets": [{"name": "accum"}],
+          "passes": [
+            {
+              "name": "A", "type": "fullscreen",
+              "shader": {
+                "vertex": "engine://fullscreen",
+                "fragment": "engine://fullscreen_constant"
+              },
+              "clear_color": [0.0, 0.0, 0.0, 0.0],
+              "output": {"color": "accum", "depth": null}
+            },
+            {
+              "name": "B", "type": "fullscreen", "after": ["A"],
+              "shader": {
+                "vertex": "engine://fullscreen",
+                "fragment": "engine://fullscreen_constant"
+              },
+              "clear_color": [0.0, 0.0, 0.0, 0.0],
+              "raster_state": {
+                "color_attachments": [{
+                  "blend": {
+                    "color": {"src": "one", "dst": "one", "op": "add"},
+                    "alpha": {"src": "one", "dst": "one", "op": "add"}
+                  }
+                }]
+              },
+              "output": {
+                "color": [{"target": "accum", "load_op": "Load"}],
+                "depth": null
+              }
+            }
+          ]
+        })json");
+        graph["passes"][1]["output"]["color"][0]["load_op"] = load_op;
+        return graph;
+    };
+
+    const auto load_json = make_graph("Load");
+    const auto clear_json = make_graph("Clear");
+    auto normalized_load = load_json;
+    normalized_load["passes"][1]["output"]["color"][0]["load_op"] =
+        "Clear";
+    REQUIRE(normalized_load == clear_json);
+
+    const auto load = planFrameGraph(parseFrameGraphDefinitionFromJson(load_json));
+    const auto clear = planFrameGraph(parseFrameGraphDefinitionFromJson(clear_json));
+    REQUIRE(framePlanOrder(load) == std::vector<std::string>{"A", "B"});
+    REQUIRE(framePlanOrder(clear) == std::vector<std::string>{"A", "B"});
+    REQUIRE(load.nodes.back().reads == std::vector<std::string>{"accum"});
+    REQUIRE(clear.nodes.back().reads.empty());
+    REQUIRE(load.barriers.size() == 1);
+    REQUIRE(clear.barriers.size() == 1);
+    CHECK(load.barriers.front().kind == "read_after_write");
+    CHECK(clear.barriers.front().kind == "write_after_write");
+    CHECK(load.barriers.front().resource == "accum");
+    CHECK(clear.barriers.front().resource == "accum");
+}
+
 TEST_CASE("snapshot plan node reports copy bytes and screen input read dependency",
           "[frameplanner][snapshot]") {
     const auto config = nlohmann::json::parse(R"json({

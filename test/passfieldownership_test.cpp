@@ -646,8 +646,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP353 mechanically enumerates every shipped fullscreen manifest and generated output transform",
-    "[wp353][fullscreen][manifest][canonical]") {
+    "WP357 shipping fullscreen manifest keeps only the three bloom upsample blends explicit",
+    "[wp353][wp357][fullscreen][manifest][canonical]") {
     const auto entries =
         shippingFullscreenManifestEntries();
     REQUIRE(entries.size() == 35);
@@ -696,8 +696,106 @@ TEST_CASE(
     };
     REQUIRE(identities == expected_identities);
 
+    const std::array<std::string_view, 3> bloom_upsample_identities{
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_1",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
+    };
+    REQUIRE(
+        std::count_if(
+            entries.begin(), entries.end(),
+            [](const auto &entry) {
+                return entry.pass.contains("raster_state");
+            }) == 3);
+    REQUIRE(
+        std::count_if(
+            entries.begin(), entries.end(),
+            [](const auto &entry) {
+                return !entry.pass.contains("raster_state");
+            }) == 32);
     for (const auto &entry : entries) {
         DYNAMIC_SECTION(entry.identity) {
+            const bool bloom_upsample =
+                std::find(
+                    bloom_upsample_identities.begin(),
+                    bloom_upsample_identities.end(),
+                    entry.identity) !=
+                bloom_upsample_identities.end();
+            if (bloom_upsample) {
+                REQUIRE(entry.pass.contains("raster_state"));
+                REQUIRE_FALSE(entry.pass.contains("color_load_op"));
+                REQUIRE(
+                    entry.pass.at("shader").at("fragment") ==
+                    "engine://bloom_upsample");
+                REQUIRE(entry.pass.at("input").size() == 1);
+
+                const auto &color_output =
+                    entry.pass.at("output").at("color");
+                REQUIRE(color_output.size() == 1);
+                REQUIRE(color_output.at(0).is_object());
+                REQUIRE(
+                    color_output.at(0).at("load_op") == "Load");
+
+                const auto expected_blend = nlohmann::json{
+                    {"color",
+                     {{"src", "one"},
+                      {"dst", "one"},
+                      {"op", "add"}}},
+                    {"alpha",
+                     {{"src", "one"},
+                      {"dst", "one"},
+                      {"op", "add"}}},
+                };
+                REQUIRE(
+                    entry.pass.at("raster_state")
+                        .at("color_attachments").at(0)
+                        .at("blend") == expected_blend);
+
+                const auto fixed =
+                    parseRasterFixedFunctionState(
+                        entry.pass, 1, entry.identity);
+                REQUIRE(fixed.color_attachments.size() == 1);
+                const auto &blend =
+                    fixed.color_attachments.front().blend;
+                REQUIRE(blend.enabled);
+                REQUIRE(
+                    blend.color.source ==
+                    MaterialOutputBlendFactor::one);
+                REQUIRE(
+                    blend.color.destination ==
+                    MaterialOutputBlendFactor::one);
+                REQUIRE(
+                    blend.color.operation ==
+                    MaterialOutputBlendOperation::add);
+                REQUIRE(
+                    blend.alpha.source ==
+                    MaterialOutputBlendFactor::one);
+                REQUIRE(
+                    blend.alpha.destination ==
+                    MaterialOutputBlendFactor::one);
+                REQUIRE(
+                    blend.alpha.operation ==
+                    MaterialOutputBlendOperation::add);
+
+                // The load-op negative control removes only the attachment
+                // field; retaining the object, target and raster state makes
+                // accidental pass-wide fallback impossible.
+                auto no_load = entry.pass;
+                no_load["output"]["color"][0].erase("load_op");
+                REQUIRE_FALSE(
+                    no_load.at("output").at("color").at(0)
+                        .contains("load_op"));
+                REQUIRE_FALSE(no_load.contains("color_load_op"));
+                REQUIRE(
+                    no_load.at("output").at("color").at(0)
+                        .at("target") ==
+                    color_output.at(0).at("target"));
+                REQUIRE(
+                    no_load.at("raster_state") ==
+                    entry.pass.at("raster_state"));
+                continue;
+            }
+
             REQUIRE_FALSE(
                 entry.pass.contains("raster_state"));
             auto explicit_defaults = entry.pass;
@@ -744,6 +842,76 @@ TEST_CASE(
             output_transforms.front()) ==
         canonicalFullscreenSemanticDescriptor(
             explicit_output_transform));
+}
+
+TEST_CASE(
+    "WP357 color migration ledger fixes the shader accumulation and three pass mappings",
+    "[wp357][color][manifest]") {
+    const auto manifest = nlohmann::json::parse(readText(
+        sourceRoot() / "docs/color_migration_manifest.json"));
+    REQUIRE(manifest.at("schema") ==
+            "pelican.color_migration_manifest");
+
+    const auto &migrations = manifest.at("implemented_migrations");
+    const auto migration = std::find_if(
+        migrations.begin(), migrations.end(),
+        [](const auto &entry) {
+            return entry.value("work_package", std::string{}) == "WP357";
+        });
+    REQUIRE(migration != migrations.end());
+    REQUIRE(std::count_if(
+                migrations.begin(), migrations.end(),
+                [](const auto &entry) {
+                    return entry.value("work_package", std::string{}) ==
+                           "WP357";
+                }) == 1);
+    REQUIRE(migration->at("decision") ==
+            "accept_standard_form_visual_change");
+    const auto expected_shader = nlohmann::json{
+        {"path", "src/core/resources/bloom_upsample.frag"},
+        {"embedded_ids", nlohmann::json::array(
+             {"bloom_upsample.frag", "bloom_upsample.frag.spv"})},
+        {"sampled_inputs", 1},
+        {"operation", "bilinear_sample"},
+    };
+    REQUIRE(migration->at("shader") == expected_shader);
+    REQUIRE(migration->at("accumulation").at("old") ==
+            "2*V3 + 4*(V2+V1+V0)");
+    REQUIRE(migration->at("accumulation").at("new") ==
+            "2*(V3+V2+V1+V0)");
+
+    const auto expected_blend = nlohmann::json{
+        {"src", "one"}, {"dst", "one"}, {"op", "add"}};
+    const std::array<std::array<std::string_view, 3>, 3> expected{
+        std::array<std::string_view, 3>{
+            "UpsampleBlend_3", "Bloom_Upsample_V_3_RT",
+            "Bloom_Upsample_V_2_RT"},
+        std::array<std::string_view, 3>{
+            "UpsampleBlend_2", "Bloom_Upsample_V_2_RT",
+            "Bloom_Upsample_V_1_RT"},
+        std::array<std::string_view, 3>{
+            "UpsampleBlend_1", "Bloom_Upsample_V_1_RT",
+            "Bloom_Upsample_V_0_RT"},
+    };
+    const auto &passes = migration->at("passes");
+    REQUIRE(passes.size() == expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        const auto &pass = passes.at(index);
+        REQUIRE(pass.at("name").get<std::string>() ==
+                std::string{expected[index][0]});
+        REQUIRE(pass.at("input").get<std::string>() ==
+                std::string{expected[index][1]});
+        REQUIRE(pass.at("loaded_output").get<std::string>() ==
+                std::string{expected[index][2]});
+        REQUIRE(pass.at("load_op") == "Load");
+        REQUIRE(pass.at("color_blend") == expected_blend);
+        REQUIRE(pass.at("alpha_blend") == expected_blend);
+    }
+    REQUIRE(migration->at("golden_approval_cases") ==
+            nlohmann::json::array(
+                {"skeletal_toon", "usd0b_static_geometry"}));
+    REQUIRE(migration->at("oracle_api") ==
+            "evaluateBloomUpsampleOracle");
 }
 
 TEST_CASE(

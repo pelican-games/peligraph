@@ -10,6 +10,8 @@
     "bloom_composite.frag.spv",
     "bloom_highpass.frag",
     "bloom_highpass.frag.spv",
+    "bloom_upsample.frag",
+    "bloom_upsample.frag.spv",
     "debug_texture.frag.spv",
     "default_config.json",
     "default.frag.spv",

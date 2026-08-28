@@ -6534,7 +6534,7 @@
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "load",
-            "resource": "Bloom_Downsample_H_2_RT",
+            "resource": "Bloom_Upsample_V_2_RT",
             "samples": 1,
             "store": "store"
           }
@@ -6545,10 +6545,6 @@
           {
             "final_layout": "shader_read_only_optimal",
             "resource": "Bloom_Upsample_V_3_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
           }
         ],
         "kind": "render",
@@ -6565,7 +6561,7 @@
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "load",
-            "resource": "Bloom_Downsample_H_1_RT",
+            "resource": "Bloom_Upsample_V_1_RT",
             "samples": 1,
             "store": "store"
           }
@@ -6575,11 +6571,7 @@
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
+            "resource": "Bloom_Upsample_V_2_RT"
           }
         ],
         "kind": "render",
@@ -6596,7 +6588,7 @@
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "load",
-            "resource": "Bloom_Downsample_H_0_RT",
+            "resource": "Bloom_Upsample_V_0_RT",
             "samples": 1,
             "store": "store"
           }
@@ -6606,11 +6598,7 @@
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
+            "resource": "Bloom_Upsample_V_1_RT"
           }
         ],
         "kind": "render",
@@ -6641,7 +6629,7 @@
           },
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
+            "resource": "Bloom_Upsample_V_0_RT"
           }
         ],
         "kind": "render",
@@ -6707,7 +6695,7 @@
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 18,
+          "paired_storage_round_trip": 15,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -6735,12 +6723,9 @@
           "VerticalBlur_2:Bloom_Upsample_V_2_RT->HorizontalBlur_3",
           "HorizontalBlur_3:Bloom_Downsample_H_3_RT->VerticalBlur_3",
           "VerticalBlur_3:Bloom_Upsample_V_3_RT->UpsampleBlend_3",
-          "VerticalBlur_2:Bloom_Upsample_V_2_RT->UpsampleBlend_3",
-          "UpsampleBlend_3:Bloom_Downsample_H_2_RT->UpsampleBlend_2",
-          "VerticalBlur_1:Bloom_Upsample_V_1_RT->UpsampleBlend_2",
-          "UpsampleBlend_2:Bloom_Downsample_H_1_RT->UpsampleBlend_1",
-          "VerticalBlur_0:Bloom_Upsample_V_0_RT->UpsampleBlend_1",
-          "UpsampleBlend_1:Bloom_Downsample_H_0_RT->FinalBloomComposite",
+          "UpsampleBlend_3:Bloom_Upsample_V_2_RT->UpsampleBlend_2",
+          "UpsampleBlend_2:Bloom_Upsample_V_1_RT->UpsampleBlend_1",
+          "UpsampleBlend_1:Bloom_Upsample_V_0_RT->FinalBloomComposite",
           "pelican_ui:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -15618,7 +15603,7 @@
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "load",
-            "resource": "Bloom_Downsample_H_2_RT",
+            "resource": "Bloom_Upsample_V_2_RT",
             "samples": 1,
             "store": "store"
           }
@@ -15629,10 +15614,6 @@
           {
             "final_layout": "shader_read_only_optimal",
             "resource": "Bloom_Upsample_V_3_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
           }
         ],
         "kind": "render",
@@ -15649,7 +15630,7 @@
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "load",
-            "resource": "Bloom_Downsample_H_1_RT",
+            "resource": "Bloom_Upsample_V_1_RT",
             "samples": 1,
             "store": "store"
           }
@@ -15659,11 +15640,7 @@
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
+            "resource": "Bloom_Upsample_V_2_RT"
           }
         ],
         "kind": "render",
@@ -15680,7 +15657,7 @@
             "final_layout": "color_attachment_optimal",
             "format": "B8G8R8A8_SRGB",
             "load": "load",
-            "resource": "Bloom_Downsample_H_0_RT",
+            "resource": "Bloom_Upsample_V_0_RT",
             "samples": 1,
             "store": "store"
           }
@@ -15690,11 +15667,7 @@
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
-          },
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
+            "resource": "Bloom_Upsample_V_1_RT"
           }
         ],
         "kind": "render",
@@ -15725,7 +15698,7 @@
           },
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
+            "resource": "Bloom_Upsample_V_0_RT"
           }
         ],
         "kind": "render",
@@ -15791,7 +15764,7 @@
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 18,
+          "paired_storage_round_trip": 15,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -15819,12 +15792,9 @@
           "VerticalBlur_2:Bloom_Upsample_V_2_RT->HorizontalBlur_3",
           "HorizontalBlur_3:Bloom_Downsample_H_3_RT->VerticalBlur_3",
           "VerticalBlur_3:Bloom_Upsample_V_3_RT->UpsampleBlend_3",
-          "VerticalBlur_2:Bloom_Upsample_V_2_RT->UpsampleBlend_3",
-          "UpsampleBlend_3:Bloom_Downsample_H_2_RT->UpsampleBlend_2",
-          "VerticalBlur_1:Bloom_Upsample_V_1_RT->UpsampleBlend_2",
-          "UpsampleBlend_2:Bloom_Downsample_H_1_RT->UpsampleBlend_1",
-          "VerticalBlur_0:Bloom_Upsample_V_0_RT->UpsampleBlend_1",
-          "UpsampleBlend_1:Bloom_Downsample_H_0_RT->FinalBloomComposite",
+          "UpsampleBlend_3:Bloom_Upsample_V_2_RT->UpsampleBlend_2",
+          "UpsampleBlend_2:Bloom_Upsample_V_1_RT->UpsampleBlend_1",
+          "UpsampleBlend_1:Bloom_Upsample_V_0_RT->FinalBloomComposite",
           "pelican_ui:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",

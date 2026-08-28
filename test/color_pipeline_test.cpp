@@ -1,4 +1,5 @@
 #include "../src/core/userpublic/color.hpp"
+#include "bloom_upsample_oracle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -123,6 +124,101 @@ TEST_CASE("authored sRGB helper decodes RGB but never alpha", "[color][api][anal
     REQUIRE(decoded.r == Catch::Approx(0.214041).margin(0.00001));
     REQUIRE(decoded.g == Catch::Approx(0.0031308).margin(0.000001));
     REQUIRE(decoded.b == 1.0f);
+}
+
+TEST_CASE(
+    "WP357 bloom oracle models repeat coordinates and keeps alpha linear",
+    "[color][bloom][wp357][oracle]") {
+    using namespace TestSupport;
+    std::array<std::uint8_t, 4 * 4 * 4> destination{};
+    std::array<std::uint8_t, 2 * 2 * 4> source{
+        32, 64, 96, 128,   224, 192, 160, 128,
+        48, 80, 112, 128,  208, 176, 144, 128,
+    };
+    std::array<std::uint8_t, 4 * 4 * 4> actual{};
+    const auto view = [](auto &bytes, std::uint32_t width,
+                         std::uint32_t height) {
+        return BloomUpsampleImageView{
+            .storage = BloomUpsampleStorage::rgba8_srgb,
+            .width = width,
+            .height = height,
+            .bytes = bytes,
+        };
+    };
+    BloomUpsampleOracleRequest request{
+        .destination = view(destination, 4, 4),
+        .source = view(source, 2, 2),
+        .actual = view(actual, 4, 4),
+        .sub_texel_precision_bits = 8,
+        .pixel_center_x = 0.5,
+        .pixel_center_y = 0.5,
+        .address_mode = BloomUpsampleAddressMode::repeat,
+        .blend_mode = BloomUpsampleBlendMode::one_plus_one,
+    };
+    const auto probe = evaluateBloomUpsampleOracle(request);
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        actual[channel] = static_cast<std::uint8_t>(
+            probe.channels[channel].ideal_storage);
+    }
+    request.actual = view(actual, 4, 4);
+    const auto repeat = evaluateBloomUpsampleOracle(request);
+    REQUIRE(repeat.matches);
+
+    request.address_mode = BloomUpsampleAddressMode::clamp_to_edge;
+    const auto clamped = evaluateBloomUpsampleOracle(request);
+    REQUIRE(repeat.channels[0].ideal_linear !=
+            Catch::Approx(clamped.channels[0].ideal_linear));
+    REQUIRE(repeat.channels[1].ideal_linear !=
+            Catch::Approx(clamped.channels[1].ideal_linear));
+    REQUIRE(repeat.channels[0].ideal_linear !=
+            Catch::Approx(repeat.channels[3].ideal_linear));
+    REQUIRE(repeat.channels[3].ideal_linear == Catch::Approx(128.0 / 255.0));
+}
+
+TEST_CASE(
+    "WP357 bloom oracle brackets legal finite RGBA16 SFLOAT results",
+    "[color][bloom][wp357][oracle][hdr]") {
+    using namespace TestSupport;
+    const auto repeated_half = [](std::uint16_t bits) {
+        std::array<std::uint8_t, 8> bytes{};
+        for (std::size_t channel = 0; channel < 4; ++channel) {
+            bytes[channel * 2] = static_cast<std::uint8_t>(bits & 0xffu);
+            bytes[channel * 2 + 1] = static_cast<std::uint8_t>(bits >> 8u);
+        }
+        return bytes;
+    };
+    const auto destination = repeated_half(0x3400u); // 0.25
+    const auto source = repeated_half(0x3800u);      // 0.5
+    auto actual = repeated_half(0x3a00u);            // 0.75
+    const auto view = [](const auto &bytes) {
+        return BloomUpsampleImageView{
+            .storage = BloomUpsampleStorage::rgba16_sfloat,
+            .width = 1,
+            .height = 1,
+            .bytes = bytes,
+        };
+    };
+    BloomUpsampleOracleRequest request{
+        .destination = view(destination),
+        .source = view(source),
+        .actual = view(actual),
+        .sub_texel_precision_bits = 8,
+        .pixel_center_x = 0.5,
+        .pixel_center_y = 0.5,
+        .address_mode = BloomUpsampleAddressMode::repeat,
+        .blend_mode = BloomUpsampleBlendMode::one_plus_one,
+    };
+    const auto finite = evaluateBloomUpsampleOracle(request);
+    REQUIRE(finite.matches);
+    for (const auto &channel : finite.channels) {
+        CHECK(channel.ideal_linear == Catch::Approx(0.75));
+        CHECK(channel.actual_storage == 0x3a00u);
+        CHECK(channel.storage_margin > 0);
+    }
+
+    actual = repeated_half(0x7c00u); // +Inf is never legal for this stimulus.
+    request.actual = view(actual);
+    REQUIRE_FALSE(evaluateBloomUpsampleOracle(request).matches);
 }
 
 } // namespace Pelican

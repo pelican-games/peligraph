@@ -20,6 +20,8 @@ constexpr auto registered_ids =
     "bloom_composite.frag.spv",
     "bloom_highpass.frag",
     "bloom_highpass.frag.spv",
+    "bloom_upsample.frag",
+    "bloom_upsample.frag.spv",
     "debug_texture.frag.spv",
     "default_config.json",
     "default.frag.spv",
@@ -162,6 +164,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("bloom_composite.frag.spv")
     PELICAN_ENGINE_RESOURCE("bloom_highpass.frag")
     PELICAN_ENGINE_RESOURCE("bloom_highpass.frag.spv")
+    PELICAN_ENGINE_RESOURCE("bloom_upsample.frag")
+    PELICAN_ENGINE_RESOURCE("bloom_upsample.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_texture.frag.spv")
     if (id == "default_config.json") {
         static const std::string default_config = b::embed<"default_config.json">().str();
