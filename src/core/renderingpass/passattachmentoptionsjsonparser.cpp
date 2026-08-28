@@ -28,7 +28,7 @@ bool hasAttachment(const nlohmann::json &encoded) {
 
 } // namespace
 
-void validatePassAttachmentOperationsHaveOutputs(
+void validatePassAttachmentOptionsHaveOutputs(
     const nlohmann::json &pass_json, std::string_view pass_name) {
     const auto output = pass_json.find("output");
     const auto has_output = [&](std::string_view aspect) {
@@ -45,6 +45,8 @@ void validatePassAttachmentOperationsHaveOutputs(
                 std::string{aspect} + " attachment");
         }
     };
+    require_output("clear_color", "color");
+    require_output("clear_colors", "color");
     require_output("color_load_op", "color");
     require_output("color_store_op", "color");
     require_output("depth_load_op", "depth");

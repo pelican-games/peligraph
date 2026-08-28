@@ -373,7 +373,7 @@ PassAttachmentOperations physicalAttachmentOperations(
             std::string{pass} + " -> " +
             std::string{resource});
     }
-    return {
+    return PassAttachmentOperations{
         runtimeAttachmentLoadOp(
             result->load_op),
         runtimeAttachmentStoreOp(
@@ -790,8 +790,8 @@ compilePassRenderingContract(
                             physicalTargetName(
                                 target, metadata));
                     }
-                    previous_color_operations[
-                        target] = operations;
+                    previous_color_operations.insert_or_assign(
+                        target, operations);
                 }
 
                 if (isConcreteRenderTarget(

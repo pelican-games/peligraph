@@ -14092,6 +14092,15 @@ XR 範囲外 / purgeability / D0 / pass 順不変。
 
 依存: WP355。見積: 小。
 
+#### 実装後コードレビュー(WP355a working tree)の台帳
+
+- **新規指摘 0 件**。raw/typed 共通の attachment option 検証、
+  `PassAttachmentOperations` の構築制約、Studio の共有パーサ否定対照、
+  GPU timing identity の canonical 化時重複拒否、typed planner の
+  `pass_type` / `pass_info` variant 整合を、対応テストと各指定変異の失敗まで確認した
+- 直前仕分けで保留した typed 構築の factory 化は変更していない。
+  本節をもってコードレビュー連鎖を打ち切る
+
 ### 設計ノート: リファクタリング計画(2026-08-28。全候補が実測済みの根拠を持つ)
 
 **原則**: 憶測の綺麗さでは着手しない。**「この構造が実際に事故を起こした回数」で順位づける。**

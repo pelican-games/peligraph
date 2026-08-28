@@ -118,7 +118,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     PassDefinition pass_def;
     pass_def.name = parseStringField(pass_json, "name", "pass");
     validateName(pass_def.name, "Pass");
-    validatePassAttachmentOperationsHaveOutputs(
+    validatePassAttachmentOptionsHaveOutputs(
         pass_json, pass_def.name);
     const auto pass_type = parsePassTypeFromJson(pass_def, pass_json);
     pass_def.region_tags =

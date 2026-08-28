@@ -360,6 +360,12 @@ struct PassAttachmentOperations {
     vk::AttachmentLoadOp load_op;
     vk::AttachmentStoreOp store_op;
 
+    PassAttachmentOperations() = delete;
+    explicit constexpr PassAttachmentOperations(
+        vk::AttachmentLoadOp load,
+        vk::AttachmentStoreOp store) noexcept
+        : load_op{load}, store_op{store} {}
+
     bool operator==(
         const PassAttachmentOperations &) const = default;
 };
@@ -381,7 +387,7 @@ inline PassAttachmentOperations resolveAttachmentOperations(
     std::optional<vk::AttachmentLoadOp> pass_load_op,
     std::optional<vk::AttachmentStoreOp> pass_store_op,
     PassAttachmentOperations defaults) {
-    return {
+    return PassAttachmentOperations{
         attachment_load_op.value_or(
             pass_load_op.value_or(defaults.load_op)),
         attachment_store_op.value_or(

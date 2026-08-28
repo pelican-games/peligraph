@@ -27,6 +27,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -3084,6 +3085,24 @@ TEST_CASE(
             "non-output render target"));
 }
 
+TEST_CASE(
+    "WP355a pass attachment operations require explicit load and store values",
+    "[renderingpass][attachment-operations][wp355a][construction]") {
+    STATIC_REQUIRE_FALSE(
+        std::is_default_constructible_v<
+            PassAttachmentOperations>);
+    STATIC_REQUIRE(
+        std::is_constructible_v<
+            PassAttachmentOperations,
+            vk::AttachmentLoadOp,
+            vk::AttachmentStoreOp>);
+    const PassAttachmentOperations operations{
+        vk::AttachmentLoadOp::eClear,
+        vk::AttachmentStoreOp::eStore};
+    CHECK(operations.load_op == vk::AttachmentLoadOp::eClear);
+    CHECK(operations.store_op == vk::AttachmentStoreOp::eStore);
+}
+
 TEST_CASE("pass attachment options parser preserves defaults when fields are omitted", "[renderingpass]") {
     PassDefinition pass_def;
     pass_def.name = "geometry";
@@ -4542,11 +4561,11 @@ TEST_CASE(
         vk::Extent2D{64, 64});
     const auto expected_scope_operations =
         std::vector<PassAttachmentOperations>{
-            {
+            PassAttachmentOperations{
                 vk::AttachmentLoadOp::eDontCare,
                 vk::AttachmentStoreOp::eDontCare,
             },
-            {
+            PassAttachmentOperations{
                 vk::AttachmentLoadOp::eClear,
                 vk::AttachmentStoreOp::eStore,
             },
@@ -4828,7 +4847,7 @@ TEST_CASE(
         compiled.passes[0].rendering
             .scope_color_attachment_operations ==
         std::vector<PassAttachmentOperations>{
-            {
+            PassAttachmentOperations{
                 vk::AttachmentLoadOp::eClear,
                 vk::AttachmentStoreOp::eStore,
             }});

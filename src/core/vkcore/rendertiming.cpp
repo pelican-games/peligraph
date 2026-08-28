@@ -74,17 +74,31 @@ std::vector<const GpuTimingSample *> canonicalSamplePointers(
     std::sort(
         result.begin(), result.end(),
         [](const auto *left, const auto *right) {
-            return std::tie(left->identity.view_index,
+            return std::tie(left->identity.logical_frame,
+                            left->identity.graph_variant,
+                            left->identity.view_index,
                             left->identity.node_ordinal,
                             left->identity.node_kind,
                             left->identity.node_name,
                             left->identity.subrange) <
-                   std::tie(right->identity.view_index,
+                   std::tie(right->identity.logical_frame,
+                            right->identity.graph_variant,
+                            right->identity.view_index,
                             right->identity.node_ordinal,
                             right->identity.node_kind,
                             right->identity.node_name,
                             right->identity.subrange);
         });
+    const auto duplicate = std::adjacent_find(
+        result.begin(), result.end(),
+        [](const auto *left, const auto *right) {
+            return left->identity == right->identity;
+        });
+    if (duplicate != result.end()) {
+        throw std::runtime_error(
+            "Duplicate GpuTimingSampleIdentity in frame: " +
+            makeGpuTimingSampleLabel((*duplicate)->identity));
+    }
     return result;
 }
 

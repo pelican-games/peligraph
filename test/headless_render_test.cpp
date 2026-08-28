@@ -4698,7 +4698,7 @@ TEST_CASE(
                 .scope_color_attachment_operations ==
             std::vector<
                 PassAttachmentOperations>{
-                {
+                PassAttachmentOperations{
                     vk::AttachmentLoadOp::
                         eClear,
                     vk::AttachmentStoreOp::

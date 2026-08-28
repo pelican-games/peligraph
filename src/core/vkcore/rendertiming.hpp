@@ -52,6 +52,9 @@ struct GpuTimingSampleIdentity {
     std::string node_kind;
     std::string node_name;
     GpuTimingSubrange subrange = GpuTimingSubrange::barriers;
+
+    bool operator==(
+        const GpuTimingSampleIdentity &) const = default;
 };
 
 struct GpuTimingSample {

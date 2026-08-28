@@ -687,7 +687,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     FrameGraphNodeDefinition node;
     node.name = requireString(pass_json, "name", "pass");
-    validatePassAttachmentOperationsHaveOutputs(
+    validatePassAttachmentOptionsHaveOutputs(
         pass_json, node.name);
     node.declaration_index = declaration_index;
     node.view_family =
@@ -1122,11 +1122,96 @@ std::string renderTargetResourceName(GlobalRenderTargetId id) {
     return {};
 }
 
+std::string_view passInfoVariantName(const PassInfo &pass_info) {
+    if (std::holds_alternative<MaterialPassInfo>(pass_info)) {
+        return "MaterialPassInfo";
+    }
+    if (std::holds_alternative<FullscreenPassInfo>(pass_info)) {
+        return "FullscreenPassInfo";
+    }
+    if (std::holds_alternative<GenericRasterPassInfo>(pass_info)) {
+        return "GenericRasterPassInfo";
+    }
+    if (std::holds_alternative<DebugDrawPassInfo>(pass_info)) {
+        return "DebugDrawPassInfo";
+    }
+    if (std::holds_alternative<GizmoPassInfo>(pass_info)) {
+        return "GizmoPassInfo";
+    }
+    if (std::holds_alternative<DebugTextPassInfo>(pass_info)) {
+        return "DebugTextPassInfo";
+    }
+    if (std::holds_alternative<ShadowDepthPassInfo>(pass_info)) {
+        return "ShadowDepthPassInfo";
+    }
+    if (std::holds_alternative<VelocityPassInfo>(pass_info)) {
+        return "VelocityPassInfo";
+    }
+    if (std::holds_alternative<PickingPassInfo>(pass_info)) {
+        return "PickingPassInfo";
+    }
+    if (std::holds_alternative<UiPassInfo>(pass_info)) {
+        return "UiPassInfo";
+    }
+#if PELICAN_WITH_IMGUI
+    if (std::holds_alternative<ImGuiPassInfo>(pass_info)) {
+        return "ImGuiPassInfo";
+    }
+#endif
+    throw std::logic_error("unknown PassInfo variant");
+}
+
+bool passInfoMatchesType(const PassDefinition &pass) {
+    switch (pass.pass_type) {
+    case RenderPassType::material:
+        return pass.isMaterial();
+    case RenderPassType::fullscreen:
+    case RenderPassType::output_transform:
+        return pass.isFullscreen();
+    case RenderPassType::raster:
+        return pass.isGenericRaster();
+    case RenderPassType::debug_draw:
+        return pass.isDebugDraw();
+    case RenderPassType::gizmo:
+        return pass.isGizmo();
+    case RenderPassType::debug_text:
+        return pass.isDebugText();
+    case RenderPassType::shadow_depth:
+        return pass.isShadowDepth();
+    case RenderPassType::velocity:
+        return pass.isVelocity();
+    case RenderPassType::picking:
+        return pass.isPicking();
+    case RenderPassType::ui:
+        return pass.isUi();
+    case RenderPassType::imgui:
+#if PELICAN_WITH_IMGUI
+        return pass.isImGui();
+#else
+        return false;
+#endif
+    case RenderPassType::canonical_anchor:
+    case RenderPassType::snapshot_copy:
+        return false;
+    }
+    return false;
+}
+
+void validatePassInfoMatchesType(const PassDefinition &pass) {
+    if (passInfoMatchesType(pass)) return;
+    throw std::runtime_error(
+        "Frame planner pass '" + pass.name + "' has pass_type '" +
+        std::string{renderPassTypeName(pass.pass_type)} +
+        "' but pass_info holds '" +
+        std::string{passInfoVariantName(pass.pass_info)} + "'");
+}
+
 FramePlanNodeKind passKind(const PassDefinition &) {
     return FramePlanNodeKind::render;
 }
 
 FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, size_t declaration_index) {
+    validatePassInfoMatchesType(pass);
     FrameGraphNodeDefinition node;
     node.name = pass.name;
     node.kind = passKind(pass);

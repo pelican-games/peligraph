@@ -1859,6 +1859,63 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP355a clear colors require a color output in raw and typed planners",
+    "[frameplanner][attachment-operations][wp355a][missing-output]") {
+    for (const std::string field : {
+             "clear_color", "clear_colors"}) {
+        DYNAMIC_SECTION(field) {
+            auto invalid = wp352FiveColorConfig();
+            auto &pass =
+                invalid["rendering_passes"][0]["passes"][0];
+            pass["name"] = "shadow_pass";
+            pass["type"] = "shadow_depth";
+            pass["output"]["color"] = nullptr;
+            pass[field] = field == "clear_color"
+                              ? nlohmann::json::array(
+                                    {0.0, 0.0, 0.0, 1.0})
+                              : nlohmann::json::object(
+                                    {{"not_an_output",
+                                      nlohmann::json::array(
+                                          {0.0, 0.0, 0.0, 1.0})}});
+            const std::string expected =
+                "Pass 'shadow_pass' field '" + field +
+                "' requires a non-empty output.color attachment";
+
+            REQUIRE_THROWS_WITH(
+                parseFrameGraphDefinitionsFromConfigJson(invalid),
+                expected);
+            const ParsedRenderTargetResolvers resolvers{invalid};
+            REQUIRE_THROWS_WITH(
+                parseRenderingPassDefinitionsFromConfigJson(
+                    invalid, resolvers.nameResolver(),
+                    resolvers.metadataResolver()),
+                expected);
+        }
+    }
+}
+
+TEST_CASE(
+    "WP355a typed planner rejects pass type and info variant drift",
+    "[frameplanner][typed][wp355a][pass-info][fail-fast]") {
+    PassDefinition mismatch;
+    mismatch.name = "typed_mismatch";
+    mismatch.pass_type = RenderPassType::fullscreen;
+    mismatch.pass_info = MaterialPassInfo{};
+    const RenderingPassDefinition definition{
+        "typed_mismatch_graph", {mismatch}};
+
+    REQUIRE_THROWS_WITH(
+        makeFrameGraphDefinition(definition),
+        "Frame planner pass 'typed_mismatch' has pass_type 'fullscreen' "
+        "but pass_info holds 'MaterialPassInfo'");
+
+    mismatch.pass_info = FullscreenPassInfo{};
+    REQUIRE_NOTHROW(makeFrameGraphDefinition(
+        RenderingPassDefinition{
+            "typed_match_graph", {std::move(mismatch)}}));
+}
+
+TEST_CASE(
     "WP352 keeps all four shipping project frame plans unchanged",
     "[frameplanner][attachment-operations][wp352][shipping]") {
     const std::array shipping_configs{

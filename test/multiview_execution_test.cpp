@@ -1421,11 +1421,11 @@ TEST_CASE(
         local_output};
     native_local_contract
         .scope_color_attachment_operations = {
-        {
+        PassAttachmentOperations{
             vk::AttachmentLoadOp::eClear,
             vk::AttachmentStoreOp::eDontCare,
         },
-        {
+        PassAttachmentOperations{
             vk::AttachmentLoadOp::eClear,
             vk::AttachmentStoreOp::eStore,
         }};

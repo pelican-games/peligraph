@@ -6,6 +6,7 @@
 #include "passfieldownership.hpp"
 #include "passshapepolicy.hpp"
 #include "renderpipeline.hpp"
+#include "rasterpass.hpp"
 #include "renderingpass/frameplanner.hpp"
 #include "renderingpass/passdefinitionjsonparser.hpp"
 #include "renderingpass/rendertargetmetadataresolver.hpp"
@@ -1302,6 +1303,39 @@ TEST_CASE(
     REQUIRE_FALSE(
         findPass(omitted_resolved, "blend_graph", "shape_case")
             .contains("raster_state"));
+
+    Pelican::RasterFixedFunctionState omitted_expected;
+    omitted_expected.color_attachments.resize(1);
+    auto additive_expected = omitted_expected;
+    additive_expected.color_attachments.front().blend = {
+        .enabled = true,
+        .color = {
+            .source = Pelican::MaterialOutputBlendFactor::source_alpha,
+            .destination = Pelican::MaterialOutputBlendFactor::one,
+            .operation = Pelican::MaterialOutputBlendOperation::add,
+        },
+        .alpha = {
+            .source = Pelican::MaterialOutputBlendFactor::one,
+            .destination = Pelican::MaterialOutputBlendFactor::one,
+            .operation = Pelican::MaterialOutputBlendOperation::add,
+        },
+    };
+    additive_expected.color_attachments.front().write_mask =
+        Pelican::materialOutputWriteRed |
+        Pelican::materialOutputWriteGreen;
+    const auto additive_fixed =
+        Pelican::parseFullscreenRasterFixedFunctionState(
+            findPass(
+                additive_resolved, "blend_graph", "shape_case"),
+            "WP355a additive studio pass");
+    const auto omitted_fixed =
+        Pelican::parseFullscreenRasterFixedFunctionState(
+            findPass(
+                omitted_resolved, "blend_graph", "shape_case"),
+            "WP355a omitted studio pass");
+    CHECK(additive_fixed == additive_expected);
+    CHECK(omitted_fixed == omitted_expected);
+    CHECK(additive_fixed != omitted_fixed);
 }
 
 TEST_CASE(

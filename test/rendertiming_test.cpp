@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
 #include <bit>
 #include <cstdint>
@@ -317,6 +318,32 @@ TEST_CASE(
     REQUIRE(snapshot.latest_views.size() == 1);
     REQUIRE(snapshot.latest_views.front().logical_frame ==
             gpu_timing_history_capacity);
+}
+
+TEST_CASE(
+    "WP355a GPU timing rejects a duplicate sample identity within a frame",
+    "[gpu-timing][identity][wp355a][duplicate][fail-fast]") {
+    const GpuTimingSample duplicate{
+        .identity = GpuTimingSampleIdentity{
+            42, "flat", 0, 7, "render", "lighting",
+            GpuTimingSubrange::body},
+        .supported = true,
+        .ms = 0.25,
+    };
+    const std::deque<GpuTimingHistoryFrame> history{
+        GpuTimingHistoryFrame{
+            .logical_frame = 42,
+            .graph_variant = "flat",
+            .samples = {duplicate, duplicate},
+        }};
+    const std::string expected =
+        "Duplicate GpuTimingSampleIdentity in frame: "
+        "frame/42/graph/flat/view/0/node/7:render:lighting/body";
+
+    REQUIRE_THROWS_WITH(
+        publishLatestGpuTimingSnapshot(history), expected);
+    REQUIRE_THROWS_WITH(
+        projectGpuTimingStatus(history, {}), expected);
 }
 
 } // namespace Pelican

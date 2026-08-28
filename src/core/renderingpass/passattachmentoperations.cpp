@@ -8,7 +8,7 @@ PassAttachmentOperations defaultPassAttachmentOperations(
     RenderPassType pass_type, PassAttachmentAspect aspect) {
     switch (aspect) {
     case PassAttachmentAspect::color:
-        return {
+        return PassAttachmentOperations{
             pass_type == RenderPassType::ui ||
                     pass_type == RenderPassType::imgui
                 ? vk::AttachmentLoadOp::eLoad
@@ -16,7 +16,7 @@ PassAttachmentOperations defaultPassAttachmentOperations(
             vk::AttachmentStoreOp::eStore,
         };
     case PassAttachmentAspect::depth:
-        return {
+        return PassAttachmentOperations{
             vk::AttachmentLoadOp::eClear,
             vk::AttachmentStoreOp::eDontCare,
         };
