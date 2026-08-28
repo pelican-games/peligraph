@@ -13633,3 +13633,87 @@ region の保存も、同じ 1 本の RPC(既存 authored pass への field 設�
 - material のシェーダ表示(所有が material システム側。別の話)
 
 依存: 無し(WP353 と独立)。見積: 小。
+
+### 設計ノート: オブジェクトモデルの現在地とプレファブの方向(2026-08-28、実測調査)
+
+**利用者の要望**: エンジン一般側の強化。オブジェクトへのコード/コンポーネントの結び付け、
+インスタンス前のコンポーネント束のプレファブ化をどう扱うか。
+
+#### 実測の要点(詳細は調査エージェントの報告。file:line は検証済みの主張のみ)
+
+**在るもの:**
+- シーン = 単一 JSON の `scenes.<id>.objects[]`、各 object は `{name?, parent?, components[]}`。
+  **`parent` は実装済みだが出荷での使用 0 件**(負のテスト fixture 3 件のみ)
+- コンポーネント codec は**ハードコードの 7 種**(`componentcodec.cpp:856-872`)+
+  codec を持たない 8 種目 `behavior`
+- **behavior がオブジェクト⇄コードの結び付けとして既に成熟している**:
+  `PELICAN_REGISTER_BEHAVIOR(型, 安定名, schema版)`、型付き params(schema 指紋で
+  リロード時の漂流検知)、二相 activation、決定的順序(`attachment_seq`)
+- 編集 op は 6 種(`set_component_value / add_component / remove_component /
+  spawn / destroy / reparent`)が RPC に**在る**。batch は局所前進で親→子 spawn 可
+- モデルは asset 名経由で共有される(同名 model 28 体が 1 template を共有)
+
+**無いもの(探して無かった):**
+- **プレファブ / object template / 複製 / 文書参照は一切無い。**
+  `design_scene_format.md:139` が「RenderWorld 期まで持ち込まない」と明示保留
+- **ECS コンポーネント型の利用者登録は不可能**(2 軸で閉じている):
+  登録シンボルが `PELICAN_API` 非公開(`registerer.hpp:32,89`)+ 著作語彙も codec 表で閉、
+  id は手番号で上限 64
+- **`GameContext` にオブジェクト名の検索が無い。**エンジン内部の name→entity map
+  (`scene.hpp:66`)は公開されていない。システムは著作されたオブジェクトを見つけられない
+- GUI(studio / ImGui とも)が発行する編集 op は **`set_component_value` だけ**。
+  spawn/destroy/reparent/add/remove は外部 RPC クライアントからしか届かない。
+  Outliner は読み取り専用
+
+**文書と実装の食い違い(要修正、コードか文書のどちらかを):**
+- `design_game_logic_native.md:14-16` は「`registerComponent<T>(name)` で game DLL から
+  登録できる」と読める記述だが、**シンボルが非公開なので今日は不可能**
+- `docs/manual/13_editor.md:284` は ImGui Inspector が behavior attach/remove を
+  サポートすると書くが、**コードは発行していない**
+
+#### 設計の方向(提案。実装しない)
+
+**1. コード結合は behavior を土台に強化する。新機構を発明しない。**
+behavior は「著作されたオブジェクトに、安定名で型付き params とともにコードを結ぶ」
+形を既に持ち、リロード・スキーマ検証・順序が揃っている。弱点は周辺:
+- `GameContext` に名前検索が無い(小さく、効果が大きい)
+- behavior 間参照 / `onFixedUpdate` が無い(設計文書自身が open 項目と認める)
+- params が平坦フィールドのみ(入れ子・配列不可)
+
+**2. プレファブは「参照 + 明示 unpack」の家風に従う。**
+このリポジトリは既に二度この選択をしている:
+render preset は「上書き不可。copy/eject が先」(`renderpipeline.cpp`)、
+physical plan の eject は「名前付きの一方向操作。**prefab の unpack と同じ作法**」
+(台帳 :5477 の自己言及)。
+**したがって: インスタンスはプレファブ文書への参照 + パラメータ束縛。
+パラメータ外を編集したければ明示 unpack(一方向)。
+Unity 型の override 追跡(逆向きの半連結)は作らない。**
+
+**3. 形は feature と同型に。第二の再利用機構を発明しない。**
+`{ref, parameters}` の束縛、束縛時の型付き制約検査、完全一致置換、名前の鋳造
+(view 系統複製で学んだ: 置換でなく鋳造)、provenance タグ、
+エディタでの畳み表示(WP341 の仕組みがそのまま使える)。
+render と scene で置換文法や検査の流儀が割れることが最大の負債になる。
+
+**4. 展開は load 時。runtime は素の objects を見る。**
+authoring 文書は参照を保持(編集の真実)、`SceneLoader` が展開(feature compose と
+同じ位置)。runtime にインスタンス同一性を持ち込まない(v1)。
+**多オブジェクト・プレファブは `parent` に依存するが、`parent` は出荷使用 0 件なので
+実戦経験が無い。v1 を単一オブジェクト(コンポーネント束 + params)から始める選択肢を
+設計段階で比較すること。**
+
+**5. runtime spawn の語彙にもなる。**
+今日、コードからの生成は field を並べる命令形しか無い。プレファブ registry が在れば
+`ctx.spawn("enemy", params)` が書ける。著作と runtime の生成が同じ語彙になる。
+
+#### 次の一手(順序)
+
+```
+1  プレファブ設計文書(上段。§5 の設計敵対レビュー(codex)を掛ける)
+2  安い独立 WP: GameContext の名前検索 / GUI からの spawn・destroy /
+   文書と実装の食い違い 2 件の解消
+3  ECS 型の利用者登録を開けるかは、プレファブ設計の後に判断
+   (behavior params で足りる範囲が設計で見えるため)
+```
+
+レンダリング軸の隊列(WP353/354 → bloom → G0)には割り込ませない。
