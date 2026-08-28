@@ -13894,3 +13894,60 @@ headless の画素対照は本物(ON 構成) / 窓 30 の意味は旧版と等�
 やらないこと: 記録のみの 3 件 / 新機能。
 
 依存: WP351b, WP352, WP353。見積: 中。
+
+### WP356: 読者のいない検査面を消し、再発を構造で塞ぐ
+
+**§0 の下段(studio 内・表示のみ + 自明な削除)。コードレビューのみ。**
+
+#### 事実(孤児監査 2026-08-28。全件 file:line 実証済み)
+
+このアーク(WP338〜355)が「書くだけで誰も読まない」検査面を 9 件作った。
+アーク前から同型の死骸が 12 件ある。病気は「`FramePlanGraphicsScene` が
+property / role を、読み手が育つより速く発行する」こと。
+
+#### 消すもの(アーク由来)
+
+- `test/run_rpc_headless.cmake` の `wp351_rpc_response_sizes.json` の `file(WRITE)` と
+  `get_status_response_bytes` の測定(消費者ゼロ。4096 上限ゲートは別実装で生きているので残す)
+- `RenderTiming::latestViewRows()`(呼び手ゼロ。member は statusJson が使うので残す)
+- WP347 の辺 role 5 本(`FramePlanBarrierKindsRole` / `BarrierCount` / `OrderOnlyCount` /
+  `SamePixelAttachmentCount` / `FusedBarrierCount`。読者ゼロ、情報は tooltip 経由で届いている)
+- `pelicanUnmatchedBarrierRecordCount` / `pelicanCurrentGroupScopeLabel`
+- WP350 の凸包 property 4 本(`pelicanConvexHullProposalText` / `Members` /
+  `MissingMembers` / `Impractical`。テストは item role 側を読む)
+- `FramePlanBoundaryStubLabelItem` / `FramePlanGpuTimingRow::node_ordinal`
+
+#### 消すもの(アーク前の同型死骸)
+
+`FramePlanFusionOverlayItem` / `FramePlanParallelOverlayItem` / `FramePlanPhysicalEmptyItem`、
+property 9 本(`pelicanCurveEdgeCount` / `pelicanEdgeBundleCount` /
+`pelicanResourceOverlayCount` / `pelicanTargetCount` / `pelicanVisibleDependencyRecordCount` /
+`pelicanFusionCandidateCount` / `pelicanParallelCandidateCount` /
+`pelicanPhysicalExplicitEmptyCount` / `pelicanExecutionPlanReason`)。
+
+#### 残すもの(理由つき。消さないこと)
+
+- `FramePlanInternalEdgeRecordsRole` / `pelicanCollapsedGroups`:
+  読者はテストのみだが、**「畳んでも記録が失われない」「孤児グループが更新を生き残らない」
+  という他で観測できない不変量を検査している**
+- `lastSnapshot…VisitsForTesting`: WP355 で実走査計測に置換済み
+
+#### 再発防止(本 WP の本体)
+
+**source-audit テストを足す**: `frameplangraphics` が `setProperty` /
+`setData(role)` する識別子を列挙し、**それぞれに読者(本番 or テスト)が
+1 箇所以上あること**を検査する。読者ゼロの発行を追加したら赤になる。
+既存の source-audit の流儀(`devstudio_frameplan_graph_test.cpp:4796` の
+mutation guard)に合わせること。
+
+#### 受け入れ条件
+
+- 削除対象の全識別子が `src/` `test/` から消えること(grep 0 件)
+- **source-audit が実際に噛むこと**: 読者の無い property を 1 つ足す mutation で赤、
+  戻して緑(実際に当てて確かめる)
+- 全数 2 回(GPU はエージェント外)、doclink 緑、`SKIP_DEVSTUDIO=ON` ビルド
+
+やらないこと: 新しい表示 / `clear_colors` `input_sampling` 等の著作語彙 /
+subgraph 置換機構(これらは著作面であり検査面ではない)。
+
+依存: WP355。見積: 小。
