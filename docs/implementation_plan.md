@@ -13781,3 +13781,27 @@ authoring 文書は参照を保持(編集の真実)、`SceneLoader` が展開(fe
 ```
 
 レンダリング軸の隊列(WP353/354 → bloom → G0)には割り込ませない。
+
+#### 追記: Unity と意図的に変える点(同日、利用者との検討)
+
+| 論点 | Unity | pelican の選択(根拠) |
+|---|---|---|
+| 上書きの面 | 任意フィールドを instance override(太字表示・apply/revert・入れ子で複雑化) | **作者が宣言したパラメータだけが上書き面。それ以外は明示 unpack**(preset/eject の家風。縛りは案内) |
+| 参照 | GUID + fileID(.meta 汚れ、diff 不能) | **名前参照 + load 時 fail-fast 検証**(parent 検証が既にこの形)。rename は参照書き換えを伴う編集 op(renameObject が既にある) |
+| コードとデータ | MonoBehaviour が混合 | **behavior(コード)と component(データ)の分離を維持**。強化は params の表現力(入れ子・配列)で行い、混合には戻らない |
+| runtime 生成 | Instantiate = 深いクローン、命名 (Clone)、リプレイ不能 | **registry からの ctx.spawn(名前, params) を決定的に**。命名は鋳造、リプレイ/golden の時系列に乗る |
+| アセット取込 | 自動 import + 不透明な Library キャッシュ | **宣言的登録のみ**(asset_data.json)。隠れたキャッシュ・二次的真実を作らない |
+| プレファブの器 | 専用アセット型 + 専用編集モード | **scene と同じ object 文法の小文書 + parameters 封筒。第二の文法を作らない** |
+
+**「データ流し込みを容易に」への具体的な答え(現状の欠落):**
+
+- **asset_data.json へ登録する編集 op が存在しない**(手編集のみ。許可キーは
+  schema/version/models/materials/textures)。`load_gltf` は runtime 専用で
+  `save_scene` を汚染する(RuntimeOnlyData)
+- したがって「流し込み」の最小実装 = **authoring レベルの asset 登録 op**
+  (studio へのファイルドロップ → assets/ へ複製 → 登録 → 任意で spawn)
+- glTF fragment 参照(`city.glb#mesh/LampPost`)は既にあるので、
+  **glTF の部分木を読み取り専用テンプレート源として prefab から参照する**形が自然
+  (reference-or-eject の家風に一致)
+- 表・統計のようなデータ資産(Unity の ScriptableObject 相当)は registry の
+  汎用データ種別として置けるが、**リポジトリに需要の証拠がまだ無い。投機として記録のみ**
