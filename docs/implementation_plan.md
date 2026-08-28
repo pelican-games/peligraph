@@ -13829,3 +13829,68 @@ authoring 文書は参照を保持(編集の真実)、`SceneLoader` が展開(fe
   (reference-or-eject の家風に一致)
 - 表・統計のようなデータ資産(Unity の ScriptableObject 相当)は registry の
   汎用データ種別として置けるが、**リポジトリに需要の証拠がまだ無い。投機として記録のみ**
+
+#### コードレビュー(codex、af3882a / 880dbeb / 29a0615 まとめて)の仕分け
+
+**実害 4 + 偽対照 2 = 直す(WP355)。記録のみ 3。**
+
+直す(根拠は各 file:line ともレビューが実証済み):
+
+1. **preview/project 層が不正な `raster_state` を受理**(所有権しか見ず入れ子を解析しない。
+   studio/preview が「有効」と言った文書が実行時に初めて落ちる。fail-fast の後退)
+2. **studio で blend を著作できない**(fullscreen form の `draftJson()` に raster_state が無く、
+   projection authority も旧のまま。**テストが同じ authority から期待値を組むので、
+   機能が丸ごと欠けたまま緑**)
+3. **存在しない添付への op が黙って消える**(`depth: null` + `depth_load_op: Load`。
+   親版 typed 経路は空文字資源を reads に足していた —— 別の形で壊れていた。
+   等価化の方法が「両方で黙殺」だった)
+4. **添付 op の既定値が 4 箇所以上に複製された**(raw planner / PassDefinition members /
+   2 つの fallback helper + UI 特例 2 箇所。既定値一箇所の原則違反)
+5. **逆向き対照の欠落**(pass-wide Load + attachment Clear/DontCare が未検査。
+   「override は Load のときだけ勝つ」誤実装が全テストを通る)
+6. **`statusJson()` の合計がビット単位で変わる**(親版は破壊的ソート後に加算、
+   新版は実行順で加算。加算順の変更で `logical_frame_history` / `averages` / `views` /
+   `total_sum` の double が変わり、`get_status` の外部契約に出る。算術反例確認済み)
+   + **`last_snapshot_history_frame_visits` が自己申告**(全履歴再走査を戻しても
+   カウンタが 1 のまま通る。§4 規約 10 の否定対照として機能していない)
+
+記録のみ: XR runtime registration 未テスト / headless の blend テストは
+`PELICAN_RUNTIME_SHADER_COMPILER` OFF で空になる / 出荷 plan 比較は raw planner のみで
+flat/xr/preview の行列ではない(コード読解では variant 依存分岐は見つかっていない)。
+
+レビューが壊せなかった点: 省略時の pipeline 等価 / `raster_state: {}` の Vulkan 値一致 /
+headless の画素対照は本物(ON 構成) / 窓 30 の意味は旧版と等価 / D0 維持。
+
+### WP355: コードレビューの実害 4 件と偽対照 2 件を塞ぐ
+
+**§4 規則 11 の中段。修正 WP —— 仕様は上の仕分けとレビューの実証で足りる。
+マージ後の §10 コードレビューは行う。**
+
+上記 1〜6 を直す。それぞれについて:
+
+1. **composition 後の project 層**で fullscreen / output_transform の `raster_state` を
+   共有 `parseRasterFixedFunctionState()` + depth 禁止で検証する。
+   **対照**: 不正な blend 値だけを足した fullscreen が project resolve /
+   preview 経路(`previewgraph.cpp:91-140`)で名前付きに落ち、正常値は通る。
+   core 側の検証は残す(両経路が同じ名前付き違反で拒否)
+2. fullscreen form に `raster_state` の **lossless passthrough** を足し、
+   projection authority に含める。**テストは authority から期待値を生成せず**、
+   additive と omitted を同一フォームで保存して解決値が異なることを確かめる
+3. op があるのに対応する出力が null/空なら、**raw / typed 共通の検証で名前付きエラー**。
+   **対照**: `depth: null` + `depth_load_op` が落ち、深度添付ありの同じ op は通る
+4. pass type × aspect → 既定 `PassAttachmentOperations` の **canonical 関数 1 箇所**に集約し、
+   全経路(raw planner / PassDefinition / helpers / UI 特例)がそれを使う。
+   **対照**: canonical の値を 1 箇所変える mutation で全経路のテストが一斉に落ちること
+5. **pass-wide Load + attachment Clear/DontCare**(color / depth 両方)を追加し、
+   raw / typed 双方で resolved op・reads・footprints を検査
+6. 全合計(nodes JSON / logical total / view total)を **canonical 順の pointer span** で
+   加算し、親版 `29a0615^` と**ビット一致**に戻す。
+   **対照**: 宣言順と実行順が異なる fixture(`golden_harness.cpp:1119-1139` の形)で、
+   修正前の実行順加算ならビットが変わることを先に確かめる。
+   `visits` は**実走査の計測に置き換える**か、eager reference publisher との
+   出力同値 + 走査量 120 対 1 の比較にする(自己申告カウンタを対照と呼ばない)
+
+受け入れ: 全数 2 回 / doclink 緑 / `SKIP_DEVSTUDIO` 両構成 / GPU はエージェント外。
+やらないこと: 記録のみの 3 件 / 新機能。
+
+依存: WP351b, WP352, WP353。見積: 中。
