@@ -14177,3 +14177,43 @@ WP355a が fail-fast 検証で「音」に変える。**構築子の再設計は
 本丸     R1(+R2)← WP354 着地が前提。着手時に設計文書を起こし §5 レビュー
 以降     R5 → R6
 ```
+
+#### コードレビュー(9568042 = WP357)の仕分け
+
+**Reject: 実害 3・懸念 2・指摘 1。**壊せなかった側: oracle 本体の独立性(標準ライブラリのみ)/
+出荷 35 本中 raster_state は UB 3 本のみで他 32 本の command 不変 / 個別 peel と Load/Clear
+画素対照の実在 / D0 / golden SHA 一致。フレーク(WP334b)は単独 0/5 で既知一族。
+
+**直す(WP357a。連鎖はここで打ち切り。次のレビュー指摘は台帳行き):**
+
+1. **[実害] 3 頂点化が topology を無視**(`engine://fullscreen` + blend + `line_list` で
+   親版 6 頂点→新版 3 頂点)。3 頂点化の条件に `topology == triangle_list` を加え、
+   **`engine://fullscreen` への非 triangle_list 指定は名前付きエラー**にする。
+   triangle/blend・line/blend・opaque の command-recording 対照を置く
+2. **[実害] oracle harness が本番の急所を上書き**:
+   (a) sampler 強制上書きをやめ、**実際に解決された sampler/format を検査**
+   (b) oracle が **B8G8R8A8_SRGB を独立に扱う**(本番の解決形式)
+   (c) **出荷 config を意味論不変で実行する脚**を追加し、
+   **FinalBloomComposite の H0/V0 を同一テスト内で異なる既知値により対照**
+3. **[実害] golden 更新を oracle 合格に条件づける**:
+   updater 経路の内部で oracle を先に実行し、**全合格まで一切書き込まない**。
+   CTest の DEPENDS では直接実行を防げないため不可
+4. **[懸念] 死に値 2 フィールド**(vertex/fragment_shader の捕捉)を使うか消す。
+   使うなら resolver 非依存の期待 bundle/digest と比較
+5. **[懸念] ON/OFF の刺激を単一正本に**(fixture `.frag` を唯一の source にし、
+   ON はそれを読み OFF は同じファイルから SPIR-V 化。stimulus hash を出力)
+6. **[指摘] Load の隣の死んだ clear_color を全 5 本から削除**
+   (UB 3 + FinalBloomComposite + hdr_tonemap。最小 fixture の Clear 側は生きているので残す)
+
+台帳のみ: sampler 既定値が struct と parser に重複(既定値一箇所)——
+canonical 化は R 系の既定値集約と合流させる。
+
+### WP357a: bloom レビューの 6 件
+
+**§0 中段。仕様は上の仕分けで足りる。各件、変異を実際に当てて落ちることを確かめる**
+(1: line_list が名前付き拒否 + 親版比較 / 2a: 出荷 UB へ nearest を足す変異が検出される /
+2c: Final の入力を H0 に戻す変異が落ちる / 3: oracle 失敗状態で updater を叩いても
+golden が書かれない / 5: 片側だけ刺激を変えると hash 不一致で落ちる)。
+全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成、GPU は本 WP も実行可(直列)。
+
+依存: WP357。見積: 中。
