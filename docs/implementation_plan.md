@@ -13951,3 +13951,79 @@ mutation guard)に合わせること。
 subgraph 置換機構(これらは著作面であり検査面ではない)。
 
 依存: WP355。見積: 小。
+
+### WP357: bloom の upsample 鎖を、標準形の加算 blend に置き換える
+
+**§4 規則 11 の上段(出荷の見た目が変わる)。仕様レビュー + コードレビュー。**
+**利用者判断(2026-08-28): 「A で行きたいけど一般的な実装ならそれでいいよ」——
+見た目の変化を、標準形への移行として受け入れる。**
+
+#### なぜ機械的変換ではないのか(先に算術を明示する)
+
+現行の蓄積(survey 実測):
+
+```
+UB_k: 出力 = coarser + 2 × current      入力 2 本、第三の蓄積先(H_k)へ書く
+最終的な bloom 項 = 2·V3 + 4·V2 + 4·V1 + 4·V0
+```
+
+**その場 blend では dst(= current 側)に係数 2 を掛けられない**
+(固定機能に dst×2 は無く、定数 factor は UNORM/SRGB 添付で [0,1] にクランプ)。
+**「後から足す側ほど重い」現行の構造は、in-place blend では表現不能。**
+
+**採る標準形(progressive upsample、CoD:AW 系):**
+
+```
+UB_k': coarser を bilinear 1 tap で出力し、One/One で V_{k-1} へその場加算
+蓄積 = V3 + V2 + V1 + V0(対等)
+最終合成 = lit + 蓄積 × intensity(×2 は最終で 1 回)
+最終的な bloom 項 = 2·V3 + 2·V2 + 2·V1 + 2·V0
+```
+
+**細かいオクターブが相対的に半分になる。これが見た目の変化の中身である。**
+
+#### やること
+
+1. **新シェーダ `bloom_upsample.frag`**: 入力 1 本を bilinear で出すだけ
+   (`outColor = texture(inputTexture, uv);`)。既存の登録手順
+   (`embed_shader` / `engineresources.cpp` / fixture)に従う
+2. **`projects/example/passes/main_rendering_config.json` の UpsampleBlend_1..3 を書き換え**:
+   - 入力は coarser 1 本(UB_3': V_3 → V_2 / UB_2': V_2 → V_1 / UB_1': V_1 → V_0)
+   - 出力添付に **`"load_op": "Load"`(WP352 の添付単位)**
+   - **`raster_state.color_attachments[0].blend` は明示 `{color:{src_factor:one,
+     dst_factor:one,op:add}, alpha:同}`。`"additive"` preset は使わない**
+     (preset の color src は SrcAlpha。WP353 で実測済みの罠)
+   - `H_0..H_2` への upsample 書き込みは消える(down 鎖の中間としてのみ残る)
+3. **FinalBloomComposite は構造維持**(2 入力 → swapchain、`+ color1 * 2.0`)。
+   **入力 1 を H_0 から蓄積済み V_0 に差し替えるだけ**
+4. **golden の再生成と定量化**
+
+#### 依存の要(WP352 の価値回収の証明)
+
+**UB_k' の `load_op: Load` に対し、WP352 の添付単位推論が V_{k-1} を自動的に
+`reads` へ足す(same_pixel)。**これが VerticalBlur_{k-1} → UB_k' の RAW 順序を成立させる。
+**受け入れ条件: この読みが plan に実在すること、および
+`load_op` を外した変異で順序保証が消える(reads から落ちる)ことを同じテストで確認する。**
+
+#### 受け入れ条件
+
+- **新しい数式の CPU 参照と一致すること**: 蓄積 `V3+V2+V1+V0` と最終合成を CPU で計算し、
+  GPU 結果と許容差内で一致(WP339a の許容差の流儀: 層別・軸別)。
+  **「golden を貼り替えたら通った」を受け入れの根拠にしない**
+- **旧 golden との差を定量化して報告すること**(チャネル毎の最大差・平均差、
+  どのレベル起源の差か)。**差の方向が算術どおり(細オクターブの減衰)であること**
+- **plan の変化を明示的に固定すること**: UB_k' の reads/writes が新形になり、
+  H_k の蓄積書き込みが消えたことを、変更後 fixture として列挙・更新
+  (影響する exact fixture を全列挙。黙って再生成しない)
+- blend は**画素で**検査(WP353 の headless の流儀)。One/One と preset(SrcAlpha)の
+  取り違えは既存テストが守る
+- 全数 2 回(GPU 込みは統合側)、doclink 緑、`SKIP_DEVSTUDIO` 両構成ビルド
+
+#### やらないこと
+
+- FinalBloomComposite の blend 化(swapchain に lit が先に無いので構造変更になる。別件)
+- down 鎖(threshold / H / V blur)の変更
+- intensity のパラメータ化(著作パラメータの話は別)
+- tent filter 等の品質向上(bilinear 1 tap。最小の標準形に留める)
+
+依存: WP352、WP353、WP355。見積: 中。
