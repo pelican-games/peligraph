@@ -152,7 +152,6 @@ FramePlanGpuTimingSnapshot parseGpuTimingResult(
         }
         result.nodes.push_back(FramePlanGpuTimingRow{
             static_cast<std::uint32_t>(view_index),
-            gpuTimingCount(row, QStringLiteral("node_ordinal")),
             node_kind.toStdString(), node_name.toStdString(),
             gpuTimingDuration(row, QStringLiteral("barriers_ms")),
             gpuTimingDuration(row, QStringLiteral("body_ms")),

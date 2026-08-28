@@ -67,6 +67,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -4795,6 +4796,127 @@ TEST_CASE(
     REQUIRE(source.find(
                 "FramePlanInternalEdgeRecordsRole, QStringList{}") ==
             std::string::npos);
+}
+
+TEST_CASE(
+    "WP356 frame-plan scene properties and roles all have source readers",
+    "[devstudio][frame-plan][source-audit][wp356]") {
+    const std::filesystem::path source_root{PELICAN_TEST_SOURCE_DIR};
+    const std::string graphics_source = readText(
+        source_root / "src" / "devstudio" / "view" /
+        "frameplangraphics.cpp");
+
+    const auto identifier_character = [](char value) {
+        const auto byte = static_cast<unsigned char>(value);
+        return std::isalnum(byte) != 0 || value == '_';
+    };
+    const auto find_calls = [&](const std::string &source,
+                                std::string_view function,
+                                bool quoted_argument) {
+        std::size_t call_count = 0;
+        std::vector<std::string> result;
+        std::size_t search_from = 0;
+        while (true) {
+            const std::size_t found = source.find(function, search_from);
+            if (found == std::string::npos) {
+                break;
+            }
+            const std::size_t name_end = found + function.size();
+            search_from = name_end;
+            if ((found != 0 &&
+                 identifier_character(source[found - 1])) ||
+                (name_end != source.size() &&
+                 identifier_character(source[name_end]))) {
+                continue;
+            }
+            std::size_t cursor = name_end;
+            while (cursor != source.size() &&
+                   std::isspace(static_cast<unsigned char>(
+                       source[cursor])) != 0) {
+                ++cursor;
+            }
+            if (cursor == source.size() || source[cursor] != '(') {
+                continue;
+            }
+            ++call_count;
+            ++cursor;
+            while (cursor != source.size() &&
+                   std::isspace(static_cast<unsigned char>(
+                       source[cursor])) != 0) {
+                ++cursor;
+            }
+            if (quoted_argument) {
+                if (cursor == source.size() || source[cursor] != '"') {
+                    continue;
+                }
+                const std::size_t argument_end =
+                    source.find('"', cursor + 1);
+                if (argument_end == std::string::npos) {
+                    continue;
+                }
+                result.push_back(
+                    source.substr(cursor + 1, argument_end - cursor - 1));
+                continue;
+            }
+            const std::size_t argument_begin = cursor;
+            while (cursor != source.size() &&
+                   identifier_character(source[cursor])) {
+                ++cursor;
+            }
+            if (cursor != argument_begin) {
+                result.push_back(source.substr(
+                    argument_begin, cursor - argument_begin));
+            }
+        }
+        return std::pair{call_count, std::move(result)};
+    };
+
+    const auto [property_call_count, property_publications] =
+        find_calls(graphics_source, "setProperty", true);
+    const auto [role_call_count, role_publications] =
+        find_calls(graphics_source, "setData", false);
+    REQUIRE(property_publications.size() == property_call_count);
+    REQUIRE(role_publications.size() == role_call_count);
+
+    const std::set<std::string> published_properties{
+        property_publications.begin(), property_publications.end()};
+    const std::set<std::string> published_roles{
+        role_publications.begin(), role_publications.end()};
+    std::set<std::string> read_properties;
+    std::set<std::string> read_roles;
+    const std::set<std::string> source_extensions{
+        ".c",   ".cc",  ".cpp", ".cxx", ".h",
+        ".hpp", ".inl", ".ipp", ".qml", ".ui"};
+    for (const std::filesystem::path relative_root : {"src", "test"}) {
+        for (const auto &entry : std::filesystem::recursive_directory_iterator{
+                 source_root / relative_root}) {
+            if (!entry.is_regular_file() ||
+                !source_extensions.contains(
+                    entry.path().extension().string())) {
+                continue;
+            }
+            const std::string source = readText(entry.path());
+            const auto [property_reads, properties] =
+                find_calls(source, "property", true);
+            (void)property_reads;
+            read_properties.insert(properties.begin(), properties.end());
+            const auto [role_reads, roles] =
+                find_calls(source, "data", false);
+            (void)role_reads;
+            read_roles.insert(roles.begin(), roles.end());
+        }
+    }
+
+    REQUIRE_FALSE(published_properties.empty());
+    REQUIRE_FALSE(published_roles.empty());
+    for (const auto &identifier : published_properties) {
+        INFO("published property has no source reader: " << identifier);
+        CHECK(read_properties.contains(identifier));
+    }
+    for (const auto &identifier : published_roles) {
+        INFO("published role has no source reader: " << identifier);
+        CHECK(read_roles.contains(identifier));
+    }
 }
 
 TEST_CASE(

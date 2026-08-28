@@ -250,15 +250,12 @@ function(validate_rpc_stdout stdout label)
        line21 MATCHES "logical_frame_history")
         message(FATAL_ERROR "${label}: disabled get_gpu_timing response violated the light contract:\n${line21}")
     endif()
-    string(LENGTH "${line0}" get_status_response_bytes)
     string(LENGTH "${line21}" get_gpu_timing_response_bytes)
     if(get_gpu_timing_response_bytes GREATER
        WP351_GPU_TIMING_RESPONSE_MAX_BYTES)
         message(FATAL_ERROR
             "${label}: disabled get_gpu_timing response was ${get_gpu_timing_response_bytes} bytes; limit is ${WP351_GPU_TIMING_RESPONSE_MAX_BYTES} bytes")
     endif()
-    file(WRITE "${OUT_DIR}/wp351_rpc_response_sizes.json"
-        "{\"get_status_bytes\":${get_status_response_bytes},\"get_gpu_timing_disabled_bytes\":${get_gpu_timing_response_bytes},\"get_gpu_timing_max_bytes\":${WP351_GPU_TIMING_RESPONSE_MAX_BYTES}}\n")
 endfunction()
 
 function(normalize_rpc_stdout stdout output_var)

@@ -45,22 +45,14 @@ inline constexpr int FramePlanRepresentationRole = Qt::UserRole + 3078;
 inline constexpr int FramePlanLifetimeUsedRole = Qt::UserRole + 3079;
 inline constexpr int FramePlanLifetimeFirstRole = Qt::UserRole + 3080;
 inline constexpr int FramePlanLifetimeLastRole = Qt::UserRole + 3081;
-inline constexpr int FramePlanOpportunityKindRole = Qt::UserRole + 3082;
 inline constexpr int FramePlanLogicalStateRole = Qt::UserRole + 3083;
 inline constexpr int FramePlanReasonCodeRole = Qt::UserRole + 3084;
 inline constexpr int FramePlanBundleOrderRole = Qt::UserRole + 3085;
 inline constexpr int FramePlanCurveRole = Qt::UserRole + 3086;
-inline constexpr int FramePlanSubtreeDepthRole = Qt::UserRole + 3087;
 inline constexpr int FramePlanGroupIdRole = Qt::UserRole + 3088;
 inline constexpr int FramePlanGroupCollapsibleRole = Qt::UserRole + 3089;
 inline constexpr int FramePlanBoundaryTargetRole = Qt::UserRole + 3090;
 inline constexpr int FramePlanBoundaryDirectionRole = Qt::UserRole + 3091;
-inline constexpr int FramePlanBarrierKindsRole = Qt::UserRole + 3092;
-inline constexpr int FramePlanBarrierCountRole = Qt::UserRole + 3093;
-inline constexpr int FramePlanOrderOnlyCountRole = Qt::UserRole + 3094;
-inline constexpr int FramePlanSamePixelAttachmentCountRole =
-    Qt::UserRole + 3095;
-inline constexpr int FramePlanFusedBarrierCountRole = Qt::UserRole + 3096;
 inline constexpr int FramePlanInternalBarrierCountRole = Qt::UserRole + 3097;
 inline constexpr int FramePlanInternalFusedBarrierCountRole =
     Qt::UserRole + 3098;
@@ -84,7 +76,6 @@ inline constexpr auto FramePlanEdgeArrowItem = "edge_arrow";
 inline constexpr auto FramePlanNodeLabelItem = "node_label";
 inline constexpr auto FramePlanGroupLabelItem = "group_label";
 inline constexpr auto FramePlanBoundaryStubItem = "boundary_stub";
-inline constexpr auto FramePlanBoundaryStubLabelItem = "boundary_stub_label";
 inline constexpr auto FramePlanGroupWarningItem = "group_warning";
 inline constexpr auto FramePlanConvexHullProposalItem =
     "convex_hull_proposal";
@@ -93,14 +84,10 @@ inline constexpr auto FramePlanEdgeLabelItem = "edge_label";
 inline constexpr auto FramePlanPhysicalContextItem = "physical_context";
 inline constexpr auto FramePlanResourceLifetimeItem = "resource_lifetime";
 inline constexpr auto FramePlanAliasOverlayItem = "alias_overlay";
-inline constexpr auto FramePlanFusionOverlayItem = "fusion_overlay";
-inline constexpr auto FramePlanParallelOverlayItem = "parallel_overlay";
-inline constexpr auto FramePlanPhysicalEmptyItem = "physical_empty";
 inline constexpr auto FramePlanPhysicalSelectionItem = "physical_selection";
 inline constexpr auto FramePlanLogicalUnavailableItem = "logical_unavailable";
 struct FramePlanGpuTimingRow {
     std::uint32_t view_index = 0;
-    std::size_t node_ordinal = 0;
     std::string node_kind;
     std::string node_name;
     double barriers_ms = 0.0;

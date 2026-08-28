@@ -1072,11 +1072,9 @@ void addNodeLabel(QGraphicsPathItem &item, const FramePlanNode &node,
     applyGpuTimingLabel(*timing, gpu_timing, node.name, isAnchor(node));
 }
 
-void addCenteredEntityLabel(QGraphicsPathItem &item, const QString &text,
-                            qreal width, qreal height,
-                            const std::string &kind,
-                            const std::string &graph,
-                            const std::string &name) {
+QGraphicsSimpleTextItem *addCenteredLabel(QGraphicsPathItem &item,
+                                          const QString &text, qreal width,
+                                          qreal height) {
     auto *label = new QGraphicsSimpleTextItem(text, &item);
     label->setBrush(QColor{QStringLiteral("#f7f9fb")});
     QFont font = label->font();
@@ -1085,6 +1083,15 @@ void addCenteredEntityLabel(QGraphicsPathItem &item, const QString &text,
     const QRectF bounds = label->boundingRect();
     label->setPos((width - bounds.width()) / 2.0,
                   (height - bounds.height()) / 2.0);
+    return label;
+}
+
+void addCenteredEntityLabel(QGraphicsPathItem &item, const QString &text,
+                            qreal width, qreal height,
+                            const std::string &kind,
+                            const std::string &graph,
+                            const std::string &name) {
+    auto *label = addCenteredLabel(item, text, width, height);
     annotateIdentity(*label, kind, graph, name);
 }
 
@@ -1232,8 +1239,6 @@ void publishBarrierCoverage(QGraphicsScene &scene,
         static_cast<qulonglong>(coverage.inside_collapsed_groups));
     scene.setProperty("pelicanOutsideBarrierRecordCount",
                       static_cast<qulonglong>(coverage.outside_window));
-    scene.setProperty("pelicanUnmatchedBarrierRecordCount",
-                      static_cast<qulonglong>(coverage.unmatched));
     scene.setProperty("pelicanBarrierCoverage",
                       barrierCoverageText(coverage));
 }
@@ -1609,8 +1614,6 @@ PhysicalOverlaySummary addPhysicalOverlay(
         annotateIdentity(*item, FramePlanAliasOverlayItem, model.graph, name);
         annotatePhysicalContext(*item, model);
         item->setData(FramePlanMembersRole, qlist(members));
-        item->setData(FramePlanOpportunityKindRole,
-                      QStringLiteral("alias"));
         item->setData(FramePlanPhysicalStateRole, state);
         item->setToolTip(label);
         auto *text = new QGraphicsSimpleTextItem(label, item);
@@ -1678,42 +1681,27 @@ void FramePlanGraphicsScene::resetGraph() {
     setProperty("pelicanGraph", QString{});
     setProperty("pelicanTarget", QString{});
     setProperty("pelicanSubtreeDepth", 1);
-    setProperty("pelicanTargetCount", 0);
     setProperty("pelicanNodeRecordCount", 0);
     setProperty("pelicanDependencyRecordCount", 0);
-    setProperty("pelicanVisibleDependencyRecordCount", 0);
     setProperty("pelicanVisibleItemCount", 0);
-    setProperty("pelicanEdgeBundleCount", 0);
-    setProperty("pelicanCurveEdgeCount", 0);
-    setProperty("pelicanResourceOverlayCount", 0);
     setProperty("pelicanPhysicalResourceCount", 0);
     setProperty("pelicanAdoptedAliasCount", 0);
     setProperty("pelicanNotAdoptedAliasCount", 0);
-    setProperty("pelicanFusionCandidateCount", 0);
-    setProperty("pelicanParallelCandidateCount", 0);
-    setProperty("pelicanPhysicalExplicitEmptyCount", 0);
     setProperty("pelicanPlanningProfile", QString{});
     setProperty("pelicanPlanningEndpoint", QString{});
     setProperty("pelicanCollapsedGroups", QStringList{});
     setProperty("pelicanCurrentGroupScope", QString{});
-    setProperty("pelicanCurrentGroupScopeLabel", QString{});
     setProperty("pelicanNonCollapsibleGroups", QStringList{});
     setProperty("pelicanGroupFeedback", QString{});
     setProperty("pelicanSessionGroups", QStringList{});
-    setProperty("pelicanConvexHullProposalMembers", QStringList{});
-    setProperty("pelicanConvexHullProposalMissingMembers", QStringList{});
-    setProperty("pelicanConvexHullProposalImpractical", false);
-    setProperty("pelicanConvexHullProposalText", QString{});
     setProperty("pelicanBoundaryStubCount", 0);
     setProperty("pelicanBarrierRecordCount", 0);
     setProperty("pelicanVisibleBarrierRecordCount", 0);
     setProperty("pelicanInternalBarrierRecordCount", 0);
     setProperty("pelicanOutsideBarrierRecordCount", 0);
-    setProperty("pelicanUnmatchedBarrierRecordCount", 0);
     setProperty("pelicanBarrierCoverage", QString{});
     setProperty("pelicanExecutionPlanState", QString{});
     setProperty("pelicanExecutionPlanReasonCode", QString{});
-    setProperty("pelicanExecutionPlanReason", QString{});
     publishStateProperties();
 }
 
@@ -1873,8 +1861,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     current_group_scope_
                         ? qtext(groupStateId(*current_group_scope_))
                         : QString{});
-        setProperty("pelicanCurrentGroupScopeLabel",
-                    scope_group ? scope_group->label : QString{});
 
         QStringList non_collapsible;
         QString first_reason;
@@ -1902,24 +1888,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             }
         }
         setProperty("pelicanSessionGroups", session_group_ids);
-        setProperty(
-            "pelicanConvexHullProposalMembers",
-            convex_hull_proposal_
-                ? qlist(convex_hull_proposal_->hull_members)
-                : QStringList{});
-        setProperty(
-            "pelicanConvexHullProposalMissingMembers",
-            convex_hull_proposal_
-                ? qlist(convex_hull_proposal_->missing_members)
-                : QStringList{});
-        setProperty(
-            "pelicanConvexHullProposalImpractical",
-            convex_hull_proposal_ &&
-                convex_hull_proposal_->impractical);
-        setProperty("pelicanConvexHullProposalText",
-                    convex_hull_proposal_
-                        ? convex_hull_proposal_->message
-                        : QString{});
     };
 
     rebuilding_ = true;
@@ -1986,14 +1954,9 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         setProperty("pelicanGraph", qtext(model.graph));
         setProperty("pelicanTarget", QString{});
         setProperty("pelicanSubtreeDepth", normalized_depth);
-        setProperty("pelicanTargetCount", 0);
         setProperty("pelicanNodeRecordCount", 0);
         setProperty("pelicanDependencyRecordCount", 0);
-        setProperty("pelicanVisibleDependencyRecordCount", 0);
         setProperty("pelicanVisibleItemCount", 0);
-        setProperty("pelicanEdgeBundleCount", 0);
-        setProperty("pelicanCurveEdgeCount", 0);
-        setProperty("pelicanResourceOverlayCount", 0);
         setProperty("pelicanPhysicalResourceCount", 0);
         setProperty("pelicanAdoptedAliasCount", 0);
         setProperty("pelicanNotAdoptedAliasCount", 0);
@@ -2004,8 +1967,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     QStringLiteral("unavailable"));
         setProperty("pelicanExecutionPlanReasonCode",
                     qtext(model.execution_plan.unavailable_reason_code));
-        setProperty("pelicanExecutionPlanReason",
-                    qtext(model.execution_plan.unavailable_reason));
         publishBarrierCoverage(*this, barrier_coverage);
         publish_group_properties();
         publishStateProperties();
@@ -2204,7 +2165,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         }
     }
 
-    std::vector<DependencyRecord> visible_dependencies;
     std::map<EntityPair, std::vector<DependencyRecord>> bundles;
     std::set<std::size_t> edge_barriers;
     std::set<std::size_t> internal_barriers;
@@ -2230,7 +2190,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             from = entity_for_node.at(dependency.from);
             to = entity_for_node.at(dependency.to);
         }
-        visible_dependencies.push_back(dependency);
         if (from == to) {
             entities.at(from).internal_records.push_back(
                 recordIdentity(dependency));
@@ -2380,7 +2339,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             item->setData(FramePlanColorRole, fill.name(QColor::HexRgb));
             item->setData(FramePlanAnchorRole, entity->anchor);
             item->setData(FramePlanMembersRole, qlist(entity->members));
-            item->setData(FramePlanSubtreeDepthRole, normalized_depth);
             if (entity->group) {
                 QString visible_label = entity->label;
                 if (entity->internal_barrier_count != 0) {
@@ -2427,10 +2385,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     QStringLiteral("%1 boundary connection to %2")
                         .arg(entity->boundary_direction,
                              qtext(entity->boundary_target)));
-                addCenteredEntityLabel(
-                    *item, entity->label, BoundaryStubWidth,
-                    BoundaryStubHeight, FramePlanBoundaryStubLabelItem,
-                    model.graph, entity->key);
+                addCenteredLabel(*item, entity->label, BoundaryStubWidth,
+                                 BoundaryStubHeight);
             } else {
                 const FramePlanNode &node =
                     *nodes_by_name.at(entity->key);
@@ -2473,7 +2429,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     }
 
     std::size_t bundle_order = 0;
-    std::size_t resource_overlay_count = 0;
     for (const auto &[endpoints, records] : bundles) {
         const DependencySummary summary = dependencySummary(records);
         const bool order_only = summary.barrier_count == 0;
@@ -2512,7 +2467,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         edge->setData(FramePlanBundleOrderRole,
                       static_cast<qulonglong>(bundle_order));
         edge->setData(FramePlanCurveRole, true);
-        edge->setData(FramePlanSubtreeDepthRole, normalized_depth);
 
         std::vector<std::string> identities;
         for (const auto &record : records) {
@@ -2520,30 +2474,12 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         }
         const std::vector<std::string> resources{
             summary.resources.begin(), summary.resources.end()};
-        const std::vector<std::string> barrier_kinds{
-            summary.barrier_kinds.begin(), summary.barrier_kinds.end()};
         const auto publish_dependency_data = [&](QGraphicsItem &item) {
             item.setData(FramePlanEdgeRecordsRole, qlist(identities));
             item.setData(FramePlanResourcesRole, qlist(resources));
-            item.setData(FramePlanBarrierKindsRole,
-                         qlist(barrier_kinds));
-            item.setData(FramePlanBarrierCountRole,
-                         static_cast<qulonglong>(summary.barrier_count));
-            item.setData(FramePlanOrderOnlyCountRole,
-                         static_cast<qulonglong>(summary.order_only_count));
-            item.setData(
-                FramePlanSamePixelAttachmentCountRole,
-                static_cast<qulonglong>(
-                    summary.same_pixel_attachment_count));
-            item.setData(FramePlanFusedBarrierCountRole,
-                         static_cast<qulonglong>(
-                             summary.fused_barrier_count));
             item.setToolTip(summary.label);
         };
         publish_dependency_data(*edge);
-        if (!summary.resources.empty()) {
-            ++resource_overlay_count;
-        }
 
         auto *arrow = addPolygon(
             QPolygonF{}, QPen{edge_color}, QBrush{edge_color});
@@ -2723,22 +2659,12 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 selected_resource_ ? qtext(selected_resource_->name)
                                    : QString{});
     setProperty("pelicanSubtreeDepth", normalized_depth);
-    setProperty("pelicanTargetCount",
-                static_cast<qulonglong>(model.resources.size()));
     setProperty("pelicanNodeRecordCount",
                 static_cast<qulonglong>(model.nodes.size()));
     setProperty("pelicanDependencyRecordCount",
                 static_cast<qulonglong>(model.dependencies.size()));
-    setProperty("pelicanVisibleDependencyRecordCount",
-                static_cast<qulonglong>(visible_dependencies.size()));
     setProperty("pelicanVisibleItemCount",
                 static_cast<qulonglong>(entities.size()));
-    setProperty("pelicanEdgeBundleCount",
-                static_cast<qulonglong>(bundles.size()));
-    setProperty("pelicanCurveEdgeCount",
-                static_cast<qulonglong>(bundles.size()));
-    setProperty("pelicanResourceOverlayCount",
-                static_cast<qulonglong>(resource_overlay_count));
     setProperty("pelicanPhysicalResourceCount",
                 static_cast<qulonglong>(physical_overlay.resource_count));
     setProperty("pelicanAdoptedAliasCount",
@@ -2747,9 +2673,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     setProperty("pelicanNotAdoptedAliasCount",
                 static_cast<qulonglong>(
                     physical_overlay.not_adopted_alias_count));
-    setProperty("pelicanFusionCandidateCount", 0);
-    setProperty("pelicanParallelCandidateCount", 0);
-    setProperty("pelicanPhysicalExplicitEmptyCount", 0);
     setProperty("pelicanPlanningProfile",
                 qtext(model.physical_plan.planning_profile));
     setProperty("pelicanPlanningEndpoint",
@@ -2759,7 +2682,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     boundary_entity_for_node.size()));
     setProperty("pelicanExecutionPlanState", QStringLiteral("available"));
     setProperty("pelicanExecutionPlanReasonCode", QString{});
-    setProperty("pelicanExecutionPlanReason", QString{});
     publishBarrierCoverage(*this, barrier_coverage);
     publish_group_properties();
     publishStateProperties();

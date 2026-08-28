@@ -231,9 +231,6 @@ DECLARE_MODULE(RenderTiming) {
         return gpu_timestamps_supported ? "enabled"
                                         : "graphics_queue_timestamps_unsupported";
     }
-    const std::vector<GpuTimingViewRow> &latestViewRows() const noexcept {
-        return published_latest_views;
-    }
     const std::vector<GpuTimingNodeRow> &latestNodeRows() const noexcept {
         return published_latest_nodes;
     }
