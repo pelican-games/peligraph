@@ -13952,81 +13952,103 @@ subgraph 置換機構(これらは著作面であり検査面ではない)。
 
 依存: WP355。見積: 小。
 
-### WP357: bloom の upsample 鎖を、標準形の加算 blend に置き換える
+### WP357: bloom の upsample 鎖を、標準形の加算 blend に置き換える(第 2 版)
 
-**§4 規則 11 の上段(出荷の見た目が変わる)。仕様レビュー + コードレビュー。**
-**利用者判断(2026-08-28): 「A で行きたいけど一般的な実装ならそれでいいよ」——
-見た目の変化を、標準形への移行として受け入れる。**
+**§4 規則 11 の上段。仕様レビューで 1 度不合格(6 指摘)。末尾に何が壊れたかを残す。**
+**利用者判断: A(見た目の変化を標準形への移行として受け入れる)。**
 
-#### なぜ機械的変換ではないのか(先に算術を明示する)
-
-現行の蓄積(survey 実測):
+#### 数式(量子化前の係数として)
 
 ```
-UB_k: 出力 = coarser + 2 × current      入力 2 本、第三の蓄積先(H_k)へ書く
-最終的な bloom 項 = 2·V3 + 4·V2 + 4·V1 + 4·V0
+旧: 2·V3 + 4·(V2+V1+V0)     UB_k: coarser + 2·current、蓄積先 H_k
+新: 2·(V3+V2+V1+V0)          UB_k': coarser を One/One でその場加算、×2 は最終 1 回
 ```
 
-**その場 blend では dst(= current 側)に係数 2 を掛けられない**
-(固定機能に dst×2 は無く、定数 factor は UNORM/SRGB 添付で [0,1] にクランプ)。
-**「後から足す側ほど重い」現行の構造は、in-place blend では表現不能。**
-
-**採る標準形(progressive upsample、CoD:AW 系):**
-
-```
-UB_k': coarser を bilinear 1 tap で出力し、One/One で V_{k-1} へその場加算
-蓄積 = V3 + V2 + V1 + V0(対等)
-最終合成 = lit + 蓄積 × intensity(×2 は最終で 1 回)
-最終的な bloom 項 = 2·V3 + 2·V2 + 2·V1 + 2·V0
-```
-
-**細かいオクターブが相対的に半分になる。これが見た目の変化の中身である。**
+**この係数は理想線形演算の話である。**出荷 LDR の実体は `B8G8R8A8_SRGB` で、
+**各段に clamp・sRGB encode・8bit 丸め・次段 decode が入り、レベル間は bilinear upsample を挟む**。
+sRGB blend は仕様上 linear 空間で行われる(旧 shader 加算も linear。ここは等価)ので、
+差の源は空間×量子化のみ。**CPU oracle はこれを段ごとに模倣すること**(§受け入れ)。
 
 #### やること
 
-1. **新シェーダ `bloom_upsample.frag`**: 入力 1 本を bilinear で出すだけ
-   (`outColor = texture(inputTexture, uv);`)。既存の登録手順
-   (`embed_shader` / `engineresources.cpp` / fixture)に従う
-2. **`projects/example/passes/main_rendering_config.json` の UpsampleBlend_1..3 を書き換え**:
-   - 入力は coarser 1 本(UB_3': V_3 → V_2 / UB_2': V_2 → V_1 / UB_1': V_1 → V_0)
-   - 出力添付に **`"load_op": "Load"`(WP352 の添付単位)**
-   - **`raster_state.color_attachments[0].blend` は明示 `{color:{src_factor:one,
-     dst_factor:one,op:add}, alpha:同}`。`"additive"` preset は使わない**
-     (preset の color src は SrcAlpha。WP353 で実測済みの罠)
-   - `H_0..H_2` への upsample 書き込みは消える(down 鎖の中間としてのみ残る)
-3. **FinalBloomComposite は構造維持**(2 入力 → swapchain、`+ color1 * 2.0`)。
-   **入力 1 を H_0 から蓄積済み V_0 に差し替えるだけ**
-4. **golden の再生成と定量化**
+1. 新シェーダ `bloom_upsample.frag`(入力 1 本を bilinear で出すだけ)。
+   既存の登録手順 + **`.frag` と `.frag.spv` の双方の embed ID**
+2. `projects/example/passes/main_rendering_config.json` の UpsampleBlend_1..3:
+   - 入力は coarser 1 本(V_3→V_2 / V_2→V_1 / V_1→V_0)、出力添付に `"load_op": "Load"`
+   - blend は**この正確な JSON**(第 1 版はパーサが受けないキーを書いていた):
 
-#### 依存の要(WP352 の価値回収の証明)
+```json
+"raster_state": { "color_attachments": [ { "blend": {
+  "color": { "src": "one", "dst": "one", "op": "add" },
+  "alpha": { "src": "one", "dst": "one", "op": "add" } } } ] }
+```
 
-**UB_k' の `load_op: Load` に対し、WP352 の添付単位推論が V_{k-1} を自動的に
-`reads` へ足す(same_pixel)。**これが VerticalBlur_{k-1} → UB_k' の RAW 順序を成立させる。
-**受け入れ条件: この読みが plan に実在すること、および
-`load_op` を外した変異で順序保証が消える(reads から落ちる)ことを同じテストで確認する。**
+3. FinalBloomComposite は構造維持、入力 1 を H_0 → 蓄積済み V_0 に差し替え
+4. fixture / golden の更新(§閉包リスト)
 
 #### 受け入れ条件
 
-- **新しい数式の CPU 参照と一致すること**: 蓄積 `V3+V2+V1+V0` と最終合成を CPU で計算し、
-  GPU 結果と許容差内で一致(WP339a の許容差の流儀: 層別・軸別)。
-  **「golden を貼り替えたら通った」を受け入れの根拠にしない**
-- **旧 golden との差を定量化して報告すること**(チャネル毎の最大差・平均差、
-  どのレベル起源の差か)。**差の方向が算術どおり(細オクターブの減衰)であること**
-- **plan の変化を明示的に固定すること**: UB_k' の reads/writes が新形になり、
-  H_k の蓄積書き込みが消えたことを、変更後 fixture として列挙・更新
-  (影響する exact fixture を全列挙。黙って再生成しない)
-- blend は**画素で**検査(WP353 の headless の流儀)。One/One と preset(SrcAlpha)の
-  取り違えは既存テストが守る
-- 全数 2 回(GPU 込みは統合側)、doclink 緑、`SKIP_DEVSTUDIO` 両構成ビルド
+**CPU oracle(第 1 版の「係数一致」を量子化込みに強化):**
+
+- oracle は **段ごとの sRGB encode/round/decode(既存 `color_pipeline_test.cpp:15` の
+  oracle を再利用)と bilinear upsample を模倣**する
+- 入力 2 系統: **(a) 飽和しないレベル別 basis**(係数 2·ΣV の方向を証明)、
+  **(b) 飽和する入力**(入れ子量子化まで GPU と一致することを証明)。
+  (a) だけでは飽和で旧新差が消える LDR の反例がある
+- LDR sRGB8 と **HDR R16F** で別 oracle
+
+**本番配線の証明(第 1 版の抜け穴: 3 パスの raster_state を省いても通せた):**
+
+- `passfieldownership_test` の 35 本 manifest を
+  **「32 本は raster_state 省略」+「UB 3 本は明示 One/One」に分割**し、
+  3 本の pass identity・`blend_enabled`・**RGB/alpha 全係数を exact 検査**
+  (係数の exact 検査は `"additive"` preset(src=SrcAlpha)への誤置換も静的に拒否する。
+  LDR 画素では blur の alpha=1 のため preset 差が見えない、が実測済みのため)
+- **同じ本番 config から `raster_state` だけを剥いだ変異を描画し、画素差があること**
+- LDR / HDR × `PELICAN_RUNTIME_SHADER_COMPILER` ON/OFF の matrix。
+  **XR は範囲外と明記**(出荷 XR config にこの鎖は無い)
+
+**`load_op` の意味(第 1 版の否定対照は不成立だった):**
+
+- **本番 graph では `load_op` を外しても順序は消えない**
+  (down 鎖経由の推移到達 + planner の WAW barrier)。
+  変異の正しい期待は **「UB の reads から V が落ち、RAW が WAW に変わる」**であり、
+  plan fixture でそれを固定する
+- **Load の宛先寄与は画素で証明する**: 迂回経路の無い最小 2 パス graph を別に組み、
+  Load 有 = 蓄積 / Load 無 = 上書き の画素差を検査する
+
+**fixture / golden の閉包(レビューが列挙済み。全件更新 or 不変を明記):**
+
+更新: `engine_resources.json`(新シェーダ ID)/ `frameplanner/plans/example_main_render.json` /
+`fixtures/devstudio/example_frame_plan.json` / `devstudio_frameplan_graph_test.cpp:2091` 系
+(H→UB 三辺の削除)/ `renderer_execution_traces.json` の skeletal_toon・usd0b subtree /
+golden `skeletal_toon` `usd0b_static_geometry` の PNG + `inventory.json` SHA +
+`wp73_rgba8_hashes.json`。
+**不変の対照**: `canonical_frame_plan_trace.txt`(pass 順は変わらない)は**再生成せず**
+一致のままであること。
+
+- 全数 2 回、doclink 緑、`SKIP_DEVSTUDIO` 両構成、GPU はエージェント外
 
 #### やらないこと
 
-- FinalBloomComposite の blend 化(swapchain に lit が先に無いので構造変更になる。別件)
-- down 鎖(threshold / H / V blur)の変更
-- intensity のパラメータ化(著作パラメータの話は別)
-- tent filter 等の品質向上(bilinear 1 tap。最小の標準形に留める)
+FinalBloomComposite の blend 化 / down 鎖の変更 / intensity のパラメータ化 /
+tent filter / XR 対応。
 
-依存: WP352、WP353、WP355。見積: 中。
+#### 仕様レビューで壊れた第 1 版(記録)
+
+| 第 1 版 | どう壊れたか |
+|---|---|
+| blend JSON のキー | `src_factor` 等はパーサが受けない。**文字どおり実装すると起動しない** |
+| 「load_op を外すと順序保証が消える」 | 推移到達 + WAW barrier で順序は残る。**代理条件だった** |
+| 「新数式と CPU 一致」 | 理想線形のみ。sRGB の段ごと量子化と bilinear を模倣しないと oracle にならない。飽和で差が消える反例あり |
+| 配線の証明なし | 3 パスの raster_state を剥いでも全条件が通った |
+| fixture 閉包が仕様外 | レビューが 10 件 + 不変対照 1 件を列挙。仕様に固定した |
+| matrix 不足 | HDR R16F と compiler ON/OFF が欠落。XR の範囲外宣言も無かった |
+
+レビューが壊せなかった点: 理想係数 2/4→2/2 の検算 / Load→reads 推論の実在(両経路)/
+sRGB blend が linear 空間である事(Vulkan 仕様引用つき)/ purgeability / D0。
+
+依存: WP352、WP353、WP355。見積: 中〜大(oracle の分だけ第 1 版より大きい)。
 
 #### コードレビュー(134f9a3 = WP355)の仕分け
 
