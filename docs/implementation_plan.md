@@ -13561,3 +13561,75 @@ region の保存も、同じ 1 本の RPC(既存 authored pass への field 設�
 **順序**: bloom 書き換え → G0 の安い 2 件 → 本件(shader 参照の field 追加 +
 生成先行フロー)。特化ノードが生成フローに乗ると
 「composite ノードを置く → 雛形シェーダが即座に開く」という体験になる。
+
+### WP354: ノードが走らせるシェーダを frame plan が運ぶ
+
+**§4 規則 11 の中段(`pelican_project` / 複数経路)。仕様レビュー + コードレビュー。**
+
+#### 目的
+
+**studio のノードからシェーダへ飛べるようにする第一歩。**
+エンジンは著作 config で最初から知っているが、表示用の投影(`framePlanToJson`)が
+運んでいないため、studio はノードがどのシェーダを走らせるか構造的に知り得ない。
+
+#### 事実(本 WP 執筆時に確認。再調査不要)
+
+- **`framePlanToJson` の現行フィールドは 23 個で、`shader` は無い**
+- 著作側: fullscreen/output_transform は `shader.{vertex,fragment}` 必須、
+  raster は `shader.{implementation,vertex,fragment}`、compute は `shader` 文字列
+  または `ray_tracing.{raygen,miss,closesthit}`、
+  shadow_depth/velocity/picking は**省略可で engine:// 既定にフォールバック**、
+  material / anchor / snapshot_copy / ui / imgui は**シェーダを持たない**
+  (material のシェーダは material システム側の所有)
+- 参照は 2 種: `engine://…`(バイナリに埋め込み。ファイルとして開けない)と
+  プロジェクト相対(`projects/sprite_demo/shaders/` 等。実在する慣行)
+- planner は `frameplanner.cpp:675-882` で pass JSON を自前で読んでいる
+- **studio には設定永続化が無い**(QSettings 使用 0 件)。本 WP では作らない
+
+#### やること
+
+**1. engine: 著作された参照をそのまま投影に写す(加算のみ)**
+
+- 各ノードについて、pass JSON の `shader` があれば**そのまま**(verbatim)
+  frame plan のノードへ出す。`ray_tracing` も同様に verbatim
+- **無ければフィールドごと出さない。**planner が既定を発明しないこと ——
+  shadow_depth 等の「省略時 engine:// 既定」を planner が複製すると
+  既定値の所在が 2 箇所になる。**表示側が「省略(エンジン既定)」と表示する**
+- 既存 23 フィールドに一切触らない
+
+**2. studio: 表示と「開く」**
+
+- ノード詳細に shader 行を出す(vertex / fragment / compute / ray_tracing の各参照)
+- **プロジェクト相対参照**: OS の関連付けで開くアクション
+  (`QDesktopServices`。エディタ指定の設定は作らない)
+- **`engine://` 参照**: 開くアクションは無効にし、**理由を表示する**
+  (埋め込みリソースでありファイルが無い)。黙って何も起きないボタンにしない
+- **シェーダ欄が無いノード**: 「非該当」または「省略(エンジン既定)」を
+  ノード種別に応じて表示。空欄にしない
+
+#### 受け入れ条件
+
+**否定対照を同じテストの中に置くこと(§4 規約 10)。**
+
+- **shader を著作した各種別(fullscreen / raster / compute / ray_tracing /
+  明示 shader の shadow_depth)で参照が現れ、
+  material / anchor / snapshot_copy で現れないこと**を同一テスト内で比較する
+- **省略した shadow_depth で、planner が engine:// 既定を発明していないこと**
+  (フィールドが無いこと)——「既定値の所在は 1 箇所」の検査
+- **既存 23 フィールドが不変であること**(出荷 4 プロジェクトの frame plan を
+  前後比較。shader / ray_tracing 以外の差分ゼロ)
+- studio: **プロジェクト相対で開くアクションが有効、engine:// で無効 + 理由表示**を
+  同一テスト内で両方実行。「開く」は `QDesktopServices` 呼び出しの継ぎ目で検査し、
+  **実際に外部プロセスを起動しない**こと
+- `uv run tools/doclink.py check` が緑、`SKIP_DEVSTUDIO=ON` でビルドが通ること
+- 全数 2 回(GPU はエージェントに走らせない)
+
+#### やらないこと
+
+- 雛形シェーダの生成(生成先行フロー。別 WP —— 共有 RPC の設計が要る)
+- 既存パスへフィールドを書き込む RPC(region 永続化と共有。別 WP)
+- 参照の解決検査(ファイル実在・compile 可否)。v1 は著作値の表示だけ
+- QSettings / エディタ指定の設定
+- material のシェーダ表示(所有が material システム側。別の話)
+
+依存: 無し(WP353 と独立)。見積: 小。
