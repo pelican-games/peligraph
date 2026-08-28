@@ -14218,48 +14218,90 @@ golden が書かれない / 5: 片側だけ刺激を変えると hash 不一致�
 
 依存: WP357。見積: 中。
 
-### WP358(= リファクタ R4): 型語彙を leaf へ移し、offline 検証から届くようにする
+#### コードレビュー(e867099 = WP354)の仕分け
 
-**§4 規則 11 の中段。仕様レビュー + コードレビュー。プレファブ U1 の前提。**
+**実装本体は健全**(D0 / 未知 enum の fail-fast / resolver / 出荷 19 JSON 影響なし、を
+レビューが独立確認)。**穴は門番側に 3 + 懸念 2。CI 掲載の欠落 1。**
 
-#### 事実(プレファブ設計レビュー 2 巡で確定済み)
+**直す(WP354a。連鎖はここで打ち切り):**
 
-- `StructFieldType` の enum は `src/core/userpublic/details/schema/structfieldschema.hpp:19-39`
-  にあり、**型名への文字列変換は core の RPC 実装内**(`editorcommandservice.cpp:65-106`)
-- 依存方向は **core → `pelican_project`**(逆は不可)。studio は project のみリンク
-- したがって **project 層(offline の文書検証、将来のプレファブ parameter 検証)から
-  型語彙に届かない**。変換が RPC 実装に埋まっているため二重実装しか道が無い
+1. **[実害] strip の baseline が偽物**: `pre_wp354.json` は実 pre-WP 出力でなく
+   (name/kind のみ + 新設 profile を含む)、比較は `appendShaderResolution` 直叩き。
+   **`e867099^` の実 renderer 出力を immutable baseline として固定**し、
+   現行値も production 経路(`currentFramePlanJson`)から取得。全 node の field 存在確認 →
+   許可 pointer のみ除去 → recursive diff 0 件。profile の扱いを明示
+2. **[実害] raw planner 不変が null overload のみ**: 実在 `CompiledRenderPipeline` を渡した
+   non-null の exact fixture を追加し、**「non-null のときだけ planner が
+   shader_resolution を足す」変更が落ちる**ことを実証。helper が補完する前の
+   不存在 REQUIRE も追加
+3. **[実害] production 配線と matrix が通常 CI 不在**: compiler OFF で test discovery 前に
+   return する構造を直し resolver/projection テストを OFF でも登録。PR gate に
+   SKIP_DEVSTUDIO=OFF + offscreen の model/widget テスト行を追加。
+   renderer production 経路を通る CPU seam テストを通常 ctest に載せる
+4. **[懸念] declared iff の producer/Studio 不一致**: provider + declared 無しを
+   producer は出せるが Studio が拒否する。origin 別の iff
+   (authored=必須 / engine_default・generated=禁止 / provider=optional)に両者を揃え、
+   その経路のテストを通す
+5. **[懸念] provider 同値文字列の規則が未固定**: authored と同一文字列を返す実 provider で
+   両 stage `origin=="provider"` を検査(「declared != effective で判定」への退行を塞ぐ)
 
-#### やること
+### WP354a: shader 投影レビューの 5 件
 
-1. 型 enum・文字列変換・parameter JSON 検証(値の型/range/enum/unit 検査)を
-   **`pelican_project` 配下(または両者の下の leaf)へ移す**
-2. core の `StructFieldSchema` はそれを**使う側**に回る
-3. **`editorcommandservice.cpp` の変換は移設先の呼び出しに置き換える**(複製を残さない)
+**§0 中段。各件、レビューが示した「素通りする変更」を実際に当てて落ちることを確かめる。**
+全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成、GPU は直列で実行可。
+依存: WP354。見積: 中。
 
-#### 地雷(先に名指しする)
+### WP358(= リファクタ R4): 型語彙を leaf へ移す(第 2 版)
 
-- **`structfieldschema.hpp` は game DLL の SDK 面である**(behavior の `Params::schema` が使う)。
-  **DLL のソース互換を壊さないこと**: `userpublic` 側の header は移設先への
-  forwarding include として残し、既存の behavior コード(fixture 3 種 +
-  projects/*/code)が**無変更でコンパイルできる**ことを検査する
-- schema fingerprint(reload の漂流検知)が**移設の前後でバイト同一**であること。
-  変わると全 behavior が「schema 漂流」と誤検知される
-- 型名の文字列(RPC の schema_fields が返す語彙)が 1 文字も変わらないこと
-  (studio の widget 生成が読む)
+**§4 規則 11 の中段。仕様レビューで 1 度不合格(4 指摘)。プレファブ U1 の前提。**
+
+#### 初版の何が壊れたか
+
+| 初版 | どう壊れたか |
+|---|---|
+| 「fingerprint バイト同一 + 語彙変異で検知」 | **両立しない**: fingerprint は enum 数値を格納し型名文字列を含まない。かつ事前固定が無ければ新経路同士の自己比較で通る |
+| 「fixture が無変更でビルド = 互換」 | ソース再コンパイルは **ABI/リンク互換を証明しない**(StructFieldSchema は DLL 境界を値渡しされる ABI carrier。静的登録は ABI gate より先に走る) |
+| 「pelican_project 配下へ」 | 境界検査は LINK_LIBRARIES しか見ないため、**header の逆 include(project→core)が素通り**する |
+| 「関数を直接呼べる = offline 検証」 | 変換は現状 enum→string の一方向のみ。逆変換と値検査が無ければ offline 検証は成立しない |
+
+#### やること(2 段構成)
+
+**段 A(移設前に固定するもの):**
+
+- **全 17 型 + range/unit/default/enum を使う ABI-coverage fixture behavior を
+  現行 SDK でビルドし、その DLL binary と fingerprint digest を tracked fixture として固定**
+  (「更新禁止」と明記。以後の前後比較のオラクル)
+- enum ordinal / `sizeof`/`alignof`/`offsetof` / variant index / import symbol /
+  `gameLogicAbiVersion == 1` の静的検査を先に置く
+
+**段 B(移設):**
+
+- **独立 leaf target `pelican_schema_leaf`** を新設(依存は標準ライブラリ + nlohmann のみ)。
+  型 enum・**双方向**の文字列変換・値の型/range/enum/unit 検査を置く
+- project と core は leaf を使う。core 固有の `Params` materialization は
+  **adapter として core に残す**(丸ごと移さない)
+- `userpublic` の header は forwarding include(DLL ソース互換)
+- `editorcommandservice.cpp` の変換は leaf 呼び出しに置換(複製 grep 0 件)
 
 #### 受け入れ条件
 
-- **移設先の関数を project 層のテストから直接呼べること**(offline 検証の成立証明)
-- **behavior fixture(wp155/162/179)と 4 project の code/ が無変更でビルドされること**
-- **schema fingerprint の前後一致**を、実 behavior 登録で検査(変異: 語彙を 1 つ
-  変えると fingerprint が変わって検知される、も同じテストで)
-- RPC の `schema_fields` 出力がバイト不変(既存 captured fixture との一致)
-- 変換の複製が残っていないこと(旧実装の grep 0 件)
-- 全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成、GPU はエージェント外
+- **段 A の DLL binary(pre-WP ビルド)が、段 B 後の player にロードでき、
+  登録・schema・reload 検証が全て通ること**(バイナリ互換の実証)
+- fingerprint は**段 A の固定 digest と一致**。否定対照は語彙でなく
+  **実登録の I32→I64 / range / unit / default / enum 変異**が
+  `validateBehaviorReload` で名前付き drift になること。型名文字列の検査は RPC 側で別途
+- **独立 consumer build(core の include dir を与えない)で leaf + project の
+  compile include graph に `src/core` が現れないこと**を検査
+  (link 検査では header 逆依存を検出できないため)
+- offline 検証の実体: project 層のテストが leaf 経由で「未知型名 / 範囲外 / enum 外」を
+  **名前付きで拒否**すること(逆変換込み)
+- RPC `schema_fields` 出力バイト不変(captured fixture 比較)/
+  behavior fixture 3 種 + 4 project の code/ 無変更ビルド /
+  全数 2 回 / doclink 緑 / SKIP_DEVSTUDIO 両構成 / GPU はエージェント外
 
 #### やらないこと
 
-プレファブ本体 / bindable inventory(U1 側)/ 型語彙の拡張(object 種別等は U1 で)。
+プレファブ本体 / bindable inventory / 型語彙の拡張 / ABI version の変更
+(維持を選ぶ。破壊が必要になったらそれは別 WP で loader protocol ごと設計する)。
 
-依存: 無し。見積: 小〜中。
+依存: 無し。見積: 中(初版「小〜中」は ABI 固定の分を見落としていた)。
