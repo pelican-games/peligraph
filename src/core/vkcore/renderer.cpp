@@ -2831,6 +2831,11 @@ Renderer::Renderer() {
     installRenderPipelineReloadParticipant();
 }
 
+Renderer::Renderer(RendererFramePlanCpuSeam,
+                   RenderingPassId rendering_pass_id)
+    : current_rendering_pass_id{rendering_pass_id},
+      flat_rendering_pass_id{rendering_pass_id} {}
+
 Renderer::~Renderer() {
     if (render_pipeline_reload_state != nullptr) {
         if (auto *reload_service =

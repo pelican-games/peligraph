@@ -613,14 +613,23 @@ FramePlanShaderStage parseShaderStage(
     }
 
     const auto declared = value.find("declared_ref");
-    const bool declared_required =
-        result.origin == "authored" || result.origin == "provider";
+    const bool declared_required = result.origin == "authored";
+    const bool declared_allowed =
+        declared_required || result.origin == "provider";
     if (declared_required) {
         if (declared == value.end() || !declared->is_string() ||
             declared->get_ref<const std::string &>().empty()) {
             throw invalid(std::string{context} +
                           " requires non-empty declared_ref for origin '" +
                           result.origin + "'");
+        }
+        result.declared_ref = declared->get<std::string>();
+    } else if (declared != value.end() && declared_allowed) {
+        if (!declared->is_string() ||
+            declared->get_ref<const std::string &>().empty()) {
+            throw invalid(std::string{context} +
+                          " requires declared_ref to be non-empty when "
+                          "present for origin 'provider'");
         }
         result.declared_ref = declared->get<std::string>();
     } else if (declared != value.end()) {

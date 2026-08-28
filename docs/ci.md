@@ -3,7 +3,9 @@
 ## 役割
 
 GitHub Actions の `CPU gate` は Windows/MSVC の configure、Debug 全ターゲット build、
-GPU 不要 CTest を pull request ごとに検査する。統合ブランチ
+GPU 不要 CTest を pull request ごとに検査する。加えて Qt 6.10 を持つ別 job が
+`SKIP_DEVSTUDIO=OFF` / runtime shader compiler OFF で WP354 の frame-plan model と widget を
+`QT_QPA_PLATFORM=offscreen` で検査する。統合ブランチ
 `codex/rendering-phase1-refactor` への push でも実行し、同じ pull request / ref の古い run は
 `concurrency.cancel-in-progress` で中止する。テストや build の自動 retry は行わない。
 
@@ -50,9 +52,12 @@ GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu
 
 ## devstudio の Qt gate
 
-常設 CI0 と CI1 は **Qt を導入せず `-DSKIP_DEVSTUDIO=ON` を維持する**。devstudio のために
-既定の engine build と clean-clone gate へ GUI toolchain を持ち込まない方針である。一方、
-D0 リンク境界の負例テストは Qt 非依存なので、この既定構成でも CTest に登録する。
+常設 CI0 の engine job と CI1 clean-clone job は **Qt を導入せず
+`-DSKIP_DEVSTUDIO=ON` を維持する**。一方、CI0 の `windows-msvc-studio` job は Qt 6.10 を導入し、
+`-DSKIP_DEVSTUDIO=OFF -DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で WP354 の model/widget 2 件を
+offscreen 実行する。これにより既定 engine gate を GUI toolchain に結合せず、shader 投影の
+Studio consumer は毎 PR の門番に置く。D0 リンク境界の負例テストは Qt 非依存なので、
+engine job にも引き続き登録する。
 
 devstudio のコンパイル、レイアウト永続化、frame plan 表示 model のテストは、Qt 6.10 を用意した
 開発環境で次の明示構成を使う。`devstudio_layoutpreset_test` は GUI を操作せず、名前付き保存・復元、
@@ -65,6 +70,9 @@ cmake -S . -B build-studio -DSKIP_DEVSTUDIO=OFF `
 cmake --build build-studio --config Debug
 ctest --test-dir build-studio -C Debug --output-on-failure
 ```
+
+CI0 の WP354 行だけを手元で再現する場合は compiler OFF で対象 target をビルドし、
+`QT_QPA_PLATFORM=offscreen` を設定して `ctest -R "^WP354 Studio"` を実行する。
 
 ### GPU gate(`run_gpu_gate.py`)
 

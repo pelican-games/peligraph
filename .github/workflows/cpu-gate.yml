@@ -92,3 +92,85 @@ jobs:
             build/ci-artifacts/
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml
+
+  windows-msvc-studio:
+    name: Windows MSVC / WP354 Studio offscreen
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.10.3"
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Prepare Studio logs
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force build-studio/ci-artifacts | Out-Null
+
+      - name: Configure Studio with compiler OFF
+        shell: pwsh
+        run: |
+          cmake `
+            -S . `
+            -B build-studio `
+            -DSKIP_DEVSTUDIO=OFF `
+            -DPELICAN_RUNTIME_SHADER_COMPILER=OFF `
+            -DPELICAN_WITH_SPIRV_LINK=OFF `
+            -DPELICAN_PYTHON_TESTS=OFF 2>&1 |
+            Tee-Object -FilePath build-studio/ci-artifacts/configure.log
+          $result = $LASTEXITCODE
+          if ($result -ne 0) { exit $result }
+
+      - name: Build WP354 Studio model and widget tests
+        shell: pwsh
+        run: |
+          cmake --build build-studio --config Debug --target `
+            pelican_test_devstudio_frameplan_test `
+            pelican_test_devstudio_frameplan_graph_test 2>&1 |
+            Tee-Object -FilePath build-studio/ci-artifacts/build.log
+          $result = $LASTEXITCODE
+          if ($result -ne 0) { exit $result }
+
+      - name: Run WP354 Studio model and widget offscreen
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $listing = ctest --test-dir build-studio -C Debug -N -R "^WP354 Studio" 2>&1
+          $result = $LASTEXITCODE
+          $listing | Tee-Object -FilePath build-studio/ci-artifacts/ctest-list.log
+          if ($result -ne 0) { exit $result }
+          if (($listing -join "`n") -notmatch "Total Tests: 2") {
+            Write-Error "expected exactly two WP354 Studio tests"
+            exit 1
+          }
+          ctest --test-dir build-studio -C Debug `
+            -R "^WP354 Studio" --output-on-failure 2>&1 |
+            Tee-Object -FilePath build-studio/ci-artifacts/ctest.log
+          $result = $LASTEXITCODE
+          if ($result -ne 0) { exit $result }
+
+      - name: Upload Studio diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cpu-gate-studio-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build-studio/ci-artifacts/
+            build-studio/Testing/Temporary/LastTest.log
+            build-studio/CMakeFiles/CMakeConfigureLog.yaml

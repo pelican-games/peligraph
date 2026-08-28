@@ -1,0 +1,23 @@
+{
+  "barriers": [],
+  "graph": "wp354_non_null_planner",
+  "levels": [
+    [
+      "raw_pass"
+    ]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "render",
+      "level": 0,
+      "name": "raw_pass",
+      "order": 0,
+      "reads": [],
+      "reads_history": [],
+      "writes": []
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}

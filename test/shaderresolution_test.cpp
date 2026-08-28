@@ -1,10 +1,13 @@
+#include "../src/core/container.hpp"
 #include "../src/core/loader/pathresolver.hpp"
-#include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/passdefinitionjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/shaderresolution.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -13,7 +16,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
@@ -89,15 +94,54 @@ std::vector<std::string> stageNames(const Json &resolution) {
     return result;
 }
 
-void eraseNode(Json &plan, std::string_view name) {
-    auto &nodes = plan.at("nodes");
-    nodes.erase(
-        std::remove_if(
-            nodes.begin(), nodes.end(), [&](const Json &candidate) {
-                return candidate.at("name")
-                           .get_ref<const std::string &>() == name;
-            }),
-        nodes.end());
+FramePlan familyFramePlan() {
+    FramePlan plan;
+    plan.name = "wp354_family_contract";
+    const struct Entry {
+        const char *name;
+        FramePlanNodeKind kind;
+    } entries[] = {
+        {"material", FramePlanNodeKind::render},
+        {"fullscreen", FramePlanNodeKind::render},
+        {"raster", FramePlanNodeKind::render},
+        {"output_transform", FramePlanNodeKind::output_transform},
+        {"debug_draw", FramePlanNodeKind::render},
+        {"gizmo", FramePlanNodeKind::render},
+        {"debug_text", FramePlanNodeKind::render},
+        {"shadow_depth", FramePlanNodeKind::render},
+        {"velocity", FramePlanNodeKind::render},
+        {"picking", FramePlanNodeKind::render},
+        {"ui", FramePlanNodeKind::render},
+        {"canonical_anchor", FramePlanNodeKind::anchor},
+        {"snapshot_copy", FramePlanNodeKind::snapshot_copy},
+        {"compute_task", FramePlanNodeKind::compute},
+        {"ray_task", FramePlanNodeKind::compute},
+    };
+    plan.nodes.reserve(std::size(entries));
+    plan.levels.reserve(std::size(entries));
+    for (std::size_t index = 0; index < std::size(entries); ++index) {
+        plan.nodes.push_back(FramePlanNode{
+            .name = entries[index].name,
+            .kind = entries[index].kind,
+            .declaration_index = index,
+            .order = index,
+            .level = index,
+        });
+        plan.levels.push_back({entries[index].name});
+    }
+    return plan;
+}
+
+void eraseRequiredObjectPointer(Json &document,
+                                const std::string &pointer) {
+    const auto separator = pointer.rfind('/');
+    REQUIRE(separator != std::string::npos);
+    const auto parent_pointer = pointer.substr(0, separator);
+    const auto field = pointer.substr(separator + 1);
+    auto &parent = document.at(Json::json_pointer{parent_pointer});
+    CAPTURE(pointer);
+    REQUIRE(parent.is_object());
+    REQUIRE(parent.erase(field) == 1);
 }
 
 } // namespace
@@ -319,15 +363,17 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
 }
 
 TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 changes only node shader fields",
-          "[wp354][shader-resolution][fixture]") {
+          "[wp354][shader-resolution][fixture][production-seam]") {
     const auto source_root =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
-    auto baseline = readJson(
+    const auto baseline = readJson(
         source_root / "test" / "fixtures" / "wp354" /
         "runtime_projection.pre_wp354.json");
-#if !PELICAN_WITH_IMGUI
-    eraseNode(baseline, "imgui");
-#endif
+    REQUIRE_FALSE(baseline.contains("profile"));
+    for (const auto &entry : baseline.at("nodes")) {
+        CAPTURE(entry.at("name"));
+        REQUIRE_FALSE(entry.contains("shader_resolution"));
+    }
 
     CompiledRenderingPass compiled;
     compiled.name = "wp354_family_contract";
@@ -408,9 +454,6 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
                   "engine://picking_skinned"),
          declared(DeclaredShaderStage::fragment, "engine://picking")});
     addPass(compiled, "ui", UiPassInfo{});
-#if PELICAN_WITH_IMGUI
-    addPass(compiled, "imgui", ImGuiPassInfo{});
-#endif
 
     ComputeTaskDefinition compute;
     compute.name = "compute_task";
@@ -452,12 +495,20 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
         .task_id = ComputeTaskId{1},
     });
 
-    PathResolver resolver;
-    resolver.setup(source_root / "projects" / "sprite_demo", false);
-    auto current = baseline;
-    appendShaderResolution(current, compiled, resolver);
+    constexpr RenderingPassId pass_id{41};
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(
+        source_root / "projects" / "sprite_demo", false);
+    GET_MODULE(FrameGraphRuntimeContainer)
+        .registerExecutionPlan(
+            pass_id, compiled, familyFramePlan(),
+            std::make_shared<CompiledRenderPipeline>());
+    Renderer renderer{RendererFramePlanCpuSeam{}, pass_id};
+    const auto current = renderer.currentFramePlanJson();
 
     REQUIRE(current.at("profile") == "runtime");
+    REQUIRE(current.at("nodes").size() ==
+            baseline.at("nodes").size());
     for (const auto &entry : current.at("nodes")) {
         CAPTURE(entry.at("name"));
         REQUIRE(entry.contains("shader_resolution"));
@@ -468,10 +519,7 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
             Json{{"state", "not_applicable"}});
     REQUIRE(node(current, "snapshot_copy").at("shader_resolution") ==
             Json{{"state", "not_applicable"}});
-    for (const auto family : {"ui", "imgui"}) {
-#if !PELICAN_WITH_IMGUI
-        if (std::string_view{family} == "imgui") continue;
-#endif
+    for (const auto family : {"ui"}) {
         const auto &fixed =
             node(current, family).at("shader_resolution").at("stages");
         REQUIRE(stageNames(
@@ -526,12 +574,97 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
                 .at("effective_ref") ==
             "engine://shaders/compute/clustered_light_select");
 
-    auto stripped = current;
-    for (auto &entry : stripped.at("nodes")) {
-        CAPTURE(entry.at("name"));
-        REQUIRE(entry.erase("shader_resolution") == 1);
+    std::vector<std::string> permitted_projection_pointers{
+        "/profile"};
+    for (std::size_t index = 0;
+         index < current.at("nodes").size(); ++index) {
+        permitted_projection_pointers.push_back(
+            "/nodes/" + std::to_string(index) +
+            "/shader_resolution");
     }
-    REQUIRE(stripped == baseline);
+    auto stripped = current;
+    for (const auto &pointer : permitted_projection_pointers) {
+        eraseRequiredObjectPointer(stripped, pointer);
+    }
+    const auto recursive_diff = Json::diff(baseline, stripped);
+    INFO("unexpected recursive diff: " << recursive_diff.dump(2));
+    REQUIRE(recursive_diff.empty());
+}
+
+TEST_CASE("non-null planner overload stays exact and shader-free before renderer enrichment",
+          "[wp354][shader-resolution][planner-negative-control][fixture]") {
+    const auto source_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const auto expected = readJson(
+        source_root / "test" / "fixtures" / "wp354" /
+        "planner_non_null.json");
+
+    FramePlan raw;
+    raw.name = "wp354_non_null_planner";
+    raw.nodes.push_back(FramePlanNode{
+        .name = "raw_pass",
+        .kind = FramePlanNodeKind::render,
+    });
+    raw.levels = {{"raw_pass"}};
+    CompiledRenderPipeline render_pipeline;
+    auto wire = framePlanToJson(raw, &render_pipeline);
+
+    REQUIRE(wire == expected);
+    REQUIRE_FALSE(wire.contains("profile"));
+    REQUIRE_FALSE(
+        wire.at("nodes").at(0).contains("shader_resolution"));
+
+    CompiledRenderingPass compiled;
+    addPass(compiled, "raw_pass", MaterialPassInfo{});
+    PathResolver resolver;
+    resolver.setup(
+        source_root / "projects" / "sprite_demo", false);
+    appendShaderResolution(wire, compiled, resolver);
+    REQUIRE(wire.at("nodes").at(0).at("shader_resolution") ==
+            Json{{"state", "material_owned"}});
+}
+
+TEST_CASE("provider projection permits a missing authored declaration",
+          "[wp354][shader-resolution][provider][origin-iff]") {
+    CompiledRenderingPass compiled;
+    compiled.name = "wp354_provider_without_declaration";
+    addPass(
+        compiled, "provided",
+        FullscreenPassInfo{
+            .vert_shader = shader(
+                "engine://fullscreen", ShaderStage::vertex),
+            .frag_shader = shader(
+                "engine://scene_present", ShaderStage::fragment),
+        },
+        {},
+        PassImplementationSelection{
+            .provider = "fixture.provider.no_declaration",
+            .implementation = "fixture.provider.no_declaration@1",
+            .provider_owner = 77,
+        });
+
+    Json plan{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"graph", "wp354_provider_without_declaration"},
+        {"nodes",
+         Json::array({
+             {{"name", "provided"}, {"kind", "render"}},
+         })},
+    };
+    PathResolver resolver;
+    resolver.setup(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR}, false);
+    appendShaderResolution(plan, compiled, resolver);
+
+    const auto &stages =
+        plan.at("nodes").at(0)
+            .at("shader_resolution").at("stages");
+    REQUIRE(stages.size() == 2);
+    for (const auto &stage : stages) {
+        REQUIRE(stage.at("origin") == "provider");
+        REQUIRE_FALSE(stage.contains("declared_ref"));
+    }
 }
 
 TEST_CASE("raw framePlanToJson remains profile-less and shader-free",

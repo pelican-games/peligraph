@@ -1149,6 +1149,22 @@ TEST_CASE("WP354 Studio model enforces the complete shader resolution wire schem
             ContainsSubstring(
                 "requires non-empty declared_ref for origin 'authored'"));
     }
+    SECTION("provider origin permits an absent declaration") {
+        resolution["stages"][0].erase("declared_ref");
+        const auto provider_only = buildFramePlanModel(plan.dump());
+        const auto &stage = provider_only.nodes.front()
+                                .shader_resolution.stages.front();
+        REQUIRE(stage.origin == "provider");
+        REQUIRE_FALSE(stage.declared_ref.has_value());
+    }
+    SECTION("provider declaration is non-empty when present") {
+        resolution["stages"][0]["declared_ref"] = "";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "requires declared_ref to be non-empty when present for "
+                "origin 'provider'"));
+    }
     SECTION("engine default forbids declaration") {
         resolution["stages"][0]["origin"] = "engine_default";
         REQUIRE_THROWS_WITH(

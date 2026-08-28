@@ -1,9 +1,12 @@
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderingpass/passimplementationregistry.hpp"
+#include "../src/core/vkcore/shaderresolution.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <filesystem>
 #include <optional>
 #include <semaphore>
 #include <stdexcept>
@@ -441,6 +444,93 @@ TEST_CASE(
             },
             "invalid fragment shader reference");
     }
+
+    REQUIRE(
+        registry.unregisterProvider(handle, owner) ==
+        RenderPass::Status::ok);
+    registry.releaseOwner(owner);
+    internal::releaseRegistrationOwner(owner);
+}
+
+TEST_CASE(
+    "WP354 real provider remains provider when effective references equal authored references",
+    "[render-pass][provider][wp354][shader-resolution][mutation-guard]") {
+    PassImplementationRegistry registry;
+    ProviderState state;
+    state.vertex = "shaders/same_vertex";
+    state.fragment = "shaders/same_fragment";
+    constexpr std::string_view provider_name =
+        "fixture.wp354.same_reference";
+    const auto owner = internal::allocateRegistrationOwner();
+    RenderPass::ProviderHandleV1 handle{};
+    REQUIRE(
+        registry.registerProvider(
+            provider(provider_name, state), owner, handle) ==
+        RenderPass::Status::ok);
+    registry.activateOwner(owner);
+
+    auto pass = fullscreenPass("wp354_same_reference");
+    pass.fullscreenInfo().vert_shader = makeShaderReference(
+        state.vertex, ShaderStage::vertex);
+    pass.fullscreenInfo().frag_shader = makeShaderReference(
+        state.fragment, ShaderStage::fragment);
+    pass.shader_declaration_parsed = true;
+    pass.declared_shader_refs = {
+        DeclaredShaderReference{
+            .stage = DeclaredShaderStage::vertex,
+            .ref = state.vertex,
+        },
+        DeclaredShaderReference{
+            .stage = DeclaredShaderStage::fragment,
+            .ref = state.fragment,
+        },
+    };
+    pass.requested_implementation_provider =
+        std::string{provider_name};
+    {
+        const auto providers = registry.snapshot();
+        auto resolved = providers.resolveFullscreen(
+            pass, fullscreenNode(pass.name));
+        pass.fullscreenInfo().vert_shader =
+            std::move(resolved.vertex_shader);
+        pass.fullscreenInfo().frag_shader =
+            std::move(resolved.fragment_shader);
+        pass.implementation_selection =
+            std::move(resolved.selection);
+    }
+    REQUIRE(state.calls == 1);
+
+    CompiledRenderingPass compiled;
+    compiled.name = "wp354_same_reference";
+    compiled.passes.push_back(CompiledPass{
+        .definition = std::move(pass),
+        .pass_id = PassId{0},
+    });
+    nlohmann::json plan{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"graph", "wp354_same_reference"},
+        {"nodes",
+         nlohmann::json::array({
+             {{"name", "wp354_same_reference"},
+              {"kind", "render"}},
+         })},
+    };
+    PathResolver path_resolver;
+    path_resolver.setup(
+        std::filesystem::temp_directory_path(), false);
+    appendShaderResolution(plan, compiled, path_resolver);
+
+    const auto &stages =
+        plan.at("nodes").at(0)
+            .at("shader_resolution").at("stages");
+    REQUIRE(stages.size() == 2);
+    REQUIRE(stages.at(0).at("declared_ref") == state.vertex);
+    REQUIRE(stages.at(0).at("effective_ref") == state.vertex);
+    REQUIRE(stages.at(0).at("origin") == "provider");
+    REQUIRE(stages.at(1).at("declared_ref") == state.fragment);
+    REQUIRE(stages.at(1).at("effective_ref") == state.fragment);
+    REQUIRE(stages.at(1).at("origin") == "provider");
 
     REQUIRE(
         registry.unregisterProvider(handle, owner) ==

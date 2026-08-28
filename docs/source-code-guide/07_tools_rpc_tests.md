@@ -597,7 +597,7 @@ transform update も即適用ではなく pending です。複数 update をま�
 
 ## 7.8 テスト構成: test を実装の仕様書として読む
 
-[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L1) は Catch2 executable と subprocess test を一か所で登録します。`pelican_define_test(name [GROUP group] [GOLDEN] [GPU] [QT] [RUNTIME_SHADER] libs...)` は、`GROUP` 無しなら `test/<name>.cpp` ごとの executable、`GROUP` 有りならソース単位の object target とリンク閉包単位の named executable を作り、`catch_discover_tests()` で各 `TEST_CASE` を CTest へ公開します。**ただし公開は無条件ではありません** — 下記 `RUNTIME_SHADER` を参照。
+[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L1) は Catch2 executable と subprocess test を一か所で登録します。`pelican_define_test(name [GROUP group] [GOLDEN] [GPU] [QT] [RUNTIME_SHADER] libs...)` は、`GROUP` 無しなら `test/<name>.cpp` ごとの executable、`GROUP` 有りならソース単位の object target とリンク閉包単位の named executable を作り、compiler option にかかわらず `catch_discover_tests()` で各 `TEST_CASE` を CTest へ公開します。
 
 signature にフラグとグループ名が入ります([`GROUP` を解析する `cmake_parse_arguments`](../../test/CMakeLists.txt#L31))。
 
@@ -606,11 +606,11 @@ cmake_parse_arguments(PELICAN_TEST
   "GOLDEN;GPU;QT;RUNTIME_SHADER" "GROUP" "" ${ARGN})
 ```
 
-このうち **`RUNTIME_SHADER` だけが登録そのものを左右します**。付いたテストは `PELICAN_RUNTIME_SHADER_COMPILER` が OFF のとき、executable としてはビルドされる(コンパイル検査は効く)ものの、[`return()` により CTest に登録されません](../../test/CMakeLists.txt#L96)。dist-bake がまだ生成しない source variant を必要とするためで、根拠は [`design_build_tiers.md`](../design_build_tiers.md) §4 です。
+`RUNTIME_SHADER` は runtime shader 依存のテストを同じ discovery properties の executable にまとめるための [`discovery_signature`](../../test/CMakeLists.txt#L60) に含まれますが、CTest 登録を抑止するフラグではありません。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` でも discovery 前に return せず、[`catch_discover_tests()`](../../test/CMakeLists.txt#L123) まで到達します。
 
-この扱いを受ける source は、`GROUP` の有無に応じて単独またはグループ executable の単位で登録から外れます。したがって **OFF 構成の緑は ON 構成の緑より弱い主張です** — シェーダコンパイル経路を踏むテストがちょうど落ちる側にいます。OFF 構成で何かを立証したいときは、登録されなかったテストがその主張に関係しないことを先に確かめてください。
+したがって OFF 構成でも、コンパイラ不在時の logical source 投影、precompiled candidate の診断、renderer/Studio consumer の経路を CTest で検査します。shaderc を実行する分岐だけは build macro で分け、OFF の緑でテスト数自体が減っていないことも discovery 検査で保証します。
 
-`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L118))。コメントが理由です。
+`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L113))。コメントが理由です。
 
 > Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
 
@@ -620,7 +620,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2030) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2025) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -745,13 +745,18 @@ ctest --test-dir build -R rpc_ --output-on-failure
 
 Visual Studio など multi-config generator では `cmake --build build --config Debug` と `ctest --test-dir build -C Debug ...` のように config をそろえます。
 
-headless test でも Vulkan loader と対応 device/driver は必要です。runtime shader compiler、VAT、EXR、RPC、SeqPlayer は build option によって test 自体が conditional になるため、「CTest が緑」だけでなく configure 時にどの option が ON だったかも確認してください。
+headless test でも Vulkan loader と対応 device/driver は必要です。runtime shader compiler は build option によって test 内の実行分岐が変わり、VAT、EXR、RPC、SeqPlayer は test 自体が conditional になるため、「CTest が緑」だけでなく configure 時にどの option が ON だったかも確認してください。
 
 CI は現在 **2 段**です。gate の駆動 script は [`run_cpu_gate.py`](../../test/ci/run_cpu_gate.py) と [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py) の 2 本で、**workflow から呼ばれているのは CPU gate だけ**です(CI1 の `clean-clone` ジョブも専用 script を持たず `run_cpu_gate.py` を再利用します)。GPU gate は今のところ workflow を持たない「名前の付いた手元コマンド」です。
 
 ### CI0: CPU gate(毎 PR)
 
 GitHub Actions の Windows CPU gate([`.github/workflows/cpu-gate.yml`](../../.github/workflows/cpu-gate.yml)、WP137)があり、GPU を要するテストを `gpu` label で除外した CTest を PR ごとに実行します。skip の判定は [`test/ci/run_cpu_gate.py`](../../test/ci/run_cpu_gate.py) 自身ではなく、両 gate 共通の [`test/ci/skip_policy.py`](../../test/ci/skip_policy.py) にあります(下記)。`run_cpu_gate.py` は 17 行しかなく、[`run_gate()`](../../test/ci/skip_policy.py#L142) に label 選択と allowlist を渡すだけです。
+
+同じ workflow の `windows-msvc-studio` job は Qt 6.10、`SKIP_DEVSTUDIO=OFF`、runtime shader
+compiler OFF を明示し、WP354 の frame-plan model と widget の2件を
+`QT_QPA_PLATFORM=offscreen` で毎 PR 実行します。engine 側の全 CPU gate と CI1 clean clone は
+従来どおり `SKIP_DEVSTUDIO=ON` です。
 
 その後 2 ステップが追加されました。
 

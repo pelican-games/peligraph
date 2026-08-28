@@ -93,11 +93,6 @@ endif()
 if(NOT is_new_executable)
   return()
 endif()
-if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
-  # These executables remain compile-checked, but their cases require source
-  # variants that dist-bake does not produce yet (design_build_tiers.md §4).
-  return()
-endif()
 set(discovery_properties)
 # A discovered case with zero assertions must not be reported as passing.
 set(discovery_arguments EXTRA_ARGS -w NoAssertions)

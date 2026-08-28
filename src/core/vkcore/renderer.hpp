@@ -40,6 +40,11 @@ enum class RenderGraphVariant {
     xr,
 };
 
+// CPU-only construction seam for exercising the production
+// currentFramePlanJson() path against an already-published runtime program.
+// It deliberately bypasses startup compilation and creates no GPU objects.
+struct RendererFramePlanCpuSeam final {};
+
 struct PickingModelInstanceToken {
     std::uint32_t index = 0;
     std::uint32_t generation = 0;
@@ -164,6 +169,8 @@ DECLARE_MODULE(Renderer) {
 
   public:
     Renderer();
+    Renderer(RendererFramePlanCpuSeam,
+             RenderingPassId rendering_pass_id);
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
     RenderPipelineAuthoringApplyResult

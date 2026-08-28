@@ -563,6 +563,22 @@ function(run_runtime_shader_compiler_smoke)
         "runtime_shader_compiler"
         "PELICAN_RUNTIME_SHADER_COMPILER"
         runtime_shader_compiler_build_dir)
+    run_process(
+        "runtime_shader_compiler_wp354_discovery"
+        TRUE
+        "${CMAKE_CTEST_COMMAND}"
+            --test-dir "${runtime_shader_compiler_build_dir}"
+            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            --output-on-failure
+            -R "^WP354 production config and provider flow through renderer model and Open action$"
+    )
+    if(NOT runtime_shader_compiler_wp354_discovery_STDOUT MATCHES
+       "100% tests passed, 0 tests failed out of 1")
+        message(FATAL_ERROR
+            "compiler-OFF did not discover exactly one WP354 production test\n"
+            "stdout:\n${runtime_shader_compiler_wp354_discovery_STDOUT}\n"
+            "stderr:\n${runtime_shader_compiler_wp354_discovery_STDERR}")
+    endif()
     clean_successful_build("${runtime_shader_compiler_build_dir}")
 endfunction()
 
