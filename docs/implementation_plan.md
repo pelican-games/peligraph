@@ -13683,6 +13683,43 @@ region の保存も、同じ 1 本の RPC(既存 authored pass への field 設�
 | wire schema 未定義 | — | 発生 | 完全形を本文に規定 |
 | variant matrix | 発生 | 再発(ImGui/XR 欠落) | 4 軸を明記 |
 
+#### 第 3 版レビュー(8 指摘)への修正 — v4 差分。仕様レビューはこの 3 巡で打ち切る
+
+**骨格は生存した**(declared 捕捉 / renderer 合流 / D0 / material 限定 / mutation 方針は
+レビューが壊せなかった)。以下は精度の修正。**残余は §10 コードレビューで受ける。**
+
+1. **origin 規則を iff で固定**: `declared_ref` は「parse 前 JSON に stage があった場合、
+   かつその場合に限り必須」。`engine_default` は parser が省略を補った場合のみ
+   (fullscreen は両 stage 必須なので engine_default になり得ない)。
+   provider は **pair 全体を返す契約**なので、identity passthrough を除き
+   両 stage とも `provider`(文字列が authored と同値でも)。
+   規範例は「両 stage provider の fullscreen」と「declared 無し engine_default の shadow」に分割
+2. **profile を明示**: renderer 経路の文書に `"profile": "runtime"` を加え、
+   `shader_resolution` は runtime profile でのみ必須。raw planner 出力は profile 無し(従来)。
+   Studio / PlanViewer は runtime profile を要求する
+3. **トリップワイヤの訂正**(私の事実誤認 3 件目: `framePlanToJson` は既に
+   `CompiledRenderPipeline*` の省略引数を持つ。「raw しか流れない」は誤り):
+   実装は **renderer 所有の `appendShaderResolution`** とし、
+   **`currentFramePlanJson` からその呼び出しを除去すると production テストが落ちる**
+   mutation 条件を置く。runtime branch にも pre_wp354 の exact fixture を置く
+4. **全 pass-family の state 対応表を必須化**: ui / imgui は
+   `engine_fixed`(embedded の resolved。PassDefinition 非所有)として明示。
+   出荷 family の具体 effective ref を検査する
+   (raster=sprite_demo / compute=clustered_lighting / ray=rt_shadow_mask(複数 miss で
+   index と authored 順)/ skinned_vertex=velocity)
+5. **`source_open_ref` は論理 scheme 正規形**(`project://` / `user://` / mount 名)で
+   wire に固定。engine は存在検査のみ。**studio が同じ `pelican_project` resolver で
+   物理パスへ解決して開く。絶対パスを wire に出さない**(machine 依存の排除)
+6. **schema の締め**: material は object `{"state":"material_owned"}` に統一(前段の
+   string 表記は誤り)。全 field を required-iff / forbidden-otherwise で定義。
+   stage 順を固定、同一 stage 重複禁止、`index` は ray 系のみ。
+   `source_open_ref` 非 null のとき `source_open_reason` は禁止
+7. **`stripWp354` の定義**: `/nodes/*/shader_resolution` のみを除去し、
+   除去前に全 node で field が存在したこと、recursive diff で他 path の差分が
+   1 件も無いことを検査。live 比較には device/runtime 依存 subtree の固定除外リストを規定
+8. **matrix**: `SKIP_DEVSTUDIO` は **ON(resolver / core renderer)と OFF(model / widget)の
+   両方**をビルド + テスト。OpenXR は「ON: flat + xr」「OFF: flat 成功 + xr unavailable」の別行
+
 依存: 無し(実装は WP353 回収後)。見積: **大**(初版「小」→ 第 2 版「中」→ 実態)。
 
 ### 設計ノート: オブジェクトモデルの現在地とプレファブの方向(2026-08-28、実測調査)
