@@ -14340,3 +14340,19 @@ leaf の値検証(project/prefab 用)と core の実行時検証(behavior params
    「監視する」という宙に浮いた記述を条件化
 
 依存: 無し。見積: 小〜中(v3 で ABI 面が消えたため)。
+
+### WP359: vector 成分の typed encode が自分の decoder に拒否される
+
+**§0 中段。WP358 の凍結遵守が発見した実バグ。**
+
+`structfieldjson.hpp:321-331` の `StructJson{component}` は Vec2/3/4/Quat の成分を
+**一要素 JSON 配列**として生成し、`:166` の decoder がそれを `"must be a number"` で拒否する。
+**vector 型の typed behavior 登録は現行 core で成立しない**(出荷 behavior に vec 使用ゼロ
+のため未発覚)。**プレファブ U1 のパラメータは vec4 を使う設計であり、確実に踏む。**
+
+やること: encode を scalar 出力に直し、往復(encode→decode→canonicalize)を全 17 型で固定。
+WP358 の三者 corpus を**真の全 17 型 typed 経路**に拡張(process-local seam の 4 型を正規化)。
+fingerprint への影響を確認(vec default を持つ behavior が存在しないため変化なしの見込みだが、
+**見込みではなく前後比較で示す**)。
+受け入れ: 修正前に Vec2 default 付き typed 登録が実際に落ちる再現 / 修正後の全 17 型往復 /
+WP358 fixture 群の不変。依存: WP358。見積: 小。
