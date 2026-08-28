@@ -176,6 +176,75 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP357a bloom oracle independently maps B8G8R8A8 storage to logical RGBA",
+    "[color][bloom][wp357a][oracle][bgra]") {
+    using namespace TestSupport;
+    const std::array<std::uint8_t, 4> destination_rgba{
+        17, 80, 143, 32};
+    const std::array<std::uint8_t, 4> destination_bgra{
+        143, 80, 17, 32};
+    const std::array<std::uint8_t, 4> source_rgba{
+        61, 122, 199, 64};
+    const std::array<std::uint8_t, 4> source_bgra{
+        199, 122, 61, 64};
+    std::array<std::uint8_t, 4> actual_rgba{};
+    std::array<std::uint8_t, 4> actual_bgra{};
+    const auto view = [](const auto &bytes,
+                         BloomUpsampleStorage storage) {
+        return BloomUpsampleImageView{
+            .storage = storage,
+            .width = 1,
+            .height = 1,
+            .bytes = bytes,
+        };
+    };
+    auto request = [&](BloomUpsampleStorage storage,
+                       const auto &destination,
+                       const auto &source,
+                       const auto &actual) {
+        return BloomUpsampleOracleRequest{
+            .destination = view(destination, storage),
+            .source = view(source, storage),
+            .actual = view(actual, storage),
+            .sub_texel_precision_bits = 8,
+            .pixel_center_x = 0.5,
+            .pixel_center_y = 0.5,
+        };
+    };
+
+    const auto rgba_probe = evaluateBloomUpsampleOracle(
+        request(BloomUpsampleStorage::rgba8_srgb,
+                destination_rgba, source_rgba, actual_rgba));
+    const auto bgra_probe = evaluateBloomUpsampleOracle(
+        request(BloomUpsampleStorage::bgra8_srgb,
+                destination_bgra, source_bgra, actual_bgra));
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        REQUIRE(rgba_probe.channels[channel].ideal_storage ==
+                bgra_probe.channels[channel].ideal_storage);
+        actual_rgba[channel] = static_cast<std::uint8_t>(
+            rgba_probe.channels[channel].ideal_storage);
+        const auto bgra_channel = channel < 3 ? 2u - channel : channel;
+        actual_bgra[bgra_channel] = static_cast<std::uint8_t>(
+            bgra_probe.channels[channel].ideal_storage);
+    }
+
+    const auto rgba = evaluateBloomUpsampleOracle(
+        request(BloomUpsampleStorage::rgba8_srgb,
+                destination_rgba, source_rgba, actual_rgba));
+    const auto bgra = evaluateBloomUpsampleOracle(
+        request(BloomUpsampleStorage::bgra8_srgb,
+                destination_bgra, source_bgra, actual_bgra));
+    REQUIRE(rgba.matches);
+    REQUIRE(bgra.matches);
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        CHECK(rgba.channels[channel].actual_storage ==
+              bgra.channels[channel].actual_storage);
+        CHECK(rgba.channels[channel].ideal_linear ==
+              Catch::Approx(bgra.channels[channel].ideal_linear));
+    }
+}
+
+TEST_CASE(
     "WP357 bloom oracle brackets legal finite RGBA16 SFLOAT results",
     "[color][bloom][wp357][oracle][hdr]") {
     using namespace TestSupport;

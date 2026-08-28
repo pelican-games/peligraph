@@ -223,6 +223,18 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
         makeShaderReference(shader.at("vertex").get<std::string>(), ShaderStage::vertex);
     fullscreen_info.frag_shader =
         makeShaderReference(shader.at("fragment").get<std::string>(), ShaderStage::fragment);
+    if (fullscreen_info.vert_shader.ref ==
+            "engine://fullscreen" &&
+        fullscreen_info.raster_state &&
+        fullscreen_info.raster_state->topology !=
+            RasterPrimitiveTopology::triangle_list) {
+        throw std::runtime_error(
+            "Fullscreen pass '" + pass_name +
+            "' cannot use engine://fullscreen with raster_state topology '" +
+            std::string{rasterPrimitiveTopologyName(
+                fullscreen_info.raster_state->topology)} +
+            "'; expected triangle_list");
+    }
     return fullscreen_info;
 }
 

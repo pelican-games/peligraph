@@ -26,8 +26,10 @@ Run the local inventory gate from the repository root:
 python -B test/golden_inventory.py --repo-root .
 ```
 
-After an intentional case/file/trace membership change, regenerate the manifest and review its
-diff explicitly:
+After an intentional case/file/trace membership change, build and pass the WP357a bloom oracle,
+then regenerate the manifest and review its diff explicitly. Update mode discovers the standard
+`build/test/Debug` executable; `--oracle-executable` or
+`PELICAN_WP357_ORACLE_EXECUTABLE` selects another build explicitly:
 
 ```powershell
 python -B test/golden_inventory.py --repo-root . --update
@@ -35,6 +37,7 @@ git diff -- test/golden/inventory.json
 python -B test/golden_inventory.py --repo-root .
 ```
 
+The oracle is executed inside the inventory updater before `inventory.json` is opened for writing.
 Generating the inventory never changes `expected.png`. Image and trace rebaselining still follows
 the six-step procedure above. `PELICAN_UPDATE_GOLDEN`,
 `PELICAN_UPDATE_RGBA8_HASH_FIXTURES`, and `PELICAN_UPDATE_RENDERER_TRACE_FIXTURES` iterate only

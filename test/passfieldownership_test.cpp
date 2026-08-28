@@ -5,6 +5,8 @@
 #include "../src/project/rasterpass.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/core/renderer/fullscreenpassrenderer.hpp"
+#include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -701,6 +703,13 @@ TEST_CASE(
         "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
         "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
     };
+    const std::array<std::string_view, 5> load_without_clear_identities{
+        "projects/example/passes/main_rendering_config.json::FinalBloomComposite",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_1",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
+        "src/core/resources/features/hdr.json::hdr_tonemap",
+    };
     REQUIRE(
         std::count_if(
             entries.begin(), entries.end(),
@@ -713,15 +722,32 @@ TEST_CASE(
             [](const auto &entry) {
                 return !entry.pass.contains("raster_state");
             }) == 32);
+    constexpr FullscreenDrawCommand parent_command{
+        6, 1, 0, 0};
     for (const auto &entry : entries) {
         DYNAMIC_SECTION(entry.identity) {
+            const auto draw = fullscreenDrawCommand(
+                parseFullscreenPassInfoFromJson(
+                    entry.pass,
+                    entry.pass.at("name").get<std::string>()));
             const bool bloom_upsample =
                 std::find(
                     bloom_upsample_identities.begin(),
                     bloom_upsample_identities.end(),
                     entry.identity) !=
                 bloom_upsample_identities.end();
+            const bool load_without_clear =
+                std::find(
+                    load_without_clear_identities.begin(),
+                    load_without_clear_identities.end(),
+                    entry.identity) !=
+                load_without_clear_identities.end();
+            if (load_without_clear) {
+                CHECK_FALSE(entry.pass.contains("clear_color"));
+            }
             if (bloom_upsample) {
+                CHECK((draw ==
+                       FullscreenDrawCommand{3, 1, 0, 0}));
                 REQUIRE(entry.pass.contains("raster_state"));
                 REQUIRE_FALSE(entry.pass.contains("color_load_op"));
                 REQUIRE(
@@ -796,6 +822,9 @@ TEST_CASE(
                 continue;
             }
 
+            // 9568042^ recorded this exact command for every shipped
+            // fullscreen pass. WP357 changes only the three entries above.
+            CHECK(draw == parent_command);
             REQUIRE_FALSE(
                 entry.pass.contains("raster_state"));
             auto explicit_defaults = entry.pass;

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Generate and validate the GPU-free golden fixture inventory."""
+"""Generate and validate the golden fixture inventory."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 
 SCHEMA = "pelican.golden_inventory"
@@ -23,6 +25,12 @@ TRACE_SOURCES = {
 }
 VAT_ANY = "on_and_off"
 VAT_ON_ONLY = "on_only"
+ORACLE_EXECUTABLE_ENV = "PELICAN_WP357_ORACLE_EXECUTABLE"
+UPDATE_ENVIRONMENT_VARIABLES = (
+    "PELICAN_UPDATE_GOLDEN",
+    "PELICAN_UPDATE_RGBA8_HASH_FIXTURES",
+    "PELICAN_UPDATE_RENDERER_TRACE_FIXTURES",
+)
 
 
 class InventoryError(RuntimeError):
@@ -270,9 +278,91 @@ def validate_inventory(repo_root: Path, manifest_path: Path | None = None) -> li
     return issues
 
 
-def write_inventory(repo_root: Path, manifest_path: Path | None = None) -> Path:
+def _find_bloom_oracle_executable(repo_root: Path) -> Path:
+    configured = os.environ.get(ORACLE_EXECUTABLE_ENV)
+    if configured:
+        candidate = Path(configured).resolve()
+        if candidate.is_file():
+            return candidate
+        raise InventoryError(
+            f"{ORACLE_EXECUTABLE_ENV} does not name a file: {candidate}"
+        )
+
+    stems = (
+        "pelican_test_group_golden_bloom_upsample_runtime",
+        "pelican_test_golden_bloom_upsample_test",
+    )
+    executable_names = tuple(
+        name
+        for stem in stems
+        for name in (f"{stem}.exe", stem)
+    )
+    build_roots = (
+        repo_root / "build/test",
+        repo_root / "build_skip_devstudio/test",
+        repo_root / "build_skip/test",
+    )
+    configurations = ("Debug", "Release", "RelWithDebInfo", "MinSizeRel", "")
+    candidates = [
+        root / configuration / name if configuration else root / name
+        for root in build_roots
+        for configuration in configurations
+        for name in executable_names
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    formatted = "\n".join(f"- {candidate}" for candidate in candidates)
+    raise InventoryError(
+        "WP357a bloom oracle executable was not found; build the golden "
+        "oracle or pass --oracle-executable. Tried:\n" + formatted
+    )
+
+
+def run_bloom_oracle_gate(
+    repo_root: Path,
+    oracle_command: Sequence[str] | None = None,
+) -> None:
+    repo_root = repo_root.resolve()
+    command = (
+        list(oracle_command)
+        if oracle_command is not None
+        else [str(_find_bloom_oracle_executable(repo_root))]
+    )
+    if not command:
+        raise InventoryError("WP357a bloom oracle command must not be empty")
+    environment = os.environ.copy()
+    for variable in UPDATE_ENVIRONMENT_VARIABLES:
+        environment.pop(variable, None)
+    completed = subprocess.run(
+        [*command, "[oracle]"],
+        cwd=repo_root,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if completed.returncode != 0:
+        output = completed.stdout.rstrip()
+        raise InventoryError(
+            "WP357a bloom oracle gate failed before inventory write "
+            f"(exit {completed.returncode})"
+            + (f":\n{output}" if output else "")
+        )
+    if completed.stdout:
+        print(completed.stdout, end="")
+
+
+def write_inventory(
+    repo_root: Path,
+    manifest_path: Path | None = None,
+    *,
+    oracle_command: Sequence[str] | None = None,
+) -> Path:
     repo_root = repo_root.resolve()
     manifest_path = manifest_path or repo_root / MANIFEST_RELATIVE_PATH
+    run_bloom_oracle_gate(repo_root, oracle_command)
     snapshot = snapshot_repository(repo_root)
     if snapshot.issues:
         raise InventoryError("cannot update invalid inventory:\n" + "\n".join(snapshot.issues))
@@ -298,6 +388,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="rewrite the manifest deterministically from the current repository",
     )
+    parser.add_argument(
+        "--oracle-executable",
+        type=Path,
+        help=(
+            "WP357a bloom oracle executable; update mode otherwise discovers "
+            "the standard build output"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -306,7 +404,16 @@ def main() -> int:
     manifest_path = args.manifest.resolve() if args.manifest else None
     try:
         if args.update:
-            written = write_inventory(args.repo_root, manifest_path)
+            oracle_command = (
+                [str(args.oracle_executable.resolve())]
+                if args.oracle_executable
+                else None
+            )
+            written = write_inventory(
+                args.repo_root,
+                manifest_path,
+                oracle_command=oracle_command,
+            )
             print(f"golden inventory updated: {written}")
             return 0
         issues = validate_inventory(args.repo_root, manifest_path)

@@ -810,7 +810,9 @@ set(pelican_wp357_shader_sources
     fixtures/wp357/wp357_seed_V2.frag
     fixtures/wp357/wp357_seed_V3.frag
     fixtures/wp357/wp357_destination.frag
-    fixtures/wp357/wp357_source.frag)
+    fixtures/wp357/wp357_source.frag
+    fixtures/wp357/wp357_zero.frag
+    fixtures/wp357/wp357_half.frag)
 set(pelican_wp357_shader_output_dir
     "${CMAKE_CURRENT_BINARY_DIR}/wp357_precompiled_shaders")
 set(pelican_wp357_shader_outputs)
@@ -818,17 +820,22 @@ foreach(wp357_shader IN LISTS pelican_wp357_shader_sources)
     get_filename_component(wp357_shader_name "${wp357_shader}" NAME)
     set(wp357_shader_output
         "${pelican_wp357_shader_output_dir}/${wp357_shader_name}.spv")
+    set(wp357_shader_hash_output
+        "${pelican_wp357_shader_output_dir}/${wp357_shader_name}.sha256")
     add_custom_command(
-        OUTPUT "${wp357_shader_output}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-                "${pelican_wp357_shader_output_dir}"
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
-                --target-env=${PELICAN_SHADER_TARGET_ENV}
-                -o "${wp357_shader_output}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/${wp357_shader}"
+        OUTPUT "${wp357_shader_output}" "${wp357_shader_hash_output}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DGLSLC_EXECUTABLE=${Vulkan_GLSLC_EXECUTABLE}"
+                "-DSHADER_TARGET_ENV=${PELICAN_SHADER_TARGET_ENV}"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/${wp357_shader}"
+                "-DOUTPUT=${wp357_shader_output}"
+                "-DHASH_OUTPUT=${wp357_shader_hash_output}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/compile_wp357_shader.cmake"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${wp357_shader}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/compile_wp357_shader.cmake"
         VERBATIM)
-    list(APPEND pelican_wp357_shader_outputs "${wp357_shader_output}")
+    list(APPEND pelican_wp357_shader_outputs
+        "${wp357_shader_output}" "${wp357_shader_hash_output}")
 endforeach()
 add_custom_target(pelican_wp357_precompiled_shaders
     DEPENDS ${pelican_wp357_shader_outputs})
@@ -1600,7 +1607,9 @@ pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
 pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)
 pelican_define_test(graphvariantpolicy_test GROUP project_planning pelican_project)
-pelican_define_test(passfieldownership_test GROUP project_planning pelican_project)
+pelican_define_test(passfieldownership_test GROUP project_planning
+  pelican_project pelican_core
+  VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_passfieldownership_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>

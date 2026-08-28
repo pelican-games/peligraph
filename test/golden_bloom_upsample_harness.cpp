@@ -9,6 +9,11 @@
 #include "../src/core/log.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/model/vertbufcontainer.hpp"
+#include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
@@ -29,6 +34,8 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <picosha2.h>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -79,6 +86,53 @@ void wp357WriteText(const std::filesystem::path &path,
                                  path.string());
     }
     output << contents;
+}
+
+std::string wp357ReadText(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        throw std::runtime_error("failed to read WP357 fixture: " +
+                                 path.string());
+    }
+    return {
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+}
+
+std::string wp357FixtureSource(std::string_view stem) {
+    const auto source_path =
+        wp357SourceRoot() / "test" / "fixtures" / "wp357" /
+        (std::string{stem} + ".frag");
+    const auto source = wp357ReadText(source_path);
+    const auto source_hash = picosha2::hash256_hex_string(
+        source.begin(), source.end());
+    const auto compiled_hash_path =
+        std::filesystem::path{PELICAN_WP357_PRECOMPILED_SHADER_DIR} /
+        (std::string{stem} + ".frag.sha256");
+    auto compiled_hash = wp357ReadText(compiled_hash_path);
+    while (!compiled_hash.empty() &&
+           (compiled_hash.back() == '\n' ||
+            compiled_hash.back() == '\r')) {
+        compiled_hash.pop_back();
+    }
+    if (source_hash != compiled_hash) {
+        throw std::runtime_error(
+            "WP357 stimulus hash mismatch for " +
+            std::string{stem} + ": source=" + source_hash +
+            " compiled=" + compiled_hash);
+    }
+    static std::set<std::string, std::less<>> emitted;
+    if (emitted.insert(std::string{stem}).second) {
+        std::cout << "WP357_STIMULUS fixture=" << stem
+                  << " compiler="
+#if PELICAN_RUNTIME_SHADER_COMPILER
+                  << "ON"
+#else
+                  << "OFF"
+#endif
+                  << " sha256=" << source_hash << '\n';
+    }
+    return source;
 }
 
 void wp357InstallPrecompiledFragment(const std::filesystem::path &root,
@@ -142,6 +196,9 @@ void wp357WriteProjectShell(const std::filesystem::path &root,
     wp357WriteText(
         root / "assets.json",
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    wp357WriteText(
+        root / "ui" / "ui_overlay.json",
+        R"json({"schema":"pelican.ui","version":1,"key":"wp357","revision":"1","direction":"ltr","root":{"id":"root","type":"panel","children":[]}})json");
 }
 
 nlohmann::json wp357ShippingPass(const nlohmann::json &shipping,
@@ -164,60 +221,29 @@ nlohmann::json wp357ShippingTarget(const nlohmann::json &shipping,
                              std::string{name});
 }
 
-std::string wp357ProducerShader(std::size_t level) {
-    const auto extent = wp357LevelExtents.at(level);
-    std::ostringstream source;
-    source << R"glsl(#version 460
-layout(location = 0) out vec4 outColor;
-
-void main() {
-    ivec2 p = ivec2(gl_FragCoord.xy);
-    float x = float(p.x) / float()glsl"
-           << extent.width - 1u << R"glsl();
-    float y = float(p.y) / float()glsl"
-           << extent.height - 1u << R"glsl();
-    float edge = (p.x == 0 ? 0.011 : 0.0) +
-                 (p.x == )glsl"
-           << extent.width - 1u << R"glsl( ? 0.019 : 0.0) +
-                 (p.y == 0 ? 0.007 : 0.0) +
-                 (p.y == )glsl"
-           << extent.height - 1u << R"glsl( ? 0.013 : 0.0);
-    float stage = float()glsl"
-           << level << R"glsl();
-    vec4 value = vec4(
-        0.018 + 0.004 * stage + 0.027 * x + 0.016 * y + edge,
-        0.021 + 0.003 * stage + 0.014 * x + 0.031 * y + 0.5 * edge,
-        0.015 + 0.005 * stage + 0.023 * x + 0.021 * y + 0.75 * edge,
-        0.024 + 0.004 * stage + 0.019 * x + 0.017 * y + 0.6 * edge);
-    outColor = value;
-}
-)glsl";
-    return source.str();
-}
-
 nlohmann::json wp357BloomConfig(bool hdr,
                                 std::optional<std::size_t> peeled_stage) {
     const auto shipping = wp357ReadJson(
         wp357SourceRoot() / "projects" / "example" / "passes" /
         "main_rendering_config.json");
-    const std::string format = hdr ? "R16G16B16A16_SFLOAT"
-                                   : "R8G8B8A8_SRGB";
     nlohmann::json targets = nlohmann::json::array();
     for (std::size_t level = 0; level < 4; ++level) {
         auto working = wp357ShippingTarget(shipping, wp357LevelTargets[level]);
-        working["format"] = format;
-        working["format_class"] = "explicit(" + format + ")";
-        working["role"] = "color";
-        working["usage"] = nlohmann::json::array(
-            {"COLOR_ATTACHMENT", "SAMPLED"});
+        if (hdr) {
+            working["format"] = "R16G16B16A16_SFLOAT";
+            working["format_class"] =
+                "explicit(R16G16B16A16_SFLOAT)";
+        }
         working["usage"].push_back("TRANSFER_SRC");
         targets.push_back(std::move(working));
 
         auto reference = wp357ShippingTarget(shipping, wp357LevelTargets[level]);
         reference["name"] = "wp357_seed_V" + std::to_string(level);
-        reference["format"] = format;
-        reference["format_class"] = "explicit(" + format + ")";
-        reference["role"] = "color";
+        if (hdr) {
+            reference["format"] = "R16G16B16A16_SFLOAT";
+            reference["format_class"] =
+                "explicit(R16G16B16A16_SFLOAT)";
+        }
         reference["usage"] =
             nlohmann::json::array({"COLOR_ATTACHMENT", "TRANSFER_SRC"});
         targets.push_back(std::move(reference));
@@ -252,8 +278,6 @@ nlohmann::json wp357BloomConfig(bool hdr,
     }
     for (std::size_t stage = 0; stage < wp357PassNames.size(); ++stage) {
         auto pass = wp357ShippingPass(shipping, wp357PassNames[stage]);
-        pass["input_sampling"] = nlohmann::json::array(
-            {{{"filter", "linear"}, {"address", "repeat"}}});
         if (peeled_stage == stage) pass.erase("raster_state");
         passes.push_back(std::move(pass));
     }
@@ -286,7 +310,8 @@ void wp357WriteBloomProject(const std::filesystem::path &root,
     for (std::size_t level = 0; level < 4; ++level) {
         wp357WriteText(root / "shaders" /
                            ("wp357_seed_V" + std::to_string(level) + ".frag"),
-                       wp357ProducerShader(level));
+                       wp357FixtureSource(
+                           "wp357_seed_V" + std::to_string(level)));
         wp357InstallPrecompiledFragment(
             root, "wp357_seed_V" + std::to_string(level));
     }
@@ -298,8 +323,6 @@ struct Wp357PhysicalFacts {
     std::string fragment_ref;
     std::string vertex_ref;
     bool descriptor_fragment_matches = false;
-    ShaderBundleId vertex_shader{};
-    std::optional<ShaderBundleId> fragment_shader;
     std::vector<FullscreenInputSampling> sampling;
     vk::AttachmentLoadOp load_op = vk::AttachmentLoadOp::eDontCare;
     std::size_t input_count = 0;
@@ -373,7 +396,7 @@ Wp357BloomCapture wp357CaptureBloom(
             auto &targets = GET_MODULE(RenderTargetContainer);
             const auto expected_format =
                 hdr ? vk::Format::eR16G16B16A16Sfloat
-                    : vk::Format::eR8G8B8A8Srgb;
+                    : vk::Format::eB8G8R8A8Srgb;
 
             for (std::size_t stage = 0; stage < 3; ++stage) {
                 const auto &compiled =
@@ -391,8 +414,6 @@ Wp357BloomCapture wp357CaptureBloom(
                                       .vert_shader.ref,
                     .descriptor_fragment_matches =
                         desc.frag.has_value() && *desc.frag == fragment,
-                    .vertex_shader = desc.vert,
-                    .fragment_shader = desc.frag,
                     .sampling = fullscreen.inputSamplingForTesting(
                         compiled.pass_id),
                     .load_op = compiled.definition
@@ -450,7 +471,7 @@ Wp357BloomCapture wp357CaptureBloom(
 void wp357RequirePhysical(const Wp357BloomCapture &capture) {
     const auto expected_format =
         capture.hdr ? vk::Format::eR16G16B16A16Sfloat
-                    : vk::Format::eR8G8B8A8Srgb;
+                    : vk::Format::eB8G8R8A8Srgb;
     for (std::size_t stage = 0; stage < 3; ++stage) {
         INFO(wp357PassNames[stage]);
         const auto &facts = capture.physical[stage];
@@ -491,11 +512,24 @@ void wp357RequirePhysical(const Wp357BloomCapture &capture) {
 }
 
 TestSupport::BloomUpsampleImageView wp357OracleView(
-    const RenderTargetReadback &readback, bool hdr) {
+    const RenderTargetReadback &readback) {
+    TestSupport::BloomUpsampleStorage storage{};
+    switch (readback.format) {
+    case vk::Format::eR8G8B8A8Srgb:
+        storage = TestSupport::BloomUpsampleStorage::rgba8_srgb;
+        break;
+    case vk::Format::eB8G8R8A8Srgb:
+        storage = TestSupport::BloomUpsampleStorage::bgra8_srgb;
+        break;
+    case vk::Format::eR16G16B16A16Sfloat:
+        storage = TestSupport::BloomUpsampleStorage::rgba16_sfloat;
+        break;
+    default:
+        throw std::runtime_error(
+            "WP357 oracle readback has an unsupported format");
+    }
     return {
-        .storage = hdr
-                       ? TestSupport::BloomUpsampleStorage::rgba16_sfloat
-                       : TestSupport::BloomUpsampleStorage::rgba8_srgb,
+        .storage = storage,
         .width = readback.extent.width,
         .height = readback.extent.height,
         .bytes = std::span<const std::uint8_t>{readback.bytes},
@@ -503,11 +537,17 @@ TestSupport::BloomUpsampleImageView wp357OracleView(
 }
 
 std::uint32_t wp357StorageAt(const RenderTargetReadback &readback,
-                             bool hdr, std::uint32_t x,
-                             std::uint32_t y, std::size_t channel) {
+                             std::uint32_t x, std::uint32_t y,
+                             std::size_t channel) {
     const auto pixel =
         static_cast<std::size_t>(y) * readback.extent.width + x;
-    if (!hdr) return readback.bytes.at(pixel * 4u + channel);
+    if (readback.format != vk::Format::eR16G16B16A16Sfloat) {
+        const auto storage_channel =
+            readback.format == vk::Format::eB8G8R8A8Srgb && channel < 3
+                ? 2u - channel
+                : channel;
+        return readback.bytes.at(pixel * 4u + storage_channel);
+    }
     const auto offset = pixel * 8u + channel * 2u;
     return static_cast<std::uint32_t>(readback.bytes.at(offset)) |
            (static_cast<std::uint32_t>(readback.bytes.at(offset + 1u)) << 8u);
@@ -528,21 +568,21 @@ Wp357OracleMetrics wp357RequireOracle(
     Wp357OracleMetrics metrics;
     const auto expected_format =
         capture.hdr ? vk::Format::eR16G16B16A16Sfloat
-                    : vk::Format::eR8G8B8A8Srgb;
+                    : vk::Format::eB8G8R8A8Srgb;
     for (std::size_t level = 0; level < 4; ++level) {
         INFO(level);
         REQUIRE(capture.seeds[level].format == expected_format);
         REQUIRE(capture.seeds[level].extent == wp357LevelExtents[level]);
         const auto &seed = capture.seeds[level];
-        const auto first = wp357StorageAt(seed, capture.hdr, 0, 0, 0);
+        const auto first = wp357StorageAt(seed, 0, 0, 0);
         const auto x_internal = wp357StorageAt(
-            seed, capture.hdr, std::min(2u, seed.extent.width - 1u),
+            seed, std::min(2u, seed.extent.width - 1u),
             std::min(1u, seed.extent.height - 1u), 0);
         const auto y_internal = wp357StorageAt(
-            seed, capture.hdr, std::min(1u, seed.extent.width - 1u),
+            seed, std::min(1u, seed.extent.width - 1u),
             std::min(2u, seed.extent.height - 1u), 0);
         const auto opposite = wp357StorageAt(
-            seed, capture.hdr, seed.extent.width - 1u,
+            seed, seed.extent.width - 1u,
             seed.extent.height - 1u, 0);
         CHECK(first != x_internal);
         CHECK(first != y_internal);
@@ -570,10 +610,9 @@ Wp357OracleMetrics wp357RequireOracle(
                 else ++metrics.internal_pixels;
                 const auto result =
                     TestSupport::evaluateBloomUpsampleOracle({
-                        .destination = wp357OracleView(
-                            destination, capture.hdr),
-                        .source = wp357OracleView(source, capture.hdr),
-                        .actual = wp357OracleView(actual, capture.hdr),
+                        .destination = wp357OracleView(destination),
+                        .source = wp357OracleView(source),
+                        .actual = wp357OracleView(actual),
                         .sub_texel_precision_bits =
                             capture.sub_texel_precision_bits,
                         .pixel_center_x = static_cast<double>(x) + 0.5,
@@ -643,7 +682,7 @@ void wp357RunBloomFormat(bool hdr) {
     wp357RequirePhysical(canonical);
     const auto canonical_metrics = wp357RequireOracle(canonical);
     std::cout << "WP357_ORACLE storage="
-              << (hdr ? "R16G16B16A16_SFLOAT" : "R8G8B8A8_SRGB")
+              << (hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB")
               << " variant=canonical subTexelPrecisionBits="
               << canonical.sub_texel_precision_bits
               << " maxDistance=" << canonical_metrics.maximum_distance
@@ -667,13 +706,13 @@ void wp357RunBloomFormat(bool hdr) {
         const auto x = center.extent.width / 2u;
         const auto y = center.extent.height / 2u;
         std::cout << "WP357_MUTANT storage="
-                  << (hdr ? "R16G16B16A16_SFLOAT" : "R8G8B8A8_SRGB")
+                  << (hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB")
                   << " removed=" << wp357PassNames[peeled]
                   << " resolvedBlend=disabled"
                   << " centerStorage=";
         for (std::size_t channel = 0; channel < 4; ++channel) {
             if (channel != 0) std::cout << ',';
-            std::cout << wp357StorageAt(center, hdr, x, y, channel);
+            std::cout << wp357StorageAt(center, x, y, channel);
         }
         std::cout << " changedPixels=" << changed
                   << " maxDistance=" << metrics.maximum_distance
@@ -682,16 +721,247 @@ void wp357RunBloomFormat(bool hdr) {
     }
 }
 
-std::string wp357ConstantShader(const std::array<int, 4> &codes) {
-    std::ostringstream source;
-    source << "#version 460\nlayout(location=0) out vec4 outColor;\n"
-              "void main(){ outColor=vec4(";
-    for (std::size_t channel = 0; channel < 4; ++channel) {
-        if (channel != 0) source << ',';
-        source << codes[channel] << ".0/255.0";
+void wp357AddTransferSource(nlohmann::json &config,
+                            std::string_view target_name) {
+    auto &targets = config.at("render_targets");
+    const auto target = std::find_if(
+        targets.begin(), targets.end(),
+        [&](const auto &candidate) {
+            return candidate.value("name", std::string{}) ==
+                   target_name;
+        });
+    if (target == targets.end()) {
+        throw std::runtime_error(
+            "WP357 production target not found: " +
+            std::string{target_name});
     }
-    source << "); }\n";
-    return source.str();
+    auto &usage = (*target)["usage"];
+    if (std::find(usage.begin(), usage.end(), "TRANSFER_SRC") ==
+        usage.end()) {
+        usage.push_back("TRANSFER_SRC");
+    }
+}
+
+nlohmann::json wp357ProductionProbeConfig() {
+    auto config = wp357ReadJson(
+        wp357SourceRoot() / "projects" / "example" / "passes" /
+        "main_rendering_config.json");
+    const auto shipping_final =
+        wp357ShippingPass(config, "FinalBloomComposite");
+    const auto expected_inputs = nlohmann::json::array(
+        {"lit_color", "Bloom_Upsample_V_0_RT"});
+    if (shipping_final.at("input") != expected_inputs) {
+        throw std::runtime_error(
+            "WP357 shipping FinalBloomComposite input contract changed: " +
+            shipping_final.at("input").dump());
+    }
+
+    // TRANSFER_SRC is observational only. Every authored format, extent,
+    // format_class, feature and shipping pass stays unchanged in the
+    // canonical execution leg.
+    wp357AddTransferSource(config, "Bloom_Downsample_H_0_RT");
+    wp357AddTransferSource(config, "Bloom_Upsample_V_0_RT");
+
+    return config;
+}
+
+void wp357WriteProductionProbeProject(
+    const std::filesystem::path &root) {
+    wp357WriteProjectShell(
+        root, "WP357 shipping bloom composite", "main_render");
+    wp357WriteText(
+        root / "passes" / "main.json",
+        wp357ProductionProbeConfig().dump(2));
+}
+
+CommonPolygonVertData wp357EmissiveQuad() {
+    CommonPolygonVertData data;
+    data.indices = {0, 1, 2, 0, 2, 3};
+    data.pos = {
+        {-0.85f, -0.85f, 0.0f},
+        {0.85f, -0.85f, 0.0f},
+        {0.85f, 0.85f, 0.0f},
+        {-0.85f, 0.85f, 0.0f},
+    };
+    data.normal.assign(data.pos.size(), glm::vec3{0.0f, 0.0f, 1.0f});
+    data.texcoord = {
+        {0.0f, 0.0f}, {1.0f, 0.0f},
+        {1.0f, 1.0f}, {0.0f, 1.0f},
+    };
+    data.color.assign(data.pos.size(), glm::vec4{1.0f});
+    return data;
+}
+
+void wp357PlaceProductionStimulus() {
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    const auto material =
+        GET_MODULE(MaterialContainer).registerMaterial(MaterialInfo{
+            .vert_shader = standard.standardVertShader(),
+            .frag_shader = standard.standardFragShader(),
+            .base_color_texture = standard.blackTexture(),
+            .metallic_roughness_texture =
+                standard.metallicRoughnessDefaultTexture(),
+            .normal_texture = standard.normalDefaultTexture(),
+            .emissive_texture = standard.whiteTexture(),
+            .occlusion_texture = standard.occlusionDefaultTexture(),
+            .base_color_factor = {0.0f, 0.0f, 0.0f, 1.0f},
+            .emissive_factor = {0.5f, 0.5f, 0.5f},
+        });
+    ModelTemplate model;
+    model.asset_id = ModelAssetId{357};
+    model.material_primitives = {
+        ModelTemplate::MaterialPrimitives{
+            .material = material,
+            .primitives = {
+                GET_MODULE(VertBufContainer).addPrimitiveEntry(
+                    wp357EmissiveQuad())},
+            .source_material_index = 0,
+        },
+    };
+    const auto instance = GET_MODULE(PolygonInstanceContainer)
+                              .placeModelInstance(model);
+    REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                .isModelInstanceAlive(instance));
+    auto &camera = GET_MODULE(Camera);
+    camera.setScreenSize(
+        wp357RenderExtent.width, wp357RenderExtent.height);
+    camera.setPos({0.0f, 0.0f, 2.0f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+}
+
+struct Wp357ProductionCapture {
+    bool final_uses_h0 = false;
+    std::string final_vertex_ref;
+    std::string final_fragment_ref;
+    std::vector<FullscreenInputSampling> final_sampling;
+    std::vector<vk::Format> final_color_formats;
+    RenderTargetReadback h0;
+    RenderTargetReadback v0;
+    RenderTargetReadback display;
+};
+
+Wp357ProductionCapture wp357CaptureProductionComposite() {
+    const auto root = wp357TempProject("production_final_v0");
+    try {
+        wp357WriteProductionProbeProject(root);
+        Wp357ProductionCapture capture;
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(
+                wp357ReadJson(root / "project.json").dump());
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = wp357RenderExtent;
+            launch.headless_frames = 1;
+            auto &time = GET_MODULE(EngineTime);
+            time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+            auto &renderer = GET_MODULE(Renderer);
+            wp357PlaceProductionStimulus();
+
+            const auto rendering_pass_id =
+                GET_MODULE(RenderingPassContainer)
+                    .getRenderingPassIdByName("main_render");
+            const auto program =
+                GET_MODULE(FrameGraphRuntimeContainer)
+                    .findProgram(rendering_pass_id);
+            REQUIRE(program != nullptr);
+            const auto &final = wp357FindCompiledPass(
+                *program, "FinalBloomComposite");
+            const auto &final_info =
+                final.definition.fullscreenInfo();
+            capture.final_vertex_ref = final_info.vert_shader.ref;
+            capture.final_fragment_ref = final_info.frag_shader.ref;
+            auto &targets = GET_MODULE(RenderTargetContainer);
+            REQUIRE(final.definition.input_targets.size() == 2);
+            capture.final_uses_h0 =
+                final.definition.input_targets.at(1) ==
+                targets.getRenderTargetIdByName(
+                    "Bloom_Downsample_H_0_RT");
+            auto &fullscreen = GET_MODULE(FullscreenPassContainer);
+            capture.final_sampling =
+                fullscreen.inputSamplingForTesting(final.pass_id);
+            capture.final_color_formats =
+                fullscreen.graphicsPipelineDescForTesting(final.pass_id)
+                    .color_formats;
+
+            time.advance();
+            renderer.render();
+            GET_MODULE(VulkanManageCore).waitIdle();
+            capture.h0 = renderer.readRenderTargetForTesting(
+                "Bloom_Downsample_H_0_RT",
+                ImageSubresourceRange{});
+            capture.v0 = renderer.readRenderTargetForTesting(
+                "Bloom_Upsample_V_0_RT",
+                ImageSubresourceRange{});
+            capture.display = renderer.readRenderTargetForTesting(
+                "display", ImageSubresourceRange{});
+        }
+        std::filesystem::remove_all(root);
+        return capture;
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+}
+
+std::array<std::uint32_t, 4> wp357CenterStorage(
+    const RenderTargetReadback &readback) {
+    std::array<std::uint32_t, 4> result{};
+    const auto x = readback.extent.width / 2u;
+    const auto y = readback.extent.height / 2u;
+    for (std::size_t channel = 0; channel < result.size(); ++channel) {
+        result[channel] = wp357StorageAt(readback, x, y, channel);
+    }
+    return result;
+}
+
+void wp357RequireProductionComposite() {
+    const auto canonical = wp357CaptureProductionComposite();
+    const auto require_physical = [](const auto &capture) {
+        CHECK(capture.final_vertex_ref == "engine://fullscreen");
+        CHECK(capture.final_fragment_ref ==
+              "engine://bloom_composite");
+        REQUIRE(capture.final_sampling.size() == 2);
+        for (const auto &sampling : capture.final_sampling) {
+            CHECK(sampling.filter == FullscreenInputFilter::linear);
+            CHECK(sampling.address_mode ==
+                  FullscreenInputAddressMode::repeat);
+        }
+        CHECK(capture.final_color_formats ==
+              std::vector<vk::Format>{
+                  vk::Format::eB8G8R8A8Srgb});
+        REQUIRE(capture.h0.format ==
+                vk::Format::eB8G8R8A8Srgb);
+        REQUIRE(capture.v0.format ==
+                vk::Format::eB8G8R8A8Srgb);
+        REQUIRE(capture.display.format ==
+                vk::Format::eB8G8R8A8Srgb);
+    };
+    require_physical(canonical);
+    REQUIRE_FALSE(canonical.final_uses_h0);
+
+    const auto h0 = wp357CenterStorage(canonical.h0);
+    const auto v0 = wp357CenterStorage(canonical.v0);
+    const auto final_v0 =
+        wp357CenterStorage(canonical.display);
+    CHECK((h0 ==
+           std::array<std::uint32_t, 4>{128, 128, 128, 255}));
+    CHECK((v0 ==
+           std::array<std::uint32_t, 4>{239, 239, 239, 255}));
+    CHECK((final_v0 ==
+           std::array<std::uint32_t, 4>{255, 255, 255, 255}));
+    REQUIRE(h0 != v0);
+    std::cout << "WP357_FINAL shippingInput=Bloom_Upsample_V_0_RT"
+              << " H0=" << h0[0] << ',' << h0[1] << ','
+              << h0[2] << ',' << h0[3]
+              << " V0=" << v0[0] << ',' << v0[1] << ','
+              << v0[2] << ',' << v0[3]
+              << " finalV0=" << final_v0[0] << ','
+              << final_v0[1] << ',' << final_v0[2] << ','
+              << final_v0[3] << '\n';
 }
 
 nlohmann::json wp357MinimalConfig(std::string_view load_op) {
@@ -748,9 +1018,9 @@ std::array<std::uint8_t, 4> wp357CaptureMinimal(std::string_view load_op) {
     try {
         wp357WriteProjectShell(root, "WP357 minimal Load", "wp357_minimal");
         wp357WriteText(root / "shaders" / "wp357_destination.frag",
-                       wp357ConstantShader({32, 44, 56, 68}));
+                       wp357FixtureSource("wp357_destination"));
         wp357WriteText(root / "shaders" / "wp357_source.frag",
-                       wp357ConstantShader({48, 56, 64, 72}));
+                       wp357FixtureSource("wp357_source"));
         wp357InstallPrecompiledFragment(root, "wp357_destination");
         wp357InstallPrecompiledFragment(root, "wp357_source");
         wp357WriteText(root / "passes" / "main.json",
@@ -795,6 +1065,7 @@ std::array<std::uint8_t, 4> wp357CaptureMinimal(std::string_view load_op) {
 void GoldenHarness::runBloomUpsampleOracle() {
     setupLogger();
     try {
+        wp357RequireProductionComposite();
         wp357RunBloomFormat(false);
         wp357RunBloomFormat(true);
     } catch (const std::runtime_error &error) {

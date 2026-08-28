@@ -8,6 +8,7 @@ namespace Pelican::TestSupport {
 
 enum class BloomUpsampleStorage {
     rgba8_srgb,
+    bgra8_srgb,
     rgba16_sfloat,
 };
 
@@ -63,7 +64,9 @@ struct BloomUpsampleOracleResult {
 };
 
 // This is the sole public bloom-upsample oracle entry point. RGB channels of
-// rgba8_srgb are decoded/encoded as sRGB; alpha always remains linear.
+// rgba8_srgb and bgra8_srgb RGB channels are decoded/encoded as sRGB; alpha
+// always remains linear. Channel-order handling is implemented here rather
+// than borrowed from renderer format helpers so the oracle stays independent.
 BloomUpsampleOracleResult evaluateBloomUpsampleOracle(
     const BloomUpsampleOracleRequest &request);
 

@@ -12,7 +12,7 @@ namespace Pelican::TestSupport {
 namespace {
 
 std::size_t bytesPerPixel(BloomUpsampleStorage storage) {
-    return storage == BloomUpsampleStorage::rgba8_srgb ? 4u : 8u;
+    return storage == BloomUpsampleStorage::rgba16_sfloat ? 8u : 4u;
 }
 
 void validateImage(const BloomUpsampleImageView &image,
@@ -178,9 +178,14 @@ std::uint8_t byteStorage(const BloomUpsampleImageView &image,
                          BloomUpsampleAddressMode mode) {
     const auto addressed_x = addressIndex(x, image.width, mode);
     const auto addressed_y = addressIndex(y, image.height, mode);
+    const auto storage_channel =
+        image.storage == BloomUpsampleStorage::bgra8_srgb &&
+                channel < 3
+            ? 2u - channel
+            : channel;
     return image.bytes[
         (static_cast<std::size_t>(addressed_y) * image.width +
-         static_cast<std::size_t>(addressed_x)) * 4u + channel];
+         static_cast<std::size_t>(addressed_x)) * 4u + storage_channel];
 }
 
 double decoded(const BloomUpsampleImageView &image,
@@ -390,9 +395,9 @@ BloomUpsampleOracleResult evaluateBloomUpsampleOracle(
     result.matches = true;
     for (std::size_t channel = 0; channel < 4; ++channel) {
         result.channels[channel] =
-            request.destination.storage == BloomUpsampleStorage::rgba8_srgb
-                ? evaluateLdr(request, destination_x, destination_y, channel)
-                : evaluateHdr(request, destination_x, destination_y, channel);
+            request.destination.storage == BloomUpsampleStorage::rgba16_sfloat
+                ? evaluateHdr(request, destination_x, destination_y, channel)
+                : evaluateLdr(request, destination_x, destination_y, channel);
         result.matches = result.matches && result.channels[channel].matches;
     }
     return result;

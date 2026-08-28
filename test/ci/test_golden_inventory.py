@@ -38,7 +38,12 @@ class GoldenInventoryTest(unittest.TestCase):
         (fixtures / "canonical_frame_plan_trace.txt").write_text(
             "alpha: present[render]\n", encoding="utf-8"
         )
-        write_inventory(self.root)
+        self.oracle_success = [
+            sys.executable,
+            "-c",
+            "print('WP357A_TEST_ORACLE_PASS')",
+        ]
+        write_inventory(self.root, oracle_command=self.oracle_success)
 
     def _write_case(self, name: str, expected: bytes, mode: str) -> None:
         case = self.root / "test/golden" / name
@@ -91,9 +96,29 @@ class GoldenInventoryTest(unittest.TestCase):
     def test_update_is_byte_deterministic(self) -> None:
         manifest_path = self.root / MANIFEST_RELATIVE_PATH
         first = manifest_path.read_bytes()
-        write_inventory(self.root)
+        write_inventory(self.root, oracle_command=self.oracle_success)
         second = manifest_path.read_bytes()
         self.assertEqual(first, second)
+
+    def test_update_oracle_failure_writes_nothing(self) -> None:
+        manifest_path = self.root / MANIFEST_RELATIVE_PATH
+        before = manifest_path.read_bytes()
+        (self.root / "test/golden/alpha/expected.png").write_bytes(
+            b"would-change-inventory"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "WP357a bloom oracle gate failed before inventory write.*exit 23",
+        ):
+            write_inventory(
+                self.root,
+                oracle_command=[
+                    sys.executable,
+                    "-c",
+                    "print('WP357A_INTENTIONAL_ORACLE_FAILURE'); raise SystemExit(23)",
+                ],
+            )
+        self.assertEqual(manifest_path.read_bytes(), before)
 
 
 if __name__ == "__main__":

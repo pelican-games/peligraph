@@ -357,7 +357,6 @@
             "vertex": "engine://fullscreen",
             "fragment": "engine://bloom_upsample"
           },
-          "clear_color": [0.0, 0.0, 0.0, 0.0],
           "raster_state": {
             "color_attachments": [
               {
@@ -383,7 +382,6 @@
             "vertex": "engine://fullscreen",
             "fragment": "engine://bloom_upsample"
           },
-          "clear_color": [0.0, 0.0, 0.0, 0.0],
           "raster_state": {
             "color_attachments": [
               {
@@ -409,7 +407,6 @@
             "vertex": "engine://fullscreen",
             "fragment": "engine://bloom_upsample"
           },
-          "clear_color": [0.0, 0.0, 0.0, 0.0],
           "raster_state": {
             "color_attachments": [
               {
@@ -430,7 +427,6 @@
             "vertex": "engine://fullscreen",
             "fragment": "engine://bloom_composite"
           },
-          "clear_color": [0.0, 0.0, 0.0, 1.0],
           "color_load_op": "Load"
         }
       ]

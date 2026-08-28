@@ -18,6 +18,7 @@
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/viewexecutionscheduler.hpp"
+#include "../src/core/renderer/fullscreenpassrenderer.hpp"
 #include "../src/core/userpublic/render/pass_implementation_abi_v1.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -372,6 +373,48 @@ TEST_CASE(
                         "does not support depth field"));
         }
     }
+}
+
+TEST_CASE(
+    "WP357a fullscreen command recording narrows only a blended engine triangle list",
+    "[renderingpass][fullscreen][raster-state][wp357a]") {
+    const auto blended = nlohmann::json::parse(R"json({
+      "shader": {
+        "vertex": "engine://fullscreen",
+        "fragment": "engine://bloom_upsample"
+      },
+      "raster_state": {
+        "topology": "triangle_list",
+        "color_attachments": [{"blend": "additive"}]
+      }
+    })json");
+    const auto triangle =
+        parseFullscreenPassInfoFromJson(
+            blended, "wp357a_triangle_blend");
+    CHECK((fullscreenDrawCommand(triangle) ==
+           FullscreenDrawCommand{3, 1, 0, 0}));
+
+    auto line = triangle;
+    line.raster_state->topology =
+        RasterPrimitiveTopology::line_list;
+    CHECK((fullscreenDrawCommand(line) ==
+           FullscreenDrawCommand{6, 1, 0, 0}));
+
+    auto opaque = triangle;
+    opaque.raster_state->color_attachments.front()
+        .blend.enabled = false;
+    CHECK((fullscreenDrawCommand(opaque) ==
+           FullscreenDrawCommand{6, 1, 0, 0}));
+
+    auto authored_line = blended;
+    authored_line["raster_state"]["topology"] =
+        "line_list";
+    REQUIRE_THROWS_WITH(
+        parseFullscreenPassInfoFromJson(
+            authored_line, "wp357a_line_blend"),
+        "Fullscreen pass 'wp357a_line_blend' cannot use "
+        "engine://fullscreen with raster_state topology 'line_list'; "
+        "expected triangle_list");
 }
 
 TEST_CASE(

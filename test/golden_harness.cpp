@@ -11450,10 +11450,18 @@ std::string loadTextFile(const std::filesystem::path &path);
 void GoldenHarness::runGoldenImages() {
     setupLogger();
     requireGoldenVulkanDevice();
-    const auto cases = loadGoldenInventoryCases();
-
     const bool update_golden_images = updateGoldenRequested();
     const bool update_rgba8_fixtures = updateRgba8HashFixturesRequested();
+    const bool update_renderer_fixtures =
+        updateRendererTraceFixturesRequested();
+    if (update_golden_images || update_rgba8_fixtures ||
+        update_renderer_fixtures) {
+        INFO("golden updater is running the WP357a bloom oracle gate "
+             "before any baseline write");
+        GoldenHarness::runBloomUpsampleOracle();
+    }
+
+    const auto cases = loadGoldenInventoryCases();
 #if !PELICAN_WITH_VAT
     if (update_rgba8_fixtures) {
         FAIL("RGBA8 aggregate fixture update requires PELICAN_WITH_VAT=ON");
@@ -11464,7 +11472,6 @@ void GoldenHarness::runGoldenImages() {
         update_rgba8_fixtures ? nlohmann::json::object() : loadJsonFile(rgba8_fixture_path);
     nlohmann::json captured_rgba8 = nlohmann::json::object();
 
-    const bool update_renderer_fixtures = updateRendererTraceFixturesRequested();
 #if !PELICAN_WITH_VAT
     if (update_renderer_fixtures) {
         FAIL("renderer aggregate fixture update requires PELICAN_WITH_VAT=ON");

@@ -5,8 +5,8 @@
 namespace Pelican {
 
 TEST_CASE(
-    "WP357 bloom upsample stages satisfy the device-bounded LDR and HDR oracle",
-    "[golden][headless][wp357][bloom][oracle]") {
+    "WP357a bloom stages and shipping Final composite satisfy the physical oracle",
+    "[golden][headless][wp357][wp357a][bloom][oracle]") {
     GoldenHarness::runBloomUpsampleOracle();
 }
 

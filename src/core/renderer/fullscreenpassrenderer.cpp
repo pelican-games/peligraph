@@ -7,6 +7,38 @@
 
 namespace Pelican {
 
+FullscreenDrawCommand fullscreenDrawCommand(
+    const FullscreenPassInfo &fullscreen_info) noexcept {
+    const auto &raster_state = fullscreen_info.raster_state;
+    const bool has_fixed_function_blend =
+        raster_state &&
+        std::ranges::any_of(
+            raster_state->color_attachments,
+            [](const auto &attachment) {
+                return attachment.blend.enabled;
+            });
+    const bool uses_engine_oversized_triangle =
+        fullscreen_info.vert_shader.ref == "engine://fullscreen";
+    const bool uses_triangle_list =
+        !raster_state ||
+        raster_state->topology ==
+            RasterPrimitiveTopology::triangle_list;
+
+    // 9568042^ recorded {6,1,0,0} for every fullscreen pass. Only an
+    // explicitly blended engine oversized triangle may narrow that command
+    // to three vertices. The parser rejects an authored non-triangle-list
+    // engine pass, while this condition keeps programmatic definitions on the
+    // parent command rather than silently changing their primitive meaning.
+    return {
+        .vertex_count =
+            has_fixed_function_blend &&
+                    uses_engine_oversized_triangle &&
+                    uses_triangle_list
+                ? 3u
+                : 6u,
+    };
+}
+
 FullscreenPassRenderer::FullscreenPassRenderer() {}
 FullscreenPassRenderer::~FullscreenPassRenderer() {}
 
@@ -20,27 +52,11 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
     dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
 
     if (!pass_def.isGenericRaster()) {
-        const auto &raster_state = pass_def.fullscreenInfo().raster_state;
-        const bool has_fixed_function_blend =
-            raster_state &&
-            std::ranges::any_of(
-                raster_state->color_attachments,
-                [](const auto &attachment) {
-                    return attachment.blend.enabled;
-                });
-        const bool uses_engine_oversized_triangle =
-            pass_def.fullscreenInfo().vert_shader.ref ==
-            "engine://fullscreen";
-        // The engine shader's first three procedural vertices form one
-        // oversized triangle; vertices 3..5 overlap part of it. Preserve the
-        // legacy six-vertex path for opaque compatibility and for project
-        // vertex shaders that define an ordinary two-triangle quad. An
-        // explicitly blended engine fullscreen pass must apply its source
-        // contribution exactly once.
-        cmd_buf.draw(has_fixed_function_blend && uses_engine_oversized_triangle
-                         ? 3
-                         : 6,
-                     1, 0, 0);
+        const auto draw =
+            fullscreenDrawCommand(pass_def.fullscreenInfo());
+        cmd_buf.draw(
+            draw.vertex_count, draw.instance_count,
+            draw.first_vertex, draw.first_instance);
         return;
     }
     std::visit(

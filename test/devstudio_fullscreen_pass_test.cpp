@@ -759,7 +759,7 @@ TEST_CASE(
     RefreshHarness refresh;
     for (const std::string_view pass_name :
          std::array{std::string_view{"ssao_pass"},
-                    std::string_view{"UpsampleBlend_3"}}) {
+                    std::string_view{"HorizontalBlur_0"}}) {
         const Json &declaration = findPass(config, graph, pass_name);
         FullscreenPassWidget form{refresh.driver()};
         form.receiveAuthoringConfig(
