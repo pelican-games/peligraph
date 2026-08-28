@@ -1,192 +1,194 @@
-# プレファブ設計 — パラメータ付きオブジェクト束(v1 草案)
+# プレファブ設計 — パラメータ付きオブジェクト束(v2)
 
-状態: **草案。codex 設計レビュー前。**
-先行文書: `design_scene_format.md`(§4 未決事項 2 が prefab を保留した)、
-`design_object_behaviors.md`、台帳の設計ノート 3 本(2026-08-28)。
+状態: **草案 v2。v1 は codex 設計レビューで 9 指摘(破綻 5)・全段 No-Go。**
+末尾 §12 に v1 の何が壊れたかを残す。
+先行文書: `design_scene_format.md`(§4 未決 2)、`design_object_behaviors.md`、
+台帳の設計ノート(2026-08-28)。
 
 ## 0. 要求と原則
 
-利用者要求:
-1. インスタンス前のコンポーネント束の再利用(プレファブ)
-2. インスタンスしたコンポーネントの調整がゲーム制作の大半 —— そこを軽くする
-3. AI・外部データからの複数コンポーネントへの一括流し込み
-4. 将来: Houdini HDA のような手続き的資産の取り込み、attribute 的な自由データ
+利用者要求(v1 と同じ):
+インスタンス前のコンポーネント束の再利用 / インスタンス調整の軽量化 /
+AI・外部データからの一括流し込み / 将来の HDA・attribute。
 
-設計原則(すべて既存の家風から導出。趣味で発明しない):
+原則(v1 から 2 つ追加。いずれもレビューが v1 の自己違反を突いた):
 
-- **参照か、明示 unpack か。半連結の上書き追跡は作らない**
-  (render preset の copy/eject、physical fragment の一方向 eject と同じ)
-- **上書き面は作者が宣言したパラメータだけ**(縛りは案内)
-- **文法は 1 つ**: プレファブ文書の中身は scene の object 文法そのもの。
-  パラメータ封筒は render feature の `parameters` と同じ 3 部形式に揃える
-- **名前は鋳造する。置換しない**(view 系統複製の実測教訓)
-- **展開は load 時。runtime はインスタンス同一性を持たない(v1)**
-- **fail-fast**: 未知参照・未宣言パラメータ・型/範囲違反・循環は名前付きエラー
+- 参照か、明示 unpack か。半連結の上書き追跡は作らない
+- 上書き面は作者が宣言したパラメータだけ
+- 文法は 1 つ。**型系も 1 つ: パラメータ型は `StructFieldSchema`
+  (enum / vec2-4 / quat / string / unit / range)を正準に使う。**
+  v1 は float/int/bool だけの独自小型集合を発明し、
+  自分の「第二の文法を作らない」に違反した
+- **文字列 sentinel を使わない。**`"$hp"` は文字列リテラルと区別できない
+  (behavior params は string を実際に受ける)。**tagged node にする:**
+  `{"$param": "hp"}` / `{"$object": "sensor"}`
+- 名前は鋳造。展開は load 時。fail-fast
 
 ## 1. プレファブ文書
 
 ```json
-{
-  "schema": "pelican.prefab",
-  "version": 1,
-  "name": "enemy_grunt",
-  "parameters": {
-    "schema": "pelican.prefab_parameters",
-    "version": 1,
-    "scalars": [
-      { "name": "hp",     "type": "int",   "range": [1, 9999], "default": 30 },
-      { "name": "speed",  "type": "float", "range": [0.0, 50.0], "default": 3.5 }
-    ],
-    "assets": [
-      { "name": "body_model", "kind": "model", "default": "sotai" }
-    ]
-  },
+{ "schema": "pelican.prefab", "version": 1, "name": "enemy_grunt",
+  "parameters": [
+    { "name": "hp",    "type": "int",   "range": [1, 9999], "default": 30 },
+    { "name": "tint",  "type": "vec4",  "default": [1,1,1,1] },
+    { "name": "shape", "type": "enum",  "choices": ["sphere","box"], "default": "sphere" },
+    { "name": "body",  "kind": "asset", "asset_kind": "model", "default": "sotai" } ],
   "objects": [
-    { "name": "root",
+    { "name": "root", "root": true,
       "components": [
         { "name": "transform" },
-        { "name": "simplemodelview", "model": "$body_model" },
-        { "name": "collider", "shape": "capsule", "radius": 0.4 },
-        { "name": "behavior", "type": "grunt_ai", "params": { "hp": "$hp", "speed": "$speed" } }
-      ] }
-  ]
-}
+        { "name": "simplemodelview", "model": { "$param": "body" } },
+        { "name": "collider", "shape": { "$param": "shape" }, "radius": 0.4 },
+        { "name": "behavior", "type": "grunt_ai",
+          "params": { "hp": { "$param": "hp" }, "target": { "$object": "sensor" } } } ] },
+    { "name": "sensor", "parent": "root",
+      "components": [ { "name": "transform" } ] } ] }
 ```
 
-決定:
+決定(v2 で変わった点に ★):
 
-- **`objects[]` は scene と同一文法**(`sceneformat.cpp` の検証をそのまま流用)。
-  第二の文法を作らない
-- **`$name` は完全一致置換のみ**(render feature と同じ。演算なし。
-  型は parameter の JSON 型を保存する)
-- パラメータ種別は v1 で 2 つ: `scalars`(float/int/bool。behavior params の
-  型系に一致)と `assets`(asset_data の登録名を指す。`kind` で表を選ぶ)。
-  render feature の `render_targets` パラメータに相当する枠だが、scene 領域では
-  資産参照がそれに当たる
-- **置き場所は project.json**(`prefab_data_json` または `prefabs[]`)。
-  著作文書(scene/camera/material/animgraph)は project.json、
-  メディア資産は asset_data.json という既存の線に従う
+- ★ パラメータ宣言は `StructFieldSchema` の型・enum・unit・range をそのまま使う。
+  asset パラメータは `kind: "asset"` + `asset_kind`(asset_data の表を選ぶ)
+- ★ **束縛は tagged node のみ**。使用箇所は codec schema が宣言した field に限る
+  (`simplemodelview.params` のような **opaque bag への束縛はエラー** ——
+  検証は通るが runtime が読まない no-op 束縛を作らせない)
+- ★ **宣言したパラメータは 1 箇所以上で使われなければエラー**(未使用宣言の禁止)
+- ★ **objects は全件 named 必須**(鋳造は内部名を要求する)。
+  **`root: true` をちょうど 1 個**(外部から instance 名で parent 参照されたときの
+  anchor 先。instance の transform もここに適用)
+- ★ **`{"$object": "内部名"}`**: behavior params 等がプレファブ内部の object を指す
+  型付き参照。展開時に鋳造名へ、unpack 時に unpack 名へ**リンカが書き換える**。
+  素の文字列で内部 object 名を書いても relocate されない(それは scene 全域の名前)
+- 入れ子プレファブは v1 実装では禁止(名前付きエラー)。v2 課題
+- 置き場所: project.json(`prefabs[]`)。著作文書の線に従う
 
-## 2. インスタンス参照(scene 側)
+## 2. scene 側とバージョンゲート ★
 
 ```json
-{ "name": "grunt_01", "parent": "spawn_area",
-  "components": [ { "name": "transform", "pos": [10, 0, 3] } ],
-  "prefab": { "ref": "enemy_grunt", "parameters": { "hp": 45 } } }
+{ "schema": "pelican.scene", "version": 2, ... }
 ```
 
-決定:
+- **prefab を使う scene は `version: 2`。**現行エンジンは `version == 1` を要求して
+  それ以外を拒否する(`sceneformat.cpp` の envelope 検査)ので、
+  **旧エンジンは prefab 入り scene を黙って欠落表示するのではなく、確実に拒否する**。
+  v2 は prefab 以外の点で v1 と同一
+- 既存 v1 scene が `prefab` キーを未知メタデータとして保存している可能性への答え:
+  version 1 のままなら従来どおり保持・無視(挙動不変)。version 2 で初めて構文になる
+- インスタンス: `{ name, parent?, components: [transform のみ可], prefab: { ref, parameters } }`
+- 外部 object の `parent: "インスタンス名"` は designated root へ解決
 
-- インスタンスは**通常の scene object + `prefab` キー**。
-  同居できる components は **root の transform だけ**(配置はインスタンス所有であって
-  上書きではない。Unity も root transform は instance 所有)。
-  それ以外の components 同居は名前付きエラー
-- **パラメータ束縛は宣言された名前だけ。**未宣言名・型違反・範囲外は load 時に
-  名前付きエラー(render feature の束縛検査と同じ位置づけ)
-- **入れ子(プレファブ文書内の prefab 参照)は v1 で禁止**し、名前付きエラー。
-  v2 の課題として記録(循環検出と鋳造の再帰が必要になる)
+## 3. 展開・鋳造・リンク・上限
 
-## 3. 展開と名前の鋳造
-
-- 展開位置: `SceneLoader::load` の先頭、`prepareSceneBindings` の前。
-  authoring 文書は参照のまま(編集の真実)、runtime は素の objects を見る
-- **鋳造規則: 内部オブジェクト名は `インスタンス名/内部名`。**
-  著作名の文字クラスは `[a-zA-Z0-9_]` なので **`/` は著作名に現れ得ず、
-  衝突が構造的に起きない**。鋳造名は著作不能(パーサが `/` 入りの著作名を拒否)
-- **サブツリー内部の `parent` 参照は鋳造名に書き換える**(内部の辺の付け替え)
+- runtime 鋳造名は `インスタンス名/内部名`(著作名クラス外の `/` で衝突構造的不可。
+  **runtime 専用であり、authoring 文書には決して入らない** ——
+  v1 はここで unpack を壊した)
+- リンカの書き換え対象: 内部 `parent` と、全 component/behavior の `{"$object"}` ノード
+- ★ **展開上限**: 展開前に「インスタンス数 × プレファブ object 数」を検査し、
+  超過は既存 runtime を無変更のまま `prefab_expansion_limit` で拒否
 - 展開順は文書順。決定的
-- 単一オブジェクト(S0)では鋳造は退化する(root がインスタンス名をそのまま使う)
 
-## 4. エディタ
+## 4. unpack ★(authoring 名は鋳造名と別)
 
-- **表示**: インスタンスは Outliner で 1 ノード + 展開で鋳造された子(読み取り専用)。
-  frame plan の provider_feature / WP341 グループ表示と同じ発想。
-  鋳造された子には provenance(どのプレファブの何か)を出す
-- **unpack**: 明示・一方向の編集 op。展開と同じコードパスで素の objects に変換し、
-  journal に載せる(undo 可能)
-- **パラメータ昇格**: インスタンス上の「このフィールドを変えたい」操作 1 回で、
-  (a) プレファブ文書にパラメータ宣言を追加、(b) インスタンスに束縛を追加。
-  **2 文書にまたがる編集**なので、プレファブ文書の保存が失敗したら scene 側を
-  変更しない(順序: プレファブ先、scene 後)。原子性の詳細は実装設計で詰める(未決)
+- unpack 時の authoring 名は **`インスタンス名__内部名` を基礎**に、既存名と衝突したら
+  宣言順で決定的に接尾辞を付けて解消(R7 準拠 = 保存可能)
+- `parent` と `{"$object"}` を unpack 名へ書き換え
+- **journal に載せる前に、生成後の scene 全体を通常 validator に通す**
+- 一方向。undo は journal の逆操作で(unpack 前のインスタンス宣言に戻る)
 
-## 5. 一括流し込みと AI 編集
+## 5. 依存指紋 ★
 
-土台は既存(調査で確認済み):
-`edit` の batch(all-or-nothing、逆操作で 1 undo)、機械可読スキーマ
-(`get_components` の schema_fields)、op ごとの名前付き検証、外部 RPC クライアント。
+- **scene snapshot(export/import)は参照 closure `{prefab_name, digest}` を含み、
+  import は不一致を `prefab_dependency_mismatch` で拒否する**
+  (scene bytes が同一でも registry が違えば別の結果になる、を検出可能に)
+- **`save_scene` の baseline 比較にも、読んだ prefab の digest を read-set として含める**
 
-追加するもの:
+## 6. エラーコード ★
 
-- **プレファブパラメータ = 取り込み契約。**表データ 1 行 = インスタンス 1 個の束縛。
-  外部データは任意のフィールドパスではなく宣言された表に流す
-  (プレファブ改訂で黙って壊れず、束縛検査で名前付きに割れる)
-- **batch の dry-run**(検証のみ、commit しない)。AI エージェントのループを安全にする。
-  `prepareBatch` が準備と commit を分けている構造に乗る想定(実装設計で確認)
-- studio の取り込み面(表 → 束縛 batch の変換とプレビュー)は S3
+editor の stable enum の流儀に合わせ、最低限:
+`prefab_not_found / prefab_version_unsupported / prefab_parameter_unknown /
+prefab_parameter_type / prefab_parameter_unused / prefab_object_ref_unresolved /
+prefab_root_missing / prefab_expansion_limit / prefab_dependency_mismatch /
+prefab_nested_unsupported`。
+文脈として scene_id / instance 名 / prefab 名 / parameter 名 / JSON pointer /
+(取り込み時)行 index を必ず載せる。
 
-## 6. runtime spawn(S4)
+## 7. 構造的バリエーション(正直な保留)★
 
-- `ctx.spawn("enemy_grunt", params)` — registry から決定的に生成。
-  鋳造名は決定的(scene epoch 内の連番)。リプレイの時系列に乗る
-- 生成物は runtime 状態(authoring 文書に入らない。behavior が今日 `GameObjects::add`
-  で作るのと同じ位置づけ。`save_scene` を汚染しない)
+レビューの指摘 4(「shape や color は変えたいのに変えられない」)には
+**型面の拡大(StructFieldSchema 全型)で答える**。これで collider の shape(enum)、
+light の color(vec)、sprite の size/pivot 等、**値の調整はすべてパラメータ化できる**。
 
-## 7. Unity と意図的に変える点
+**構造の差分**(elite だけ behavior を足す等)は v1 では扱わない:
+答えは**別プレファブ**である。optional slot / variant は、
+構造差分の需要が実測されてから設計する(未決 §13)。
+**v1 の正直な射程: 「値のパラメータ化 + 資産差し替え」。それを明記して出荷する。**
 
-台帳の設計ノート(2026-08-28)の表を正とする。要点:
-上書き面は宣言パラメータのみ + 明示 unpack / 参照は名前 + fail-fast /
-コードとデータの分離維持 / spawn は決定的 / 取込は宣言的登録のみ / 文法は 1 つ。
+## 8. 昇格と dry-run(U3。authoring transaction 基盤の後)★
 
-失うもの(正直に): 「後からその場で、予測していなかったフィールドを変える」自由。
-緩和: パラメータ昇格(§4)と unpack。残る本物の損失は一度きりの雑な微調整で、
-そこは unpack が受け皿。
+- **前提基盤: `AuthoringDocumentKey` と文書別 revision/digest**。
+  現行 journal は単一 SceneRevision 前提で、prefab 文書に revision が無い。
+  昇格(2 文書編集)・クラッシュ復旧・undo の単位はこの基盤の上でしか成立しない
+- **dry-run は allocator を一切呼ばない純粋 preflight**。
+  現行 `prepareBatch` は前段の `normalizeBehaviorAttachmentIdentities` が
+  attachment handle を実際に消費する(v1 の「構造に乗る」は偽だった)。
+  受け入れ: **0 回 dry-run と N 回 dry-run の後の本 commit が、
+  ID・journal・runtime trace までバイト一致**
 
-## 8. 将来拡張(v1 では実装しない。設計の穴だけ空けておく)
+## 9. spawn(U4。group lifecycle の後)★
 
-### 8.1 Houdini HDA
+- **`SpawnedPrefabHandle`(group owner)を導入する**: 全 object/behavior の prepare →
+  atomic publish、group destroy、`onInit` 失敗時の全体 rollback。
+  これ無しでは多 object spawn の孤児(root だけ消えて identity 親で生き残る
+  localtransform 等)を防げない
+- 基盤を作らない選択をするなら S4 は単一 object 限定と明記する
 
-HDA = 手続きノード網 + 宣言されたパラメータ面、という構造は
-**プレファブ文書 + parameters と同型**。対応は 2 段階が考えられる:
-
-- **authoring 時 cook → bake(eject 系)**: Houdini Engine で cook した結果
-  (メッシュ・インスタンス群)を資産として登録し、プレファブ文書に stamp する。
-  runtime に Houdini 依存を持ち込まない。決定的・purgeable。家風に一致
-- HDA の parm interface → prefab parameters への写像は素直
-  (両方とも型付き宣言パラメータ)
-- live cook(編集中の再 cook)は将来。**隠れキャッシュを作らない**制約だけ先に固定
-
-### 8.2 attribute 的な自由データ
-
-Houdini の attribute(要素に付く名前付き型付き値)の scene 版は
-「オブジェクトに付く open な型付き key-value」。**closed-schema の家風と緊張する**ので
-v1 では作らないが、住み分けの構図だけ固定する:
+## 10. 出荷単位(レビューの再編成を採用)★
 
 ```
-宣言された層   prefab parameters / behavior params   契約。検証される。取り込み面
-自由な層       attributes(将来)                     探索用。型は値が自己申告
+U1  文書 + registry + version 2 ゲート + 単一 object 展開 + 依存指紋 + エラーコード
+U2  多 object(全件 named / root 規約 / リンカ / 展開上限)+ エディタ表示 + 合法 unpack
+    ※ 前提: parent 機構の実戦投入(出荷 scene での使用が今日 0 件)
+U3  authoring transaction 基盤 → パラメータ昇格 + 純粋 dry-run + 一括取り込み面
+U4  group lifecycle → 決定的 spawn
 ```
 
-- 需要が先に立つのは behavior params の強化(入れ子・配列)である可能性が高い。
-  そちらで足りるなら attributes は不要 —— **params 強化を先に、attributes は
-  その後に判断**
-- ジオメトリレベル(点・頂点)の attribute はレンダラの ABI の話であり別領域
-  (material/shader 側。ここでは扱わない)
+各 U の受け入れ条件(骨子。WP 化時に §4 規約 10 の形へ):
 
-## 9. 実装の段(各段が挙動を変えること)
+- U1: プレファブ無し / default / 束縛あり の 3 者を同じ本番ロードで実行し、
+  **実 ECS / behavior が解決した値**を検査。version 2 を旧 validator が拒否すること。
+  snapshot の依存不一致拒否。未使用宣言・opaque 束縛・型違反の名前付き拒否
+- U2: 2 インスタンス + 内部 `{"$object"}` + 外部 parent + instance transform を同時検査。
+  unpack → save → 新プロセスで reload → undo → redo が完走
+- U3: 0 回対 N 回 dry-run のバイト一致。全 cross-document 失敗点からの復旧
+- U4: 多 object spawn の全体 destroy / 途中失敗 rollback / リプレイ trace 同一
 
-```
-S0  文書 + registry + load 時展開(単一オブジェクト)+ 束縛検査     engine
-S1  多オブジェクト + 鋳造 + 内部 parent 書き換え                    engine
-    ※ 前提: parent 機構を出荷シーンのどれかで実戦させる(使用 0 件のため)
-S2  エディタ表示(1 ノード + 読み取り専用の子)+ unpack op          engine RPC + studio
-S3  パラメータ昇格 + 一括取り込み面 + batch dry-run                 engine RPC + studio
-S4  ctx.spawn(決定的 runtime 生成)                                 engine
-```
+## 11. 将来拡張(v1 から変更なし)
 
-## 10. 未決事項
+HDA: authoring 時 cook → stamp(eject 系)。parm interface と parameters の写像。
+attributes: behavior params 強化(入れ子・配列)の後に要否判断。
+ジオメトリ属性はレンダラ ABI の別領域。
 
-1. 入れ子プレファブ(v2。循環検出と再帰鋳造)
-2. パラメータ昇格の 2 文書原子性の詳細
-3. `prefab_data_json`(一括)か `prefabs[]`(個別列挙)か
-4. attributes 層の要否(behavior params 強化の後に判断)
-5. HDA live cook の形
+## 12. v1 レビューで壊れた点(記録)
+
+| # | v1 | どう壊れたか | v2 の答え |
+|---|---|---|---|
+| 1 | version 据え置き | 旧エンジンが prefab scene を**黙って欠落表示** | scene version 2 ゲート |
+| 2 | 鋳造名で unpack | `/` 入り名は R7 違反で**保存不能** | runtime 名と unpack 名を分離 |
+| 3 | parent だけ書き換え | behavior の内部参照が relocate されず誤結合 / root 規約なし / 無名 object | 全件 named + root 指定 + `{"$object"}` + リンカ |
+| 4 | scalar/asset のみ | enum/vec/quat/string が調整不能でプレファブ増殖か unpack 強制 | StructFieldSchema を正準採用。構造差分は正直に保留 |
+| 5 | 文字列 `"$name"` | リテラルと衝突 / no-op 束縛が検証を通る | tagged node + opaque 束縛禁止 + 未使用宣言禁止 |
+| 6 | 指紋なし | 同一 scene bytes + 別 registry が検出不能 | snapshot closure digest + save read-set |
+| 7 | 昇格を S3 に | 文書別 revision / undo 単位 / 復旧が存在しない | authoring transaction 基盤を U3 の前提に |
+| 8 | dry-run は「乗る想定」 | 現行配線は preflight で handle を消費する(前提が偽) | 純粋 preflight + 0対N バイト一致条件 |
+| 9 | spawn に群の概念なし | 多 object の rollback / 一括 destroy が不可能 | SpawnedPrefabHandle か単一 object 限定 |
+
+レビューが壊せなかった点(独立確認): runtime 鋳造名の対衝突 / 再帰禁止の封じ /
+spawn が save を汚染しない / D0 は正しく分ければ成立 / 値調整用途での S0 の有用性。
+
+## 13. 未決事項
+
+1. 入れ子プレファブ(再帰鋳造と循環検出)
+2. optional slot / variant(構造差分。需要の実測後)
+3. authoring transaction 基盤の詳細設計(U3 の前提。別文書に値する規模)
+4. attributes 層の要否
+5. HDA live cook
