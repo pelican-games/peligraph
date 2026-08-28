@@ -902,6 +902,13 @@ FullscreenPassContainer::fragmentShaderForTesting(
     return *desc.frag;
 }
 
+GraphicsPipelineDesc
+FullscreenPassContainer::graphicsPipelineDescForTesting(
+    PassId pass_id) const {
+    return GET_MODULE(PipelineFactory).graphicsDesc(
+        requirePipelineHandle(pass_id, pipelines));
+}
+
 std::vector<ShaderResourceInterfaceBinding>
 FullscreenPassContainer::resourceInterfaceForTesting(
     PassId pass_id) const {

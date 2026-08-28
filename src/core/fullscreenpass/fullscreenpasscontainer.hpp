@@ -133,6 +133,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
     inputSamplingForTesting(PassId pass_id) const;
     ShaderBundleId fragmentShaderForTesting(
         PassId pass_id) const;
+    GraphicsPipelineDesc graphicsPipelineDescForTesting(
+        PassId pass_id) const;
     std::vector<ShaderResourceInterfaceBinding>
     resourceInterfaceForTesting(PassId pass_id) const;
     std::vector<bool>

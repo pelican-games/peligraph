@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -122,6 +123,28 @@ struct RasterFixedFunctionState {
     bool operator==(
         const RasterFixedFunctionState &) const = default;
 };
+
+// Parses only the portable fixed-function state. This is intentionally
+// independent from RasterGeometryContract so procedural fullscreen passes do
+// not need to manufacture a draw contract.
+RasterFixedFunctionState parseRasterFixedFunctionState(
+    const nlohmann::json &pass,
+    std::size_t color_attachment_count,
+    std::string_view context = "raster pass");
+
+void validateRasterFixedFunctionState(
+    const RasterFixedFunctionState &state,
+    std::size_t color_attachment_count,
+    bool has_depth_attachment,
+    std::string_view context = "raster pass");
+
+// Physical target formats are known only during runtime lowering. Keep this
+// validation shared by generic raster and fullscreen paths so integer render
+// targets fail before shader registration and Vulkan pipeline creation.
+void validateRasterColorAttachmentNumericClasses(
+    std::span<const RasterColorAttachmentState> states,
+    std::span<const MaterialOutputNumericClass> numeric_classes,
+    std::string_view context);
 
 struct RasterPassContract {
     std::uint32_t schema_version = 1;

@@ -30,6 +30,7 @@ constexpr std::array fullscreen_fields{
     "push_constants"sv,
     "uses_light_data"sv,
     "implementation"sv,
+    "raster_state"sv,
 };
 constexpr std::array raster_fields{
     "resource_ports"sv,

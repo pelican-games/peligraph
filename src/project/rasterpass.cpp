@@ -222,7 +222,9 @@ RasterGeometryContract parseGeometry(
     return result;
 }
 
-RasterFixedFunctionState parseState(
+} // namespace
+
+RasterFixedFunctionState parseRasterFixedFunctionState(
     const nlohmann::json &pass,
     std::size_t color_attachment_count,
     std::string_view context) {
@@ -344,8 +346,6 @@ RasterFixedFunctionState parseState(
     return result;
 }
 
-} // namespace
-
 std::string_view rasterPrimitiveTopologyName(
     RasterPrimitiveTopology topology) {
     switch (topology) {
@@ -413,7 +413,7 @@ RasterPassContract parseRasterPassContract(
     RasterPassContract result;
     result.geometry = parseGeometry(pass, context);
     result.state =
-        parseState(
+        parseRasterFixedFunctionState(
             pass, color_attachment_count,
             context);
     validateRasterPassContract(
@@ -451,26 +451,59 @@ void validateRasterPassContract(
             }
         },
         contract.geometry.operation);
-    if (contract.state.color_attachments.size() !=
+    validateRasterFixedFunctionState(
+        contract.state, color_attachment_count,
+        has_depth_attachment, context);
+}
+
+void validateRasterFixedFunctionState(
+    const RasterFixedFunctionState &state,
+    std::size_t color_attachment_count,
+    bool has_depth_attachment,
+    std::string_view context) {
+    if (state.color_attachments.size() !=
         color_attachment_count) {
         throw std::runtime_error(
             std::string{context} +
             " color attachment state count does not match pass outputs");
     }
     if (!has_depth_attachment &&
-        (contract.state.depth.test ||
-         contract.state.depth.write)) {
+        (state.depth.test || state.depth.write)) {
         throw std::runtime_error(
             std::string{context} +
             " enables depth state without a depth attachment");
     }
     for (const auto &color :
-         contract.state.color_attachments) {
+         state.color_attachments) {
         if ((color.write_mask &
              ~materialOutputWriteRgba) != 0) {
             throw std::runtime_error(
                 std::string{context} +
                 " has invalid color write-mask bits");
+        }
+    }
+}
+
+void validateRasterColorAttachmentNumericClasses(
+    std::span<const RasterColorAttachmentState> states,
+    std::span<const MaterialOutputNumericClass> numeric_classes,
+    std::string_view context) {
+    if (!numeric_classes.empty() &&
+        numeric_classes.size() != states.size()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " physical color numeric-class count does not match "
+            "logical outputs");
+    }
+    if (numeric_classes.empty()) return;
+    for (std::size_t index = 0; index < states.size(); ++index) {
+        if (states[index].blend.enabled &&
+            numeric_classes[index] !=
+                MaterialOutputNumericClass::floating) {
+            throw std::runtime_error(
+                std::string{context} +
+                " cannot enable blending for integer color output " +
+                std::to_string(index));
         }
     }
 }

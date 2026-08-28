@@ -2099,6 +2099,14 @@ PassId registerFullscreenPipeline(
         &rendering,
     std::span<const ShaderResourceInterfaceBinding>
         resource_interface) {
+    const auto &fullscreen_info =
+        pass_def.fullscreenInfo();
+    if (fullscreen_info.raster_state) {
+        validateRasterColorAttachmentNumericClasses(
+            fullscreen_info.raster_state->color_attachments,
+            pass_def.physical_color_numeric_classes,
+            "Fullscreen pass '" + pass_def.name + "'");
+    }
     const auto color_formats =
         resolvePhysicalColorFormats(
             pass_def, rendering,
@@ -2122,8 +2130,49 @@ PassId registerFullscreenPipeline(
         dependencies.shader_defines, pass_def,
         rendering);
     const auto shaders = registerFullscreenShaders(
-        pass_def.fullscreenInfo(), dependencies,
+        fullscreen_info, dependencies,
         resource_interface);
+    if (fullscreen_info.raster_state) {
+        GraphicsPipelineDesc desc;
+        desc.vert = shaders.vert_shader;
+        desc.frag = shaders.frag_shader;
+        desc.color_formats = color_formats;
+        desc.depth_format = depth_format;
+        desc.shader_defines =
+            std::move(dependencies.shader_defines);
+        desc.rasterization_samples =
+            pass_def.rasterization_samples;
+        desc.view = view;
+        desc.local_read =
+            graphicsLocalReadContract(rendering);
+        desc.resource_interface.assign(
+            resource_interface.begin(),
+            resource_interface.end());
+        if (!rendering.local_read_scope) {
+            for (std::size_t physical = 0;
+                 physical <
+                 rendering.color_attachment_locations.size();
+                 ++physical) {
+                const auto logical =
+                    rendering.color_attachment_locations[physical];
+                if (logical != unusedPhysicalAttachmentMapping &&
+                    logical != static_cast<std::uint32_t>(physical)) {
+                    throw std::runtime_error(
+                        "Fullscreen pass requires non-identity attachment "
+                        "location remapping outside a local-read scope: " +
+                        pass_def.name);
+                }
+            }
+        }
+        applyVulkanRasterPassContract(
+            *fullscreen_info.raster_state, desc,
+            rendering.color_attachment_locations);
+        const auto pipeline_id =
+            dependencies.fullscreen_pass_container
+                .registerRasterPass(std::move(desc));
+        return fullscreenPipelineValueToPassId(
+            pipeline_id.value);
+    }
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
         color_formats, depth_format,
         shaders.vert_shader, shaders.frag_shader,
@@ -2137,36 +2186,6 @@ PassId registerFullscreenPipeline(
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
-void validateGenericRasterColorState(
-    const PassDefinition &pass) {
-    const auto &states =
-        pass.genericRasterInfo()
-            .contract.state.color_attachments;
-    if (!pass.physical_color_numeric_classes.empty() &&
-        pass.physical_color_numeric_classes.size() !=
-            states.size()) {
-        throw std::runtime_error(
-            "Raster pass physical color numeric-class count "
-            "does not match logical outputs: " +
-            pass.name);
-    }
-    for (std::size_t index = 0;
-         index < states.size(); ++index) {
-        if (!states[index].blend.enabled ||
-            pass.physical_color_numeric_classes.empty()) {
-            continue;
-        }
-        if (pass.physical_color_numeric_classes[index] !=
-            MaterialOutputNumericClass::floating) {
-            throw std::runtime_error(
-                "Raster pass cannot enable blending for integer "
-                "color output " +
-                std::to_string(index) + ": " +
-                pass.name);
-        }
-    }
-}
-
 PassId registerGenericRasterPipeline(
     const PassDefinition &pass_def,
     FullscreenRuntimeDependencies dependencies,
@@ -2174,7 +2193,11 @@ PassId registerGenericRasterPipeline(
     const CompiledPassRenderingContract &rendering,
     std::span<const ShaderResourceInterfaceBinding>
         resource_interface) {
-    validateGenericRasterColorState(pass_def);
+    validateRasterColorAttachmentNumericClasses(
+        pass_def.genericRasterInfo()
+            .contract.state.color_attachments,
+        pass_def.physical_color_numeric_classes,
+        "Raster pass '" + pass_def.name + "'");
     auto color_formats =
         resolvePhysicalColorFormats(
             pass_def, rendering,

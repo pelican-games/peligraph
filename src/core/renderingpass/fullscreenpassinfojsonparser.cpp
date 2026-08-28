@@ -182,6 +182,27 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
     fullscreen_info.input_sampling =
         parseInputSampling(pass_json, pass_name);
 
+    if (pass_json.contains("raster_state")) {
+        const auto &encoded = pass_json.at("raster_state");
+        if (encoded.is_object()) {
+            for (const auto &[key, value] : encoded.items()) {
+                (void)value;
+                if (key.starts_with("depth_")) {
+                    throw std::runtime_error(
+                        "Fullscreen pass raster_state does not support depth field '" +
+                        key + "': " + pass_name);
+                }
+            }
+        }
+        fullscreen_info.raster_state =
+            parseRasterFixedFunctionState(
+                pass_json, 1,
+                "Fullscreen pass '" + pass_name + "'");
+        validateRasterFixedFunctionState(
+            *fullscreen_info.raster_state, 1, false,
+            "Fullscreen pass '" + pass_name + "'");
+    }
+
     if (pass_json.contains("push_constants")) {
         if (!pass_json.at("push_constants").is_string()) {
             throw std::runtime_error("Fullscreen pass push_constants must be a string: " + pass_name);

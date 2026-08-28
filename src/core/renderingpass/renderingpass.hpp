@@ -251,6 +251,10 @@ struct FullscreenPassInfo {
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
     FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
     bool uses_light_data = false;
+    // Absence is observable compatibility state: legacy fullscreen pipelines
+    // keep GraphicsPipelineDesc::color_attachment_states empty. Authored state
+    // is expanded and lowered only when raster_state is present in JSON.
+    std::optional<RasterFixedFunctionState> raster_state;
     // Empty preserves the legacy linear/repeat policy for every image input.
     // When authored, entries map one-to-one to PassDefinition::input_targets.
     std::vector<FullscreenInputSampling> input_sampling;

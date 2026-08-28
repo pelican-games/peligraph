@@ -620,6 +620,46 @@ void main() {
 )glsl";
 }
 
+const char *wp353BlendDestinationFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.1, 0.2, 0.3, 0.4);
+}
+)glsl";
+}
+
+const char *wp353BlendSourceFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.4, 0.2, 0.1, 0.5);
+}
+)glsl";
+}
+
+const char *wp353BlendPresentFragmentShader() {
+    return R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D omittedTexture;
+layout(set = 1, binding = 1) uniform sampler2D additiveTexture;
+layout(set = 1, binding = 2) uniform sampler2D oneOneTexture;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    if (inUV.x < (1.0 / 3.0)) {
+        outColor = texture(omittedTexture, inUV);
+    } else if (inUV.x < (2.0 / 3.0)) {
+        outColor = texture(additiveTexture, inUV);
+    } else {
+        outColor = texture(oneOneTexture, inUV);
+    }
+}
+)glsl";
+}
+
 const char *localReadProducerFragmentShader() {
     return R"glsl(
 #version 450
@@ -1233,6 +1273,164 @@ nlohmann::json pipelineReloadRenderingConfig() {
 )json");
 }
 
+nlohmann::json wp353BlendRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [
+    {
+      "name": "wp353_omitted",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+    },
+    {
+      "name": "wp353_additive",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+    },
+    {
+      "name": "wp353_one_one",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+    }
+  ],
+  "rendering_passes": [{
+    "name": "wp353_blend_main",
+    "passes": [
+      {
+        "name": "wp353_seed_omitted",
+        "type": "fullscreen",
+        "output": {"color": "wp353_omitted", "depth": null},
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_destination"
+        }
+      },
+      {
+        "name": "wp353_seed_additive",
+        "type": "fullscreen",
+        "output": {"color": "wp353_additive", "depth": null},
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_destination"
+        }
+      },
+      {
+        "name": "wp353_seed_one_one",
+        "type": "fullscreen",
+        "output": {"color": "wp353_one_one", "depth": null},
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_destination"
+        }
+      },
+      {
+        "name": "wp353_overlay_omitted",
+        "type": "fullscreen",
+        "after": ["wp353_seed_omitted"],
+        "color_load_op": "Load",
+        "output": {"color": "wp353_omitted", "depth": null},
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_source"
+        }
+      },
+      {
+        "name": "wp353_overlay_additive",
+        "type": "fullscreen",
+        "after": ["wp353_seed_additive"],
+        "color_load_op": "Load",
+        "output": {"color": "wp353_additive", "depth": null},
+        "raster_state": {
+          "color_attachments": [{"blend": "additive", "write_mask": "rgba"}]
+        },
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_source"
+        }
+      },
+      {
+        "name": "wp353_overlay_one_one",
+        "type": "fullscreen",
+        "after": ["wp353_seed_one_one"],
+        "color_load_op": "Load",
+        "output": {"color": "wp353_one_one", "depth": null},
+        "raster_state": {
+          "color_attachments": [{
+            "blend": {
+              "color": {"src": "one", "dst": "one", "op": "add"},
+              "alpha": {"src": "one", "dst": "one", "op": "add"}
+            },
+            "write_mask": "rgba"
+          }]
+        },
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_source"
+        }
+      },
+      {
+        "name": "wp353_present",
+        "type": "fullscreen",
+        "input": ["wp353_omitted", "wp353_additive", "wp353_one_one"],
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_present"
+        }
+      }
+    ]
+  }]
+}
+)json");
+}
+
+nlohmann::json wp353IntegerBlendEarlyFailureConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "render_targets": [{
+    "name": "wp353_integer_target",
+    "extent_scale": 1.0,
+    "format": "R32_UINT",
+    "format_class": "data",
+    "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+  }],
+  "rendering_passes": [{
+    "name": "wp353_integer_main",
+    "passes": [
+      {
+        "name": "wp353_integer_blend",
+        "type": "fullscreen",
+        "output": {"color": "wp353_integer_target", "depth": null},
+        "raster_state": {
+          "color_attachments": [{"blend": "additive"}]
+        },
+        "shader": {
+          "vertex": "shaders/wp353_intentionally_missing",
+          "fragment": "shaders/wp353_intentionally_missing"
+        }
+      },
+      {
+        "name": "wp353_integer_present",
+        "type": "fullscreen",
+        "input": ["wp353_integer_target"],
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {
+          "vertex": "shaders/wp353_fullscreen",
+          "fragment": "shaders/wp353_present"
+        }
+      }
+    ]
+  }]
+}
+)json");
+}
+
 nlohmann::json localReadRenderingConfig() {
     return nlohmann::json::parse(R"json(
 {
@@ -1275,6 +1473,9 @@ nlohmann::json localReadRenderingConfig() {
             "local_source": "same_pixel"
           },
           "output": {"color": "local_output", "depth": null},
+          "raster_state": {
+            "color_attachments": [{"blend": "blend", "write_mask": "rgba"}]
+          },
           "resource_ports": {
             "input_color": {
               "resource": "local_source"
@@ -3216,6 +3417,273 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "fullscreen integer blend fails before shader registration",
+    "[wp353][headless][render][fullscreen][blend][integer]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "shaders" / "wp353_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" / "wp353_present.frag",
+            gpuArenaCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            wp353IntegerBlendEarlyFailureConfig().dump(2));
+
+        auto project =
+            makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]["default_rendering_pass"] =
+            "wp353_integer_main";
+        project["schema"] = "pelican.project";
+        project["version"] = 1;
+        project["name"] = "wp353-integer-blend";
+        GET_MODULE(ProjectSource).setProjectData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false, project.dump());
+
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{16, 16};
+        launch.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(
+            EngineTime::Mode::fixed_step, 1.0 / 60.0);
+
+        REQUIRE_THROWS_WITH(
+            (void)GET_MODULE(Renderer),
+            Catch::Matchers::ContainsSubstring(
+                "Fullscreen pass 'wp353_integer_blend'") &&
+                Catch::Matchers::ContainsSubstring(
+                    "integer color output 0"));
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan integer blend validation unavailable");
+        throw;
+    }
+#endif
+}
+
+TEST_CASE(
+    "fullscreen authored blend changes resolved factors and pixels",
+    "[wp353][headless][render][fullscreen][blend]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        writeTextFile(
+            temp_dir / "shaders" / "wp353_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" / "wp353_destination.frag",
+            wp353BlendDestinationFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" / "wp353_source.frag",
+            wp353BlendSourceFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" / "wp353_present.frag",
+            wp353BlendPresentFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            wp353BlendRenderingConfig().dump(2));
+
+        auto project =
+            makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]["default_rendering_pass"] =
+            "wp353_blend_main";
+        project["schema"] = "pelican.project";
+        project["version"] = 1;
+        project["name"] = "wp353-fullscreen-blend";
+        GET_MODULE(ProjectSource).setProjectData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false, project.dump());
+
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{16, 16};
+        launch.headless_frames = 1;
+        auto &engine_time = GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step, 1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto rendering_pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "wp353_blend_main");
+        const auto program =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .findProgram(rendering_pass_id);
+        REQUIRE(program != nullptr);
+
+        const auto find_pass =
+            [&](std::string_view name)
+            -> const CompiledPass & {
+            const auto found = std::find_if(
+                program->rendering_pass.passes.begin(),
+                program->rendering_pass.passes.end(),
+                [&](const auto &pass) {
+                    return pass.definition.name == name;
+                });
+            REQUIRE(
+                found !=
+                program->rendering_pass.passes.end());
+            return *found;
+        };
+        auto &fullscreen_passes =
+            GET_MODULE(FullscreenPassContainer);
+        const auto omitted =
+            fullscreen_passes.graphicsPipelineDescForTesting(
+                find_pass("wp353_overlay_omitted").pass_id);
+        const auto additive =
+            fullscreen_passes.graphicsPipelineDescForTesting(
+                find_pass("wp353_overlay_additive").pass_id);
+        const auto one_one =
+            fullscreen_passes.graphicsPipelineDescForTesting(
+                find_pass("wp353_overlay_one_one").pass_id);
+
+        // This is the production compile contrast: omission retains the
+        // legacy unspecified representation, while both authored states are
+        // materialized and resolve to different source factors.
+        REQUIRE(omitted.color_attachment_states.empty());
+        REQUIRE(
+            additive.color_attachment_states.size() == 1);
+        REQUIRE(one_one.color_attachment_states.size() == 1);
+        const auto &additive_state =
+            additive.color_attachment_states.front();
+        const auto &one_one_state =
+            one_one.color_attachment_states.front();
+        CHECK(additive_state.blend_enabled);
+        CHECK(
+            additive_state.source_color ==
+            vk::BlendFactor::eSrcAlpha);
+        CHECK(
+            additive_state.destination_color ==
+            vk::BlendFactor::eOne);
+        CHECK(
+            additive_state.source_alpha ==
+            vk::BlendFactor::eOne);
+        CHECK(
+            additive_state.destination_alpha ==
+            vk::BlendFactor::eOne);
+        CHECK(one_one_state.blend_enabled);
+        CHECK(
+            one_one_state.source_color ==
+            vk::BlendFactor::eOne);
+        CHECK(
+            one_one_state.destination_color ==
+            vk::BlendFactor::eOne);
+        CHECK(additive_state != one_one_state);
+
+        engine_time.advance();
+        renderer.render();
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        vkcore.waitIdle();
+
+        const auto omitted_pixels =
+            renderer.readRenderTargetForTesting(
+                "wp353_omitted", ImageSubresourceRange{});
+        const auto additive_pixels =
+            renderer.readRenderTargetForTesting(
+                "wp353_additive", ImageSubresourceRange{});
+        const auto one_one_pixels =
+            renderer.readRenderTargetForTesting(
+                "wp353_one_one", ImageSubresourceRange{});
+        const auto require_center_pixel =
+            [](const RenderTargetReadback &readback,
+               const std::array<std::uint8_t, 4> &expected) {
+            REQUIRE(
+                readback.format ==
+                vk::Format::eR8G8B8A8Unorm);
+            REQUIRE(readback.layer_count == 1);
+            REQUIRE(readback.image_layer_count == 1);
+            REQUIRE(
+                readback.bytes.size() ==
+                static_cast<std::size_t>(
+                    readback.extent.width) *
+                    readback.extent.height * 4u);
+            const auto pixel =
+                (static_cast<std::size_t>(
+                     readback.extent.height / 2u) *
+                     readback.extent.width +
+                 readback.extent.width / 2u) *
+                4u;
+            for (std::size_t channel = 0;
+                 channel < expected.size(); ++channel) {
+                const auto actual =
+                    readback.bytes[pixel + channel];
+                const auto delta = actual > expected[channel]
+                                       ? actual - expected[channel]
+                                       : expected[channel] - actual;
+                CHECK(delta <= 1u);
+            }
+        };
+        // destination=(.1,.2,.3,.4), source=(.4,.2,.1,.5).
+        // Omitted overwrites; additive is SrcAlpha/One; explicit is One/One.
+        require_center_pixel(
+            omitted_pixels, {102, 51, 26, 128});
+        require_center_pixel(
+            additive_pixels, {77, 77, 89, 230});
+        require_center_pixel(
+            one_one_pixels, {128, 102, 102, 230});
+        CHECK(
+            omitted_pixels.bytes !=
+            additive_pixels.bytes);
+        CHECK(
+            additive_pixels.bytes !=
+            one_one_pixels.bytes);
+
+        vkcore.waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan fullscreen blend rendering unavailable");
+        throw;
+    }
+#endif
+}
+
+TEST_CASE(
     "runtime target planner executes a fused tile-local scope",
     "[headless][render][tile-local][dynamic-rendering]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -3372,6 +3840,34 @@ TEST_CASE(
             consumer_pass.rendering
                 .local_read_extent ==
             source_metadata.extent);
+        REQUIRE(
+            consumer_pass.rendering
+                .color_attachment_locations ==
+            std::vector<std::uint32_t>{
+                unusedPhysicalAttachmentMapping, 0u});
+        const auto consumer_pipeline =
+            GET_MODULE(FullscreenPassContainer)
+                .graphicsPipelineDescForTesting(
+                    consumer_pass.pass_id);
+        REQUIRE(
+            consumer_pipeline.color_attachment_states.size() == 2);
+        CHECK(
+            consumer_pipeline.color_attachment_states[0]
+                .write_mask == vk::ColorComponentFlags{});
+        CHECK_FALSE(
+            consumer_pipeline.color_attachment_states[0]
+                .blend_enabled);
+        CHECK(
+            consumer_pipeline.color_attachment_states[1]
+                .blend_enabled);
+        CHECK(
+            consumer_pipeline.color_attachment_states[1]
+                .source_color ==
+            vk::BlendFactor::eSrcAlpha);
+        CHECK(
+            consumer_pipeline.color_attachment_states[1]
+                .destination_color ==
+            vk::BlendFactor::eOneMinusSrcAlpha);
         const auto resource_interface =
             GET_MODULE(FullscreenPassContainer)
                 .resourceInterfaceForTesting(

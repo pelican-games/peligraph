@@ -185,6 +185,20 @@ void applyVulkanRasterPassContract(
         contract.state.color_attachments.size(),
         desc.depth_format.has_value(),
         "Vulkan raster pipeline");
+    applyVulkanRasterPassContract(
+        contract.state, desc,
+        physical_attachment_locations);
+}
+
+void applyVulkanRasterPassContract(
+    const RasterFixedFunctionState &state,
+    GraphicsPipelineDesc &desc,
+    std::span<const std::uint32_t>
+        physical_attachment_locations) {
+    validateRasterFixedFunctionState(
+        state, state.color_attachments.size(),
+        desc.depth_format.has_value(),
+        "Vulkan raster pipeline");
     if (!physical_attachment_locations.empty() &&
         physical_attachment_locations.size() !=
             desc.color_formats.size()) {
@@ -193,26 +207,26 @@ void applyVulkanRasterPassContract(
             "must match physical color formats");
     }
     if (physical_attachment_locations.empty() &&
-        contract.state.color_attachments.size() !=
+        state.color_attachments.size() !=
             desc.color_formats.size()) {
         throw std::runtime_error(
             "Vulkan raster color state count must match physical "
             "color formats when no attachment mapping is supplied");
     }
     desc.topology =
-        lowerTopology(contract.state.topology);
+        lowerTopology(state.topology);
     desc.cull_mode =
-        lowerCullMode(contract.state.cull);
+        lowerCullMode(state.cull);
     desc.front_face =
         lowerFrontFace(
-            contract.state.front_face);
+            state.front_face);
     desc.depth_test =
-        contract.state.depth.test;
+        state.depth.test;
     desc.depth_write =
-        contract.state.depth.write;
+        state.depth.write;
     desc.depth_compare =
         lowerDepthCompare(
-            contract.state.depth.compare);
+            state.depth.compare);
     desc.color_attachment_states.assign(
         desc.color_formats.size(),
         lowerVulkanRasterColorAttachmentState(
@@ -221,17 +235,16 @@ void applyVulkanRasterPassContract(
     if (physical_attachment_locations.empty()) {
         for (std::size_t index = 0;
              index <
-             contract.state.color_attachments.size();
+             state.color_attachments.size();
              ++index) {
             desc.color_attachment_states[index] =
                 lowerVulkanRasterColorAttachmentState(
-                    contract.state
-                        .color_attachments[index]);
+                    state.color_attachments[index]);
         }
         return;
     }
     std::vector<bool> mapped(
-        contract.state.color_attachments.size(),
+        state.color_attachments.size(),
         false);
     for (std::size_t physical = 0;
          physical <
@@ -244,7 +257,7 @@ void applyVulkanRasterPassContract(
             continue;
         }
         if (logical >=
-            contract.state.color_attachments.size()) {
+            state.color_attachments.size()) {
             throw std::runtime_error(
                 "Vulkan raster attachment-location mapping "
                 "references an absent logical color output");
@@ -257,8 +270,7 @@ void applyVulkanRasterPassContract(
         mapped[logical] = true;
         desc.color_attachment_states[physical] =
             lowerVulkanRasterColorAttachmentState(
-                contract.state
-                    .color_attachments[logical]);
+                state.color_attachments[logical]);
     }
     if (std::find(
             mapped.begin(), mapped.end(), false) !=

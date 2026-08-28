@@ -107,7 +107,8 @@ cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2D�
 | `resolution_domain` | 任意 | type 依存 | `scene` / `output` / `independent` / `unclassified`(= `none`)。MSAA の sample count 計画がパスを同じ解像度圏へまとめる区分。既定は `material` / `velocity` / `picking` = `scene`、`output_transform` / `ui` / `gizmo` / `imgui` = `output`、`shadow_depth` = `independent`、それ以外 = `unclassified` |
 | `regions` | 任意 | — | subgraph replacement 用の region タグ(string 配列)。重複は `has duplicate region tag`(後述「差し替えプロバイダの入口」)|
 | `implementation` | 任意 | — | **`fullscreen` / `output_transform` 限定**。`{"provider": "<名前>"}` **ちょうど 1 キー**。ほかの type に書くと所有していない旨の名指しエラー|
-| `draw` / `raster_state` | `raster` では `draw` のみ必須 | — | **`raster` 限定**(ほかの type に書くと所有していない旨の名指しエラー)。後述「type: raster」|
+| `draw` | `raster` では必須 | — | **`raster` 限定**(ほかの type に書くと所有していない旨の名指しエラー)。後述「type: raster」|
+| `raster_state` | 任意 | — | **`raster` / `fullscreen` / `output_transform` 限定**。`fullscreen` 系では color blend/write-mask と topology/cull/front-face だけを受理し、`depth_*` は名前付きエラーで拒否する。後述「固定機能状態」|
 | `material_resources` | 任意 | — | **`material` 限定**。`.surface` のtyped buffer/image portをframe-graph resourceへ割り当てる。resource、history、view、sampling、mip/layer subresource、read footprintから依存とbarrierを導出する |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
@@ -159,9 +160,9 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 ### type 別の要点
 
 - **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
-- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む。**入力枚数にエンジン固定の上限はありません**(✅WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った 8 は descriptor pool のサイズ見積もりで、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。
+- **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む。**入力枚数にエンジン固定の上限はありません**(✅WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った 8 は descriptor pool のサイズ見積もりで、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。任意の`raster_state`で1枚のcolor attachmentのblend/write-maskとtopology/cull/front-faceを書けます。深度状態は受理しません。
 - **`raster`** — 汎用ラスタパス(✅WP238b)。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
-- **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。
+- **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。内部契約は`fullscreen`と同じ`raster_state`所有表を共有し、blend/write-mask等を同じ経路で解決します。自動生成される既定ノードは`raster_state`を省略します。
 - **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
 - **`picking`** — モデル面へ整数 ID を書く視覚ピッキングパス。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://picking` / `engine://picking_skinned`)。通常は `engine://features/picking.json` 経由(本節後半)。
 - **`gizmo`** — 選択 transform の移動・回転・拡縮ハンドルを canonical display へ重ねる line-list パス。通常は `engine://features/gizmo.json` 経由(本節後半)。
@@ -219,21 +220,29 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 
 `draw` 自体を省略すると `<パス名> requires a draw object` です。
 
-**`raster_state`(任意・object)**
+**固定機能状態 `raster_state`(任意・object、✅WP238b/353)**
 
 | フィールド | 既定 | 値 |
 |---|---|---|
 | `topology` | `triangle_list` | `point_list` / `line_list` / `line_strip` / `triangle_list` / `triangle_strip` |
 | `cull` | `none` | `none` / `front` / `back` |
 | `front_face` | `counter_clockwise` | `counter_clockwise` / `clockwise` |
-| `depth_test` / `depth_write` | `false` | bool |
-| `depth_compare` | `less` | `never` / `less` / `equal` / `less_equal` / `greater` / `not_equal` / `greater_equal` / `always` |
-| `color_attachments` | — | 配列。**要素数は `output.color` の枚数と厳密一致**(`color_attachments count must match pass color outputs`)。各要素は `blend` / `write_mask` の 2 キーのみ |
+| `depth_test` / `depth_write` | `false` | bool。**`raster`限定**。`fullscreen` / `output_transform`では拒否 |
+| `depth_compare` | `less` | `never` / `less` / `equal` / `less_equal` / `greater` / `not_equal` / `greater_equal` / `always`。**`raster`限定** |
+| `color_attachments` | — | 配列。`raster`では**要素数を `output.color` の枚数と厳密一致**させる(`color_attachments count must match pass color outputs`)。`fullscreen` / `output_transform`はcolor出力が1枚なので1要素。各要素は `blend` / `write_mask` の 2 キーのみ |
 
 `color_attachments[].blend` / `.write_mask` の値の語彙は §6.7 の `material_output_states` と**同一のパーサ**です。
 ただしキーは別で、`material_outputs` / `material_output_states` は material パス限定です
-(所有していない旨の名指しエラー)。raster パスの blend / write mask は
-必ず `raster_state.color_attachments[]` に書きます。
+(所有していない旨の名指しエラー)。`raster` / `fullscreen` / `output_transform`のblend / write maskは
+必ず `raster_state.color_attachments[]` に書きます。`"additive"` presetのcolor係数は
+`SrcAlpha/One`、alpha係数は`One/One`です。colorも`One/One`にしたい場合はpresetではなく
+color/alphaを明示してください。UINT/SINT color targetでblendを有効にすると、shader登録前に
+パス名と出力添字を含むエラーで拒否します。
+
+`fullscreen` / `output_transform`で`raster_state`自体を省略した場合、従来どおりpipelineの
+color attachment stateは「未指定」の空表現を保ちます。省略をopaque/RGBAの展開済み既定へ
+書き換えません。明示した場合だけ固定機能状態を生成します。また`depth_test`、`depth_write`、
+`depth_compare`など`depth_*`をこれらの型へ書くと、無視せずフィールド名付きで拒否します。
 
 `input` / `resource_ports` も受理します。resource port は image が `sampled`、buffer が `storage` に限られ、
 1 つの resource へ複数 port は割り当てられません。color attachment 数にもエンジン固定の上限はありません。
@@ -1540,7 +1549,7 @@ blend constant/dual-source blendの境界は
 
 `material_outputs` / `material_output_states` は **material パス限定**です
 (ほかの type に書くと所有していない旨の名指しエラー)。
-`raster` パスの attachment blend / write mask は、値の語彙は同じですが
+`raster` / `fullscreen` / `output_transform` パスの attachment blend / write mask は、値の語彙は同じですが
 `raster_state.color_attachments[]` の側に書きます(§6.2)。
 
 `material_outputs` を省略した pass は既存プロジェクト向けの内蔵5-MRT/1-color ABIを
@@ -1892,6 +1901,8 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `<pass> requires a draw object` / `Raster pass requires shader: <pass>` | `raster` パスに `draw` / `shader` が無い |
 | `Raster pass shader implementation must use canonical namespace.name@major syntax` | `shader.implementation` が `namespace.name@major` 形式でない |
 | `raster_state color_attachments count must match pass color outputs` | `color_attachments` の要素数が `output.color` の枚数と違う |
+| `Fullscreen pass raster_state does not support depth field '<鍵>': <名前>` | `fullscreen` / `output_transform` の `raster_state` に範囲外の `depth_*` を書いた |
+| `Fullscreen pass '<名前>' cannot enable blending for integer color output <添字>` | UINT/SINT color target に対してblendを有効にした。`opaque`にするかfloating-point targetを使う |
 | `Pass '<名前>' type '<type>' does not own field 'implementation'` | `implementation` を `fullscreen` / `output_transform` 以外の type に書いた(§6.2) |
 | `tagged region v1 supports contiguous fullscreen passes only` / `... requires contiguous authored passes` | `regions` タグが非連続、または fullscreen 以外のパスに付いている(§6.2) |
 | `resolved draw_sort has unknown xr_view_policy: <x>` / `XR per_view draw sorting requires exactly two views` | `draw_sort.xr_view_policy` の値が不正 / `per_view` を view 数 2 以外で使った(§6.2) |

@@ -4,6 +4,8 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
+
 using namespace Pelican;
 
 TEST_CASE("generic raster contract canonicalizes portable draw and attachment state") {
@@ -204,4 +206,80 @@ TEST_CASE("generic raster fingerprint changes with pipeline-relevant state") {
     CHECK(
         rasterPassContractFingerprint(base) !=
         rasterPassContractFingerprint(changed));
+}
+
+TEST_CASE(
+    "public fixed-function parser is shared and distinguishes additive from explicit one-one",
+    "[raster][fixed-state][wp353]") {
+    const auto pass = nlohmann::json::parse(R"json({
+      "draw": {"vertex_count": 3},
+      "raster_state": {
+        "topology": "triangle_strip",
+        "cull": "back",
+        "front_face": "clockwise",
+        "color_attachments": [{"blend": "additive", "write_mask": "rg"}]
+      }
+    })json");
+    const auto fixed =
+        parseRasterFixedFunctionState(pass, 1, "shared fixed state");
+    const auto contract =
+        parseRasterPassContract(pass, 1, false, "shared fixed state");
+    REQUIRE(fixed == contract.state);
+    REQUIRE(fixed.color_attachments.size() == 1);
+    const auto &additive = fixed.color_attachments.front().blend;
+    CHECK(additive.enabled);
+    CHECK(
+        additive.color.source ==
+        MaterialOutputBlendFactor::source_alpha);
+    CHECK(
+        additive.color.destination ==
+        MaterialOutputBlendFactor::one);
+
+    auto explicit_one_one = pass;
+    explicit_one_one["raster_state"]["color_attachments"][0]["blend"] = {
+        {"color", {{"src", "one"}, {"dst", "one"}, {"op", "add"}}},
+        {"alpha", {{"src", "one"}, {"dst", "one"}, {"op", "add"}}},
+    };
+    const auto explicit_state =
+        parseRasterFixedFunctionState(
+            explicit_one_one, 1, "explicit one-one");
+    const auto &one_one =
+        explicit_state.color_attachments.front().blend;
+    CHECK(one_one.enabled);
+    CHECK(
+        one_one.color.source ==
+        MaterialOutputBlendFactor::one);
+    CHECK(
+        one_one.color.destination ==
+        MaterialOutputBlendFactor::one);
+    CHECK(additive != one_one);
+}
+
+TEST_CASE(
+    "shared raster numeric-class validation rejects integer blend targets",
+    "[raster][fixed-state][integer][wp353]") {
+    const auto state = parseRasterFixedFunctionState(
+        nlohmann::json{
+            {"raster_state",
+             {{"color_attachments",
+               nlohmann::json::array(
+                   {{{"blend", "additive"}}})}}}},
+        1, "numeric-class fixture");
+    const std::array floating{
+        MaterialOutputNumericClass::floating};
+    const std::array integer{
+        MaterialOutputNumericClass::unsigned_integer};
+
+    CHECK_NOTHROW(
+        validateRasterColorAttachmentNumericClasses(
+            state.color_attachments, floating,
+            "Fullscreen pass 'floating'"));
+    CHECK_THROWS_WITH(
+        validateRasterColorAttachmentNumericClasses(
+            state.color_attachments, integer,
+            "Fullscreen pass 'picking_overlay'"),
+        Catch::Matchers::ContainsSubstring(
+            "Fullscreen pass 'picking_overlay'") &&
+            Catch::Matchers::ContainsSubstring(
+                "integer color output 0"));
 }

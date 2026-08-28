@@ -1,6 +1,8 @@
 #include "../src/project/passfieldownership.hpp"
 #include "../src/project/projectformat.hpp"
 #include "../src/project/projectpathresolver.hpp"
+#include "../src/project/featurecompose.hpp"
+#include "../src/project/rasterpass.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 
@@ -14,6 +16,8 @@
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -175,6 +179,231 @@ bool configRequiresRuntimeShaderCompiler(
         }
     }
     return false;
+}
+
+struct FullscreenManifestEntry {
+    std::string identity;
+    nlohmann::json pass;
+};
+
+void collectFullscreenManifestEntries(
+    const nlohmann::json &node,
+    std::string_view relative_path,
+    std::vector<FullscreenManifestEntry> &entries) {
+    if (node.is_object()) {
+        if (node.value("type", std::string{}) ==
+                "fullscreen" &&
+            node.contains("name") &&
+            node.at("name").is_string()) {
+            entries.push_back({
+                std::string{relative_path} + "::" +
+                    node.at("name").get<std::string>(),
+                node,
+            });
+        }
+        for (const auto &[key, value] : node.items()) {
+            (void)key;
+            collectFullscreenManifestEntries(
+                value, relative_path, entries);
+        }
+        return;
+    }
+    if (node.is_array()) {
+        for (const auto &value : node) {
+            collectFullscreenManifestEntries(
+                value, relative_path, entries);
+        }
+    }
+}
+
+std::vector<FullscreenManifestEntry>
+shippingFullscreenManifestEntries() {
+    std::vector<FullscreenManifestEntry> result;
+    for (const auto relative_root : {
+             "projects",
+             "src/core/resources/render_pipelines",
+             "src/core/resources/features"}) {
+        const auto root = sourceRoot() / relative_root;
+        for (const auto &entry :
+             std::filesystem::recursive_directory_iterator{
+                 root}) {
+            if (!entry.is_regular_file() ||
+                entry.path().extension() != ".json") {
+                continue;
+            }
+            const auto relative_path =
+                std::filesystem::relative(
+                    entry.path(), sourceRoot())
+                    .generic_string();
+            collectFullscreenManifestEntries(
+                nlohmann::json::parse(
+                    readText(entry.path())),
+                relative_path, result);
+        }
+    }
+    std::sort(
+        result.begin(), result.end(),
+        [](const auto &lhs, const auto &rhs) {
+            return lhs.identity < rhs.identity;
+        });
+    return result;
+}
+
+nlohmann::json explicitDefaultFullscreenRasterState() {
+    return {
+        {"topology", "triangle_list"},
+        {"cull", "none"},
+        {"front_face", "counter_clockwise"},
+        {"color_attachments",
+         nlohmann::json::array(
+             {{{"blend", "opaque"},
+               {"write_mask", "rgba"}}})},
+    };
+}
+
+void materializeExplicitFullscreenDefaults(
+    nlohmann::json &node) {
+    if (node.is_object()) {
+        if (node.value("type", std::string{}) ==
+                "fullscreen" &&
+            !node.contains("raster_state")) {
+            node["raster_state"] =
+                explicitDefaultFullscreenRasterState();
+        }
+        for (auto &[key, value] : node.items()) {
+            (void)key;
+            materializeExplicitFullscreenDefaults(value);
+        }
+        return;
+    }
+    if (node.is_array()) {
+        for (auto &value : node) {
+            materializeExplicitFullscreenDefaults(value);
+        }
+    }
+}
+
+struct CanonicalFullscreenSemanticDescriptor {
+    std::string vertex_shader_reference;
+    std::string fragment_shader_reference;
+    RasterFixedFunctionState fixed_function;
+
+    bool operator==(
+        const CanonicalFullscreenSemanticDescriptor &) const =
+        default;
+};
+
+std::string stableShaderReference(
+    const nlohmann::json &shader,
+    std::string_view stage) {
+    const auto &reference =
+        shader.at(std::string{stage});
+    return reference.is_string()
+               ? reference.get<std::string>()
+               : reference.dump();
+}
+
+CanonicalFullscreenSemanticDescriptor
+canonicalFullscreenSemanticDescriptor(
+    const nlohmann::json &pass) {
+    const auto &shader = pass.at("shader");
+    return {
+        .vertex_shader_reference =
+            stableShaderReference(shader, "vertex"),
+        .fragment_shader_reference =
+            stableShaderReference(shader, "fragment"),
+        .fixed_function =
+            parseRasterFixedFunctionState(
+                pass, 1,
+                "canonical fullscreen descriptor '" +
+                    pass.at("name").get<std::string>() +
+                    "'"),
+    };
+}
+
+std::vector<std::pair<
+    std::string,
+    CanonicalFullscreenSemanticDescriptor>>
+canonicalFullscreenDescriptorsInConfig(
+    const nlohmann::json &config) {
+    std::vector<std::pair<
+        std::string,
+        CanonicalFullscreenSemanticDescriptor>> result;
+    const auto collect = [&result](
+                             const auto &self,
+                             const nlohmann::json &node) -> void {
+        if (node.is_object()) {
+            const auto type =
+                node.value("type", std::string{});
+            if ((type == "fullscreen" ||
+                 type == "output_transform") &&
+                node.contains("name") &&
+                node.at("name").is_string()) {
+                result.emplace_back(
+                    node.at("name").get<std::string>(),
+                    canonicalFullscreenSemanticDescriptor(
+                        node));
+            }
+            for (const auto &[key, value] : node.items()) {
+                (void)key;
+                self(self, value);
+            }
+            return;
+        }
+        if (node.is_array()) {
+            for (const auto &value : node) {
+                self(self, value);
+            }
+        }
+    };
+    collect(collect, config);
+    std::sort(
+        result.begin(), result.end(),
+        [](const auto &lhs, const auto &rhs) {
+            return lhs.first < rhs.first;
+        });
+    return result;
+}
+
+std::vector<nlohmann::json> generatedOutputTransformSet() {
+    const auto composed = composeRenderFeatureConfig(
+        nlohmann::json{
+            {"render_targets", nlohmann::json::array()},
+            {"rendering_passes",
+             nlohmann::json::array({
+                 {
+                     {"name", "main"},
+                     {"passes",
+                      nlohmann::json::array({
+                          {
+                              {"name", "present"},
+                              {"type", "fullscreen"},
+                              {"output",
+                               {{"color", "swapchain"},
+                                {"depth", nullptr}}},
+                              {"shader",
+                               {{"vertex", "engine://fullscreen"},
+                                {"fragment", "engine://scene_present"}}},
+                          },
+                      })},
+                 },
+             })},
+        },
+        RenderFeatureComposeDependencies{
+            .runtime_shader_compiler_enabled = true,
+        });
+    std::vector<nlohmann::json> result;
+    const auto &passes =
+        composed.config.at("rendering_passes")
+            .front()
+            .at("passes");
+    for (const auto &pass : passes) {
+        if (pass.value("type", std::string{}) ==
+            "output_transform") {
+            result.push_back(pass);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -414,6 +643,200 @@ TEST_CASE(
         }
     }
     REQUIRE(feature_count > 0);
+}
+
+TEST_CASE(
+    "WP353 mechanically enumerates every shipped fullscreen manifest and generated output transform",
+    "[wp353][fullscreen][manifest][canonical]") {
+    const auto entries =
+        shippingFullscreenManifestEntries();
+    REQUIRE(entries.size() == 35);
+
+    std::vector<std::string> identities;
+    identities.reserve(entries.size());
+    for (const auto &entry : entries) {
+        identities.push_back(entry.identity);
+    }
+    const std::vector<std::string> expected_identities{
+        "projects/example/passes/example_renderingpass_data.json::lighting_pass",
+        "projects/example/passes/main_rendering_config.json::FinalBloomComposite",
+        "projects/example/passes/main_rendering_config.json::HighLuminanceExtraction",
+        "projects/example/passes/main_rendering_config.json::HorizontalBlur_0",
+        "projects/example/passes/main_rendering_config.json::HorizontalBlur_1",
+        "projects/example/passes/main_rendering_config.json::HorizontalBlur_2",
+        "projects/example/passes/main_rendering_config.json::HorizontalBlur_3",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_1",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
+        "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
+        "projects/example/passes/main_rendering_config.json::VerticalBlur_0",
+        "projects/example/passes/main_rendering_config.json::VerticalBlur_1",
+        "projects/example/passes/main_rendering_config.json::VerticalBlur_2",
+        "projects/example/passes/main_rendering_config.json::VerticalBlur_3",
+        "projects/example/passes/main_rendering_config.json::lighting_pass",
+        "projects/example/passes/main_rendering_config.json::ssao_blur_pass",
+        "projects/example/passes/main_rendering_config.json::ssao_pass",
+        "projects/sprite_demo/passes/main.json::lighting_pass",
+        "projects/vrm_xr_demo/passes/main.json::lighting_pass",
+        "projects/vrm_xr_demo/passes/main.json::ssao_clear",
+        "src/core/resources/features/cube_capture.json::cube_capture_lighting",
+        "src/core/resources/features/cube_capture.json::cube_capture_ssao",
+        "src/core/resources/features/cube_capture.json::cube_capture_ssao_blur",
+        "src/core/resources/features/hdr.json::hdr_tonemap",
+        "src/core/resources/features/planar_reflection.json::planar_reflection_lighting",
+        "src/core/resources/features/planar_reflection.json::planar_reflection_ssao",
+        "src/core/resources/features/planar_reflection.json::planar_reflection_ssao_blur",
+        "src/core/resources/features/rt_shadow_mask.json::rt_shadow_mask",
+        "src/core/resources/features/sky_ambient.json::sky_background",
+        "src/core/resources/features/taa.json::taa_composite",
+        "src/core/resources/features/taa.json::taa_resolve",
+        "src/core/resources/render_pipelines/hybrid_v1.json::deferred_lighting",
+        "src/core/resources/render_pipelines/hybrid_v1.json::scene_present",
+        "src/core/resources/render_pipelines/hybrid_v1.json::ssao_blur_pass",
+        "src/core/resources/render_pipelines/hybrid_v1.json::ssao_pass",
+    };
+    REQUIRE(identities == expected_identities);
+
+    for (const auto &entry : entries) {
+        DYNAMIC_SECTION(entry.identity) {
+            REQUIRE_FALSE(
+                entry.pass.contains("raster_state"));
+            auto explicit_defaults = entry.pass;
+            explicit_defaults["raster_state"] =
+                explicitDefaultFullscreenRasterState();
+            REQUIRE(
+                canonicalFullscreenSemanticDescriptor(
+                    entry.pass) ==
+                canonicalFullscreenSemanticDescriptor(
+                    explicit_defaults));
+
+            auto explicit_non_default = entry.pass;
+            explicit_non_default["raster_state"] = {
+                {"color_attachments",
+                 nlohmann::json::array(
+                     {{{"blend", "additive"},
+                       {"write_mask", "rg"}}})},
+            };
+            CHECK_FALSE(
+                canonicalFullscreenSemanticDescriptor(
+                    entry.pass) ==
+                canonicalFullscreenSemanticDescriptor(
+                    explicit_non_default));
+        }
+    }
+
+    // output_transform is engine-generated and deliberately remains a
+    // separate invariant set from the 35 authored fullscreen entries.
+    const auto output_transforms =
+        generatedOutputTransformSet();
+    REQUIRE(output_transforms.size() == 1);
+    REQUIRE(
+        output_transforms.front().at("name") ==
+        "output_transform");
+    REQUIRE_FALSE(
+        output_transforms.front().contains(
+            "raster_state"));
+    auto explicit_output_transform =
+        output_transforms.front();
+    explicit_output_transform["raster_state"] =
+        explicitDefaultFullscreenRasterState();
+    REQUIRE(
+        canonicalFullscreenSemanticDescriptor(
+            output_transforms.front()) ==
+        canonicalFullscreenSemanticDescriptor(
+            explicit_output_transform));
+}
+
+TEST_CASE(
+    "WP353 canonical fullscreen semantics and named failures match with the runtime compiler on and off",
+    "[wp353][fullscreen][canonical][runtime-compiler]") {
+    constexpr std::string_view feature_reference =
+        "engine://features/taa.json";
+    const auto feature = nlohmann::json::parse(
+        loadEngineText(feature_reference));
+    const auto omitted_config =
+        featureCorpusConfig(
+            feature, std::string{feature_reference});
+    auto explicit_config = omitted_config;
+    materializeExplicitFullscreenDefaults(
+        explicit_config);
+
+    const auto omitted_loader =
+        [](std::string_view reference) {
+            return loadEngineText(reference);
+        };
+    const auto explicit_loader =
+        [](std::string_view reference) {
+            auto document = nlohmann::json::parse(
+                loadEngineText(reference));
+            materializeExplicitFullscreenDefaults(
+                document);
+            return document.dump();
+        };
+
+    auto compiler_on = corpusCapabilities();
+    compiler_on.runtime_shader_compiler_enabled = true;
+    const auto omitted_resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            omitted_config, "wp353 omitted compiler-on"},
+        compiler_on,
+        RenderPipelineResolveDependencies{
+            .load_feature_json = omitted_loader,
+            .load_pipeline_json = omitted_loader,
+        });
+    const auto explicit_resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            explicit_config, "wp353 explicit compiler-on"},
+        compiler_on,
+        RenderPipelineResolveDependencies{
+            .load_feature_json = explicit_loader,
+            .load_pipeline_json = explicit_loader,
+        });
+    const auto omitted_descriptors =
+        canonicalFullscreenDescriptorsInConfig(
+            omitted_resolved.normalized_config);
+    const auto explicit_descriptors =
+        canonicalFullscreenDescriptorsInConfig(
+            explicit_resolved.normalized_config);
+    REQUIRE(omitted_descriptors.size() == 7);
+    REQUIRE(
+        omitted_descriptors ==
+        explicit_descriptors);
+
+    auto compiler_off = compiler_on;
+    compiler_off.runtime_shader_compiler_enabled = false;
+    const auto capture_failure =
+        [&](const nlohmann::json &config,
+            const RenderPipelineResolveDependencies &dependencies,
+            std::string_view source) {
+            try {
+                (void)resolveRenderPipeline(
+                    RenderPipelineRequest{
+                        config, std::string{source}},
+                    compiler_off, dependencies);
+            } catch (const std::runtime_error &error) {
+                return std::string{error.what()};
+            }
+            return std::string{"<resolution unexpectedly succeeded>"};
+        };
+    const auto omitted_failure = capture_failure(
+        omitted_config,
+        RenderPipelineResolveDependencies{
+            .load_feature_json = omitted_loader,
+            .load_pipeline_json = omitted_loader,
+        },
+        "wp353 omitted compiler-off");
+    const auto explicit_failure = capture_failure(
+        explicit_config,
+        RenderPipelineResolveDependencies{
+            .load_feature_json = explicit_loader,
+            .load_pipeline_json = explicit_loader,
+        },
+        "wp353 explicit compiler-off");
+    REQUIRE(
+        omitted_failure.find(
+            "runtime shader compiler is required") !=
+        std::string::npos);
+    REQUIRE(omitted_failure == explicit_failure);
 }
 
 TEST_CASE(

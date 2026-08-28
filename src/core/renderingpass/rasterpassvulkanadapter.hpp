@@ -20,4 +20,12 @@ void applyVulkanRasterPassContract(
     std::span<const std::uint32_t>
         physical_attachment_locations = {});
 
+// Fullscreen passes own fixed-function state but not draw geometry. This
+// overload shares the exact Vulkan lowering without a dummy draw contract.
+void applyVulkanRasterPassContract(
+    const RasterFixedFunctionState &state,
+    GraphicsPipelineDesc &desc,
+    std::span<const std::uint32_t>
+        physical_attachment_locations = {});
+
 } // namespace Pelican

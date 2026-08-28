@@ -315,6 +315,65 @@ TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[ren
 }
 
 TEST_CASE(
+    "fullscreen fixed state stays optional and rejects every depth spelling",
+    "[renderingpass][fullscreen][raster-state][wp353]") {
+    const nlohmann::json omitted{
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}},
+    };
+    const auto legacy =
+        parseFullscreenPassInfoFromJson(omitted, "legacy");
+    REQUIRE_FALSE(legacy.raster_state.has_value());
+
+    auto authored = omitted;
+    authored["raster_state"] = {
+        {"topology", "triangle_strip"},
+        {"cull", "back"},
+        {"front_face", "clockwise"},
+        {"color_attachments",
+         nlohmann::json::array(
+             {{{"blend", "additive"},
+               {"write_mask", "ga"}}})},
+    };
+    const auto parsed =
+        parseFullscreenPassInfoFromJson(authored, "authored");
+    REQUIRE(parsed.raster_state.has_value());
+    CHECK(
+        parsed.raster_state->topology ==
+        RasterPrimitiveTopology::triangle_strip);
+    CHECK(
+        parsed.raster_state->cull ==
+        RasterCullMode::back);
+    CHECK(
+        parsed.raster_state->front_face ==
+        RasterFrontFace::clockwise);
+    REQUIRE(
+        parsed.raster_state->color_attachments.size() == 1);
+    CHECK(
+        parsed.raster_state->color_attachments.front().write_mask ==
+        (materialOutputWriteGreen |
+         materialOutputWriteAlpha));
+
+    for (const auto *field : {
+             "depth_test", "depth_write", "depth_compare",
+             "depth_bias"}) {
+        DYNAMIC_SECTION(field) {
+            auto invalid = omitted;
+            invalid["raster_state"] = nlohmann::json::object();
+            invalid["raster_state"][field] =
+                std::string_view{field} == "depth_compare"
+                    ? nlohmann::json{"less"}
+                    : nlohmann::json{true};
+            CHECK_THROWS_WITH(
+                parseFullscreenPassInfoFromJson(
+                    invalid, "depth_is_out_of_scope"),
+                Catch::Matchers::ContainsSubstring(field) &&
+                    Catch::Matchers::ContainsSubstring(
+                        "does not support depth field"));
+        }
+    }
+}
+
+TEST_CASE(
     "render target JSON parser keeps mip and array-layer contracts",
     "[renderingpass][subresource][wp209b]") {
     const auto definitions =
@@ -784,6 +843,100 @@ TEST_CASE(
             contract, desc, duplicate),
         Catch::Matchers::ContainsSubstring(
             "duplicates a logical color output"));
+}
+
+TEST_CASE(
+    "fullscreen Vulkan adapter maps authored state into a non-identity physical slot",
+    "[renderingpass][fullscreen][raster-state][vulkan][wp353]") {
+    const auto state = parseRasterFixedFunctionState(
+        nlohmann::json::parse(R"json({
+          "raster_state": {
+            "topology": "triangle_strip",
+            "cull": "front",
+            "front_face": "clockwise",
+            "color_attachments": [{
+              "blend": {
+                "color": {"src": "one", "dst": "one", "op": "add"},
+                "alpha": {"src": "one", "dst": "one", "op": "add"}
+              },
+              "write_mask": "rb"
+            }]
+          }
+        })json"),
+        1, "fullscreen physical mapping");
+    GraphicsPipelineDesc desc;
+    desc.color_formats = {
+        vk::Format::eR16G16B16A16Sfloat,
+        vk::Format::eR8G8B8A8Unorm};
+    const std::array locations{
+        unusedGraphicsAttachmentMapping, 0u};
+
+    applyVulkanRasterPassContract(
+        state, desc, locations);
+
+    CHECK(
+        desc.topology ==
+        vk::PrimitiveTopology::eTriangleStrip);
+    CHECK(
+        desc.cull_mode ==
+        vk::CullModeFlagBits::eFront);
+    CHECK(
+        desc.front_face ==
+        vk::FrontFace::eClockwise);
+    REQUIRE(desc.color_attachment_states.size() == 2);
+    CHECK(
+        desc.color_attachment_states[0].write_mask ==
+        vk::ColorComponentFlags{});
+    CHECK_FALSE(
+        desc.color_attachment_states[0].blend_enabled);
+    CHECK(desc.color_attachment_states[1].blend_enabled);
+    CHECK(
+        desc.color_attachment_states[1].source_color ==
+        vk::BlendFactor::eOne);
+    CHECK(
+        desc.color_attachment_states[1].destination_color ==
+        vk::BlendFactor::eOne);
+    CHECK(
+        desc.color_attachment_states[1].write_mask ==
+        (vk::ColorComponentFlagBits::eR |
+         vk::ColorComponentFlagBits::eB));
+
+    struct ViewExpectation {
+        const char *name;
+        GraphicsPipelineViewContract view;
+    };
+    const std::array<ViewExpectation, 3> views{
+        ViewExpectation{
+            "flat", GraphicsPipelineViewContract{}},
+        // Sequential XR registers one single-view pipeline and invokes it
+        // once per eye; multiview registers one two-view pipeline.
+        ViewExpectation{
+            "xr_sequential", GraphicsPipelineViewContract{}},
+        ViewExpectation{
+            "xr_multiview",
+            GraphicsPipelineViewContract::multiview(2)},
+    };
+    for (const auto &view : views) {
+        DYNAMIC_SECTION(view.name) {
+            GraphicsPipelineDesc variant;
+            variant.color_formats = {
+                vk::Format::eR16G16B16A16Sfloat,
+                vk::Format::eR8G8B8A8Unorm};
+            variant.view = view.view;
+            applyVulkanRasterPassContract(
+                state, variant, locations);
+            REQUIRE(
+                variant.color_attachment_states ==
+                desc.color_attachment_states);
+            REQUIRE(
+                variant.topology == desc.topology);
+            REQUIRE(
+                variant.cull_mode == desc.cull_mode);
+            REQUIRE(
+                variant.front_face == desc.front_face);
+            REQUIRE(variant.view == view.view);
+        }
+    }
 }
 
 TEST_CASE(
@@ -2179,6 +2332,12 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
          nlohmann::json::array(
              {"region.post.fixture", "region.post"})},
         {"push_constants", "projection_view"},
+        {"uses_light_data", true},
+        {"raster_state",
+         {{"cull", "back"},
+          {"color_attachments",
+           nlohmann::json::array(
+               {{{"blend", "additive"}}})}}},
         {"clear_color", nlohmann::json::array({0.0f, 0.0f, 0.0f, 1.0f})},
     };
 
@@ -2191,6 +2350,11 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     REQUIRE(pass_def.output_depth == noRenderTargetId());
     REQUIRE(pass_def.fullscreenInfo().frag_shader.ref == "debug_texture");
     REQUIRE(pass_def.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
+    REQUIRE(pass_def.fullscreenInfo().uses_light_data);
+    REQUIRE(pass_def.fullscreenInfo().raster_state.has_value());
+    CHECK(
+        pass_def.fullscreenInfo().raster_state->cull ==
+        RasterCullMode::back);
     REQUIRE(
         pass_def.requested_implementation_provider ==
         std::optional<std::string>{"fixture.fullscreen"});
@@ -2202,6 +2366,37 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     REQUIRE(
         pass_def.view_family ==
         "$reflection/probe/0");
+
+    auto output_transform_json = pass_json;
+    output_transform_json["name"] = "output_transform_fixture";
+    output_transform_json["type"] = "output_transform";
+    const auto output_transform =
+        parsePassDefinitionFromJson(
+            output_transform_json, name_resolver,
+            metadata_resolver);
+    REQUIRE(output_transform.isFullscreen());
+    REQUIRE(
+        output_transform.fullscreenInfo()
+            .raster_state.has_value());
+    REQUIRE(
+        output_transform.fullscreenInfo().push_constants ==
+        FullscreenPushConstantData::eProjectionView);
+    REQUIRE(
+        output_transform.fullscreenInfo().uses_light_data);
+
+    const nlohmann::json non_owner{
+        {"name", "ui_fixture"},
+        {"type", "ui"},
+        {"output",
+         {{"color", "half_color"},
+          {"depth", nullptr}}},
+        {"raster_state", pass_json.at("raster_state")},
+    };
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            non_owner, name_resolver,
+            metadata_resolver),
+        "Pass 'ui_fixture' type 'ui' does not own field 'raster_state'");
 }
 
 TEST_CASE(
