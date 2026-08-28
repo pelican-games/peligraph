@@ -14251,57 +14251,65 @@ golden が書かれない / 5: 片側だけ刺激を変えると hash 不一致�
 全数 2 回、doclink 緑、SKIP_DEVSTUDIO 両構成、GPU は直列で実行可。
 依存: WP354。見積: 中。
 
-### WP358(= リファクタ R4): 型語彙を leaf へ移す(第 2 版)
+### WP358(= リファクタ R4): 型語彙を leaf に新設し、core は写像で繋ぐ(第 3 版)
 
-**§4 規則 11 の中段。仕様レビューで 1 度不合格(4 指摘)。プレファブ U1 の前提。**
+**§4 規則 11 の中段。仕様レビュー 2 巡不合格。第 3 版は戦略を変更した。**
 
-#### 初版の何が壊れたか
+#### 戦略変更の理由(v2 の 8 指摘の根)
 
-| 初版 | どう壊れたか |
-|---|---|
-| 「fingerprint バイト同一 + 語彙変異で検知」 | **両立しない**: fingerprint は enum 数値を格納し型名文字列を含まない。かつ事前固定が無ければ新経路同士の自己比較で通る |
-| 「fixture が無変更でビルド = 互換」 | ソース再コンパイルは **ABI/リンク互換を証明しない**(StructFieldSchema は DLL 境界を値渡しされる ABI carrier。静的登録は ABI gate より先に走る) |
-| 「pelican_project 配下へ」 | 境界検査は LINK_LIBRARIES しか見ないため、**header の逆 include(project→core)が素通り**する |
-| 「関数を直接呼べる = offline 検証」 | 変換は現状 enum→string の一方向のみ。逆変換と値検査が無ければ offline 検証は成立しない |
+v2 は「core の語彙を移設する」だった。膨張の源はそこにある:
+`StructFieldSchema` は **DLL 境界を値渡しされる ABI 面**であり、動かすと
+ABI タプルの定義(Debug/Release/CRT/toolset)、pre-WP バイナリ fixture、
+loader の static-init 順序、SDK staging manifest、旧 DLL を常設ロードする CI が
+芋づる式に必要になる(v2 レビューの指摘 1〜3・8)。
 
-#### やること(2 段構成)
+**v3: core は 1 バイトも動かさない。leaf を新設し、1:1 写像で繋ぐ。**
+段 A(バイナリ固定)は丸ごと不要になる。fingerprint も SDK も無変更。
+完全統一(core を leaf に載せ替える)は**今はやらない**と決め、
+費用(v2 の 8 指摘)を理由として記録する。
 
-**段 A(移設前に固定するもの):**
+#### やること
 
-- **全 17 型 + range/unit/default/enum を使う ABI-coverage fixture behavior を
-  現行 SDK でビルドし、その DLL binary と fingerprint digest を tracked fixture として固定**
-  (「更新禁止」と明記。以後の前後比較のオラクル)
-- enum ordinal / `sizeof`/`alignof`/`offsetof` / variant index / import symbol /
-  `gameLogicAbiVersion == 1` の静的検査を先に置く
+1. **独立 leaf target `pelican_schema_leaf`** を新設(依存: 標準ライブラリ + nlohmann のみ):
+   - 正準の型名語彙(17 型。現行 RPC の綴りをそのまま正とする)
+   - **双方向の部分関数**: string→enum(未知名は名前付きエラー)/
+     enum→string(**無効 ordinal も名前付きエラー**。silent "unknown" 禁止)
+   - **schema 宣言検証と値検証を別 API** として定義
+   - **17 型の規範表**(JSON 形 / 境界 / vector arity / F32 表現可能性 /
+     enum 最大 8・重複・default 整合 / range の min≤max と適用可否)を本文に置き、
+     正負 corpus で全行を検査
+   - `unit` は**不透明文字列の一致検査のみ**(意味検証はしない。その語を条件から外す)
+2. **core adapter**: core enum ↔ leaf 語彙の 1:1 写像。**全射・単射・往復を
+   静的/exhaustive テストで固定**(型を足して写像を忘れるとビルドか単体で割れる)
+3. **`editorcommandservice.cpp` の変換を leaf 写像の呼び出しに置換**
+   (文字列語彙の所有者を leaf 一箇所に。呼び手はこの 1 箇所であることを grep で確認)
+4. project 層は leaf を直接使う(offline 検証の成立)
 
-**段 B(移設):**
+#### 二重規則のリスク管理(v2 指摘 6 への答え)
 
-- **独立 leaf target `pelican_schema_leaf`** を新設(依存は標準ライブラリ + nlohmann のみ)。
-  型 enum・**双方向**の文字列変換・値の型/range/enum/unit 検査を置く
-- project と core は leaf を使う。core 固有の `Params` materialization は
-  **adapter として core に残す**(丸ごと移さない)
-- `userpublic` の header は forwarding include(DLL ソース互換)
-- `editorcommandservice.cpp` の変換は leaf 呼び出しに置換(複製 grep 0 件)
+leaf の値検証(project/prefab 用)と core の実行時検証(behavior params)は
+**当面並存する**。乖離を放置しないため、**共通 corpus を両方に通し、
+受理/拒否の判定が一致することを 1 テストで検査**する
+(将来 core を leaf に載せ替えるときの等価オラクルにもなる)。
 
 #### 受け入れ条件
 
-- **段 A の DLL binary(pre-WP ビルド)が、段 B 後の player にロードでき、
-  登録・schema・reload 検証が全て通ること**(バイナリ互換の実証)
-- fingerprint は**段 A の固定 digest と一致**。否定対照は語彙でなく
-  **実登録の I32→I64 / range / unit / default / enum 変異**が
-  `validateBehaviorReload` で名前付き drift になること。型名文字列の検査は RPC 側で別途
-- **独立 consumer build(core の include dir を与えない)で leaf + project の
-  compile include graph に `src/core` が現れないこと**を検査
-  (link 検査では header 逆依存を検出できないため)
-- offline 検証の実体: project 層のテストが leaf 経由で「未知型名 / 範囲外 / enum 外」を
-  **名前付きで拒否**すること(逆変換込み)
-- RPC `schema_fields` 出力バイト不変(captured fixture 比較)/
-  behavior fixture 3 種 + 4 project の code/ 無変更ビルド /
-  全数 2 回 / doclink 緑 / SKIP_DEVSTUDIO 両構成 / GPU はエージェント外
+- leaf の include graph に `src/core` が現れないこと
+  (**core の include dir を与えない独立 consumer build**で検査。link 検査では不足)
+- 写像の全射・往復 exhaustive テスト(**型を 1 つ写像から外す変異で落ちる**)
+- 双方向の名前付きエラー(未知文字列 / 無効 ordinal の両方。production RPC 経路で負例)
+- 17 型規範表の正負 corpus(project 層のテストから leaf 経由で)
+- **共通 corpus の leaf/core 判定一致**
+- RPC `schema_fields` 出力バイト不変(**実装前に captured fixture を固定してから**)
+- SDK・DLL 面が無変更であること(`userpublic` 配下の diff 0 / fingerprint 関連 diff 0)
+- 全数 2 回 / doclink 緑 / SKIP_DEVSTUDIO 両構成 / GPU はエージェント外
 
-#### やらないこと
+#### やらないこと(理由つき)
 
-プレファブ本体 / bindable inventory / 型語彙の拡張 / ABI version の変更
-(維持を選ぶ。破壊が必要になったらそれは別 WP で loader protocol ごと設計する)。
+- **core 語彙の移設・統一**(v2 の 8 指摘が費用。必要が実証されたら別 WP で、
+  ABI タプル manifest・`--probe-game-logic-abi` の非 GPU 検査・staged-SDK 4 project build
+  を含む完全形で設計する —— 指摘の処方箋は台帳のこの節に残る)
+- behavior / event の実行時検証の置き換え(共通 corpus で監視するに留める)
+- 型語彙の拡張(object 種別等はプレファブ U1 で)
 
-依存: 無し。見積: 中(初版「小〜中」は ABI 固定の分を見落としていた)。
+依存: 無し。見積: 小〜中(v3 で ABI 面が消えたため)。
