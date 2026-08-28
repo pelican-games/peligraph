@@ -1,5 +1,7 @@
 #include "shaderreference.hpp"
 
+#include "../../project/shadersourceresolver.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -22,17 +24,23 @@ std::string lowerExtension(std::string_view ref) {
 std::string_view shaderStageSourceExtension(ShaderStage stage) {
     switch (stage) {
     case ShaderStage::vertex:
-        return ".vert";
+        return shaderSourceStageExtension(
+            ShaderSourceStage::vertex);
     case ShaderStage::fragment:
-        return ".frag";
+        return shaderSourceStageExtension(
+            ShaderSourceStage::fragment);
     case ShaderStage::compute:
-        return ".comp";
+        return shaderSourceStageExtension(
+            ShaderSourceStage::compute);
     case ShaderStage::raygen:
-        return ".rgen";
+        return shaderSourceStageExtension(
+            ShaderSourceStage::raygen);
     case ShaderStage::miss:
-        return ".rmiss";
+        return shaderSourceStageExtension(
+            ShaderSourceStage::miss);
     case ShaderStage::closesthit:
-        return ".rchit";
+        return shaderSourceStageExtension(
+            ShaderSourceStage::closesthit);
     }
     throw std::runtime_error("unknown shader stage");
 }

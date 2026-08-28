@@ -82,6 +82,20 @@ Json readJson(const std::filesystem::path &path) {
     return Json::parse(readText(path));
 }
 
+void addRuntimeShaderContract(Json &plan) {
+    plan["profile"] = "runtime";
+    for (auto &node : plan.at("nodes")) {
+        node["shader_resolution"] =
+            Json{{"state", "not_applicable"}};
+    }
+}
+
+Json readRuntimeFramePlan(const std::filesystem::path &path) {
+    Json plan = readJson(path);
+    addRuntimeShaderContract(plan);
+    return plan;
+}
+
 std::filesystem::path filesystemPath(const QString &path) {
 #ifdef _WIN32
     return std::filesystem::path{path.toStdWString()};
@@ -251,6 +265,7 @@ Json minimalFramePlan(std::string graph, const Json &resources,
     return Json{
         {"schema", "pelican.frame_plan"},
         {"version", 1},
+        {"profile", "runtime"},
         {"graph", std::move(graph)},
         {"runtime_generation", generation},
         {"nodes", Json::array()},
@@ -610,8 +625,10 @@ Json resolvedFramePlanFromAuthoredConfig(const Json &authored,
         throw std::runtime_error(
             "real-file test expected exactly one resolved frame graph");
     }
-    return Pelican::framePlanToJson(
+    auto plan = Pelican::framePlanToJson(
         Pelican::planFrameGraph(graphs.front()), &compiled);
+    addRuntimeShaderContract(plan);
+    return plan;
 }
 
 Json shapePlan() {
@@ -750,9 +767,11 @@ TEST_CASE(
     const auto config_path = root / "projects" / "example" / "passes" /
                              "main_rendering_config.json";
     const Json config = readJson(config_path);
-    const QByteArray frame_plan = QByteArray::fromStdString(readText(
-        root / "test" / "fixtures" / "devstudio" /
-        "example_frame_plan.json"));
+    const QByteArray frame_plan = QByteArray::fromStdString(
+        readRuntimeFramePlan(
+            root / "test" / "fixtures" / "devstudio" /
+            "example_frame_plan.json")
+            .dump());
     const std::string graph =
         config.at("rendering_passes").at(0).at("name").get<std::string>();
 
@@ -1513,9 +1532,11 @@ TEST_CASE(
         source_root / "projects" / "example";
     const Json config = readJson(
         project_root / "passes" / "main_rendering_config.json");
-    const QByteArray frame_plan = QByteArray::fromStdString(readText(
-        source_root / "test" / "fixtures" / "devstudio" /
-        "example_frame_plan.json"));
+    const QByteArray frame_plan = QByteArray::fromStdString(
+        readRuntimeFramePlan(
+            source_root / "test" / "fixtures" / "devstudio" /
+            "example_frame_plan.json")
+            .dump());
     const std::string graph =
         config.at("rendering_passes").at(0).at("name").get<std::string>();
     const Json &declaration = findPass(config, graph, "ssao_pass");
@@ -2004,7 +2025,7 @@ TEST_CASE(
     const Json config = readJson(
         root / "projects" / "example" / "passes" /
         "main_rendering_config.json");
-    const Json plan = readJson(
+    const Json plan = readRuntimeFramePlan(
         root / "test" / "fixtures" / "devstudio" /
         "example_frame_plan.json");
     const std::size_t authored_count =
@@ -2090,6 +2111,7 @@ TEST_CASE(
          {"reads", Json::array()},
          {"writes", Json::array()}},
     });
+    addRuntimeShaderContract(plan);
     const Json authored{
         {"rendering_passes",
          Json::array({

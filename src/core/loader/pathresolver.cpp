@@ -93,6 +93,21 @@ std::string PathResolver::normalizedReference(std::string_view ref) const {
     return resolver.normalizedReference(ref);
 }
 
+ShaderSourceOpenResolution
+PathResolver::resolveShaderSourceOpenReference(
+    std::string_view stem, ShaderSourceStage stage) const {
+    return Pelican::resolveShaderSourceOpenReference(
+        resolver, stem, stage,
+        [](std::string_view id) {
+            if (engineResource(id)) {
+                return true;
+            }
+            std::string spirv{id};
+            spirv += ".spv";
+            return engineResource(spirv).has_value();
+        });
+}
+
 std::string PathResolver::loadText(std::string_view ref) const {
     return resolver.loadText(ref, engineResourceLoader());
 }

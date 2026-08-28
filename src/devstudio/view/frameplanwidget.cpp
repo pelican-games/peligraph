@@ -3,6 +3,9 @@
 #include "frameplangraphics.hpp"
 #include "../model/frameplanmodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
+#include "projectformat.hpp"
+#include "projectpathresolver.hpp"
+#include "shadersourceresolver.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -10,6 +13,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QFont>
 #include <QGraphicsView>
 #include <QHeaderView>
@@ -32,12 +36,15 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -394,11 +401,17 @@ struct FramePlanWidget::Impl {
     QTreeWidget *materials = nullptr;
     QPlainTextEdit *raw_json = nullptr;
     std::optional<FramePlanModel> model;
+    std::optional<Pelican::ProjectPathResolver> project_resolver;
+    FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
     qint64 pending_request = 0;
     qint64 pending_gpu_timing_request = 0;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
+        shader_source_open_action = [](const std::filesystem::path &path) {
+            return QDesktopServices::openUrl(QUrl::fromLocalFile(
+                QString::fromStdWString(path.wstring())));
+        };
         auto *layout = new QVBoxLayout(&owner);
         layout->setContentsMargins(6, 6, 6, 6);
         layout->setSpacing(6);
@@ -934,6 +947,110 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    void openShaderSource(const std::string &logical_ref) {
+        try {
+            if (!project_resolver) {
+                throw std::runtime_error(
+                    "shader source open requires an open project");
+            }
+            const auto path =
+                Pelican::materializeShaderSourceOpenReference(
+                    *project_resolver, logical_ref);
+            if (!shader_source_open_action ||
+                !shader_source_open_action(path)) {
+                throw std::runtime_error(
+                    "the desktop could not open shader source: " +
+                    path.string());
+            }
+            status->setText(
+                owner.tr("Opened shader source %1")
+                    .arg(QString::fromStdString(logical_ref)));
+            status->setStyleSheet(QStringLiteral("color: #388e3c;"));
+        } catch (const std::exception &error) {
+            status->setText(QString::fromUtf8(error.what()));
+            status->setStyleSheet(QStringLiteral("color: #b00020;"));
+        }
+    }
+
+    void addShaderResolution(QTreeWidget *tree,
+                             QTreeWidgetItem *pass_item,
+                             const FramePlanNode &node) {
+        const auto &resolution = node.shader_resolution;
+        if (resolution.state ==
+            FramePlanShaderResolutionState::material_owned) {
+            auto *group = groupItem(pass_item, owner.tr("Shaders"));
+            addFact(group, owner.tr("State"),
+                    QStringLiteral("material_owned"));
+            return;
+        }
+        if (resolution.state ==
+            FramePlanShaderResolutionState::not_applicable) {
+            auto *group = groupItem(pass_item, owner.tr("Shaders"));
+            addFact(group, owner.tr("State"),
+                    QStringLiteral("not_applicable"));
+            return;
+        }
+
+        auto *group = groupItem(
+            pass_item, owner.tr("Shaders"), resolution.stages.size());
+        for (const auto &stage : resolution.stages) {
+            auto *stage_item = new QTreeWidgetItem(group);
+            const QString stage_name =
+                stage.index
+                    ? QStringLiteral("%1[%2]")
+                          .arg(text(stage.stage))
+                          .arg(static_cast<qulonglong>(*stage.index))
+                    : text(stage.stage);
+            stage_item->setText(1, stage_name);
+            stage_item->setText(
+                2, QStringLiteral("[%1]").arg(text(stage.origin)));
+
+            QString reference = text(stage.effective_ref);
+            if (stage.declared_ref &&
+                *stage.declared_ref != stage.effective_ref) {
+                reference = owner.tr("declared: %1  →  effective: %2")
+                                .arg(text(*stage.declared_ref),
+                                     text(stage.effective_ref));
+            }
+            stage_item->setText(3, reference);
+
+            auto *open = new QPushButton(owner.tr("Open"), tree);
+            open->setObjectName(
+                QStringLiteral("pelican.shaderSourceOpen"));
+            open->setProperty("pelicanNode",
+                              QString::fromStdString(node.name));
+            open->setProperty("pelicanStage",
+                              QString::fromStdString(stage.stage));
+            open->setProperty(
+                "pelicanStageIndex",
+                stage.index ? QVariant::fromValue<qulonglong>(*stage.index)
+                            : QVariant{});
+            if (stage.source_open_ref) {
+                const auto logical_ref = *stage.source_open_ref;
+                open->setProperty(
+                    "pelicanSourceOpenRef",
+                    QString::fromStdString(logical_ref));
+                open->setToolTip(
+                    owner.tr("Open %1")
+                        .arg(QString::fromStdString(logical_ref)));
+                QObject::connect(
+                    open, &QPushButton::clicked, &owner,
+                    [this, logical_ref] {
+                        openShaderSource(logical_ref);
+                    });
+            } else {
+                open->setEnabled(false);
+                const auto reason = stage.source_open_reason.value_or(
+                    "source_not_found");
+                open->setText(text(reason));
+                open->setToolTip(
+                    owner.tr("Shader source cannot be opened: %1")
+                        .arg(text(reason)));
+            }
+            tree->setItemWidget(stage_item, 4, open);
+        }
+    }
+
     void populatePasses(QTreeWidget *tree,
                         std::span<const FramePlanNode> nodes) {
         for (const FramePlanNode &node : nodes) {
@@ -979,6 +1096,8 @@ struct FramePlanWidget::Impl {
                             .arg(text(node.depth_load_op),
                                  text(node.depth_store_op)));
             }
+
+            addShaderResolution(tree, item, node);
 
             addResourceGroup(item, owner.tr("Inputs"), node.reads);
             addResourceGroup(item, owner.tr("History inputs"),
@@ -1465,6 +1584,33 @@ void FramePlanWidget::receiveResult(const QByteArray &result_json) {
 void FramePlanWidget::receiveGpuTimingResult(
     const QByteArray &result_json) {
     impl_->consumeGpuTimingResult(result_json);
+}
+
+void FramePlanWidget::setProjectRoot(
+    const std::filesystem::path &project_root) {
+    const auto project_file = project_root / "project.json";
+    std::ifstream input{project_file, std::ios::binary};
+    if (!input) {
+        throw std::runtime_error(
+            "could not open project.json for shader source resolution: " +
+            project_file.string());
+    }
+    const std::string contents{
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+    auto parsed = Pelican::parseProjectEnvelopeText(contents);
+    Pelican::ProjectPathResolver resolver;
+    resolver.setup(project_root, false, parsed.envelope);
+    impl_->project_resolver = std::move(resolver);
+}
+
+void FramePlanWidget::setShaderSourceOpenAction(
+    ShaderSourceOpenAction action) {
+    if (!action) {
+        throw std::invalid_argument(
+            "shader source open action must not be empty");
+    }
+    impl_->shader_source_open_action = std::move(action);
 }
 
 ToolLayoutSnapshot FramePlanWidget::toolLayoutSnapshot() const {

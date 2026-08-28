@@ -1,5 +1,6 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/project/shadersourceresolver.hpp"
 #include "../src/core/log.hpp"
 
 #include <catch2/matchers/catch_matchers.hpp>
@@ -519,6 +520,174 @@ TEST_CASE("PathResolver parses asset fragments without loading subassets", "[pat
     REQUIRE(existing_fragment->fragment.path == "Cube");
 
     resolver.resetForTesting();
+}
+
+TEST_CASE("WP354 shader source open references preserve logical schemes and exact stage suffixes",
+          "[pathresolver][wp354]") {
+    Sandbox sandbox;
+    const auto user_root = sandbox.base / "user";
+    const auto mounted_root = sandbox.base / "mounted-store";
+    writeText(sandbox.root / "shaders" / "local.vert", "project vertex");
+    writeText(user_root / "shaders" / "personal.comp", "user compute");
+    writeText(mounted_root / "fx" / "mounted.frag", "mounted fragment");
+    writeText(
+        sandbox.root / ".pelican" / "local.json",
+        nlohmann::json{
+            {"asset_stores",
+             {{"shader-store", mounted_root.generic_string()}}}}
+            .dump());
+    const auto envelope = projectEnvelope({
+        {"name", "fixture-project"},
+        {"asset_stores",
+         {{"shader-store", {{"mount", "mounted"}}}}},
+    });
+
+    auto &resolver = resolverForTest();
+    resolver.resetForTesting();
+    resolver.setup(sandbox.root, false, envelope, user_root);
+
+    const auto unprefixed =
+        resolver.resolveShaderSourceOpenReference(
+            "shaders/local", ShaderSourceStage::vertex);
+    REQUIRE(unprefixed.logical_ref ==
+            std::optional<std::string>{
+                "project://shaders/local.vert"});
+    REQUIRE(unprefixed.physical_path ==
+            weaklyCanonical(sandbox.root / "shaders" / "local.vert"));
+    REQUIRE_FALSE(unprefixed.reason);
+
+    const auto explicit_project =
+        resolver.resolveShaderSourceOpenReference(
+            "project://shaders/local", ShaderSourceStage::vertex);
+    REQUIRE(explicit_project.logical_ref == unprefixed.logical_ref);
+    REQUIRE(explicit_project.physical_path == unprefixed.physical_path);
+
+    const auto user = resolver.resolveShaderSourceOpenReference(
+        "user://shaders/personal", ShaderSourceStage::compute);
+    REQUIRE(user.logical_ref ==
+            std::optional<std::string>{
+                "user://shaders/personal.comp"});
+    REQUIRE(user.physical_path ==
+            weaklyCanonical(user_root / "shaders" / "personal.comp"));
+
+    const auto mount = resolver.resolveShaderSourceOpenReference(
+        "mounted/fx/mounted", ShaderSourceStage::fragment);
+    REQUIRE(mount.logical_ref ==
+            std::optional<std::string>{
+                "project://mounted/fx/mounted.frag"});
+    REQUIRE(mount.physical_path ==
+            weaklyCanonical(mounted_root / "fx" / "mounted.frag"));
+    REQUIRE(mount.logical_ref->find(
+                mounted_root.generic_string()) == std::string::npos);
+    REQUIRE(mount.logical_ref->find(':') ==
+            std::string{*mount.logical_ref}.find("project://") + 7);
+
+    const auto engine = resolver.resolveShaderSourceOpenReference(
+        "engine://ui", ShaderSourceStage::vertex);
+    REQUIRE_FALSE(engine.logical_ref);
+    REQUIRE(engine.reason ==
+            ShaderSourceOpenReason::embedded_engine_resource);
+    const auto missing_engine =
+        resolver.resolveShaderSourceOpenReference(
+            "engine://definitely_missing_wp354",
+            ShaderSourceStage::fragment);
+    REQUIRE_FALSE(missing_engine.logical_ref);
+    REQUIRE(missing_engine.reason ==
+            ShaderSourceOpenReason::source_not_found);
+
+    const auto generated =
+        resolver.resolveShaderSourceOpenReference(
+            "generated://fixture", ShaderSourceStage::compute);
+    REQUIRE(generated.reason == ShaderSourceOpenReason::generated);
+    const auto missing = resolver.resolveShaderSourceOpenReference(
+        "shaders/missing", ShaderSourceStage::closesthit);
+    REQUIRE(missing.reason == ShaderSourceOpenReason::source_not_found);
+
+    ProjectPathResolver project_resolver;
+    project_resolver.setup(
+        sandbox.root, false, envelope, user_root);
+    REQUIRE(materializeShaderSourceOpenReference(
+                project_resolver, *unprefixed.logical_ref) ==
+            *unprefixed.physical_path);
+    REQUIRE(materializeShaderSourceOpenReference(
+                project_resolver, *user.logical_ref) ==
+            *user.physical_path);
+    REQUIRE(materializeShaderSourceOpenReference(
+                project_resolver, *mount.logical_ref) ==
+            *mount.physical_path);
+    REQUIRE_THROWS_WITH(
+        materializeShaderSourceOpenReference(
+            project_resolver, "engine://ui.vert"),
+        Catch::Matchers::ContainsSubstring(
+            "requires a canonical project:// or user://"));
+    for (const std::string invalid : {
+             "project://shaders/../local.vert",
+             "project:///absolute.vert",
+             "project://shaders/no_stage_suffix",
+             "project://shaders/unknown.glsl",
+             "user://shaders/../personal.comp",
+             "project://mounted/../escape.frag",
+             "C:/machine/absolute.vert"}) {
+        CAPTURE(invalid);
+        REQUIRE_FALSE(
+            isCanonicalShaderSourceOpenReference(invalid));
+        REQUIRE_THROWS_WITH(
+            materializeShaderSourceOpenReference(
+                project_resolver, invalid),
+            Catch::Matchers::ContainsSubstring("requires a canonical"));
+    }
+    REQUIRE(isCanonicalShaderSourceOpenReference(
+        "project://mounted/fx/mounted.frag"));
+    REQUIRE(isCanonicalShaderSourceOpenReference(
+        "user://shaders/personal.comp"));
+    REQUIRE(isCanonicalShaderSourceOpenReference(
+        "project://shaders/local.vert", ShaderSourceStage::vertex));
+    REQUIRE_FALSE(isCanonicalShaderSourceOpenReference(
+        "project://shaders/local.vert", ShaderSourceStage::fragment));
+
+    REQUIRE_THROWS_WITH(
+        resolver.resolveShaderSourceOpenReference(
+            "../outside", ShaderSourceStage::vertex),
+        Catch::Matchers::ContainsSubstring("escapes project root"));
+    REQUIRE_THROWS_WITH(
+        resolver.resolveShaderSourceOpenReference(
+            "project://../outside", ShaderSourceStage::vertex),
+        Catch::Matchers::ContainsSubstring("escapes project root"));
+    REQUIRE_THROWS_WITH(
+        resolver.resolveShaderSourceOpenReference(
+            "user://../outside", ShaderSourceStage::compute),
+        Catch::Matchers::ContainsSubstring("escapes user root"));
+    REQUIRE_THROWS_WITH(
+        resolver.resolveShaderSourceOpenReference(
+            "mounted/../outside", ShaderSourceStage::fragment),
+        Catch::Matchers::ContainsSubstring("escapes mount root"));
+
+    // Absolute paths are a CLI-only escape hatch.  Even when that hatch is
+    // enabled, a project-owned shader stem must never be converted into a
+    // machine-specific source_open_ref on the runtime wire.
+    ProjectPathResolver absolute_enabled;
+    absolute_enabled.setup(
+        sandbox.root, true, envelope, user_root);
+    const auto absolute_stem =
+        (sandbox.root / "shaders" / "local").generic_string();
+    REQUIRE_THROWS_WITH(
+        Pelican::resolveShaderSourceOpenReference(
+            absolute_enabled, absolute_stem,
+            ShaderSourceStage::vertex),
+        Catch::Matchers::ContainsSubstring(
+            "Absolute project path references are not allowed"));
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    INFO("runtime compiler ON uses the same source_open_ref resolver");
+#else
+    INFO("runtime compiler OFF uses the same source_open_ref resolver");
+#endif
+    resolver.resetForTesting();
+    REQUIRE_THROWS_WITH(
+        resolver.resolveShaderSourceOpenReference(
+            "shaders/local", ShaderSourceStage::vertex),
+        Catch::Matchers::ContainsSubstring(
+            "PathResolver setup must be called"));
 }
 
 } // namespace Pelican

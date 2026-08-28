@@ -429,6 +429,28 @@ enum class RenderResolutionDomain : std::uint8_t {
     independent,
 };
 
+// Exact authored-stage presence captured by the typed JSON parsers before a
+// pass implementation provider can replace the effective shader pair.  The
+// semantic skinned_vertex stage is intentionally distinct from the Vulkan
+// vertex stage, and ray arrays retain their authored indices.
+enum class DeclaredShaderStage : std::uint8_t {
+    vertex,
+    skinned_vertex,
+    fragment,
+    compute,
+    raygen,
+    miss,
+    closesthit,
+};
+
+struct DeclaredShaderReference {
+    DeclaredShaderStage stage = DeclaredShaderStage::vertex;
+    std::optional<std::size_t> index;
+    std::string ref;
+
+    bool operator==(const DeclaredShaderReference &) const = default;
+};
+
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {
         applyDefaultAttachmentOperations(RenderPassType::material);
@@ -453,6 +475,11 @@ struct PassDefinition {
     RenderPassType pass_type = RenderPassType::material;
     std::optional<std::string> requested_implementation_provider;
     std::optional<PassImplementationSelection> implementation_selection;
+    // True only after the typed JSON parser observed the pre-default pass
+    // object.  An absent declared stage is engine_default iff this is true;
+    // programmatically constructed passes use generated provenance instead.
+    bool shader_declaration_parsed = false;
+    std::vector<DeclaredShaderReference> declared_shader_refs;
 
     vk::AttachmentLoadOp color_load_op;
     vk::AttachmentStoreOp color_store_op;
@@ -717,6 +744,8 @@ struct ComputeTaskDefinition {
     // the frame plan because both execution kinds must run outside dynamic
     // rendering.
     std::optional<RayTracingTaskShaderDefinition> ray_tracing;
+    bool shader_declaration_parsed = false;
+    std::vector<DeclaredShaderReference> declared_shader_refs;
     std::vector<std::string> reads;
     std::vector<std::string> writes;
     std::vector<std::string> after;

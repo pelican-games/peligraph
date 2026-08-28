@@ -416,6 +416,7 @@ void MainWindow::openProject(const QString &path) {
         selection_model_.bindProject(&*project_model_);
         populateOutliner();
         refreshSelectionViews();
+        frame_plan_->setProjectRoot(project_model_->projectRoot());
         viewport_->openProject(displayPath(project_model_->projectRoot()));
         statusBar()->showMessage(
             tr("Opened %1. %2")

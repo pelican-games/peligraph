@@ -51,6 +51,36 @@ struct FramePlanMaterialFilter {
     bool operator==(const FramePlanMaterialFilter &) const = default;
 };
 
+enum class FramePlanShaderResolutionState {
+    resolved,
+    material_owned,
+    not_applicable,
+};
+
+struct FramePlanShaderStage {
+    std::string stage;
+    std::optional<std::size_t> index;
+    std::optional<std::string> declared_ref;
+    std::string effective_ref;
+    std::string origin;
+    std::optional<std::string> source_open_ref;
+    std::optional<std::string> source_open_reason;
+
+    bool operator==(const FramePlanShaderStage &) const = default;
+};
+
+struct FramePlanShaderResolution {
+    FramePlanShaderResolutionState state =
+        FramePlanShaderResolutionState::not_applicable;
+    std::vector<FramePlanShaderStage> stages;
+
+    [[nodiscard]] bool resolved() const noexcept {
+        return state == FramePlanShaderResolutionState::resolved;
+    }
+
+    bool operator==(const FramePlanShaderResolution &) const = default;
+};
+
 struct FramePlanNode {
     std::string name;
     std::string kind;
@@ -68,6 +98,7 @@ struct FramePlanNode {
     std::size_t byte_size = 0;
     std::optional<FramePlanMaterialFilter> material_filter;
     std::string material_variant;
+    FramePlanShaderResolution shader_resolution;
 
     // The public response may publish these directly. Current runtime output
     // carries the same high-level facts in physical_target_plan.attachments;
@@ -394,6 +425,7 @@ struct FramePlanGpuResourceArena {
 };
 
 struct FramePlanModel {
+    std::string profile;
     std::string graph;
     std::optional<std::uint64_t> runtime_generation;
     std::size_t response_bytes = 0;

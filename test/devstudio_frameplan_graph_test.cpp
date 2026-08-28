@@ -5,6 +5,7 @@
 
 #include <QElapsedTimer>
 #include <QPoint>
+#include <QPushButton>
 #include <QSet>
 #include <QStringList>
 #include <QWidget>
@@ -61,6 +62,7 @@
 #include <QSignalSpy>
 #include <QStringList>
 #include <QTest>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QWheelEvent>
@@ -93,6 +95,14 @@ using StringSet = std::set<std::string, std::less<>>;
 using EdgePair = std::pair<std::string, std::string>;
 using EdgeSet = std::set<EdgePair>;
 
+void addRuntimeShaderContract(Json &plan) {
+    plan["profile"] = "runtime";
+    for (auto &node : plan.at("nodes")) {
+        node["shader_resolution"] =
+            Json{{"state", "not_applicable"}};
+    }
+}
+
 QApplication &application() {
     static int argument_count = 1;
     static char application_name[] = "pelican_frameplan_graph_test";
@@ -122,6 +132,13 @@ std::string readText(const std::filesystem::path &path) {
 
 Json readJson(const std::filesystem::path &path) {
     return Json::parse(readText(path));
+}
+
+Json capturedRuntimeFramePlan() {
+    Json plan = Json::parse(
+        readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    addRuntimeShaderContract(plan);
+    return plan;
 }
 
 std::string loadEngineDocument(std::string_view reference) {
@@ -210,6 +227,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     }
     const Pelican::FramePlan plan = Pelican::planFrameGraph(graphs.front());
     Json wire = Pelican::framePlanToJson(plan, &compiled);
+    addRuntimeShaderContract(wire);
     const Pelican::FrameExecutionPlan execution =
         Pelican::compileFrameExecutionPlan(
             graphs.front(), plan,
@@ -471,6 +489,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
         const Pelican::FramePlan plan =
             Pelican::planFrameGraph(graphs.front());
         Json wire = Pelican::framePlanToJson(plan, &compiled);
+        addRuntimeShaderContract(wire);
         const Pelican::FrameExecutionPlan execution =
             Pelican::compileFrameExecutionPlan(
                 graphs.front(), plan,
@@ -1151,6 +1170,7 @@ Json independentOpportunityFramePlan(
 
     const Pelican::FramePlan plan = Pelican::planFrameGraph(graphs.front());
     Json wire = Pelican::framePlanToJson(plan);
+    addRuntimeShaderContract(wire);
     const Pelican::FrameExecutionPlan execution =
         Pelican::compileFrameExecutionPlan(
             graphs.front(), plan,
@@ -1216,6 +1236,7 @@ Json fractionalScaleFramePlan() {
     const Pelican::FramePlan plan =
         Pelican::planFrameGraph(graphs.front());
     Json wire = Pelican::framePlanToJson(plan);
+    addRuntimeShaderContract(wire);
     wire["execution_plan"] = Pelican::frameExecutionPlanToJson(
         Pelican::compileFrameExecutionPlan(
             graphs.front(), plan,
@@ -5037,7 +5058,7 @@ TEST_CASE(
     "WP329 logical node selection shows model details and clearing selection removes them",
     "[devstudio][frame-plan][logical-graph][selection][wp329][negative-contrast]") {
     (void)application();
-    const std::string captured = readText(PELICAN_TEST_FRAME_PLAN_FIXTURE);
+    const std::string captured = capturedRuntimeFramePlan().dump();
     const FramePlanModel model = buildFramePlanModel(captured);
     REQUIRE_FALSE(model.nodes.empty());
 
@@ -5089,7 +5110,7 @@ TEST_CASE(
     "WP318 every example target stays within five direct nodes and named depths are exact",
     "[devstudio][frame-plan][target-subtree][wp318]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
 
@@ -5160,7 +5181,7 @@ TEST_CASE(
     "WP318 subtree coordinates and bundle order ignore every input array order",
     "[devstudio][frame-plan][target-subtree][determinism][wp318]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
     FramePlanModel ordered = buildFramePlanModel(wire.dump());
@@ -5190,7 +5211,7 @@ TEST_CASE(
     "WP318 moving a node reroutes its curve arrow and label and positions live only in one scene",
     "[devstudio][frame-plan][drag][curve][session][wp318]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
     const QByteArray captured = QByteArray::fromStdString(wire.dump());
@@ -5281,7 +5302,7 @@ TEST_CASE(
     "WP320 dragging through the real view keeps movement and scene bounds finite",
     "[devstudio][frame-plan][drag][mouse][wp320]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
 
@@ -5376,7 +5397,7 @@ TEST_CASE(
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
     widget.receiveResult(QByteArray::fromStdString(
-        readText(PELICAN_TEST_FRAME_PLAN_FIXTURE)));
+        capturedRuntimeFramePlan().dump()));
     QApplication::processEvents();
     QGraphicsView &view = logicalView(widget);
     REQUIRE(view.transformationAnchor() == QGraphicsView::AnchorUnderMouse);
@@ -5411,7 +5432,7 @@ TEST_CASE(
     "WP318 selected target preserves every WP307 physical fact and scopes both alias outcomes",
     "[devstudio][frame-plan][physical-overlay][target][wp318]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
     const Json &physical = wire.at("physical_target_plan");
@@ -5830,7 +5851,7 @@ TEST_CASE(
     "WP320 stress: interleaved target, depth, zoom and repeated drags stay stable",
     "[devstudio][frame-plan][drag][stress][wp320]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
 
@@ -5905,12 +5926,132 @@ TEST_CASE(
     REQUIRE(finite_rect(logical.sceneRect()));
 }
 
+TEST_CASE(
+    "WP354 Studio shader details materialize logical refs only through the Open action seam",
+    "[devstudio][frame-plan][wp354][shader-resolution][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = std::filesystem::path{
+        temporary.path().toStdWString()};
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream project{root / "project.json", std::ios::binary};
+        project << Json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "wp354-widget"},
+        }.dump();
+        std::ofstream vertex{root / "shaders" / "effective.vert",
+                             std::ios::binary};
+        vertex << "#version 450\nvoid main(){}\n";
+        std::ofstream fragment{root / "shaders" / "effective.frag",
+                               std::ios::binary};
+        fragment << "#version 450\nvoid main(){}\n";
+    }
+
+    const auto stage = [](std::string name, std::string suffix) {
+        return Json{
+            {"stage", std::move(name)},
+            {"declared_ref", "shaders/declared"},
+            {"effective_ref", "shaders/effective"},
+            {"origin", "provider"},
+            {"source_open_ref",
+             "project://shaders/effective." + std::move(suffix)},
+        };
+    };
+    Json wire{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"profile", "runtime"},
+        {"graph", "wp354_widget"},
+        {"nodes",
+         Json::array({
+             {{"name", "provided"},
+              {"kind", "render"},
+              {"declaration_index", 0},
+              {"order", 0},
+              {"level", 0},
+              {"reads", Json::array()},
+              {"writes", Json::array()},
+              {"shader_resolution",
+               {{"state", "resolved"},
+                {"stages",
+                 Json::array({stage("vertex", "vert"),
+                              stage("fragment", "frag")})}}}},
+             {{"name", "shadow"},
+              {"kind", "render"},
+              {"declaration_index", 1},
+              {"order", 1},
+              {"level", 1},
+              {"reads", Json::array()},
+              {"writes", Json::array()},
+              {"shader_resolution",
+               {{"state", "resolved"},
+                {"stages",
+                 Json::array({
+                     {{"stage", "vertex"},
+                      {"effective_ref", "engine://shadow_depth"},
+                      {"origin", "engine_default"},
+                      {"source_open_ref", nullptr},
+                      {"source_open_reason",
+                       "embedded_engine_resource"}},
+                 })}}}},
+         })},
+        {"barriers", Json::array()},
+        {"resources", Json::array()},
+    };
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.setProjectRoot(root);
+    std::optional<std::filesystem::path> opened;
+    widget.setShaderSourceOpenAction(
+        [&](const std::filesystem::path &path) {
+            opened = path;
+            return true;
+        });
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+
+    const auto buttons =
+        widget.findChildren<QPushButton *>(
+            QStringLiteral("pelican.shaderSourceOpen"));
+    REQUIRE(buttons.size() == 3);
+    QPushButton *vertex_open = nullptr;
+    QPushButton *shadow_disabled = nullptr;
+    for (auto *button : buttons) {
+        if (button->property("pelicanNode") ==
+                QStringLiteral("provided") &&
+            button->property("pelicanStage") ==
+                QStringLiteral("vertex")) {
+            vertex_open = button;
+        }
+        if (button->property("pelicanNode") ==
+            QStringLiteral("shadow")) {
+            shadow_disabled = button;
+        }
+    }
+    REQUIRE(vertex_open != nullptr);
+    REQUIRE(vertex_open->isEnabled());
+    REQUIRE(vertex_open->property("pelicanSourceOpenRef") ==
+            QStringLiteral("project://shaders/effective.vert"));
+    vertex_open->click();
+    REQUIRE(opened == std::filesystem::canonical(
+                          root / "shaders" / "effective.vert"));
+
+    REQUIRE(shadow_disabled != nullptr);
+    REQUIRE_FALSE(shadow_disabled->isEnabled());
+    REQUIRE(shadow_disabled->text() ==
+            QStringLiteral("embedded_engine_resource"));
+}
+
 
 TEST_CASE(
     "WP320 a frame plan arriving mid-drag does not destabilise the scene",
     "[devstudio][frame-plan][drag][refresh][wp320]") {
     (void)application();
-    Json wire = Json::parse(readText(PELICAN_TEST_FRAME_PLAN_FIXTURE));
+    Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
         exampleFramePlan(true).at("runtime_resolution");
     const QByteArray captured = QByteArray::fromStdString(wire.dump());

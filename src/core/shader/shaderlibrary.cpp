@@ -7,6 +7,7 @@
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../../project/materiallowering.hpp"
+#include "../../project/shadersourceresolver.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -66,13 +67,22 @@ vk::ShaderStageFlagBits toVkStage(ShaderStage stage) {
     throw std::runtime_error("unknown shader stage");
 }
 
-std::string appendShaderExtension(std::string_view ref, ShaderStage stage, bool spirv) {
-    std::string candidate{ref};
-    candidate += shaderStageSourceExtension(stage);
-    if (spirv) {
-        candidate += ".spv";
+ShaderSourceStage sourceStage(ShaderStage stage) {
+    switch (stage) {
+    case ShaderStage::vertex:
+        return ShaderSourceStage::vertex;
+    case ShaderStage::fragment:
+        return ShaderSourceStage::fragment;
+    case ShaderStage::compute:
+        return ShaderSourceStage::compute;
+    case ShaderStage::raygen:
+        return ShaderSourceStage::raygen;
+    case ShaderStage::miss:
+        return ShaderSourceStage::miss;
+    case ShaderStage::closesthit:
+        return ShaderSourceStage::closesthit;
     }
-    return candidate;
+    throw std::runtime_error("unknown shader stage");
 }
 
 bool hasScheme(std::string_view ref) {
@@ -440,9 +450,11 @@ ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &refer
                                                         &virtual_includes) {
     std::vector<std::string> candidate_refs;
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    candidate_refs.push_back(appendShaderExtension(reference.ref, reference.stage, false));
+    candidate_refs.push_back(shaderSourceCandidateReference(
+        reference.ref, sourceStage(reference.stage), false));
 #endif
-    candidate_refs.push_back(appendShaderExtension(reference.ref, reference.stage, true));
+    candidate_refs.push_back(shaderSourceCandidateReference(
+        reference.ref, sourceStage(reference.stage), true));
 
     std::vector<std::string> tried;
     for (const auto &candidate_ref : candidate_refs) {

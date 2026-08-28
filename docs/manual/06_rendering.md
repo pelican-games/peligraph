@@ -1121,6 +1121,52 @@ pelican_player --project mygame --headless --dump-frame-plan   # stderr に出�
 
 出力にはノードごとの `order` / `level` / `reads` / `writes`(`@history` 読みは `reads_history`)と導出された `barriers`、`snapshot_copy` ノードが含まれます。
 
+renderer から取得する文書は `"profile": "runtime"` を持ち、全ノードに
+`shader_resolution` を付加します。これは raw planner の `framePlanToJson` には含まれません。
+パス実装 provider がシェーダを差し替えても、typed parse 時の宣言と実効値を別々に確認できます。
+
+```json
+"shader_resolution": {
+  "state": "resolved",
+  "stages": [
+    {"stage":"vertex", "declared_ref":"shaders/authored",
+     "effective_ref":"shaders/provider_vertex", "origin":"provider",
+     "source_open_ref":"project://shaders/provider_vertex.vert"}
+  ]
+}
+```
+
+`origin` は `authored` / `engine_default` / `provider` / `generated` です。
+`declared_ref` は stage が元 JSON に存在した場合だけ出ます。provider は identity passthrough
+以外では fullscreen の vertex/fragment pair の両方を `provider` とします。
+parser が省略を補った stage だけが `engine_default` です。ray の `miss` / `closesthit` は
+authored 順の `{stage,index}` エントリです。
+
+| pass family | state | stage |
+|---|---|---|
+| material | `material_owned` | material shader の掘り下げは別契約 |
+| fullscreen | `resolved` | vertex, fragment |
+| raster | `resolved` | vertex, optional fragment |
+| output_transform | `resolved` | vertex, fragment |
+| debug_draw | `resolved` | vertex, fragment |
+| gizmo | `resolved` | vertex, fragment |
+| debug_text | `resolved` | vertex, fragment |
+| shadow_depth | `resolved` | vertex |
+| velocity | `resolved` | vertex, skinned_vertex, fragment |
+| picking | `resolved` | vertex, skinned_vertex, fragment |
+| ui | `resolved` (`engine_fixed`) | vertex, fragment |
+| imgui | `resolved` (`engine_fixed`) | vertex, fragment |
+| canonical_anchor | `not_applicable` | — |
+| snapshot_copy | `not_applicable` | — |
+| compute_task | `resolved` | compute、または raygen + miss[] + closesthit[] |
+
+`source_open_ref` は拡張子付きの正規論理参照(`project://` / `user://`、asset store の
+mount 名も論理パス内に保持)だけです。絶対パスは wire に出ません。Studio の「開く」は
+同じ project resolver で押下時に物理パスへ変換します。embedded/generated/missing source は
+`null` と `embedded_engine_resource` / `generated` / `source_not_found` を表示し、ボタンを無効にします。
+Studio と ImGui Plan Viewer は runtime profile 以外を受理しません。
+request-local な preview graph はこの renderer runtime 投影の対象外です。
+
 **`execution_plan`(🚧WP238a)** — 同じダンプに backend 非依存の共通 IR が併記されます
 (`schema: "pelican.frame_execution_plan"`)。ノードごとの semantic dialect、選択された implementation と
 endpoint、required / provided capability、resource use(current / previous epoch × read / write × footprint)、

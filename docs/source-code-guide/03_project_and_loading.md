@@ -19,7 +19,7 @@ Runtime object
 | データ | 純粋層 | runtime層 |
 |---|---|---|
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L460) |
-| path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L8)（module寿命、ログ、engine resource注入） |
+| path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L271) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2695) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1055) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
@@ -111,7 +111,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L69)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L551) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
 
-engine側の [`PathResolver`](../../src/core/loader/pathresolver.hpp#L8) は薄いmodule adapterです。[`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) に残るのは、module寿命、返されたwarningのログ、`engine://` IDを埋め込みbytesへ変えるloader注入だけです。この境界によりdevstudioやCLIは`pelican_core`をリンクせず同じescape防止・asset store規則を使えます。
+engine側の [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9) は薄いmodule adapterです。[`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) に残るのは、module寿命、返されたwarningのログ、`engine://` IDを埋め込みbytesへ変えるloader注入だけです。この境界によりdevstudioやCLIは`pelican_core`をリンクせず同じescape防止・asset store規則を使えます。
 
 ### 返り値がpathだけではない理由
 

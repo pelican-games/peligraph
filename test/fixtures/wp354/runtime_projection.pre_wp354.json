@@ -1,0 +1,26 @@
+{
+  "schema": "pelican.frame_plan",
+  "version": 1,
+  "profile": "runtime",
+  "graph": "wp354_family_contract",
+  "nodes": [
+    {"name": "material", "kind": "render"},
+    {"name": "fullscreen", "kind": "render"},
+    {"name": "raster", "kind": "render"},
+    {"name": "output_transform", "kind": "output_transform"},
+    {"name": "debug_draw", "kind": "render"},
+    {"name": "gizmo", "kind": "render"},
+    {"name": "debug_text", "kind": "render"},
+    {"name": "shadow_depth", "kind": "render"},
+    {"name": "velocity", "kind": "render"},
+    {"name": "picking", "kind": "render"},
+    {"name": "ui", "kind": "render"},
+    {"name": "imgui", "kind": "render"},
+    {"name": "canonical_anchor", "kind": "anchor"},
+    {"name": "snapshot_copy", "kind": "snapshot_copy"},
+    {"name": "compute_task", "kind": "compute"},
+    {"name": "ray_task", "kind": "compute"}
+  ],
+  "barriers": [],
+  "resources": []
+}

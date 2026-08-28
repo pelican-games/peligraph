@@ -117,11 +117,11 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`openxr/`](../../src/core/openxr) | OpenXR discovery/session/action/composition/mirror（独立static lib） | [`OpenXr::SessionRuntime`](../../src/core/openxr/openxrsession.hpp#L134) |
 | [`ui/`](../../src/core/ui) | 2D UI（document/layout/atlas/bitmapfont/input routing） | [`ui::UiModule`](../../src/core/ui/module.hpp#L30) |
 | [`watch/`](../../src/core/watch) | FileWatcher、ContentDigest、reload gate/queue/transaction/service | [`watch::ReloadService`](../../src/core/watch/reloadservice.hpp#L111) |
-| [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L54)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L8)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
+| [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L54)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L37) |
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L20) |
 | [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L206)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L64) |
-| [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L432)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L153) |
+| [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L454)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L153) |
 | [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L39)、[`Camera`](../../src/core/renderer/camera.hpp#L17) |
 | [`render_algorithms/`](../../src/core/render_algorithms) | 差し替え可能な標準render algorithm（cube capture / planar reflection）のViewFamily provider。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` で丸ごと外れる | [`registerStandardRenderAlgorithmProviders()`](../../src/core/render_algorithms/standardrenderalgorithms.hpp#L9) |
 | [`vkcore/`](../../src/core/vkcore) | Vulkan instance/device、FrameTarget、command、layout、renderer編成 | [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36)、[`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) |
@@ -174,7 +174,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
                       project（純粋パース・検証）
 ```
 
-実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2821) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
+実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2822) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
 
 新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L29)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L65) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
 

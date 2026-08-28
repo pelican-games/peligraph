@@ -12,19 +12,23 @@ TEST_CASE("plan viewer model is an exact deterministic projection of frame plan 
     nlohmann::json plan{
         {"schema", "pelican.frame_plan"},
         {"version", 1},
+        {"profile", "runtime"},
         {"graph", "main"},
         {"levels", {{"opaque"}, {"__snapshot_opaque_color"}, {"refract"}}},
         {"nodes",
          nlohmann::json::array({
              {{"name", "refract"}, {"kind", "render"}, {"order", 2}, {"level", 2},
-              {"reads", {"opaque_color"}}, {"writes", {"display"}}},
+              {"reads", {"opaque_color"}}, {"writes", {"display"}},
+              {"shader_resolution", {{"state", "material_owned"}}}},
              {{"name", "opaque"}, {"kind", "render"}, {"order", 0}, {"level", 0},
               {"reads", nlohmann::json::array()}, {"writes", {"display"}},
-              {"source", "project"}},
+              {"source", "project"},
+              {"shader_resolution", {{"state", "material_owned"}}}},
              {{"name", "__snapshot_opaque_color"}, {"kind", "snapshot_copy"},
               {"order", 1}, {"level", 1}, {"reads", {"display"}},
               {"writes", {"opaque_color"}}, {"snapshot_after", "post_ldr"},
-              {"byte_size", 8294400}, {"source", "engine"}},
+              {"byte_size", 8294400}, {"source", "engine"},
+              {"shader_resolution", {{"state", "not_applicable"}}}},
          })},
         {"barriers",
          nlohmann::json::array({
@@ -102,4 +106,40 @@ TEST_CASE("plan viewer rejects data outside the public frame plan contract",
           "[imgui][plan-viewer]") {
     REQUIRE_THROWS_WITH(buildPlanViewerModel({{"schema", "private.renderer_graph"}}),
                         "plan viewer requires pelican.frame_plan version 1");
+
+    nlohmann::json runtime{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"profile", "runtime"},
+        {"graph", "suffix_contract"},
+        {"levels", {{"pass"}}},
+        {"nodes",
+         nlohmann::json::array({
+             {{"name", "pass"}, {"kind", "render"}, {"order", 0},
+              {"level", 0}, {"reads", nlohmann::json::array()},
+              {"writes", nlohmann::json::array()},
+              {"shader_resolution",
+               {{"state", "resolved"},
+                {"stages",
+                 nlohmann::json::array({
+                     {{"stage", "vertex"},
+                      {"declared_ref", "shaders/pass"},
+                      {"effective_ref", "shaders/pass"},
+                      {"origin", "authored"},
+                      {"source_open_ref",
+                       "project://shaders/pass.frag"}},
+                 })}}}},
+         })},
+        {"barriers", nlohmann::json::array()},
+        {"resources", nlohmann::json::array()},
+    };
+    REQUIRE_THROWS_WITH(
+        buildPlanViewerModel(runtime),
+        Catch::Matchers::ContainsSubstring("exact stage source suffix"));
+
+    runtime.erase("profile");
+    REQUIRE_THROWS_WITH(
+        buildPlanViewerModel(runtime),
+        Catch::Matchers::ContainsSubstring(
+            "requires frame plan profile 'runtime'"));
 }

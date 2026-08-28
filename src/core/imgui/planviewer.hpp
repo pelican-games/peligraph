@@ -5,11 +5,27 @@
 #include <cstddef>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace Pelican {
+
+struct PlanViewerShaderStage {
+    std::string stage;
+    std::optional<std::size_t> index;
+    std::optional<std::string> declared_ref;
+    std::string effective_ref;
+    std::string origin;
+    std::optional<std::string> source_open_ref;
+    std::optional<std::string> source_open_reason;
+};
+
+struct PlanViewerShaderResolution {
+    std::string state;
+    std::vector<PlanViewerShaderStage> stages;
+};
 
 struct PlanViewerNode {
     std::string name;
@@ -28,6 +44,7 @@ struct PlanViewerNode {
     std::string depth_store_op;
     std::string snapshot_after;
     std::size_t byte_size = 0;
+    PlanViewerShaderResolution shader_resolution;
 };
 
 struct PlanViewerEdge {

@@ -35,6 +35,14 @@ namespace {
 
 using Json = nlohmann::json;
 
+void addRuntimeShaderContract(Json &plan) {
+    plan["profile"] = "runtime";
+    for (auto &node : plan.at("nodes")) {
+        node["shader_resolution"] =
+            Json{{"state", "not_applicable"}};
+    }
+}
+
 std::string capturedResponseText() {
     std::ifstream stream{PELICAN_TEST_FRAME_PLAN_FIXTURE, std::ios::binary};
     if (!stream) {
@@ -110,6 +118,7 @@ std::string capturedResponse() {
     captured["runtime_resolution"] =
         Pelican::frameRuntimeResolutionWireToJson(
             capturedRuntimeResolution(captured));
+    addRuntimeShaderContract(captured);
     return captured.dump();
 }
 
@@ -241,8 +250,10 @@ Json exampleFramePlanFromProducer() {
             "projects/example did not resolve to one frame graph");
     }
     const auto compiled = Pelican::compileRenderPipeline(resolved);
-    return Pelican::framePlanToJson(
+    auto plan = Pelican::framePlanToJson(
         Pelican::planFrameGraph(graphs.front()), &compiled);
+    addRuntimeShaderContract(plan);
+    return plan;
 }
 
 const FramePlanNode *findNode(const FramePlanModel &model,
@@ -1025,4 +1036,157 @@ TEST_CASE("Devstudio frame plan model accepts only the current public contract",
 
     REQUIRE_THROWS_WITH(buildFramePlanModel("not json"),
                         ContainsSubstring("is not valid JSON"));
+}
+
+TEST_CASE("WP354 Studio model enforces the complete shader resolution wire schema",
+          "[devstudio][frame-plan][wp354][shader-resolution]") {
+    Json plan = Json::parse(capturedResponse());
+    auto &resolution = plan["nodes"][0]["shader_resolution"];
+    const Json valid_stage{
+        {"stage", "vertex"},
+        {"declared_ref", "shaders/authored"},
+        {"effective_ref", "shaders/effective"},
+        {"origin", "provider"},
+        {"source_open_ref", "project://shaders/effective.vert"},
+    };
+    resolution = Json{
+        {"state", "resolved"},
+        {"stages", Json::array({valid_stage})},
+    };
+    const auto model = buildFramePlanModel(plan.dump());
+    REQUIRE(model.profile == "runtime");
+    REQUIRE(model.nodes.front().shader_resolution.resolved());
+    REQUIRE(model.nodes.front().shader_resolution.stages.front().origin ==
+            "provider");
+    REQUIRE(model.nodes.front()
+                .shader_resolution.stages.front()
+                .declared_ref ==
+            std::optional<std::string>{"shaders/authored"});
+
+    SECTION("runtime profile is mandatory") {
+        plan.erase("profile");
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("requires profile 'runtime'"));
+    }
+    SECTION("unknown state is named") {
+        resolution["state"] = "future_state";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "unknown shader_resolution.state 'future_state'"));
+    }
+    SECTION("unknown stage is named") {
+        resolution["stages"][0]["stage"] = "geometry";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("unknown shader stage 'geometry'"));
+    }
+    SECTION("unknown origin is named") {
+        resolution["stages"][0]["origin"] = "future_origin";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("unknown shader origin 'future_origin'"));
+    }
+    SECTION("unknown null reason is named") {
+        auto &stage = resolution["stages"][0];
+        stage["source_open_ref"] = nullptr;
+        stage["source_open_reason"] = "future_reason";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "unknown source_open_reason 'future_reason'"));
+    }
+    SECTION("nonnull source forbids reason") {
+        resolution["stages"][0]["source_open_reason"] =
+            "source_not_found";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "forbids source_open_reason when source_open_ref is non-null"));
+    }
+    SECTION("null source requires reason") {
+        resolution["stages"][0]["source_open_ref"] = nullptr;
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "requires source_open_reason when source_open_ref is null"));
+    }
+    SECTION("engine paths cannot leak onto the portable wire") {
+        resolution["stages"][0]["source_open_ref"] =
+            "C:/machine/shader.vert";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "must be a canonical project:// or user:// logical reference"));
+    }
+    SECTION("logical source paths must already be normalized") {
+        resolution["stages"][0]["source_open_ref"] =
+            "project://shaders/../effective.vert";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "must be a canonical project:// or user:// logical reference"));
+    }
+    SECTION("logical source suffix must match the shader stage") {
+        resolution["stages"][0]["source_open_ref"] =
+            "project://shaders/effective.frag";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("exact stage source suffix"));
+    }
+    SECTION("material state is exclusive") {
+        resolution["state"] = "material_owned";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("contains unknown field 'stages'"));
+    }
+    SECTION("authored origin requires declaration") {
+        resolution["stages"][0]["origin"] = "authored";
+        resolution["stages"][0].erase("declared_ref");
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "requires non-empty declared_ref for origin 'authored'"));
+    }
+    SECTION("engine default forbids declaration") {
+        resolution["stages"][0]["origin"] = "engine_default";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "forbids declared_ref for origin 'engine_default'"));
+    }
+    SECTION("canonical order is mandatory") {
+        Json fragment = valid_stage;
+        fragment["stage"] = "fragment";
+        fragment["source_open_ref"] =
+            "project://shaders/effective.frag";
+        Json vertex = valid_stage;
+        resolution["stages"] = Json::array({fragment, vertex});
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("not in canonical stage order"));
+    }
+    SECTION("non-ray stages cannot be duplicated") {
+        resolution["stages"] = Json::array({valid_stage, valid_stage});
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("duplicate shader stage identity 'vertex'"));
+    }
+    SECTION("ray arrays require indexed authored order") {
+        Json raygen = valid_stage;
+        raygen["stage"] = "raygen";
+        raygen["source_open_ref"] =
+            "project://shaders/effective.rgen";
+        Json miss = valid_stage;
+        miss["stage"] = "miss";
+        miss["index"] = 1;
+        miss["source_open_ref"] =
+            "project://shaders/effective.rmiss";
+        resolution["stages"] = Json::array({raygen, miss});
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "miss indices must be contiguous authored order starting at 0"));
+    }
 }

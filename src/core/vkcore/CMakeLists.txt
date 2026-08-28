@@ -23,6 +23,7 @@ target_sources(pelican_core PRIVATE
     rendertiming.cpp
     renderer.cpp
     renderer_config.cpp
+    shaderresolution.cpp
     vulkanvalidation.cpp
     vma_impl.cpp
 )

@@ -189,6 +189,33 @@ if(TARGET pelican_studio_outliner)
   )
 endif()
 
+if(TARGET pelican_studio_view)
+  find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  pelican_define_test(shaderresolution_production_test GPU QT QT_OFFSCREEN
+    RUNTIME_SHADER
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_core
+    VulkanMemoryAllocator
+    VulkanMemoryAllocator-Hpp
+    Qt6::Core
+    Qt6::Widgets)
+  target_compile_definitions(pelican_test_shaderresolution_production_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>)
+  if(MSVC)
+    target_compile_options(pelican_test_shaderresolution_production_test PRIVATE /bigobj)
+  endif()
+  if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_shaderresolution_production_test PRIVATE
+      pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+      pelican_copy_test_shaderc_runtime(
+        pelican_test_shaderresolution_production_test)
+    endif()
+  endif()
+endif()
+
 if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_inspector_test
     pelican_studio_inspector_model
@@ -1036,7 +1063,14 @@ endif()
 pelican_define_test(pathresolver_test GROUP runtime_services pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+pelican_define_test(shaderresolution_test GROUP runtime_services pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_compile_definitions(pelican_test_shaderresolution_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
 if(PELICAN_WITH_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
 pelican_define_test(physquery_test GROUP runtime_services pelican_core)

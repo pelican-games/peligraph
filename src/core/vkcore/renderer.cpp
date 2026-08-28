@@ -57,6 +57,7 @@
 #include "renderer_config.hpp"
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
+#include "shaderresolution.hpp"
 #include "util.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrmirrorsink.hpp"
@@ -3432,6 +3433,9 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     }
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
+    appendShaderResolution(
+        result, program->rendering_pass,
+        GET_MODULE(PathResolver));
     result["execution_plan"] =
         frameExecutionPlanToJson(
             frame_graph->execution_plan);

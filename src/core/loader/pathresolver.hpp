@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../project/projectpathresolver.hpp"
+#include "../../project/shadersourceresolver.hpp"
 #include "../container.hpp"
 
 namespace Pelican {
@@ -36,6 +37,8 @@ DECLARE_MODULE(PathResolver) {
     ResolvedRef resolveExistingFileReference(std::string_view ref) const;
     std::filesystem::path resolveExistingFile(std::string_view ref) const;
     std::string normalizedReference(std::string_view ref) const;
+    ShaderSourceOpenResolution resolveShaderSourceOpenReference(
+        std::string_view stem, ShaderSourceStage stage) const;
     std::string loadText(std::string_view ref) const;
     std::vector<std::byte> loadBytes(std::string_view ref) const;
 };

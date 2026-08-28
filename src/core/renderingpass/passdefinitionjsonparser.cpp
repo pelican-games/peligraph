@@ -104,6 +104,43 @@ void parsePassImplementationProvider(
         std::move(provider);
 }
 
+void captureDeclaredShaderReferences(
+    PassDefinition &pass_def,
+    const nlohmann::json &pass_json) {
+    const auto shader = pass_json.find("shader");
+    if (shader == pass_json.end()) {
+        return;
+    }
+    // Every pass-specific typed parser has already validated the shader
+    // object and its stage value types before this capture runs.
+    if (!shader->is_object()) {
+        throw std::logic_error(
+            "typed pass parser accepted a non-object shader: " +
+            pass_def.name);
+    }
+    const auto append = [&](std::string_view field,
+                            DeclaredShaderStage stage) {
+        const auto found = shader->find(field);
+        if (found == shader->end()) {
+            return;
+        }
+        if (!found->is_string()) {
+            throw std::logic_error(
+                "typed pass parser accepted a non-string shader stage: " +
+                pass_def.name + "/" + std::string{field});
+        }
+        pass_def.declared_shader_refs.push_back(
+            DeclaredShaderReference{
+                .stage = stage,
+                .ref = found->get<std::string>(),
+            });
+    };
+    append("vertex", DeclaredShaderStage::vertex);
+    append("skinned_vertex",
+           DeclaredShaderStage::skinned_vertex);
+    append("fragment", DeclaredShaderStage::fragment);
+}
+
 } // namespace
 
 PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
@@ -184,6 +221,8 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     parseShadowDepthPassInfoIntoDefinition(pass_def, pass_json);
     parseVelocityPassInfoIntoDefinition(pass_def, pass_json);
     parsePickingPassInfoIntoDefinition(pass_def, pass_json);
+    pass_def.shader_declaration_parsed = true;
+    captureDeclaredShaderReferences(pass_def, pass_json);
     return pass_def;
 }
 

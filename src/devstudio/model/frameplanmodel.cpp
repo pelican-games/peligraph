@@ -4,6 +4,7 @@
 #include "executionplanwire.hpp"
 #include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
+#include "../../project/shadersourceresolver.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -499,6 +500,242 @@ void parseBackendSelection(
     }
 }
 
+void requireOnlyFields(
+    const Json &object, std::initializer_list<std::string_view> allowed,
+    std::string_view context) {
+    for (const auto &[field, value] : object.items()) {
+        (void)value;
+        if (std::find(allowed.begin(), allowed.end(), field) ==
+            allowed.end()) {
+            throw invalid(std::string{context} +
+                          " contains unknown field '" + field + "'");
+        }
+    }
+}
+
+std::string requireNonEmptyStringField(
+    const Json &object, std::string_view field,
+    std::string_view context) {
+    auto value = requireStringField(object, field, context);
+    if (value.empty()) {
+        throw invalid(std::string{context} + "." +
+                      std::string{field} + " must not be empty");
+    }
+    return value;
+}
+
+bool knownShaderStage(std::string_view value) {
+    return value == "vertex" || value == "skinned_vertex" ||
+           value == "fragment" || value == "compute" ||
+           value == "raygen" || value == "miss" ||
+           value == "closesthit";
+}
+
+Pelican::ShaderSourceStage sourceStageForWireStage(
+    std::string_view value) {
+    if (value == "vertex" || value == "skinned_vertex") {
+        return Pelican::ShaderSourceStage::vertex;
+    }
+    if (value == "fragment") return Pelican::ShaderSourceStage::fragment;
+    if (value == "compute") return Pelican::ShaderSourceStage::compute;
+    if (value == "raygen") return Pelican::ShaderSourceStage::raygen;
+    if (value == "miss") return Pelican::ShaderSourceStage::miss;
+    if (value == "closesthit") {
+        return Pelican::ShaderSourceStage::closesthit;
+    }
+    throw std::logic_error("unknown validated shader stage");
+}
+
+int shaderStageOrder(std::string_view value) {
+    if (value == "vertex") return 0;
+    if (value == "skinned_vertex") return 1;
+    if (value == "fragment") return 2;
+    if (value == "compute") return 3;
+    if (value == "raygen") return 4;
+    if (value == "miss") return 5;
+    if (value == "closesthit") return 6;
+    return -1;
+}
+
+bool knownShaderOrigin(std::string_view value) {
+    return value == "authored" || value == "engine_default" ||
+           value == "provider" || value == "generated";
+}
+
+bool knownSourceOpenReason(std::string_view value) {
+    return value == "embedded_engine_resource" ||
+           value == "generated" || value == "source_not_found";
+}
+
+FramePlanShaderStage parseShaderStage(
+    const Json &value, std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    requireOnlyFields(
+        value,
+        {"stage", "index", "declared_ref", "effective_ref", "origin",
+         "source_open_ref", "source_open_reason"},
+        context);
+
+    FramePlanShaderStage result;
+    result.stage = requireNonEmptyStringField(value, "stage", context);
+    if (!knownShaderStage(result.stage)) {
+        throw invalid(std::string{context} +
+                      " has unknown shader stage '" + result.stage + "'");
+    }
+
+    const bool indexed_ray_stage =
+        result.stage == "miss" || result.stage == "closesthit";
+    const auto index = value.find("index");
+    if (indexed_ray_stage) {
+        if (index == value.end()) {
+            throw invalid(std::string{context} +
+                          " requires index for ray array stage '" +
+                          result.stage + "'");
+        }
+        result.index = optionalSizeField(value, "index", context);
+        if (!result.index) {
+            throw invalid(std::string{context} + ".index must not be null");
+        }
+    } else if (index != value.end()) {
+        throw invalid(std::string{context} +
+                      " forbids index for shader stage '" +
+                      result.stage + "'");
+    }
+
+    result.effective_ref =
+        requireNonEmptyStringField(value, "effective_ref", context);
+    result.origin = requireNonEmptyStringField(value, "origin", context);
+    if (!knownShaderOrigin(result.origin)) {
+        throw invalid(std::string{context} +
+                      " has unknown shader origin '" + result.origin + "'");
+    }
+
+    const auto declared = value.find("declared_ref");
+    const bool declared_required =
+        result.origin == "authored" || result.origin == "provider";
+    if (declared_required) {
+        if (declared == value.end() || !declared->is_string() ||
+            declared->get_ref<const std::string &>().empty()) {
+            throw invalid(std::string{context} +
+                          " requires non-empty declared_ref for origin '" +
+                          result.origin + "'");
+        }
+        result.declared_ref = declared->get<std::string>();
+    } else if (declared != value.end()) {
+        throw invalid(std::string{context} +
+                      " forbids declared_ref for origin '" +
+                      result.origin + "'");
+    }
+
+    const auto source = value.find("source_open_ref");
+    if (source == value.end() ||
+        (!source->is_null() && !source->is_string())) {
+        throw invalid(std::string{context} +
+                      " requires source_open_ref as a string or null");
+    }
+    const auto reason = value.find("source_open_reason");
+    if (source->is_string()) {
+        const auto logical_ref = source->get<std::string>();
+        if (!Pelican::isCanonicalShaderSourceOpenReference(
+                logical_ref,
+                sourceStageForWireStage(result.stage))) {
+            throw invalid(std::string{context} +
+                          ".source_open_ref must be a canonical project:// "
+                          "or user:// logical reference with the exact stage "
+                          "source suffix");
+        }
+        if (reason != value.end()) {
+            throw invalid(std::string{context} +
+                          " forbids source_open_reason when "
+                          "source_open_ref is non-null");
+        }
+        result.source_open_ref = logical_ref;
+    } else {
+        if (reason == value.end() || !reason->is_string()) {
+            throw invalid(std::string{context} +
+                          " requires source_open_reason when "
+                          "source_open_ref is null");
+        }
+        const auto named_reason = reason->get<std::string>();
+        if (!knownSourceOpenReason(named_reason)) {
+            throw invalid(std::string{context} +
+                          " has unknown source_open_reason '" +
+                          named_reason + "'");
+        }
+        result.source_open_reason = named_reason;
+    }
+    return result;
+}
+
+FramePlanShaderResolution parseShaderResolution(
+    const Json &value, std::string_view context) {
+    if (!value.is_object()) {
+        throw invalid(std::string{context} + " must be an object");
+    }
+    const auto state = requireNonEmptyStringField(value, "state", context);
+    FramePlanShaderResolution result;
+    if (state == "material_owned") {
+        requireOnlyFields(value, {"state"}, context);
+        result.state = FramePlanShaderResolutionState::material_owned;
+        return result;
+    }
+    if (state == "not_applicable") {
+        requireOnlyFields(value, {"state"}, context);
+        result.state = FramePlanShaderResolutionState::not_applicable;
+        return result;
+    }
+    if (state != "resolved") {
+        throw invalid(std::string{context} +
+                      " has unknown shader_resolution.state '" +
+                      state + "'");
+    }
+
+    requireOnlyFields(value, {"state", "stages"}, context);
+    result.state = FramePlanShaderResolutionState::resolved;
+    const auto &stages = requireArrayField(value, "stages", context);
+    if (stages.empty()) {
+        throw invalid(std::string{context} +
+                      ".stages must not be empty for resolved state");
+    }
+    result.stages.reserve(stages.size());
+    int previous_order = -1;
+    std::set<std::pair<std::string, std::optional<std::size_t>>> identities;
+    std::size_t next_miss_index = 0;
+    std::size_t next_closesthit_index = 0;
+    for (std::size_t index = 0; index < stages.size(); ++index) {
+        auto stage = parseShaderStage(
+            stages.at(index), std::string{context} + ".stages[" +
+                                  std::to_string(index) + "]");
+        const auto order = shaderStageOrder(stage.stage);
+        if (order < previous_order) {
+            throw invalid(std::string{context} +
+                          ".stages are not in canonical stage order");
+        }
+        previous_order = order;
+        if (!identities.emplace(stage.stage, stage.index).second) {
+            throw invalid(std::string{context} +
+                          ".stages contains duplicate shader stage identity '" +
+                          stage.stage + "'");
+        }
+        if (stage.stage == "miss" &&
+            *stage.index != next_miss_index++) {
+            throw invalid(std::string{context} +
+                          ".stages miss indices must be contiguous authored "
+                          "order starting at 0");
+        }
+        if (stage.stage == "closesthit" &&
+            *stage.index != next_closesthit_index++) {
+            throw invalid(std::string{context} +
+                          ".stages closesthit indices must be contiguous "
+                          "authored order starting at 0");
+        }
+        result.stages.push_back(std::move(stage));
+    }
+    return result;
+}
+
 } // namespace
 
 FramePlanModel buildFramePlanModel(std::string_view response_json) {
@@ -519,8 +756,12 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
     if (version == root.end() || unsignedInteger(*version, "root.version") != 1) {
         throw invalid("requires pelican.frame_plan version 1");
     }
+    if (optionalStringField(root, "profile", "root") != "runtime") {
+        throw invalid("requires profile 'runtime'");
+    }
 
     FramePlanModel model;
+    model.profile = "runtime";
     model.response_bytes = response_json.size();
     model.raw_json = root.dump(2);
     model.graph = requireStringField(root, "graph", "root");
@@ -565,6 +806,9 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.byte_size = optionalSizeField(value, "byte_size", context).value_or(0);
         node.material_variant =
             optionalStringField(value, "material_variant", context);
+        node.shader_resolution = parseShaderResolution(
+            requireObjectField(value, "shader_resolution", context),
+            context + ".shader_resolution");
         if (const auto filter = value.find("material_filter");
             filter != value.end()) {
             node.material_filter =

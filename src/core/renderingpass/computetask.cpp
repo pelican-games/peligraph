@@ -1219,6 +1219,44 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
     };
 }
 
+void captureDeclaredComputeShaderReferences(
+    ComputeTaskDefinition &definition,
+    const nlohmann::json &task_json) {
+    const auto append = [&](DeclaredShaderStage stage,
+                            const nlohmann::json &value,
+                            std::optional<std::size_t> index =
+                                std::nullopt) {
+        definition.declared_shader_refs.push_back(
+            DeclaredShaderReference{
+                .stage = stage,
+                .index = index,
+                .ref = value.get<std::string>(),
+            });
+    };
+    if (!definition.ray_tracing) {
+        append(DeclaredShaderStage::compute,
+               task_json.at("shader"));
+        return;
+    }
+
+    const auto &pipeline = task_json.at("ray_tracing");
+    append(DeclaredShaderStage::raygen,
+           pipeline.at("raygen"));
+    const auto append_list = [&](std::string_view field,
+                                 DeclaredShaderStage stage) {
+        const auto &encoded = pipeline.at(field);
+        if (encoded.is_string()) {
+            append(stage, encoded, 0);
+            return;
+        }
+        for (std::size_t index = 0; index < encoded.size(); ++index) {
+            append(stage, encoded.at(index), index);
+        }
+    };
+    append_list("miss", DeclaredShaderStage::miss);
+    append_list("closesthit", DeclaredShaderStage::closesthit);
+}
+
 ComputeDispatchDefinition parseDispatch(
     const nlohmann::json &task_json, const std::string &name,
     bool ray_tracing) {
@@ -1690,6 +1728,9 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
                     "compute task: " + definition.name),
                 ShaderStage::compute);
         }
+        definition.shader_declaration_parsed = true;
+        captureDeclaredComputeShaderReferences(
+            definition, task_json);
         definition.reads = parseOptionalStringList(task_json, "reads", "compute task: " + definition.name);
         definition.writes = parseOptionalStringList(task_json, "writes", "compute task: " + definition.name);
         definition.after = parseOptionalStringList(task_json, "after", "compute task: " + definition.name);

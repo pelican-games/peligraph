@@ -3,6 +3,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../../project/materialformat.hpp"
+#include "../../project/shadersourceresolver.hpp"
 #include "../../project/surfaceformat.hpp"
 
 #include <imgui.h>
@@ -82,6 +83,193 @@ std::vector<std::string> stringArray(const nlohmann::json &value, std::string_vi
 
 bool contains(const std::vector<std::string> &values, std::string_view value) {
     return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+bool knownValue(std::string_view value,
+                std::initializer_list<std::string_view> known) {
+    return std::find(known.begin(), known.end(), value) != known.end();
+}
+
+int shaderStageOrder(std::string_view stage) {
+    if (stage == "vertex") return 0;
+    if (stage == "skinned_vertex") return 1;
+    if (stage == "fragment") return 2;
+    if (stage == "compute") return 3;
+    if (stage == "raygen") return 4;
+    if (stage == "miss") return 5;
+    if (stage == "closesthit") return 6;
+    return -1;
+}
+
+ShaderSourceStage sourceStageForWireStage(std::string_view stage) {
+    if (stage == "vertex" || stage == "skinned_vertex") {
+        return ShaderSourceStage::vertex;
+    }
+    if (stage == "fragment") return ShaderSourceStage::fragment;
+    if (stage == "compute") return ShaderSourceStage::compute;
+    if (stage == "raygen") return ShaderSourceStage::raygen;
+    if (stage == "miss") return ShaderSourceStage::miss;
+    if (stage == "closesthit") return ShaderSourceStage::closesthit;
+    throw std::logic_error("unknown validated plan viewer shader stage");
+}
+
+PlanViewerShaderResolution readShaderResolution(
+    const nlohmann::json &node, std::string_view node_name) {
+    const auto found = node.find("shader_resolution");
+    if (found == node.end() || !found->is_object()) {
+        throw std::runtime_error(
+            "plan viewer runtime node '" + std::string{node_name} +
+            "' requires shader_resolution object");
+    }
+    const auto &wire = *found;
+    if (!wire.contains("state") || !wire.at("state").is_string()) {
+        throw std::runtime_error(
+            "plan viewer shader_resolution requires string state");
+    }
+    PlanViewerShaderResolution result;
+    result.state = wire.at("state").get<std::string>();
+    if (!knownValue(result.state,
+                    {"resolved", "material_owned", "not_applicable"})) {
+        throw std::runtime_error(
+            "plan viewer unknown shader_resolution.state '" +
+            result.state + "'");
+    }
+    if (result.state != "resolved") {
+        if (wire.size() != 1 || wire.contains("stages")) {
+            throw std::runtime_error(
+                "plan viewer shader_resolution state '" + result.state +
+                "' forbids stages and extra fields");
+        }
+        return result;
+    }
+    if (wire.size() != 2 || !wire.contains("stages") ||
+        !wire.at("stages").is_array() || wire.at("stages").empty()) {
+        throw std::runtime_error(
+            "plan viewer resolved shader_resolution requires only a "
+            "non-empty stages array");
+    }
+
+    int previous_order = -1;
+    std::set<std::pair<std::string, std::optional<std::size_t>>> identities;
+    std::size_t next_miss = 0;
+    std::size_t next_hit = 0;
+    for (const auto &entry : wire.at("stages")) {
+        if (!entry.is_object() || !entry.contains("stage") ||
+            !entry.at("stage").is_string() ||
+            !entry.contains("effective_ref") ||
+            !entry.at("effective_ref").is_string() ||
+            entry.at("effective_ref").get_ref<const std::string &>().empty() ||
+            !entry.contains("origin") || !entry.at("origin").is_string() ||
+            !entry.contains("source_open_ref")) {
+            throw std::runtime_error(
+                "plan viewer shader stage is missing a required field");
+        }
+        PlanViewerShaderStage stage;
+        stage.stage = entry.at("stage").get<std::string>();
+        const auto order = shaderStageOrder(stage.stage);
+        if (order < 0) {
+            throw std::runtime_error(
+                "plan viewer unknown shader stage '" + stage.stage + "'");
+        }
+        if (order < previous_order) {
+            throw std::runtime_error(
+                "plan viewer shader stages are not in canonical order");
+        }
+        previous_order = order;
+        const bool indexed =
+            stage.stage == "miss" || stage.stage == "closesthit";
+        if (indexed) {
+            if (!entry.contains("index") ||
+                !entry.at("index").is_number_unsigned()) {
+                throw std::runtime_error(
+                    "plan viewer ray array shader stage requires index");
+            }
+            stage.index = entry.at("index").get<std::size_t>();
+        } else if (entry.contains("index")) {
+            throw std::runtime_error(
+                "plan viewer non-array shader stage forbids index");
+        }
+        if (!identities.emplace(stage.stage, stage.index).second) {
+            throw std::runtime_error(
+                "plan viewer duplicate shader stage identity '" +
+                stage.stage + "'");
+        }
+        if (stage.stage == "miss" && *stage.index != next_miss++) {
+            throw std::runtime_error(
+                "plan viewer miss indices must preserve authored order");
+        }
+        if (stage.stage == "closesthit" && *stage.index != next_hit++) {
+            throw std::runtime_error(
+                "plan viewer closesthit indices must preserve authored order");
+        }
+
+        stage.effective_ref = entry.at("effective_ref").get<std::string>();
+        stage.origin = entry.at("origin").get<std::string>();
+        if (!knownValue(stage.origin,
+                        {"authored", "engine_default", "provider",
+                         "generated"})) {
+            throw std::runtime_error(
+                "plan viewer unknown shader origin '" + stage.origin + "'");
+        }
+        const bool declared_required =
+            stage.origin == "authored" || stage.origin == "provider";
+        if (declared_required) {
+            if (!entry.contains("declared_ref") ||
+                !entry.at("declared_ref").is_string() ||
+                entry.at("declared_ref")
+                    .get_ref<const std::string &>()
+                    .empty()) {
+                throw std::runtime_error(
+                    "plan viewer shader origin '" + stage.origin +
+                    "' requires declared_ref");
+            }
+            stage.declared_ref =
+                entry.at("declared_ref").get<std::string>();
+        } else if (entry.contains("declared_ref")) {
+            throw std::runtime_error(
+                "plan viewer shader origin '" + stage.origin +
+                "' forbids declared_ref");
+        }
+
+        const auto &source = entry.at("source_open_ref");
+        if (source.is_string()) {
+            const auto logical = source.get<std::string>();
+            if (!isCanonicalShaderSourceOpenReference(
+                    logical, sourceStageForWireStage(stage.stage))) {
+                throw std::runtime_error(
+                    "plan viewer source_open_ref must be a canonical "
+                    "logical reference with the exact stage source suffix");
+            }
+            if (entry.contains("source_open_reason")) {
+                throw std::runtime_error(
+                    "plan viewer non-null source_open_ref forbids "
+                    "source_open_reason");
+            }
+            stage.source_open_ref = logical;
+        } else if (source.is_null()) {
+            if (!entry.contains("source_open_reason") ||
+                !entry.at("source_open_reason").is_string()) {
+                throw std::runtime_error(
+                    "plan viewer null source_open_ref requires "
+                    "source_open_reason");
+            }
+            const auto reason =
+                entry.at("source_open_reason").get<std::string>();
+            if (!knownValue(reason,
+                            {"embedded_engine_resource", "generated",
+                             "source_not_found"})) {
+                throw std::runtime_error(
+                    "plan viewer unknown source_open_reason '" + reason +
+                    "'");
+            }
+            stage.source_open_reason = reason;
+        } else {
+            throw std::runtime_error(
+                "plan viewer source_open_ref must be string or null");
+        }
+        result.stages.push_back(std::move(stage));
+    }
+    return result;
 }
 
 std::string readTextFile(const std::filesystem::path &path) {
@@ -177,6 +365,10 @@ PlanViewerModel buildPlanViewerModel(
         plan_json.value("version", 0) != 1) {
         throw std::runtime_error("plan viewer requires pelican.frame_plan version 1");
     }
+    if (plan_json.value("profile", std::string{}) != "runtime") {
+        throw std::runtime_error(
+            "plan viewer requires frame plan profile 'runtime'");
+    }
     if (!plan_json.contains("nodes") || !plan_json.at("nodes").is_array() ||
         !plan_json.contains("barriers") || !plan_json.at("barriers").is_array()) {
         throw std::runtime_error("plan viewer frame plan requires nodes and barriers arrays");
@@ -236,6 +428,8 @@ PlanViewerModel buildPlanViewerModel(
             node_json.value("depth_load_op", std::string{});
         node.depth_store_op =
             node_json.value("depth_store_op", std::string{});
+        node.shader_resolution =
+            readShaderResolution(node_json, node.name);
         if (node.kind == "anchor" &&
             node.name.starts_with("__anchor_")) {
             node.anchor = node.name.substr(
@@ -599,6 +793,34 @@ struct PlanViewer::Impl {
             ImGui::SeparatorText("snapshot copy");
             ImGui::Text("copy point: %s", node.snapshot_after.c_str());
             ImGui::Text("byte size: %zu", node.byte_size);
+        }
+        ImGui::SeparatorText("shaders");
+        ImGui::Text("state: %s", node.shader_resolution.state.c_str());
+        for (const auto &stage : node.shader_resolution.stages) {
+            const auto label =
+                stage.index
+                    ? stage.stage + "[" + std::to_string(*stage.index) + "]"
+                    : stage.stage;
+            ImGui::BulletText("%s  [%s]", label.c_str(),
+                              stage.origin.c_str());
+            if (stage.declared_ref &&
+                *stage.declared_ref != stage.effective_ref) {
+                ImGui::TextWrapped("  declared: %s",
+                                   stage.declared_ref->c_str());
+                ImGui::TextWrapped("  effective: %s",
+                                   stage.effective_ref.c_str());
+            } else {
+                ImGui::TextWrapped("  effective: %s",
+                                   stage.effective_ref.c_str());
+            }
+            if (stage.source_open_ref) {
+                ImGui::TextWrapped("  source: %s",
+                                   stage.source_open_ref->c_str());
+            } else {
+                ImGui::TextDisabled(
+                    "  source unavailable: %s",
+                    stage.source_open_reason->c_str());
+            }
         }
         ImGui::SeparatorText("attachment ops");
         if (node.color_load_op.empty() && node.depth_load_op.empty()) ImGui::TextDisabled("not applicable");
