@@ -13148,3 +13148,173 @@ planar_reflection_geometry
 WP341/343/350 の「畳む・中に入る」がその表示にそのまま使える。
 
 依存: 無し。見積: 中。
+
+### WP353: fullscreen パスがブレンドと深度状態を書けるようにする
+
+**§4 規則 11 の上段(出荷物の挙動が変わる)。設計 + 仕様 + コードの三段レビュー。**
+
+#### これは新機能ではない。予定されていた一般化の実施である
+
+`docs/design_shader_freedom_kit.md:199` が明記している:
+
+> 初期実装(fullscreen 移行時)は **fullscreen パスを動かす最小限**に限定する:
+> `vert/frag/color_formats` + 固定ステート(vertex input なし、depth なし、blend なし、cull なし)。
+> **§4.4 の完全形(vertex layout、depth/blend/cull オプション)は
+> material/ui 移行の段で一般化する。最初から汎用を作らないこと。**
+
+**「最初から汎用を作らない」は正しい規律だった。移行は済んだが、一般化の段が実施されていない。**
+
+**そして設計(§4.4)と実装の既定値がずれている:**
+
+```
+              design_shader_freedom_kit.md §4.4     pipelinefactory.hpp:87-103
+cull          eBack                                  eNone
+depth_test    true                                   false
+depth_write   true                                   false
+blend         (記載なし)                             false、One/Zero 固定
+```
+
+#### 測った事実(すべて本 WP 執筆時に確認。再調査不要)
+
+**1. `fullscreen` はパイプライン状態を 1 つも所有していない。**
+
+`src/project/passfieldownership.cpp:26-33`:
+```
+fullscreen_fields = {input_sampling, resource_ports, shader,
+                     push_constants, uses_light_data, implementation}
+```
+**パイプライン状態はゼロ。**`validatePassFieldOwnership`(`:147-155`)が
+`"Pass 'X' type 'fullscreen' does not own field 'raster_state'"` で**投げる**。
+
+**逃げ道が塞がっている**: `type: "raster"` に書き換えれば `raster_state` は書けるが、
+`push_constants` と `uses_light_data` は fullscreen 所有なので**同時には書けない**。
+`lighting_pass` と `sky_background` は両方を必要とするので**構造的に変換不可能**である。
+
+**2. 出荷内に回避策が実在する。**
+
+**回避策 A: 加算ブレンドをフラグメントシェーダで手書きしている。**
+`src/core/resources/bloom_composite.frag` が
+`outColor = color0 + color1 * bloomIntensity` を行い、
+**コメント自身が「A value of 1.0 is a neutral additive blend」と書いている。**
+
+代償(すべて `projects/example/passes/main_rendering_config.json:347-392` に見える):
+- サンプラ 2 本と、フル解像度フェッチが合成 1 段につき 1 回余分
+- **蓄積先へ直接書けないので、段ごとに 3 枚目のターゲットが要る** ——
+  `UpsampleBlend_3` は `V_3` と `V_2` を読んで `H_2` に書く。
+  ブレンドがあれば `V_2` に直接足せる
+- 4 つの合成すべてが `"color_load_op": "Load"` を書いているが、
+  **その隣の `clear_color` は決して効かない。**
+  作者は「行き先を壊すな」を、所有している唯一のフィールドで綴っている
+- `bloomIntensity` が `const float`。パスから渡せない
+
+**回避策 B: 深度 equal テストを `discard` で代用している。**
+`src/core/resources/sky_ambient.frag` が scene depth を読み `if (scene_depth < 1.0) discard;`。
+固定機能なら `depth_test=true, depth_write=false, depth_compare=equal`。
+
+代償(`src/core/resources/features/sky_ambient.json`):
+- 深度バッファに本来不要な `"usage": ["SAMPLED"]` を足している(`:71-75`)
+- `input_sampling` の宣言(`:57-63`)と依存テクスチャ読み
+- **`discard` がフルスクリーン三角形の early-Z を殺す**
+
+**3. 出荷 35 本の `fullscreen` パスは 1 本も深度添付を持たない。**
+すべて `"depth": null` である。**深度を fullscreen で使う経路が今は存在しない。**
+
+**4. 既定値を変えなければ、書かないパスの挙動は変わらない。**
+`GraphicsPipelineDesc` の既定(`pipelinefactory.hpp:87-103`)を据え置けば、
+**何も書いていない 35 本は 1 ビットも動かない。**
+
+#### やること
+
+**1. `fullscreen` が `raster_state` を所有できるようにする**
+
+**`raster` 型と同じ綴りを使うこと。第二の流儀を作らないこと。**
+`raster_state` のパーサは `src/project/rasterpass.cpp:225-345` に既にある。
+**受けるキーを増やさない。既にある `{topology, cull, front_face, depth_test,
+depth_write, depth_compare, color_attachments}` をそのまま使う。**
+
+**2. ブレンドを実際に効かせる**
+
+`color_attachments[].blend` は既に文法にある(`materialoutput.cpp:104-168` が
+`"opaque"` / `"blend"` / `"additive"` と `{color, alpha}` を受ける)。
+**`fullscreen` の pipeline 生成(`renderingpassruntimecompiler.cpp:2094-2138` /
+`fullscreenpasscontainer.cpp:200-227`)がそれを読むようにする。**
+
+**3. 深度状態を効かせる**
+
+**ただし事実 3 のとおり、fullscreen は深度添付を持てない。**
+**深度添付を持てるようにするかどうかは本 WP の判断対象である。**
+`src/project/passshapepolicy.cpp:49-57` が
+`fullscreen` に「色 1 枚・深度なし」を強制している。
+
+**深度添付を許すなら、その 1 行の緩和が出荷 35 本に影響しないことを示すこと。**
+**示せないなら、深度は本 WP から外して報告すること。**
+**黙って落とさないこと。**
+
+#### 受け入れ条件
+
+**否定対照を同じテストの中に置くこと(§4 規約 10)。**
+
+**既定が動かないこと(最重要):**
+
+- **出荷 4 プロジェクト + `src/core/resources/features/` の全 feature について、
+  本 WP の前後で frame plan と生成されるパイプライン記述が完全に一致すること。**
+  同じテストの中で比較する
+- **一致しなければ実装を進めず報告すること**(事実 4 が崩れている)
+
+**ブレンドが効くこと:**
+
+- **`fullscreen` パスに `raster_state.color_attachments[0].blend` を書き、
+  生成された `vk::PipelineColorBlendAttachmentState` が
+  `blendEnable` と係数を反映することを検査する**
+- **同じテストの中で、書かなかった版も実行し、
+  そちらが従来の `blendEnable=false` / One,Zero のままであることを比較すること**
+- **`"additive"` と `{color, alpha}` の両方の綴りを検査すること**
+
+**所有表:**
+
+- **`fullscreen` で `raster_state` が投げなくなること**、かつ
+  **`raster_state` を所有しない型(例: `ui`)では従来どおり投げること**を、
+  同じテストの中で両方実行する
+- **`push_constants` / `uses_light_data` と `raster_state` を
+  同じ `fullscreen` パスに同時に書けること** ——
+  これが「`raster` に書き換える逃げ道」が塞がっていた理由である
+
+**第二の流儀を作らないこと:**
+
+- **`raster` 型で書いた `raster_state` と `fullscreen` で書いたそれが、
+  同じパーサ・同じ既定・同じエラー文言を通ること**を検査する
+
+**そのほか:**
+
+- `uv run tools/doclink.py check` が緑
+- **`SKIP_DEVSTUDIO=ON` でもビルドが通ること**
+- **GPU テストはエージェントに走らせない**(統合側で直列に回す)
+
+#### やらないこと
+
+- **既定値を変えること。**§4.4 と実装がずれているのは事実だが、
+  **既定を動かすと出荷 35 本が動く。**本 WP は「書けるようにする」だけである
+- **`bloom_composite.frag` を書き換えること。**回避策の解消は別 WP。
+  本 WP は書ける場所を作るところまで
+- **`sky_ambient` を書き換えること。**同上
+- 特化ノードを作ること
+- `material` / `shadow_depth` のパイプライン状態に触ること(下記)
+
+#### 次
+
+**回避策の解消**を、書けるようになってから 1 つずつ:
+
+- **bloom の加算合成** —— シェーダの 2 本目のサンプラと、段ごとの 3 枚目のターゲットが消える
+- **sky の `discard`** —— early-Z が戻る。深度添付の可否が決まってから
+
+**別経路のつまみ**(本 WP の範囲外。証拠だけ記録しておく):
+
+- **`front_face` が `materialcontainer.cpp:810` にリテラルで固定されている。**
+  `SurfaceRenderState`(`surfaceformat.hpp:185-191`)に member 自体が無く、
+  平面反射は投影行列を掛けて回避している(`planarreflectionview.hpp:13-16` が自認)
+- **`depthBiasEnable` が `pipelinefactory.cpp:455` で false 固定。**
+  影のバイアスが `fullscreen.frag:115-116` で**画素ごとに**手計算されている。
+  ただし `shadow_depth` は authored 0 件なので、ノードは何も畳まない。
+  **固定を外す側で直すこと**
+
+依存: 無し。見積: 中。
