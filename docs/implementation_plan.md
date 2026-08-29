@@ -14357,58 +14357,86 @@ fingerprint への影響を確認(vec default を持つ behavior が存在しな
 受け入れ: 修正前に Vec2 default 付き typed 登録が実際に落ちる再現 / 修正後の全 17 型往復 /
 WP358 fixture 群の不変。依存: WP358。見積: 小。
 
-### WP360(= リファクタ R3): scene の読者を単一の解決済み投影に載せ替える
+### WP360(= リファクタ R3): scene の読者を単一の解決済み投影に載せ替える(第 2 版)
 
-**§4 規則 11 の上段(core の scene 経路)。仕様 + コードレビュー。意味論不変のリファクタ。**
-**プレファブ U1 の背骨を、プレファブ抜きで先に敷く**(設計 v4 §1 の seam。
-provenance は当面全件 "authored")。
+**§4 規則 11 の上段。仕様レビューで 1 度不合格(9 指摘)。処方箋を採り、ここで打ち切り。**
 
-#### 事実(オブジェクトモデル調査 + プレファブ設計レビューで確定済み)
+#### v1 の中心欠陥: 契約なしの sentinel は添字系を壊す
 
-生の scene JSON / 著作 component 添字を直接読む消費者が複数ある:
+合成 component には正直な authored index が無い。現行 RPC は全 component に
+`component_index` / `authored_json` を必須とし、behavior の `attachment_seq` は
+`(object_index, component_index)` を符号化し、editor journal は raw slot を編集する。
+**resolved 添字を漏らすと編集が別の component を書く。**
 
-- `SceneLoader::load` は生 scene を読む(`scene.cpp:274`)
-- **`Camera` は `sceneDocument().scenesJson()` を自前で再走査する**(`camera.cpp:634, 677`)
-- behavior reload validator も生 `components[]` を走査(`registerer.cpp:152`)
-- editor runtime query は著作 component 数で配列を確保し同添字で runtime 値を対応
-  (`editorruntimefactory.cpp:1044`)
+#### 契約(実装より先に固定する)
 
-この構造のままでは、scene に触るどの機能も全読者を追う羽目になる
-(プレファブ v3 レビューが「SceneLoader 内だけで展開すると prefab 由来 camera が
-Camera に見えない」と実証した穴の一般形)。
+```
+ResolvedComponent {
+  resolved_index,
+  provenance = Authored { authoring_component_index }
+             | Generated { stable_generated_id, source },
+  canonical_json }
+```
+
+- **RPC の `component_index` / `attachment_index` / `attachment_seq` は authored 添字のまま**
+- Generated は別 identity で **read-only**。mutation API は Authored のみ受理し、
+  Generated への編集は名前付きエラー
+- **raw アクセスの allowlist**(「seam 内のみ」は literal に不成立のため):
+  authoring authority(parse / validate / edit / serialize)は raw 可 /
+  **resolver が runtime lowering の唯一の raw reader** /
+  runtime・projector・query は ResolvedScene のみ。
+  **grep でなく、`scenesJson()` の可視性の私有化または依存境界テストで強制**
 
 #### やること
 
-1. **`ResolvedScene` seam を新設**: `(AuthoringSceneDocument) → ResolvedScene +
-   provenance map`(現時点は全 component が authored。プレファブが将来ここに挿さる)
-2. **全読者を載せ替える**: SceneLoader / Camera(生走査の削除)/ Light /
-   behavior reload validator / editor projection・query
-3. 生 JSON への直接アクセスは seam の実装内のみに閉じる
+1. 契約どおりの `ResolvedScene` seam(provenance 付き)
+2. **全束縛点の載せ替え**(レビューが列挙した): `SceneLoader::load` / 初期 behavior
+   attachment / 実 DLL reload / editor set・add・remove・reparent transaction 後 /
+   Camera・Light・Collider projection adapter / preview projection・capture /
+   production editor RPC query
+3. **behavior validator の SDK 境界**: staged SDK header に core-private 型を持ち込まない。
+   scan を core-private adapter に移し、registrar へは中立 DTO
+   (`ResolvedBehaviorUse` 相当)を渡す
 
 #### 受け入れ条件
 
-**意味論不変(等価オラクル):**
+**等価(注入なし):** 親版 RPC bytes 一致(後方互換)+
+**production 配線の RPC fixture を別に**(`EditorRuntimeFactory` / SceneLoader / ECS /
+BehaviorArena を実接続。v1 の capture は runtime_query 未接続で添字 join を検査できなかった)
 
-- **editor RPC(scene_tree / get_components)の bytes が親版と一致**:
-  親版 SHA の shared clone から実 RPC bytes を出所付きで固定(WP354a/358 の流儀)し、
-  載せ替え後も一致
-- golden / replay trace / 全数が不変(全数 2 回)
+**sentinel(契約に基づく形で):**
 
-**配線の証明(sentinel。grep は証明にならない):**
+- **authored の前・間に Generated を挿入**し、同時に検査:
+  authored の bytes/添字は親版の同 component と一致 / runtime 値は正しい authored
+  provenance に join / Generated は別 identity + read-only / Generated への編集は名前付き拒否
+- **behavior は実 schema version bump の sentinel**(同版は scene を読まず continue するため
+  「例外が出ない」は観測でない)。名前付き `schema_incompatible` + scene/object/component
+  identity を検査
+- Camera / Light / behavior / editor query は**件数でなく実際に解決された固有値**を検査
+- **本番 caller の呼び出し削除変異でも同じテストが落ちる**(ヘルパ直叩きは配線証明でない)
+- behavior 編集 round-trip 後、**raw slot の正しい 1 箇所だけ**が変わること
 
-- **test seam で ResolvedScene に合成 component を注入し、全消費者
-  (Camera の対象解決 / Light / behavior 検証 / editor query)がそれを観測する**ことを
-  1 テストで検査 —— 生 JSON を読み続ける消費者はこの注入が見えないため落ちる
-- 逆対照: 注入なしでは従来と同一
+**構成と fixture:**
 
-**そのほか:**
-
-- 生 `scenesJson()` / 生 `components[]` 走査の消費者側 grep 0 件(補助検査)
-- doclink 緑 / SKIP_DEVSTUDIO 両構成 / GPU は直列で実行可
+- **physics ON/OFF**(OFF では collider が名前付きエラー、ON では実 runtime 値)/
+  preview / ImGui ON/OFF / SKIP_DEVSTUDIO 両構成
+- **出荷 4 scene は behavior 0 件**のため、behavior + interleaved Generated の
+  **専用 fixture を必須**(出荷 corpus では中心欠陥が観測不能)
+- **staged SDK での 4 project code build** を受け入れに含める(境界 3 の証明)
+- 全数 2 回 / doclink 緑 / GPU 直列可
 
 #### やらないこと
 
-プレファブ(文書・registry・展開・v2 ゲート・SnapshotV2・BindableProvider・studio 編集)は
-**次の WP361**。本 WP は器だけを、等価証明つきで。
+プレファブ本体(WP361)。ただし Generated provenance の契約は本 WP で固定される
+(プレファブはその最初の本番利用者になる)。
 
-依存: 無し。見積: 中〜大。
+#### v1 の 9 指摘(記録)
+
+束縛点列挙の不足 / **provenance・添字契約の不在(中心)** / 親版 capture が
+runtime_query 未接続 / 観測の定義が弱い(同版 behavior は scene を読まない)/
+「seam 内のみ」の literal 不成立 → allowlist / physics 等の構成不足 /
+出荷 scene に behavior 0 件 → 専用 fixture / SDK header への core 型持ち込み禁止 →
+中立 DTO / sentinel は authored の前・間に。
+壊せなかった: 親版 bytes 一致の実現可能性 / D0 / XR・compiler 分岐の不在。
+
+依存: 無し。見積: 大(契約と SDK 境界の分)。
