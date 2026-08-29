@@ -131,7 +131,9 @@ prefab_dependency_mismatch / prefab_nested_unsupported / prefab_provider_stale /
 prefab_parameter_required / prefab_instance_id_collision / prefab_generated_read_only /
 prefab_generated_id_collision / prefab_instance_transform_missing /
 prefab_instance_transform_duplicate / prefab_component_duplicate /
-prefab_name_mismatch / prefab_persistence_unsupported`。
+prefab_name_mismatch / prefab_persistence_unsupported / prefab_path_invalid /
+prefab_registry_invalid / prefab_document_invalid / prefab_instance_invalid /
+prefab_instance_id_invalid / prefab_component_key_duplicate`。
 文脈: scene_id / instance / prefab / parameter / JSON pointer / (取込時)行 index。
 
 ## 7. 出荷単位と、多オブジェクトへの送り

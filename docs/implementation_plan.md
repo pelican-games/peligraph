@@ -14804,3 +14804,173 @@ WP362 は set/unset の selector・CAS token・result/error・journal inverse �
 
 error catalog 追加(design 側にも反映): `prefab_name_mismatch` /
 `prefab_persistence_unsupported`。
+
+#### WP361/362 仕様レビュー第 3 巡(不合格・11 件)と v4 —— 決定と現物
+
+第 3 巡の内訳: 本当に壊れているもの 5 件(同名挿入の ID 再利用 / seq 符号化 /
+closure の scene digest 欠落 / 否定対照の期待値が逆 / codec default が指紋の外)と、
+「表を書け」と命じたまま表が無いもの 6 件。**v4 で全件を閉じ、レビューはここで
+打ち切る(以降の指摘はコードレビューと台帳で受ける)。v4 は v2/v3 に優先する。**
+
+##### 決定(第 3 巡の破綻 5 件への答え)
+
+- **否定対照の修正**: `instance_id` 単独変更 → Generated ID は変化・`resolved_json` は
+  **不変**。解決値の感度は parameter 値だけを変える別対照で検査する
+- **component key**: prefab の component record に **省略可 `id`**(字句は instance_id と
+  同じ)を導入。**key = `id` があれば `id`、なければ `name`**。key 重複は
+  `prefab_component_key_duplicate`(同名 behavior を 2 件置くには `id` が必須になる)。
+  これで合法な同名挿入でも既存 ID は動かない
+- **Generated ID 導出(byte 単位で固定)**:
+  `gid = "gid_" + lowercase-hex(SHA-256(D ∥ LP(instance_id) ∥ LP(component_key)) の先頭 16 byte)`。
+  `LP(s) = u32-LE(UTF-8 byte 長) ∥ UTF-8 bytes`、`D = LP("pelican.prefab.gid.v1")`。
+  wire 型は string。**scene 成分は含めない**(gid は常に scene 文脈で使われ、
+  scene 内一意性は instance_id 一意 × key 一意から従う)。導出衝突検出時は名前付き
+- **seq は order key であって identity ではない**: Generated は authored と**同一 domain** の
+  `attachment_seq = (object_index << 32) | merged_component_index`
+  (merged 配列 = authored 著作順 → generated 文書順)。既存の「seq 昇順 = 実行順」契約は
+  無変更で宣言順を誘導し、domain bit も 2^53 超過も無い。
+  **identity 期待表の「behavior seq 不変」列は撤回**し、「Generated ID / arena identity
+  (variant が gid を保持)不変」に置換する。seq は authored 挿入で正当にずれる
+  (bytes → seq が決定的関数であることが担保。undo/redo・session 跨ぎは bytes 同一で従う)
+- **closure に文書中全 scene の semantic digest を追加**(parameter override 反例を閉じる)。
+  保証文は「同じ closure → 同じ semantic projection(revision・resolver_generation・
+  AuthoringObjectId・entity id・arena handle/owner を除いた ResolvedScene の正規化像)」
+- **unused registry entry は closure の外**: 参照されない prefab entry の追加・削除では
+  import は成功し mismatch しない —— これを肯定 assertion として受け入れに置く
+- **codec semantics を指紋に入れる**: 7 つの component codec それぞれが
+  {field 存在規則, 省略時 default の canonical JSON} を canonical descriptor として
+  データで公開し、provider fingerprint に合流する。
+  **default 値だけ変える mutation で fingerprint が変わる**対照を要求(behavior 側は
+  既に encoded defaults を含む —— 同水準に揃える)
+
+##### 文法表(WP361 本文。これが正)
+
+**project.json `prefabs[]` entry**(unknown field は `prefab_registry_invalid`):
+
+| field | 型 | 必須 | 規則 |
+|---|---|---|---|
+| name | string | ✔ | `^[A-Za-z0-9_-]{1,64}$`。配列内一意(`prefab_duplicate_name`)。文書内 name と一致(`prefab_name_mismatch`) |
+| path | string | ✔ | project root 相対・`/` 区切り。先頭 `/`・`..` 成分・drive letter は `prefab_path_invalid` |
+
+**prefab 文書 envelope**(unknown field は `prefab_document_invalid`):
+
+| field | 型 | 必須 | 規則 |
+|---|---|---|---|
+| schema | string | ✔ | `"pelican.prefab"` のみ |
+| version | number | ✔ | 1 のみ(`prefab_version_unsupported`) |
+| name | string | ✔ | registry name と同じ字句 |
+| parameters | array | 省略可 | 下記 record。name 一意(`prefab_parameter_duplicate`) |
+| components | array | ✔ 非空 | 下記 record |
+
+**parameter record**(`type` と `kind` は**排他で一方必須**、違反は `prefab_document_invalid`):
+
+| 形 | field | 必須 | 規則 |
+|---|---|---|---|
+| 値 | name / type / default / range | name,type ✔ | type は leaf 17 語彙。default 省略 = instance 必須。range は数値型のみ |
+| asset | name / kind:"asset" / asset_kind / default | name,kind,asset_kind ✔ | default は asset 名 string |
+| object | name / kind:"object" / required_components | name,kind ✔ | **default 禁止**(scene 外から scene 内 object は指せない)= 常に instance 必須 |
+
+**component record**: `name` ✔(component 語彙)+ 省略可 `id` + body passthrough。
+key 重複 `prefab_component_key_duplicate` / transform は `prefab_transform_forbidden`。
+**tagged node** `{"$param": "<name>"}` は**その 1 field のみ**(追加 field は
+`prefab_document_invalid`)。未宣言参照 `prefab_parameter_unknown` /
+全宣言 parameter はどこかで使用(`prefab_parameter_unused`)。
+`name`・`id`・discriminant 位置への tagged node は provider 判定で
+`prefab_binding_not_bindable` / `prefab_binding_inactive`。
+
+**scene instance block `"prefab"`**(unknown field は `prefab_instance_invalid`):
+
+| field | 型 | 必須 | 規則 |
+|---|---|---|---|
+| ref | string | ✔ | registry に存在(`prefab_not_found`) |
+| instance_id | string | ✔ | `^[A-Za-z0-9_-]{1,64}$` 違反 `prefab_instance_id_invalid` / scene 内一意 `prefab_instance_id_collision` |
+| parameters | object | 省略可 | key は宣言名(`prefab_parameter_unknown`)/ 値は leaf 検証(`prefab_parameter_type`)/ required 欠落 `prefab_parameter_required` |
+
+**検証順**: ① scene version gate → ② registry 構文 → ③ 文書構文(envelope →
+parameters → components → tagged 閉包)→ ④ instance 構文(ref → instance_id →
+parameters)→ ⑤ 束縛妥当性(provider)→ ⑥ 合成規則 → ⑦ object-ref(4 相の 3)→
+⑧ codec/behavior canonicalization。各段で最初の違反の code を返す。
+
+**journal の複製/spawn**: 対象 object が prefab キーを持つ場合、canonical op が
+**`new_instance_id` field を記録**する(再生はこの値を使う。決定的)。
+記録の無い旧形式は再解決時 `prefab_instance_id_collision`。
+
+##### RPC wire(WP361 本文)
+
+- get_components の Generated branch(session 正規化の除外一覧に
+  `closure_generation` / `provider_generation` を追加):
+  ```json
+  { "generated": { "stable_generated_id": "gid_0123456789abcdef0123456789abcdef",
+      "source": { "prefab": "enemy_grunt", "instance_id": "gi_7f3a",
+                  "component_key": "sprite_view",
+                  "digest": { "algorithm": "sha256", "hex": "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345" } },
+      "resolved_json": { "name": "sprite_view", "texture": "white" },
+      "editable": false } }
+  ```
+- instance を持つ object entry に `prefab_instance`(parameters は**宣言順**):
+  ```json
+  { "prefab_instance": { "ref": "enemy_grunt", "instance_id": "gi_7f3a",
+      "closure_generation": 3, "provider_generation": 1,
+      "parameters": [
+        { "name": "hp", "value_resolved": 55, "source": "override", "value_authored": 55 },
+        { "name": "tint", "value_resolved": [1, 1, 1, 1], "source": "default" } ] } }
+  ```
+  (`value_authored` は override 時のみ。同値 default/override は `source` で識別)
+- **set_component_value の selector**: 省略可 `generated_id` を追加し
+  `component_slot` と**排他**(両方/どちらも無しは op 不正)。
+  precedence: ①構文 → ② gid 解決(未知は not-found 系 detail)→
+  ③ `prefab_generated_read_only`
+
+##### SnapshotV2 wire(WP362 本文。4 形の現物)
+
+routing: `schema_version` の値で分岐。**V1 の適用範囲 = scene format v1 かつ prefab
+キーなし**。prefab 使用文書への V1 export/import は恒久的に
+`prefab_persistence_unsupported`。数値は非負整数 ≤2^53−1。unknown field 拒否。
+配列は記載の sort 順。key 順は表順。
+
+- **ExportSceneSnapshotRequestV2**: `{"schema_version":2,"allow_pending":false}`
+  (field 表は V1 と同一、version のみ 2)
+- **ExportSceneSnapshotResponseV2** = V1 の全 field(schema_version:2)+ `prefab_closure`:
+  ```json
+  { "prefab_closure": {
+      "scenes": [ { "scene_id": "main", "digest": { "algorithm": "sha256", "hex": "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345" } } ],
+      "prefabs": [ { "name": "enemy_grunt", "digest": { "algorithm": "sha256", "hex": "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345" } } ],
+      "behaviors": [ { "stable_name": "grunt_ai", "schema_version": 1, "params_schema_fingerprint": "585b..." } ],
+      "provider_fingerprint": { "algorithm": "sha256", "hex": "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345" },
+      "resolver_inputs_fingerprint": { "algorithm": "sha256", "hex": "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345" } } }
+  ```
+  `scenes` = **文書中全 scene** の semantic digest(scene_id 昇順)/
+  `prefabs` = read-set のみ(name 昇順)/ `behaviors` = stable_name 昇順。
+  scene digest の byte domain = 現行どおり semantic_scene_bytes(UTF-8)/
+  prefab digest = disk raw bytes / save baseline = disk bytes
+- **ImportSceneSnapshotRequestV2** = V1 の全 field(schema_version:2)+ 同形の
+  `prefab_closure`。検証順は V1 の 5 段に **⑤' closure 照合
+  (`prefab_dependency_mismatch`、要素単位の detail)**を ④ と ⑤(scene_not_found)の
+  間に挿入
+- **ImportSceneSnapshotResult** は V1 と同形(変更なし、と明記)
+
+##### ResolverInputSnapshotV1(WP362 本文)
+
+encoding を固定: field ごとに `LP(field名) ∥ presence byte(optional のみ、0x00/0x01)∥
+値 bytes`。f32 は IEEE754 LE・`-0 → +0` 正規化・NaN は名前付きエラー。enum は宣言値の
+u32-LE。hash = SHA-256、domain `LP("pelican.resolver.inputs.v1")`。
+**field 集合 = `ResolvedSceneDefaults` の全 member を宣言順で**。恣意を残さないため
+**mirror test(WP358 の pair-swap の流儀)**: member を列挙する静的検査が、指紋に
+入っていない member の追加で**コンパイル時または実行時に落ちる**こと。
+主張の境界(v3 (7))は維持: camera up・window size 等の描画時 project 設定は契約の外。
+
+##### set/unset の canonical op(WP362 本文)
+
+```json
+{ "op": "set_prefab_parameter", "object": 12, "parameter": "hp", "value": 55 }
+```
+inverse = 旧 override があれば旧値の set / 旧が default なら
+`{ "op": "unset_prefab_parameter", "object": 12, "parameter": "hp" }`(逆も同様)。
+request の外側 CAS = `{scene_revision, closure_generation, provider_generation}`
+(不一致は各 `stale_revision` / `prefab_dependency_mismatch` / `prefab_provider_stale`)。
+required parameter への unset は `prefab_parameter_required` で拒否(v3 どおり)。
+
+error catalog 追加(design 側にも反映): `prefab_path_invalid` /
+`prefab_registry_invalid` / `prefab_document_invalid` / `prefab_instance_invalid` /
+`prefab_instance_id_invalid` / `prefab_component_key_duplicate`。
+本節の JSON 例は全て実 parser で parse 可能であること(fixture の parse gate に使う)。
