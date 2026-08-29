@@ -35,6 +35,7 @@ enum class EditorCommandErrorCode : std::uint8_t {
     ExternalModification,
     SaveBusy,
     RuntimeOnlyData,
+    ResolvedSceneProviderUnavailable,
     SaveUnavailable,
     SaveFailed,
 };
@@ -246,8 +247,6 @@ class EditorCommandService {
     std::unordered_map<std::uint64_t, std::string> actor_display_names_;
     mutable std::optional<EditorPreviewLeaseResult> preview_lease_;
     mutable std::vector<PendingPreviewWatchTransition> pending_preview_watch_;
-    mutable std::optional<ResolvedScene> fallback_resolved_;
-
     const AuthoringSceneDocument &document() const;
     const ResolvedScene &resolved() const;
     const ResolvedSceneView &selectScene(

@@ -92,6 +92,9 @@ std::unique_ptr<EditorCommandService> makeInteractiveEditorAssetQueryService() {
         .document = [&project_config]() -> const AuthoringSceneDocument & {
             return project_config.sceneDocument();
         },
+        .resolved_scene = [&project_config]() -> const ResolvedScene & {
+            return project_config.resolvedScene();
+        },
         .current_scene_id = [&project_config] { return project_config.defaultSceneId(); },
         .assets = [&project_config, &path_resolver] {
             return collectEditorAssets(project_config, path_resolver);

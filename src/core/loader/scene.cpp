@@ -164,15 +164,17 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
             const auto &component_name = component.name;
             if (component_name == "light") {
                 try {
-                    (void)component.requireRuntimeValue();
+                    const auto &light =
+                        std::any_cast<const LightCodecData &>(
+                            component.requireRuntimeValue());
+                    light_entries.push_back(
+                        LightLoadEntry{object_name, light});
                 } catch (const std::exception &error) {
                     throw std::runtime_error(
                         "Invalid light on object '" +
                         displayObjectName(object_name) + "': " +
                         error.what());
                 }
-                light_entries.push_back(LightLoadEntry{
-                    object_name, component.effective_json});
                 continue;
             }
             if (component_name == "collider") {

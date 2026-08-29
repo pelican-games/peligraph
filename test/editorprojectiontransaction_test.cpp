@@ -658,11 +658,11 @@ TEST_CASE("Transform projection binds an unnamed child by authoring id",
 TEST_CASE("Light and Phys prepared publication is failure atomic",
           "[editor-projection][light][phys]") {
     const std::vector<LightLoadEntry> lights{
-        {"Key", nlohmann::json{{"name", "light"},
-                                {"type", "directional"},
-                                {"direction", {0, -1, 0}},
-                                {"intensity", 2.0},
-                                {"color", {1, 1, 1}}}},
+        {"Key", LightCodecData{
+                    .type = LightCodecType::Directional,
+                    .direction = {0, -1, 0},
+                    .intensity = 2.0f,
+                    .color = {1, 1, 1}}},
     };
     const auto prepared_lights = LightContainer::prepareLoad(lights);
     REQUIRE(prepared_lights.directional_lights.size() == 1);

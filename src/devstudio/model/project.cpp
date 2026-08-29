@@ -1,14 +1,13 @@
 #include "project.hpp"
 
 #include "projectformat.hpp"
-#include "projectpathresolver.hpp"
 #include "sceneformat.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -71,76 +70,37 @@ std::string readTextFile(const std::filesystem::path &path,
     return contents;
 }
 
-std::string sceneDataReference(const Pelican::ProjectEnvelope &project) {
-    if (!project.basic_config.is_object()) {
-        throw std::runtime_error("project.json basic_config must be an object");
+std::uint64_t exactUnsigned(const nlohmann::json &value,
+                            std::string_view field, bool nonzero = false) {
+    std::uint64_t result = 0;
+    if (value.is_number_unsigned()) {
+        result = value.get<std::uint64_t>();
+    } else if (value.is_number_integer()) {
+        const auto signed_value = value.get<std::int64_t>();
+        if (signed_value < 0) {
+            throw std::runtime_error(std::string{field} +
+                                     " must be non-negative");
+        }
+        result = static_cast<std::uint64_t>(signed_value);
+    } else {
+        throw std::runtime_error(std::string{field} +
+                                 " must be an integer token");
     }
-    const auto found = project.basic_config.find("scene_data_json");
-    if (found == project.basic_config.end() || !found->is_string() ||
-        found->get_ref<const std::string &>().empty()) {
-        throw std::runtime_error(
-            "project.json requires string basic_config.scene_data_json");
-    }
-    return found->get<std::string>();
-}
-
-std::vector<OutlinerScene>
-buildScenes(const Pelican::SceneFormatDocument &document) {
-    std::vector<OutlinerScene> result;
-    result.reserve(document.scenes.size());
-
-    for (const auto &[scene_id, authored_scene] : document.scenes.items()) {
-        const auto &authored_objects = authored_scene.at("objects");
-        OutlinerScene scene;
-        scene.scene_id = scene_id;
-        scene.objects.reserve(authored_objects.size());
-        scene.root_declaration_indices.reserve(authored_objects.size());
-
-        std::unordered_map<std::string, std::size_t> named_object_indices;
-        named_object_indices.reserve(authored_objects.size());
-        for (std::size_t index = 0; index < authored_objects.size(); ++index) {
-            const auto name = authored_objects.at(index).find("name");
-            if (name != authored_objects.at(index).end()) {
-                named_object_indices.emplace(name->get<std::string>(), index);
-            }
-        }
-
-        for (std::size_t index = 0; index < authored_objects.size(); ++index) {
-            if (index == std::numeric_limits<std::uint64_t>::max()) {
-                throw std::overflow_error(
-                    "scene declaration index exceeds identity number space");
-            }
-            const auto &authored_object = authored_objects.at(index);
-            const auto name = authored_object.find("name");
-            const std::string authored_name =
-                name == authored_object.end() ? std::string{}
-                                              : name->get<std::string>();
-
-            OutlinerObject object{
-                .key = {scene_id, index},
-                .display_name = Pelican::runtimeObjectIdentityName(
-                    scene_id, static_cast<std::uint64_t>(index) + 1,
-                    authored_name),
-            };
-            if (const auto parent = authored_object.find("parent");
-                parent != authored_object.end()) {
-                object.parent_declaration_index =
-                    named_object_indices.at(parent->get<std::string>());
-            }
-            scene.objects.push_back(std::move(object));
-        }
-
-        for (std::size_t index = 0; index < scene.objects.size(); ++index) {
-            const auto parent = scene.objects[index].parent_declaration_index;
-            if (parent) {
-                scene.objects[*parent].child_declaration_indices.push_back(index);
-            } else {
-                scene.root_declaration_indices.push_back(index);
-            }
-        }
-        result.push_back(std::move(scene));
+    if (nonzero && result == 0) {
+        throw std::runtime_error(std::string{field} + " must be non-zero");
     }
     return result;
+}
+
+const std::string &requiredNonemptyString(const nlohmann::json &object,
+                                          std::string_view field) {
+    const auto found = object.find(field);
+    if (found == object.end() || !found->is_string() ||
+        found->get_ref<const std::string &>().empty()) {
+        throw std::runtime_error("scene_tree requires non-empty string " +
+                                 std::string{field});
+    }
+    return found->get_ref<const std::string &>();
 }
 
 } // namespace
@@ -151,22 +111,142 @@ ProjectOutlinerModel::open(const std::filesystem::path &project_path) {
     auto parsed_project = Pelican::parseProjectEnvelopeText(
         readTextFile(location.file, "project.json"));
 
-    Pelican::ProjectPathResolver resolver;
-    resolver.setup(location.root, false, parsed_project.envelope);
-    const auto scene_text =
-        resolver.loadText(sceneDataReference(parsed_project.envelope));
-    auto scene_document = Pelican::normalizeSceneDataJson(
-        nlohmann::json::parse(scene_text));
-
     ProjectOutlinerModel model;
-    model.project_root_ = resolver.projectRoot();
+    model.project_root_ = location.root;
     model.project_name_ = std::move(parsed_project.envelope.name);
-    model.scenes_ = buildScenes(scene_document);
     model.warnings_ = std::move(parsed_project.warnings);
-    model.warnings_.insert(model.warnings_.end(),
-                           std::make_move_iterator(scene_document.warnings.begin()),
-                           std::make_move_iterator(scene_document.warnings.end()));
     return model;
+}
+
+bool ProjectOutlinerModel::updateSceneTree(
+    const nlohmann::json &scene_tree) {
+    if (!scene_tree.is_object()) {
+        throw std::runtime_error("scene_tree result must be an object");
+    }
+    const auto revision_value = scene_tree.find("scene_revision");
+    if (revision_value == scene_tree.end()) {
+        throw std::runtime_error("scene_tree requires scene_revision");
+    }
+    const auto revision = exactUnsigned(*revision_value, "scene_revision",
+                                        true);
+    const auto scene_id = requiredNonemptyString(scene_tree, "scene_id");
+    const auto objects_value = scene_tree.find("objects");
+    if (objects_value == scene_tree.end() || !objects_value->is_array()) {
+        throw std::runtime_error("scene_tree requires objects array");
+    }
+
+    if (scene_revision_ && *scene_revision_ == revision &&
+        std::any_of(scenes_.begin(), scenes_.end(),
+                    [&scene_id](const auto &scene) {
+                        return scene.scene_id == scene_id;
+                    })) {
+        return false;
+    }
+
+    struct RpcObject {
+        std::size_t declaration_index = 0;
+        std::uint64_t authoring_object_id = 0;
+        std::string name;
+        std::optional<std::string> parent;
+    };
+    std::vector<std::optional<RpcObject>> ordered(objects_value->size());
+    std::unordered_map<std::string, std::size_t> named_indices;
+    for (const auto &value : *objects_value) {
+        if (!value.is_object()) {
+            throw std::runtime_error("scene_tree object entry must be an object");
+        }
+        const auto index_value = value.find("declaration_index");
+        const auto id_value = value.find("authoring_object_id");
+        if (index_value == value.end() || id_value == value.end()) {
+            throw std::runtime_error(
+                "scene_tree object requires declaration_index and authoring_object_id");
+        }
+        const auto index64 = exactUnsigned(*index_value,
+                                           "declaration_index");
+        if (index64 >= ordered.size()) {
+            throw std::runtime_error(
+                "scene_tree declaration indices must be contiguous");
+        }
+        const auto index = static_cast<std::size_t>(index64);
+        if (ordered[index]) {
+            throw std::runtime_error(
+                "scene_tree declaration_index is duplicated");
+        }
+        RpcObject object{
+            .declaration_index = index,
+            .authoring_object_id = exactUnsigned(
+                *id_value, "authoring_object_id", true),
+        };
+        if (const auto name = value.find("name"); name != value.end()) {
+            if (!name->is_string() || name->get_ref<const std::string &>().empty()) {
+                throw std::runtime_error(
+                    "scene_tree object name must be a non-empty string");
+            }
+            object.name = name->get<std::string>();
+            if (!named_indices.emplace(object.name, index).second) {
+                throw std::runtime_error(
+                    "scene_tree object name is duplicated");
+            }
+        }
+        if (const auto parent = value.find("parent"); parent != value.end()) {
+            if (!parent->is_string() ||
+                parent->get_ref<const std::string &>().empty()) {
+                throw std::runtime_error(
+                    "scene_tree object parent must be a non-empty string");
+            }
+            object.parent = parent->get<std::string>();
+        }
+        ordered[index] = std::move(object);
+    }
+
+    OutlinerScene projected{.scene_id = scene_id};
+    projected.objects.reserve(ordered.size());
+    projected.root_declaration_indices.reserve(ordered.size());
+    for (std::size_t index = 0; index < ordered.size(); ++index) {
+        if (!ordered[index]) {
+            throw std::runtime_error(
+                "scene_tree declaration indices must be contiguous");
+        }
+        const auto &source = *ordered[index];
+        OutlinerObject object{
+            .key = {scene_id, index},
+            .display_name = Pelican::runtimeObjectIdentityName(
+                scene_id, source.authoring_object_id, source.name),
+        };
+        if (source.parent) {
+            const auto parent = named_indices.find(*source.parent);
+            if (parent == named_indices.end()) {
+                throw std::runtime_error(
+                    "scene_tree parent does not name an object");
+            }
+            object.parent_declaration_index = parent->second;
+        }
+        projected.objects.push_back(std::move(object));
+    }
+    for (std::size_t index = 0; index < projected.objects.size(); ++index) {
+        const auto parent =
+            projected.objects[index].parent_declaration_index;
+        if (parent) {
+            projected.objects[*parent].child_declaration_indices.push_back(index);
+        } else {
+            projected.root_declaration_indices.push_back(index);
+        }
+    }
+
+    if (!scene_revision_ || *scene_revision_ != revision) {
+        scenes_.clear();
+        scene_revision_ = revision;
+    }
+    const auto existing = std::find_if(
+        scenes_.begin(), scenes_.end(), [&scene_id](const auto &scene) {
+            return scene.scene_id == scene_id;
+        });
+    if (existing == scenes_.end()) {
+        scenes_.push_back(std::move(projected));
+    } else {
+        *existing = std::move(projected);
+    }
+    return true;
 }
 
 const OutlinerObject *

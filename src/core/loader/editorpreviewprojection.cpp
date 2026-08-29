@@ -260,6 +260,10 @@ void applyOverrides(Json &raw, const AuthoringSceneDocument &base,
         }
         try {
             (*component)[Json::json_pointer{field_path}] = override_value.at("value");
+            // Validate the complete authored component at the override seam.
+            // The resolved value is produced once below; this call exists only
+            // to preserve the pre-WP360 rejection boundary.
+            (void)codec->decodeAuthored(*component);
         } catch (const EditorPreviewProjectionError &) {
             throw;
         } catch (const std::exception &error) {
@@ -608,15 +612,47 @@ OrderedJson overlapResult(const OrderedJson &scene, const Json &query,
 #endif
 }
 
-OrderedJson cameraResult(const OrderedJson &object, const Json &query,
+const ResolvedObject &findResolvedObject(const ResolvedScene &scene,
+                                         std::uint64_t object_id,
+                                         std::string_view context) {
+    for (const auto &resolved_scene : scene.scenes()) {
+        const auto found = std::find_if(
+            resolved_scene.objects.begin(), resolved_scene.objects.end(),
+            [object_id](const auto &object) {
+                return object.authoring_object_id == object_id;
+            });
+        if (found != resolved_scene.objects.end()) return *found;
+    }
+    schemaError(std::string{context},
+                "object_id is absent from the resolved projection");
+}
+
+OrderedJson cameraResult(const OrderedJson &object,
+                         const ResolvedScene &resolved,
+                         std::uint64_t object_id, const Json &query,
                          std::string_view context) {
-    const auto *component = findEvaluatedComponent(object, "camera");
-    if (component == nullptr) {
+    const auto &resolved_object =
+        findResolvedObject(resolved, object_id,
+                           std::string{context} + "/object_id");
+    const auto found = std::find_if(
+        resolved_object.components.begin(), resolved_object.components.end(),
+        [](const auto &component) { return component.name == "camera"; });
+    if (found == resolved_object.components.end()) {
         schemaError(std::string{context} + "/object_id",
                     "camera query object has no camera component");
     }
-    const auto decoded = requireComponentCodec("camera").decodeAuthored(*component);
-    const auto &camera = std::any_cast<const CameraCodecData &>(decoded);
+    const CameraCodecData *camera = nullptr;
+    try {
+        camera = &std::any_cast<const CameraCodecData &>(
+            found->requireRuntimeValue());
+    } catch (const std::exception &error) {
+        schemaError(std::string{context} + "/object_id", error.what());
+    }
+    if (!camera->yfov || !camera->znear || !camera->zfar ||
+        !camera->xmag || !camera->ymag) {
+        throw std::logic_error(
+            "resolved preview camera is missing projection values");
+    }
     const auto &world = object.at("world_trs");
     const auto position = queryVec3(world.at("pos"), "prepared_camera/world/pos");
     const auto rotation = queryQuat(world.at("rotation"),
@@ -630,15 +666,15 @@ OrderedJson cameraResult(const OrderedJson &object, const Json &query,
         schemaError(std::string{context}, "camera query dimensions must be non-zero");
     }
     glm::mat4 projection;
-    if (camera.projection_kind == CameraProjectionKind::Orthographic) {
-        projection = glm::orthoRH_ZO(-camera.xmag, camera.xmag,
-                                     -camera.ymag, camera.ymag,
-                                     camera.znear, camera.zfar);
+    if (camera->projection_kind == CameraProjectionKind::Orthographic) {
+        projection = glm::orthoRH_ZO(-*camera->xmag, *camera->xmag,
+                                     -*camera->ymag, *camera->ymag,
+                                     *camera->znear, *camera->zfar);
     } else {
-        const auto aspect = camera.aspect.value_or(
+        const auto aspect = camera->aspect.value_or(
             static_cast<float>(width) / static_cast<float>(height));
-        projection = glm::perspectiveRH_ZO(camera.yfov, aspect,
-                                           camera.znear, camera.zfar);
+        projection = glm::perspectiveRH_ZO(*camera->yfov, aspect,
+                                           *camera->znear, *camera->zfar);
     }
     const auto glm_position = toGlm(position);
     const auto view = glm::lookAt(glm_position, glm_position + direction, up);
@@ -825,10 +861,10 @@ OrderedJson EditorPreviewEvaluationContext::evaluate(
             }
             const auto object_id = exactUnsigned(query.at("object_id"),
                                                  context + "/object_id");
-            data = cameraResult(findEvaluatedObject(
-                                    projection_.evaluated_scene, object_id,
+            data = cameraResult(
+                findEvaluatedObject(projection_.evaluated_scene, object_id,
                                     context + "/object_id"),
-                                query, context);
+                projection_.state.resolved(), object_id, query, context);
         } else {
             unavailable(context + "/kind", "query_adapter",
                         "eval_preview query kind is unavailable: " + kind);

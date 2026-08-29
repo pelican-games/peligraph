@@ -1,10 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json_fwd.hpp>
 
 namespace PelicanStudio {
 
@@ -28,17 +31,19 @@ struct OutlinerScene {
     std::vector<std::size_t> root_declaration_indices;
 };
 
-// Engine-independent, read-only projection of project.json and its scene
-// document. Object identity is always (scene id, declaration index); authored
-// names are presentation and parent-reference data only.
+// Project metadata plus the most recent typed scene_tree RPC projection.
+// Object identity is always (scene id, declaration index); authored names are
+// presentation and parent-reference data only.
 class ProjectOutlinerModel {
     std::filesystem::path project_root_;
     std::optional<std::string> project_name_;
     std::vector<OutlinerScene> scenes_;
     std::vector<std::string> warnings_;
+    std::optional<std::uint64_t> scene_revision_;
 
   public:
     static ProjectOutlinerModel open(const std::filesystem::path &project_path);
+    bool updateSceneTree(const nlohmann::json &scene_tree);
 
     const std::filesystem::path &projectRoot() const noexcept {
         return project_root_;
@@ -51,6 +56,9 @@ class ProjectOutlinerModel {
     }
     const std::vector<std::string> &warnings() const noexcept {
         return warnings_;
+    }
+    const std::optional<std::uint64_t> &sceneRevision() const noexcept {
+        return scene_revision_;
     }
 
     const OutlinerObject *findObject(const OutlinerObjectKey &key) const noexcept;

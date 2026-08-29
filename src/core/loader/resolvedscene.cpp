@@ -65,8 +65,14 @@ void SceneProjectionState::swap(SceneProjectionState &other) noexcept {
 namespace {
 
 bool requestsGeneratedComponent(const nlohmann::json &component) {
-    return component.contains("generated") ||
-           component.value("origin", std::string{}) == "generated";
+    const auto generated = component.find("generated");
+    if (generated != component.end() && generated->is_boolean() &&
+        generated->get<bool>()) {
+        return true;
+    }
+    const auto origin = component.find("origin");
+    return origin != component.end() && origin->is_string() &&
+           origin->get_ref<const std::string &>() == "generated";
 }
 
 ResolvedComponent resolveComponent(
@@ -106,14 +112,22 @@ ResolvedComponent resolveComponent(
             return result;
         }
 
-        const auto canonical = registration->canonicalize_params(source_params);
-        result.behavior_canonical_params = canonical;
-        // This is intentionally the parent RPC representation: the pre-WP360
-        // query completed behavior params before serializing authored_json.
-        result.source_json_exact["params"] = nlohmann::json::parse(canonical);
-        result.effective_json = result.source_json_exact;
-        result.codec = {ComponentCodecState::Registered, true,
-                        std::string_view{"behavior_params"}};
+        try {
+            const auto canonical =
+                registration->canonicalize_params(source_params);
+            result.behavior_canonical_params = canonical;
+            // This is intentionally the parent RPC representation: the pre-WP360
+            // query completed behavior params before serializing authored_json.
+            result.source_json_exact["params"] =
+                nlohmann::json::parse(canonical);
+            result.effective_json = result.source_json_exact;
+            result.codec = {ComponentCodecState::Registered, true,
+                            std::string_view{"behavior_params"}};
+        } catch (const std::exception &error) {
+            result.runtime_resolution_error = error.what();
+            result.codec = {ComponentCodecState::Registered, true,
+                            std::string_view{"behavior_params"}};
+        }
         return result;
     }
 
@@ -136,15 +150,6 @@ ResolvedComponent resolveComponent(
                            ? &*found
                            : nullptr;
             };
-            const auto *projection =
-                data.projection_kind == CameraProjectionKind::Perspective
-                    ? nested("perspective")
-                    : nested("orthographic");
-            const auto has_projection_field = [&](std::string_view name) {
-                return authored.contains(name) ||
-                       (projection != nullptr && projection->contains(name));
-            };
-
             if (!data.projection_specified) {
                 data.projection_kind = defaults.camera_projection.kind;
                 data.yfov = defaults.camera_projection.yfov;
@@ -155,7 +160,7 @@ ResolvedComponent resolveComponent(
                 data.ymag = defaults.camera_projection.ymag;
             } else if (data.projection_kind ==
                        CameraProjectionKind::Perspective) {
-                if (!has_projection_field("yfov")) {
+                if (!data.yfov) {
                     if (defaults.camera_projection.kind !=
                         CameraProjectionKind::Perspective) {
                         throw std::runtime_error(
@@ -163,17 +168,17 @@ ResolvedComponent resolveComponent(
                     }
                     data.yfov = defaults.camera_projection.yfov;
                 }
-                if (!has_projection_field("znear")) {
+                if (!data.znear) {
                     data.znear = defaults.camera_projection.znear;
                 }
-                if (!has_projection_field("zfar")) {
+                if (!data.zfar) {
                     data.zfar = defaults.camera_projection.zfar;
                 }
                 // The authored camera contract deliberately clears a fallback
                 // perspective aspect when the field is omitted.
-                if (!has_projection_field("aspect")) data.aspect.reset();
+                // aspect is intentionally not inherited when it is omitted.
             } else {
-                if (!has_projection_field("xmag")) {
+                if (!data.xmag) {
                     if (defaults.camera_projection.kind !=
                         CameraProjectionKind::Orthographic) {
                         throw std::runtime_error(
@@ -181,7 +186,7 @@ ResolvedComponent resolveComponent(
                     }
                     data.xmag = defaults.camera_projection.xmag;
                 }
-                if (!has_projection_field("ymag")) {
+                if (!data.ymag) {
                     if (defaults.camera_projection.kind !=
                         CameraProjectionKind::Orthographic) {
                         throw std::runtime_error(
@@ -189,16 +194,31 @@ ResolvedComponent resolveComponent(
                     }
                     data.ymag = defaults.camera_projection.ymag;
                 }
-                if (!has_projection_field("znear")) {
+                if (!data.znear) {
                     data.znear = defaults.camera_projection.znear;
                 }
-                if (!has_projection_field("zfar")) {
+                if (!data.zfar) {
                     data.zfar = defaults.camera_projection.zfar;
                 }
                 data.aspect.reset();
             }
+            // Keep the typed projection total for downstream consumers. The
+            // inactive-kind magnitudes/FOV are carried only as resolver state;
+            // encodeCanonical emits fields for the active kind alone.
+            if (!data.yfov) data.yfov = defaults.camera_projection.yfov;
+            if (!data.xmag) data.xmag = defaults.camera_projection.xmag;
+            if (!data.ymag) data.ymag = defaults.camera_projection.ymag;
             data.projection_specified = true;
-            if (data.zfar <= data.znear) {
+            const bool projection_complete = data.znear && data.zfar &&
+                (data.projection_kind == CameraProjectionKind::Perspective
+                     ? static_cast<bool>(data.yfov)
+                     : static_cast<bool>(data.xmag) &&
+                           static_cast<bool>(data.ymag));
+            if (!projection_complete) {
+                throw std::logic_error(
+                    "resolved camera is missing projection values");
+            }
+            if (*data.zfar <= *data.znear) {
                 throw std::runtime_error(
                     "camera.zfar must be greater than the resolved znear");
             }
@@ -237,12 +257,12 @@ ResolvedSceneDefaults cameraDefaultsAfter(
         std::any_cast<const CameraCodecData &>(component.requireRuntimeValue());
     defaults.camera_projection = CameraProjectionSpec{
         .kind = data.projection_kind,
-        .yfov = data.yfov,
-        .znear = data.znear,
-        .zfar = data.zfar,
+        .yfov = *data.yfov,
+        .znear = *data.znear,
+        .zfar = *data.zfar,
         .aspect = data.aspect,
-        .xmag = data.xmag,
-        .ymag = data.ymag,
+        .xmag = *data.xmag,
+        .ymag = *data.ymag,
     };
     defaults.camera_sprite = CameraSpritePolicySpec{
         .pixel_perfect = data.pixel_perfect,

@@ -6,10 +6,20 @@
 #include "../src/core/loader/editorpreviewprojection.hpp"
 #include "../src/core/loader/resolvedscene.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/gamelogic/behaviorarena.hpp"
+#include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/log.hpp"
+#include "../src/core/renderer/camera.hpp"
 #include "../src/core/userpublic/behavior.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -22,10 +32,6 @@
 #ifndef PELICAN_WP360_RPC_FIXTURE
 #define PELICAN_WP360_RPC_FIXTURE ""
 #endif
-#ifndef PELICAN_WP360_SKIP_DEVSTUDIO
-#define PELICAN_WP360_SKIP_DEVSTUDIO 0
-#endif
-
 namespace Pelican {
 namespace {
 
@@ -46,6 +52,80 @@ class Wp360WireBehavior final : public Behavior {
   public:
     using Params = Wp360WireParams;
 };
+
+struct Wp360aRequiredLabelParams {
+    std::string label;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&Wp360aRequiredLabelParams::label>("label"),
+                  "default"));
+};
+
+class Wp360aInactiveBehavior final : public Behavior {
+  public:
+    using Params = Wp360aRequiredLabelParams;
+};
+
+PELICAN_REGISTER_BEHAVIOR(Wp360aInactiveBehavior,
+                          "wp360a_inactive_behavior", 1);
+
+struct Wp360aSandbox {
+    std::filesystem::path base;
+    std::filesystem::path root;
+
+    explicit Wp360aSandbox(std::string_view name) {
+        const auto suffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        base = std::filesystem::temp_directory_path() /
+               ("pelican_wp360a_" + std::string{name} + "_" + suffix);
+        root = base / "project";
+        std::filesystem::create_directories(root);
+    }
+    ~Wp360aSandbox() {
+        std::error_code error;
+        std::filesystem::remove_all(base, error);
+    }
+};
+
+void writeWp360aText(const std::filesystem::path &path,
+                     std::string_view text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output{path, std::ios::binary};
+    output << text;
+}
+
+void ensureWp360aLogger() {
+    static const bool initialized = [] {
+        setupLogger();
+        return true;
+    }();
+    (void)initialized;
+}
+
+Json wp360aProjectJson(float up_y = 1.0f, float zfar = 1000.0f,
+                       std::string_view default_scene = "default_scene") {
+    return Json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "wp360a-seam"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"window_size", {{"width", 100}, {"height", 100}}},
+          {"camera",
+           {{"yfov", 0.5},
+            {"znear", 0.1},
+            {"zfar", zfar},
+            {"up", {0.0, up_y, 0.0}}}},
+          {"default_scene_id", default_scene},
+          {"scene_data_json", "scene.json"}}}};
+}
+
+void setupWp360aProject(const Wp360aSandbox &sandbox,
+                        const Json &project, const Json &scene) {
+    writeWp360aText(sandbox.root / "scene.json", scene.dump());
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+}
 
 constexpr std::string_view wireScene() {
     return R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"name":"WP360WireProbe","components":[{"name":"camera","type":"perspective","yfov":0.731},{"name":"behavior","type":"wp360_wire_behavior","params":{}},{"name":"light","type":"point","position":[7,8,9],"intensity":6.25,"color":[0.2,0.4,0.8]},{"name":"unknown_read_only","payload":{"identity":360}}]}]}}})json";
@@ -244,12 +324,213 @@ TEST_CASE("WP360 preview matrix reads resolver-completed values in every UI conf
     REQUIRE(result.at(0).at("data").at("yfov") == 0.731f);
     REQUIRE(result.at(0).at("data").at("znear") == 0.125f);
     REQUIRE(result.at(0).at("data").at("zfar") == 360.0f);
+    STATIC_REQUIRE(PELICAN_WP360_SKIP_DEVSTUDIO == 0 ||
+                   PELICAN_WP360_SKIP_DEVSTUDIO == 1);
     std::cout << "WP360_PREVIEW_MATRIX yfov="
               << result.at(0).at("data").at("yfov")
               << " znear=" << result.at(0).at("data").at("znear")
               << " zfar=" << result.at(0).at("data").at("zfar")
               << " imgui=" << PELICAN_WITH_IMGUI
               << " skip_devstudio=" << PELICAN_WP360_SKIP_DEVSTUDIO << '\n';
+}
+
+TEST_CASE("WP360a case 1 accepts a target-less orbit through codec and Camera",
+          "[wp360a][harm-1]") {
+    ensureWp360aLogger();
+    Wp360aSandbox sandbox{"orbit"};
+    const auto scene = Json::parse(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[
+        {"name":"OrbitNoTarget","components":[
+          {"name":"camera","controller":{"type":"orbit","distance":4.0}}
+        ]}
+      ]}}
+    })json");
+    FastModuleContainer modules;
+    setupWp360aProject(sandbox, wp360aProjectJson(), scene);
+    auto &camera = GET_MODULE(Camera);
+    const auto *controller = camera.sceneCameraController("OrbitNoTarget");
+    REQUIRE(controller != nullptr);
+    REQUIRE(controller->target.empty());
+    REQUIRE(controller->distance == 4.0f);
+    std::cout << "WP360A_FIXED_CASE1 accepted target=<empty> distance="
+              << controller->distance << '\n';
+}
+
+TEST_CASE("WP360a case 2 preserves nondefault project up only when rotation is omitted",
+          "[wp360a][harm-2]") {
+    ensureWp360aLogger();
+    Wp360aSandbox sandbox{"up"};
+    const auto scene = Json::parse(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[
+        {"name":"NoRotation","components":[
+          {"name":"transform","pos":[1,2,3]},{"name":"camera"}
+        ]},
+        {"name":"IdentityRotation","components":[
+          {"name":"transform","pos":[4,5,6],"rotation":[0,0,0,1]},
+          {"name":"camera"}
+        ]}
+      ]}}
+    })json");
+    FastModuleContainer modules;
+    setupWp360aProject(sandbox, wp360aProjectJson(-1.0f), scene);
+    auto &camera = GET_MODULE(Camera);
+    camera.setActiveCamera("NoRotation");
+    REQUIRE(camera.getPos() == glm::vec3{1, 2, 3});
+    REQUIRE(camera.getUp() == glm::vec3{0, -1, 0});
+    const auto omitted_up = camera.getUp();
+    camera.setActiveCamera("IdentityRotation");
+    REQUIRE(camera.getUp() == glm::vec3{0, 1, 0});
+    std::cout << "WP360A_FIXED_CASE2 omitted_up=" << omitted_up.x << ','
+              << omitted_up.y << ',' << omitted_up.z
+              << " explicit_identity_up=" << camera.getUp().x << ','
+              << camera.getUp().y << ',' << camera.getUp().z << '\n';
+}
+
+TEST_CASE("WP360a case 3 rejects a string camera override at the merge seam",
+          "[wp360a][harm-3]") {
+    const auto document = AuthoringSceneDocument::load(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"main":{"objects":[
+        {"name":"Camera","components":[
+          {"name":"camera","type":"perspective","yfov":0.8,"znear":0.1,"zfar":100}
+        ]}
+      ]}}
+    })json", SceneRevision{1});
+    const auto overrides = Json::array({
+        {{"op", "set_component_value"}, {"object_id", 1},
+         {"component_slot", "camera"}, {"field_path", "/yfov"},
+         {"value", "not-a-number"}},
+    });
+    try {
+        (void)prepareEditorPreviewProjection(document, overrides);
+        FAIL("preview unexpectedly accepted invalid yfov");
+    } catch (const EditorPreviewProjectionError &error) {
+        REQUIRE(error.code() ==
+                EditorPreviewProjectionErrorCode::schema_violation);
+        REQUIRE(error.field() == "overrides/0/field_path");
+        std::cout << "WP360A_FIXED_CASE3 code="
+                  << editorPreviewProjectionErrorCodeName(error.code())
+                  << " field=" << error.field() << " message="
+                  << error.what() << '\n';
+    }
+}
+
+TEST_CASE("WP360a case 4 reserves only exact generated markers",
+          "[wp360a][harm-4]") {
+    const auto accepted = AuthoringSceneDocument::load(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"main":{"objects":[{"components":[
+        {"name":"external_false","generated":false},
+        {"name":"external_null","generated":null},
+        {"name":"origin_false","origin":false},
+        {"name":"origin_null","origin":null},
+        {"name":"origin_external","origin":"external"}
+      ]}]}}
+    })json", SceneRevision{1});
+    const auto resolved = ResolvedSceneResolver::resolve(
+        accepted, SceneResolverGeneration{1});
+    REQUIRE(resolved.findScene("main")->objects.front().components.size() ==
+            5);
+
+    const auto require_reserved = [](std::string_view marker) {
+        const auto document = AuthoringSceneDocument::load(
+            std::string{R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"components":[{"name":"external_probe",)json"} +
+                std::string{marker} +
+                R"json(}] }]}}})json",
+            SceneRevision{1});
+        REQUIRE_THROWS_AS(ResolvedSceneResolver::resolve(
+                              document, SceneResolverGeneration{1}),
+                          ResolvedSceneError);
+    };
+    require_reserved(R"json("generated":true)json");
+    require_reserved(R"json("origin":"generated")json");
+    std::cout << "WP360A_FIXED_CASE4 accepted=false,null,external"
+                 " rejected=generated:true,origin:generated\n";
+}
+
+TEST_CASE("WP360a case 5 compares znear with the resolved project zfar once",
+          "[wp360a][harm-5]") {
+    ensureWp360aLogger();
+    Wp360aSandbox sandbox{"camera-default"};
+    const auto scene = Json::parse(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[
+        {"name":"LongRange","components":[
+          {"name":"camera","type":"perspective","yfov":0.5,"znear":5000}
+        ]}
+      ]}}
+    })json");
+    FastModuleContainer modules;
+    setupWp360aProject(sandbox, wp360aProjectJson(1.0f, 10000.0f), scene);
+    auto &camera = GET_MODULE(Camera);
+    camera.setActiveCamera("LongRange");
+    const auto projection = camera.getProjectionSpec();
+    REQUIRE(projection.znear == 5000.0f);
+    REQUIRE(projection.zfar == 10000.0f);
+    std::cout << "WP360A_FIXED_CASE5 accepted znear=" << projection.znear
+              << " zfar=" << projection.zfar << '\n';
+}
+
+TEST_CASE("WP360a case 6 stores inactive behavior errors and names active bind failures",
+          "[wp360a][harm-6]") {
+    ensureWp360aLogger();
+    Wp360aSandbox sandbox{"inactive"};
+    const auto scene = Json::parse(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{
+        "active":{"objects":[]},
+        "inactive":{"objects":[
+          {"name":"InvalidInactive","components":[
+            {"name":"behavior","type":"wp360a_inactive_behavior","params":{"label":7}}
+          ]}
+        ]}
+      }
+    })json");
+    FastModuleContainer modules;
+    setupWp360aProject(
+        sandbox, wp360aProjectJson(1.0f, 1000.0f, "active"), scene);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    REQUIRE_NOTHROW(GET_MODULE(SceneLoader).load(SceneId{"active"}));
+    const auto &resolved = GET_MODULE(ProjectBasicConfig).resolvedScene();
+    const auto *inactive = resolved.findScene("inactive");
+    REQUIRE(inactive != nullptr);
+    const auto &component =
+        inactive->objects.front().components.front();
+    REQUIRE(component.runtime_resolution_error.has_value());
+    REQUIRE_THROWS_WITH(
+        prepareResolvedSceneBehaviorAttachments(
+            inactive->objects, BehaviorRegistryAvailability::active),
+        Catch::Matchers::ContainsSubstring("behavior_resolution_error") &&
+            Catch::Matchers::ContainsSubstring("InvalidInactive"));
+    std::cout << "WP360A_FIXED_CASE6 active=loaded inactive_error=stored"
+                 " bind_error=behavior_resolution_error\n";
+}
+
+TEST_CASE("WP360a missing resolved provider is a named error with no fallback",
+          "[wp360a][fallback]") {
+    const auto document = AuthoringSceneDocument::load(
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}})json",
+        SceneRevision{1});
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+    }};
+    try {
+        (void)service.sceneTree();
+        FAIL("missing resolved provider unexpectedly fell back");
+    } catch (const EditorCommandError &error) {
+        REQUIRE(error.code() ==
+                EditorCommandErrorCode::ResolvedSceneProviderUnavailable);
+        REQUIRE(std::string{editorCommandErrorCodeName(error.code())} ==
+                "resolved_scene_provider_unavailable");
+        std::cout << "WP360A_FALLBACK code="
+                  << editorCommandErrorCodeName(error.code())
+                  << " message=" << error.what() << '\n';
+    }
 }
 
 #if PELICAN_WITH_RPC

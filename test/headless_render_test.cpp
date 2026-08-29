@@ -5491,15 +5491,11 @@ TEST_CASE(
                     .name =
                         "Directional" +
                         std::to_string(index),
-                    .component =
-                        {
-                            {"type", "directional"},
-                            {"direction",
-                             {0.0, 0.0, -1.0}},
-                            {"intensity", 1.0},
-                            {"color",
-                             {1.0, 1.0, 1.0}},
-                        },
+                    .component = LightCodecData{
+                        .type = LightCodecType::Directional,
+                        .direction = {0.0f, 0.0f, -1.0f},
+                        .intensity = 1.0f,
+                        .color = {1.0f, 1.0f, 1.0f}},
                 });
         }
         GET_MODULE(LightContainer).load(lights);
@@ -9231,16 +9227,15 @@ TEST_CASE(
             GET_MODULE(LightContainer).load({
                 LightLoadEntry{
                     .name = "WP283 directional",
-                    .component = {
-                        {"type", "directional"},
+                    .component = LightCodecData{
+                        .type = LightCodecType::Directional,
                         // A background sample at the cleared world origin
                         // intersects the x=-0.25 blocker along this ray.
                         // The corner assertions therefore exercise coverage,
                         // rather than relying on an incidental miss.
-                        {"direction", {0.5, 0.0, -1.0}},
-                        {"intensity", 4.0},
-                        {"color", {1.0, 1.0, 1.0}},
-                    },
+                        .direction = {0.5f, 0.0f, -1.0f},
+                        .intensity = 4.0f,
+                        .color = {1.0f, 1.0f, 1.0f}},
                 },
             });
             auto &camera = GET_MODULE(Camera);
@@ -9427,12 +9422,11 @@ TEST_CASE(
         GET_MODULE(LightContainer).load({
             LightLoadEntry{
                 .name = "WP284 empty-TLAS directional",
-                .component = {
-                    {"type", "directional"},
-                    {"direction", {0.0, 0.0, -1.0}},
-                    {"intensity", 1.0},
-                    {"color", {1.0, 1.0, 1.0}},
-                },
+                .component = LightCodecData{
+                    .type = LightCodecType::Directional,
+                    .direction = {0.0f, 0.0f, -1.0f},
+                    .intensity = 1.0f,
+                    .color = {1.0f, 1.0f, 1.0f}},
             },
         });
         auto &camera = GET_MODULE(Camera);
@@ -9519,12 +9513,11 @@ TEST_CASE(
         GET_MODULE(LightContainer).load({
             LightLoadEntry{
                 .name = "WP285 embedded directional",
-                .component = {
-                    {"type", "directional"},
-                    {"direction", {0.0, 0.0, -1.0}},
-                    {"intensity", 1.0},
-                    {"color", {1.0, 1.0, 1.0}},
-                },
+                .component = LightCodecData{
+                    .type = LightCodecType::Directional,
+                    .direction = {0.0f, 0.0f, -1.0f},
+                    .intensity = 1.0f,
+                    .color = {1.0f, 1.0f, 1.0f}},
             },
         });
 

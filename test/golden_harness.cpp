@@ -4101,6 +4101,10 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
     project["name"] = std::string{mode};
     project["basic_config"]["window_size"] = {
         {"width", golden_case.width}, {"height", golden_case.height}};
+    if (mode == "editor_runtime_binding") {
+        project["basic_config"]["camera"]["znear"] = 0.4321f;
+        project["basic_config"]["camera"]["zfar"] = 8765.0f;
+    }
     if (isStrictSpriteGoldenMode(mode)) {
         project["basic_config"]["sprite"] = {{"pixels_per_unit", 4.0}};
     }
@@ -4270,9 +4274,9 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
              {transform({7.0f, 8.0f, 9.0f}),
               sprite("atlas#sprite/page1", {0.5f, 0.5f}),
               nlohmann::json{{"name", "light"},
-                             {"type", "point"},
+                             {"type", "spot"},
                              {"position", {7.0f, 8.0f, 9.0f}},
-                             {"intensity", 6.25f},
+                             {"direction", {0.0f, -1.0f, 0.0f}},
                              {"color", {0.2f, 0.4f, 0.8f}}},
               nlohmann::json{{"name", "camera"},
                              {"type", "perspective"},
@@ -5881,12 +5885,16 @@ void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
         REQUIRE(query_camera.at("runtime_json").at("yfov") ==
                 Catch::Approx(0.731f));
         REQUIRE(query_camera.at("runtime_json").at("znear") ==
-                Catch::Approx(0.1f));
+                Catch::Approx(0.4321f));
         REQUIRE(query_camera.at("runtime_json").at("zfar") ==
-                Catch::Approx(100.0f));
+                Catch::Approx(8765.0f));
         REQUIRE(query_light.at("component_index") == 2);
         REQUIRE(query_light.at("runtime_json").at("intensity") ==
-                Catch::Approx(6.25f));
+                Catch::Approx(1.0f));
+        REQUIRE(query_light.at("runtime_json").at("innerConeAngle") ==
+                Catch::Approx(12.5f));
+        REQUIRE(query_light.at("runtime_json").at("outerConeAngle") ==
+                Catch::Approx(17.5f));
         REQUIRE(query_behavior.at("component_index") == 5);
         REQUIRE(query_behavior.at("pending") == true);
 
@@ -5897,17 +5905,19 @@ void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
         REQUIRE(resolved_camera->second.projection.yfov ==
                 Catch::Approx(0.731f));
         REQUIRE(resolved_camera->second.projection.zfar ==
-                Catch::Approx(100.0f));
+                Catch::Approx(8765.0f));
 
         const auto light_state = GET_MODULE(LightContainer).snapshotPrepared();
         const auto resolved_light = std::find_if(
-            light_state.point_lights.begin(), light_state.point_lights.end(),
+            light_state.spot_lights.begin(), light_state.spot_lights.end(),
             [](const auto &light) {
                 return light.name == "WP360ResolvedProbe";
             });
-        REQUIRE(resolved_light != light_state.point_lights.end());
-        REQUIRE(resolved_light->intensity == Catch::Approx(6.25f));
+        REQUIRE(resolved_light != light_state.spot_lights.end());
+        REQUIRE(resolved_light->intensity == Catch::Approx(1.0f));
         REQUIRE(resolved_light->position.x == Catch::Approx(7.0f));
+        REQUIRE(resolved_light->innerConeAngle == Catch::Approx(12.5f));
+        REQUIRE(resolved_light->outerConeAngle == Catch::Approx(17.5f));
 
         const auto attachments = GET_MODULE(BehaviorAttachmentArena).snapshot();
         const auto resolved_attachment = std::find_if(
@@ -5922,6 +5932,8 @@ void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
                   << " query_zfar="
                   << query_camera.at("runtime_json").at("zfar").get<float>()
                   << " light_intensity=" << resolved_light->intensity
+                  << " light_cones=" << resolved_light->innerConeAngle
+                  << ',' << resolved_light->outerConeAngle
                   << " behavior_component_index="
                   << resolved_attachment->component_index << '\n';
 

@@ -315,7 +315,10 @@ ComponentCodecValue decodeTransform(const Json &json) {
     requireClosed(json, "transform", std::array<std::string_view, 4>{"name", "pos", "rotation", "scale"});
     TransformCodecData result;
     if (const auto it = json.find("pos"); it != json.end()) result.pos = readVec3(*it, "transform.pos");
-    if (const auto it = json.find("rotation"); it != json.end()) result.rotation = readQuat(*it, "transform.rotation");
+    if (const auto it = json.find("rotation"); it != json.end()) {
+        result.rotation = readQuat(*it, "transform.rotation");
+        result.rotation_specified = true;
+    }
     if (const auto it = json.find("scale"); it != json.end()) result.scale = readVec3(*it, "transform.scale");
     return result;
 }
@@ -355,7 +358,8 @@ ComponentCodecValue projectTransform(const void *raw_source) {
     if (raw_source == nullptr) throw std::invalid_argument("transform runtime source is null");
     const auto &source = *static_cast<const TransformCodecTarget *>(raw_source);
     if (source.local != nullptr) {
-        return TransformCodecData{source.local->pos, source.local->rotation, source.local->scale};
+        return TransformCodecData{source.local->pos, source.local->rotation,
+                                  source.local->scale, true};
     }
     if (source.world == nullptr) throw std::invalid_argument("transform world source is null");
 
@@ -376,12 +380,12 @@ ComponentCodecValue projectTransform(const void *raw_source) {
         return TransformCodecData{{local_pos.x, local_pos.y, local_pos.z},
                                   {local_rotation.x, local_rotation.y,
                                    local_rotation.z, local_rotation.w},
-                                  {local_scale.x, local_scale.y, local_scale.z}};
+                                  {local_scale.x, local_scale.y, local_scale.z}, true};
     }
     return TransformCodecData{{source.world->pos.x, source.world->pos.y, source.world->pos.z},
                               {source.world->rotation.x, source.world->rotation.y,
                                source.world->rotation.z, source.world->rotation.w},
-                              {source.world->scale.x, source.world->scale.y, source.world->scale.z}};
+                              {source.world->scale.x, source.world->scale.y, source.world->scale.z}, true};
 }
 
 const Json *optionalObject(const Json &json, std::string_view root, std::string_view field);
@@ -442,25 +446,27 @@ const Json *findCameraNumber(const Json &json, const Json *nested, std::string_v
     return nullptr;
 }
 
-OrderedJson decodeController(const Json &controller) {
+CameraControllerCodecData decodeController(const Json &controller) {
     requireClosed(controller, "camera.controller",
                   std::array<std::string_view, 12>{"type", "target", "offset", "distance", "yaw", "pitch",
                                                    "yaw_degrees", "pitch_degrees", "damping", "speed",
                                                    "sensitivity", "up"});
     const auto type = readString(requireField(controller, "camera.controller", "type"),
                                  "camera.controller.type", true);
-    OrderedJson result{{"type", type}};
-    const auto damping = controller.contains("damping")
-                             ? readFloat(controller.at("damping"), "camera.controller.damping", 0.0f)
-                             : 0.0f;
-    result["damping"] = damping;
+    CameraControllerCodecData result;
+    result.damping = controller.contains("damping")
+                         ? readFloat(controller.at("damping"), "camera.controller.damping", 0.0f)
+                         : 0.0f;
     constexpr float degrees_to_radians = 0.01745329251994329577f;
     if (type == "orbit") {
-        result["target"] = readString(requireField(controller, "camera.controller", "target"),
+        result.type = CameraControllerCodecType::Orbit;
+        if (controller.contains("target")) {
+            result.target = readString(controller.at("target"),
                                        "camera.controller.target", true);
-        result["distance"] = readFloat(requireField(controller, "camera.controller", "distance"),
-                                        "camera.controller.distance", 0.0f,
-                                        std::numeric_limits<float>::max(), false);
+        }
+        result.distance = readFloat(requireField(controller, "camera.controller", "distance"),
+                                    "camera.controller.distance", 0.0f,
+                                    std::numeric_limits<float>::max(), false);
         const auto read_angle = [&](std::string_view radians, std::string_view degrees) {
             if (controller.contains(radians) && controller.contains(degrees)) {
                 codecError(StructFieldErrorCode::UnknownField,
@@ -475,23 +481,25 @@ OrderedJson decodeController(const Json &controller) {
             }
             return 0.0f;
         };
-        result["yaw"] = read_angle("yaw", "yaw_degrees");
-        result["pitch"] = read_angle("pitch", "pitch_degrees");
-        result["sensitivity"] = controller.contains("sensitivity")
-                                    ? readFloat(controller.at("sensitivity"), "camera.controller.sensitivity", 0.0f)
-                                    : 1.0f;
+        result.yaw = read_angle("yaw", "yaw_degrees");
+        result.pitch = read_angle("pitch", "pitch_degrees");
+        result.sensitivity = controller.contains("sensitivity")
+                                 ? readFloat(controller.at("sensitivity"), "camera.controller.sensitivity", 0.0f)
+                                 : 1.0f;
     } else if (type == "follow") {
-        result["target"] = readString(requireField(controller, "camera.controller", "target"),
-                                       "camera.controller.target", true);
-        result["offset"] = encodeVec(readVec3(requireField(controller, "camera.controller", "offset"),
-                                               "camera.controller.offset"));
+        result.type = CameraControllerCodecType::Follow;
+        result.target = readString(requireField(controller, "camera.controller", "target"),
+                                   "camera.controller.target", true);
+        result.offset = readVec3(requireField(controller, "camera.controller", "offset"),
+                                 "camera.controller.offset");
     } else if (type == "fly") {
-        result["speed"] = readFloat(requireField(controller, "camera.controller", "speed"),
-                                     "camera.controller.speed", 0.0f,
-                                     std::numeric_limits<float>::max(), false);
-        result["sensitivity"] = readFloat(requireField(controller, "camera.controller", "sensitivity"),
-                                           "camera.controller.sensitivity", 0.0f,
-                                           std::numeric_limits<float>::max(), false);
+        result.type = CameraControllerCodecType::Fly;
+        result.speed = readFloat(requireField(controller, "camera.controller", "speed"),
+                                 "camera.controller.speed", 0.0f,
+                                 std::numeric_limits<float>::max(), false);
+        result.sensitivity = readFloat(requireField(controller, "camera.controller", "sensitivity"),
+                                       "camera.controller.sensitivity", 0.0f,
+                                       std::numeric_limits<float>::max(), false);
     } else {
         codecError(StructFieldErrorCode::InvalidEnum, "camera.controller.type",
                    "value '" + type + "' is not supported");
@@ -578,7 +586,7 @@ ComponentCodecValue decodeCamera(const Json &json) {
         result.zfar = readFloat(*value, "camera.zfar", 0.0f,
                                 std::numeric_limits<float>::max(), false);
     }
-    if (result.zfar <= result.znear) {
+    if (result.znear && result.zfar && *result.zfar <= *result.znear) {
         codecError(StructFieldErrorCode::OutOfRange, "camera.zfar", "must be greater than znear");
     }
 
@@ -615,21 +623,43 @@ std::string_view cameraTypeName(CameraProjectionKind kind) {
     return kind == CameraProjectionKind::Perspective ? "perspective" : "orthographic";
 }
 
+OrderedJson encodeController(const CameraControllerCodecData &data) {
+    OrderedJson result;
+    result["type"] = data.type == CameraControllerCodecType::Orbit
+                         ? "orbit"
+                         : (data.type == CameraControllerCodecType::Follow ? "follow" : "fly");
+    result["damping"] = data.damping;
+    if (data.type == CameraControllerCodecType::Orbit) {
+        if (!data.target.empty()) result["target"] = data.target;
+        result["distance"] = data.distance;
+        result["yaw"] = data.yaw;
+        result["pitch"] = data.pitch;
+        result["sensitivity"] = data.sensitivity;
+    } else if (data.type == CameraControllerCodecType::Follow) {
+        result["target"] = data.target;
+        result["offset"] = encodeVec(data.offset);
+    } else {
+        result["speed"] = data.speed;
+        result["sensitivity"] = data.sensitivity;
+    }
+    return result;
+}
+
 OrderedJson encodeCamera(const ComponentCodecValue &value) {
     const auto &data = codecValue<CameraCodecData>(value, "camera");
     OrderedJson result{{"name", "camera"}};
     if (data.projection_specified) {
         result["type"] = cameraTypeName(data.projection_kind);
         if (data.projection_kind == CameraProjectionKind::Perspective) {
-            result["yfov"] = data.yfov;
-            result["znear"] = data.znear;
-            result["zfar"] = data.zfar;
+            if (data.yfov) result["yfov"] = *data.yfov;
+            if (data.znear) result["znear"] = *data.znear;
+            if (data.zfar) result["zfar"] = *data.zfar;
             if (data.aspect) result["aspect"] = *data.aspect;
         } else {
-            result["xmag"] = data.xmag;
-            result["ymag"] = data.ymag;
-            result["znear"] = data.znear;
-            result["zfar"] = data.zfar;
+            if (data.xmag) result["xmag"] = *data.xmag;
+            if (data.ymag) result["ymag"] = *data.ymag;
+            if (data.znear) result["znear"] = *data.znear;
+            if (data.zfar) result["zfar"] = *data.zfar;
         }
     }
     if (data.sprite_specified) {
@@ -639,7 +669,7 @@ OrderedJson encodeCamera(const ComponentCodecValue &value) {
                          ? "z"
                          : (data.sprite_sort == CameraSpriteSortPolicy::y_down ? "y_down" : "declaration")}};
     }
-    if (data.controller) result["controller"] = *data.controller;
+    if (data.controller) result["controller"] = encodeController(*data.controller);
     return result;
 }
 
@@ -921,7 +951,7 @@ nlohmann::ordered_json projectTransformRuntimeJson(const TransformCodecTarget &t
     const TransformCodecData world{{target.world->pos.x, target.world->pos.y, target.world->pos.z},
                                    {target.world->rotation.x, target.world->rotation.y,
                                     target.world->rotation.z, target.world->rotation.w},
-                                   {target.world->scale.x, target.world->scale.y, target.world->scale.z}};
+                                   {target.world->scale.x, target.world->scale.y, target.world->scale.z}, true};
     return OrderedJson{{"local_trs", local},
                        {"world_trs", codec.encodeCanonical(ComponentCodecValue{world})}};
 }

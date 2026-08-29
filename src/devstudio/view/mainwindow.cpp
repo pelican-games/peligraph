@@ -18,6 +18,7 @@
 #include <QFont>
 #include <QInputDialog>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QJsonParseError>
 #include <QKeySequence>
 #include <QLabel>
@@ -47,6 +48,8 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace PelicanStudio {
 namespace {
@@ -266,6 +269,9 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] {
+                pending_outliner_request_ = 0;
+                outliner_refresh_timer_->start();
+                requestOutlinerRefresh();
                 pending_gizmo_requests_.clear();
                 gizmo_model_.startSession();
                 modal_transform_timer_->start();
@@ -273,6 +279,8 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
+                outliner_refresh_timer_->stop();
+                pending_outliner_request_ = 0;
                 modal_transform_timer_->stop();
                 pending_gizmo_requests_.clear();
                 gizmo_model_.stopSession();
@@ -280,10 +288,12 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
             [this](qint64 request_id, const QByteArray &result_json) {
+                completeOutlinerRpc(request_id, result_json);
                 completeGizmoRpc(request_id, result_json);
             });
     connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
             [this](qint64 request_id, const QString &message) {
+                failOutlinerRpc(request_id, message);
                 failGizmoRpc(request_id, message);
             });
     modal_transform_timer_ = new QTimer(this);
@@ -293,6 +303,10 @@ void MainWindow::createWorkspace() {
             inspector_->gizmoTransformBinding());
         dispatchGizmoModel();
     });
+    outliner_refresh_timer_ = new QTimer(this);
+    outliner_refresh_timer_->setInterval(250);
+    connect(outliner_refresh_timer_, &QTimer::timeout, this,
+            [this] { requestOutlinerRefresh(); });
 }
 
 void MainWindow::createMenus() {
@@ -469,6 +483,52 @@ void MainWindow::populateOutliner() {
         }
     }
     outliner_->expandToDepth(0);
+}
+
+void MainWindow::requestOutlinerRefresh() {
+    if (!project_model_ || pending_outliner_request_ != 0 ||
+        !viewport_->rpcReady()) {
+        return;
+    }
+    QString error;
+    pending_outliner_request_ = viewport_->requestRpc(
+        QStringLiteral("scene_tree"), QJsonObject{}, &error);
+    if (pending_outliner_request_ == 0 && !error.isEmpty()) {
+        statusBar()->showMessage(
+            tr("Outliner refresh is unavailable: %1").arg(error), 5000);
+    }
+}
+
+void MainWindow::completeOutlinerRpc(
+    qint64 request_id, const QByteArray &result_json) {
+    if (request_id != pending_outliner_request_) return;
+    pending_outliner_request_ = 0;
+    try {
+        const auto result = nlohmann::json::parse(std::string{
+            result_json.constData(),
+            static_cast<std::size_t>(result_json.size())});
+        if (!project_model_->updateSceneTree(result)) return;
+        const auto selected = selection_model_.selected();
+        if (selected && project_model_->findObject(*selected) == nullptr) {
+            (void)selection_model_.selectFromOutliner(std::nullopt);
+        }
+        populateOutliner();
+        refreshSelectionViews();
+    } catch (const std::exception &error) {
+        const auto message =
+            tr("Invalid scene_tree response: %1")
+                .arg(QString::fromUtf8(error.what()));
+        statusBar()->showMessage(message, 8000);
+        appendEngineOutput(tr("[Studio outliner] %1\n").arg(message));
+    }
+}
+
+void MainWindow::failOutlinerRpc(qint64 request_id,
+                                 const QString &message) {
+    if (request_id != pending_outliner_request_) return;
+    pending_outliner_request_ = 0;
+    statusBar()->showMessage(
+        tr("Outliner scene_tree failed: %1").arg(message), 5000);
 }
 
 void MainWindow::selectOutlinerItem(QTreeWidgetItem *item) {

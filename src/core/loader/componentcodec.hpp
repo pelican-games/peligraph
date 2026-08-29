@@ -40,6 +40,7 @@ struct TransformCodecData {
     vec3 pos{0.0f, 0.0f, 0.0f};
     quat rotation{0.0f, 0.0f, 0.0f, 1.0f};
     vec3 scale{1.0f, 1.0f, 1.0f};
+    bool rotation_specified = false;
 };
 
 struct TransformCodecTarget {
@@ -53,20 +54,38 @@ struct SimpleModelViewCodecData {
     std::optional<nlohmann::ordered_json> params;
 };
 
+enum class CameraControllerCodecType : std::uint8_t {
+    Orbit,
+    Follow,
+    Fly,
+};
+
+struct CameraControllerCodecData {
+    CameraControllerCodecType type = CameraControllerCodecType::Orbit;
+    std::string target;
+    vec3 offset{0.0f, 0.0f, 0.0f};
+    float distance = 0.0f;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    float damping = 0.0f;
+    float speed = 0.0f;
+    float sensitivity = 0.0f;
+};
+
 struct CameraCodecData {
     bool projection_specified = false;
     CameraProjectionKind projection_kind = CameraProjectionKind::Perspective;
-    float yfov = 0.78539816339f;
-    float znear = 0.1f;
-    float zfar = 1000.0f;
+    std::optional<float> yfov;
+    std::optional<float> znear;
+    std::optional<float> zfar;
     std::optional<float> aspect;
-    float xmag = 1.0f;
-    float ymag = 1.0f;
+    std::optional<float> xmag;
+    std::optional<float> ymag;
 
     bool sprite_specified = false;
     CameraPixelPerfectMode pixel_perfect = CameraPixelPerfectMode::off;
     CameraSpriteSortPolicy sprite_sort = CameraSpriteSortPolicy::z;
-    std::optional<nlohmann::ordered_json> controller;
+    std::optional<CameraControllerCodecData> controller;
 };
 
 enum class LightCodecType : std::uint8_t {

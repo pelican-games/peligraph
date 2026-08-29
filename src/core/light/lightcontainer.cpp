@@ -8,7 +8,6 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
-#include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
 
@@ -16,27 +15,26 @@ namespace Pelican
 {
 	namespace
 	{
-		glm::vec3 readVec3(const nlohmann::json& json, const std::string& field, const std::string& light_name)
+		glm::vec3 toGlm(vec3 value)
 		{
-			if (!json.contains(field) || !json.at(field).is_array() || json.at(field).size() != 3)
-			{
-				const auto display_name = light_name.empty() ? std::string{"<unnamed>"} : light_name;
-				throw std::runtime_error("Light '" + display_name + "' requires vec3 field: " + field);
-			}
-
-			const auto& value = json.at(field);
-			return glm::vec3(
-				value.at(0).get<float>(),
-				value.at(1).get<float>(),
-				value.at(2).get<float>()
-			);
+			return {value.x, value.y, value.z};
 		}
 
-		glm::vec3 readSrgbColor(const nlohmann::json& json, const std::string& light_name)
+		glm::vec3 readSrgbColor(vec3 encoded)
 		{
-			const auto encoded = readVec3(json, "color", light_name);
-			const auto linear = Pelican::srgb(encoded.r, encoded.g, encoded.b, 1.0f);
+			const auto linear = Pelican::srgb(encoded.x, encoded.y, encoded.z, 1.0f);
 			return glm::vec3{linear};
+		}
+
+		std::string_view lightTypeName(LightCodecType type)
+		{
+			switch (type)
+			{
+			case LightCodecType::Directional: return "directional";
+			case LightCodecType::Point: return "point";
+			case LightCodecType::Spot: return "spot";
+			}
+			return "unknown";
 		}
 
 		void registerLightName(std::unordered_map<std::string, uint32_t>& name_map, const std::string& name,
@@ -103,26 +101,26 @@ namespace Pelican
 		size_t spot_count = 0;
 		for (const auto& entry : lights)
 		{
-			const auto type = entry.component.value("type", "");
-			if (type == "directional")
+			const auto type = entry.component.type;
+			if (type == LightCodecType::Directional)
 			{
 				if (++directional_count > MAX_DIRECTIONAL_LIGHTS)
 				{
-					warnings.push_back(capWarning(type, entry.name, directional_count, MAX_DIRECTIONAL_LIGHTS));
+					warnings.push_back(capWarning(std::string{lightTypeName(type)}, entry.name, directional_count, MAX_DIRECTIONAL_LIGHTS));
 				}
 			}
-			else if (type == "point")
+			else if (type == LightCodecType::Point)
 			{
 				if (++point_count > MAX_POINT_LIGHTS)
 				{
-					warnings.push_back(capWarning(type, entry.name, point_count, MAX_POINT_LIGHTS));
+					warnings.push_back(capWarning(std::string{lightTypeName(type)}, entry.name, point_count, MAX_POINT_LIGHTS));
 				}
 			}
-			else if (type == "spot")
+			else if (type == LightCodecType::Spot)
 			{
 				if (++spot_count > MAX_SPOT_LIGHTS)
 				{
-					warnings.push_back(capWarning(type, entry.name, spot_count, MAX_SPOT_LIGHTS));
+					warnings.push_back(capWarning(std::string{lightTypeName(type)}, entry.name, spot_count, MAX_SPOT_LIGHTS));
 				}
 			}
 		}
@@ -243,42 +241,41 @@ namespace Pelican
 
 		for (const auto& lightEntry : lights)
 		{
-			const auto& lightJson = lightEntry.component;
-			const auto type = lightJson.value("type", "");
-			if (type == "directional")
+			const auto& data = lightEntry.component;
+			if (data.type == LightCodecType::Directional)
 			{
 				DirectionalLight light{};
 				light.name = lightEntry.name;
-				light.direction = readVec3(lightJson, "direction", light.name);
-				light.intensity = lightJson.value("intensity", 1.0f);
-				light.color = readSrgbColor(lightJson, light.name);
+				light.direction = toGlm(data.direction);
+				light.intensity = data.intensity;
+				light.color = readSrgbColor(data.color);
 
 				registerLightName(prepared.directional_names, light.name, static_cast<uint32_t>(prepared.directional_lights.size()),
 					"directional");
 				prepared.directional_lights.push_back(light);
 			}
-			else if (type == "point")
+			else if (data.type == LightCodecType::Point)
 			{
 				PointLight light{};
 				light.name = lightEntry.name;
-				light.position = readVec3(lightJson, "position", light.name);
-				light.intensity = lightJson.value("intensity", 1.0f);
-				light.color = readSrgbColor(lightJson, light.name);
+				light.position = toGlm(data.position);
+				light.intensity = data.intensity;
+				light.color = readSrgbColor(data.color);
 
 				registerLightName(prepared.point_names, light.name, static_cast<uint32_t>(prepared.point_lights.size()),
 					"point");
 				prepared.point_lights.push_back(light);
 			}
-			else if (type == "spot")
+			else if (data.type == LightCodecType::Spot)
 			{
 				SpotLight light{};
 				light.name = lightEntry.name;
-				light.position = readVec3(lightJson, "position", light.name);
-				light.direction = readVec3(lightJson, "direction", light.name);
-				light.intensity = lightJson.value("intensity", 1.0f);
-				light.innerConeAngle = lightJson.value("innerConeAngle", 12.5f);
-				light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
-				light.color = readSrgbColor(lightJson, light.name);
+				light.position = toGlm(data.position);
+				light.direction = toGlm(data.direction);
+				light.intensity = data.intensity;
+				light.innerConeAngle = data.inner_cone_angle;
+				light.outerConeAngle = data.outer_cone_angle;
+				light.color = readSrgbColor(data.color);
 
 				registerLightName(prepared.spot_names, light.name, static_cast<uint32_t>(prepared.spot_lights.size()),
 					"spot");
@@ -286,7 +283,7 @@ namespace Pelican
 			}
 			else
 			{
-				throw std::runtime_error("Unknown light type: " + type);
+				throw std::runtime_error("Unknown typed light kind");
 			}
 		}
 

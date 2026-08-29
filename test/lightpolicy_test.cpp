@@ -16,9 +16,13 @@ namespace Pelican {
 namespace {
 
 LightLoadEntry entry(std::string type, std::string name) {
+    const auto typed = type == "directional"
+                           ? LightCodecType::Directional
+                           : (type == "point" ? LightCodecType::Point
+                                              : LightCodecType::Spot);
     return LightLoadEntry{
         .name = std::move(name),
-        .component = nlohmann::json{{"type", std::move(type)}},
+        .component = LightCodecData{.type = typed},
     };
 }
 

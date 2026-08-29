@@ -4,12 +4,12 @@
 #include "light.hpp"
 #include "lightinventory.hpp"
 #include "../container.hpp"
+#include "../loader/componentcodec.hpp"
 #include "../vkcore/buf.hpp"
 
 #include <string>
 #include <span>
 #include <vector>
-#include <nlohmann/json.hpp>
 #include <vulkan/vulkan.hpp>
 #include <unordered_map>
 
@@ -18,7 +18,7 @@ namespace Pelican
 	struct LightLoadEntry
 	{
 		std::string name;
-		nlohmann::json component;
+		LightCodecData component;
 	};
 
 	std::vector<std::string> collectLightCapWarnings(const std::vector<LightLoadEntry>& lights);

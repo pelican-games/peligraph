@@ -9,6 +9,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
@@ -66,9 +67,22 @@ EditorRuntimeObjectState fakeRuntime(const ResolvedSceneView &scene,
     return result;
 }
 
+std::function<const ResolvedScene &()>
+explicitResolvedProvider(const AuthoringSceneDocument &document) {
+    auto cached = std::make_shared<std::optional<ResolvedScene>>();
+    return [&document, cached]() -> const ResolvedScene & {
+        if (!*cached || (*cached)->revision() != document.revision()) {
+            *cached = ResolvedSceneResolver::resolve(
+                document, SceneResolverGeneration{document.revision().value});
+        }
+        return **cached;
+    };
+}
+
 EditorCommandService makeQueryService(const AuthoringSceneDocument &document) {
     return EditorCommandService{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
         .runtime_query = fakeRuntime,
         .assets = [] {
@@ -247,6 +261,7 @@ TEST_CASE("ExportSceneSnapshot V1 fixture uses semantic bytes and their real sha
     const auto document = AuthoringSceneDocument::load(fixture.at("document").dump(), SceneRevision{42});
     const EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
         .snapshot_state = [] { return EditorSnapshotState{.preview_epoch = 7}; },
     }};
@@ -273,6 +288,7 @@ TEST_CASE("ExportSceneSnapshot V1 validates strict request fields and pending st
     const auto document = AuthoringSceneDocument::load(fixture.at("document").dump(), SceneRevision{8});
     const EditorCommandService busy_service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
         .snapshot_state = [] {
             return EditorSnapshotState{.pending_ticket_ids = {"ticket-7"},
@@ -307,6 +323,7 @@ TEST_CASE("ExportSceneSnapshot V1 rejects semantic payloads over 64 MiB",
     const auto document = AuthoringSceneDocument::load(oversized_document.dump(), SceneRevision{9});
     const EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
         .snapshot_state = [] { return EditorSnapshotState{}; },
     }};
@@ -322,6 +339,7 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
         readJson(authoringFixturePath()).dump(), SceneRevision{42});
     const EditorCommandService source_service{EditorCommandServiceDependencies{
         .document = [&source]() -> const AuthoringSceneDocument & { return source; },
+        .resolved_scene = explicitResolvedProvider(source),
         .current_scene_id = [] { return std::string{"main"}; },
     }};
     const auto exported = source_service.exportSceneSnapshot({});
@@ -333,6 +351,7 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
     std::size_t import_calls = 0;
     EditorCommandService target_service{EditorCommandServiceDependencies{
         .document = [&target]() -> const AuthoringSceneDocument & { return target; },
+        .resolved_scene = explicitResolvedProvider(target),
         .current_scene_id = [&target_scene] { return target_scene; },
         .import_scene_snapshot =
             [&](std::string_view bytes, std::string_view current_scene_id) {
@@ -392,6 +411,7 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
         readJson(authoringFixturePath()).dump(), SceneRevision{21});
     const EditorCommandService source_service{EditorCommandServiceDependencies{
         .document = [&source]() -> const AuthoringSceneDocument & { return source; },
+        .resolved_scene = explicitResolvedProvider(source),
         .current_scene_id = [] { return std::string{"main"}; },
     }};
     auto valid = importRequest(source_service.exportSceneSnapshot({}));

@@ -166,9 +166,14 @@ AuthoringSceneDocument fixtureDocument() {
 std::string runFixtureRpc(
     EditorCommandRpcAdapter::SchemaTypeNameResolver resolver = {}) {
     const auto document = fixtureDocument();
+    const auto resolved = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{document.revision().value});
     const EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & {
             return document;
+        },
+        .resolved_scene = [&resolved]() -> const ResolvedScene & {
+            return resolved;
         },
         .current_scene_id = [] { return std::string{"main"}; },
     }};

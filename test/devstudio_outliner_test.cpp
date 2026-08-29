@@ -10,7 +10,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -31,6 +33,54 @@ const OutlinerScene &requireScene(const ProjectOutlinerModel &model,
         }
     }
     FAIL("missing scene: " << scene_id);
+}
+
+nlohmann::json readJson(const std::filesystem::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw std::runtime_error("could not open " + path.string());
+    return nlohmann::json::parse(stream);
+}
+
+nlohmann::json sceneTree(std::string scene_id,
+                         const nlohmann::json &objects,
+                         std::uint64_t revision = 1,
+                         std::uint64_t first_authoring_id = 1) {
+    nlohmann::json result{{"scene_revision", revision},
+                          {"scene_id", scene_id},
+                          {"objects", nlohmann::json::array()}};
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        nlohmann::json object{
+            {"scene_revision", revision},
+            {"authoring_object_id", first_authoring_id + index},
+            {"declaration_index", index},
+            {"components", nlohmann::json::array()},
+        };
+        if (objects.at(index).contains("name")) {
+            object["name"] = objects.at(index).at("name");
+        }
+        if (objects.at(index).contains("parent")) {
+            object["parent"] = objects.at(index).at("parent");
+        }
+        result["objects"].push_back(std::move(object));
+    }
+    return result;
+}
+
+ProjectOutlinerModel exampleModel() {
+    const auto project_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example";
+    auto model = ProjectOutlinerModel::open(project_root);
+    const auto normalized = Pelican::normalizeSceneDataJson(
+        readJson(project_root / "scenes" / "main.scene.json"));
+    REQUIRE(model.scenes().empty());
+    REQUIRE(model.updateSceneTree(sceneTree(
+        "default_scene",
+        normalized.scenes.at("default_scene").at("objects"), 1)));
+    REQUIRE(model.updateSceneTree(sceneTree(
+        "scene_flow_second",
+        normalized.scenes.at("scene_flow_second").at("objects"), 1,
+        1000)));
+    return model;
 }
 
 struct ProjectSandbox {
@@ -63,9 +113,19 @@ TEST_CASE("Devstudio outliner opens the example without collapsing unnamed objec
           "[devstudio][outliner][wp250]") {
     const auto project_root =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example";
-    const auto model = ProjectOutlinerModel::open(project_root);
+    auto model = ProjectOutlinerModel::open(project_root);
 
     REQUIRE(model.projectName() == "example");
+    REQUIRE(model.scenes().empty());
+    const auto normalized = Pelican::normalizeSceneDataJson(
+        readJson(project_root / "scenes" / "main.scene.json"));
+    REQUIRE(model.updateSceneTree(sceneTree(
+        "default_scene",
+        normalized.scenes.at("default_scene").at("objects"), 1)));
+    REQUIRE(model.updateSceneTree(sceneTree(
+        "scene_flow_second",
+        normalized.scenes.at("scene_flow_second").at("objects"), 1,
+        1000)));
     REQUIRE(model.scenes().size() == 2);
 
     const auto &main = requireScene(model, "default_scene");
@@ -117,8 +177,12 @@ TEST_CASE("Devstudio outliner projects parent references onto declaration identi
   }
 })json");
 
-    const auto model =
+    auto model =
         ProjectOutlinerModel::open(sandbox.root / "project.json");
+    REQUIRE(model.scenes().empty());
+    const auto authored = readJson(sandbox.root / "scenes/tree.scene.json");
+    REQUIRE(model.updateSceneTree(sceneTree(
+        "main", authored.at("scenes").at("main").at("objects"))));
     const auto &scene = requireScene(model, "main");
     REQUIRE(scene.root_declaration_indices ==
             std::vector<std::size_t>{0, 1});
@@ -134,7 +198,7 @@ TEST_CASE("Viewport picks and outliner rows share declaration identity headlessl
           "[devstudio][selection][wp264]") {
     const auto project_root =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example";
-    const auto project = ProjectOutlinerModel::open(project_root);
+    const auto project = exampleModel();
     const auto &scene = requireScene(project, "default_scene");
 
     const auto unnamed = std::find_if(
@@ -171,9 +235,7 @@ TEST_CASE("Viewport picks and outliner rows share declaration identity headlessl
 
 TEST_CASE("Newer outliner selection wins over an older viewport response",
           "[devstudio][selection][wp264]") {
-    const auto project = ProjectOutlinerModel::open(
-        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
-        "example");
+    const auto project = exampleModel();
     const auto &scene = requireScene(project, "default_scene");
 
     SelectionModel selection;
@@ -195,9 +257,7 @@ TEST_CASE("Newer outliner selection wins over an older viewport response",
 
 TEST_CASE("Background clears selection while unavailable picking is explicit and preserves it",
           "[devstudio][selection][wp264]") {
-    const auto project = ProjectOutlinerModel::open(
-        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
-        "example");
+    const auto project = exampleModel();
     const auto &scene = requireScene(project, "default_scene");
 
     SelectionModel selection;
@@ -220,4 +280,47 @@ TEST_CASE("Background clears selection while unavailable picking is explicit and
     REQUIRE(unavailable.message.find("engine://features/picking.json") !=
             std::string::npos);
     REQUIRE(selection.selected() == scene.objects.at(1).key);
+}
+
+TEST_CASE("Studio outliner follows RPC snapshot and structure revisions instead of disk",
+          "[devstudio][outliner][wp360a]") {
+    ProjectSandbox sandbox;
+    sandbox.write("project.json", R"json({
+  "schema":"pelican.project","version":1,"name":"rpc-authority",
+  "basic_config":{"scene_data_json":"scenes/tree.scene.json"}
+})json");
+    sandbox.write("scenes/tree.scene.json", R"json({
+  "schema":"pelican.scene","version":1,
+  "scenes":{"main":{"objects":[{"name":"DiskOnly","components":[]}]}}
+})json");
+
+    auto model = ProjectOutlinerModel::open(sandbox.root);
+    REQUIRE(model.scenes().empty());
+
+    const nlohmann::json imported_objects = nlohmann::json::array({
+        nlohmann::json{{"name", "ImportedSnapshot"}},
+    });
+    REQUIRE(model.updateSceneTree(
+        sceneTree("main", imported_objects, 10, 900)));
+    REQUIRE(requireScene(model, "main").objects.size() == 1);
+    REQUIRE(requireScene(model, "main").objects[0].display_name ==
+            "ImportedSnapshot");
+    REQUIRE(requireScene(model, "main").objects[0].display_name !=
+            "DiskOnly");
+
+    const nlohmann::json edited_objects = nlohmann::json::array({
+        nlohmann::json{{"name", "ImportedSnapshot"}},
+        nlohmann::json{{"name", "RuntimeChild"},
+                       {"parent", "ImportedSnapshot"}},
+    });
+    REQUIRE(model.updateSceneTree(sceneTree("main", edited_objects, 11, 900)));
+    const auto &updated = requireScene(model, "main");
+    REQUIRE(updated.objects.size() == 2);
+    REQUIRE(updated.objects[1].parent_declaration_index == 0);
+    REQUIRE(updated.objects[0].child_declaration_indices ==
+            std::vector<std::size_t>{1});
+    std::cout << "WP360A_OUTLINER disk=DiskOnly snapshot="
+              << updated.objects[0].display_name
+              << " structure_child=" << updated.objects[1].display_name
+              << " revision=" << *model.sceneRevision() << '\n';
 }

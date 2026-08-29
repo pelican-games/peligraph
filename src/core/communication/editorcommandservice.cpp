@@ -226,6 +226,8 @@ std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcep
     case EditorCommandErrorCode::ExternalModification: return "external_modification";
     case EditorCommandErrorCode::SaveBusy: return "save_busy";
     case EditorCommandErrorCode::RuntimeOnlyData: return "runtime_only_data";
+    case EditorCommandErrorCode::ResolvedSceneProviderUnavailable:
+        return "resolved_scene_provider_unavailable";
     case EditorCommandErrorCode::SaveUnavailable: return "save_unavailable";
     case EditorCommandErrorCode::SaveFailed: return "save_failed";
     }
@@ -303,14 +305,12 @@ const AuthoringSceneDocument &EditorCommandService::document() const {
 }
 
 const ResolvedScene &EditorCommandService::resolved() const {
-    if (dependencies_.resolved_scene) return dependencies_.resolved_scene();
-    const auto &source = document();
-    if (!fallback_resolved_ ||
-        fallback_resolved_->revision() != source.revision()) {
-        fallback_resolved_ = ResolvedSceneResolver::resolve(
-            source, SceneResolverGeneration{source.revision().value});
+    if (!dependencies_.resolved_scene) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::ResolvedSceneProviderUnavailable,
+            "resolved_scene_provider_unavailable: EditorCommandService requires an explicitly wired resolved_scene provider"};
     }
-    return *fallback_resolved_;
+    return dependencies_.resolved_scene();
 }
 
 const ResolvedSceneView &

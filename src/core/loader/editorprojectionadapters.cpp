@@ -98,7 +98,9 @@ std::vector<LightLoadEntry> prepareLightEntries(
         for (const auto &component : object.components) {
             if (component.name != "light") continue;
             entries.push_back(LightLoadEntry{
-                object_name, component.effective_json,
+                object_name,
+                std::any_cast<const LightCodecData &>(
+                    component.requireRuntimeValue()),
             });
         }
     }

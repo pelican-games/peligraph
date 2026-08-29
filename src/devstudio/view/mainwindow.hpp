@@ -79,6 +79,8 @@ class MainWindow : public QMainWindow {
     GizmoModel gizmo_model_;
     std::array<QAction *, 3> gizmo_mode_actions_{};
     QTimer *modal_transform_timer_ = nullptr;
+    QTimer *outliner_refresh_timer_ = nullptr;
+    qint64 pending_outliner_request_ = 0;
     QHash<qint64, ViewportPickToken> pending_pick_tokens_;
     QHash<qint64, quint64> pending_gizmo_requests_;
     std::uint64_t presented_gizmo_notice_revision_ = 0;
@@ -88,6 +90,10 @@ class MainWindow : public QMainWindow {
     void createMenus();
     void chooseProject();
     void populateOutliner();
+    void requestOutlinerRefresh();
+    void completeOutlinerRpc(qint64 request_id,
+                             const QByteArray &result_json);
+    void failOutlinerRpc(qint64 request_id, const QString &message);
     void selectOutlinerItem(QTreeWidgetItem *item);
     void beginViewportPick(const QPoint &pixel_position);
     void completeViewportPick(qint64 request_id,
