@@ -130,7 +130,8 @@ prefab_object_ref_missing_component / prefab_transform_forbidden /
 prefab_dependency_mismatch / prefab_nested_unsupported / prefab_provider_stale /
 prefab_parameter_required / prefab_instance_id_collision / prefab_generated_read_only /
 prefab_generated_id_collision / prefab_instance_transform_missing /
-prefab_instance_transform_duplicate / prefab_component_duplicate`。
+prefab_instance_transform_duplicate / prefab_component_duplicate /
+prefab_name_mismatch / prefab_persistence_unsupported`。
 文脈: scene_id / instance / prefab / parameter / JSON pointer / (取込時)行 index。
 
 ## 7. 出荷単位と、多オブジェクトへの送り

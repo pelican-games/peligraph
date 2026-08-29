@@ -14703,3 +14703,104 @@ Generated seq は authored と衝突しない決定的符号化(衝突は名前�
 - 表示: 解決値 + 出所(default / 束縛)。WP361 の read-only 表示に出所列を追加
 
 依存: WP362 は WP361 に依存。やらないこと(両 WP 共通): v1 の「やらないこと」+ U2〜U4 全部。
+
+#### WP361/362 仕様レビュー第 2 巡(不合格・10 件)と v3 差分
+
+第 2 巡は「10 指摘を閉じたか」の検証。判定: 閉鎖 1 / 部分 6 / 未閉鎖 3、
+加えて v2 自身が成立不能条件 2 件(session 跨ぎ RPC bytes 一致 / 宣言順反転の全結果一致)と
+WP 境界欠陥 2 件(WP361 単独出荷不能 / wire から編集情報を復元不能)を持ち込んだ。
+**全件「直す」。以下が v3 差分で、v2 本文と矛盾する場合は v3 が優先する。**
+第 3 巡を最終とし、以降の指摘は台帳行き。
+
+##### (1) session 跨ぎ比較の成立化
+
+「RPC bytes 一致」を撤回。比較は **Generated branch の正規化部分木に限定**し、
+`scene_revision`・AuthoringObjectId・entity id・arena handle/owner を明示的に除外する。
+否定対照: 同一テスト内で `instance_id` だけを変え、Generated ID と解決値が変わること。
+
+##### (2) identity lifecycle の全定義
+
+- `instance_id` 字句: `[A-Za-z0-9_-]{1,64}`。割当 authority は v2 手書き時は作者
+- **Generated ID のキーは順序位置ではなく `{component 名, 同名序数}`**
+  (prefab 先頭への component 挿入で既存 ID が再利用されない。
+  否定対照: prefab に collider を前挿入 → sprite/behavior の ID 不変)
+- 導出は domain-separated + **length-prefixed** の固定アルゴリズム(区切り曖昧性なし)
+- journal の object 複製/spawn が prefab キーを持つ object を対象にした場合:
+  **op が新 instance_id を記録**する(undo/redo 再生が決定的)。記録なし複製は
+  再解決時に `prefab_instance_id_collision`
+- scene 間 copy は target で新 ID / **unpack は identity 断絶**(Generated ID は消え、
+  authored 通常 component になる)と宣言(U2 実装、契約は今固定)
+
+##### (3) 順序非依存の主張の限定
+
+「宣言順反転で結果一致」を撤回し、**kind:object 参照解決と required_components 判定が
+stable identity で対応付けて一致**することに限定する。
+**camera の先勝ち継承(最初の camera の解決結果が後続の default になる)は既存意味論として
+維持**し、既存固定テストで担保する(移行しない)。4 相化は placeholder IR・全 object
+materialization・freeze・検証・canonicalization の別 pass を要する改修であることを
+規模として認める(resolvedscene.cpp の一走査への条件追加では書けない)。
+
+##### (4) 最終 component 全順序と behavior 実行順
+
+- 最終配列 = **authored(著作順)→ generated(prefab 文書順)**
+- behavior 実行順 = object 宣言順 → 同一 object 内は上記の最終配列順
+- Generated seq 符号化 = `(1<<63) | (object_index<<32) | generated_ordinal`
+  (authored と domain 分離。generated_ordinal は prefab 文書順の序数 ——
+  authored component の挿入で不変)
+- 否定対照: **解決値が同一でも callback trace の順序が違えば落ちる**テスト
+
+##### (5) 文法の表化と Studio 条件の実体化
+
+- project entry / prefab 文書 / scene instance の**全 field 表**
+  (必須性・型・unknown field は拒否(現行 strict parser の流儀)・path は project root
+  相対のみ、絶対と `..` は拒否・検証順)を WP361 本文として確定
+- `prefab_name_mismatch` を error catalog に追加
+- Studio offline 条件 = project.json だけでなく**設定された scene と全 prefab を
+  本番 leaf resolver で開き**、名前付き結果と実展開値を検査する
+
+##### (6) SnapshotV2 wire の現物化
+
+- export request / export response / import request / import result の
+  **4 形すべての JSON 現物例**・必須/禁止 field・canonical ordering を WP362 本文に書く
+  (「実装前に本文へ」の TODO 形式を廃止)
+- digest の byte domain を固定: snapshot scene digest = 現行どおり
+  `semantic_scene_bytes` / prefab digest = disk raw bytes / save baseline = disk bytes
+- **V1 の適用範囲 = 「scene format v1 かつ prefab キーなし」**と明記
+
+##### (7) resolver 入力閉包の型化と主張の境界
+
+- `ResolverInputSnapshotV1` を型として定義: **解決に入る project 入力の全列挙**
+  (projection defaults・sprite defaults)+ canonical float encoding。
+  field 単独変更ごとの否定対照
+- **主張の境界を明記**: closure が保証するのは「同じ closure → 同じ ResolvedScene」。
+  camera `up`・window size 等の**描画時 project 設定は snapshot 契約の外**
+  (snapshot は scene を project 間で運ぶもので、受け側 project の描画設定が
+  適用されるのは正しい挙動)。この境界自体を本文に書く
+
+##### (8) provider fingerprint の byte 単位固定
+
+- descriptor record の全 field・**全内部 sort key**(path 辞書順・discriminant 値
+  ソート・enum/range も正規順)・encoding(UTF-8 length-prefixed 文字列、
+  IEEE754 LE double)・SHA-256 を固定
+- generation は **owner-pinned の prepare → publish → rollback 状態機械**として
+  atomic unit と同時に定義(reload 中の旧 generation 窓は「publish まで旧が有効」)
+
+##### (9) 出荷ゲート(WP361 単独期間の非破壊)
+
+WP361 単独では prefab 使用文書の**永続化を全入口で名前付き拒否**する:
+`save_scene` と snapshot(V1/V2 とも)は `prefab_persistence_unsupported`(新 code)。
+WP361 の出荷状態 = 「v2 scene の prefab は load・表示・in-memory 編集(authored 側)・
+undo/redo まで。保存と snapshot は WP362 で解禁」。
+これを受け入れ条件に含める(拒否が実 RPC で観測されること)。
+
+##### (10) wire に編集情報を先行搭載
+
+WP361 の get_components Generated branch / instance 表現に:
+`parameters: [{name, value_resolved, source: "default"|"override", value_authored?}]` +
+closure/provider generation を含める(**同値 default と同値 override を同一テストで
+識別** —— resolved_json だけでは区別不能な反例が根拠)。
+WP362 は set/unset の selector・CAS token・result/error・journal inverse を
+この wire の上に定義する。
+
+error catalog 追加(design 側にも反映): `prefab_name_mismatch` /
+`prefab_persistence_unsupported`。
