@@ -14489,3 +14489,71 @@ AfterPublication rollback / 親版 fixture 一致 / D0 / 決定性。**
 - caller deletion mutation を behavior 以外(Camera / query)にも
 
 依存: WP360。見積: 中〜大。
+
+### WP361: プレファブ U1 —— 単一オブジェクトの参照・展開・編集
+
+**§4 規則 11 の上段(scene 形式・新サブシステム)。仕様レビュー + コードレビュー。見積: 大。**
+**規範は `docs/design_prefabs.md`(v4、3 巡 30 指摘消化)。本節は WP としての範囲・
+受け入れ・オラクルだけを定める。設計との食い違いは設計が優先。**
+
+#### 前提(全部揃っている)
+
+WP358(leaf 語彙)/ WP359(vec 往復)/ WP360+a(ResolvedScene seam、
+Generated の席は named unsupported で確保済み、原子的所有、型封じの raw)。
+Generated の契約は WP360 v2 レビューの処方箋(指摘 2〜5)を正とする。
+
+#### 範囲(設計 v4 の U1)
+
+1. **プレファブ文書 + registry**: `pelican.prefab` v1(StructFieldSchema 型の parameters、
+   `kind:"asset"` / `kind:"object"`、tagged node `{"$param"}`)、project.json `prefabs[]`、
+   parse 済み envelope からの immutable `PrefabRegistrySnapshot`
+2. **scene version 2 ゲート**(expander と原子的)+ 互換 matrix
+   (**v1 + prefab キーは `prefab_requires_scene_v2` で名前付き拒否** —— silent no-op 禁止)
+3. **展開は resolver 内**: Generated component として、WP360 v2 処方箋どおり:
+   - **wire union**: Authored branch は既存 bytes 完全一致 / Generated は
+     `{stable_generated_id, source, resolved_json, editable:false}`、authored index を持たない
+   - **`stable_generated_id` の決定的導出**
+     `{scene stable id, AuthoringObjectId, source kind, source-local key}`。
+     衝突は名前付きエラー。**set→undo→redo / object remove→undo / 無関係 component の
+     前方挿入で、bytes・authored index・Generated ID・behavior seq 全比較**
+   - **arena の席**: identity を `Authored | Generated` variant 化。Generated seq の
+     決定的導出と editor shift の非適用
+   - Generated への mutation は名前付き拒否。**Studio / ImGui の実応答取込で
+     read-only 表示 + mutation UI 非生成を同一 fixture で検査**
+4. **BindableProvider**(設計 v4 §2): codec の bindable-path + discriminant 条件つき
+   applicability + behavior 登録由来の provider、fingerprint / generation 持ち。
+   `shape:"box"` 固定の prefab で `/radius` 束縛 → `prefab_binding_inactive`
+5. **SnapshotV2**(三 schema 同時)+ save read-set。closure は prefab digest +
+   **behavior `{stable_name, schema_version, params_schema_fingerprint}` +
+   provider fingerprint**(bytes 同一でも解決が変わる DLL default 変更を検出)
+6. **studio**: instance 選択で解決値 + 出所表示、
+   `set_prefab_parameter` / `unset_prefab_parameter`(再展開、failure-atomic、
+   request に prefab digest + provider generation)
+7. 設計 §6 の stable error code 全部(context: scene_id / instance / prefab /
+   parameter / JSON pointer)
+
+#### 受け入れ条件(要点。§4 規約 10 の形で)
+
+- **プレファブ無し / default / 束縛あり を同じ本番ロードで実行し、実 ECS / behavior の
+  解決値を検査**(WP360 の production 配線 fixture を拡張)
+- 互換 matrix 4 セル(旧+v2 拒否は成立済み / 新+v1 不変 / **新+v1+prefab キー名前付き拒否** /
+  新+v2 展開)を同一テスト群で
+- **出荷 4 project の scene・RPC bytes・golden が完全不変**
+  (prefab 0 使用のため。親版オラクルは WP354a/358/360 の流儀)
+- **専用 fixture 必須**(出荷 corpus では何も観測できない): behavior 入り prefab /
+  authored の前・間に Generated / discriminant 束縛の拒否 / 未使用宣言・型・範囲の負例
+- undo/redo/前方挿入の identity 保存(上記 3)
+- tagged node の置換順序(raw 検証 → 置換 → 具体値を codec へ)。
+  **置換前の tagged node が codec に届いたら落ちる**対照
+- SnapshotV2: 同一 scene bytes + 別 registry / 別 behavior fingerprint の
+  `prefab_dependency_mismatch` 拒否
+- matrix: physics・RPC ON/OFF / SKIP 両構成 / preview / ImGui ON/OFF。
+  userpublic は **behavior 関連 diff 0**(arena は core 側)
+- 全数 2 回 / doclink 緑 / GPU 直列可
+
+#### やらないこと
+
+多オブジェクト(§6 前提 4 件)/ unpack・一括取り込み・dry-run(U2)/
+パラメータ昇格(U3)/ spawn(U4)/ optional slot・variant / HDA / attributes。
+
+依存: WP358, WP359, WP360, WP360a。見積: **大**。
