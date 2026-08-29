@@ -28,6 +28,10 @@ function(pelican_normalize_rpc_stdout stdout output_var)
         [=["instance_id":"<uuid>"]=] normalized "${normalized}")
     string(REGEX REPLACE [=["startup":\{[^\}]*\}]=]
         [=["startup":"<measured>"]=] normalized "${normalized}")
+    string(REGEX REPLACE [=["closure_generation":[0-9]+]=]
+        [=["closure_generation":"<generation>"]=] normalized "${normalized}")
+    string(REGEX REPLACE [=["provider_generation":[0-9]+]=]
+        [=["provider_generation":"<generation>"]=] normalized "${normalized}")
 
     string(REPLACE "\n" ";" response_lines "${normalized}")
     set(normalized_lines)

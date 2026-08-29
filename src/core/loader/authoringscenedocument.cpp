@@ -32,6 +32,8 @@ AuthoringSceneDocument AuthoringSceneDocument::load(std::string_view scene_v1_by
     // retained as the authoring authority; normalizeSceneDataJson's scene copy
     // is not cached a second time.
     auto validated = normalizeSceneDataJson(document.raw_document_);
+    document.format_version_ = validated.version;
+    document.uses_prefabs_ = validated.uses_prefabs;
     document.warnings_ = std::move(validated.warnings);
 
     std::uint64_t next_object_id = first_authoring_object_id;
@@ -150,6 +152,8 @@ AuthoringSceneDocument AuthoringSceneDocument::stageAuthoring(
     auto result = *this;
     result.revision_ = revision;
     result.raw_document_ = std::move(raw_document);
+    result.format_version_ = validated.version;
+    result.uses_prefabs_ = validated.uses_prefabs;
     result.warnings_ = std::move(validated.warnings);
     return result;
 }
@@ -391,6 +395,8 @@ AuthoringSceneDocument AuthoringSceneDocumentStage::finish(
         }
     }
     base_.revision_ = revision;
+    base_.format_version_ = validated.version;
+    base_.uses_prefabs_ = validated.uses_prefabs;
     base_.warnings_ = std::move(validated.warnings);
     return std::move(base_);
 }
@@ -398,6 +404,8 @@ AuthoringSceneDocument AuthoringSceneDocumentStage::finish(
 void AuthoringSceneDocument::swap(AuthoringSceneDocument &other) noexcept {
     using std::swap;
     swap(revision_, other.revision_);
+    swap(format_version_, other.format_version_);
+    swap(uses_prefabs_, other.uses_prefabs_);
     raw_document_.swap(other.raw_document_);
     warnings_.swap(other.warnings_);
     scene_metadata_.swap(other.scene_metadata_);

@@ -27,6 +27,7 @@ enum class BehaviorRegistryAvailability {
 struct PreparedSceneBehaviorAttachment {
     std::size_t object_index = 0;
     std::size_t component_index = 0;
+    ResolvedComponentOrigin component_origin;
     std::string object_name;
     std::string stable_name;
     std::string canonical_params;
@@ -45,6 +46,9 @@ struct BehaviorAttachmentInfo {
     std::uint64_t attachment_seq = 0;
     GameObjectId entity = invalidGameObjectId;
     std::size_t component_index = 0;
+    ResolvedComponentOrigin component_origin;
+    std::size_t scene_object_index = 0;
+    bool scene_ordered = false;
     std::string stable_name;
     std::string canonical_params;
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
@@ -79,6 +83,9 @@ struct BehaviorAttachmentEdit {
     BehaviorAttachmentEditKind kind = BehaviorAttachmentEditKind::set_params;
     GameObjectId entity = invalidGameObjectId;
     std::size_t component_index = 0;
+    ResolvedComponentOrigin component_origin;
+    std::size_t scene_object_index = 0;
+    bool scene_ordered = false;
     BehaviorAttachmentIdentity identity;
     std::string stable_name;
     std::string canonical_params;

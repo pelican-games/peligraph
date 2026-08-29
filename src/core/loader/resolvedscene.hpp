@@ -2,6 +2,7 @@
 
 #include "authoringscenedocument.hpp"
 #include "componentcodec.hpp"
+#include "prefabprovider.hpp"
 
 #include <any>
 #include <cstddef>
@@ -13,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace Pelican {
@@ -58,8 +60,43 @@ struct ResolvedSceneDefaults {
     CameraSpritePolicySpec camera_sprite;
 };
 
+struct AuthoredComponentOrigin {
+    std::size_t authoring_component_index = 0;
+};
+
+struct GeneratedComponentOrigin {
+    std::string stable_generated_id;
+    std::string prefab;
+    std::string instance_id;
+    std::string component_key;
+    std::string digest_sha256;
+};
+
+class ResolvedComponentOrigin {
+    std::variant<AuthoredComponentOrigin, GeneratedComponentOrigin> value_;
+
+    explicit ResolvedComponentOrigin(GeneratedComponentOrigin generated)
+        : value_{std::move(generated)} {}
+    friend class ResolvedSceneResolver;
+
+  public:
+    ResolvedComponentOrigin(AuthoredComponentOrigin authored = {})
+        : value_{authored} {}
+    bool isGenerated() const noexcept {
+        return std::holds_alternative<GeneratedComponentOrigin>(value_);
+    }
+    const AuthoredComponentOrigin *authored() const noexcept {
+        return std::get_if<AuthoredComponentOrigin>(&value_);
+    }
+    const GeneratedComponentOrigin *generated() const noexcept {
+        return std::get_if<GeneratedComponentOrigin>(&value_);
+    }
+};
+
 struct ResolvedComponent {
     std::size_t authoring_component_index = 0;
+    std::size_t merged_component_index = 0;
+    ResolvedComponentOrigin origin;
     std::string name;
     nlohmann::json source_json_exact;
     nlohmann::json effective_json;
@@ -76,11 +113,27 @@ struct ResolvedComponent {
     const ComponentCodecValue &requireRuntimeValue() const;
 };
 
+struct ResolvedPrefabParameter {
+    std::string name;
+    nlohmann::ordered_json value_resolved;
+    bool is_override = false;
+    std::optional<nlohmann::json> value_authored;
+};
+
+struct ResolvedPrefabInstance {
+    std::string ref;
+    std::string instance_id;
+    std::uint64_t closure_generation = 0;
+    std::uint64_t provider_generation = 0;
+    std::vector<ResolvedPrefabParameter> parameters;
+};
+
 struct ResolvedObject {
     AuthoringObjectId authoring_object_id{};
     std::size_t authoring_object_index = 0;
     std::optional<std::string> name;
     std::optional<std::string> parent;
+    std::optional<ResolvedPrefabInstance> prefab_instance;
     std::vector<ResolvedComponent> components;
 };
 
@@ -96,6 +149,8 @@ class ResolvedScene {
     std::vector<ResolvedSceneView> scenes_;
     std::vector<BehaviorReloadSourceParams> behavior_reload_sources_;
     ResolvedSceneDefaults defaults_;
+    PrefabRegistrySnapshot prefab_registry_;
+    BindableProviderSnapshot bindable_provider_;
 
     friend class ResolvedSceneResolver;
 
@@ -111,6 +166,12 @@ class ResolvedScene {
         return behavior_reload_sources_;
     }
     const ResolvedSceneDefaults &defaults() const noexcept { return defaults_; }
+    const PrefabRegistrySnapshot &prefabRegistry() const noexcept {
+        return prefab_registry_;
+    }
+    const BindableProviderSnapshot &bindableProvider() const noexcept {
+        return bindable_provider_;
+    }
 
     const ResolvedSceneView *findScene(std::string_view scene_id) const noexcept;
 };
@@ -143,10 +204,14 @@ class ResolvedSceneResolver {
   public:
     static ResolvedScene resolve(const AuthoringSceneDocument &document,
                                  SceneResolverGeneration generation,
-                                 ResolvedSceneDefaults defaults = {});
+                                 ResolvedSceneDefaults defaults = {},
+                                 PrefabRegistrySnapshot registry = {},
+                                 BindableProviderSnapshot provider = {});
     static SceneProjectionState prepare(AuthoringSceneDocument document,
                                         SceneResolverGeneration generation,
-                                        ResolvedSceneDefaults defaults = {});
+                                        ResolvedSceneDefaults defaults = {},
+                                        PrefabRegistrySnapshot registry = {},
+                                        BindableProviderSnapshot provider = {});
 
     [[noreturn]] static void resolveGeneratedComponent();
 };

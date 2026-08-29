@@ -864,7 +864,9 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         candidate_state.emplace(ResolvedSceneResolver::prepare(
             std::move(staged),
             document_target_.nextProjectionResolverGeneration(),
-            base_state.resolved().defaults()));
+            base_state.resolved().defaults(),
+            base_state.resolved().prefabRegistry(),
+            base_state.resolved().bindableProvider()));
 
         std::unordered_set<EditorProjectionAdapter *> adapter_addresses;
         std::unordered_set<std::string> adapter_names;

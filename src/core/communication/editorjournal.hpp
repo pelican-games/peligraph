@@ -53,6 +53,7 @@ enum class EditorEditErrorCode : std::uint8_t {
     undo_conflict,
     not_editable,
     schema_violation,
+    prefab_instance_id_collision,
     unknown_component_type,
     duplicate_component,
     missing_component,
@@ -151,6 +152,8 @@ struct EditorEditRuntimeDependencies {
     // global hook while keeping the two documents independent.
     std::function<void()> frame_boundary_extension;
     bool install_commit_hook = false;
+    std::function<PrefabRegistrySnapshot()> prefab_registry;
+    std::function<BindableProviderSnapshot()> bindable_provider;
 };
 
 // Owns the session-issued actor identity, the accepted ticket queue and

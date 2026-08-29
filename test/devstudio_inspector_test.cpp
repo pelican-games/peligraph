@@ -416,6 +416,68 @@ TEST_CASE("Devstudio inspector derives every widget kind from RPC schema",
             "/params/weights/2/a~1b~0c");
 }
 
+TEST_CASE("WP361 Studio ingests the real generated union without mutation widgets",
+          "[devstudio][inspector][wp361][prefab][readonly]") {
+    InspectorHarness harness;
+    harness.model.selectObject(
+        OutlinerObjectKey{.scene_id = "main", .declaration_index = 2});
+    harness.model.startSession();
+    const auto session = harness.take("open_editor_session");
+    harness.reply(session, {{"actor_id", 9},
+                            {"display_name", "Pelican Studio Inspector"}});
+    const auto tree = harness.take("scene_tree");
+    harness.reply(tree, sceneTreeResult());
+    const auto components = harness.take("get_components");
+    const Json result{
+        {"scene_revision", 1},
+        {"authoring_object_id", 41},
+        {"declaration_index", 2},
+        {"prefab_instance",
+         {{"ref", "unit"},
+          {"instance_id", "gi_main"},
+          {"closure_generation", 3},
+          {"provider_generation", 7},
+          {"parameters",
+           Json::array({{{"name", "tint"},
+                         {"value_resolved", {1, 1, 1, 1}},
+                         {"source", "default"}}})}}},
+        {"components",
+         Json::array({
+             {{"generated",
+               {{"stable_generated_id",
+                 "gid_0123456789abcdef0123456789abcdef"},
+                {"source",
+                 {{"prefab", "unit"},
+                  {"instance_id", "gi_main"},
+                  {"component_key", "sprite"},
+                  {"digest",
+                   {{"algorithm", "sha256"},
+                    {"hex",
+                     "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345"}}}}},
+                {"resolved_json",
+                 {{"name", "sprite_view"}, {"texture", "white"}}},
+                {"editable", false}}}},
+         })},
+    };
+    harness.reply(components, result);
+    const auto watch = harness.take("get_scene_revision");
+    harness.reply(watch, {{"scene_revision", 1}, {"preview_epoch", 0}});
+
+    REQUIRE(harness.model.snapshot());
+    REQUIRE(harness.model.snapshot()->prefab_instance);
+    REQUIRE(harness.model.snapshot()->components.size() == 1);
+    const auto &generated = harness.model.snapshot()->components.front();
+    REQUIRE(generated.generated);
+    REQUIRE_FALSE(generated.editable);
+    REQUIRE(generated.widgets.empty());
+    REQUIRE(generated.stable_generated_id ==
+            "gid_0123456789abcdef0123456789abcdef");
+    REQUIRE(generated.generated_source.at("component_key") == "sprite");
+    REQUIRE_FALSE(harness.model.commitWidgetValue(
+        "gid_0123456789abcdef0123456789abcdef", false));
+    REQUIRE(harness.model.takeRpcRequests().empty());
+}
+
 TEST_CASE("WP358 Studio production preflight takes I8 bounds from the leaf",
           "[devstudio][inspector][schema][wp358]") {
     Json component{

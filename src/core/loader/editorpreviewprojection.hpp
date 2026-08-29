@@ -54,6 +54,13 @@ PreparedProjection prepareEditorPreviewProjection(
     const nlohmann::json &overrides,
     const ResolvedSceneDefaults &defaults,
     const EditorPreviewProjectionFaultHook &fault_hook = {});
+PreparedProjection prepareEditorPreviewProjection(
+    const AuthoringSceneDocument &base_document,
+    const nlohmann::json &overrides,
+    const ResolvedSceneDefaults &defaults,
+    PrefabRegistrySnapshot registry,
+    BindableProviderSnapshot provider,
+    const EditorPreviewProjectionFaultHook &fault_hook = {});
 
 // Query adapter over an explicit PreparedProjection.  It never resolves a live
 // ECS/Light/Phys/Camera module; physics receives the staged collider span.

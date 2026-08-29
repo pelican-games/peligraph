@@ -386,9 +386,15 @@ OrderedJson EditorPreviewService::evalPreview(
             const auto defaults = projection_state
                                       ? projection_state->resolved().defaults()
                                       : ResolvedSceneDefaults{};
-            auto prepared = prepareEditorPreviewProjection(
-                document, overrides, defaults,
-                dependencies_.projection_fault_hook);
+            auto prepared = projection_state
+                ? prepareEditorPreviewProjection(
+                      document, overrides, defaults,
+                      projection_state->resolved().prefabRegistry(),
+                      projection_state->resolved().bindableProvider(),
+                      dependencies_.projection_fault_hook)
+                : prepareEditorPreviewProjection(
+                      document, overrides, defaults,
+                      dependencies_.projection_fault_hook);
             const auto execution_gate = gate_provider();
             checkGate(method, execution_gate, accepted_gate.epoch);
             checkXr(method, dependencies_.xr_active);
@@ -433,9 +439,15 @@ OrderedJson EditorPreviewService::renderPreview(
             const auto defaults = projection_state
                                       ? projection_state->resolved().defaults()
                                       : ResolvedSceneDefaults{};
-            auto prepared = prepareEditorPreviewProjection(
-                document, overrides, defaults,
-                dependencies_.projection_fault_hook);
+            auto prepared = projection_state
+                ? prepareEditorPreviewProjection(
+                      document, overrides, defaults,
+                      projection_state->resolved().prefabRegistry(),
+                      projection_state->resolved().bindableProvider(),
+                      dependencies_.projection_fault_hook)
+                : prepareEditorPreviewProjection(
+                      document, overrides, defaults,
+                      dependencies_.projection_fault_hook);
             resolveCamera(parsed.camera, prepared, parsed.request);
             const auto execution_gate = gate_provider();
             checkGate(method, execution_gate, accepted_gate.epoch);

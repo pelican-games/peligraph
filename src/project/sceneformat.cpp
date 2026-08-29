@@ -1,4 +1,5 @@
 #include "sceneformat.hpp"
+#include "prefab.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -15,7 +16,7 @@ namespace Pelican {
 namespace {
 
 constexpr std::string_view scene_schema = "pelican.scene";
-constexpr int supported_scene_version = 1;
+constexpr int latest_scene_version = 2;
 
 bool isR7Identifier(std::string_view value) {
     if (value.empty()) {
@@ -48,21 +49,22 @@ std::string objectContext(const std::string &scene_id, const std::string &object
     return " on object '" + display_name + "' in scene '" + scene_id + "'";
 }
 
-void validateEnvelope(const nlohmann::json &document) {
+int validateEnvelope(const nlohmann::json &document) {
     if (document.value("schema", std::string{}) != scene_schema) {
         throw std::runtime_error(
-            "scene data schema is not supported; use schema 'pelican.scene' with version 1 and a 'scenes' object");
+            "scene data schema is not supported; use schema 'pelican.scene' with a supported version and a 'scenes' object");
     }
     if (!document.contains("version") || !document.at("version").is_number_integer()) {
         throw std::runtime_error("scene data requires numeric version");
     }
     const auto version = document.at("version").get<int>();
-    if (version != supported_scene_version) {
-        throw std::runtime_error("scene data version must be exactly 1");
+    if (version < 1 || version > latest_scene_version) {
+        throw std::runtime_error("scene data version must be 1 or 2");
     }
     if (!document.contains("scenes") || !document.at("scenes").is_object()) {
         throw std::runtime_error("scene data requires scenes object");
     }
+    return version;
 }
 
 nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &scene_id) {
@@ -204,8 +206,25 @@ SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data) {
     }
 
     SceneFormatDocument document;
-    validateEnvelope(scene_data);
+    document.version = validateEnvelope(scene_data);
     const auto &scenes = scene_data.at("scenes");
+
+    for (auto scene_it = scenes.begin(); scene_it != scenes.end(); ++scene_it) {
+        if (!scene_it.value().is_object()) continue;
+        const auto objects = scene_it.value().find("objects");
+        if (objects == scene_it.value().end() || !objects->is_array()) continue;
+        for (const auto &object : *objects) {
+            if (object.is_object() && object.contains("prefab")) {
+                document.uses_prefabs = true;
+                if (document.version == 1) {
+                    throw PrefabError{
+                        PrefabErrorCode::PrefabRequiresSceneV2,
+                        "scene version 1 cannot contain a prefab key",
+                        {.scene_id = scene_it.key(), .json_pointer = "/prefab"}};
+                }
+            }
+        }
+    }
 
     document.scenes = nlohmann::json::object();
     for (auto it = scenes.begin(); it != scenes.end(); ++it) {

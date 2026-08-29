@@ -455,6 +455,14 @@ struct InspectorWidget::Impl {
             layout->addWidget(plainLabel(
                 owner.tr("No editable properties."), contents));
         } else {
+            if (model.snapshot()->prefab_instance) {
+                auto *instance = plainLabel(
+                    QString::fromStdString(
+                        model.snapshot()->prefab_instance->dump(2)), contents);
+                instance->setObjectName(
+                    QStringLiteral("pelican.inspectorPrefabInstance"));
+                layout->addWidget(instance);
+            }
             for (const InspectorComponentSnapshot &component :
                  model.snapshot()->components) {
                 addComponent(*layout, contents, component);
@@ -486,7 +494,16 @@ struct InspectorWidget::Impl {
             auto *json = plainLabel(
                 QString::fromStdString(component.authored_json.dump(2)), group);
             json->setObjectName(QStringLiteral("pelican.inspectorReadOnlyJson"));
-            form->addRow(owner.tr("Authored JSON"), json);
+            form->addRow(component.generated ? owner.tr("Resolved JSON")
+                                             : owner.tr("Authored JSON"),
+                         json);
+        }
+        if (component.generated) {
+            auto *source = plainLabel(
+                QString::fromStdString(component.generated_source.dump(2)), group);
+            source->setObjectName(
+                QStringLiteral("pelican.inspectorGeneratedSource"));
+            form->addRow(owner.tr("Prefab source"), source);
         }
         if (component.runtime_json &&
             *component.runtime_json != component.authored_json) {

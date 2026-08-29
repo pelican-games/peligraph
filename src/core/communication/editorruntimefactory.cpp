@@ -622,7 +622,8 @@ std::size_t operationComponentIndex(
         const auto component = std::find_if(
             object->components.begin(), object->components.end(),
             [component_name](const auto &candidate) {
-                return candidate.name == component_name;
+                return !candidate.origin.isGenerated() &&
+                       candidate.name == component_name;
             });
         if (component != object->components.end()) {
             return component->authoring_component_index;
@@ -630,6 +631,18 @@ std::size_t operationComponentIndex(
     }
     throw std::runtime_error(
         "component edit has no declaration index and cannot resolve one");
+}
+
+const ResolvedObject *resolvedEditorObject(const EditorRuntimeModules &modules,
+                                           AuthoringObjectId object_id) {
+    for (const auto &scene : modules.project_config.resolvedScene().scenes()) {
+        const auto found = std::find_if(
+            scene.objects.begin(), scene.objects.end(), [&](const auto &object) {
+                return object.authoring_object_id == object_id;
+            });
+        if (found != scene.objects.end()) return &*found;
+    }
+    return nullptr;
 }
 
 struct BehaviorProjectionJunctionState {
@@ -842,12 +855,23 @@ EditorProjectionResult executeEditorProjection(
                             authored.contains("params")
                                 ? nlohmann::json{authored.at("params")}
                                 : nlohmann::json::object();
+                        const auto component_index =
+                            operation.at("component_index").get<std::size_t>();
+                        const auto *resolved_object =
+                            resolvedEditorObject(modules, object_id);
+                        if (resolved_object == nullptr) {
+                            throw std::runtime_error(
+                                "behavior add target is absent from resolved scene");
+                        }
                         behavior_edits.push_back(BehaviorAttachmentEdit{
                             .kind = BehaviorAttachmentEditKind::attach,
                             .entity = *entity,
-                            .component_index =
-                                operation.at("component_index")
-                                    .get<std::size_t>(),
+                            .component_index = component_index,
+                            .component_origin = ResolvedComponentOrigin{
+                                AuthoredComponentOrigin{component_index}},
+                            .scene_object_index =
+                                resolved_object->authoring_object_index,
+                            .scene_ordered = true,
                             .identity = behaviorIdentity(operation),
                             .stable_name = stable_name,
                             .canonical_params =
@@ -1055,7 +1079,7 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
                     return attachment.entity == *entity_id &&
                            attachment.component_index ==
                                object.components[index]
-                                   .authoring_component_index;
+                                   .merged_component_index;
                 });
             if (found != behavior_attachments.end()) {
                 result.component_pending[index] = found->pending;
@@ -1634,6 +1658,14 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     };
                 },
             .install_commit_hook = true,
+            .prefab_registry = [runtime] {
+                return runtime->modules.project_config.resolvedScene()
+                    .prefabRegistry();
+            },
+            .bindable_provider = [runtime] {
+                return runtime->modules.project_config.resolvedScene()
+                    .bindableProvider();
+            },
         },
         .preview = EditorPreviewServiceDependencies{
             .document = [runtime]() -> const AuthoringSceneDocument & {

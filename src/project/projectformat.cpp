@@ -86,6 +86,8 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
         project.value("basic_config", nlohmann::json::object());
     result.envelope.asset_stores =
         project.value("asset_stores", nlohmann::json::object());
+    result.envelope.prefabs = parsePrefabRegistryEntries(
+        project.value("prefabs", nlohmann::json::array()));
 
     if (!project.contains("engine_min_version")) {
         return result;

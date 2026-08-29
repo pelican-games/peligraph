@@ -802,6 +802,7 @@ target_compile_definitions(pelican_test_wp360_resolvedscene_test PRIVATE
   PELICAN_WP360_RPC_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp360/get_components.parent.ndjson"
   PELICAN_WP360_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
 )
+pelican_define_test(wp361_prefab_test pelican_core glm picosha2)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})

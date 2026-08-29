@@ -98,6 +98,8 @@ class AuthoringSceneDocument {
     };
 
     SceneRevision revision_{};
+    int format_version_ = 1;
+    bool uses_prefabs_ = false;
     nlohmann::json raw_document_;
     std::vector<std::string> warnings_;
     std::vector<SceneMetadata> scene_metadata_;
@@ -108,6 +110,8 @@ class AuthoringSceneDocument {
                                        std::uint64_t first_authoring_object_id = 1);
 
     SceneRevision revision() const noexcept { return revision_; }
+    int formatVersion() const noexcept { return format_version_; }
+    bool usesPrefabs() const noexcept { return uses_prefabs_; }
     std::size_t objectCount() const noexcept;
     std::span<const std::string> warnings() const noexcept { return warnings_; }
     void swap(AuthoringSceneDocument &other) noexcept;

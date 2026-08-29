@@ -14,6 +14,7 @@ target_sources(pelican_core PRIVATE
     authoringscenedocument.cpp
     sceneauthoringadapter.cpp
     resolvedscene.cpp
+    prefabprovider.cpp
     componentcodec.cpp
     editorpreviewprojection.cpp
     editorprojectiontransaction.cpp

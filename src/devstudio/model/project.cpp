@@ -2,6 +2,7 @@
 
 #include "projectformat.hpp"
 #include "sceneformat.hpp"
+#include "prefab.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -111,10 +112,70 @@ ProjectOutlinerModel::open(const std::filesystem::path &project_path) {
     auto parsed_project = Pelican::parseProjectEnvelopeText(
         readTextFile(location.file, "project.json"));
 
+    // Offline open uses the same project leaf parsers as the engine. Loading
+    // every registry entry here catches a broken unused prefab as well as a
+    // broken referenced one; expansion validates configured-scene instances
+    // and produces the concrete JSON that the core provider will later check.
+    const auto registry = Pelican::buildPrefabRegistrySnapshot(
+        parsed_project.envelope.prefabs,
+        [&](std::string_view relative) {
+            return readTextFile(location.root /
+                                    std::filesystem::path{std::string{relative}},
+                                "prefab");
+        });
+    std::vector<OfflinePrefabExpansion> offline_expansions;
+    if (parsed_project.envelope.basic_config.is_object()) {
+        const auto scene_ref =
+            parsed_project.envelope.basic_config.find("scene_data_json");
+        if (scene_ref != parsed_project.envelope.basic_config.end() &&
+            scene_ref->is_string() && !scene_ref->get_ref<const std::string &>().empty()) {
+            const auto scene_bytes = readTextFile(
+                location.root / std::filesystem::path{scene_ref->get<std::string>()},
+                "configured scene");
+            const auto scene_json = nlohmann::json::parse(scene_bytes);
+            const auto normalized = Pelican::normalizeSceneDataJson(scene_json);
+            if (normalized.uses_prefabs) {
+                for (auto scene = normalized.scenes.begin();
+                     scene != normalized.scenes.end(); ++scene) {
+                    std::unordered_map<std::string, bool> instance_ids;
+                    for (const auto &object : scene.value().at("objects")) {
+                        const auto block = object.find("prefab");
+                        if (block == object.end()) continue;
+                        auto instance = Pelican::resolvePrefabInstance(
+                            *block, registry,
+                            {.scene_id = scene.key(), .json_pointer = "/prefab"});
+                        if (!instance_ids.emplace(instance.instance_id, true).second) {
+                            throw Pelican::PrefabError{
+                                Pelican::PrefabErrorCode::PrefabInstanceIdCollision,
+                                "duplicate prefab instance_id in configured scene",
+                                {.scene_id = scene.key(),
+                                 .instance_id = instance.instance_id,
+                                 .prefab = instance.ref}};
+                        }
+                        const auto *record = registry.find(instance.ref);
+                        OfflinePrefabExpansion expansion{
+                            .scene_id = scene.key(),
+                            .object_name = object.value("name", std::string{}),
+                            .instance_id = instance.instance_id,
+                        };
+                        for (const auto &component : record->document->components) {
+                            expansion.resolved_component_json.push_back(
+                                Pelican::substitutePrefabComponent(
+                                    component, instance.parameters)
+                                    .dump());
+                        }
+                        offline_expansions.push_back(std::move(expansion));
+                    }
+                }
+            }
+        }
+    }
+
     ProjectOutlinerModel model;
     model.project_root_ = location.root;
     model.project_name_ = std::move(parsed_project.envelope.name);
     model.warnings_ = std::move(parsed_project.warnings);
+    model.offline_prefab_expansions_ = std::move(offline_expansions);
     return model;
 }
 

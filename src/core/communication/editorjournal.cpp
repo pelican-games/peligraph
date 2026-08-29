@@ -5,6 +5,7 @@
 #include "../appflow/framephase.hpp"
 #include "../loader/componentcodec.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
+#include "../../project/prefab.hpp"
 
 #include <algorithm>
 #include <array>
@@ -438,13 +439,17 @@ class LocalDocumentTarget final : public EditorProjectionDocumentTarget {
     SceneProjectionState state_;
 
   public:
-    explicit LocalDocumentTarget(const AuthoringSceneDocument &source)
+    explicit LocalDocumentTarget(
+        const AuthoringSceneDocument &source,
+        PrefabRegistrySnapshot registry = {},
+        BindableProviderSnapshot provider = {})
         : state_{ResolvedSceneResolver::prepare(
               AuthoringSceneAuthority::stage(
                   source,
                   AuthoringSceneAuthority::rawView(source).documentJson(),
                   SceneRevision{source.revision().value + 1}),
-              SceneResolverGeneration{1})} {}
+              SceneResolverGeneration{1}, {}, std::move(registry),
+              std::move(provider))} {}
 
     const SceneProjectionState &projectionState() const override {
         return state_;
@@ -877,7 +882,8 @@ PreparedOperation prepareSpawn(const Json &raw,
                                const AuthoringSceneDocument &document,
                                std::string_view default_scene) {
     constexpr auto context = "spawn";
-    requireOnly(raw, {"op", "scene_id", "declaration_index", "object"},
+    requireOnly(raw, {"op", "scene_id", "declaration_index", "object",
+                      "new_instance_id"},
                 context);
     const auto scene_id = optionalString(raw, "scene_id", context)
                               .value_or(std::string{default_scene});
@@ -906,13 +912,51 @@ PreparedOperation prepareSpawn(const Json &raw,
         }
     }
     auto object = canonicalSpawnObject(raw.at("object"), scene_id, document);
+    std::optional<std::string> new_instance_id;
+    if (object.contains("prefab")) {
+        const auto found = raw.find("new_instance_id");
+        if (found == raw.end()) {
+            editFailure(
+                EditorEditErrorCode::prefab_instance_id_collision,
+                {{"object", nullptr}, {"slot", nullptr},
+                 {"field_path", "/new_instance_id"},
+                 {"detail", "prefab spawn requires an authoritative new_instance_id"}},
+                "prefab spawn requires an authoritative new_instance_id");
+        }
+        if (!found->is_string() ||
+            !isPrefabIdentifier(found->get_ref<const std::string &>())) {
+            editFailure(
+                EditorEditErrorCode::schema_violation,
+                {{"object", nullptr}, {"slot", nullptr},
+                 {"field_path", "/new_instance_id"},
+                 {"detail", "prefab spawn requires a valid new_instance_id"}},
+                "prefab spawn requires a valid new_instance_id");
+        }
+        if (!object.at("prefab").is_object()) {
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", nullptr}, {"slot", nullptr},
+                         {"field_path", "/object/prefab"},
+                         {"detail", "prefab spawn block must be an object"}},
+                        "prefab spawn block must be an object");
+        }
+        new_instance_id = found->get<std::string>();
+        object["prefab"]["instance_id"] = *new_instance_id;
+    } else if (raw.contains("new_instance_id")) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", nullptr}, {"slot", nullptr},
+                     {"field_path", "/new_instance_id"},
+                     {"detail", "new_instance_id is valid only for prefab spawn"}},
+                    "new_instance_id is valid only for prefab spawn");
+    }
     const auto name = object.at("name").get<std::string>();
+    OrderedJson forward{{"op", context},
+                        {"scene_id", scene_id},
+                        {"declaration_index", declaration_index},
+                        {"object", object}};
+    if (new_instance_id) forward["new_instance_id"] = *new_instance_id;
     return PreparedOperation{
         .commands = {makeInsertObjectCommand(scene_id, declaration_index, object)},
-        .forward = {{"op", context},
-                    {"scene_id", scene_id},
-                    {"declaration_index", declaration_index},
-                    {"object", object}},
+        .forward = std::move(forward),
         .inverse = {{"op", "remove_objects"}, {"object_ids", OrderedJson::array()}},
         .stable_target = "/scenes/" + scene_id + "/name_reservations/" + name,
         .read_set = {"/scenes/" + scene_id + "/name_reservations/" + name},
@@ -1251,11 +1295,14 @@ Json normalizeBehaviorAttachmentIdentities(
 
 PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
-                           std::string_view current_scene) {
+                           std::string_view current_scene,
+                           PrefabRegistrySnapshot registry = {},
+                           BindableProviderSnapshot provider = {}) {
     if (!raw_operations.is_array() || raw_operations.empty()) {
         throw std::invalid_argument("edit operations must be a non-empty array");
     }
-    LocalDocumentTarget local{source};
+    LocalDocumentTarget local{source, std::move(registry),
+                              std::move(provider)};
     PreparedBatch batch;
     batch.operations.reserve(raw_operations.size());
     for (const auto &raw : raw_operations) {
@@ -1408,8 +1455,11 @@ EditorProjectionCommand commandFromCanonical(const Json &operation,
 
 std::vector<EditorProjectionCommand>
 commandsFromCanonical(std::span<const OrderedJson> operations,
-                      const AuthoringSceneDocument &document) {
-    LocalDocumentTarget local{document};
+                      const AuthoringSceneDocument &document,
+                      PrefabRegistrySnapshot registry = {},
+                      BindableProviderSnapshot provider = {}) {
+    LocalDocumentTarget local{document, std::move(registry),
+                              std::move(provider)};
     std::vector<EditorProjectionCommand> result;
     for (const auto &operation : operations) {
         const auto op = operation.at("op").get<std::string>();
@@ -1746,6 +1796,8 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::undo_conflict: return "undo_conflict";
     case EditorEditErrorCode::not_editable: return "not_editable";
     case EditorEditErrorCode::schema_violation: return "schema_violation";
+    case EditorEditErrorCode::prefab_instance_id_collision:
+        return "prefab_instance_id_collision";
     case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
     case EditorEditErrorCode::duplicate_component: return "duplicate_component";
     case EditorEditErrorCode::missing_component: return "missing_component";
@@ -1892,6 +1944,16 @@ struct EditorEditCoordinator::Impl {
         : dependencies{std::move(runtime)} {}
 
     const AuthoringSceneDocument &document() const { return dependencies.document(); }
+    PrefabRegistrySnapshot prefabRegistry() const {
+        return dependencies.prefab_registry
+                   ? dependencies.prefab_registry()
+                   : PrefabRegistrySnapshot{};
+    }
+    BindableProviderSnapshot bindableProvider() const {
+        return dependencies.bindable_provider
+                   ? dependencies.bindable_provider()
+                   : BindableProviderSnapshot{};
+    }
 
     EditorGateSnapshot gateSnapshot() {
         const auto observation = dependencies.gate ? dependencies.gate()
@@ -2313,7 +2375,9 @@ struct EditorEditCoordinator::Impl {
                         continue;
                     }
                     auto batch = prepareBatch(request.raw_operations, document(),
-                                              request.accepted_scene_id);
+                                              request.accepted_scene_id,
+                                              prefabRegistry(),
+                                              bindableProvider());
                     requireLivePreviewCapability(batch, "open_preview");
                     PreviewLease lease{
                         .ticket = request.ticket,
@@ -2388,7 +2452,9 @@ struct EditorEditCoordinator::Impl {
 
                 if (request.kind == PreviewRequest::Kind::update) {
                     auto batch = prepareBatch(request.raw_operations, document(),
-                                              request.accepted_scene_id);
+                                              request.accepted_scene_id,
+                                              prefabRegistry(),
+                                              bindableProvider());
                     requireLivePreviewCapability(batch, "update_preview");
                     auto writes = batchWriteSet(batch);
                     if (!sameStableSet(writes, preview_lease->write_set)) {
@@ -2429,7 +2495,9 @@ struct EditorEditCoordinator::Impl {
                         continue;
                     }
                     auto batch = prepareBatch(preview_lease->raw_operations,
-                                              document(), preview_lease->scene_id);
+                                              document(), preview_lease->scene_id,
+                                              prefabRegistry(),
+                                              bindableProvider());
                     const EditorEditExecutionRequest execution{
                         .base_revision = preview_lease->base_revision,
                         .commands = batch.commands,
@@ -2582,7 +2650,9 @@ struct EditorEditCoordinator::Impl {
                 std::span<const EditorProjectionCommand> execution_commands;
                 if (ticket.kind == Ticket::Kind::edit) {
                     batch = prepareBatch(ticket.raw_operations, document(),
-                                         ticket.accepted_scene_id);
+                                         ticket.accepted_scene_id,
+                                         prefabRegistry(),
+                                         bindableProvider());
                     const auto writes = batchWriteSet(batch);
                     const auto domains = batchStructuralDomains(batch);
                     requireNoLeaseOverlap(writes, domains);
@@ -2611,7 +2681,8 @@ struct EditorEditCoordinator::Impl {
                     requireNoLeaseOverlap(revert_source->write_set,
                                           revert_source->structural_domain);
                     revert_commands = commandsFromCanonical(
-                        revert_source->ordered_inverse, document());
+                        revert_source->ordered_inverse, document(),
+                        prefabRegistry(), bindableProvider());
                     execution_operations = revert_source->ordered_inverse;
                     execution_commands = revert_commands;
                 }
@@ -2834,7 +2905,9 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         normalized_operations = normalizeBehaviorAttachmentIdentities(
             operations, impl_->document(), base, impl_->dependencies);
         const auto batch = prepareBatch(normalized_operations, impl_->document(),
-                                        impl_->dependencies.current_scene_id());
+                                        impl_->dependencies.current_scene_id(),
+                                        impl_->prefabRegistry(),
+                                        impl_->bindableProvider());
         const auto writes = batchWriteSet(batch);
         const auto domains = batchStructuralDomains(batch);
         impl_->requireNoLeaseOverlap(writes, domains);
@@ -2928,7 +3001,9 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
         const auto &source = impl.requireJournal(source_id);
         impl.requireRevertPreconditions(source);
         impl.requireNoLeaseOverlap(source.write_set, source.structural_domain);
-        (void)commandsFromCanonical(source.ordered_inverse, impl.document());
+        (void)commandsFromCanonical(source.ordered_inverse, impl.document(),
+                                    impl.prefabRegistry(),
+                                    impl.bindableProvider());
         Impl::Ticket pending{
             .id = ticket_id,
             .kind = redo ? Impl::Ticket::Kind::redo : Impl::Ticket::Kind::undo,
@@ -3007,7 +3082,9 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
     }
     try {
         auto batch = prepareBatch(request.raw_operations, impl_->document(),
-                                  request.accepted_scene_id);
+                                  request.accepted_scene_id,
+                                  impl_->prefabRegistry(),
+                                  impl_->bindableProvider());
         requireLivePreviewCapability(batch, method);
         if (!impl_->dependencies.execute_preview) {
             editFailure(EditorEditErrorCode::method_unavailable,
@@ -3077,7 +3154,9 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
     }
     try {
         auto batch = prepareBatch(request.raw_operations, impl_->document(),
-                                  request.accepted_scene_id);
+                                  request.accepted_scene_id,
+                                  impl_->prefabRegistry(),
+                                  impl_->bindableProvider());
         requireLivePreviewCapability(batch, method);
         const auto writes = batchWriteSet(batch);
         if (!sameStableSet(writes, impl_->preview_lease->write_set)) {
@@ -3270,7 +3349,9 @@ EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(
     }
     const auto &operations = inverse ? found->ordered_inverse
                                      : found->ordered_forward;
-    auto commands = commandsFromCanonical(operations, impl_->document());
+    auto commands = commandsFromCanonical(
+        operations, impl_->document(), impl_->prefabRegistry(),
+        impl_->bindableProvider());
     const EditorEditExecutionRequest request{
         .base_revision = impl_->document().revision(),
         .commands = commands,

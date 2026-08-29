@@ -31,6 +31,13 @@ struct OutlinerScene {
     std::vector<std::size_t> root_declaration_indices;
 };
 
+struct OfflinePrefabExpansion {
+    std::string scene_id;
+    std::string object_name;
+    std::string instance_id;
+    std::vector<std::string> resolved_component_json;
+};
+
 // Project metadata plus the most recent typed scene_tree RPC projection.
 // Object identity is always (scene id, declaration index); authored names are
 // presentation and parent-reference data only.
@@ -39,6 +46,7 @@ class ProjectOutlinerModel {
     std::optional<std::string> project_name_;
     std::vector<OutlinerScene> scenes_;
     std::vector<std::string> warnings_;
+    std::vector<OfflinePrefabExpansion> offline_prefab_expansions_;
     std::optional<std::uint64_t> scene_revision_;
 
   public:
@@ -56,6 +64,10 @@ class ProjectOutlinerModel {
     }
     const std::vector<std::string> &warnings() const noexcept {
         return warnings_;
+    }
+    const std::vector<OfflinePrefabExpansion> &offlinePrefabExpansions() const
+        noexcept {
+        return offline_prefab_expansions_;
     }
     const std::optional<std::uint64_t> &sceneRevision() const noexcept {
         return scene_revision_;

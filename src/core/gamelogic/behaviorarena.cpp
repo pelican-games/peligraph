@@ -112,6 +112,8 @@ std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
                 prepared.push_back(PreparedSceneBehaviorAttachment{
                     .object_index = object_index,
                     .component_index = component_index,
+                    .component_origin = ResolvedComponentOrigin{
+                        AuthoredComponentOrigin{component_index}},
                     .object_name = object_name,
                     .stable_name = stable_name,
                     .canonical_params = {},
@@ -128,6 +130,8 @@ std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
             prepared.push_back(PreparedSceneBehaviorAttachment{
                 .object_index = object_index,
                 .component_index = component_index,
+                .component_origin = ResolvedComponentOrigin{
+                    AuthoredComponentOrigin{component_index}},
                 .object_name = object_name,
                 .stable_name = stable_name,
                 .canonical_params = registration->canonicalize_params(params),
@@ -188,7 +192,8 @@ prepareResolvedSceneBehaviorAttachments(
                 }
                 prepared.push_back(PreparedSceneBehaviorAttachment{
                     .object_index = object.authoring_object_index,
-                    .component_index = component.authoring_component_index,
+                    .component_index = component.merged_component_index,
+                    .component_origin = component.origin,
                     .object_name = object_name,
                     .stable_name = stable_name,
                     .canonical_params = {},
@@ -204,7 +209,8 @@ prepareResolvedSceneBehaviorAttachments(
             }
             prepared.push_back(PreparedSceneBehaviorAttachment{
                 .object_index = object.authoring_object_index,
-                .component_index = component.authoring_component_index,
+                .component_index = component.merged_component_index,
+                .component_origin = component.origin,
                 .object_name = object_name,
                 .stable_name = stable_name,
                 .canonical_params = *component.behavior_canonical_params,
@@ -294,6 +300,13 @@ struct PreparedBehaviorAttachmentEdits::Impl {
     }
 };
 
+void refreshSceneAttachmentSequence(BehaviorAttachmentInfo &info) noexcept {
+    if (!info.scene_ordered) return;
+    info.attachment_seq =
+        (static_cast<std::uint64_t>(info.scene_object_index) << 32U) |
+        static_cast<std::uint64_t>(info.component_index);
+}
+
 PreparedBehaviorAttachmentEdits::PreparedBehaviorAttachmentEdits(
     std::unique_ptr<Impl> impl) noexcept
     : impl_{std::move(impl)} {}
@@ -326,6 +339,7 @@ void PreparedBehaviorAttachmentEdits::publish() noexcept {
                 if (attachment.info.entity == edit.entity &&
                     attachment.info.component_index >= edit.component_index) {
                     ++attachment.info.component_index;
+                    refreshSceneAttachmentSequence(attachment.info);
                 }
             }
             arena.attachments.push_back(std::move(*item.attachment));
@@ -341,6 +355,7 @@ void PreparedBehaviorAttachmentEdits::publish() noexcept {
                 if (attachment.info.entity == edit.entity &&
                     attachment.info.component_index > edit.component_index) {
                     --attachment.info.component_index;
+                    refreshSceneAttachmentSequence(attachment.info);
                 }
             }
             break;
@@ -366,6 +381,7 @@ void PreparedBehaviorAttachmentEdits::publish() noexcept {
                 if (attachment.info.entity == edit.entity &&
                     attachment.info.component_index >= edit.component_index) {
                     ++attachment.info.component_index;
+                    refreshSceneAttachmentSequence(attachment.info);
                 }
             }
             break;
@@ -374,6 +390,7 @@ void PreparedBehaviorAttachmentEdits::publish() noexcept {
                 if (attachment.info.entity == edit.entity &&
                     attachment.info.component_index > edit.component_index) {
                     --attachment.info.component_index;
+                    refreshSceneAttachmentSequence(attachment.info);
                 }
             }
             break;
@@ -424,6 +441,9 @@ void BehaviorAttachmentArena::publishSceneAttachments(
                 .attachment_seq = sequence,
                 .entity = bound.entity,
                 .component_index = bound.prepared.component_index,
+                .component_origin = bound.prepared.component_origin,
+                .scene_object_index = bound.prepared.object_index,
+                .scene_ordered = true,
                 .stable_name = bound.prepared.stable_name,
                 .canonical_params = bound.prepared.canonical_params,
                 .owner = bound.prepared.registration_owner,
@@ -694,6 +714,8 @@ BehaviorAttachmentArena::prepareEditorEdits(
         std::uint64_t attachment_seq = 0;
         GameObjectId entity = invalidGameObjectId;
         std::size_t component_index = 0;
+        std::size_t scene_object_index = 0;
+        bool scene_ordered = false;
         std::string stable_name;
         internal::RegistrationOwner owner = internal::engineRegistrationOwner;
         bool pending = false;
@@ -706,6 +728,8 @@ BehaviorAttachmentArena::prepareEditorEdits(
             .attachment_seq = attachment.info.attachment_seq,
             .entity = attachment.info.entity,
             .component_index = attachment.info.component_index,
+            .scene_object_index = attachment.info.scene_object_index,
+            .scene_ordered = attachment.info.scene_ordered,
             .stable_name = attachment.info.stable_name,
             .owner = attachment.info.owner,
             .pending = attachment.info.pending,
@@ -739,12 +763,6 @@ BehaviorAttachmentArena::prepareEditorEdits(
             if (current.identity.handle == invalidBehaviorAttachmentHandle) {
                 throw std::runtime_error("behavior editor attach requires a reserved identity");
             }
-            if (std::any_of(simulated.begin(), simulated.end(), [&](const auto &candidate) {
-                    return candidate.handle == current.identity.handle ||
-                           candidate.attachment_seq == current.identity.attachment_seq;
-                })) {
-                throw std::runtime_error("behavior editor attach identity is already live");
-            }
             const auto *registration =
                 internal::getBehaviorRegisterer().findByName(current.stable_name);
             if (registration == nullptr) {
@@ -752,12 +770,36 @@ BehaviorAttachmentArena::prepareEditorEdits(
                                          current.stable_name);
             }
             auto instance = registration->create(current.canonical_params);
+            for (auto &candidate : simulated) {
+                if (candidate.entity == current.entity &&
+                    candidate.component_index >= current.component_index) {
+                    ++candidate.component_index;
+                    if (candidate.scene_ordered) {
+                        candidate.attachment_seq = sceneBehaviorAttachmentSeq(
+                            candidate.scene_object_index,
+                            candidate.component_index);
+                    }
+                }
+            }
+            const auto effective_sequence = current.scene_ordered
+                ? sceneBehaviorAttachmentSeq(current.scene_object_index,
+                                             current.component_index)
+                : current.identity.attachment_seq;
+            if (std::any_of(simulated.begin(), simulated.end(), [&](const auto &candidate) {
+                    return candidate.handle == current.identity.handle ||
+                           candidate.attachment_seq == effective_sequence;
+                })) {
+                throw std::runtime_error("behavior editor attach identity is already live");
+            }
             item.attachment.emplace(Attachment{
                 .info = BehaviorAttachmentInfo{
                     .handle = current.identity.handle,
-                    .attachment_seq = current.identity.attachment_seq,
+                    .attachment_seq = effective_sequence,
                     .entity = current.entity,
                     .component_index = current.component_index,
+                    .component_origin = current.component_origin,
+                    .scene_object_index = current.scene_object_index,
+                    .scene_ordered = current.scene_ordered,
                     .stable_name = current.stable_name,
                     .canonical_params = current.canonical_params,
                     .owner = registration->owner,
@@ -770,17 +812,13 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 .initialized = false,
                 .activation_delay = 1,
             });
-            for (auto &candidate : simulated) {
-                if (candidate.entity == current.entity &&
-                    candidate.component_index >= current.component_index) {
-                    ++candidate.component_index;
-                }
-            }
             simulated.push_back({
                 .handle = current.identity.handle,
-                .attachment_seq = current.identity.attachment_seq,
+                .attachment_seq = effective_sequence,
                 .entity = current.entity,
                 .component_index = current.component_index,
+                .scene_object_index = current.scene_object_index,
+                .scene_ordered = current.scene_ordered,
                 .stable_name = current.stable_name,
                 .owner = registration->owner,
             });
@@ -791,7 +829,8 @@ BehaviorAttachmentArena::prepareEditorEdits(
             const auto found = find_simulated(current);
             if (found == simulated.end() || found->entity != current.entity ||
                 found->component_index != current.component_index ||
-                (current.identity.attachment_seq != 0 &&
+                (current.identity.handle == invalidBehaviorAttachmentHandle &&
+                 current.identity.attachment_seq != 0 &&
                  found->attachment_seq != current.identity.attachment_seq)) {
                 throw std::runtime_error("behavior editor remove target is stale");
             }
@@ -800,6 +839,11 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 if (candidate.entity == current.entity &&
                     candidate.component_index > current.component_index) {
                     --candidate.component_index;
+                    if (candidate.scene_ordered) {
+                        candidate.attachment_seq = sceneBehaviorAttachmentSeq(
+                            candidate.scene_object_index,
+                            candidate.component_index);
+                    }
                 }
             }
             break;
@@ -808,7 +852,8 @@ BehaviorAttachmentArena::prepareEditorEdits(
             const auto found = find_simulated(current);
             if (found == simulated.end() || found->entity != current.entity ||
                 found->component_index != current.component_index || found->pending ||
-                (current.identity.attachment_seq != 0 &&
+                (current.identity.handle == invalidBehaviorAttachmentHandle &&
+                 current.identity.attachment_seq != 0 &&
                  found->attachment_seq != current.identity.attachment_seq)) {
                 throw std::runtime_error("behavior editor params target is stale or pending");
             }
@@ -828,6 +873,11 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 if (candidate.entity == current.entity &&
                     candidate.component_index >= current.component_index) {
                     ++candidate.component_index;
+                    if (candidate.scene_ordered) {
+                        candidate.attachment_seq = sceneBehaviorAttachmentSeq(
+                            candidate.scene_object_index,
+                            candidate.component_index);
+                    }
                 }
             }
             break;
@@ -836,6 +886,11 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 if (candidate.entity == current.entity &&
                     candidate.component_index > current.component_index) {
                     --candidate.component_index;
+                    if (candidate.scene_ordered) {
+                        candidate.attachment_seq = sceneBehaviorAttachmentSeq(
+                            candidate.scene_object_index,
+                            candidate.component_index);
+                    }
                 }
             }
             break;

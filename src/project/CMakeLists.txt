@@ -24,6 +24,7 @@ add_library(pelican_project
     passfieldownership.cpp
     passshapepolicy.cpp
     physicaltargetplanwire.cpp
+    prefab.cpp
     projectformat.cpp
     projectpathresolver.cpp
     rasterpass.cpp

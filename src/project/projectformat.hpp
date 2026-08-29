@@ -1,5 +1,7 @@
 #pragma once
 
+#include "prefab.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <optional>
@@ -14,6 +16,7 @@ struct ProjectEnvelope {
     std::optional<std::string> engine_min_version;
     nlohmann::json basic_config = nlohmann::json::object();
     nlohmann::json asset_stores = nlohmann::json::object();
+    std::vector<PrefabRegistryEntry> prefabs;
 };
 
 struct ProjectEnvelopeParseOptions {

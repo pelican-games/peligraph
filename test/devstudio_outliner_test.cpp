@@ -100,7 +100,9 @@ struct ProjectSandbox {
     }
 
     void write(std::string_view relative_path, std::string_view contents) {
-        std::ofstream stream(root / relative_path, std::ios::binary);
+        const auto path = root / relative_path;
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream stream(path, std::ios::binary);
         REQUIRE(stream);
         stream << contents;
         REQUIRE(stream.good());
@@ -151,6 +153,44 @@ TEST_CASE("Devstudio outliner opens the example without collapsing unnamed objec
     REQUIRE(keys.size() == 47);
     REQUIRE(display_names.size() == 47);
     REQUIRE(unnamed_count == 32);
+}
+
+TEST_CASE("WP361 Studio offline open resolves the configured scene and every prefab",
+          "[devstudio][outliner][wp361][prefab][offline]") {
+    ProjectSandbox sandbox;
+    sandbox.write("project.json", R"json({
+      "schema":"pelican.project","version":1,"name":"prefab-offline",
+      "basic_config":{"scene_data_json":"scenes/main.scene.json"},
+      "prefabs":[{"name":"unit","path":"prefabs/unit.json"}]
+    })json");
+    sandbox.write("prefabs/unit.json", R"json({
+      "schema":"pelican.prefab","version":1,"name":"unit",
+      "parameters":[{"name":"texture","kind":"asset","asset_kind":"texture","default":"white"}],
+      "components":[{"name":"sprite_view","id":"sprite","texture":{"$param":"texture"}}]
+    })json");
+    sandbox.write("scenes/main.scene.json", R"json({
+      "schema":"pelican.scene","version":2,
+      "scenes":{"main":{"objects":[
+        {"name":"Instance","components":[{"name":"transform"}],
+         "prefab":{"ref":"unit","instance_id":"gi_main","parameters":{"texture":"blue"}}}
+      ]}}
+    })json");
+
+    const auto model = ProjectOutlinerModel::open(sandbox.root);
+    REQUIRE(model.offlinePrefabExpansions().size() == 1);
+    const auto &expansion = model.offlinePrefabExpansions().front();
+    REQUIRE(expansion.scene_id == "main");
+    REQUIRE(expansion.object_name == "Instance");
+    REQUIRE(expansion.instance_id == "gi_main");
+    REQUIRE(expansion.resolved_component_json.size() == 1);
+    REQUIRE(nlohmann::json::parse(expansion.resolved_component_json.front()) ==
+            nlohmann::json{{"name", "sprite_view"}, {"texture", "blue"}});
+
+    sandbox.write("prefabs/unit.json", R"json({
+      "schema":"pelican.prefab","version":1,"name":"wrong",
+      "components":[{"name":"sprite_view","texture":"white"}]
+    })json");
+    REQUIRE_THROWS(ProjectOutlinerModel::open(sandbox.root));
 }
 
 TEST_CASE("Devstudio outliner projects parent references onto declaration identities",

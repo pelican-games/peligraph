@@ -38,6 +38,8 @@ enum class EditorCommandErrorCode : std::uint8_t {
     ResolvedSceneProviderUnavailable,
     SaveUnavailable,
     SaveFailed,
+    PrefabPersistenceUnsupported,
+    PrefabGeneratedReadOnly,
 };
 
 std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcept;
@@ -73,6 +75,8 @@ struct EditorComponentQueryResult {
     std::optional<std::uint64_t> behavior_attachment_seq;
     std::optional<std::uint64_t> behavior_owner;
     std::optional<std::uint32_t> behavior_owner_generation;
+    std::optional<GeneratedComponentOrigin> generated;
+    std::optional<nlohmann::ordered_json> generated_resolved_json;
 };
 
 struct EditorObjectQueryResult {
@@ -83,6 +87,7 @@ struct EditorObjectQueryResult {
     std::optional<std::string> parent;
     std::optional<GameObjectId> entity_id;
     std::vector<EditorComponentQueryResult> components;
+    std::optional<ResolvedPrefabInstance> prefab_instance;
 };
 
 struct EditorSceneTreeRequest {
@@ -301,6 +306,7 @@ class EditorCommandService {
     bool forceAbortPreview(std::string reason) noexcept;
     EditorEditCoordinator *editCoordinator() noexcept { return edit_.get(); }
     const EditorEditCoordinator *editCoordinator() const noexcept { return edit_.get(); }
+    bool usesPrefabs() const { return document().usesPrefabs(); }
 };
 
 class EditorCommandRpcAdapter {

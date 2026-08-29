@@ -82,6 +82,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::unordered_map<std::string, std::string> input_profile_json_refs;
     std::optional<std::string> default_input_profile;
     bool project_source = false;
+    PrefabRegistrySnapshot prefab_registry;
+    mutable BindableProviderSnapshot prefab_provider;
+    mutable std::uint64_t next_prefab_provider_generation = 1;
 
     mutable std::optional<SceneProjectionState> scene_projection;
     mutable std::optional<std::string> scene_baseline_digest;

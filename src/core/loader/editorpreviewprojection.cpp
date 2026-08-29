@@ -731,6 +731,15 @@ PreparedProjection prepareEditorPreviewProjection(
     const AuthoringSceneDocument &base_document, const Json &overrides,
     const ResolvedSceneDefaults &defaults,
     const EditorPreviewProjectionFaultHook &fault_hook) {
+    return prepareEditorPreviewProjection(base_document, overrides, defaults,
+                                          {}, {}, fault_hook);
+}
+
+PreparedProjection prepareEditorPreviewProjection(
+    const AuthoringSceneDocument &base_document, const Json &overrides,
+    const ResolvedSceneDefaults &defaults, PrefabRegistrySnapshot registry,
+    BindableProviderSnapshot provider,
+    const EditorPreviewProjectionFaultHook &fault_hook) {
     auto raw =
         AuthoringSceneAuthority::rawView(base_document).documentJson();
     applyOverrides(raw, base_document, overrides, fault_hook);
@@ -754,7 +763,7 @@ PreparedProjection prepareEditorPreviewProjection(
     auto state = ResolvedSceneResolver::prepare(
         std::move(staged),
         SceneResolverGeneration{base_document.revision().value + 1},
-        defaults);
+        defaults, std::move(registry), std::move(provider));
     auto evaluated = evaluatedScene(state.resolved());
     return PreparedProjection{.state = std::move(state),
                               .evaluated_scene = std::move(evaluated)};

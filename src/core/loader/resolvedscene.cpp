@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace Pelican {
@@ -76,21 +78,26 @@ bool requestsGeneratedComponent(const nlohmann::json &component) {
 }
 
 ResolvedComponent resolveComponent(
-    const AuthoringComponentView &source,
+    const nlohmann::json &authored,
+    ComponentCodecQueryMetadata source_codec,
+    std::size_t authoring_component_index,
+    std::size_t merged_component_index,
+    ResolvedComponentOrigin origin,
     const SceneComponentProvenance &provenance,
     std::vector<BehaviorReloadSourceParams> &behavior_sources,
     const ResolvedSceneDefaults &defaults) {
-    const auto &authored = source.authoredJson();
-    if (requestsGeneratedComponent(authored)) {
+    if (!origin.isGenerated() && requestsGeneratedComponent(authored)) {
         ResolvedSceneResolver::resolveGeneratedComponent();
     }
 
     ResolvedComponent result{
-        .authoring_component_index = source.declaration_index,
+        .authoring_component_index = authoring_component_index,
+        .merged_component_index = merged_component_index,
+        .origin = std::move(origin),
         .name = authored.at("name").get<std::string>(),
         .source_json_exact = authored,
         .effective_json = authored,
-        .codec = source.codec,
+        .codec = source_codec,
     };
 
     if (result.name == "behavior") {
@@ -271,11 +278,111 @@ ResolvedSceneDefaults cameraDefaultsAfter(
     return defaults;
 }
 
+struct PendingComponent {
+    nlohmann::json json;
+    ComponentCodecQueryMetadata codec;
+    std::optional<std::size_t> authored_index;
+    std::optional<GeneratedComponentOrigin> generated;
+};
+
+struct PendingObject {
+    const AuthoringObjectView *source = nullptr;
+    const PrefabRegistryRecord *prefab_record = nullptr;
+    std::optional<PrefabInstanceDeclaration> prefab;
+    std::vector<PendingComponent> components;
+};
+
+struct PendingScene {
+    const AuthoringSceneView *source = nullptr;
+    std::vector<PendingObject> objects;
+};
+
+const PrefabParameterDeclaration &parameterDeclaration(
+    const PrefabDocument &document, std::string_view name) {
+    const auto found = std::find_if(document.parameters.begin(),
+                                    document.parameters.end(),
+                                    [&](const auto &parameter) {
+                                        return parameter.name == name;
+                                    });
+    if (found == document.parameters.end()) {
+        throw std::logic_error("validated prefab binding lost its declaration");
+    }
+    return *found;
+}
+
+std::string bindingProviderName(const PrefabComponentDocument &component) {
+    if (component.name != "behavior") return component.name;
+    const auto type = component.body.find("type");
+    if (type == component.body.end() || !type->is_string() ||
+        type->get_ref<const std::string &>().empty()) {
+        throw PrefabError{
+            PrefabErrorCode::PrefabBindingNotBindable,
+            "behavior type is a non-bindable fixed discriminant",
+            {.json_pointer = "/type"}};
+    }
+    return "behavior:" + type->get<std::string>();
+}
+
+nlohmann::json validateAndSubstitute(
+    const PrefabDocument &document,
+    const PrefabComponentDocument &component,
+    const PrefabInstanceDeclaration &instance,
+    const BindableProviderSnapshot &provider,
+    std::string_view scene_id) {
+    const auto provider_name = bindingProviderName(component);
+    for (const auto &binding : component.bindings) {
+        if (binding.json_pointer == "/name" || binding.json_pointer == "/id" ||
+            binding.json_pointer == "/shape" || binding.json_pointer == "/type" ||
+            binding.json_pointer == "/controller/type" ||
+            binding.json_pointer == "/params/controller/type") {
+            throw PrefabError{
+                PrefabErrorCode::PrefabBindingNotBindable,
+                "prefab discriminants are not bindable",
+                {.scene_id = std::string{scene_id},
+                 .instance_id = instance.instance_id,
+                 .prefab = instance.ref,
+                 .parameter = binding.parameter,
+                 .json_pointer = binding.json_pointer}};
+        }
+    }
+    for (const auto &binding : component.bindings) {
+        const auto &parameter = parameterDeclaration(document, binding.parameter);
+        const auto *descriptor = provider.findActive(
+            provider_name, binding.json_pointer, component.body);
+        PrefabErrorContext context{
+            .scene_id = std::string{scene_id},
+            .instance_id = instance.instance_id,
+            .prefab = instance.ref,
+            .parameter = binding.parameter,
+            .json_pointer = binding.json_pointer,
+        };
+        if (descriptor == nullptr &&
+            !provider.containsPath(provider_name, binding.json_pointer)) {
+            throw PrefabError{PrefabErrorCode::PrefabBindingNotBindable,
+                              "prefab binding path is not bindable: " +
+                                  binding.json_pointer,
+                              std::move(context)};
+        }
+        if (descriptor == nullptr) {
+            throw PrefabError{PrefabErrorCode::PrefabBindingInactive,
+                              "prefab binding is inactive for the fixed discriminant",
+                              std::move(context)};
+        }
+        if (!prefabParameterMatchesDescriptor(parameter, *descriptor)) {
+            throw PrefabError{PrefabErrorCode::PrefabParameterType,
+                              "prefab parameter type does not match binding path",
+                              std::move(context)};
+        }
+    }
+    return substitutePrefabComponent(component, instance.parameters);
+}
+
 } // namespace
 
 ResolvedScene ResolvedSceneResolver::resolve(
     const AuthoringSceneDocument &document,
-    SceneResolverGeneration generation, ResolvedSceneDefaults defaults) {
+    SceneResolverGeneration generation, ResolvedSceneDefaults defaults,
+    PrefabRegistrySnapshot registry, BindableProviderSnapshot provider) {
     if (generation.value == 0) {
         throw std::invalid_argument(
             "SceneResolverGeneration must be non-zero");
@@ -287,39 +394,252 @@ ResolvedScene ResolvedSceneResolver::resolve(
     (void)raw_view;
     const auto authoring_scenes = AuthoringSceneAuthority::query(document);
 
+    if (document.usesPrefabs() && provider.generation() == 0) {
+        provider = buildProductionBindableProviderSnapshot();
+    }
+
+    // Phase 1a: validate every instance and resolve parameter values. No
+    // component codec is consulted in this phase.
+    std::vector<PendingScene> pending_scenes;
+    pending_scenes.reserve(authoring_scenes.size());
+    for (const auto &source_scene : authoring_scenes) {
+        PendingScene pending{.source = &source_scene};
+        pending.objects.reserve(source_scene.objects.size());
+        std::unordered_set<std::string> instance_ids;
+        for (const auto &source_object : source_scene.objects) {
+            PendingObject object{.source = &source_object};
+            const auto &authored_object = source_object.authoredJson();
+            if (const auto prefab = authored_object.find("prefab");
+                prefab != authored_object.end()) {
+                object.prefab = resolvePrefabInstance(
+                    *prefab, registry,
+                    {.scene_id = source_scene.scene_id,
+                     .json_pointer = "/prefab"});
+                if (!instance_ids.insert(object.prefab->instance_id).second) {
+                    throw PrefabError{
+                        PrefabErrorCode::PrefabInstanceIdCollision,
+                        "duplicate prefab instance_id in scene: " +
+                            object.prefab->instance_id,
+                        {.scene_id = source_scene.scene_id,
+                         .instance_id = object.prefab->instance_id,
+                         .prefab = object.prefab->ref,
+                         .json_pointer = "/prefab/instance_id"}};
+                }
+                object.prefab_record = registry.find(object.prefab->ref);
+                if (object.prefab_record == nullptr) {
+                    throw std::logic_error("resolved prefab disappeared from immutable registry");
+                }
+            }
+            pending.objects.push_back(std::move(object));
+        }
+        pending_scenes.push_back(std::move(pending));
+    }
+
+    // Phase 1b: provider validation precedes substitution, and concrete JSON
+    // is the only representation admitted to the codec phase.
+    for (auto &scene : pending_scenes) {
+        for (auto &object : scene.objects) {
+            if (!object.prefab) continue;
+            for (const auto &component : object.prefab_record->document->components) {
+                auto concrete = validateAndSubstitute(
+                    *object.prefab_record->document, component, *object.prefab,
+                    provider, scene.source->scene_id);
+                object.components.push_back(PendingComponent{
+                    .json = std::move(concrete),
+                    .codec = componentCodecQueryMetadata(component.name),
+                    .generated = GeneratedComponentOrigin{
+                        .stable_generated_id = prefabGeneratedId(
+                            object.prefab->instance_id, component.key),
+                        .prefab = object.prefab->ref,
+                        .instance_id = object.prefab->instance_id,
+                        .component_key = component.key,
+                        .digest_sha256 = object.prefab_record->digest_sha256,
+                    },
+                });
+            }
+        }
+    }
+
+    // Phase 2: materialize authored-first/generated-second arrays and enforce
+    // the final merged composition rules. GID uniqueness is a scene-local
+    // invariant and is checked before any runtime decode.
+    for (auto &scene : pending_scenes) {
+        std::unordered_set<std::string> generated_ids;
+        for (auto &object : scene.objects) {
+            std::vector<PendingComponent> generated = std::move(object.components);
+            object.components.clear();
+            object.components.reserve(object.source->components.size() + generated.size());
+            std::size_t transform_count = 0;
+            for (const auto &component : object.source->components) {
+                const auto &json = component.authoredJson();
+                if (json.value("name", std::string{}) == "transform") ++transform_count;
+                object.components.push_back(PendingComponent{
+                    .json = json,
+                    .codec = component.codec,
+                    .authored_index = component.declaration_index,
+                });
+            }
+            if (object.prefab) {
+                if (transform_count == 0) {
+                    throw PrefabError{
+                        PrefabErrorCode::PrefabInstanceTransformMissing,
+                        "prefab instance requires exactly one authored transform",
+                        {.scene_id = scene.source->scene_id,
+                         .instance_id = object.prefab->instance_id,
+                         .prefab = object.prefab->ref}};
+                }
+                if (transform_count > 1) {
+                    throw PrefabError{
+                        PrefabErrorCode::PrefabInstanceTransformDuplicate,
+                        "prefab instance has more than one authored transform",
+                        {.scene_id = scene.source->scene_id,
+                         .instance_id = object.prefab->instance_id,
+                         .prefab = object.prefab->ref}};
+                }
+                std::unordered_set<std::string> component_names;
+                for (const auto &component : object.components) {
+                    const auto name = component.json.value("name", std::string{});
+                    if (name != "behavior" && !component_names.insert(name).second) {
+                        throw PrefabError{
+                            PrefabErrorCode::PrefabComponentDuplicate,
+                            "duplicate non-behavior component in merged prefab object: " + name,
+                            {.scene_id = scene.source->scene_id,
+                             .instance_id = object.prefab->instance_id,
+                             .prefab = object.prefab->ref}};
+                    }
+                }
+                for (const auto &component : generated) {
+                    const auto name = component.json.value("name", std::string{});
+                    if (name != "behavior" && !component_names.insert(name).second) {
+                        throw PrefabError{
+                            PrefabErrorCode::PrefabComponentDuplicate,
+                            "duplicate non-behavior component in merged prefab object: " + name,
+                            {.scene_id = scene.source->scene_id,
+                             .instance_id = object.prefab->instance_id,
+                             .prefab = object.prefab->ref}};
+                    }
+                    if (!generated_ids.insert(component.generated->stable_generated_id).second) {
+                        throw PrefabError{
+                            PrefabErrorCode::PrefabGeneratedIdCollision,
+                            "generated component id collision: " +
+                                component.generated->stable_generated_id,
+                            {.scene_id = scene.source->scene_id,
+                             .instance_id = object.prefab->instance_id,
+                             .prefab = object.prefab->ref}};
+                    }
+                }
+            }
+            object.components.insert(object.components.end(),
+                                     std::make_move_iterator(generated.begin()),
+                                     std::make_move_iterator(generated.end()));
+        }
+    }
+
+    // Phase 3: freeze object identity, then resolve object parameters and
+    // required component sets against the fully materialized scene.
+    for (const auto &scene : pending_scenes) {
+        std::unordered_map<std::string, const PendingObject *> objects;
+        for (const auto &object : scene.objects) {
+            if (object.source->name) objects.emplace(*object.source->name, &object);
+        }
+        for (const auto &object : scene.objects) {
+            if (!object.prefab) continue;
+            for (const auto &parameter : object.prefab->parameters) {
+                if (parameter.kind != PrefabParameterKind::Object) continue;
+                const auto target_name = parameter.value_resolved.get<std::string>();
+                const auto target = objects.find(target_name);
+                if (target == objects.end()) {
+                    throw PrefabError{
+                        PrefabErrorCode::PrefabObjectRefUnresolved,
+                        "prefab object parameter target does not exist: " + target_name,
+                        {.scene_id = scene.source->scene_id,
+                         .instance_id = object.prefab->instance_id,
+                         .prefab = object.prefab->ref,
+                         .parameter = parameter.name}};
+                }
+                for (const auto &required : parameter.required_components) {
+                    const auto present = std::any_of(
+                        target->second->components.begin(), target->second->components.end(),
+                        [&](const auto &component) {
+                            return component.json.value("name", std::string{}) == required;
+                        });
+                    if (!present) {
+                        throw PrefabError{
+                            PrefabErrorCode::PrefabObjectRefMissingComponent,
+                            "prefab object parameter target lacks required component: " + required,
+                            {.scene_id = scene.source->scene_id,
+                             .instance_id = object.prefab->instance_id,
+                             .prefab = object.prefab->ref,
+                             .parameter = parameter.name}};
+                    }
+                }
+            }
+        }
+    }
+
     ResolvedScene result;
     result.revision_ = document.revision();
     result.resolver_generation_ = generation;
     result.defaults_ = defaults;
+    result.prefab_registry_ = std::move(registry);
+    result.bindable_provider_ = std::move(provider);
     result.warnings_.assign(document.warnings().begin(),
                             document.warnings().end());
     result.scenes_.reserve(authoring_scenes.size());
 
-    for (const auto &source_scene : authoring_scenes) {
+    // Phase 4: canonicalize in the legacy authored-first declaration order.
+    // The first resolved camera continues to seed later camera defaults.
+    for (const auto &pending_scene : pending_scenes) {
+        const auto &source_scene = *pending_scene.source;
         ResolvedSceneView scene{.scene_id = source_scene.scene_id};
         auto scene_camera_defaults = defaults;
         bool first_camera_resolved = false;
         scene.objects.reserve(source_scene.objects.size());
         for (std::size_t object_index = 0;
-             object_index < source_scene.objects.size(); ++object_index) {
-            const auto &source_object = source_scene.objects[object_index];
+             object_index < pending_scene.objects.size(); ++object_index) {
+            const auto &pending_object = pending_scene.objects[object_index];
+            const auto &source_object = *pending_object.source;
             ResolvedObject object{
                 .authoring_object_id = source_object.authoring_object_id,
                 .authoring_object_index = source_object.declaration_index,
                 .name = source_object.name,
                 .parent = source_object.parent,
             };
-            object.components.reserve(source_object.components.size());
+            if (pending_object.prefab) {
+                ResolvedPrefabInstance instance{
+                    .ref = pending_object.prefab->ref,
+                    .instance_id = pending_object.prefab->instance_id,
+                    .closure_generation = result.prefab_registry_.generation(),
+                    .provider_generation = result.bindable_provider_.generation(),
+                };
+                instance.parameters.reserve(pending_object.prefab->parameters.size());
+                for (const auto &parameter : pending_object.prefab->parameters) {
+                    instance.parameters.push_back({
+                        .name = parameter.name,
+                        .value_resolved = parameter.value_resolved,
+                        .is_override = parameter.is_override,
+                        .value_authored = parameter.value_authored,
+                    });
+                }
+                object.prefab_instance = std::move(instance);
+            }
+            object.components.reserve(pending_object.components.size());
             for (std::size_t component_index = 0;
-                 component_index < source_object.components.size();
+                 component_index < pending_object.components.size();
                  ++component_index) {
+                const auto &pending_component = pending_object.components[component_index];
+                ResolvedComponentOrigin origin = pending_component.generated
+                    ? ResolvedComponentOrigin{*pending_component.generated}
+                    : ResolvedComponentOrigin{AuthoredComponentOrigin{
+                          *pending_component.authored_index}};
                 object.components.push_back(resolveComponent(
-                    source_object.components[component_index],
+                    pending_component.json, pending_component.codec,
+                    pending_component.authored_index.value_or(0), component_index,
+                    std::move(origin),
                     SceneComponentProvenance{
                         .scene_id = source_scene.scene_id,
                         .object_index = source_object.declaration_index,
-                        .component_index = source_object.components[component_index]
-                                               .declaration_index,
+                        .component_index = component_index,
                     },
                     result.behavior_reload_sources_, scene_camera_defaults));
                 if (!first_camera_resolved &&
@@ -338,8 +658,10 @@ ResolvedScene ResolvedSceneResolver::resolve(
 
 SceneProjectionState ResolvedSceneResolver::prepare(
     AuthoringSceneDocument document, SceneResolverGeneration generation,
-    ResolvedSceneDefaults defaults) {
-    auto resolved = resolve(document, generation, defaults);
+    ResolvedSceneDefaults defaults, PrefabRegistrySnapshot registry,
+    BindableProviderSnapshot provider) {
+    auto resolved = resolve(document, generation, defaults, std::move(registry),
+                            std::move(provider));
     return SceneProjectionState{std::move(document), std::move(resolved)};
 }
 

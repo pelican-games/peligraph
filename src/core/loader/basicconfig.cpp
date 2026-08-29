@@ -463,6 +463,16 @@ ProjectBasicConfig::ProjectBasicConfig() {
     StartupPhaseTimer startup_timer{&StartupMetrics::addConfig};
     const auto &source = GET_MODULE(ProjectSource);
     project_source = source.hasProjectSource();
+    if (project_source) {
+        const auto parsed = parseProjectEnvelopeText(
+            source.loadProjectSource(),
+            {.ignore_engine_version = source.ignoresEngineVersion()});
+        prefab_registry = buildPrefabRegistrySnapshot(
+            parsed.envelope.prefabs,
+            [](std::string_view path) {
+                return GET_MODULE(PathResolver).loadText(std::string{path});
+            });
+    }
     JsonLoader loader{
         source.loadSource(),
         projectBasicConfigSource(source),
@@ -549,10 +559,15 @@ void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) c
     auto document = AuthoringSceneDocument::load(
         scene_v1_bytes, SceneRevision{next_scene_revision},
         next_authoring_object_id);
+    if (prefab_provider.generation() == 0) {
+        prefab_provider = buildProductionBindableProviderSnapshot(
+            next_prefab_provider_generation++);
+    }
     auto candidate = ResolvedSceneResolver::prepare(
         std::move(document),
         SceneResolverGeneration{next_scene_resolver_generation},
-        ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite});
+        ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
+        prefab_registry, prefab_provider);
     if (scene_projection) {
         publishPreparedSceneState(candidate);
     } else {
@@ -625,7 +640,11 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     auto candidate = ResolvedSceneResolver::prepare(
         std::move(candidate_document),
         SceneResolverGeneration{next_scene_resolver_generation},
-        ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite});
+        ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
+        prefab_registry, prefab_provider.generation() == 0
+                             ? buildProductionBindableProviderSnapshot(
+                                   next_prefab_provider_generation++)
+                             : prefab_provider);
     const auto committed_revision = candidate.revision();
     const auto previous_next_revision = next_scene_revision;
     const auto previous_next_generation = next_scene_resolver_generation;
@@ -669,10 +688,13 @@ void ProjectBasicConfig::refreshResolvedScene(
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
 
+    auto candidate_provider = buildProductionBindableProviderSnapshot(
+        next_prefab_provider_generation++);
     auto candidate = ResolvedSceneResolver::prepare(
         scene_projection->authoring(),
         SceneResolverGeneration{next_scene_resolver_generation},
-        scene_projection->resolved().defaults());
+        scene_projection->resolved().defaults(),
+        scene_projection->resolved().prefabRegistry(), candidate_provider);
     const auto previous_next_revision = next_scene_revision;
     const auto previous_next_generation = next_scene_resolver_generation;
     const auto previous_next_object_id = next_authoring_object_id;
@@ -686,10 +708,16 @@ void ProjectBasicConfig::refreshResolvedScene(
         next_authoring_object_id = previous_next_object_id;
         throw;
     }
+    prefab_provider = scene_projection->resolved().bindableProvider();
 }
 
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     const auto &source = sceneDocument();
+    if (source.usesPrefabs()) {
+        throw PrefabError{
+            PrefabErrorCode::PrefabPersistenceUnsupported,
+            "saving a scene that uses prefabs is unavailable until WP362"};
+    }
     if (!scene_baseline_digest) {
         throw SceneSaveError{SceneSaveErrorCode::Unavailable,
                              "scene source has no baseline disk digest"};
@@ -747,7 +775,9 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     auto next_state = ResolvedSceneResolver::prepare(
         std::move(next_document),
         SceneResolverGeneration{next_scene_resolver_generation},
-        scene_projection->resolved().defaults());
+        scene_projection->resolved().defaults(),
+        scene_projection->resolved().prefabRegistry(),
+        scene_projection->resolved().bindableProvider());
     const auto committed_revision = next_state.revision();
     auto next_baseline_digest = sceneBytesDigest(semantic_bytes);
     SceneSaveResult result{

@@ -57,6 +57,9 @@ struct InspectorComponentSnapshot {
     bool schema_available = false;
     std::string read_only_reason;
     std::vector<InspectorWidgetDescriptor> widgets;
+    bool generated = false;
+    std::optional<std::string> stable_generated_id;
+    nlohmann::json generated_source;
 };
 
 struct InspectorObjectSnapshot {
@@ -66,6 +69,7 @@ struct InspectorObjectSnapshot {
     std::size_t declaration_index = 0;
     std::optional<std::string> name;
     std::vector<InspectorComponentSnapshot> components;
+    std::optional<nlohmann::json> prefab_instance;
 };
 
 enum class InspectorNoticeKind : std::uint8_t {
