@@ -14356,3 +14356,59 @@ fingerprint への影響を確認(vec default を持つ behavior が存在しな
 **見込みではなく前後比較で示す**)。
 受け入れ: 修正前に Vec2 default 付き typed 登録が実際に落ちる再現 / 修正後の全 17 型往復 /
 WP358 fixture 群の不変。依存: WP358。見積: 小。
+
+### WP360(= リファクタ R3): scene の読者を単一の解決済み投影に載せ替える
+
+**§4 規則 11 の上段(core の scene 経路)。仕様 + コードレビュー。意味論不変のリファクタ。**
+**プレファブ U1 の背骨を、プレファブ抜きで先に敷く**(設計 v4 §1 の seam。
+provenance は当面全件 "authored")。
+
+#### 事実(オブジェクトモデル調査 + プレファブ設計レビューで確定済み)
+
+生の scene JSON / 著作 component 添字を直接読む消費者が複数ある:
+
+- `SceneLoader::load` は生 scene を読む(`scene.cpp:274`)
+- **`Camera` は `sceneDocument().scenesJson()` を自前で再走査する**(`camera.cpp:634, 677`)
+- behavior reload validator も生 `components[]` を走査(`registerer.cpp:152`)
+- editor runtime query は著作 component 数で配列を確保し同添字で runtime 値を対応
+  (`editorruntimefactory.cpp:1044`)
+
+この構造のままでは、scene に触るどの機能も全読者を追う羽目になる
+(プレファブ v3 レビューが「SceneLoader 内だけで展開すると prefab 由来 camera が
+Camera に見えない」と実証した穴の一般形)。
+
+#### やること
+
+1. **`ResolvedScene` seam を新設**: `(AuthoringSceneDocument) → ResolvedScene +
+   provenance map`(現時点は全 component が authored。プレファブが将来ここに挿さる)
+2. **全読者を載せ替える**: SceneLoader / Camera(生走査の削除)/ Light /
+   behavior reload validator / editor projection・query
+3. 生 JSON への直接アクセスは seam の実装内のみに閉じる
+
+#### 受け入れ条件
+
+**意味論不変(等価オラクル):**
+
+- **editor RPC(scene_tree / get_components)の bytes が親版と一致**:
+  親版 SHA の shared clone から実 RPC bytes を出所付きで固定(WP354a/358 の流儀)し、
+  載せ替え後も一致
+- golden / replay trace / 全数が不変(全数 2 回)
+
+**配線の証明(sentinel。grep は証明にならない):**
+
+- **test seam で ResolvedScene に合成 component を注入し、全消費者
+  (Camera の対象解決 / Light / behavior 検証 / editor query)がそれを観測する**ことを
+  1 テストで検査 —— 生 JSON を読み続ける消費者はこの注入が見えないため落ちる
+- 逆対照: 注入なしでは従来と同一
+
+**そのほか:**
+
+- 生 `scenesJson()` / 生 `components[]` 走査の消費者側 grep 0 件(補助検査)
+- doclink 緑 / SKIP_DEVSTUDIO 両構成 / GPU は直列で実行可
+
+#### やらないこと
+
+プレファブ(文書・registry・展開・v2 ゲート・SnapshotV2・BindableProvider・studio 編集)は
+**次の WP361**。本 WP は器だけを、等価証明つきで。
+
+依存: 無し。見積: 中〜大。
