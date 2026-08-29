@@ -15046,3 +15046,59 @@ schema・provider・decoder を同一データから生成する件は R5(型付
 - flat/xr 実機差・prefab 入り eval/render preview の網羅は WP362 の受け入れで拾う
 
 依存: WP361。連鎖打ち切り宣言: WP361a の §10 指摘は台帳行き。
+
+#### WP361a コードレビュー(受理不可・9 件)の仕分けと、打ち切り宣言の一度限りの延長
+
+宣言(「WP361a の指摘は台帳行き」)に対する裁定: 9 件のうち #1〜4 は WP361a の
+修理自身が持ち込んだ**機能後退**であり、うち 2 件は致命(非アクティブ scene への
+lifecycle 編集が現行 scene の runtime を破壊 / `onDestroy` が entity 死後に呼ばれ
+公開契約 08_gameplay.md:269 に反する)。打ち切りの趣旨は指摘の無限 WP 化の防止であって、
+既知の致命後退の出荷ではない。**よって一度だけ延長し WP361b(後退の修復に限定)を
+最終とする。WP361b のレビュー指摘は例外なく台帳のみ。**
+
+仕分け:
+- **直す(WP361b)**: #1 非 current scene の lifecycle adapter 生成(current 限定に
+  し、複数 scene batch の新設拒否も撤回)/ #2 pre-destroy barrier(ECS publish 前に
+  逆順 onDestroy)/ #3 identity plan を candidate から一度だけ作り journal・arena・
+  RPC で共有(set-params は既存 identity 保持)/ #4 lifecycle を単一 aggregate
+  participant に(parent-first staged bindings、同一 batch の parent→child spawn)/
+  #7 scheme 拒否を RFC 文法(`^[A-Za-z][A-Za-z0-9+.-]*:`)に
+- **WP362 で閉じる**: #5 shared selector parser の「request 全体」構文検査
+  (WP362 が同じ parser に set/unset を足すため、そこで operation grammar の
+  副作用なし syntax leaf を通す。malformed spawn + valid gid の否定対照込み)
+- **台帳のみ**: #6 Studio offline の behavior binding 乖離(behavior schema を
+  project metadata / RPC catalog 経由で pure leaf へ渡す設計が要る。U2 の
+  picker/inventory と同時に)/ #8 collider radius 0.5 の 5 箇所所在
+  (canonical default の単一データ化 = R5・#9 完全統一と同件)
+- テスト感度 5 件は WP361b の受け入れに織り込む(production factory 経由の
+  lifecycle テスト / 同一 batch fixture / real RPC の .edit・.runtime_query 配線と
+  authored 肯定対照 / persistence prescan に噛む fixture / fingerprint oracle の
+  vector・string branch 拡張)
+
+### WP361b: WP361a 後退の修復(最終。これ以降の指摘は無条件で台帳)
+
+**§4 規則 11 上段。コードレビューのみ。見積: 中。範囲は上記 5 件 + テスト感度 5 件に
+限定し、それ以外に触れない。**
+
+受け入れ(全て「取り消したら落ちる」):
+1. `secondary` scene への spawn/destroy で `main` の runtime snapshot
+   (camera・light・physics・behavior attachment 全列挙)が完全不変。
+   複数 scene lifecycle を含む batch が受理され、各 scene の authoring に適用される
+   (current scene 分だけが runtime adapter を持つ)
+2. onDestroy 内で `ctx.self()` の isAlive を読む behavior fixture が
+   destroy transaction で **true** を観測する(現状 false になることの再現から)
+3. 「先頭 spawn + 既存 object への behavior add」を**同一 operations** に入れ、
+   journal・arena・RPC の handle と seq が三者一致。
+   「set params + 無関係 spawn」で既存 behavior の onDestroy/onInit が**走らない**
+   (in-place 維持)
+4. 同一 batch の parent→child spawn が成功し、child の runtime binding が
+   parent entity を正しく指す
+5. `project:foo` / `https:unit.json` が `prefab_path_invalid`
+6. lifecycle テストは production factory(editorruntimefactory)経由。
+   factory の lifecycle 分岐を削ると落ちること
+7. real RpcServer fixture に `.edit` / `.runtime_query` を配線し、同一 fixture 内で
+   authored edit の成功(肯定)と Generated 拒否(否定)を並べる
+8. fingerprint oracle に vector と string の手計算 bytes を追加
+   (旧 JSON-dump に戻すと落ちる)
+
+依存: WP361a、WP362(同じ transaction 機構を触るため **WP362 マージ後に投入**)。
