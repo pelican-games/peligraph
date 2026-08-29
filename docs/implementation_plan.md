@@ -15104,3 +15104,14 @@ lifecycle 編集が現行 scene の runtime を破壊 / `onDestroy` が entity �
    malformed spawn + valid gid の request が invalid_params になる(read_only より先)
 
 依存: WP361a、WP362(同じ transaction 機構を触るため **WP362 マージ後に投入**)。
+
+#### WP362 統合失敗(GPU 直列で 2 件)と回収内修正
+
+エージェントは GPU テストを走らせない規約のため、統合側で初めて割れた:
+`behavior_dll_reload_pending_recovery` と `inspector edits unnamed parented …` の 2 件、
+両走で決定的に再現。原因は resolvedscene.cpp の closure 構築が **文書中の全 behavior** を
+provider snapshot に要求し、不在を fatal にしたこと。設計 §4 が要求するのは
+「**prefab 内 behavior**」の tuple のみであり、authored behavior の「DLL 不在 →
+pending → 回復」(二相活性化)は既存の公開契約。修正: 列挙を Generated(prefab 由来)
+behavior に限定。authored は pending のまま / prefab 由来の不在は named fatal を維持。
+これは WP362 の閉ループ内の回収であり連鎖には数えない。
