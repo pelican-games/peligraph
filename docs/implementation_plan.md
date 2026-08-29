@@ -14866,7 +14866,7 @@ closure の scene digest 欠落 / 否定対照の期待値が逆 / codec default
 
 | 形 | field | 必須 | 規則 |
 |---|---|---|---|
-| 値 | name / type / default / range | name,type ✔ | type は leaf 17 語彙。default 省略 = instance 必須。range は数値型のみ |
+| 値 | name / type / default / range / enum_values | name,type ✔ | type は leaf 17 語彙。default 省略 = instance 必須。range は数値型のみ。**enum_values は type=="enum" のとき必須・それ以外は禁止**(leaf の enum_values_required と strict unknown-field の衝突を解く —— 実装の UNMET 報告 1 件への答え) |
 | asset | name / kind:"asset" / asset_kind / default | name,kind,asset_kind ✔ | default は asset 名 string |
 | object | name / kind:"object" / required_components | name,kind ✔ | **default 禁止**(scene 外から scene 内 object は指せない)= 常に instance 必須 |
 
@@ -14974,3 +14974,10 @@ error catalog 追加(design 側にも反映): `prefab_path_invalid` /
 `prefab_registry_invalid` / `prefab_document_invalid` / `prefab_instance_invalid` /
 `prefab_instance_id_invalid` / `prefab_component_key_duplicate`。
 本節の JSON 例は全て実 parser で parse 可能であること(fixture の parse gate に使う)。
+
+##### 実装の UNMET 1 件への裁定(v4 追補)
+
+実装が正しく検出した表の欠落: 値 parameter の表が `enum_values` を許さないため、
+leaf の enum 型(非空 `enum_values` 必須)が表現不能だった。上表を修正し、
+enum parameter の正例(展開まで)と、enum 以外での `enum_values` 指定・
+enum での欠落の負例(いずれも `prefab_document_invalid`)を受け入れに追加する。
