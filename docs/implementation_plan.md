@@ -15126,3 +15126,52 @@ save baseline・set/unset(3 重 CAS・12 fault point)・出所表示。
 出荷 4 project は全経緯を通じて byte 不変。
 残余は台帳の既存行(Studio behavior binding 乖離 / default 単一ソース化 = R5 同件 /
 U2〜U4)。WP361b の §10 レビューの指摘は宣言どおり無条件で台帳のみ。
+
+#### WP361b コードレビュー(7 件)→ revert して一度でやり直す(WP361b v2)
+
+WP361b の §10 で実害 5 件(うち #2 は **Inspector の behavior 編集が実 producer の
+`attachment_handle` を新 gate が拒否して死ぬ** —— 検証済み: 新 whitelist に無い /
+inspector.cpp:780 は付ける / 深層 parser :710 は許可)+ テスト感度 2 件。
+台帳のみ宣言の再延長はしない。**スキル §0 の規定どおり c4f2287 を revert(6c68181)し、
+一度でやり直す。** U1 完成宣言は WP361b v2 の緑まで保留に訂正する。
+
+7 件の記録(v2 の仕様源):
+1. pre-destroy barrier が fallible prepare の途中で発火。rollback は onDestroy を
+   なかったことにできず、retry で二重 onDestroy(onDestroy→onUpdate→onDestroy)。
+   deferred queue(ctx.createObject/removeObject)も未 checkpoint
+2. 新 syntax leaf が `attachment_handle` を拒否 → 実 Inspector(ImGui/Studio 両方)の
+   behavior 編集が invalid_params。旧 whitelist(:710)との二重文法
+3. identity plan が operation ごと、consumer は final attachment ごと →
+   「同一 behavior へ set×2 + 無関係 spawn」の合法 batch が unmatched で失敗。
+   set 後 destroy も同様
+4. inverse に forward candidate の seq をコピー → 前方 spawn + set の undo が
+   stale 判定で失敗
+5. 合法な seq 0(object 0, component 0)を allocator failure と誤認(既存欠陥・未修復)
+6. current 側の camera/light/physics 肯定対照が無い(prepareSpecials 削除でも緑)
+7. 構文検査テストが spawn 一種のみ(表駆動 + 実 producer 形の肯定例が要る)
+
+### WP361b v2: 後退修復のやり直し(revert 済みの上に一度で)
+
+**§4 規則 11 上段。見積: 大。仕様 = WP361b の 9 条件(そのまま有効)+ 以下の
+アーキテクチャ処方(レビューの直し方を採用)。このレビューの指摘は無条件台帳。**
+
+A. **identity plan は operation 列からでなく final resolved scene から構築**する。
+   key = (object_id, final authored origin)。反復 set は同一 handle/seq を確認して
+   1 件に統合。final consumer の無い entry は runtime plan に入れない。
+   **undo/redo を含む各 execution で next_resolved から再構築**(inverse への
+   forward seq コピー禁止)
+B. **point of no return**: 全 fallible prepare と fault point の後に、
+   onDestroy barrier + noexcept publication だけを置く。deferred queue は
+   checkpoint し、barrier 前の rollback では巻き戻す。
+   受け入れ: 「set(失敗する)+ destroy」batch → rollback → retry で
+   **onDestroy がちょうど 1 回**(callback trace で検査)
+C. **文法は単一 AST/parser**: 手前 leaf と preparer の二重 whitelist を廃止。
+   `attachment_handle` は公開 CAS として維持(黙って消さず、stale なら named)。
+   受け入れ: **実 producer(inspectormodel / imgui inspector)の生成する request
+   そのもの**を通す肯定対照 + 全 public operation の表駆動 malformed × valid gid
+D. **seq 0 は sentinel にしない**: 欠落は optional / field 存在で表現。
+   object 0・component 0 への add が通る対照
+E. current 側にも rich payload(camera/light/collider)の肯定対照 + destroy 後の
+   孤児検査(prepareSpecials 削除で落ちること)
+
+依存: WP361a、WP362(revert 6c68181 の上)。
