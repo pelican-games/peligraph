@@ -15063,7 +15063,7 @@ lifecycle 編集が現行 scene の runtime を破壊 / `onDestroy` が entity �
   RPC で共有(set-params は既存 identity 保持)/ #4 lifecycle を単一 aggregate
   participant に(parent-first staged bindings、同一 batch の parent→child spawn)/
   #7 scheme 拒否を RFC 文法(`^[A-Za-z][A-Za-z0-9+.-]*:`)に
-- **WP362 で閉じる**: #5 shared selector parser の「request 全体」構文検査
+- **WP362 で閉じる → 実装は取りこぼし、WP361b へ移管**: #5 shared selector parser の「request 全体」構文検査
   (WP362 が同じ parser に set/unset を足すため、そこで operation grammar の
   副作用なし syntax leaf を通す。malformed spawn + valid gid の否定対照込み)
 - **台帳のみ**: #6 Studio offline の behavior binding 乖離(behavior schema を
@@ -15100,5 +15100,7 @@ lifecycle 編集が現行 scene の runtime を破壊 / `onDestroy` が entity �
    authored edit の成功(肯定)と Generated 拒否(否定)を並べる
 8. fingerprint oracle に vector と string の手計算 bytes を追加
    (旧 JSON-dump に戻すと落ちる)
+9. (#5 移管)selector 解決前に**全 operation** を副作用なし syntax leaf で検査。
+   malformed spawn + valid gid の request が invalid_params になる(read_only より先)
 
 依存: WP361a、WP362(同じ transaction 機構を触るため **WP362 マージ後に投入**)。
