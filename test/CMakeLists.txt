@@ -191,7 +191,9 @@ if(TARGET pelican_studio_layout)
 endif()
 
 if(TARGET pelican_studio_outliner)
-  pelican_define_test(devstudio_outliner_test pelican_studio_outliner)
+  pelican_define_test(devstudio_outliner_test
+    pelican_studio_outliner
+    pelican_core)
   target_compile_definitions(pelican_test_devstudio_outliner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )

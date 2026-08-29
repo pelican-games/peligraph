@@ -1,6 +1,11 @@
 #include "project.hpp"
 #include "selection.hpp"
 #include "sceneformat.hpp"
+#include "../src/core/loader/authoringscenedocument.hpp"
+#include "../src/core/loader/prefabprovider.hpp"
+#include "../src/core/loader/resolvedscene.hpp"
+#include "../src/project/prefab.hpp"
+#include "../src/project/projectformat.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -11,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -186,11 +192,74 @@ TEST_CASE("WP361 Studio offline open resolves the configured scene and every pre
     REQUIRE(nlohmann::json::parse(expansion.resolved_component_json.front()) ==
             nlohmann::json{{"name", "sprite_view"}, {"texture", "blue"}});
 
+    const auto project = Pelican::parseProjectEnvelopeJson(
+        readJson(sandbox.root / "project.json"));
+    const auto registry = Pelican::buildPrefabRegistrySnapshot(
+        project.envelope.prefabs, [&](std::string_view relative) {
+            return readJson(sandbox.root / std::filesystem::path{relative})
+                .dump();
+        });
+    const auto document = Pelican::AuthoringSceneDocument::load(
+        readJson(sandbox.root / "scenes/main.scene.json").dump(),
+        Pelican::SceneRevision{1});
+    const auto engine = Pelican::ResolvedSceneResolver::resolve(
+        document, Pelican::SceneResolverGeneration{1}, {}, registry,
+        Pelican::buildProductionBindableProviderSnapshot(1));
+    std::vector<nlohmann::json> engine_generated;
+    for (const auto &component :
+        engine.findScene("main")->objects.front().components) {
+        if (component.origin.isGenerated()) {
+            // source_json_exact is the engine resolver's expansion boundary;
+            // effective_json additionally contains codec canonical defaults.
+            engine_generated.push_back(component.source_json_exact);
+        }
+    }
+    std::vector<nlohmann::json> studio_generated;
+    for (const auto &component : expansion.resolved_component_json) {
+        studio_generated.push_back(nlohmann::json::parse(component));
+    }
+    REQUIRE(studio_generated == engine_generated);
+
     sandbox.write("prefabs/unit.json", R"json({
-      "schema":"pelican.prefab","version":1,"name":"wrong",
-      "components":[{"name":"sprite_view","texture":"white"}]
+      "schema":"pelican.prefab","version":1,"name":"unit",
+      "parameters":[{"name":"radius","type":"f32","default":0.5}],
+      "components":[{"name":"collider","id":"hit","shape":"box",
+                     "radius":{"$param":"radius"}}]
     })json");
-    REQUIRE_THROWS(ProjectOutlinerModel::open(sandbox.root));
+    sandbox.write("scenes/main.scene.json", R"json({
+      "schema":"pelican.scene","version":2,
+      "scenes":{"main":{"objects":[
+        {"name":"Instance","components":[{"name":"transform"}],
+         "prefab":{"ref":"unit","instance_id":"gi_main",
+                   "parameters":{"radius":0.75}}}
+      ]}}
+    })json");
+    std::optional<Pelican::PrefabErrorCode> studio_error;
+    try {
+        (void)ProjectOutlinerModel::open(sandbox.root);
+    } catch (const Pelican::PrefabError &error) {
+        studio_error = error.code();
+    }
+    REQUIRE(studio_error == Pelican::PrefabErrorCode::PrefabBindingInactive);
+
+    const auto inactive_registry = Pelican::buildPrefabRegistrySnapshot(
+        project.envelope.prefabs, [&](std::string_view relative) {
+            return readJson(sandbox.root / std::filesystem::path{relative})
+                .dump();
+        });
+    const auto inactive_document = Pelican::AuthoringSceneDocument::load(
+        readJson(sandbox.root / "scenes/main.scene.json").dump(),
+        Pelican::SceneRevision{1});
+    std::optional<Pelican::PrefabErrorCode> engine_error;
+    try {
+        (void)Pelican::ResolvedSceneResolver::resolve(
+            inactive_document, Pelican::SceneResolverGeneration{2}, {},
+            inactive_registry,
+            Pelican::buildProductionBindableProviderSnapshot(2));
+    } catch (const Pelican::PrefabError &error) {
+        engine_error = error.code();
+    }
+    REQUIRE(engine_error == studio_error);
 }
 
 TEST_CASE("Devstudio outliner projects parent references onto declaration identities",

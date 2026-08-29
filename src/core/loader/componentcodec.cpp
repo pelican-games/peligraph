@@ -25,6 +25,8 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
+thread_local ComponentCodecCanonicalDefaults codec_canonical_defaults;
+
 enum class ColliderSchemaShape : std::uint8_t { Sphere, Box, Capsule };
 
 struct CameraSchemaFields {
@@ -772,8 +774,24 @@ ComponentCodecValue decodeCollider(const Json &json) {
                   std::array<std::string_view, 11>{"name", "shape", "pos", "rotation", "radius",
                                                    "half_extents", "half_height", "layer", "mask", "trigger",
                                                    "one_way"});
+    auto normalized = json;
+    if (!normalized.contains("shape")) normalized["shape"] = "sphere";
+    if (normalized.at("shape").is_string()) {
+        const auto &shape = normalized.at("shape").get_ref<const std::string &>();
+        if ((shape == "sphere" || shape == "capsule") &&
+            !normalized.contains("radius")) {
+            normalized["radius"] =
+                componentCodecCanonicalDefaults().collider_radius;
+        }
+        if (shape == "box" && !normalized.contains("half_extents")) {
+            normalized["half_extents"] = {0.5F, 0.5F, 0.5F};
+        }
+        if (shape == "capsule" && !normalized.contains("half_height")) {
+            normalized["half_height"] = 0.5F;
+        }
+    }
     ColliderComponent result;
-    JsonArchiveLoader archive{static_cast<const void *>(&json)};
+    JsonArchiveLoader archive{static_cast<const void *>(&normalized)};
     result.ref(archive);
     return result;
 }
@@ -898,6 +916,30 @@ const std::array codecs{
 };
 
 } // namespace
+
+ComponentCodecCanonicalDefaults componentCodecCanonicalDefaults() noexcept {
+    return codec_canonical_defaults;
+}
+
+namespace testing {
+
+ScopedComponentCodecCanonicalDefaults::ScopedComponentCodecCanonicalDefaults(
+    ComponentCodecCanonicalDefaults replacement)
+    : previous_{codec_canonical_defaults} {
+    if (!std::isfinite(replacement.collider_radius) ||
+        replacement.collider_radius < 0.0f) {
+        throw std::invalid_argument(
+            "collider codec radius default must be finite and non-negative");
+    }
+    codec_canonical_defaults = replacement;
+}
+
+ScopedComponentCodecCanonicalDefaults::~ScopedComponentCodecCanonicalDefaults()
+    noexcept {
+    codec_canonical_defaults = previous_;
+}
+
+} // namespace testing
 
 ComponentCodecValue ComponentCodec::decodeAuthored(const nlohmann::json &authored) const {
     if (decode_authored == nullptr) throw std::logic_error("component codec decode callback is missing");

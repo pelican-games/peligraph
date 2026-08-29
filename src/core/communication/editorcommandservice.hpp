@@ -264,6 +264,8 @@ class EditorCommandService {
                                 const nlohmann::json &params,
                                 PreviewWatchTransitionKind kind);
     void synchronizePreviewWatch() const noexcept;
+    void validateGeneratedSelectors(const nlohmann::json &params,
+                                    std::string_view method) const;
 
   public:
     explicit EditorCommandService(EditorCommandServiceDependencies dependencies);

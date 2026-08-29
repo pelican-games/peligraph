@@ -3,6 +3,7 @@
 #include "../loader/authoringsceneauthority.hpp"
 
 #include "../appflow/framephase.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../loader/componentcodec.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 #include "../../project/prefab.hpp"
@@ -1155,6 +1156,16 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
     const auto path = result.error ? result.error->object_path : std::string{"/"};
     const auto message = result.error ? result.error->message
                                       : std::string{"projection transaction failed"};
+    if (result.error &&
+        result.error->prefab_error_code ==
+            PrefabErrorCode::PrefabInstanceIdCollision) {
+        return EditFailure{
+            EditorEditErrorCode::prefab_instance_id_collision,
+            OrderedJson{{"method", method},
+                        {"object_path", path},
+                        {"prefab_error", "prefab_instance_id_collision"}},
+            message};
+    }
     switch (code) {
     case EditorProjectionErrorCode::StaleRevision:
         return EditFailure{EditorEditErrorCode::stale_revision,
@@ -1243,14 +1254,15 @@ Json normalizeBehaviorAttachmentIdentities(
             }
             const auto identity = dependencies.allocate_behavior_attachment(
                 base_revision.value + 1U, command_index, attachment_index);
-            if (identity.handle == 0 || identity.attachment_seq == 0 ||
-                identity.handle > maxExactJsonInteger ||
-                identity.attachment_seq > maxExactJsonInteger) {
+            const auto attachment_seq = sceneBehaviorAttachmentSeq(
+                object.object_index, attachment_index);
+            if (identity.handle == 0 || identity.handle > maxExactJsonInteger ||
+                attachment_seq > maxExactJsonInteger) {
                 throw std::overflow_error(
                     "behavior attachment identity exceeds the exact JSON range");
             }
             operation["attachment_handle"] = identity.handle;
-            operation["attachment_seq"] = identity.attachment_seq;
+            operation["attachment_seq"] = attachment_seq;
             continue;
         }
 
@@ -1273,22 +1285,21 @@ Json normalizeBehaviorAttachmentIdentities(
         }
         if (identity) {
             if (identity->handle == 0 || identity->handle > maxExactJsonInteger ||
-                identity->attachment_seq > maxExactJsonInteger) {
+                sceneBehaviorAttachmentSeq(object.object_index,
+                                           attachment_index) >
+                    maxExactJsonInteger) {
                 throw std::overflow_error(
                     "resolved behavior attachment identity exceeds the exact JSON range");
             }
             operation["attachment_handle"] = identity->handle;
-            operation["attachment_seq"] = identity->attachment_seq;
-        } else {
-            constexpr auto max_part = std::numeric_limits<std::uint32_t>::max();
-            if (object.object_index > max_part || attachment_index > max_part) {
-                throw std::overflow_error(
-                    "scene behavior attachment tuple exceeds 32-bit sequence fields");
-            }
-            operation["attachment_seq"] =
-                (static_cast<std::uint64_t>(object.object_index) << 32U) |
-                static_cast<std::uint64_t>(attachment_index);
         }
+        const auto attachment_seq = sceneBehaviorAttachmentSeq(
+            object.object_index, attachment_index);
+        if (attachment_seq > maxExactJsonInteger) {
+            throw std::overflow_error(
+                "scene behavior attachment sequence exceeds exact JSON range");
+        }
+        operation["attachment_seq"] = attachment_seq;
     }
     return result;
 }
@@ -1784,6 +1795,90 @@ bool sameStableSet(std::span<const std::string> left,
 }
 
 } // namespace
+
+EditorMutationRequestAst parseEditorMutationRequest(
+    const Json &params, std::string_view method) {
+    const auto context = std::string{method};
+    EditorMutationRequestAst result;
+    if (method == "edit") {
+        requireOnly(params,
+                    {"actor_id", "base_revision", "operations",
+                     "coalesce_key"},
+                    context);
+        result.actor_id = EditorActorId{
+            exactUnsigned(params.at("actor_id"), "edit actor_id", true)};
+        result.base_revision = SceneRevision{exactUnsigned(
+            params.at("base_revision"), "edit base_revision")};
+        result.coalesce_key = optionalString(params, "coalesce_key", context);
+    } else if (method == "open_preview") {
+        requireOnly(params, {"actor_id", "operations"}, context);
+        result.actor_id = EditorActorId{exactUnsigned(
+            params.at("actor_id"), "open_preview actor_id", true)};
+    } else if (method == "update_preview") {
+        requireOnly(params, {"actor_id", "ticket", "operations"},
+                    context);
+        result.actor_id = EditorActorId{exactUnsigned(
+            params.at("actor_id"), "update_preview actor_id", true)};
+        result.ticket = requireString(params, "ticket", context);
+    } else {
+        throw std::invalid_argument(
+            "generated selector parser received an unsupported method");
+    }
+
+    const auto operations = params.find("operations");
+    if (operations == params.end() || !operations->is_array() ||
+        operations->empty()) {
+        throw std::invalid_argument(context +
+                                    " operations must be a non-empty array");
+    }
+    result.operations = *operations;
+    for (const auto &operation : *operations) {
+        requireObject(operation, "edit operation");
+        const auto op = requireString(operation, "op", "edit operation");
+        if (op != "set_component_value") continue;
+        const bool has_slot = operation.contains("component_slot");
+        const bool has_generated = operation.contains("generated_id");
+        if (has_slot == has_generated) {
+            throw std::invalid_argument(
+                "set_component_value requires exactly one of component_slot and generated_id");
+        }
+        const auto object_id = AuthoringObjectId{exactUnsigned(
+            operation.at("object_id"), "set_component_value object_id",
+            true)};
+        const auto field_path = requireString(
+            operation, "field_path", "set_component_value");
+        if (!field_path.starts_with('/')) {
+            throw std::invalid_argument(
+                "set_component_value field_path must be an RFC6901 JSON pointer");
+        }
+        try {
+            (void)nlohmann::json::json_pointer{field_path};
+        } catch (const nlohmann::json::exception &) {
+            throw std::invalid_argument(
+                "set_component_value field_path must be an RFC6901 JSON pointer");
+        }
+        if (!operation.contains("value")) {
+            throw std::invalid_argument(
+                "set_component_value value is required");
+        }
+        if (!has_generated) {
+            (void)requireString(operation, "component_slot",
+                                "set_component_value");
+            continue;
+        }
+        requireOnly(operation,
+                    {"op", "object_id", "generated_id", "field_path",
+                     "value"},
+                    "set_component_value generated selector");
+        EditorGeneratedSelectorAst selector;
+        selector.object_id = object_id;
+        selector.generated_id = requireString(
+            operation, "generated_id", "set_component_value");
+        selector.field_path = field_path;
+        result.generated_selectors.push_back(std::move(selector));
+    }
+    return result;
+}
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     switch (code) {
@@ -2868,15 +2963,12 @@ OrderedJson EditorEditCoordinator::canPreview(const Json &params) {
 }
 
 OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
-    requireOnly(params, {"actor_id", "base_revision", "operations",
-                         "coalesce_key"}, "edit");
-    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
-                                                    "edit actor_id", true)};
+    const auto request = parseEditorMutationRequest(params, "edit");
+    const auto actor = request.actor_id;
     (void)impl_->requireBound(actor);
-    const auto base = SceneRevision{exactUnsigned(params.at("base_revision"),
-                                                   "edit base_revision")};
-    const auto &operations = params.at("operations");
-    const auto coalesce = optionalString(params, "coalesce_key", "edit");
+    const auto base = *request.base_revision;
+    const auto &operations = request.operations;
+    const auto &coalesce = request.coalesce_key;
     const auto ticket = impl_->allocateTicket();
     const auto gate = impl_->gateSnapshot();
     if (!gate.can_edit) {
@@ -3038,9 +3130,8 @@ OrderedJson EditorEditCoordinator::enqueueRedo(const Json &params) {
 
 OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
     constexpr auto method = "open_preview";
-    requireOnly(params, {"actor_id", "operations"}, method);
-    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
-                                                    "open_preview actor_id", true)};
+    const auto parsed = parseEditorMutationRequest(params, method);
+    const auto actor = parsed.actor_id;
     (void)impl_->requireBound(actor);
     const auto request_id = impl_->allocatePreviewRequest();
     const auto ticket = impl_->allocatePreviewTicket();
@@ -3050,7 +3141,7 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
         .ticket = ticket,
         .kind = Impl::PreviewRequest::Kind::open,
         .actor_id = actor,
-        .raw_operations = params.at("operations"),
+        .raw_operations = parsed.operations,
         .accepted_gate_epoch = gate.epoch,
         .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
@@ -3112,11 +3203,10 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
 
 OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
     constexpr auto method = "update_preview";
-    requireOnly(params, {"actor_id", "ticket", "operations"}, method);
-    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
-                                                    "update_preview actor_id", true)};
+    const auto parsed = parseEditorMutationRequest(params, method);
+    const auto actor = parsed.actor_id;
     (void)impl_->requireBound(actor);
-    const auto ticket = requireString(params, "ticket", method);
+    const auto &ticket = *parsed.ticket;
     const auto request_id = impl_->allocatePreviewRequest();
     const auto gate = impl_->gateSnapshot();
     Impl::PreviewRequest request{
@@ -3124,7 +3214,7 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
         .ticket = ticket,
         .kind = Impl::PreviewRequest::Kind::update,
         .actor_id = actor,
-        .raw_operations = params.at("operations"),
+        .raw_operations = parsed.operations,
         .accepted_gate_epoch = gate.epoch,
         .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),

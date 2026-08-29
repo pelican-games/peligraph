@@ -159,6 +159,33 @@ struct PrefabInstanceDeclaration {
     std::vector<PrefabResolvedParameter> parameters;
 };
 
+// Provider descriptors live in pelican_project so prefab expansion has one
+// side-effect-free leaf shared by the engine and offline Studio. The runtime
+// provider snapshot adds generation/fingerprint and registered behavior
+// descriptors, but does not own binding semantics.
+enum class BindableSemanticKind : std::uint8_t { Value, Asset, Object };
+
+struct BindableDiscriminant {
+    std::string json_pointer;
+    std::vector<nlohmann::ordered_json> active_values;
+};
+
+struct BindableDescriptor {
+    std::string provider_name;
+    std::string json_pointer;
+    Schema::FieldType type = Schema::FieldType::String;
+    BindableSemanticKind semantic_kind = BindableSemanticKind::Value;
+    // Asset bindings are compatible only when both sides name the same
+    // subtype (for example "model" or "texture").
+    std::string asset_kind;
+    bool bindable = true;
+    bool required = false;
+    std::optional<nlohmann::ordered_json> canonical_default;
+    Schema::FieldRange range;
+    std::vector<std::string> enum_values;
+    std::vector<BindableDiscriminant> applicability;
+};
+
 PrefabInstanceDeclaration resolvePrefabInstance(
     const nlohmann::json &prefab_block, const PrefabRegistrySnapshot &registry,
     PrefabErrorContext context = {});
@@ -166,6 +193,26 @@ PrefabInstanceDeclaration resolvePrefabInstance(
 nlohmann::ordered_json substitutePrefabComponent(
     const PrefabComponentDocument &component,
     std::span<const PrefabResolvedParameter> parameters);
+
+// Canonical built-in codec descriptors used by both production provider
+// construction and Studio's offline expansion. Runtime codec schemas may
+// enrich type/range/enum metadata without changing the binding paths.
+std::vector<BindableDescriptor> builtinPrefabBindableDescriptors();
+
+bool prefabParameterMatchesDescriptor(
+    const PrefabParameterDeclaration &parameter,
+    const BindableDescriptor &descriptor) noexcept;
+bool prefabDescriptorActive(const BindableDescriptor &descriptor,
+                            const nlohmann::json &component);
+
+// Validate provider binding rules and return the concrete component JSON.
+// This is the only prefab substitution path used by engine and Studio.
+nlohmann::ordered_json resolvePrefabComponentBody(
+    const PrefabDocument &document,
+    const PrefabComponentDocument &component,
+    const PrefabInstanceDeclaration &instance,
+    std::span<const BindableDescriptor> descriptors,
+    PrefabErrorContext context = {});
 
 // Stable generated ids are byte-defined by WP361 v4. The component key is
 // component.id when present, otherwise component.name.

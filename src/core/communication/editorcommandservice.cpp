@@ -227,53 +227,6 @@ bool scenePayloadContainsPrefabKey(const Json &document) {
     return false;
 }
 
-void validateGeneratedSetSyntax(const Json &params, const Json &operation) {
-    requireObjectParams(params, "edit");
-    requireOnlyFields(params,
-                      {"actor_id", "base_revision", "operations",
-                       "coalesce_key"},
-                      "edit");
-    const auto actor = params.find("actor_id");
-    const auto revision = params.find("base_revision");
-    if (actor == params.end() ||
-        exactUnsignedInteger(*actor, "edit actor_id") == 0) {
-        invalidParams("edit actor_id must be a non-zero unsigned integer");
-    }
-    if (revision == params.end()) {
-        invalidParams("edit base_revision is required");
-    }
-    (void)exactUnsignedInteger(*revision, "edit base_revision");
-    if (const auto coalesce = params.find("coalesce_key");
-        coalesce != params.end() && !coalesce->is_string()) {
-        invalidParams("edit coalesce_key must be a string");
-    }
-
-    requireOnlyFields(operation,
-                      {"op", "object_id", "generated_id", "field_path",
-                       "value"},
-                      "set_component_value generated selector");
-    const auto object = operation.find("object_id");
-    if (object == operation.end() ||
-        exactUnsignedInteger(*object, "set_component_value object_id") == 0) {
-        invalidParams(
-            "set_component_value object_id must be a non-zero unsigned integer");
-    }
-    const auto generated = operation.find("generated_id");
-    if (generated == operation.end() || !generated->is_string() ||
-        generated->get_ref<const std::string &>().empty()) {
-        invalidParams("set_component_value generated_id must be a non-empty string");
-    }
-    const auto path = operation.find("field_path");
-    if (path == operation.end() || !path->is_string() ||
-        path->get_ref<const std::string &>().empty() ||
-        !path->get_ref<const std::string &>().starts_with('/')) {
-        invalidParams("set_component_value field_path must be a JSON pointer");
-    }
-    if (!operation.contains("value")) {
-        invalidParams("set_component_value value is required");
-    }
-}
-
 } // namespace
 
 std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcept {
@@ -550,10 +503,10 @@ EditorListAssetsResult EditorCommandService::listAssets(const EditorListAssetsRe
 
 ExportSceneSnapshotResponseV1
 EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const {
-    if (document().usesPrefabs()) {
+    if (document().formatVersion() != 1 || document().usesPrefabs()) {
         throw EditorCommandError{
             EditorCommandErrorCode::PrefabPersistenceUnsupported,
-            "prefab_persistence_unsupported: snapshot export is unavailable for prefab scenes"};
+            "prefab_persistence_unsupported: SnapshotV1 requires formatVersion 1 without prefabs"};
     }
     if (request.schema_version != 1) {
         throw EditorCommandError{EditorCommandErrorCode::UnsupportedSnapshotVersion,
@@ -609,10 +562,24 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
 
 ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
     const ImportSceneSnapshotRequestV1 &request) {
-    if (document().usesPrefabs()) {
+    if (document().formatVersion() != 1 || document().usesPrefabs()) {
         throw EditorCommandError{
             EditorCommandErrorCode::PrefabPersistenceUnsupported,
-            "prefab_persistence_unsupported: snapshot import is unavailable for prefab scenes"};
+            "prefab_persistence_unsupported: SnapshotV1 requires a formatVersion 1 live scene without prefabs"};
+    }
+    // Incoming prefab data is routed before the request-version decision so
+    // a V2-shaped closure cannot escape through SnapshotV1's version gate.
+    try {
+        if (scenePayloadContainsPrefabKey(
+                nlohmann::json::parse(request.semantic_scene_bytes))) {
+            throw EditorCommandError{
+                EditorCommandErrorCode::PrefabPersistenceUnsupported,
+                "prefab_persistence_unsupported: snapshot import contains prefab instances"};
+        }
+    } catch (const EditorCommandError &) {
+        throw;
+    } catch (const std::exception &) {
+        // Preserve SNAPSHOT0's later named snapshot-invalid boundary.
     }
     // SNAPSHOT0 validation order is part of the wire contract. Do not merge
     // these gates or move parsing ahead of the digest check.
@@ -635,19 +602,6 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
         throw EditorCommandError{EditorCommandErrorCode::DigestMismatch,
                                  "snapshot digest does not match semantic_scene_bytes"};
     }
-    try {
-        if (scenePayloadContainsPrefabKey(
-                nlohmann::json::parse(request.semantic_scene_bytes))) {
-            throw EditorCommandError{
-                EditorCommandErrorCode::PrefabPersistenceUnsupported,
-                "prefab_persistence_unsupported: snapshot import contains prefab instances"};
-        }
-    } catch (const EditorCommandError &) {
-        throw;
-    } catch (const std::exception &) {
-        // Preserve SNAPSHOT0's later named snapshot-invalid boundary.
-    }
-
     AuthoringSceneDocument validated;
     try {
         validated = AuthoringSceneDocument::load(
@@ -656,6 +610,11 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
         throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
                                  "snapshot parse or semantic validation failed",
                                  error.what()};
+    }
+    if (validated.formatVersion() != 1 || validated.usesPrefabs()) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::PrefabPersistenceUnsupported,
+            "prefab_persistence_unsupported: SnapshotV1 payload requires formatVersion 1 without prefabs"};
     }
     if (!internal::authoringSceneContains(validated,
                                           request.current_scene_id)) {
@@ -807,55 +766,46 @@ OrderedJson EditorCommandService::renderPreview(const Json &params) {
     });
 }
 
-OrderedJson EditorCommandService::edit(const Json &params) {
-    if (params.is_object()) {
-        const auto operations = params.find("operations");
-        if (operations != params.end() && operations->is_array()) {
-            for (const auto &operation : *operations) {
-                if (!operation.is_object() ||
-                    operation.value("op", std::string{}) !=
-                        "set_component_value") {
-                    continue;
-                }
-                const auto has_slot = operation.contains("component_slot");
-                const auto has_generated = operation.contains("generated_id");
-                if (has_slot == has_generated) {
-                    throw EditorCommandError{
-                        EditorCommandErrorCode::InvalidParams,
-                        "set_component_value requires exactly one of component_slot and generated_id"};
-                }
-                if (!has_generated) continue;
-                validateGeneratedSetSyntax(params, operation);
-                const auto generated_id =
-                    operation.at("generated_id").get<std::string>();
-                const auto object_id = exactUnsignedInteger(
-                    operation.at("object_id"), "set_component_value object_id");
-                const ResolvedComponent *selected = nullptr;
-                for (const auto &scene : resolved().scenes()) {
-                    for (const auto &object : scene.objects) {
-                        if (object.authoring_object_id.value != object_id) continue;
-                        const auto found = std::find_if(
-                            object.components.begin(), object.components.end(),
-                            [&](const auto &component) {
-                                const auto *generated = component.origin.generated();
-                                return generated != nullptr &&
-                                       generated->stable_generated_id == generated_id;
-                            });
-                        if (found != object.components.end()) selected = &*found;
-                    }
-                }
-                if (selected == nullptr) {
-                    throw EditorCommandError{
-                        EditorCommandErrorCode::ObjectNotFound,
-                        "generated component was not found", generated_id};
-                }
-                throw EditorCommandError{
-                    EditorCommandErrorCode::PrefabGeneratedReadOnly,
-                    "prefab_generated_read_only: generated components cannot be edited",
-                    generated_id};
+void EditorCommandService::validateGeneratedSelectors(
+    const Json &params, std::string_view method) const {
+    EditorMutationRequestAst request;
+    try {
+        request = parseEditorMutationRequest(params, method);
+    } catch (const std::exception &error) {
+        throw EditorCommandError{EditorCommandErrorCode::InvalidParams,
+                                 "invalid_params: " +
+                                     std::string{error.what()}};
+    }
+    for (const auto &selector : request.generated_selectors) {
+        const ResolvedComponent *selected = nullptr;
+        for (const auto &scene : resolved().scenes()) {
+            for (const auto &object : scene.objects) {
+                if (object.authoring_object_id != selector.object_id) continue;
+                const auto found = std::find_if(
+                    object.components.begin(), object.components.end(),
+                    [&](const auto &component) {
+                        const auto *generated = component.origin.generated();
+                        return generated != nullptr &&
+                               generated->stable_generated_id ==
+                                   selector.generated_id;
+                    });
+                if (found != object.components.end()) selected = &*found;
             }
         }
+        if (selected == nullptr) {
+            throw EditorCommandError{EditorCommandErrorCode::ObjectNotFound,
+                                     "generated component was not found",
+                                     selector.generated_id};
+        }
+        throw EditorCommandError{
+            EditorCommandErrorCode::PrefabGeneratedReadOnly,
+            "prefab_generated_read_only: generated components cannot be edited",
+            selector.generated_id};
     }
+}
+
+OrderedJson EditorCommandService::edit(const Json &params) {
+    validateGeneratedSelectors(params, "edit");
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     return edit_->enqueue(params);
 }
@@ -871,6 +821,7 @@ OrderedJson EditorCommandService::redo(const Json &params) {
 }
 
 OrderedJson EditorCommandService::openPreview(const Json &params) {
+    validateGeneratedSelectors(params, "open_preview");
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     auto result = edit_->openPreview(params);
     trackPreviewTransition(result, params, PreviewWatchTransitionKind::Open);
@@ -878,6 +829,7 @@ OrderedJson EditorCommandService::openPreview(const Json &params) {
 }
 
 OrderedJson EditorCommandService::updatePreview(const Json &params) {
+    validateGeneratedSelectors(params, "update_preview");
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     auto result = edit_->updatePreview(params);
     trackPreviewTransition(result, params, PreviewWatchTransitionKind::Update);
@@ -1310,6 +1262,24 @@ OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) con
 
 OrderedJson EditorCommandRpcAdapter::importSceneSnapshot(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    if (params.is_object()) {
+        const auto bytes = params.find("semantic_scene_bytes");
+        if (bytes != params.end() && bytes->is_string()) {
+            try {
+                if (scenePayloadContainsPrefabKey(nlohmann::json::parse(
+                        bytes->get_ref<const std::string &>()))) {
+                    throw EditorCommandError{
+                        EditorCommandErrorCode::PrefabPersistenceUnsupported,
+                        "prefab_persistence_unsupported: snapshot import contains prefab instances"};
+                }
+            } catch (const EditorCommandError &) {
+                throw;
+            } catch (const std::exception &) {
+                // The ordinary request/parser gates retain ownership of
+                // malformed JSON and malformed request fields.
+            }
+        }
+    }
     if (service_.usesPrefabs() && params.is_object()) {
         const auto version = params.find("schema_version");
         if (version != params.end() && version->is_number_integer() &&

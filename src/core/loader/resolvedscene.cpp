@@ -297,86 +297,6 @@ struct PendingScene {
     std::vector<PendingObject> objects;
 };
 
-const PrefabParameterDeclaration &parameterDeclaration(
-    const PrefabDocument &document, std::string_view name) {
-    const auto found = std::find_if(document.parameters.begin(),
-                                    document.parameters.end(),
-                                    [&](const auto &parameter) {
-                                        return parameter.name == name;
-                                    });
-    if (found == document.parameters.end()) {
-        throw std::logic_error("validated prefab binding lost its declaration");
-    }
-    return *found;
-}
-
-std::string bindingProviderName(const PrefabComponentDocument &component) {
-    if (component.name != "behavior") return component.name;
-    const auto type = component.body.find("type");
-    if (type == component.body.end() || !type->is_string() ||
-        type->get_ref<const std::string &>().empty()) {
-        throw PrefabError{
-            PrefabErrorCode::PrefabBindingNotBindable,
-            "behavior type is a non-bindable fixed discriminant",
-            {.json_pointer = "/type"}};
-    }
-    return "behavior:" + type->get<std::string>();
-}
-
-nlohmann::json validateAndSubstitute(
-    const PrefabDocument &document,
-    const PrefabComponentDocument &component,
-    const PrefabInstanceDeclaration &instance,
-    const BindableProviderSnapshot &provider,
-    std::string_view scene_id) {
-    const auto provider_name = bindingProviderName(component);
-    for (const auto &binding : component.bindings) {
-        if (binding.json_pointer == "/name" || binding.json_pointer == "/id" ||
-            binding.json_pointer == "/shape" || binding.json_pointer == "/type" ||
-            binding.json_pointer == "/controller/type" ||
-            binding.json_pointer == "/params/controller/type") {
-            throw PrefabError{
-                PrefabErrorCode::PrefabBindingNotBindable,
-                "prefab discriminants are not bindable",
-                {.scene_id = std::string{scene_id},
-                 .instance_id = instance.instance_id,
-                 .prefab = instance.ref,
-                 .parameter = binding.parameter,
-                 .json_pointer = binding.json_pointer}};
-        }
-    }
-    for (const auto &binding : component.bindings) {
-        const auto &parameter = parameterDeclaration(document, binding.parameter);
-        const auto *descriptor = provider.findActive(
-            provider_name, binding.json_pointer, component.body);
-        PrefabErrorContext context{
-            .scene_id = std::string{scene_id},
-            .instance_id = instance.instance_id,
-            .prefab = instance.ref,
-            .parameter = binding.parameter,
-            .json_pointer = binding.json_pointer,
-        };
-        if (descriptor == nullptr &&
-            !provider.containsPath(provider_name, binding.json_pointer)) {
-            throw PrefabError{PrefabErrorCode::PrefabBindingNotBindable,
-                              "prefab binding path is not bindable: " +
-                                  binding.json_pointer,
-                              std::move(context)};
-        }
-        if (descriptor == nullptr) {
-            throw PrefabError{PrefabErrorCode::PrefabBindingInactive,
-                              "prefab binding is inactive for the fixed discriminant",
-                              std::move(context)};
-        }
-        if (!prefabParameterMatchesDescriptor(parameter, *descriptor)) {
-            throw PrefabError{PrefabErrorCode::PrefabParameterType,
-                              "prefab parameter type does not match binding path",
-                              std::move(context)};
-        }
-    }
-    return substitutePrefabComponent(component, instance.parameters);
-}
-
 } // namespace
 
 ResolvedScene ResolvedSceneResolver::resolve(
@@ -395,7 +315,9 @@ ResolvedScene ResolvedSceneResolver::resolve(
     const auto authoring_scenes = AuthoringSceneAuthority::query(document);
 
     if (document.usesPrefabs() && provider.generation() == 0) {
-        provider = buildProductionBindableProviderSnapshot();
+        throw PrefabError{
+            PrefabErrorCode::PrefabProviderStale,
+            "prefab resolution requires an explicit non-zero provider snapshot"};
     }
 
     // Phase 1a: validate every instance and resolve parameter values. No
@@ -441,9 +363,10 @@ ResolvedScene ResolvedSceneResolver::resolve(
         for (auto &object : scene.objects) {
             if (!object.prefab) continue;
             for (const auto &component : object.prefab_record->document->components) {
-                auto concrete = validateAndSubstitute(
+                auto concrete = resolvePrefabComponentBody(
                     *object.prefab_record->document, component, *object.prefab,
-                    provider, scene.source->scene_id);
+                    provider.descriptors(),
+                    {.scene_id = scene.source->scene_id});
                 object.components.push_back(PendingComponent{
                     .json = std::move(concrete),
                     .codec = componentCodecQueryMetadata(component.name),

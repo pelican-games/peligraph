@@ -11,6 +11,7 @@
 namespace Pelican {
 
 class Camera;
+class BehaviorAttachmentArena;
 class ComponentInfoManager;
 class ECSCoreTemplatePublic;
 class LightContainer;
@@ -40,6 +41,14 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
         Camera &camera, LightContainer &lights, PhysWorld &physics,
         std::string scene_id, AuthoringObjectId target_object,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings);
+    // Production lifecycle core for headless/runtime tests whose scene has no
+    // renderer, camera, light, model, or collider projection.  It executes the
+    // same staged ECS mutation used by the full adapter and deliberately fails
+    // if a render/physics-owned component is encountered.
+    SceneObjectProjectionAdapter(
+        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+        std::string scene_id, AuthoringObjectId target_object,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings);
     ~SceneObjectProjectionAdapter();
 
     EditorProjectionAdapterKind kind() const noexcept override;
@@ -52,6 +61,32 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
 
     std::span<const EditorProjectionRuntimeObjectBinding>
     runtimeBindings() const noexcept;
+    std::span<const EditorProjectionRuntimeObjectBinding>
+    preparedRuntimeBindings() const noexcept;
+    AuthoringObjectId preparedTargetObject() const noexcept;
+};
+
+// Reconciles every scene-ordered behavior attachment from next_resolved after
+// lifecycle adapters have staged their entity bindings. This is a production
+// inverse-token adapter; no callback-only fake target participates.
+class BehaviorSceneProjectionAdapter final : public EditorProjectionAdapter {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+  public:
+    BehaviorSceneProjectionAdapter(
+        BehaviorAttachmentArena &arena, std::string scene_id,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters);
+    ~BehaviorSceneProjectionAdapter();
+
+    EditorProjectionAdapterKind kind() const noexcept override;
+    std::string_view name() const noexcept override;
+    EditorProjectionPublicationMode publicationMode() const noexcept override;
+    void prepare(const EditorProjectionPrepareContext &context) override;
+    void publish() noexcept override;
+    void rollback() noexcept override;
+    void finish() noexcept override;
 };
 
 // Production adapters for the non-transform registered codecs. Each adapter

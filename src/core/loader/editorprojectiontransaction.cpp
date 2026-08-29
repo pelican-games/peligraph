@@ -369,6 +369,10 @@ EditorProjectionError errorFromException(EditorProjectionErrorCode fallback,
         return EditorProjectionError{projection->code(),
                                      projection->objectPath(), error.what()};
     }
+    if (const auto *prefab = dynamic_cast<const PrefabError *>(&error)) {
+        return EditorProjectionError{fallback, std::move(path), error.what(),
+                                     prefab->code()};
+    }
     return EditorProjectionError{fallback, std::move(path), error.what()};
 }
 

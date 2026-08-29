@@ -14,26 +14,6 @@
 
 namespace Pelican {
 
-enum class BindableSemanticKind : std::uint8_t { Value, Asset, Object };
-
-struct BindableDiscriminant {
-    std::string json_pointer;
-    std::vector<nlohmann::ordered_json> active_values;
-};
-
-struct BindableDescriptor {
-    std::string provider_name;
-    std::string json_pointer;
-    Schema::FieldType type = Schema::FieldType::String;
-    BindableSemanticKind semantic_kind = BindableSemanticKind::Value;
-    bool bindable = true;
-    bool required = false;
-    std::optional<nlohmann::ordered_json> canonical_default;
-    Schema::FieldRange range;
-    std::vector<std::string> enum_values;
-    std::vector<BindableDiscriminant> applicability;
-};
-
 class BindableProviderSnapshot {
     struct Data;
     std::shared_ptr<const Data> data_;
@@ -62,9 +42,5 @@ class BindableProviderSnapshot {
 
 BindableProviderSnapshot buildProductionBindableProviderSnapshot(
     std::uint64_t generation = 1);
-
-bool prefabParameterMatchesDescriptor(
-    const PrefabParameterDeclaration &parameter,
-    const BindableDescriptor &descriptor) noexcept;
 
 } // namespace Pelican

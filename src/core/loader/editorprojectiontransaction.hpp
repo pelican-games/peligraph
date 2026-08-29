@@ -70,6 +70,7 @@ struct EditorProjectionError {
     EditorProjectionErrorCode code = EditorProjectionErrorCode::CommandInvalid;
     std::string object_path;
     std::string message;
+    std::optional<PrefabErrorCode> prefab_error_code;
 };
 
 enum class EditorProjectionStatus : std::uint8_t {

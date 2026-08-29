@@ -70,6 +70,27 @@ enum class EditorEditErrorCode : std::uint8_t {
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept;
 
+struct EditorGeneratedSelectorAst {
+    AuthoringObjectId object_id{};
+    std::string generated_id;
+    std::string field_path;
+};
+
+struct EditorMutationRequestAst {
+    EditorActorId actor_id{};
+    std::optional<SceneRevision> base_revision;
+    std::optional<std::string> ticket;
+    std::optional<std::string> coalesce_key;
+    nlohmann::json operations;
+    std::vector<EditorGeneratedSelectorAst> generated_selectors;
+};
+
+// The single syntax parser for edit, open_preview, and update_preview. It
+// validates the whole request before exposing selector ASTs, so callers can
+// resolve gid and apply the read-only policy only after syntax succeeds.
+EditorMutationRequestAst parseEditorMutationRequest(
+    const nlohmann::json &params, std::string_view method);
+
 struct EditorLastWriterStamp {
     SceneRevision revision{};
     std::string transaction_id;

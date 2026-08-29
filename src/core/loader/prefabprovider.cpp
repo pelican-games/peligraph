@@ -42,6 +42,90 @@ void appendString(std::vector<unsigned char> &bytes, std::string_view value) {
     bytes.insert(bytes.end(), value.begin(), value.end());
 }
 
+template <class Unsigned>
+void appendLittle(std::vector<unsigned char> &bytes, Unsigned value,
+                  std::size_t width = sizeof(Unsigned)) {
+    for (std::size_t index = 0; index < width; ++index) {
+        bytes.push_back(static_cast<unsigned char>(value & 0xffU));
+        value >>= 8U;
+    }
+}
+
+void appendTypedValue(std::vector<unsigned char> &bytes,
+                      Schema::FieldType type, const OJson &value) {
+    using T = Schema::FieldType;
+    bytes.push_back(static_cast<unsigned char>(type));
+    const auto appendSigned = [&](std::size_t width) {
+        appendLittle(bytes,
+                     static_cast<std::uint64_t>(value.get<std::int64_t>()),
+                     width);
+    };
+    const auto appendUnsigned = [&](std::size_t width) {
+        appendLittle(bytes, value.get<std::uint64_t>(), width);
+    };
+    const auto appendF32 = [&](const OJson &number) {
+        auto scalar = static_cast<float>(number.get<double>());
+        if (scalar == 0.0F) scalar = 0.0F;
+        appendLittle(bytes, std::bit_cast<std::uint32_t>(scalar));
+    };
+    switch (type) {
+    case T::I8: appendSigned(1); break;
+    case T::I16: appendSigned(2); break;
+    case T::I32: appendSigned(4); break;
+    case T::I64: appendSigned(8); break;
+    case T::U8: appendUnsigned(1); break;
+    case T::U16: appendUnsigned(2); break;
+    case T::U32: appendUnsigned(4); break;
+    case T::U64: appendUnsigned(8); break;
+    case T::F32: appendF32(value); break;
+    case T::F64: {
+        auto scalar = value.get<double>();
+        if (scalar == 0.0) scalar = 0.0;
+        appendLittle(bytes, std::bit_cast<std::uint64_t>(scalar));
+        break;
+    }
+    case T::Vec2:
+    case T::Vec3:
+    case T::Vec4:
+    case T::Quat:
+        for (const auto &element : value) appendF32(element);
+        break;
+    case T::String:
+    case T::Enum:
+        appendString(bytes, value.get_ref<const std::string &>());
+        break;
+    case T::Bool: bytes.push_back(value.get<bool>() ? 1U : 0U); break;
+    }
+}
+
+// Applicability values carry their own wire tag because their field type is
+// intentionally not looked up through another descriptor.
+void appendDiscriminantValue(std::vector<unsigned char> &bytes,
+                             const OJson &value) {
+    if (value.is_boolean()) {
+        bytes.push_back(0x01U);
+        bytes.push_back(value.get<bool>() ? 1U : 0U);
+    } else if (value.is_number_unsigned()) {
+        bytes.push_back(0x02U);
+        appendLittle(bytes, value.get<std::uint64_t>());
+    } else if (value.is_number_integer()) {
+        bytes.push_back(0x03U);
+        appendLittle(bytes,
+                     static_cast<std::uint64_t>(value.get<std::int64_t>()));
+    } else if (value.is_number_float()) {
+        bytes.push_back(0x04U);
+        auto scalar = value.get<double>();
+        if (scalar == 0.0) scalar = 0.0;
+        appendLittle(bytes, std::bit_cast<std::uint64_t>(scalar));
+    } else if (value.is_string()) {
+        bytes.push_back(0x05U);
+        appendString(bytes, value.get_ref<const std::string &>());
+    } else {
+        throw std::logic_error(
+            "provider discriminant must be a scalar canonical value");
+    }
+}
+
 void appendRange(std::vector<unsigned char> &bytes,
                  const Schema::FieldRange &range) {
     std::visit([&](const auto &value) {
@@ -68,250 +152,78 @@ void appendRange(std::vector<unsigned char> &bytes,
     }, range);
 }
 
+void appendDescriptorRecord(std::vector<unsigned char> &bytes,
+                            const BindableDescriptor &descriptor) {
+    appendString(bytes, descriptor.provider_name);
+    appendString(bytes, descriptor.json_pointer);
+    bytes.push_back(static_cast<unsigned char>(descriptor.type));
+    bytes.push_back(static_cast<unsigned char>(descriptor.semantic_kind));
+    appendString(bytes, descriptor.asset_kind);
+    bytes.push_back(descriptor.bindable ? 1U : 0U);
+    bytes.push_back(descriptor.required ? 1U : 0U);
+    bytes.push_back(descriptor.canonical_default ? 1U : 0U);
+    if (descriptor.canonical_default) {
+        appendTypedValue(bytes, descriptor.type,
+                         *descriptor.canonical_default);
+    }
+    appendRange(bytes, descriptor.range);
+    auto enums = descriptor.enum_values;
+    std::sort(enums.begin(), enums.end());
+    appendU32(bytes, static_cast<std::uint32_t>(enums.size()));
+    for (const auto &value : enums) appendString(bytes, value);
+
+    auto applicability = descriptor.applicability;
+    std::sort(applicability.begin(), applicability.end(),
+              [](const auto &lhs, const auto &rhs) {
+                  return lhs.json_pointer < rhs.json_pointer;
+              });
+    appendU32(bytes, static_cast<std::uint32_t>(applicability.size()));
+    for (auto &condition : applicability) {
+        appendString(bytes, condition.json_pointer);
+        std::vector<std::vector<unsigned char>> encoded_values;
+        encoded_values.reserve(condition.active_values.size());
+        for (const auto &value : condition.active_values) {
+            auto &encoded = encoded_values.emplace_back();
+            appendDiscriminantValue(encoded, value);
+        }
+        std::sort(encoded_values.begin(), encoded_values.end());
+        appendU32(bytes,
+                  static_cast<std::uint32_t>(encoded_values.size()));
+        for (const auto &encoded : encoded_values) {
+            bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+        }
+    }
+}
+
 std::string descriptorFingerprint(std::span<const BindableDescriptor> descriptors) {
     std::vector<unsigned char> bytes;
-    appendString(bytes, "pelican.bindable.provider.v1");
+    appendString(bytes, "pelican.bindable.provider.v4");
     appendU32(bytes, static_cast<std::uint32_t>(descriptors.size()));
     for (const auto &descriptor : descriptors) {
-        appendString(bytes, descriptor.provider_name);
-        appendString(bytes, descriptor.json_pointer);
-        bytes.push_back(static_cast<unsigned char>(descriptor.type));
-        bytes.push_back(static_cast<unsigned char>(descriptor.semantic_kind));
-        bytes.push_back(descriptor.bindable ? 1 : 0);
-        bytes.push_back(descriptor.required ? 1 : 0);
-        bytes.push_back(descriptor.canonical_default ? 1 : 0);
-        if (descriptor.canonical_default) appendString(bytes, descriptor.canonical_default->dump());
-        appendRange(bytes, descriptor.range);
-        auto enum_values = descriptor.enum_values;
-        std::sort(enum_values.begin(), enum_values.end());
-        appendU32(bytes, static_cast<std::uint32_t>(enum_values.size()));
-        for (const auto &value : enum_values) appendString(bytes, value);
-        auto applicability = descriptor.applicability;
-        std::sort(applicability.begin(), applicability.end(),
-                  [](const auto &lhs, const auto &rhs) {
-                      return lhs.json_pointer < rhs.json_pointer;
-                  });
-        appendU32(bytes, static_cast<std::uint32_t>(applicability.size()));
-        for (auto &condition : applicability) {
-            appendString(bytes, condition.json_pointer);
-            std::sort(condition.active_values.begin(), condition.active_values.end(),
-                      [](const auto &lhs, const auto &rhs) { return lhs.dump() < rhs.dump(); });
-            appendU32(bytes, static_cast<std::uint32_t>(condition.active_values.size()));
-            for (const auto &value : condition.active_values) appendString(bytes, value.dump());
-        }
+        appendDescriptorRecord(bytes, descriptor);
     }
     return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
 }
 
-std::string descriptorSortKey(const BindableDescriptor &descriptor) {
-    OJson applicability = OJson::array();
-    auto conditions = descriptor.applicability;
-    std::sort(conditions.begin(), conditions.end(), [](const auto &lhs,
-                                                        const auto &rhs) {
-        return lhs.json_pointer < rhs.json_pointer;
-    });
-    for (auto &condition : conditions) {
-        std::sort(condition.active_values.begin(), condition.active_values.end(),
-                  [](const auto &lhs, const auto &rhs) {
-                      return lhs.dump() < rhs.dump();
-                  });
-        applicability.push_back(
-            OJson{{"path", condition.json_pointer},
-                  {"values", condition.active_values}});
-    }
-    OJson enums = descriptor.enum_values;
-    std::sort(enums.begin(), enums.end(), [](const auto &lhs, const auto &rhs) {
-        return lhs.dump() < rhs.dump();
-    });
-    std::vector<unsigned char> range_bytes;
-    appendRange(range_bytes, descriptor.range);
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string range_key;
-    range_key.reserve(range_bytes.size() * 2U);
-    for (const auto byte : range_bytes) {
-        range_key.push_back(hex[byte >> 4U]);
-        range_key.push_back(hex[byte & 0x0fU]);
-    }
-    return OJson{{"provider", descriptor.provider_name},
-                 {"path", descriptor.json_pointer},
-                 {"applicability", std::move(applicability)},
-                 {"type", static_cast<unsigned>(descriptor.type)},
-                 {"kind", static_cast<unsigned>(descriptor.semantic_kind)},
-                 {"bindable", descriptor.bindable},
-                 {"required", descriptor.required},
-                 {"default", descriptor.canonical_default
-                                 ? *descriptor.canonical_default
-                                 : OJson(nullptr)},
-                 {"range", std::move(range_key)},
-                 {"enum", std::move(enums)}}
-        .dump();
-}
-
-BindableDescriptor field(std::string provider, std::string path,
-                         Schema::FieldType type, bool required,
-                         std::optional<OJson> default_value = std::nullopt,
-                         BindableSemanticKind kind = BindableSemanticKind::Value,
-                         std::vector<BindableDiscriminant> applicability = {}) {
-    return {.provider_name = std::move(provider),
-            .json_pointer = std::move(path),
-            .type = type,
-            .semantic_kind = kind,
-            .bindable = true,
-            .required = required,
-            .canonical_default = std::move(default_value),
-            .applicability = std::move(applicability)};
+std::vector<unsigned char>
+descriptorSortKey(const BindableDescriptor &descriptor) {
+    std::vector<unsigned char> result;
+    appendDescriptorRecord(result, descriptor);
+    return result;
 }
 
 Schema::FieldType leafType(StructFieldType type);
 
 std::vector<BindableDescriptor> codecDescriptors() {
-    using T = Schema::FieldType;
-    using K = BindableSemanticKind;
-    std::vector<BindableDescriptor> result;
-    const auto add = [&](std::string provider, std::string path, T type,
-                         bool required, std::optional<OJson> def = std::nullopt,
-                         K kind = K::Value,
-                         std::vector<BindableDiscriminant> applicability = {}) {
-        result.push_back(field(std::move(provider), std::move(path), type,
-                               required, std::move(def), kind,
-                               std::move(applicability)));
-    };
-    const auto addDiscriminant = [&](std::string provider, std::string path,
-                                     T type, bool required,
-                                     std::optional<OJson> def = std::nullopt) {
-        auto descriptor = field(std::move(provider), std::move(path), type,
-                                required, std::move(def));
-        descriptor.bindable = false;
-        result.push_back(std::move(descriptor));
-    };
-
-    // All seven codec schemas are represented, including required/presence
-    // semantics and canonical JSON defaults. Discriminants themselves are
-    // intentionally absent: changing the active field set is not bindable.
-    add("transform", "/pos", T::Vec3, false, OJson::array({0.0, 0.0, 0.0}));
-    add("transform", "/rotation", T::Quat, false, OJson::array({0.0, 0.0, 0.0, 1.0}));
-    add("transform", "/scale", T::Vec3, false, OJson::array({1.0, 1.0, 1.0}));
-    add("simplemodelview", "/model", T::String, true, std::nullopt, K::Asset);
-
-    const auto perspective = std::vector<BindableDiscriminant>{{"/type", {"perspective"}}};
-    const auto orthographic = std::vector<BindableDiscriminant>{{"/type", {"orthographic"}}};
-    addDiscriminant("camera", "/type", T::Enum, false, "perspective");
-    add("camera", "/yfov", T::F32, false, f32(0.78539816339F), K::Value, perspective);
-    add("camera", "/znear", T::F32, false, f32(0.1F));
-    add("camera", "/zfar", T::F32, false, f32(1000.0F));
-    add("camera", "/aspect", T::F32, false, f32(1.0F), K::Value, perspective);
-    add("camera", "/xmag", T::F32, false, f32(1.0F), K::Value, orthographic);
-    add("camera", "/ymag", T::F32, false, f32(1.0F), K::Value, orthographic);
-    add("camera", "/sprite/pixel_perfect", T::Enum, false, "off");
-    add("camera", "/sprite/sort", T::Enum, false, "z");
-    const auto orbit = std::vector<BindableDiscriminant>{{"/controller/type", {"orbit"}}};
-    const auto follow = std::vector<BindableDiscriminant>{{"/controller/type", {"follow"}}};
-    const auto fly = std::vector<BindableDiscriminant>{{"/controller/type", {"fly"}}};
-    addDiscriminant("camera", "/controller/type", T::String, true);
-    add("camera", "/controller/target", T::String, false, std::nullopt,
-        K::Object, orbit);
-    add("camera", "/controller/target", T::String, true, std::nullopt,
-        K::Object, follow);
-    add("camera", "/controller/distance", T::F32, true, std::nullopt,
-        K::Value, orbit);
-    add("camera", "/controller/yaw", T::F32, false, f32(0.0F), K::Value, orbit);
-    add("camera", "/controller/yaw_degrees", T::F32, false, f32(0.0F),
-        K::Value, orbit);
-    add("camera", "/controller/pitch", T::F32, false, f32(0.0F), K::Value, orbit);
-    add("camera", "/controller/pitch_degrees", T::F32, false, f32(0.0F),
-        K::Value, orbit);
-    add("camera", "/controller/offset", T::Vec3, true, std::nullopt,
-        K::Value, follow);
-    add("camera", "/controller/speed", T::F32, true, std::nullopt,
-        K::Value, fly);
-    add("camera", "/controller/sensitivity", T::F32, false, f32(1.0F),
-        K::Value, orbit);
-    add("camera", "/controller/sensitivity", T::F32, true, std::nullopt,
-        K::Value, fly);
-    add("camera", "/controller/damping", T::F32, false, f32(0.0F));
-
-    const auto point_or_spot = std::vector<BindableDiscriminant>{{"/type", {"point", "spot"}}};
-    const auto spot = std::vector<BindableDiscriminant>{{"/type", {"spot"}}};
-    addDiscriminant("light", "/type", T::Enum, true);
-    add("light", "/position", T::Vec3, true, std::nullopt, K::Value,
-        point_or_spot);
-    add("light", "/direction", T::Vec3, true, std::nullopt, K::Value,
-        {{"/type", {"directional", "spot"}}});
-    add("light", "/intensity", T::F32, false, f32(1.0F));
-    add("light", "/range", T::F32, false, f32(0.0F), K::Value, point_or_spot);
-    add("light", "/color", T::Vec3, true);
-    add("light", "/innerConeAngle", T::F32, false, f32(12.5F), K::Value, spot);
-    add("light", "/outerConeAngle", T::F32, false, f32(17.5F), K::Value, spot);
-
-    const auto sphere_or_capsule = std::vector<BindableDiscriminant>{{"/shape", {"sphere", "capsule"}}};
-    const auto box = std::vector<BindableDiscriminant>{{"/shape", {"box"}}};
-    const auto capsule = std::vector<BindableDiscriminant>{{"/shape", {"capsule"}}};
-    addDiscriminant("collider", "/shape", T::Enum, false, "sphere");
-    add("collider", "/pos", T::Vec3, false, OJson::array({0.0, 0.0, 0.0}));
-    add("collider", "/rotation", T::Quat, false, OJson::array({0.0, 0.0, 0.0, 1.0}));
-    add("collider", "/radius", T::F32, false, f32(0.5F), K::Value, sphere_or_capsule);
-    add("collider", "/half_extents", T::Vec3, false, OJson::array({0.5, 0.5, 0.5}), K::Value, box);
-    add("collider", "/half_height", T::F32, false, f32(0.5F), K::Value, capsule);
-    add("collider", "/layer", T::U32, false, 1);
-    add("collider", "/mask", T::U32, false, UINT32_MAX);
-    add("collider", "/trigger", T::Bool, false, false);
-    add("collider", "/one_way", T::Bool, false, false);
-
-    add("animation", "/clip", T::String, true, std::nullopt, K::Asset);
-    add("animation", "/speed", T::F64, false, 1.0);
-    add("animation", "/loop", T::Bool, false, true);
-    add("animation", "/start_time", T::F64, false, 0.0);
-
-    add("sprite_view", "/texture", T::String, true, std::nullopt, K::Asset);
-    add("sprite_view", "/size", T::Vec2, false, OJson::array({0.0, 0.0}));
-    add("sprite_view", "/pivot", T::Vec2, false, OJson::array({0.5, 0.5}));
-    add("sprite_view", "/color", T::Vec4, false, OJson::array({1.0, 1.0, 1.0, 1.0}));
-    add("sprite_view", "/flip/0", T::Bool, false, false);
-    add("sprite_view", "/flip/1", T::Bool, false, false);
-    add("sprite_view", "/layer", T::I16, false, 0);
-    add("sprite_view", "/billboard", T::Enum, false, "none");
-
-    const auto cloneCameraPath = [&](std::string_view source,
-                                     std::string target) {
-        const auto current_size = result.size();
-        for (std::size_t index = 0; index < current_size; ++index) {
-            if (result[index].provider_name != "camera" ||
-                result[index].json_pointer != source) continue;
-            auto clone = result[index];
-            clone.json_pointer = std::move(target);
-            if (clone.json_pointer.starts_with("/perspective/")) {
-                clone.applicability = {{"/type", {"perspective"}}};
-            } else if (clone.json_pointer.starts_with("/orthographic/")) {
-                clone.applicability = {{"/type", {"orthographic"}}};
-            }
-            result.push_back(std::move(clone));
-            return;
+    // The project-owned table is the shared engine/Studio source. The codec
+    // pass below enriches only metadata that is owned by runtime schemas.
+    auto result = builtinPrefabBindableDescriptors();
+    const auto codec_defaults = componentCodecCanonicalDefaults();
+    for (auto &descriptor : result) {
+        if (descriptor.provider_name == "collider" &&
+            descriptor.json_pointer == "/radius") {
+            descriptor.canonical_default = f32(codec_defaults.collider_radius);
         }
-    };
-    for (const auto &[source, target] :
-         std::array<std::pair<std::string_view, std::string_view>, 8>{
-             {{"/yfov", "/perspective/yfov"},
-              {"/znear", "/perspective/znear"},
-              {"/zfar", "/perspective/zfar"},
-              {"/aspect", "/perspective/aspect"},
-              {"/xmag", "/orthographic/xmag"},
-              {"/ymag", "/orthographic/ymag"},
-              {"/znear", "/orthographic/znear"},
-              {"/zfar", "/orthographic/zfar"}}}) {
-        cloneCameraPath(source, std::string{target});
-    }
-    const auto controller_descriptors = result;
-    for (const auto &descriptor : controller_descriptors) {
-        if (descriptor.provider_name != "camera" ||
-            !descriptor.json_pointer.starts_with("/controller/")) continue;
-        auto clone = descriptor;
-        clone.json_pointer = "/params" + clone.json_pointer;
-        for (auto &condition : clone.applicability) {
-            if (condition.json_pointer.starts_with("/controller/")) {
-                condition.json_pointer = "/params" + condition.json_pointer;
-            }
-        }
-        result.push_back(std::move(clone));
     }
 
     // The codec-owned schema is the source of truth for type/range/enum
@@ -460,37 +372,7 @@ const BindableDescriptor *BindableProviderSnapshot::findActive(
 
 bool BindableProviderSnapshot::active(const BindableDescriptor &descriptor,
                                       const nlohmann::json &component) const {
-    for (const auto &condition : descriptor.applicability) {
-        const auto pointer = nlohmann::json::json_pointer{condition.json_pointer};
-        nlohmann::json implicit;
-        const nlohmann::json *actual_pointer = nullptr;
-        if (component.contains(pointer)) {
-            actual_pointer = &component.at(pointer);
-        } else if (condition.json_pointer == "/shape" &&
-                   descriptor.provider_name == "collider") {
-            implicit = "sphere";
-        } else if (condition.json_pointer == "/type" &&
-                   descriptor.provider_name == "camera") {
-            implicit = component.contains("orthographic") ||
-                               component.contains("xmag") ||
-                               component.contains("ymag")
-                           ? "orthographic"
-                           : "perspective";
-        } else if (condition.json_pointer == "/type" &&
-                   descriptor.provider_name == "light") {
-            implicit = "directional";
-        } else {
-            return false;
-        }
-        const nlohmann::json &actual = actual_pointer != nullptr
-                                           ? *actual_pointer
-                                           : implicit;
-        if (std::none_of(condition.active_values.begin(), condition.active_values.end(),
-                         [&](const auto &candidate) { return candidate == actual; })) {
-            return false;
-        }
-    }
-    return true;
+    return prefabDescriptorActive(descriptor, component);
 }
 
 BindableProviderSnapshot buildProductionBindableProviderSnapshot(
@@ -508,8 +390,13 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
             }
         }
         for (const auto &schema : registration.params_schema) {
-            auto pointer = "/params/" + std::string{schema.name};
-            std::replace(pointer.begin(), pointer.end(), '.', '/');
+            std::string escaped_name;
+            for (const char ch : std::string_view{schema.name}) {
+                if (ch == '~') escaped_name += "~0";
+                else if (ch == '/') escaped_name += "~1";
+                else escaped_name.push_back(ch);
+            }
+            auto pointer = "/params/" + escaped_name;
             auto def = defaults.find(std::string{schema.name});
             descriptors.push_back({
                 .provider_name = "behavior:" + registration.stable_name,
@@ -536,22 +423,6 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
         }
     }
     return BindableProviderSnapshot{generation, std::move(descriptors)};
-}
-
-bool prefabParameterMatchesDescriptor(
-    const PrefabParameterDeclaration &parameter,
-    const BindableDescriptor &descriptor) noexcept {
-    if (parameter.kind == PrefabParameterKind::Value) {
-        return parameter.value_schema.type == descriptor.type &&
-               descriptor.semantic_kind == BindableSemanticKind::Value;
-    }
-    if (descriptor.type != Schema::FieldType::String) return false;
-    if (parameter.kind == PrefabParameterKind::Asset) {
-        return descriptor.semantic_kind == BindableSemanticKind::Asset ||
-               descriptor.semantic_kind == BindableSemanticKind::Value;
-    }
-    return descriptor.semantic_kind == BindableSemanticKind::Object ||
-           descriptor.semantic_kind == BindableSemanticKind::Value;
 }
 
 } // namespace Pelican

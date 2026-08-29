@@ -559,15 +559,16 @@ void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) c
     auto document = AuthoringSceneDocument::load(
         scene_v1_bytes, SceneRevision{next_scene_revision},
         next_authoring_object_id);
-    if (prefab_provider.generation() == 0) {
-        prefab_provider = buildProductionBindableProviderSnapshot(
-            next_prefab_provider_generation++);
-    }
+    const bool publish_provider = prefab_provider.generation() == 0;
+    auto candidate_provider = publish_provider
+                                  ? buildProductionBindableProviderSnapshot(
+                                        next_prefab_provider_generation)
+                                  : prefab_provider;
     auto candidate = ResolvedSceneResolver::prepare(
         std::move(document),
         SceneResolverGeneration{next_scene_resolver_generation},
         ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
-        prefab_registry, prefab_provider);
+        prefab_registry, candidate_provider);
     if (scene_projection) {
         publishPreparedSceneState(candidate);
     } else {
@@ -576,6 +577,10 @@ void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) c
         ++next_scene_resolver_generation;
         next_authoring_object_id =
             scene_projection->authoring_.next_authoring_object_id_value_;
+    }
+    if (publish_provider) {
+        prefab_provider = std::move(candidate_provider);
+        ++next_prefab_provider_generation;
     }
 }
 
@@ -637,14 +642,22 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     auto candidate_document = AuthoringSceneDocument::load(
         scene_v1_bytes, SceneRevision{next_scene_revision},
         next_authoring_object_id);
+    if (candidate_document.formatVersion() != 1 ||
+        candidate_document.usesPrefabs()) {
+        throw PrefabError{
+            PrefabErrorCode::PrefabPersistenceUnsupported,
+            "scene snapshot import accepts only formatVersion 1 without prefabs"};
+    }
+    const bool publish_provider = prefab_provider.generation() == 0;
+    auto candidate_provider = publish_provider
+                                  ? buildProductionBindableProviderSnapshot(
+                                        next_prefab_provider_generation)
+                                  : prefab_provider;
     auto candidate = ResolvedSceneResolver::prepare(
         std::move(candidate_document),
         SceneResolverGeneration{next_scene_resolver_generation},
         ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
-        prefab_registry, prefab_provider.generation() == 0
-                             ? buildProductionBindableProviderSnapshot(
-                                   next_prefab_provider_generation++)
-                             : prefab_provider);
+        prefab_registry, candidate_provider);
     const auto committed_revision = candidate.revision();
     const auto previous_next_revision = next_scene_revision;
     const auto previous_next_generation = next_scene_resolver_generation;
@@ -673,6 +686,10 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
         next_authoring_object_id = previous_next_object_id;
         throw;
     }
+    if (publish_provider) {
+        prefab_provider = std::move(candidate_provider);
+        ++next_prefab_provider_generation;
+    }
     return committed_revision;
 }
 
@@ -689,7 +706,7 @@ void ProjectBasicConfig::refreshResolvedScene(
     }
 
     auto candidate_provider = buildProductionBindableProviderSnapshot(
-        next_prefab_provider_generation++);
+        next_prefab_provider_generation);
     auto candidate = ResolvedSceneResolver::prepare(
         scene_projection->authoring(),
         SceneResolverGeneration{next_scene_resolver_generation},
@@ -709,6 +726,7 @@ void ProjectBasicConfig::refreshResolvedScene(
         throw;
     }
     prefab_provider = scene_projection->resolved().bindableProvider();
+    ++next_prefab_provider_generation;
 }
 
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {

@@ -123,6 +123,8 @@ ProjectOutlinerModel::open(const std::filesystem::path &project_path) {
                                     std::filesystem::path{std::string{relative}},
                                 "prefab");
         });
+    const auto bindable_descriptors =
+        Pelican::builtinPrefabBindableDescriptors();
     std::vector<OfflinePrefabExpansion> offline_expansions;
     if (parsed_project.envelope.basic_config.is_object()) {
         const auto scene_ref =
@@ -160,8 +162,10 @@ ProjectOutlinerModel::open(const std::filesystem::path &project_path) {
                         };
                         for (const auto &component : record->document->components) {
                             expansion.resolved_component_json.push_back(
-                                Pelican::substitutePrefabComponent(
-                                    component, instance.parameters)
+                                Pelican::resolvePrefabComponentBody(
+                                    *record->document, component, instance,
+                                    bindable_descriptors,
+                                    {.scene_id = scene.key()})
                                     .dump());
                         }
                         offline_expansions.push_back(std::move(expansion));

@@ -3,6 +3,7 @@
 
 #include "componentcodec.hpp"
 #include "../asset/model.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../ecs/archetypemigration.hpp"
 #include "../ecs/componentinfo.hpp"
 #include "../ecs/predefined/modelview.hpp"
@@ -133,11 +134,11 @@ struct SceneObjectProjectionAdapter::Impl {
 
     ECSCoreTemplatePublic &ecs;
     ComponentInfoManager &components;
-    ModelAssetContainer &models;
-    PolygonInstanceContainer &renderer;
-    Camera &camera;
-    LightContainer &lights;
-    PhysWorld &physics;
+    ModelAssetContainer *models = nullptr;
+    PolygonInstanceContainer *renderer = nullptr;
+    Camera *camera = nullptr;
+    LightContainer *lights = nullptr;
+    PhysWorld *physics = nullptr;
     std::string scene_id;
     AuthoringObjectId target_object{};
     AuthoringObjectId prepared_target{};
@@ -253,11 +254,15 @@ struct SceneObjectProjectionAdapter::Impl {
                 return load.name == "simplemodelview";
             });
         if (model_load != loads.end()) {
+            if (models == nullptr || renderer == nullptr) {
+                throw std::runtime_error(
+                    "headless object lifecycle cannot project simplemodelview");
+            }
             const auto &data =
                 std::any_cast<const SimpleModelViewCodecData &>(
                     model_load->decoded);
-            auto &model = models.getModelTemplateByName(data.model);
-            staged_model.emplace(renderer.stageModelInstance(model));
+            auto &model = models->getModelTemplateByName(data.model);
+            staged_model.emplace(renderer->stageModelInstance(model));
             staged_model_id = staged_model->id();
 
             glm::mat4 matrix{1.0F};
@@ -279,7 +284,7 @@ struct SceneObjectProjectionAdapter::Impl {
                          glm::toMat4(world.rotation) *
                          glm::scale(glm::mat4{1.0F}, world.scale);
             }
-            renderer.setStagedModelMatrix(*staged_model, matrix);
+            renderer->setStagedModelMatrix(*staged_model, matrix);
         }
 
         entity.emplace(ECSEntityMutation::prepareCreate(
@@ -348,16 +353,47 @@ struct SceneObjectProjectionAdapter::Impl {
     }
 
     void prepareSpecials(const EditorProjectionPrepareContext &context,
+                         const ResolvedSceneView *base_scene,
                          const ResolvedSceneView *next_scene) {
-        old_camera = camera.snapshotPrepared();
-        next_camera =
-            camera.prepareSceneCameras(scene_id,
-                                       context.next_resolved);
-        old_lights = lights.snapshotPrepared();
-        next_lights = LightContainer::prepareLoad(
-            prepareLightEntries(context.next_resolved, scene_id));
+        const auto sceneContains = [](const ResolvedSceneView *scene,
+                                      std::string_view component_name) {
+            return scene != nullptr &&
+                   std::any_of(scene->objects.begin(), scene->objects.end(),
+                               [&](const auto &object) {
+                                   return findResolvedComponent(
+                                              &object, component_name) !=
+                                          nullptr;
+                               });
+        };
+        const auto requireConnected = [&](bool connected,
+                                          std::string_view component_name) {
+            if (!connected &&
+                (sceneContains(base_scene, component_name) ||
+                 sceneContains(next_scene, component_name))) {
+                throw std::runtime_error(
+                    "headless object lifecycle cannot project " +
+                    std::string{component_name});
+            }
+        };
+        requireConnected(models != nullptr && renderer != nullptr,
+                         "simplemodelview");
+        requireConnected(camera != nullptr, "camera");
+        requireConnected(lights != nullptr, "light");
+        requireConnected(physics != nullptr, "collider");
 
-        old_physics = physics.snapshotPrepared();
+        if (camera != nullptr) {
+            old_camera = camera->snapshotPrepared();
+            next_camera = camera->prepareSceneCameras(
+                scene_id, context.next_resolved);
+        }
+        if (lights != nullptr) {
+            old_lights = lights->snapshotPrepared();
+            next_lights = LightContainer::prepareLoad(
+                prepareLightEntries(context.next_resolved, scene_id));
+        }
+        if (physics == nullptr) return;
+
+        old_physics = physics->snapshotPrepared();
         std::unordered_map<std::string, const PhysWorld::Binding *> old_by_name;
         for (const auto &binding : old_physics->bindings) {
             old_by_name.emplace(binding.identity.name, &binding);
@@ -399,7 +435,7 @@ struct SceneObjectProjectionAdapter::Impl {
                                              ECSEntityMutationKind::create
                                          ? entity->entity()
                                          : invalidEntityId};
-        next_physics = physics.prepareBindings(
+        next_physics = physics->prepareBindings(
             std::move(next),
             entity->kind() == ECSEntityMutationKind::create
                 ? std::span<const GameObjectId>{unpublished}
@@ -416,11 +452,11 @@ SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
     : impl_(std::make_unique<Impl>(Impl{
           .ecs = ecs,
           .components = components,
-          .models = models,
-          .renderer = renderer,
-          .camera = camera,
-          .lights = lights,
-          .physics = physics,
+          .models = &models,
+          .renderer = &renderer,
+          .camera = &camera,
+          .lights = &lights,
+          .physics = &physics,
           .scene_id = std::move(scene_id),
           .target_object = target_object,
           .bindings = std::move(bindings),
@@ -447,6 +483,40 @@ SceneObjectProjectionAdapter::publicationMode() const noexcept {
 std::span<const EditorProjectionRuntimeObjectBinding>
 SceneObjectProjectionAdapter::runtimeBindings() const noexcept {
     return impl_->bindings;
+}
+
+SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
+    ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+    std::string scene_id, AuthoringObjectId target_object,
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings)
+    : impl_(std::make_unique<Impl>(Impl{
+          .ecs = ecs,
+          .components = components,
+          .scene_id = std::move(scene_id),
+          .target_object = target_object,
+          .bindings = std::move(bindings),
+      })) {
+    (void)bindingMap(impl_->bindings);
+    impl_->adapter_name = "object_lifecycle.headless." + impl_->scene_id + "." +
+                          (impl_->target_object.value == 0
+                               ? std::string{"auto"}
+                               : std::to_string(impl_->target_object.value));
+}
+std::span<const EditorProjectionRuntimeObjectBinding>
+SceneObjectProjectionAdapter::preparedRuntimeBindings() const noexcept {
+    // ECS archetype inverse tokens are published during the prepare walk to
+    // release the core mutation guard.  Preserve "prepared" semantics across
+    // that early swap so later adapters (notably behavior reconciliation) see
+    // the post-lifecycle binding set in both phases.
+    return impl_->bindings_published
+               ? std::span<const EditorProjectionRuntimeObjectBinding>{
+                     impl_->bindings}
+               : std::span<const EditorProjectionRuntimeObjectBinding>{
+                     impl_->next_bindings};
+}
+AuthoringObjectId
+SceneObjectProjectionAdapter::preparedTargetObject() const noexcept {
+    return impl_->prepared_target;
 }
 
 void SceneObjectProjectionAdapter::prepare(
@@ -495,22 +565,28 @@ void SceneObjectProjectionAdapter::prepare(
     } else {
         impl_->prepareDestroy();
     }
-    impl_->prepareSpecials(context, next_scene);
+    impl_->prepareSpecials(context, base_scene, next_scene);
 }
 
 void SceneObjectProjectionAdapter::publish() noexcept {
     if (impl_->staged_model) {
-        impl_->renderer.publishModelInstance(std::move(*impl_->staged_model));
+        impl_->renderer->publishModelInstance(std::move(*impl_->staged_model));
         impl_->staged_model.reset();
         impl_->staged_model_published = true;
     }
     impl_->entity->publish();
-    impl_->camera.publishPrepared(std::move(*impl_->next_camera));
-    impl_->camera_published = true;
-    impl_->lights.publishPrepared(std::move(*impl_->next_lights));
-    impl_->lights_published = true;
-    impl_->physics.publishPrepared(std::move(*impl_->next_physics));
-    impl_->physics_published = true;
+    if (impl_->next_camera) {
+        impl_->camera->publishPrepared(std::move(*impl_->next_camera));
+        impl_->camera_published = true;
+    }
+    if (impl_->next_lights) {
+        impl_->lights->publishPrepared(std::move(*impl_->next_lights));
+        impl_->lights_published = true;
+    }
+    if (impl_->next_physics) {
+        impl_->physics->publishPrepared(std::move(*impl_->next_physics));
+        impl_->physics_published = true;
+    }
     impl_->bindings.swap(impl_->next_bindings);
     impl_->bindings_published = true;
 }
@@ -520,13 +596,13 @@ void SceneObjectProjectionAdapter::rollback() noexcept {
         impl_->bindings.swap(impl_->next_bindings);
     }
     if (impl_->physics_published) {
-        impl_->physics.publishPrepared(std::move(*impl_->old_physics));
+        impl_->physics->publishPrepared(std::move(*impl_->old_physics));
     }
     if (impl_->lights_published) {
-        impl_->lights.publishPrepared(std::move(*impl_->old_lights));
+        impl_->lights->publishPrepared(std::move(*impl_->old_lights));
     }
     if (impl_->camera_published) {
-        impl_->camera.publishPrepared(std::move(*impl_->old_camera));
+        impl_->camera->publishPrepared(std::move(*impl_->old_camera));
     }
     if (impl_->entity) impl_->entity->rollback();
     impl_->entity.reset();
@@ -563,6 +639,121 @@ void SceneObjectProjectionAdapter::finish() noexcept {
     impl_->lights_published = false;
     impl_->physics_published = false;
     impl_->bindings_published = false;
+}
+
+struct BehaviorSceneProjectionAdapter::Impl {
+    BehaviorAttachmentArena &arena;
+    std::string scene_id;
+    std::string adapter_name;
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings;
+    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
+    std::unique_ptr<PreparedBehaviorSceneReconciliation> prepared;
+};
+
+BehaviorSceneProjectionAdapter::BehaviorSceneProjectionAdapter(
+    BehaviorAttachmentArena &arena, std::string scene_id,
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters)
+    : impl_{std::make_unique<Impl>(Impl{
+          .arena = arena,
+          .scene_id = std::move(scene_id),
+          .adapter_name = {},
+          .bindings = std::move(bindings),
+          .lifecycle_adapters = std::move(lifecycle_adapters),
+      })} {
+    (void)bindingMap(impl_->bindings);
+    impl_->adapter_name = "behavior.scene." + impl_->scene_id;
+}
+
+BehaviorSceneProjectionAdapter::~BehaviorSceneProjectionAdapter() = default;
+EditorProjectionAdapterKind
+BehaviorSceneProjectionAdapter::kind() const noexcept {
+    return EditorProjectionAdapterKind::BehaviorAttachment;
+}
+std::string_view BehaviorSceneProjectionAdapter::name() const noexcept {
+    return impl_->adapter_name;
+}
+EditorProjectionPublicationMode
+BehaviorSceneProjectionAdapter::publicationMode() const noexcept {
+    return EditorProjectionPublicationMode::InverseToken;
+}
+
+void BehaviorSceneProjectionAdapter::prepare(
+    const EditorProjectionPrepareContext &context) {
+    auto next_bindings = impl_->bindings;
+    for (const auto *lifecycle : impl_->lifecycle_adapters) {
+        if (lifecycle == nullptr) {
+            throw std::logic_error(
+                "behavior scene projection has a null lifecycle adapter");
+        }
+        const auto target = lifecycle->preparedTargetObject();
+        const auto staged = lifecycle->preparedRuntimeBindings();
+        const auto replacement = std::find_if(
+            staged.begin(), staged.end(), [&](const auto &binding) {
+                return binding.authoring_object_id == target;
+            });
+        const auto current = std::find_if(
+            next_bindings.begin(), next_bindings.end(),
+            [&](const auto &binding) {
+                return binding.authoring_object_id == target;
+            });
+        if (replacement == staged.end()) {
+            if (current != next_bindings.end()) next_bindings.erase(current);
+        } else if (current == next_bindings.end()) {
+            next_bindings.push_back(*replacement);
+        } else {
+            *current = *replacement;
+        }
+    }
+
+    const auto *scene = findResolvedScene(context.next_resolved,
+                                          impl_->scene_id);
+    std::vector<BoundSceneBehaviorAttachment> desired;
+    if (scene != nullptr) {
+        auto prepared = prepareResolvedSceneBehaviorAttachments(
+            scene->objects, BehaviorRegistryAvailability::active);
+        desired.reserve(prepared.size());
+        for (auto &attachment : prepared) {
+            const auto object = std::find_if(
+                scene->objects.begin(), scene->objects.end(),
+                [&](const auto &candidate) {
+                    return candidate.authoring_object_index ==
+                           attachment.object_index;
+                });
+            if (object == scene->objects.end()) {
+                throw std::logic_error(
+                    "prepared behavior lost its resolved object");
+            }
+            const auto binding = std::find_if(
+                next_bindings.begin(), next_bindings.end(),
+                [&](const auto &candidate) {
+                    return candidate.authoring_object_id ==
+                           object->authoring_object_id;
+                });
+            if (binding == next_bindings.end()) {
+                throw std::runtime_error(
+                    "resolved behavior object has no staged runtime binding");
+            }
+            desired.push_back(BoundSceneBehaviorAttachment{
+                .prepared = std::move(attachment),
+                .entity = binding->entity,
+            });
+        }
+    }
+    impl_->prepared =
+        impl_->arena.prepareSceneReconciliation(std::move(desired));
+}
+
+void BehaviorSceneProjectionAdapter::publish() noexcept {
+    if (impl_->prepared) impl_->prepared->publish();
+}
+void BehaviorSceneProjectionAdapter::rollback() noexcept {
+    if (impl_->prepared) impl_->prepared->rollback();
+    impl_->prepared.reset();
+}
+void BehaviorSceneProjectionAdapter::finish() noexcept {
+    if (impl_->prepared) impl_->prepared->finish();
+    impl_->prepared.reset();
 }
 
 struct EcsCodecProjectionAdapter::Impl {

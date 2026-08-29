@@ -757,6 +757,7 @@ EditorProjectionResult executeEditorProjection(
     std::vector<BehaviorAttachmentEdit> behavior_edits;
     struct LifecycleUpdate {
         AuthoringObjectId object_id{};
+        std::string scene_id;
         SceneObjectProjectionAdapter *adapter = nullptr;
     };
     std::vector<LifecycleUpdate> lifecycle_updates;
@@ -776,7 +777,7 @@ EditorProjectionResult executeEditorProjection(
             modules.physics, scene_id, object_id, runtime_bindings);
         auto *raw = adapter.get();
         adapters.push_back(std::move(adapter));
-        lifecycle_updates.push_back({object_id, raw});
+        lifecycle_updates.push_back({object_id, scene_id, raw});
     };
 
     for (std::size_t index = 0; index < request.operations.size(); ++index) {
@@ -949,7 +950,7 @@ EditorProjectionResult executeEditorProjection(
     }
 
     std::unique_ptr<BehaviorProjectionJunctionState> behavior_state;
-    if (!behavior_edits.empty()) {
+    if (!behavior_edits.empty() && lifecycle_updates.empty()) {
         behavior_state = std::make_unique<BehaviorProjectionJunctionState>(
             BehaviorProjectionJunctionState{
                 .arena = modules.behavior_arena,
@@ -963,6 +964,24 @@ EditorProjectionResult executeEditorProjection(
             &BehaviorProjectionJunctionState::finish);
         adapters.push_back(
             std::make_unique<EditorProjectionCallbackAdapter>(std::move(junction)));
+    }
+    if (!lifecycle_updates.empty()) {
+        const auto &scene_id = lifecycle_updates.front().scene_id;
+        if (std::any_of(lifecycle_updates.begin(), lifecycle_updates.end(),
+                        [&](const auto &update) {
+                            return update.scene_id != scene_id;
+                        })) {
+            throw std::runtime_error(
+                "one editor lifecycle transaction cannot span runtime scenes");
+        }
+        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
+        lifecycle_adapters.reserve(lifecycle_updates.size());
+        for (const auto &update : lifecycle_updates) {
+            lifecycle_adapters.push_back(update.adapter);
+        }
+        adapters.push_back(std::make_unique<BehaviorSceneProjectionAdapter>(
+            modules.behavior_arena, scene_id, runtime_bindings,
+            std::move(lifecycle_adapters)));
     }
 
     std::vector<EditorProjectionAdapter *> adapter_ptrs;

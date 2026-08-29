@@ -111,6 +111,30 @@ class PreparedBehaviorAttachmentEdits {
     void finish() noexcept;
 };
 
+class PreparedBehaviorSceneReconciliation {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    explicit PreparedBehaviorSceneReconciliation(
+        std::unique_ptr<Impl> impl) noexcept;
+    friend class BehaviorAttachmentArena;
+
+  public:
+    ~PreparedBehaviorSceneReconciliation();
+    PreparedBehaviorSceneReconciliation(
+        PreparedBehaviorSceneReconciliation &&) noexcept;
+    PreparedBehaviorSceneReconciliation &operator=(
+        PreparedBehaviorSceneReconciliation &&) noexcept;
+    PreparedBehaviorSceneReconciliation(
+        const PreparedBehaviorSceneReconciliation &) = delete;
+    PreparedBehaviorSceneReconciliation &operator=(
+        const PreparedBehaviorSceneReconciliation &) = delete;
+
+    void publish() noexcept;
+    void rollback() noexcept;
+    void finish() noexcept;
+};
+
 std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
                                          std::size_t component_index);
 std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
@@ -123,6 +147,7 @@ prepareResolvedSceneBehaviorAttachments(
 DECLARE_MODULE(BehaviorAttachmentArena) {
     friend class BehaviorCallbackScope;
     friend class PreparedBehaviorAttachmentEdits;
+    friend class PreparedBehaviorSceneReconciliation;
 
     struct Attachment {
         BehaviorAttachmentInfo info;
@@ -179,6 +204,9 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
         GameObjectId entity, std::size_t component_index) const;
     std::unique_ptr<PreparedBehaviorAttachmentEdits>
     prepareEditorEdits(std::vector<BehaviorAttachmentEdit> edits);
+    std::unique_ptr<PreparedBehaviorSceneReconciliation>
+    prepareSceneReconciliation(
+        std::vector<BoundSceneBehaviorAttachment> desired);
 
     void deferCreateObject(LocalTransformComponent transform);
     void deferCreateSpriteObject(LocalTransformComponent transform,

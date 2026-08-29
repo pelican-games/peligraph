@@ -276,8 +276,9 @@ parsePrefabRegistryEntries(const Json &value) {
             if (end == std::string::npos) break;
             begin = end + 1;
         }
-        if (path.starts_with('/') || path.starts_with('\\') || drive || dotdot ||
-            path.find('\\') != std::string::npos) {
+        const bool scheme = path.find("://") != std::string::npos;
+        if (path.starts_with('/') || path.starts_with('\\') || drive || scheme ||
+            dotdot || path.find('\\') != std::string::npos) {
             context.prefab = name;
             context.json_pointer = "/prefabs/" + std::to_string(index) + "/path";
             fail(PrefabErrorCode::PrefabPathInvalid,
@@ -714,6 +715,326 @@ nlohmann::ordered_json substitutePrefabComponent(
             found->value_resolved;
     }
     return result;
+}
+
+std::vector<BindableDescriptor> builtinPrefabBindableDescriptors() {
+    using T = Schema::FieldType;
+    using K = BindableSemanticKind;
+    using OJson = nlohmann::ordered_json;
+    std::vector<BindableDescriptor> result;
+    const auto add = [&](std::string provider, std::string path, T type,
+                         bool required,
+                         std::optional<OJson> def = std::nullopt,
+                         K kind = K::Value,
+                         std::vector<BindableDiscriminant> applicability = {},
+                         std::string asset_kind = {}) {
+        result.push_back({.provider_name = std::move(provider),
+                          .json_pointer = std::move(path),
+                          .type = type,
+                          .semantic_kind = kind,
+                          .asset_kind = std::move(asset_kind),
+                          .bindable = true,
+                          .required = required,
+                          .canonical_default = std::move(def),
+                          .applicability = std::move(applicability)});
+    };
+    const auto discriminant = [&](std::string provider, std::string path,
+                                  T type, bool required,
+                                  std::optional<OJson> def = std::nullopt) {
+        add(std::move(provider), std::move(path), type, required,
+            std::move(def));
+        result.back().bindable = false;
+    };
+
+    add("transform", "/pos", T::Vec3, false, OJson::array({0.0, 0.0, 0.0}));
+    add("transform", "/rotation", T::Quat, false,
+        OJson::array({0.0, 0.0, 0.0, 1.0}));
+    add("transform", "/scale", T::Vec3, false,
+        OJson::array({1.0, 1.0, 1.0}));
+    add("simplemodelview", "/model", T::String, true, std::nullopt,
+        K::Asset, {}, "model");
+
+    const auto perspective =
+        std::vector<BindableDiscriminant>{{"/type", {"perspective"}}};
+    const auto orthographic =
+        std::vector<BindableDiscriminant>{{"/type", {"orthographic"}}};
+    discriminant("camera", "/type", T::Enum, false, "perspective");
+    add("camera", "/yfov", T::F32, false, 0.78539816339F, K::Value,
+        perspective);
+    add("camera", "/znear", T::F32, false, 0.1F);
+    add("camera", "/zfar", T::F32, false, 1000.0F);
+    add("camera", "/aspect", T::F32, false, 1.0F, K::Value,
+        perspective);
+    add("camera", "/xmag", T::F32, false, 1.0F, K::Value,
+        orthographic);
+    add("camera", "/ymag", T::F32, false, 1.0F, K::Value,
+        orthographic);
+    add("camera", "/sprite/pixel_perfect", T::Enum, false, "off");
+    add("camera", "/sprite/sort", T::Enum, false, "z");
+    const auto orbit =
+        std::vector<BindableDiscriminant>{{"/controller/type", {"orbit"}}};
+    const auto follow =
+        std::vector<BindableDiscriminant>{{"/controller/type", {"follow"}}};
+    const auto fly =
+        std::vector<BindableDiscriminant>{{"/controller/type", {"fly"}}};
+    discriminant("camera", "/controller/type", T::String, true);
+    add("camera", "/controller/target", T::String, false, std::nullopt,
+        K::Object, orbit);
+    add("camera", "/controller/target", T::String, true, std::nullopt,
+        K::Object, follow);
+    add("camera", "/controller/distance", T::F32, true, std::nullopt,
+        K::Value, orbit);
+    add("camera", "/controller/yaw", T::F32, false, 0.0F, K::Value,
+        orbit);
+    add("camera", "/controller/yaw_degrees", T::F32, false, 0.0F,
+        K::Value, orbit);
+    add("camera", "/controller/pitch", T::F32, false, 0.0F, K::Value,
+        orbit);
+    add("camera", "/controller/pitch_degrees", T::F32, false, 0.0F,
+        K::Value, orbit);
+    add("camera", "/controller/offset", T::Vec3, true, std::nullopt,
+        K::Value, follow);
+    add("camera", "/controller/speed", T::F32, true, std::nullopt,
+        K::Value, fly);
+    add("camera", "/controller/sensitivity", T::F32, false, 1.0F,
+        K::Value, orbit);
+    add("camera", "/controller/sensitivity", T::F32, true, std::nullopt,
+        K::Value, fly);
+    add("camera", "/controller/damping", T::F32, false, 0.0F);
+
+    const auto point_or_spot =
+        std::vector<BindableDiscriminant>{{"/type", {"point", "spot"}}};
+    const auto spot =
+        std::vector<BindableDiscriminant>{{"/type", {"spot"}}};
+    discriminant("light", "/type", T::Enum, true);
+    add("light", "/position", T::Vec3, true, std::nullopt, K::Value,
+        point_or_spot);
+    add("light", "/direction", T::Vec3, true, std::nullopt, K::Value,
+        {{"/type", {"directional", "spot"}}});
+    add("light", "/intensity", T::F32, false, 1.0F);
+    add("light", "/range", T::F32, false, 0.0F, K::Value,
+        point_or_spot);
+    add("light", "/color", T::Vec3, true);
+    add("light", "/innerConeAngle", T::F32, false, 12.5F, K::Value,
+        spot);
+    add("light", "/outerConeAngle", T::F32, false, 17.5F, K::Value,
+        spot);
+
+    const auto sphere_or_capsule =
+        std::vector<BindableDiscriminant>{{"/shape", {"sphere", "capsule"}}};
+    const auto box =
+        std::vector<BindableDiscriminant>{{"/shape", {"box"}}};
+    const auto capsule =
+        std::vector<BindableDiscriminant>{{"/shape", {"capsule"}}};
+    discriminant("collider", "/shape", T::Enum, false, "sphere");
+    add("collider", "/pos", T::Vec3, false,
+        OJson::array({0.0, 0.0, 0.0}));
+    add("collider", "/rotation", T::Quat, false,
+        OJson::array({0.0, 0.0, 0.0, 1.0}));
+    add("collider", "/radius", T::F32, false, 0.5F, K::Value,
+        sphere_or_capsule);
+    add("collider", "/half_extents", T::Vec3, false,
+        OJson::array({0.5, 0.5, 0.5}), K::Value, box);
+    add("collider", "/half_height", T::F32, false, 0.5F, K::Value,
+        capsule);
+    add("collider", "/layer", T::U32, false, 1);
+    add("collider", "/mask", T::U32, false, UINT32_MAX);
+    add("collider", "/trigger", T::Bool, false, false);
+    add("collider", "/one_way", T::Bool, false, false);
+
+    add("animation", "/clip", T::String, true, std::nullopt, K::Asset,
+        {}, "animation");
+    add("animation", "/speed", T::F64, false, 1.0);
+    add("animation", "/loop", T::Bool, false, true);
+    add("animation", "/start_time", T::F64, false, 0.0);
+    add("sprite_view", "/texture", T::String, true, std::nullopt,
+        K::Asset, {}, "texture");
+    add("sprite_view", "/size", T::Vec2, false,
+        OJson::array({0.0, 0.0}));
+    add("sprite_view", "/pivot", T::Vec2, false,
+        OJson::array({0.5, 0.5}));
+    add("sprite_view", "/color", T::Vec4, false,
+        OJson::array({1.0, 1.0, 1.0, 1.0}));
+    add("sprite_view", "/flip/0", T::Bool, false, false);
+    add("sprite_view", "/flip/1", T::Bool, false, false);
+    add("sprite_view", "/layer", T::I16, false, 0);
+    add("sprite_view", "/billboard", T::Enum, false, "none");
+
+    const auto cloneCameraPath = [&](std::string_view source,
+                                     std::string target) {
+        const auto found = std::find_if(
+            result.begin(), result.end(), [&](const auto &descriptor) {
+                return descriptor.provider_name == "camera" &&
+                       descriptor.json_pointer == source;
+            });
+        if (found == result.end()) return;
+        auto clone = *found;
+        clone.json_pointer = std::move(target);
+        clone.applicability = {{"/type", {clone.json_pointer.starts_with(
+                                                 "/perspective/")
+                                             ? "perspective"
+                                             : "orthographic"}}};
+        result.push_back(std::move(clone));
+    };
+    for (const auto &[source, target] :
+         std::array<std::pair<std::string_view, std::string_view>, 8>{
+             {{"/yfov", "/perspective/yfov"},
+              {"/znear", "/perspective/znear"},
+              {"/zfar", "/perspective/zfar"},
+              {"/aspect", "/perspective/aspect"},
+              {"/xmag", "/orthographic/xmag"},
+              {"/ymag", "/orthographic/ymag"},
+              {"/znear", "/orthographic/znear"},
+              {"/zfar", "/orthographic/zfar"}}}) {
+        cloneCameraPath(source, std::string{target});
+    }
+    const auto camera_descriptors = result;
+    for (const auto &descriptor : camera_descriptors) {
+        if (descriptor.provider_name != "camera" ||
+            !descriptor.json_pointer.starts_with("/controller/")) {
+            continue;
+        }
+        auto clone = descriptor;
+        clone.json_pointer = "/params" + clone.json_pointer;
+        for (auto &condition : clone.applicability) {
+            if (condition.json_pointer.starts_with("/controller/")) {
+                condition.json_pointer = "/params" + condition.json_pointer;
+            }
+        }
+        result.push_back(std::move(clone));
+    }
+    return result;
+}
+
+bool prefabParameterMatchesDescriptor(
+    const PrefabParameterDeclaration &parameter,
+    const BindableDescriptor &descriptor) noexcept {
+    if (parameter.kind == PrefabParameterKind::Value) {
+        return parameter.value_schema.type == descriptor.type &&
+               descriptor.semantic_kind == BindableSemanticKind::Value;
+    }
+    if (descriptor.type != Schema::FieldType::String) return false;
+    if (parameter.kind == PrefabParameterKind::Asset) {
+        return descriptor.semantic_kind == BindableSemanticKind::Asset &&
+               !descriptor.asset_kind.empty() &&
+               parameter.asset_kind == descriptor.asset_kind;
+    }
+    return descriptor.semantic_kind == BindableSemanticKind::Object ||
+           descriptor.semantic_kind == BindableSemanticKind::Value;
+}
+
+bool prefabDescriptorActive(const BindableDescriptor &descriptor,
+                            const nlohmann::json &component) {
+    for (const auto &condition : descriptor.applicability) {
+        const auto pointer =
+            nlohmann::json::json_pointer{condition.json_pointer};
+        nlohmann::json implicit;
+        const nlohmann::json *actual = nullptr;
+        if (component.contains(pointer)) {
+            actual = &component.at(pointer);
+        } else if (descriptor.provider_name == "collider" &&
+                   condition.json_pointer == "/shape") {
+            implicit = "sphere";
+        } else if (descriptor.provider_name == "camera" &&
+                   condition.json_pointer == "/type") {
+            implicit = component.contains("orthographic") ||
+                               component.contains("xmag") ||
+                               component.contains("ymag")
+                           ? "orthographic"
+                           : "perspective";
+        } else if (descriptor.provider_name == "light" &&
+                   condition.json_pointer == "/type") {
+            implicit = "directional";
+        } else {
+            return false;
+        }
+        if (actual == nullptr) actual = &implicit;
+        if (std::none_of(condition.active_values.begin(),
+                         condition.active_values.end(),
+                         [&](const auto &candidate) {
+                             return candidate == *actual;
+                         })) {
+            return false;
+        }
+    }
+    return true;
+}
+
+nlohmann::ordered_json resolvePrefabComponentBody(
+    const PrefabDocument &document,
+    const PrefabComponentDocument &component,
+    const PrefabInstanceDeclaration &instance,
+    std::span<const BindableDescriptor> descriptors,
+    PrefabErrorContext context) {
+    auto provider_name = component.name;
+    if (component.name == "behavior") {
+        const auto type = component.body.find("type");
+        if (type == component.body.end() || !type->is_string() ||
+            type->get_ref<const std::string &>().empty()) {
+            context.json_pointer = "/type";
+            fail(PrefabErrorCode::PrefabBindingNotBindable,
+                 "behavior type is a non-bindable fixed discriminant", context);
+        }
+        provider_name = "behavior:" + type->get<std::string>();
+    }
+    context.instance_id = instance.instance_id;
+    context.prefab = instance.ref;
+    // Discriminants are structural.  Reject every attempted discriminant
+    // binding before evaluating applicability of any sibling field so the
+    // result does not depend on JSON object iteration order.
+    for (const auto &binding : component.bindings) {
+        if (binding.json_pointer == "/name" || binding.json_pointer == "/id" ||
+            binding.json_pointer == "/shape" || binding.json_pointer == "/type" ||
+            binding.json_pointer == "/controller/type" ||
+            binding.json_pointer == "/params/controller/type") {
+            context.parameter = binding.parameter;
+            context.json_pointer = binding.json_pointer;
+            fail(PrefabErrorCode::PrefabBindingNotBindable,
+                 "prefab discriminants are not bindable", context);
+        }
+    }
+    for (const auto &binding : component.bindings) {
+        context.parameter = binding.parameter;
+        context.json_pointer = binding.json_pointer;
+        const auto parameter = std::find_if(
+            document.parameters.begin(), document.parameters.end(),
+            [&](const auto &candidate) {
+                return candidate.name == binding.parameter;
+            });
+        if (parameter == document.parameters.end()) {
+            throw std::logic_error(
+                "validated prefab binding lost its declaration");
+        }
+        const BindableDescriptor *active = nullptr;
+        bool path_present = false;
+        for (const auto &descriptor : descriptors) {
+            if (!descriptor.bindable || descriptor.provider_name != provider_name ||
+                descriptor.json_pointer != binding.json_pointer) {
+                continue;
+            }
+            path_present = true;
+            if (prefabDescriptorActive(descriptor, component.body)) {
+                active = &descriptor;
+                break;
+            }
+        }
+        if (!path_present) {
+            fail(PrefabErrorCode::PrefabBindingNotBindable,
+                 "prefab binding path is not bindable: " +
+                     binding.json_pointer,
+                 context);
+        }
+        if (active == nullptr) {
+            fail(PrefabErrorCode::PrefabBindingInactive,
+                 "prefab binding is inactive for the fixed discriminant",
+                 context);
+        }
+        if (!prefabParameterMatchesDescriptor(*parameter, *active)) {
+            fail(PrefabErrorCode::PrefabParameterType,
+                 "prefab parameter type does not match binding path", context);
+        }
+    }
+    return substitutePrefabComponent(component, instance.parameters);
 }
 
 std::string prefabGeneratedId(std::string_view instance_id,

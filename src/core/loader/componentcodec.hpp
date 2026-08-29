@@ -106,6 +106,34 @@ struct LightCodecData {
     float range = 0.0f;
 };
 
+// Canonical omission defaults consumed by both the decoder and the prefab
+// provider.  Keeping the value behind this boundary lets tests prove that a
+// codec-default change reaches the resolved component, instead of merely
+// mutating a detached provider descriptor.
+struct ComponentCodecCanonicalDefaults {
+    float collider_radius = 0.5f;
+};
+
+ComponentCodecCanonicalDefaults componentCodecCanonicalDefaults() noexcept;
+
+namespace testing {
+
+class ScopedComponentCodecCanonicalDefaults final {
+    ComponentCodecCanonicalDefaults previous_;
+
+  public:
+    explicit ScopedComponentCodecCanonicalDefaults(
+        ComponentCodecCanonicalDefaults replacement);
+    ~ScopedComponentCodecCanonicalDefaults() noexcept;
+
+    ScopedComponentCodecCanonicalDefaults(
+        const ScopedComponentCodecCanonicalDefaults &) = delete;
+    ScopedComponentCodecCanonicalDefaults &operator=(
+        const ScopedComponentCodecCanonicalDefaults &) = delete;
+};
+
+} // namespace testing
+
 using ComponentCodecValue = std::any;
 
 // Every registered codec owns exactly these five operations. runtime_apply and
