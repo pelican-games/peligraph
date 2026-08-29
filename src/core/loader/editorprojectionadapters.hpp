@@ -66,6 +66,45 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
     AuthoringObjectId preparedTargetObject() const noexcept;
 };
 
+struct EditorBehaviorAttachmentIdentityPlanEntry {
+    AuthoringObjectId object_id{};
+    std::size_t authoring_component_index = 0;
+    std::uint64_t attachment_handle = 0;
+    std::uint64_t attachment_seq = 0;
+    bool preserve_existing = false;
+};
+
+// The production lifecycle participant for one current scene.  All object
+// changes share a staged binding set, so parent-first spawns can bind children
+// in the same batch.  It also owns the behavior pre-destroy/reconciliation
+// barriers, leaving the outer projection transaction with one inverse token.
+class SceneLifecycleProjectionAdapter final : public EditorProjectionAdapter {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+  public:
+    SceneLifecycleProjectionAdapter(
+        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+        ModelAssetContainer &models, PolygonInstanceContainer &renderer,
+        Camera &camera, LightContainer &lights, PhysWorld &physics,
+        BehaviorAttachmentArena &behavior_arena, std::string scene_id,
+        std::vector<AuthoringObjectId> target_objects,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        std::vector<EditorBehaviorAttachmentIdentityPlanEntry> identity_plan = {});
+    ~SceneLifecycleProjectionAdapter();
+
+    EditorProjectionAdapterKind kind() const noexcept override;
+    std::string_view name() const noexcept override;
+    EditorProjectionPublicationMode publicationMode() const noexcept override;
+    void prepare(const EditorProjectionPrepareContext &context) override;
+    void publish() noexcept override;
+    void rollback() noexcept override;
+    void finish() noexcept override;
+
+    std::span<const EditorProjectionRuntimeObjectBinding>
+    runtimeBindings() const noexcept;
+};
+
 // Reconciles every scene-ordered behavior attachment from next_resolved after
 // lifecycle adapters have staged their entity bindings. This is a production
 // inverse-token adapter; no callback-only fake target participates.
@@ -77,7 +116,8 @@ class BehaviorSceneProjectionAdapter final : public EditorProjectionAdapter {
     BehaviorSceneProjectionAdapter(
         BehaviorAttachmentArena &arena, std::string scene_id,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings,
-        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters);
+        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters,
+        std::vector<EditorBehaviorAttachmentIdentityPlanEntry> identity_plan = {});
     ~BehaviorSceneProjectionAdapter();
 
     EditorProjectionAdapterKind kind() const noexcept override;

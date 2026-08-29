@@ -276,7 +276,21 @@ parsePrefabRegistryEntries(const Json &value) {
             if (end == std::string::npos) break;
             begin = end + 1;
         }
-        const bool scheme = path.find("://") != std::string::npos;
+        const auto ascii_alpha = [](char value) {
+            return (value >= 'A' && value <= 'Z') ||
+                   (value >= 'a' && value <= 'z');
+        };
+        const auto ascii_alnum_or_scheme_punctuation = [&](char value) {
+            return ascii_alpha(value) ||
+                   (value >= '0' && value <= '9') || value == '+' ||
+                   value == '.' || value == '-';
+        };
+        const auto scheme_end = path.find(':');
+        const bool scheme =
+            scheme_end != std::string::npos && scheme_end != 0 &&
+            ascii_alpha(path.front()) &&
+            std::all_of(path.begin() + 1, path.begin() + scheme_end,
+                        ascii_alnum_or_scheme_punctuation);
         if (path.starts_with('/') || path.starts_with('\\') || drive || scheme ||
             dotdot || path.find('\\') != std::string::npos) {
             context.prefab = name;

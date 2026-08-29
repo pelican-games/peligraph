@@ -24,6 +24,11 @@ EditorGateObservation applyBehaviorEditConcurrencyGate(
     EditorGateObservation observation, bool behavior_callback_active,
     bool game_logic_reload_active, bool reload_reconciling) noexcept;
 
+// Exact production state oracle used by lifecycle regression tests. It is the
+// same snapshot provider used to enforce eval_preview isolation, so camera,
+// light, physics, ECS, and behavior attachment state cannot silently diverge.
+nlohmann::ordered_json editorRuntimeStateSnapshotForTesting();
+
 } // namespace internal
 
 // Creates the single production editor composition used by either the RPC
