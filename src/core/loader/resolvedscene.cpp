@@ -715,8 +715,20 @@ ResolvedScene ResolvedSceneResolver::resolve(
 
     std::vector<std::string> behavior_names;
     behavior_names.reserve(result.behavior_reload_sources_.size());
-    for (const auto &source : result.behavior_reload_sources_) {
-        behavior_names.push_back(source.stable_name);
+    // Reload sources intentionally retain authored behaviors so missing DLLs
+    // can remain pending and recover. The prefab closure only owns generated
+    // behavior dependencies.
+    for (const auto &scene : result.scenes_) {
+        for (const auto &object : scene.objects) {
+            for (const auto &component : object.components) {
+                if (component.name != "behavior" ||
+                    !component.origin.isGenerated()) {
+                    continue;
+                }
+                behavior_names.push_back(
+                    component.source_json_exact.value("type", std::string{}));
+            }
+        }
     }
     std::sort(behavior_names.begin(), behavior_names.end());
     behavior_names.erase(

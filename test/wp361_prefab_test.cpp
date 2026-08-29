@@ -2164,6 +2164,93 @@ TEST_CASE("WP361 and WP362 v4 JSON examples remain syntax parse gates",
     for (const auto example : examples) REQUIRE_NOTHROW(Json::parse(example));
 }
 
+TEST_CASE("WP362 authored behavior absent from provider remains pending without prefab",
+          "[wp362][snapshot-v2][closure][behavior][regression]") {
+    ensureBehavior();
+    const std::string authored_name =
+        "wp362_authored_provider_absent";
+    const auto document = AuthoringSceneDocument::load(
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"name":"AuthoredOnly","components":[{"name":"behavior","type":"wp362_authored_provider_absent","params":{}}]}]}}})json",
+        SceneRevision{30});
+    const auto provider = buildProductionBindableProviderSnapshot(40);
+    REQUIRE(std::none_of(
+        provider.behaviorDependencies().begin(),
+        provider.behaviorDependencies().end(), [authored_name](const auto &dependency) {
+            return dependency.stable_name == authored_name;
+        }));
+
+    const auto resolved = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{50}, {}, {}, provider);
+
+    REQUIRE(resolved.prefabClosure().behaviors.empty());
+    REQUIRE(resolved.behaviorReloadSources().size() == 1);
+    REQUIRE(resolved.behaviorReloadSources()[0].stable_name == authored_name);
+    const auto *scene = resolved.findScene("main");
+    REQUIRE(scene != nullptr);
+    REQUIRE(scene->objects.size() == 1);
+    REQUIRE(scene->objects[0].components.size() == 1);
+    REQUIRE(scene->objects[0].components[0].origin.authored() != nullptr);
+    REQUIRE(scene->objects[0].components[0].behavior_pending);
+}
+
+TEST_CASE("WP362 generated behavior absent from provider remains named fatal",
+          "[wp362][snapshot-v2][closure][behavior][negative]") {
+    ensureBehavior();
+    const auto production = buildProductionBindableProviderSnapshot(41);
+    const BindableProviderSnapshot without_behavior_dependency{
+        42,
+        std::vector<BindableDescriptor>{production.descriptors().begin(),
+                                        production.descriptors().end()}};
+    const auto registry = registryFor(prefabFixture());
+    const auto document = AuthoringSceneDocument::load(
+        sceneFixture().dump(), SceneRevision{31});
+
+    requirePrefabError(PrefabErrorCode::PrefabProviderStale, [&] {
+        (void)ResolvedSceneResolver::resolve(
+            document, SceneResolverGeneration{51}, {}, registry,
+            without_behavior_dependency);
+    });
+}
+
+TEST_CASE("WP362 closure contains only generated behavior dependency tuples",
+          "[wp362][snapshot-v2][closure][behavior]") {
+    ensureBehavior();
+    const std::string authored_name =
+        "wp362_authored_not_in_prefab_closure";
+    auto scene = sceneFixture();
+    scene["scenes"]["main"]["objects"][1]["components"][1]["type"] =
+        authored_name;
+    const auto document = AuthoringSceneDocument::load(
+        scene.dump(), SceneRevision{32});
+    const auto registry = registryFor(prefabFixture());
+    const auto provider = buildProductionBindableProviderSnapshot(43);
+    const auto expected = std::find_if(
+        provider.behaviorDependencies().begin(),
+        provider.behaviorDependencies().end(), [](const auto &dependency) {
+            return dependency.stable_name == "wp361_behavior";
+        });
+    REQUIRE(expected != provider.behaviorDependencies().end());
+    REQUIRE(std::none_of(
+        provider.behaviorDependencies().begin(),
+        provider.behaviorDependencies().end(), [authored_name](const auto &dependency) {
+            return dependency.stable_name == authored_name;
+        }));
+
+    const auto resolved = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{52}, {}, registry, provider);
+    const auto &behaviors = resolved.prefabClosure().behaviors;
+
+    REQUIRE(behaviors.size() == 1);
+    REQUIRE(behaviors[0].stable_name == expected->stable_name);
+    REQUIRE(behaviors[0].schema_version == expected->schema_version);
+    REQUIRE(behaviors[0].params_schema_fingerprint ==
+            expected->params_schema_fingerprint);
+    REQUIRE(std::none_of(behaviors.begin(), behaviors.end(),
+                         [authored_name](const auto &dependency) {
+                             return dependency.stable_name == authored_name;
+                         }));
+}
+
 TEST_CASE("WP362 resolver input bytes and dependency closure are complete",
           "[wp362][snapshot-v2][closure][fingerprint]") {
     ensureBehavior();
