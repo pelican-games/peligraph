@@ -15115,3 +15115,14 @@ provider snapshot に要求し、不在を fatal にしたこと。設計 §4 �
 pending → 回復」(二相活性化)は既存の公開契約。修正: 列挙を Generated(prefab 由来)
 behavior に限定。authored は pending のまま / prefab 由来の不在は named fatal を維持。
 これは WP362 の閉ループ内の回収であり連鎖には数えない。
+
+#### プレファブ U1 完成宣言(2026-08-30)
+
+WP361(b6b4666)→ WP361a(2d0e0ce)→ WP362(直前 + 5fd8923)→ WP361b(c4f2287)。
+統合: 全数 1433 ×2 緑(GPU 直列込み・PELICAN_TEST_PROJECTS_DIR 付き)、doclink 2341 ok。
+設計 v4 の U1 出荷単位が全機能で成立: 文書・registry・v2 ゲート・4 相 resolver・
+Generated identity(gid)・wire union・read-only 表示・SnapshotV2 closure・
+save baseline・set/unset(3 重 CAS・12 fault point)・出所表示。
+出荷 4 project は全経緯を通じて byte 不変。
+残余は台帳の既存行(Studio behavior binding 乖離 / default 単一ソース化 = R5 同件 /
+U2〜U4)。WP361b の §10 レビューの指摘は宣言どおり無条件で台帳のみ。
