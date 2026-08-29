@@ -1,6 +1,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/project/sceneformat.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -43,19 +44,19 @@ std::filesystem::path exampleScenePath() {
            "scenes" / "main.scene.json";
 }
 
-EditorRuntimeObjectState fakeRuntime(const AuthoringSceneView &scene,
-                                     const AuthoringObjectView &object) {
+EditorRuntimeObjectState fakeRuntime(const ResolvedSceneView &scene,
+                                     const ResolvedObject &object) {
     EditorRuntimeObjectState result;
     result.component_runtime_json.resize(object.components.size());
     if (scene.scene_id != "main" || !object.name || *object.name != "MixedObject") return result;
     result.entity_id = GameObjectId{17, 4};
     const auto transform = std::find_if(object.components.begin(), object.components.end(), [](const auto &component) {
-        return component.authoredJson().at("name") == "transform";
+        return component.name == "transform";
     });
     if (transform != object.components.end()) {
         const auto index = static_cast<std::size_t>(transform - object.components.begin());
         result.component_runtime_json[index] = nlohmann::ordered_json{
-            {"local_trs", transform->authoredJson()},
+            {"local_trs", transform->source_json_exact},
             {"world_trs", {{"name", "transform"},
                            {"pos", {11, 2, 3}},
                            {"rotation", {0, 0, 0, 1}},
@@ -215,7 +216,7 @@ TEST_CASE("RPC declaration indices follow order after authoring id diverges on i
           "[editor-command][query][wp258]") {
     auto document = AuthoringSceneDocument::load(
         readJson(authoringFixturePath()).dump(), SceneRevision{40});
-    auto stage = document.structuralStage();
+    auto stage = test_support::authoring(document).structuralStage();
     const auto inserted_id = stage.insertObject(
         "main", 1,
         nlohmann::json{{"components", nlohmann::json::array()}});
@@ -256,7 +257,8 @@ TEST_CASE("ExportSceneSnapshot V1 fixture uses semantic bytes and their real sha
     const auto typed_response = imgui.exportSceneSnapshot({.schema_version = 1, .allow_pending = false});
     REQUIRE(nlohmann::json(rpc_response) == fixture.at("expected_response"));
     REQUIRE(rpc_response.dump() == editorQueryJson(typed_response).dump());
-    REQUIRE(typed_response.semantic_scene_bytes == document.encodeSemantic());
+    REQUIRE(typed_response.semantic_scene_bytes ==
+            test_support::authoring(document).encodeSemantic());
     REQUIRE(typed_response.digest.algorithm == "sha256");
     REQUIRE(typed_response.digest.hex.size() == 64);
     REQUIRE(std::all_of(typed_response.digest.hex.begin(), typed_response.digest.hex.end(), [](unsigned char ch) {
@@ -354,10 +356,18 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
     REQUIRE(round_tripped.semantic_scene_bytes == exported.semantic_scene_bytes);
     REQUIRE(round_tripped.digest.algorithm == exported.digest.algorithm);
     REQUIRE(round_tripped.digest.hex == exported.digest.hex);
-    REQUIRE(target.rawJson() == source.rawJson());
-    REQUIRE(target.rawJson().at("scenes").at("secondary") ==
-            source.rawJson().at("scenes").at("secondary"));
-    REQUIRE(target.rawJson()
+    REQUIRE(test_support::authoring(target).rawJson() ==
+            test_support::authoring(source).rawJson());
+    REQUIRE(test_support::authoring(target)
+                .rawJson()
+                .at("scenes")
+                .at("secondary") ==
+            test_support::authoring(source)
+                .rawJson()
+                .at("scenes")
+                .at("secondary"));
+    REQUIRE(test_support::authoring(target)
+                .rawJson()
                 .at("scenes")
                 .at("main")
                 .at("objects")
@@ -366,8 +376,8 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
                 .at(1)
                 .at("name") == "unknown_read_only");
 
-    const auto source_objects = source.query().at(0).objects;
-    const auto target_objects = target.query().at(0).objects;
+    const auto source_objects = test_support::authoring(source).query().at(0).objects;
+    const auto target_objects = test_support::authoring(target).query().at(0).objects;
     REQUIRE(source_objects.size() == target_objects.size());
     REQUIRE(source_objects.front().authoring_object_id.value < 1000);
     REQUIRE(target_objects.front().authoring_object_id.value == 1000);
@@ -403,10 +413,12 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
             },
     }};
     EditorCommandRpcAdapter rpc{target_service};
-    const auto baseline_bytes = target.encodeSemantic();
+    const auto baseline_bytes =
+        test_support::authoring(target).encodeSemantic();
     const auto baseline_revision = target.revision();
     const auto require_unpublished = [&] {
-        REQUIRE(target.encodeSemantic() == baseline_bytes);
+        REQUIRE(test_support::authoring(target).encodeSemantic() ==
+                baseline_bytes);
         REQUIRE(target.revision() == baseline_revision);
     };
 

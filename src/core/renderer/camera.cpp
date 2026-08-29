@@ -2,10 +2,13 @@
 #include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/resolvedscene.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <any>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -25,78 +28,6 @@ float checkedNumber(const nlohmann::json &value, const std::string &field, const
         throw std::runtime_error("camera '" + camera_name + "' field '" + field + "' must be numeric");
     }
     return value.get<float>();
-}
-
-struct JsonCameraParam {
-    nlohmann::json value;
-    std::string field;
-};
-
-std::optional<JsonCameraParam> findCameraParam(const std::vector<const nlohmann::json *> &roots,
-                                               std::string_view field) {
-    for (const auto *root : roots) {
-        if (root == nullptr || !root->is_object()) {
-            continue;
-        }
-        if (const auto it = root->find(field); it != root->end()) {
-            return JsonCameraParam{*it, std::string{field}};
-        }
-    }
-    return std::nullopt;
-}
-
-float requireCameraParam(const std::vector<const nlohmann::json *> &roots, std::string_view primary,
-                         const std::string &camera_name) {
-    const auto param = findCameraParam(roots, primary);
-    if (!param) {
-        throw std::runtime_error("camera '" + camera_name + "' requires numeric field '" +
-                                 std::string{primary} + "'");
-    }
-    return checkedNumber(param->value, param->field, camera_name);
-}
-
-std::optional<float> optionalCameraParam(const std::vector<const nlohmann::json *> &roots,
-                                         std::string_view primary, const std::string &camera_name) {
-    const auto param = findCameraParam(roots, primary);
-    if (!param) {
-        return std::nullopt;
-    }
-
-    return checkedNumber(param->value, param->field, camera_name);
-}
-
-void rejectDeprecatedCameraFields(const std::vector<const nlohmann::json *> &roots,
-                                  const std::string &camera_name) {
-    struct DeprecatedField {
-        std::string_view name;
-        std::string_view replacement;
-        std::string_view suffix;
-    };
-    static constexpr DeprecatedField deprecated_fields[] = {
-        {"fov_y", "yfov", " (radians)"},
-        {"near", "znear", ""},
-        {"far", "zfar", ""},
-    };
-    for (const auto &field : deprecated_fields) {
-        for (const auto *root : roots) {
-            if (root != nullptr && root->is_object() && root->contains(field.name)) {
-                throw std::runtime_error("camera '" + camera_name + "' field '" +
-                                         std::string{field.name} + "' is not supported in v1; use '" +
-                                         std::string{field.replacement} + "'" + std::string{field.suffix});
-            }
-        }
-    }
-}
-
-const nlohmann::json *optionalObject(const nlohmann::json &json, const char *name, const std::string &camera_name) {
-    const auto it = json.find(name);
-    if (it == json.end()) {
-        return nullptr;
-    }
-    if (!it->is_object()) {
-        throw std::runtime_error("camera '" + camera_name + "' field '" + name + "' must be an object");
-    }
-    return &*it;
 }
 
 std::string checkedString(const nlohmann::json &value, const std::string &field, const std::string &camera_name) {
@@ -199,157 +130,8 @@ glm::vec3 requireControllerVec3(const nlohmann::json &controller, const char *fi
     return readControllerVec3(*it, field, camera_name);
 }
 
-bool hasAnyCameraProjectionParam(const nlohmann::json &camera_component) {
-    static constexpr const char *fields[] = {
-        "type", "perspective", "orthographic", "yfov", "fov_y", "znear", "near",
-        "zfar", "far", "aspect", "xmag", "ymag",
-    };
-    for (const auto *field : fields) {
-        if (camera_component.contains(field)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 std::string cameraDisplayName(const std::string &name) {
     return name.empty() ? std::string{"<unnamed>"} : name;
-}
-
-CameraProjectionSpec parseSceneCameraProjection(const nlohmann::json &camera_component,
-                                                const CameraProjectionSpec &fallback,
-                                                const std::string &object_name) {
-    const auto camera_name = cameraDisplayName(object_name);
-    if (!hasAnyCameraProjectionParam(camera_component)) {
-        return fallback;
-    }
-
-    const auto *perspective = optionalObject(camera_component, "perspective", camera_name);
-    const auto *orthographic = optionalObject(camera_component, "orthographic", camera_name);
-    rejectDeprecatedCameraFields({perspective, orthographic, &camera_component}, camera_name);
-
-    std::string type = camera_component.value("type", std::string{});
-    if (type.empty()) {
-        type = orthographic != nullptr || camera_component.contains("xmag") || camera_component.contains("ymag")
-                   ? "orthographic"
-                   : "perspective";
-    }
-    if (type != "perspective" && type != "orthographic") {
-        throw std::runtime_error("camera '" + camera_name + "' type must be 'perspective' or 'orthographic'");
-    }
-
-    CameraProjectionSpec projection = fallback;
-    if (type == "orthographic") {
-        projection.kind = CameraProjectionKind::Orthographic;
-        const std::vector<const nlohmann::json *> roots{orthographic, &camera_component};
-        if (auto xmag = optionalCameraParam(roots, "xmag", camera_name)) {
-            projection.xmag = *xmag;
-        } else if (fallback.kind != CameraProjectionKind::Orthographic) {
-            projection.xmag = requireCameraParam(roots, "xmag", camera_name);
-        }
-        if (auto ymag = optionalCameraParam(roots, "ymag", camera_name)) {
-            projection.ymag = *ymag;
-        } else if (fallback.kind != CameraProjectionKind::Orthographic) {
-            projection.ymag = requireCameraParam(roots, "ymag", camera_name);
-        }
-        if (auto znear = optionalCameraParam(roots, "znear", camera_name)) {
-            projection.znear = *znear;
-        }
-        if (auto zfar = optionalCameraParam(roots, "zfar", camera_name)) {
-            projection.zfar = *zfar;
-        }
-        projection.aspect.reset();
-        return projection;
-    }
-
-    projection.kind = CameraProjectionKind::Perspective;
-    const std::vector<const nlohmann::json *> roots{perspective, &camera_component};
-    if (auto yfov = optionalCameraParam(roots, "yfov", camera_name)) {
-        projection.yfov = *yfov;
-    } else if (fallback.kind != CameraProjectionKind::Perspective) {
-        projection.yfov = requireCameraParam(roots, "yfov", camera_name);
-    }
-    if (auto znear = optionalCameraParam(roots, "znear", camera_name)) {
-        projection.znear = *znear;
-    }
-    if (auto zfar = optionalCameraParam(roots, "zfar", camera_name)) {
-        projection.zfar = *zfar;
-    }
-    projection.aspect = optionalCameraParam(roots, "aspect", camera_name);
-    return projection;
-}
-
-CameraSpritePolicySpec parseSceneCameraSpritePolicy(const nlohmann::json &camera_component,
-                                                    CameraSpritePolicySpec fallback,
-                                                    const std::string &object_name) {
-    const auto found = camera_component.find("sprite");
-    if (found == camera_component.end()) return fallback;
-    const auto camera_name = cameraDisplayName(object_name);
-    if (!found->is_object()) {
-        throw std::runtime_error("camera '" + camera_name + "' field 'sprite' must be an object");
-    }
-    for (const auto &[field, value] : found->items()) {
-        (void)value;
-        if (field != "pixel_perfect" && field != "sort") {
-            throw std::runtime_error("camera '" + camera_name +
-                                     "' sprite policy has unknown field '" + field + "'");
-        }
-    }
-    if (const auto value = found->find("pixel_perfect"); value != found->end()) {
-        if (!value->is_string()) {
-            throw std::runtime_error("camera '" + camera_name +
-                                     "' sprite.pixel_perfect must be a string");
-        }
-        const auto name = value->get<std::string>();
-        if (name == "off") fallback.pixel_perfect = CameraPixelPerfectMode::off;
-        else if (name == "strict") fallback.pixel_perfect = CameraPixelPerfectMode::strict;
-        else {
-            throw std::runtime_error("camera '" + camera_name +
-                                     "' sprite.pixel_perfect must be 'off' or 'strict'");
-        }
-    }
-    if (const auto value = found->find("sort"); value != found->end()) {
-        if (!value->is_string()) {
-            throw std::runtime_error("camera '" + camera_name + "' sprite.sort must be a string");
-        }
-        const auto name = value->get<std::string>();
-        if (name == "z") fallback.sort = CameraSpriteSortPolicy::z;
-        else if (name == "y_down") fallback.sort = CameraSpriteSortPolicy::y_down;
-        else if (name == "declaration") fallback.sort = CameraSpriteSortPolicy::declaration;
-        else {
-            throw std::runtime_error("camera '" + camera_name +
-                                     "' sprite.sort must be 'z', 'y_down', or 'declaration'");
-        }
-    }
-    return fallback;
-}
-
-const nlohmann::json *findControllerObject(const nlohmann::json &camera_component,
-                                           const std::string &camera_name) {
-    const nlohmann::json *controller = nullptr;
-    if (const auto it = camera_component.find("controller"); it != camera_component.end()) {
-        if (!it->is_object()) {
-            throw std::runtime_error("camera '" + camera_name + "' field 'controller' must be an object");
-        }
-        controller = &*it;
-    }
-
-    const auto params_it = camera_component.find("params");
-    if (params_it != camera_component.end() && params_it->is_object()) {
-        const auto nested_it = params_it->find("controller");
-        if (nested_it != params_it->end()) {
-            if (!nested_it->is_object()) {
-                throw std::runtime_error("camera '" + camera_name + "' field 'params.controller' must be an object");
-            }
-            if (controller != nullptr) {
-                throw std::runtime_error("camera '" + camera_name +
-                                         "' controller must be declared only once");
-            }
-            controller = &*nested_it;
-        }
-    }
-
-    return controller;
 }
 
 Camera::SceneCameraController parseSceneCameraController(const nlohmann::json &controller,
@@ -391,73 +173,70 @@ Camera::SceneCameraController parseSceneCameraController(const nlohmann::json &c
                              "' is not supported");
 }
 
-std::optional<Camera::SceneCameraController> parseOptionalSceneCameraController(
-    const nlohmann::json &camera_component, const std::string &object_name) {
-    const auto camera_name = cameraDisplayName(object_name);
-    const auto *controller = findControllerObject(camera_component, camera_name);
-    if (controller == nullptr) {
-        return std::nullopt;
-    }
-    return parseSceneCameraController(*controller, object_name);
+const ResolvedComponent *findResolvedComponent(
+    const ResolvedObject &object, std::string_view name) {
+    const auto found = std::find_if(
+        object.components.begin(), object.components.end(),
+        [name](const auto &component) { return component.name == name; });
+    return found == object.components.end() ? nullptr : &*found;
 }
 
-const nlohmann::json *findComponent(const nlohmann::json &object, std::string_view name) {
-    if (!object.contains("components") || !object.at("components").is_array()) {
-        return nullptr;
+Camera::SceneCamera parseResolvedSceneCamera(
+    const ResolvedObject &object, glm::vec3 fallback_up) {
+    const auto *component = findResolvedComponent(object, "camera");
+    if (component == nullptr || component->runtime_codec == nullptr) {
+        throw std::logic_error("resolved camera has no runtime codec");
     }
-    for (const auto &component : object.at("components")) {
-        if (component.is_object() && component.value("name", std::string{}) == name) {
-            return &component;
-        }
+    const CameraCodecData *resolved_data = nullptr;
+    try {
+        resolved_data = &std::any_cast<const CameraCodecData &>(
+            component->requireRuntimeValue());
+    } catch (const std::exception &error) {
+        throw std::runtime_error(
+            "Invalid camera on object '" +
+            (object.name ? *object.name : std::string{"<unnamed>"}) +
+            "': " + error.what());
     }
-    return nullptr;
-}
-
-glm::vec3 readVec3(const nlohmann::json &array, const std::string &field, const std::string &object_name) {
-    if (!array.is_array() || array.size() != 3) {
-        throw std::runtime_error("transform field '" + field + "' on object '" + cameraDisplayName(object_name) +
-                                 "' must be a vec3 array");
-    }
-    return glm::vec3{
-        checkedNumber(array.at(0), field, cameraDisplayName(object_name)),
-        checkedNumber(array.at(1), field, cameraDisplayName(object_name)),
-        checkedNumber(array.at(2), field, cameraDisplayName(object_name)),
-    };
-}
-
-glm::quat readQuat(const nlohmann::json &array, const std::string &field, const std::string &object_name) {
-    if (!array.is_array() || array.size() != 4) {
-        throw std::runtime_error("transform field '" + field + "' on object '" + cameraDisplayName(object_name) +
-                                 "' must be a quat array");
-    }
-    const auto x = checkedNumber(array.at(0), field, cameraDisplayName(object_name));
-    const auto y = checkedNumber(array.at(1), field, cameraDisplayName(object_name));
-    const auto z = checkedNumber(array.at(2), field, cameraDisplayName(object_name));
-    const auto w = checkedNumber(array.at(3), field, cameraDisplayName(object_name));
-    return glm::quat{w, x, y, z};
-}
-
-Camera::SceneCamera parseSceneCamera(const nlohmann::json &object, const nlohmann::json &camera_component,
-                                     const CameraProjectionSpec &fallback_projection,
-                                     CameraSpritePolicySpec fallback_sprite,
-                                     glm::vec3 fallback_up) {
+    const auto &data = *resolved_data;
     Camera::SceneCamera camera;
-    camera.name = object.value("name", std::string{});
-    camera.projection = parseSceneCameraProjection(camera_component, fallback_projection, camera.name);
-    camera.sprite = parseSceneCameraSpritePolicy(camera_component, fallback_sprite, camera.name);
-    camera.controller = parseOptionalSceneCameraController(camera_component, camera.name);
+    camera.name = object.name.value_or(std::string{});
+    if (!data.projection_specified || !data.sprite_specified) {
+        throw std::logic_error(
+            "resolved camera is missing resolver-completed values");
+    }
+    camera.projection = CameraProjectionSpec{
+        .kind = data.projection_kind,
+        .yfov = data.yfov,
+        .znear = data.znear,
+        .zfar = data.zfar,
+        .aspect = data.aspect,
+        .xmag = data.xmag,
+        .ymag = data.ymag,
+    };
+    camera.sprite = CameraSpritePolicySpec{
+        .pixel_perfect = data.pixel_perfect,
+        .sort = data.sprite_sort,
+    };
     camera.up = fallback_up;
+    if (data.controller) {
+        camera.controller = parseSceneCameraController(*data.controller,
+                                                       camera.name);
+    }
 
-    if (const auto *transform = findComponent(object, "transform")) {
-        if (const auto pos_it = transform->find("pos"); pos_it != transform->end()) {
-            camera.pos = readVec3(*pos_it, "pos", camera.name);
+    if (const auto *transform = findResolvedComponent(object, "transform")) {
+        if (transform->runtime_codec == nullptr) {
+            throw std::logic_error("resolved transform has no runtime codec");
         }
-        if (const auto rotation_it = transform->find("rotation"); rotation_it != transform->end()) {
-            const auto rotation = readQuat(*rotation_it, "rotation", camera.name);
-            const auto rotation_matrix = glm::mat3_cast(rotation);
-            camera.dir = glm::normalize(rotation_matrix * glm::vec3{0.0f, 0.0f, 1.0f});
-            camera.up = glm::normalize(rotation_matrix * glm::vec3{0.0f, 1.0f, 0.0f});
-        }
+        const auto &trs = std::any_cast<const TransformCodecData &>(
+            transform->requireRuntimeValue());
+        camera.pos = glm::vec3{trs.pos.x, trs.pos.y, trs.pos.z};
+        const auto rotation = glm::quat{trs.rotation.w, trs.rotation.x,
+                                        trs.rotation.y, trs.rotation.z};
+        const auto rotation_matrix = glm::mat3_cast(rotation);
+        camera.dir = glm::normalize(rotation_matrix *
+                                    glm::vec3{0.0f, 0.0f, 1.0f});
+        camera.up = glm::normalize(rotation_matrix *
+                                   glm::vec3{0.0f, 1.0f, 0.0f});
     }
     return camera;
 }
@@ -631,12 +410,11 @@ Camera::prepareSceneCameras(std::string_view scene_id) const {
         return prepared;
     }
 
-    const auto &scenes = config.sceneDocument().scenesJson();
-    return prepareSceneCameras(scene_id, scenes);
+    return prepareSceneCameras(scene_id, config.resolvedScene());
 }
 
 Camera::PreparedSceneState Camera::prepareSceneCameras(
-    std::string_view scene_id, const nlohmann::json &scenes) const {
+    std::string_view scene_id, const ResolvedScene &resolved) const {
     const auto &config = GET_MODULE(ProjectBasicConfig);
     const auto props = config.initailCameraProperty();
     const auto screen = config.initialWindowSize();
@@ -666,23 +444,20 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
         }
     };
     rebuild();
-    const auto scene_it = scenes.find(std::string{scene_id});
-    if (scene_it == scenes.end()) {
+    const auto *scene = resolved.findScene(scene_id);
+    if (scene == nullptr) {
         applyRuntimeFreeCameraOverlay(prepared, std::nullopt);
         return prepared;
     }
 
     bool first_camera = true;
     std::optional<SceneCamera> first_scene_camera;
-    for (const auto &object : scene_it.value().at("objects")) {
-        const auto *camera_component = findComponent(object, "camera");
-        if (camera_component == nullptr) {
+    for (const auto &object : scene->objects) {
+        if (findResolvedComponent(object, "camera") == nullptr) {
             continue;
         }
 
-        auto scene_camera = parseSceneCamera(
-            object, *camera_component, prepared.projection,
-            prepared.sprite_policy, prepared.up);
+        auto scene_camera = parseResolvedSceneCamera(object, prepared.up);
         if (first_camera) {
             first_scene_camera = scene_camera;
             prepared.projection = scene_camera.projection;

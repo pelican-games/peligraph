@@ -35,17 +35,13 @@ namespace {
 
 using Json = nlohmann::json;
 
-const AuthoringSceneView *findScene(
-    const std::vector<AuthoringSceneView> &scenes, std::string_view scene_id) {
-    const auto found = std::find_if(
-        scenes.begin(), scenes.end(), [scene_id](const auto &scene) {
-            return scene.scene_id == scene_id;
-        });
-    return found == scenes.end() ? nullptr : &*found;
+const ResolvedSceneView *findResolvedScene(
+    const ResolvedScene &scene, std::string_view scene_id) {
+    return scene.findScene(scene_id);
 }
 
-const AuthoringObjectView *findObject(const AuthoringSceneView *scene,
-                                      AuthoringObjectId object_id) {
+const ResolvedObject *findResolvedObject(const ResolvedSceneView *scene,
+                                         AuthoringObjectId object_id) {
     if (scene == nullptr) return nullptr;
     const auto found = std::find_if(
         scene->objects.begin(), scene->objects.end(),
@@ -55,14 +51,11 @@ const AuthoringObjectView *findObject(const AuthoringSceneView *scene,
     return found == scene->objects.end() ? nullptr : &*found;
 }
 
-const Json *findComponent(const AuthoringObjectView *object,
-                          std::string_view component_name) {
+const ResolvedComponent *findResolvedComponent(const ResolvedObject *object,
+                                               std::string_view component_name) {
     if (object == nullptr) return nullptr;
     for (const auto &component : object->components) {
-        const auto &json = component.authoredJson();
-        if (json.at("name").get_ref<const std::string &>() == component_name) {
-            return &json;
-        }
+        if (component.name == component_name) return &component;
     }
     return nullptr;
 }
@@ -96,32 +89,27 @@ template <class Token> void finishToken(Token &token) noexcept {
 }
 
 std::vector<LightLoadEntry> prepareLightEntries(
-    const AuthoringSceneDocument &document, std::string_view scene_id) {
+    const ResolvedScene &document, std::string_view scene_id) {
     std::vector<LightLoadEntry> entries;
-    const auto &scenes = document.scenesJson();
-    const auto scene = scenes.find(std::string{scene_id});
-    if (scene == scenes.end()) return entries;
-    for (const auto &object : scene->at("objects")) {
-        const auto object_name = object.value("name", std::string{});
-        for (const auto &component : object.at("components")) {
-            if (component.at("name") != "light") continue;
-            const auto &codec = requireComponentCodec("light");
-            const auto decoded = codec.decodeAuthored(component);
+    const auto *scene = document.findScene(scene_id);
+    if (scene == nullptr) return entries;
+    for (const auto &object : scene->objects) {
+        const auto object_name = object.name.value_or(std::string{});
+        for (const auto &component : object.components) {
+            if (component.name != "light") continue;
             entries.push_back(LightLoadEntry{
-                object_name,
-                Json::parse(codec.encodeCanonical(decoded).dump()),
+                object_name, component.effective_json,
             });
         }
     }
     return entries;
 }
 
-PhysWorldTransform authoredPhysTransform(const AuthoringObjectView &object) {
-    const auto *authored = findComponent(&object, "transform");
-    if (authored == nullptr) return {};
-    const auto decoded =
-        requireComponentCodec("transform").decodeAuthored(*authored);
-    const auto &trs = std::any_cast<const TransformCodecData &>(decoded);
+PhysWorldTransform resolvedPhysTransform(const ResolvedObject &object) {
+    const auto *component = findResolvedComponent(&object, "transform");
+    if (component == nullptr) return {};
+    const auto &trs = std::any_cast<const TransformCodecData &>(
+        component->requireRuntimeValue());
     return PhysWorldTransform{
         .pos = trs.pos,
         .rotation = trs.rotation,
@@ -183,8 +171,8 @@ struct SceneObjectProjectionAdapter::Impl {
         return found->entity;
     }
 
-    void prepareSpawn(const AuthoringSceneView &next_scene,
-                      const AuthoringObjectView &object) {
+    void prepareSpawn(const ResolvedSceneView &next_scene,
+                      const ResolvedObject &object) {
         std::vector<SpawnLoad> loads;
         std::vector<ComponentId> ids;
         loads.reserve(object.components.size() + 1);
@@ -192,8 +180,7 @@ struct SceneObjectProjectionAdapter::Impl {
         bool has_local = false;
         bool has_transform = false;
         for (const auto &component_view : object.components) {
-            const auto &authored = component_view.authoredJson();
-            const auto component_name = authored.at("name").get<std::string>();
+            const auto &component_name = component_view.name;
             if (component_name == "light" || component_name == "collider" ||
                 component_name == "behavior") {
                 continue;
@@ -201,14 +188,13 @@ struct SceneObjectProjectionAdapter::Impl {
             has_local = has_local || component_name == "localtransform";
             has_transform = has_transform || component_name == "transform";
             const auto id = components.getComponentIdByName(component_name);
-            const auto *codec = findComponentCodec(component_name);
             loads.push_back(SpawnLoad{
                 .name = component_name,
                 .id = id,
-                .authored = authored,
-                .codec = codec,
-                .decoded = codec != nullptr
-                               ? codec->decodeAuthored(authored)
+                .authored = component_view.effective_json,
+                .codec = component_view.runtime_codec,
+                .decoded = component_view.runtime_codec != nullptr
+                               ? component_view.requireRuntimeValue()
                                : ComponentCodecValue{},
             });
             ids.push_back(id);
@@ -360,14 +346,14 @@ struct SceneObjectProjectionAdapter::Impl {
     }
 
     void prepareSpecials(const EditorProjectionPrepareContext &context,
-                         const AuthoringSceneView *next_scene) {
+                         const ResolvedSceneView *next_scene) {
         old_camera = camera.snapshotPrepared();
         next_camera =
             camera.prepareSceneCameras(scene_id,
-                                       context.next_document.scenesJson());
+                                       context.next_resolved);
         old_lights = lights.snapshotPrepared();
         next_lights = LightContainer::prepareLoad(
-            prepareLightEntries(context.next_document, scene_id));
+            prepareLightEntries(context.next_resolved, scene_id));
 
         old_physics = physics.snapshotPrepared();
         std::unordered_map<std::string, const PhysWorld::Binding *> old_by_name;
@@ -379,18 +365,19 @@ struct SceneObjectProjectionAdapter::Impl {
         if (next_scene != nullptr) {
             next.reserve(next_scene->objects.size());
             for (const auto &object : next_scene->objects) {
-                const auto *authored = findComponent(&object, "collider");
-                if (authored == nullptr) continue;
+                const auto *collider_component =
+                    findResolvedComponent(&object, "collider");
+                if (collider_component == nullptr) continue;
                 const auto identity_name = runtimeObjectIdentityName(
                     scene_id, object.authoring_object_id,
                     object.name.value_or(std::string{}));
                 ColliderComponent collider;
-                const auto &codec = requireComponentCodec("collider");
-                codec.applyRuntime(codec.decodeAuthored(*authored), &collider);
+                collider_component->runtime_codec->applyRuntime(
+                    collider_component->requireRuntimeValue(), &collider);
                 PhysWorld::Binding binding{
                     .identity = {.name = identity_name},
                     .collider = collider,
-                    .transform_source = authoredPhysTransform(object),
+                    .transform_source = resolvedPhysTransform(object),
                 };
                 if (const auto old = old_by_name.find(identity_name);
                     old != old_by_name.end()) {
@@ -400,7 +387,7 @@ struct SceneObjectProjectionAdapter::Impl {
                 const auto runtime =
                     entities.find(object.authoring_object_id.value);
                 if (runtime != entities.end() &&
-                    findComponent(&object, "transform") != nullptr) {
+                    findResolvedComponent(&object, "transform") != nullptr) {
                     binding.transform_source = runtime->second;
                 }
                 next.push_back(std::move(binding));
@@ -463,23 +450,23 @@ SceneObjectProjectionAdapter::runtimeBindings() const noexcept {
 void SceneObjectProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->next_bindings.clear();
-    const auto base_scenes = context.base_document.query();
-    const auto next_scenes = context.next_document.query();
-    const auto *base_scene = findScene(base_scenes, impl_->scene_id);
-    const auto *next_scene = findScene(next_scenes, impl_->scene_id);
+    const auto *base_scene =
+        findResolvedScene(context.base_resolved, impl_->scene_id);
+    const auto *next_scene =
+        findResolvedScene(context.next_resolved, impl_->scene_id);
     impl_->prepared_target = impl_->target_object;
     if (impl_->prepared_target.value == 0) {
         std::vector<AuthoringObjectId> difference;
         if (base_scene != nullptr) {
             for (const auto &object : base_scene->objects) {
-                if (findObject(next_scene, object.authoring_object_id) == nullptr) {
+                if (findResolvedObject(next_scene, object.authoring_object_id) == nullptr) {
                     difference.push_back(object.authoring_object_id);
                 }
             }
         }
         if (next_scene != nullptr) {
             for (const auto &object : next_scene->objects) {
-                if (findObject(base_scene, object.authoring_object_id) == nullptr) {
+                if (findResolvedObject(base_scene, object.authoring_object_id) == nullptr) {
                     difference.push_back(object.authoring_object_id);
                 }
             }
@@ -490,8 +477,10 @@ void SceneObjectProjectionAdapter::prepare(
         }
         impl_->prepared_target = difference.front();
     }
-    const auto *base_object = findObject(base_scene, impl_->prepared_target);
-    const auto *next_object = findObject(next_scene, impl_->prepared_target);
+    const auto *base_object =
+        findResolvedObject(base_scene, impl_->prepared_target);
+    const auto *next_object =
+        findResolvedObject(next_scene, impl_->prepared_target);
     if ((base_object == nullptr) == (next_object == nullptr)) {
         throw std::runtime_error(
             "scene object projection target is not a spawn or destroy");
@@ -616,38 +605,39 @@ EcsCodecProjectionAdapter::publicationMode() const noexcept {
 void EcsCodecProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->prepared.clear();
-    const auto base_scenes = context.base_document.query();
-    const auto next_scenes = context.next_document.query();
-    const auto *base_scene = findScene(base_scenes, impl_->scene_id);
-    const auto *next_scene = findScene(next_scenes, impl_->scene_id);
+    const auto *base_scene =
+        findResolvedScene(context.base_resolved, impl_->scene_id);
+    const auto *next_scene =
+        findResolvedScene(context.next_resolved, impl_->scene_id);
     for (const auto &binding : impl_->bindings) {
         const auto *base_object =
-            findObject(base_scene, binding.authoring_object_id);
+            findResolvedObject(base_scene, binding.authoring_object_id);
         const auto *next_object =
-            findObject(next_scene, binding.authoring_object_id);
+            findResolvedObject(next_scene, binding.authoring_object_id);
         if (base_object == nullptr || next_object == nullptr) continue;
 
         for (const auto component_name :
              {std::string_view{"animation"}, std::string_view{"sprite_view"}}) {
             const auto *base_component =
-                findComponent(base_object, component_name);
+                findResolvedComponent(base_object, component_name);
             const auto *next_component =
-                findComponent(next_object, component_name);
+                findResolvedComponent(next_object, component_name);
             if (base_component == nullptr || next_component == nullptr ||
-                *base_component == *next_component) {
+                base_component->effective_json ==
+                    next_component->effective_json) {
                 continue;
             }
-            const auto &codec = requireComponentCodec(component_name);
-            const auto decoded = codec.decodeAuthored(*next_component);
             if (component_name == "animation") {
                 const auto &next_value =
-                    std::any_cast<const AnimationComponent &>(decoded);
+                    std::any_cast<const AnimationComponent &>(
+                        next_component->requireRuntimeValue());
                 impl_->prepared.emplace_back(
                     impl_->ecs.prepareComponentSwap(binding.entity,
                                                     next_value));
             } else {
                 const auto &next_value =
-                    std::any_cast<const SpriteViewComponent &>(decoded);
+                    std::any_cast<const SpriteViewComponent &>(
+                        next_component->requireRuntimeValue());
                 impl_->prepared.emplace_back(
                     impl_->ecs.prepareComponentSwap(binding.entity,
                                                     next_value));
@@ -725,21 +715,21 @@ RendererModelProjectionAdapter::publicationMode() const noexcept {
 void RendererModelProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->prepared.clear();
-    const auto base_scenes = context.base_document.query();
-    const auto next_scenes = context.next_document.query();
-    const auto *base_scene = findScene(base_scenes, impl_->scene_id);
-    const auto *next_scene = findScene(next_scenes, impl_->scene_id);
+    const auto *base_scene =
+        findResolvedScene(context.base_resolved, impl_->scene_id);
+    const auto *next_scene =
+        findResolvedScene(context.next_resolved, impl_->scene_id);
     for (const auto &binding : impl_->bindings) {
         const auto *base_object =
-            findObject(base_scene, binding.authoring_object_id);
+            findResolvedObject(base_scene, binding.authoring_object_id);
         const auto *next_object =
-            findObject(next_scene, binding.authoring_object_id);
+            findResolvedObject(next_scene, binding.authoring_object_id);
         const auto *base_component =
-            findComponent(base_object, "simplemodelview");
+            findResolvedComponent(base_object, "simplemodelview");
         const auto *next_component =
-            findComponent(next_object, "simplemodelview");
+            findResolvedComponent(next_object, "simplemodelview");
         if (base_component == nullptr || next_component == nullptr ||
-            *base_component == *next_component) {
+            base_component->effective_json == next_component->effective_json) {
             continue;
         }
         auto *live = impl_->ecs.tryComponent<SimpleModelViewComponent>(
@@ -748,11 +738,9 @@ void RendererModelProjectionAdapter::prepare(
             throw std::runtime_error(
                 "simplemodelview runtime component is absent on bound entity");
         }
-        const auto decoded =
-            requireComponentCodec("simplemodelview").decodeAuthored(
-                *next_component);
         const auto &data =
-            std::any_cast<const SimpleModelViewCodecData &>(decoded);
+            std::any_cast<const SimpleModelViewCodecData &>(
+                next_component->requireRuntimeValue());
         if (data.model == live->model_name) continue;
 
         auto &model = impl_->models.getModelTemplateByName(data.model);
@@ -844,7 +832,7 @@ void CameraProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->old_state = impl_->camera.snapshotPrepared();
     impl_->next_state = impl_->camera.prepareSceneCameras(
-        impl_->scene_id, context.next_document.scenesJson());
+        impl_->scene_id, context.next_resolved);
     impl_->published = false;
 }
 void CameraProjectionAdapter::publish() noexcept {
@@ -895,23 +883,8 @@ LightProjectionAdapter::publicationMode() const noexcept {
 }
 void LightProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
-    std::vector<LightLoadEntry> entries;
-    const auto &scenes = context.next_document.scenesJson();
-    const auto scene = scenes.find(impl_->scene_id);
-    if (scene != scenes.end()) {
-        for (const auto &object : scene->at("objects")) {
-            const auto object_name = object.value("name", std::string{});
-            for (const auto &component : object.at("components")) {
-                if (component.at("name") != "light") continue;
-                const auto &codec = requireComponentCodec("light");
-                const auto decoded = codec.decodeAuthored(component);
-                entries.push_back(LightLoadEntry{
-                    object_name,
-                    Json::parse(codec.encodeCanonical(decoded).dump()),
-                });
-            }
-        }
-    }
+    auto entries = prepareLightEntries(context.next_resolved,
+                                       impl_->scene_id);
     impl_->old_state = impl_->lights.snapshotPrepared();
     impl_->next_state = LightContainer::prepareLoad(entries);
     impl_->published = false;
@@ -980,18 +953,19 @@ void ColliderProjectionAdapter::prepare(
     }
 
     std::vector<PhysWorld::Binding> next_bindings;
-    const auto scenes = context.next_document.query();
-    const auto *scene = findScene(scenes, impl_->scene_id);
+    const auto *scene =
+        findResolvedScene(context.next_resolved, impl_->scene_id);
     if (scene != nullptr) {
         for (const auto &object : scene->objects) {
-            const auto *authored = findComponent(&object, "collider");
-            if (authored == nullptr) continue;
+            const auto *component =
+                findResolvedComponent(&object, "collider");
+            if (component == nullptr) continue;
             const auto identity_name = runtimeObjectIdentityName(
                 impl_->scene_id, object.authoring_object_id,
                 object.name.value_or(std::string{}));
             ColliderComponent collider;
-            const auto &codec = requireComponentCodec("collider");
-            codec.applyRuntime(codec.decodeAuthored(*authored), &collider);
+            component->runtime_codec->applyRuntime(
+                component->requireRuntimeValue(), &collider);
 
             PhysWorld::Binding binding{
                 .identity = {.name = identity_name},
@@ -1009,11 +983,10 @@ void ColliderProjectionAdapter::prepare(
                     nullptr) {
                 binding.transform_source = entity->second;
             } else if (const auto *transform =
-                           findComponent(&object, "transform")) {
-                const auto decoded =
-                    requireComponentCodec("transform").decodeAuthored(*transform);
+                           findResolvedComponent(&object, "transform")) {
                 const auto &trs =
-                    std::any_cast<const TransformCodecData &>(decoded);
+                    std::any_cast<const TransformCodecData &>(
+                        transform->requireRuntimeValue());
                 binding.transform_source = PhysWorldTransform{
                     .pos = trs.pos,
                     .rotation = trs.rotation,

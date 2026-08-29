@@ -2,12 +2,15 @@
 #include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/loader/componentcodec.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,25 +18,10 @@
 namespace Pelican {
 namespace {
 
-class DocumentTarget final : public EditorProjectionDocumentTarget {
+class DocumentTarget final : public test_support::SceneProjectionTarget {
   public:
-    AuthoringSceneDocument document;
-
     explicit DocumentTarget(AuthoringSceneDocument value)
-        : document(std::move(value)) {}
-
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document;
-    }
-
-    SceneRevision nextProjectionRevision() const override {
-        return SceneRevision{document.revision().value + 1};
-    }
-
-    void publishProjectionDocument(
-        AuthoringSceneDocument &&next) noexcept override {
-        document.swap(next);
-    }
+        : SceneProjectionTarget(std::move(value)) {}
 };
 
 nlohmann::json projectionFixture() {
@@ -323,6 +311,88 @@ TEST_CASE("Editor projection restores every adapter prepare and inverse publish 
     REQUIRE(runtime == committed_runtime);
 }
 
+TEST_CASE("WP360 AfterPublication restores the authoring resolved pair and every reader",
+          "[wp360][editor-projection][fault][atomic-pair]") {
+    auto source = projectionFixture();
+    source["scenes"]["main"]["objects"][0]["components"].push_back(
+        nlohmann::json{{"name", "camera"},
+                       {"type", "perspective"},
+                       {"yfov", 0.51f},
+                       {"znear", 0.2f},
+                       {"zfar", 51.0f}});
+    DocumentTarget target{AuthoringSceneDocument::load(
+        source.dump(), SceneRevision{360})};
+    const auto authoring_before = target.document.rawJson();
+    const auto revision_before = target.projectionState().revision();
+    const auto generation_before =
+        target.projectionState().resolverGeneration();
+    RuntimeSnapshot runtime;
+    runtime.lifecycle_trace.reserve(32);
+    const auto runtime_before = runtime;
+    auto adapters = makeSnapshotAdapters(runtime);
+    auto pointers = adapterPointers(adapters);
+    OnePointFault fault{EditorProjectionFaultPoint::AfterPublication,
+                        "scene_pair"};
+    EditorProjectionTransaction transaction{target, revision_before, &fault};
+    const std::array commands{
+        makeSetComponentValueCommand(
+            "main", "Root", "light",
+            nlohmann::json{{"name", "light"},
+                           {"type", "directional"},
+                           {"direction", {1, 0, 0}},
+                           {"intensity", 8.75f},
+                           {"color", {0.25f, 0.5f, 1.0f}}}),
+        makeSetComponentValueCommand(
+            "main", "Root", "camera",
+            nlohmann::json{{"name", "camera"},
+                           {"type", "perspective"},
+                           {"yfov", 0.91f},
+                           {"znear", 0.3f},
+                           {"zfar", 91.0f}}),
+    };
+
+    const auto result = transaction.commit(commands, pointers);
+    REQUIRE(result.status == EditorProjectionStatus::Failed);
+    REQUIRE(result.error.has_value());
+    REQUIRE(result.error->code ==
+            EditorProjectionErrorCode::AdapterPublishFailed);
+    REQUIRE(target.projectionState().revision() == revision_before);
+    REQUIRE(target.projectionState().resolverGeneration() ==
+            generation_before);
+    REQUIRE(target.document.rawJson() == authoring_before);
+    REQUIRE(runtime == runtime_before);
+
+    const auto &resolved = target.projectionState().resolved();
+    const auto *scene = resolved.findScene("main");
+    REQUIRE(scene != nullptr);
+    const auto &root = scene->objects.front();
+    const auto find_component = [&](std::string_view name)
+        -> const ResolvedComponent & {
+        const auto found = std::find_if(
+            root.components.begin(), root.components.end(),
+            [&](const auto &component) { return component.name == name; });
+        REQUIRE(found != root.components.end());
+        return *found;
+    };
+    REQUIRE_THAT(find_component("light")
+                     .effective_json.at("intensity").get<float>(),
+                 Catch::Matchers::WithinAbs(1.0f, 1.0e-6f));
+    REQUIRE_THAT(find_component("camera")
+                     .effective_json.at("yfov").get<float>(),
+                 Catch::Matchers::WithinAbs(0.51f, 1.0e-6f));
+    REQUIRE_THAT(find_component("camera")
+                     .effective_json.at("zfar").get<float>(),
+                 Catch::Matchers::WithinAbs(51.0f, 1.0e-6f));
+    std::cout << "WP360_AFTER_PUBLICATION_ROLLBACK revision="
+              << resolved.revision().value << " generation="
+              << resolved.resolverGeneration().value
+              << " camera_yfov="
+              << find_component("camera").effective_json.at("yfov")
+              << " light_intensity="
+              << find_component("light").effective_json.at("intensity")
+              << '\n';
+}
+
 TEST_CASE("Editor projection structural stage preserves stable identity and destroy interval",
           "[editor-projection][structural][identity]") {
     DocumentTarget target{AuthoringSceneDocument::load(
@@ -385,8 +455,9 @@ TEST_CASE("Editor projection structural stage preserves stable identity and dest
 TEST_CASE("Structural spawn destroy and mixed command faults restore document and runtime exactly",
           "[editor-projection][structural][fault][mixed]") {
     const auto source = projectionFixture();
-    const auto ids = AuthoringSceneDocument::load(
-                         source.dump(), SceneRevision{1}, 700)
+    const auto identity_source = AuthoringSceneDocument::load(
+        source.dump(), SceneRevision{1}, 700);
+    const auto ids = test_support::authoring(identity_source)
                          .query()
                          .front()
                          .objects;

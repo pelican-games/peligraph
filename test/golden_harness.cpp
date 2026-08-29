@@ -10,6 +10,7 @@
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../src/core/gamelogic/behaviorarena.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/imgui/inspector.hpp"
 #include "../src/core/light/lightcontainer.hpp"
@@ -4258,12 +4259,32 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
     auto scenes = nlohmann::json{
         {"default_scene", {{"objects", objects}}}};
     if (mode == "editor_runtime_binding") {
+        auto secondary_objects = nlohmann::json::array();
+        secondary_objects.push_back(nlohmann::json{
+            {"components",
+             {transform({-0.25f, 0, 0}),
+              sprite("atlas#sprite/page0", {0.75f, 0.75f})}}});
+        secondary_objects.push_back(nlohmann::json{
+            {"name", "WP360ResolvedProbe"},
+            {"components",
+             {transform({7.0f, 8.0f, 9.0f}),
+              sprite("atlas#sprite/page1", {0.5f, 0.5f}),
+              nlohmann::json{{"name", "light"},
+                             {"type", "point"},
+                             {"position", {7.0f, 8.0f, 9.0f}},
+                             {"intensity", 6.25f},
+                             {"color", {0.2f, 0.4f, 0.8f}}},
+              nlohmann::json{{"name", "camera"},
+                             {"type", "perspective"},
+                             {"yfov", 0.731f}},
+              nlohmann::json{{"name", "collider"},
+                             {"shape", "sphere"},
+                             {"radius", 0.375f}},
+              nlohmann::json{{"name", "behavior"},
+                             {"type", "wp360_missing_behavior"},
+                             {"params", {{"identity", 360}}}}}}});
         scenes["secondary_scene"] = {
-            {"objects",
-             nlohmann::json::array({nlohmann::json{
-                 {"components",
-                  {transform({-0.25f, 0, 0}),
-                   sprite("atlas#sprite/page0", {0.75f, 0.75f})}}}})}};
+            {"objects", std::move(secondary_objects)}};
     }
     writeTextFile(root / "scene.json",
                   nlohmann::json{{"schema", "pelican.scene"},
@@ -5819,7 +5840,7 @@ void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
         const auto secondary_tree =
             rpc("scene_tree", nlohmann::json::object());
         REQUIRE(secondary_tree.at("scene_id") == "secondary_scene");
-        REQUIRE(secondary_tree.at("objects").size() == 1);
+        REQUIRE(secondary_tree.at("objects").size() == 2);
         const auto secondary_id = secondary_tree.at("objects")
                                       .at(0)
                                       .at("authoring_object_id")
@@ -5838,6 +5859,71 @@ void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
                 secondary_components.at("components").end());
         REQUIRE(secondary_transform->contains("runtime_json"));
         REQUIRE(secondary_components.at("entity_id").is_object());
+
+        const auto probe = rpc(
+            "get_components",
+            {{"scene_id", "secondary_scene"},
+             {"name", "WP360ResolvedProbe"}});
+        const auto probe_component = [&](std::string_view name)
+            -> const nlohmann::json & {
+            const auto found = std::find_if(
+                probe.at("components").begin(), probe.at("components").end(),
+                [&](const auto &component) {
+                    return component.at("name") == std::string{name};
+                });
+            REQUIRE(found != probe.at("components").end());
+            return *found;
+        };
+        const auto &query_camera = probe_component("camera");
+        const auto &query_light = probe_component("light");
+        const auto &query_behavior = probe_component("behavior");
+        REQUIRE(query_camera.at("component_index") == 3);
+        REQUIRE(query_camera.at("runtime_json").at("yfov") ==
+                Catch::Approx(0.731f));
+        REQUIRE(query_camera.at("runtime_json").at("znear") ==
+                Catch::Approx(0.1f));
+        REQUIRE(query_camera.at("runtime_json").at("zfar") ==
+                Catch::Approx(100.0f));
+        REQUIRE(query_light.at("component_index") == 2);
+        REQUIRE(query_light.at("runtime_json").at("intensity") ==
+                Catch::Approx(6.25f));
+        REQUIRE(query_behavior.at("component_index") == 5);
+        REQUIRE(query_behavior.at("pending") == true);
+
+        const auto camera_state = GET_MODULE(Camera).snapshotPrepared();
+        const auto resolved_camera =
+            camera_state.scene_cameras.find("WP360ResolvedProbe");
+        REQUIRE(resolved_camera != camera_state.scene_cameras.end());
+        REQUIRE(resolved_camera->second.projection.yfov ==
+                Catch::Approx(0.731f));
+        REQUIRE(resolved_camera->second.projection.zfar ==
+                Catch::Approx(100.0f));
+
+        const auto light_state = GET_MODULE(LightContainer).snapshotPrepared();
+        const auto resolved_light = std::find_if(
+            light_state.point_lights.begin(), light_state.point_lights.end(),
+            [](const auto &light) {
+                return light.name == "WP360ResolvedProbe";
+            });
+        REQUIRE(resolved_light != light_state.point_lights.end());
+        REQUIRE(resolved_light->intensity == Catch::Approx(6.25f));
+        REQUIRE(resolved_light->position.x == Catch::Approx(7.0f));
+
+        const auto attachments = GET_MODULE(BehaviorAttachmentArena).snapshot();
+        const auto resolved_attachment = std::find_if(
+            attachments.begin(), attachments.end(), [](const auto &entry) {
+                return entry.stable_name == "wp360_missing_behavior";
+            });
+        REQUIRE(resolved_attachment != attachments.end());
+        REQUIRE(resolved_attachment->component_index == 5);
+        REQUIRE(resolved_attachment->pending);
+        std::cout << "WP360_PRODUCTION_WIRING camera_yfov="
+                  << resolved_camera->second.projection.yfov
+                  << " query_zfar="
+                  << query_camera.at("runtime_json").at("zfar").get<float>()
+                  << " light_intensity=" << resolved_light->intensity
+                  << " behavior_component_index="
+                  << resolved_attachment->component_index << '\n';
 
         const auto secondary_session = rpc(
             "open_editor_session",

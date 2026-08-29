@@ -14,6 +14,8 @@
 
 namespace Pelican {
 
+class ResolvedScene;
+
 DECLARE_MODULE(Camera) {
   public:
     enum class SceneCameraControllerType {
@@ -96,7 +98,7 @@ DECLARE_MODULE(Camera) {
     PreparedSceneState snapshotPrepared() const;
     PreparedSceneState prepareSceneCameras(std::string_view scene_id) const;
     PreparedSceneState prepareSceneCameras(
-        std::string_view scene_id, const nlohmann::json &scenes) const;
+        std::string_view scene_id, const ResolvedScene &scene) const;
     void publishPrepared(PreparedSceneState &&prepared) noexcept;
     void loadSceneCameras(std::string_view scene_id);
     void setActiveCamera(std::string_view name);

@@ -1,4 +1,5 @@
 #include "../src/core/loader/editorpreviewprojection.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -68,7 +69,8 @@ TEST_CASE("WP172 PreparedProjection evaluates overrides and explicit staged quer
     const auto base = AuthoringSceneDocument::load(
         previewFixture().dump(), SceneRevision{41});
     SharedStateFixture live{
-        .authored_semantic_bytes = base.encodeSemantic(),
+        .authored_semantic_bytes =
+            test_support::authoring(base).encodeSemantic(),
         .scene_revision = base.revision().value,
     };
     const auto before = live;
@@ -124,7 +126,8 @@ TEST_CASE("WP172 PreparedProjection evaluates overrides and explicit staged quer
             Json::array({0.0f, 0.0f, -5.0f}));
 
     REQUIRE(base.revision().value == 41);
-    REQUIRE(base.encodeSemantic() == before.authored_semantic_bytes);
+    REQUIRE(test_support::authoring(base).encodeSemantic() ==
+            before.authored_semantic_bytes);
     REQUIRE(live == before);
 }
 
@@ -133,7 +136,8 @@ TEST_CASE("WP172 eval_preview prepare and query faults discard request-local sta
     const auto base = AuthoringSceneDocument::load(
         previewFixture().dump(), SceneRevision{9});
     SharedStateFixture live{
-        .authored_semantic_bytes = base.encodeSemantic(),
+        .authored_semantic_bytes =
+            test_support::authoring(base).encodeSemantic(),
         .scene_revision = base.revision().value,
     };
     const auto before = live;
@@ -152,7 +156,8 @@ TEST_CASE("WP172 eval_preview prepare and query faults discard request-local sta
                           }),
                       std::runtime_error);
     REQUIRE(live == before);
-    REQUIRE(base.encodeSemantic() == before.authored_semantic_bytes);
+    REQUIRE(test_support::authoring(base).encodeSemantic() ==
+            before.authored_semantic_bytes);
 
     const auto prepared = prepareEditorPreviewProjection(base, overrides);
     const EditorPreviewEvaluationContext context{prepared};
@@ -166,7 +171,8 @@ TEST_CASE("WP172 eval_preview prepare and query faults discard request-local sta
                           }),
                       std::runtime_error);
     REQUIRE(live == before);
-    REQUIRE(base.encodeSemantic() == before.authored_semantic_bytes);
+    REQUIRE(test_support::authoring(base).encodeSemantic() ==
+            before.authored_semantic_bytes);
 }
 
 TEST_CASE("WP172 descendant_world remains scoped to the root scene",
@@ -208,7 +214,7 @@ TEST_CASE("WP172 eval_preview rejects unsupported prepared fields without public
     fixture.at("scenes").at("main").at("objects").at(0).at("components")
         .push_back({{"name", "custom_unprepared"}, {"value", 1}});
     const auto base = AuthoringSceneDocument::load(fixture.dump(), SceneRevision{1});
-    const auto bytes = base.encodeSemantic();
+    const auto bytes = test_support::authoring(base).encodeSemantic();
 
     try {
         (void)prepareEditorPreviewProjection(
@@ -223,7 +229,7 @@ TEST_CASE("WP172 eval_preview rejects unsupported prepared fields without public
                 EditorPreviewProjectionErrorCode::method_unavailable);
         REQUIRE(error.adapter() == "custom_unprepared");
     }
-    REQUIRE(base.encodeSemantic() == bytes);
+    REQUIRE(test_support::authoring(base).encodeSemantic() == bytes);
     REQUIRE(base.revision().value == 1);
 
     const auto prepared = prepareEditorPreviewProjection(base, Json::array());
@@ -238,7 +244,7 @@ TEST_CASE("WP172 eval_preview rejects unsupported prepared fields without public
         REQUIRE(error.code() ==
                 EditorPreviewProjectionErrorCode::schema_violation);
     }
-    REQUIRE(base.encodeSemantic() == bytes);
+    REQUIRE(test_support::authoring(base).encodeSemantic() == bytes);
 }
 
 } // namespace Pelican

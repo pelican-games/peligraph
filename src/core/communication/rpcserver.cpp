@@ -409,7 +409,7 @@ nlohmann::json pickingReadbackJson(const PickingReadbackResult &readback,
 
         if (bound_authoring_id) {
             for (const auto &scene :
-                 modules.project_config.sceneDocument().query()) {
+                 modules.project_config.resolvedScene().scenes()) {
                 if (scene.scene_id !=
                     modules.scene_loader.currentScene()) {
                     continue;
@@ -422,7 +422,7 @@ nlohmann::json pickingReadbackJson(const PickingReadbackResult &readback,
                     });
                 if (object != scene.objects.end()) {
                     scene_id = scene.scene_id;
-                    declaration_index = object->declaration_index;
+                    declaration_index = object->authoring_object_index;
                     authoring_object_id =
                         object->authoring_object_id.value;
                 }

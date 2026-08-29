@@ -1,4 +1,5 @@
 #include "gamelogicreload.hpp"
+#include "behaviorreloadvalidation.hpp"
 #include "behaviorarena.hpp"
 
 #include "../animation/animationservice.hpp"
@@ -24,6 +25,8 @@
 #include "../userpublic/gamelogic.hpp"
 
 #include <chrono>
+#include <optional>
+#include <span>
 #include <system_error>
 
 #ifdef _WIN32
@@ -184,13 +187,15 @@ bool GameLogicReloader::validateCandidate(const std::filesystem::path &path, std
     if (!candidate) return false;
     try {
         if (active) {
-            const nlohmann::json *authoring_scenes = nullptr;
+            std::optional<std::span<const BehaviorReloadSourceParams>>
+                behavior_sources;
             if (const auto *config =
                     FastModuleContainer::tryGet<ProjectBasicConfig>()) {
-                authoring_scenes = &config->sceneDocument().scenesJson();
+                behavior_sources =
+                    config->resolvedScene().behaviorReloadSources();
             }
-            internal::validateBehaviorReload(active->owner, candidate->owner,
-                                             authoring_scenes);
+            internal::validateBehaviorReloadSources(
+                active->owner, candidate->owner, behavior_sources);
         }
     } catch (const std::exception &validation_error) {
         error = validation_error.what();
@@ -451,7 +456,11 @@ void runtimeTeardown() {
 void rebuildCurrentScene() {
     auto &scene_loader = GET_MODULE(SceneLoader);
     auto scene = scene_loader.currentScene();
-    if (!scene.empty()) scene_loader.load(std::move(scene));
+    if (scene.empty()) return;
+    GET_MODULE(ProjectBasicConfig).refreshResolvedScene(
+        [&scene_loader, scene = std::move(scene)]() mutable {
+            scene_loader.load(std::move(scene));
+        });
 }
 
 bool deterministicDriverActive() {

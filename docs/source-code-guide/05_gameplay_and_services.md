@@ -241,7 +241,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ## 5.6 Camera
 
-[`Camera`](../../src/core/renderer/camera.hpp#L17) は次を一つのmoduleで管理します。
+[`Camera`](../../src/core/renderer/camera.hpp#L19) は次を一つのmoduleで管理します。
 
 - 現在のpos/dir/up
 - perspective/orthographic projection
@@ -249,15 +249,15 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L104) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L109) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1369)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L503)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L106) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L111) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1369)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L503)）です。
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L725) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L500) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L796) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L571) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L739) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L599)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L787) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L79)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L514) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L416)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L562) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -289,7 +289,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L787) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L562) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
@@ -788,21 +788,21 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 ### Arena
 
-[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L111) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
+[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L116) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
 
 | 経路 | 使うAPI |
 |---|---|
 | scene由来 | `prepareSceneBehaviorAttachments()` → `publishSceneAttachments()` → `activatePublished()` |
-| 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L87) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
+| 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L88) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L56) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L106) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L69) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L57) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L107) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L70) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
 ### DLL reload
 
-[`gamelogicreload.cpp` 内](../../src/core/gamelogic/gamelogicreload.cpp#L192) が [`internal::validateBehaviorReload(active_owner, candidate_owner, authoring_scenes)`](../../src/core/userpublic/details/behavior/registerer.hpp#L285) を呼び、`schema_version`の差分と型の消滅を候補DLL採用前に検証します。
+[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L184) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L109) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L10) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L47) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 
@@ -831,7 +831,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 >
 > **不変条件**: 指紋に入れる項目・順序・キー名を変えると、既存の全 behavior が `schema_changed_without_version_bump` になります(変えるなら reload 側の互換方針とセットで)。`ordered_json` を `json` に変えない。指紋生成はデフォルト値の encode を経由するので、この経路を短絡させない。
 
-> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L249))
+> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L254))
 >
 > **何をする所か**: 候補 DLL のシャドウコピーを検証し、teardown → 旧 DLL の unload → 新 DLL の load → rebuild を 1 つの transaction として実行します。どこで失敗しても旧 DLL の状態へ戻すのがロールバック側の仕事です。
 >
@@ -848,7 +848,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 >               rebuild() が失敗したら teardown + unload して active を捨てる
 > ```
 >
-> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L169) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L84) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L181) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
+> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L172) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L87) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L184) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
 >
 > **不変条件**: `catch` の中で DLL を unload しない。`previous_unloaded` の 2 経路を 1 本化しない(旧ハンドルの再利用は「まだ落としていない」ときだけ正しい)。後始末経路は `noexcept` を保ち、`removeFileNoThrow()` を throw する削除へ替えない。ロールバックの `rebuild()` が失敗したら active を残さず捨てる。
 

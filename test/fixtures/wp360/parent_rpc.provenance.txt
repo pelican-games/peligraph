@@ -1,0 +1,11 @@
+fixture=get_components.parent.ndjson
+parent_head=447104d0b7ac6a15198dcbe03d84ef113b81a588
+capture_source=capture_parent_rpc.cpp
+capture_source_sha256=307aa54fa57bb713053c335e404996a90f9f1761ae2ac5788adaef8a9f758605
+producer=real Pelican::RpcServer::run in a git shared clone of parent_head
+configure=Release build with the WP360 requested feature flags and local immutable FetchContent source caches
+request={"jsonrpc":"2.0","id":360,"method":"get_components","params":{"name":"WP360WireProbe"}} followed by LF
+byte_count=2410
+last_byte=0a
+sha256=aff26b51b41d7500b8405202e624dd9400f72b176e94572279ebaea895bb8f7c
+parent_userpublic_diff_exit=0

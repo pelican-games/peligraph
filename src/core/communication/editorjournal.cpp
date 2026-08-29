@@ -1,5 +1,7 @@
 #include "editorjournal.hpp"
 
+#include "../loader/authoringsceneauthority.hpp"
+
 #include "../appflow/framephase.hpp"
 #include "../loader/componentcodec.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
@@ -119,7 +121,7 @@ struct ObjectLocation {
 
 std::vector<ObjectLocation> objectLocations(const AuthoringSceneDocument &document) {
     std::vector<ObjectLocation> result;
-    const auto scenes = document.query();
+    const auto scenes = AuthoringSceneAuthority::query(document);
     for (std::size_t scene_index = 0; scene_index < scenes.size(); ++scene_index) {
         const auto &scene = scenes[scene_index];
         for (const auto &object : scene.objects) {
@@ -433,25 +435,34 @@ std::string primaryGateReason(const EditorGateSnapshot &snapshot) {
 }
 
 class LocalDocumentTarget final : public EditorProjectionDocumentTarget {
-    AuthoringSceneDocument document_;
+    SceneProjectionState state_;
 
   public:
     explicit LocalDocumentTarget(const AuthoringSceneDocument &source)
-        : document_{source.stage(
-              source.rawJson(), SceneRevision{source.revision().value + 1})} {}
+        : state_{ResolvedSceneResolver::prepare(
+              AuthoringSceneAuthority::stage(
+                  source,
+                  AuthoringSceneAuthority::rawView(source).documentJson(),
+                  SceneRevision{source.revision().value + 1}),
+              SceneResolverGeneration{1})} {}
 
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document_;
+    const SceneProjectionState &projectionState() const override {
+        return state_;
     }
     SceneRevision nextProjectionRevision() const override {
-        if (document_.revision().value ==
+        if (state_.revision().value ==
             std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("SceneRevision space exhausted");
         }
-        return SceneRevision{document_.revision().value + 1};
+        return SceneRevision{state_.revision().value + 1};
     }
-    void publishProjectionDocument(AuthoringSceneDocument &&document) noexcept override {
-        document_.swap(document);
+    SceneResolverGeneration nextProjectionResolverGeneration() const override {
+        return SceneResolverGeneration{
+            state_.resolverGeneration().value + 1};
+    }
+    void publishProjectionState(
+        SceneProjectionState &candidate) noexcept override {
+        state_.swap(candidate);
     }
 };
 
@@ -870,7 +881,7 @@ PreparedOperation prepareSpawn(const Json &raw,
                 context);
     const auto scene_id = optionalString(raw, "scene_id", context)
                               .value_or(std::string{default_scene});
-    const auto scenes = document.query();
+    const auto scenes = AuthoringSceneAuthority::query(document);
     const auto scene = std::find_if(scenes.begin(), scenes.end(),
                                     [&](const auto &candidate) {
                                         return candidate.scene_id == scene_id;

@@ -70,7 +70,7 @@ sequenceDiagram
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
 5. `Persistence`からsettingsを読み、audio設定を適用。
 6. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L20) で組み込みComponent/Systemを登録。
-7. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L463) でgame DLLをロード**（WP110系列）。
+7. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L472) でgame DLLをロード**（WP110系列）。
 8. `ProjectBasicConfig.defaultSceneId()` のsceneを即時ロードし、`ModelAssetContainer` を明示的に先行生成（並列prepareのcommitを起動スレッドで実施）。
 9. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L84) でwatcherのlive inventoryを種付け。
 10. `Loop::run()`へ入る。
@@ -353,7 +353,7 @@ void updateFrameState() {
 - **位置が固定**: reload公開の後、`freeze_events` の直前。windowed / headless固定フレーム / RPC `step_frame` の全loop面で同じ位置です。
 - **未設置ならzero-state no-op**: hookが無い場合、moduleを生成せずmodule graphも変えません。
 
-実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L2719) の1箇所だけです。
+実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L2730) の1箇所だけです。
 
 > **設計決定:** 編集の公開点をフレーム境界の1箇所へ寄せることで、「エディタが動いていないビルド／セッションでは編集面が存在しない」状態を保っています。§2.4 のwindowed RPC dispatch（`updateFrameState()` の直後）と合わせて読むと、リクエスト受理→次フレーム冒頭で公開、という往復になります。
 

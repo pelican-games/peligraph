@@ -8,6 +8,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -215,29 +216,14 @@ struct PersistenceProject {
 };
 
 class PersistencePreviewTarget final
-    : public Pelican::EditorProjectionDocumentTarget {
-    Pelican::AuthoringSceneDocument document_;
-
+    : public Pelican::test_support::SceneProjectionTarget {
   public:
     explicit PersistencePreviewTarget(
         const Pelican::AuthoringSceneDocument &source)
-        : document_{source.stage(
-              source.rawJson(),
+        : SceneProjectionTarget{Pelican::AuthoringSceneAuthority::stage(
+              source,
+              Pelican::AuthoringSceneAuthority::rawView(source).documentJson(),
               Pelican::SceneRevision{source.revision().value + 1U})} {}
-
-    const Pelican::AuthoringSceneDocument &projectionDocument()
-        const override {
-        return document_;
-    }
-
-    Pelican::SceneRevision nextProjectionRevision() const override {
-        return Pelican::SceneRevision{document_.revision().value + 1U};
-    }
-
-    void publishProjectionDocument(
-        Pelican::AuthoringSceneDocument &&document) noexcept override {
-        document_.swap(document);
-    }
 };
 
 void writePersistenceFile(const std::filesystem::path &path,
@@ -832,7 +818,8 @@ TEST_CASE("Devstudio modal gizmo commit survives save and a fresh authoring relo
         auto &config =
             Pelican::FastModuleContainer::get<Pelican::ProjectBasicConfig>();
         const auto &document = config.sceneDocument();
-        const auto scenes = document.query();
+        const auto scenes =
+            Pelican::test_support::authoring(document).query();
         REQUIRE(scenes.size() == 1);
         REQUIRE(scenes.front().objects.size() == 1);
         const auto object_id =
@@ -934,7 +921,8 @@ TEST_CASE("Devstudio modal gizmo commit survives save and a fresh authoring relo
         const auto &reloaded =
             Pelican::FastModuleContainer::get<Pelican::ProjectBasicConfig>()
                 .sceneDocument();
-        REQUIRE(reloaded.rawJson()
+        REQUIRE(Pelican::test_support::authoring(reloaded)
+                    .rawJson()
                     .at("scenes")
                     .at("main")
                     .at("objects")

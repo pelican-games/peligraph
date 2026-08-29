@@ -335,12 +335,10 @@ class StandaloneTransformProjectionAdapter final
 
     void prepare(const EditorProjectionPrepareContext &context) override {
         prepared_.clear();
-        const auto next_scenes = context.next_document.query();
-        const auto &codec = requireComponentCodec("transform");
 
-        for (const auto &scene : next_scenes) {
+        for (const auto &scene : context.next_resolved.scenes()) {
             if (scenes_.contains(scene.scene_id)) {
-                std::unordered_map<std::string, const AuthoringObjectView *>
+                std::unordered_map<std::string, const ResolvedObject *>
                     by_name;
                 for (const auto &object : scene.objects) {
                     if (object.name) by_name.emplace(*object.name, &object);
@@ -348,7 +346,7 @@ class StandaloneTransformProjectionAdapter final
                 std::unordered_map<std::uint64_t, TransformComponent> worlds;
                 std::unordered_set<std::uint64_t> visiting;
                 const auto compute_world = [&](auto &&self,
-                                               const AuthoringObjectView &object)
+                                               const ResolvedObject &object)
                     -> const TransformComponent & {
                     if (const auto found =
                             worlds.find(object.authoring_object_id.value);
@@ -363,8 +361,7 @@ class StandaloneTransformProjectionAdapter final
                     const auto component = std::find_if(
                         object.components.begin(), object.components.end(),
                         [](const auto &candidate) {
-                            return candidate.authoredJson().at("name") ==
-                                   "transform";
+                            return candidate.name == "transform";
                         });
                     if (component == object.components.end()) {
                         throw std::runtime_error(
@@ -382,9 +379,8 @@ class StandaloneTransformProjectionAdapter final
                     TransformComponent next{};
                     TransformCodecTarget target{.world = &next,
                                                 .parent_world = parent_world};
-                    codec.applyRuntime(
-                        codec.decodeAuthored(component->authoredJson()),
-                        &target);
+                    component->runtime_codec->applyRuntime(
+                        component->requireRuntimeValue(), &target);
                     visiting.erase(object.authoring_object_id.value);
                     return worlds
                         .emplace(object.authoring_object_id.value, next)
@@ -479,9 +475,8 @@ class ReparentLocalTransformProjectionAdapter final
             return;
         }
 
-        const auto scenes = context.next_document.query();
-        const AuthoringObjectView *object = nullptr;
-        for (const auto &scene : scenes) {
+        const ResolvedObject *object = nullptr;
+        for (const auto &scene : context.next_resolved.scenes()) {
             const auto found = std::find_if(
                 scene.objects.begin(), scene.objects.end(),
                 [&](const auto &candidate) {
@@ -498,15 +493,14 @@ class ReparentLocalTransformProjectionAdapter final
         const auto transform = std::find_if(
             object->components.begin(), object->components.end(),
             [](const auto &candidate) {
-                return candidate.authoredJson().at("name") == "transform";
+                return candidate.name == "transform";
             });
         if (transform == object->components.end()) {
             throw std::runtime_error("reparent target has no transform");
         }
-        const auto decoded = requireComponentCodec("transform").decodeAuthored(
-            transform->authoredJson());
         const auto &data =
-            std::any_cast<const TransformCodecData &>(decoded);
+            std::any_cast<const TransformCodecData &>(
+                transform->requireRuntimeValue());
         const LocalTransformComponent next{
             .scale = data.scale,
             .rotation = data.rotation,
@@ -539,10 +533,10 @@ std::vector<TransformProjectionBinding> makeTransformBindings(
     std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings) {
     std::vector<TransformProjectionBinding> result;
     auto &ecs = modules.ecs_core.getTemplatePublicModule();
-    const auto scenes = modules.project_config.sceneDocument().query();
+    const auto scenes = modules.project_config.resolvedScene().scenes();
     for (const auto &binding : runtime_bindings) {
-        const AuthoringSceneView *bound_scene = nullptr;
-        const AuthoringObjectView *bound_object = nullptr;
+        const ResolvedSceneView *bound_scene = nullptr;
+        const ResolvedObject *bound_object = nullptr;
         for (const auto &scene : scenes) {
             const auto object = std::find_if(scene.objects.begin(), scene.objects.end(),
                                              [&](const auto &candidate) {
@@ -618,7 +612,7 @@ std::size_t operationComponentIndex(
     // Compatibility for inverse records produced before component_index was
     // included for non-behavior add_component operations. A remove inverse is
     // executed against a document where that component is currently present.
-    for (const auto &scene : modules.project_config.sceneDocument().query()) {
+    for (const auto &scene : modules.project_config.resolvedScene().scenes()) {
         const auto object = std::find_if(
             scene.objects.begin(), scene.objects.end(),
             [object_id](const auto &candidate) {
@@ -628,13 +622,10 @@ std::size_t operationComponentIndex(
         const auto component = std::find_if(
             object->components.begin(), object->components.end(),
             [component_name](const auto &candidate) {
-                return candidate.authoredJson()
-                           .at("name")
-                           .template get_ref<const std::string &>() ==
-                       component_name;
+                return candidate.name == component_name;
             });
         if (component != object->components.end()) {
-            return component->declaration_index;
+            return component->authoring_component_index;
         }
     }
     throw std::runtime_error(
@@ -680,23 +671,26 @@ BehaviorAttachmentIdentity behaviorIdentity(
 
 class EphemeralEditorProjectionTarget final
     : public EditorProjectionDocumentTarget {
-    AuthoringSceneDocument document_;
+    SceneProjectionState state_;
 
   public:
     explicit EphemeralEditorProjectionTarget(
-        const AuthoringSceneDocument &source)
-        : document_{source.stage(
-              source.rawJson(), SceneRevision{source.revision().value + 1U})} {}
+        const SceneProjectionState &source)
+        : state_{source} {}
 
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document_;
+    const SceneProjectionState &projectionState() const override {
+        return state_;
     }
     SceneRevision nextProjectionRevision() const override {
-        return SceneRevision{document_.revision().value + 1U};
+        return SceneRevision{state_.revision().value + 1U};
     }
-    void publishProjectionDocument(
-        AuthoringSceneDocument &&document) noexcept override {
-        document_.swap(document);
+    SceneResolverGeneration nextProjectionResolverGeneration() const override {
+        return SceneResolverGeneration{
+            state_.resolverGeneration().value + 1U};
+    }
+    void publishProjectionState(
+        SceneProjectionState &candidate) noexcept override {
+        state_.swap(candidate);
     }
 };
 
@@ -735,7 +729,7 @@ EditorProjectionResult executeEditorPreview(
     adapter_ptrs.reserve(adapters.size());
     for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
     EphemeralEditorProjectionTarget target{
-        modules.project_config.sceneDocument()};
+        modules.project_config.sceneProjectionState()};
     EditorProjectionTransaction transaction{
         target, target.projectionDocument().revision()};
     return transaction.commit(request.commands, adapter_ptrs);
@@ -1038,8 +1032,8 @@ std::vector<std::string> editorGateReasonNamesForRenderConfig(
 
 EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
                                             std::span<const EditorProjectionRuntimeObjectBinding> bindings,
-                                            const AuthoringSceneView &scene,
-                                            const AuthoringObjectView &object) {
+                                            const ResolvedSceneView &scene,
+                                            const ResolvedObject &object) {
     EditorRuntimeObjectState result;
     result.component_runtime_json.resize(object.components.size());
     result.component_pending.resize(object.components.size(), false);
@@ -1053,13 +1047,15 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
     auto &component_info = modules.component_info;
     const auto behavior_attachments = modules.behavior_arena.snapshot();
     for (std::size_t index = 0; index < object.components.size(); ++index) {
-        const auto name = object.components[index].authoredJson().at("name").get<std::string>();
+        const auto &name = object.components[index].name;
         if (name == "behavior") {
             const auto found = std::find_if(
                 behavior_attachments.begin(), behavior_attachments.end(),
                 [&](const BehaviorAttachmentInfo &attachment) {
                     return attachment.entity == *entity_id &&
-                           attachment.component_index == index;
+                           attachment.component_index ==
+                               object.components[index]
+                                   .authoring_component_index;
                 });
             if (found != behavior_attachments.end()) {
                 result.component_pending[index] = found->pending;
@@ -1085,8 +1081,17 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
             }
             continue;
         }
-        const auto *codec = findComponentCodec(name);
-        if (codec == nullptr || codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) continue;
+        const auto *codec = object.components[index].runtime_codec;
+        if (codec == nullptr) continue;
+        if (codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) {
+            // Camera, Light, and Collider expose the exact resolver-completed
+            // value used to prepare their production adapters.  This remains
+            // absent from parent wire fixtures whose runtime_query is not
+            // connected, preserving those bytes.
+            result.component_runtime_json[index] =
+                object.components[index].effective_json;
+            continue;
+        }
         const auto component_id = component_info.getComponentIdByName(name);
         auto *raw_component = ecs.tryComponentRaw(*entity_id, component_id);
         if (raw_component == nullptr) continue;
@@ -1198,9 +1203,9 @@ struct EditorRuntimeState {
             return result;
         };
 
-        const auto &document = modules.project_config.sceneDocument();
+        const auto &document = modules.project_config.resolvedScene();
         auto runtime_objects = Json::array();
-        for (const auto &scene : document.query()) {
+        for (const auto &scene : document.scenes()) {
             for (const auto &object : scene.objects) {
                 const auto state = queryEditorRuntime(modules, runtime_bindings,
                                                       scene, object);
@@ -1336,7 +1341,8 @@ struct EditorRuntimeState {
                                 ? modules.reload_gate->snapshot()
                                 : watch::ReloadGateSnapshot{};
         return {
-            {"authored_semantic_bytes", document.rawJson().dump()},
+            {"authored_semantic_bytes",
+             modules.project_config.sceneDataJson()},
             {"scene_revision", document.revision().value},
             {"ecs_values_identity", std::move(runtime_objects)},
             {"ecs_versions_tick_entity_free_list",
@@ -1556,12 +1562,15 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         .document = [runtime]() -> const AuthoringSceneDocument & {
             return runtime->modules.project_config.sceneDocument();
         },
+        .resolved_scene = [runtime]() -> const ResolvedScene & {
+            return runtime->modules.project_config.resolvedScene();
+        },
         .current_scene_id = [runtime] {
             return runtime->modules.scene_loader.currentScene();
         },
         .runtime_query =
-            [runtime](const AuthoringSceneView &scene,
-                      const AuthoringObjectView &object) {
+            [runtime](const ResolvedSceneView &scene,
+                      const ResolvedObject &object) {
                 runtime->refreshRuntimeBindings();
                 return queryEditorRuntime(runtime->modules,
                                           runtime->runtime_bindings,
@@ -1629,6 +1638,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         .preview = EditorPreviewServiceDependencies{
             .document = [runtime]() -> const AuthoringSceneDocument & {
                 return runtime->modules.project_config.sceneDocument();
+            },
+            .projection_state = [runtime]() -> const SceneProjectionState & {
+                return runtime->modules.project_config.sceneProjectionState();
             },
             .preview_graph = [runtime]() -> const PreviewGraphProgram & {
                 return runtime->modules.renderer.previewGraphProgram();

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "authoringscenedocument.hpp"
+#include "resolvedscene.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../userpublic/components/localtransform.hpp"
 
@@ -96,10 +96,20 @@ struct EditorProjectionResult {
 class EditorProjectionDocumentTarget {
   public:
     virtual ~EditorProjectionDocumentTarget() = default;
-    virtual const AuthoringSceneDocument &projectionDocument() const = 0;
+    virtual const SceneProjectionState &projectionState() const = 0;
     virtual SceneRevision nextProjectionRevision() const = 0;
-    virtual void publishProjectionDocument(
-        AuthoringSceneDocument &&document) noexcept = 0;
+    virtual SceneResolverGeneration nextProjectionResolverGeneration() const = 0;
+    // Swap is the publication and inverse operation. After the first call,
+    // candidate owns the old live pair; a second call restores it.
+    virtual void publishProjectionState(
+        SceneProjectionState &candidate) noexcept = 0;
+
+    const AuthoringSceneDocument &projectionDocument() const noexcept {
+        return projectionState().authoring();
+    }
+    const ResolvedScene &projectionResolvedScene() const noexcept {
+        return projectionState().resolved();
+    }
 };
 
 // Keeps ProjectBasicConfig's widely included public header free of editor
@@ -113,10 +123,11 @@ class ProjectBasicConfigProjectionTarget final
     explicit ProjectBasicConfigProjectionTarget(ProjectBasicConfig &config) noexcept
         : config_(config) {}
 
-    const AuthoringSceneDocument &projectionDocument() const override;
+    const SceneProjectionState &projectionState() const override;
     SceneRevision nextProjectionRevision() const override;
-    void publishProjectionDocument(
-        AuthoringSceneDocument &&document) noexcept override;
+    SceneResolverGeneration nextProjectionResolverGeneration() const override;
+    void publishProjectionState(
+        SceneProjectionState &candidate) noexcept override;
 };
 
 struct EditorProjectionCommand {
@@ -154,6 +165,8 @@ EditorProjectionCommand makeReorderObjectCommand(
 struct EditorProjectionPrepareContext {
     const AuthoringSceneDocument &base_document;
     const AuthoringSceneDocument &next_document;
+    const ResolvedScene &base_resolved;
+    const ResolvedScene &next_resolved;
 };
 
 class EditorProjectionAdapter {
@@ -173,6 +186,7 @@ class EditorProjectionAdapter {
 enum class EditorProjectionFaultPoint : std::uint8_t {
     Prepare,
     Publish,
+    AfterPublication,
 };
 
 class EditorProjectionFaultInjector {

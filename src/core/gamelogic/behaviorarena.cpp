@@ -140,6 +140,76 @@ std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
     return prepared;
 }
 
+std::vector<PreparedSceneBehaviorAttachment>
+prepareResolvedSceneBehaviorAttachments(
+    std::span<const ResolvedObject> objects,
+    BehaviorRegistryAvailability availability) {
+    std::vector<PreparedSceneBehaviorAttachment> prepared;
+    const auto &registry = internal::getBehaviorRegisterer();
+    for (std::size_t object_index = 0; object_index < objects.size();
+         ++object_index) {
+        const auto &object = objects[object_index];
+        const auto object_name = object.name.value_or(std::string{});
+        for (const auto &component : object.components) {
+            if (component.name != "behavior") continue;
+            const auto stable_name =
+                component.effective_json.value("type", std::string{});
+            if (stable_name.empty()) {
+                throw std::runtime_error(
+                    "behavior on object '" +
+                    (object_name.empty() ? std::string{"<unnamed>"}
+                                         : object_name) +
+                    "' requires a non-empty string type");
+            }
+            const auto *registration = registry.findByName(stable_name);
+            if (registration == nullptr) {
+                if (availability == BehaviorRegistryAvailability::active) {
+                    throw std::runtime_error(
+                        "Unknown behavior type '" + stable_name +
+                        "' on object '" +
+                        (object_name.empty() ? std::string{"<unnamed>"}
+                                             : object_name) +
+                        "'");
+                }
+                if (logger != nullptr) {
+                    LOG_WARNING(
+                        logger,
+                        "behavior type '{}' on object '{}' is pending because the game-logic DLL is unavailable",
+                        stable_name,
+                        object_name.empty() ? std::string{"<unnamed>"}
+                                            : object_name);
+                }
+                prepared.push_back(PreparedSceneBehaviorAttachment{
+                    .object_index = object.authoring_object_index,
+                    .component_index = component.authoring_component_index,
+                    .object_name = object_name,
+                    .stable_name = stable_name,
+                    .canonical_params = {},
+                    .raw_component = component.source_json_exact,
+                    .registration_owner = internal::engineRegistrationOwner,
+                    .pending = true,
+                });
+                continue;
+            }
+            if (!component.behavior_canonical_params) {
+                throw std::logic_error(
+                    "resolved behavior is missing canonical params");
+            }
+            prepared.push_back(PreparedSceneBehaviorAttachment{
+                .object_index = object.authoring_object_index,
+                .component_index = component.authoring_component_index,
+                .object_name = object_name,
+                .stable_name = stable_name,
+                .canonical_params = *component.behavior_canonical_params,
+                .raw_component = component.source_json_exact,
+                .registration_owner = registration->owner,
+                .pending = false,
+            });
+        }
+    }
+    return prepared;
+}
+
 BehaviorContext::BehaviorContext(GameObjectId self, BehaviorAttachmentHandle attachment,
                                  std::uint64_t sequence, void *params,
                                  const std::type_info *params_type_info) noexcept

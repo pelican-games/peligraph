@@ -564,14 +564,10 @@ ComponentCodecValue decodeCamera(const Json &json) {
         if (const auto *value = findCameraNumber(json, nested, "xmag")) {
             result.xmag = readFloat(*value, "camera.xmag", 0.0f,
                                     std::numeric_limits<float>::max(), false);
-        } else if (result.projection_specified) {
-            codecError(StructFieldErrorCode::MissingField, "camera.xmag", "is required for orthographic");
         }
         if (const auto *value = findCameraNumber(json, nested, "ymag")) {
             result.ymag = readFloat(*value, "camera.ymag", 0.0f,
                                     std::numeric_limits<float>::max(), false);
-        } else if (result.projection_specified) {
-            codecError(StructFieldErrorCode::MissingField, "camera.ymag", "is required for orthographic");
         }
     }
     if (const auto *value = findCameraNumber(json, nested, "znear")) {

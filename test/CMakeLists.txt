@@ -149,6 +149,19 @@ add_test(
 )
 
 add_test(
+  NAME wp360_raw_authority_compile_contract
+  COMMAND ${CMAKE_COMMAND}
+    "-DPELICAN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+    "-DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/wp360_raw_authority_build"
+    "-DNLOHMANN_INCLUDE_DIR=${nlohmann_SOURCE_DIR}/include"
+    "-DGENERATOR=${CMAKE_GENERATOR}"
+    "-DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+    "-DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+    "-DTEST_CONFIG=$<CONFIG>"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp360_raw_authority_compile.cmake
+)
+
+add_test(
   NAME feature_registry_ledger_contract
   COMMAND ${CMAKE_COMMAND}
     -P ${CMAKE_SOURCE_DIR}/cmake/verify_feature_registry.cmake
@@ -784,6 +797,11 @@ target_compile_definitions(pelican_test_editorcommandservice_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(editorjournal_test GROUP ecs_editor pelican_core glm)
+pelican_define_test(wp360_resolvedscene_test pelican_core glm picosha2)
+target_compile_definitions(pelican_test_wp360_resolvedscene_test PRIVATE
+  PELICAN_WP360_RPC_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp360/get_components.parent.ndjson"
+  PELICAN_WP360_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
+)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})

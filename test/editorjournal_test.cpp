@@ -2,10 +2,12 @@
 #include "../src/core/communication/editorruntimefactory.hpp"
 #include "../src/core/gamelogic/behaviorarena.hpp"
 #include "../src/core/userpublic/behavior.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -59,42 +61,20 @@ Json editorFixture() {
     })json");
 }
 
-class DocumentTarget final : public EditorProjectionDocumentTarget {
+class DocumentTarget final : public test_support::SceneProjectionTarget {
   public:
-    AuthoringSceneDocument document;
-
     DocumentTarget()
-        : document{AuthoringSceneDocument::load(editorFixture().dump(),
-                                                SceneRevision{1})} {}
-
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document;
-    }
-    SceneRevision nextProjectionRevision() const override {
-        return SceneRevision{document.revision().value + 1};
-    }
-    void publishProjectionDocument(AuthoringSceneDocument &&next) noexcept override {
-        document.swap(next);
-    }
+        : SceneProjectionTarget{AuthoringSceneDocument::load(
+              editorFixture().dump(), SceneRevision{1})} {}
 };
 
-class PreviewDocumentTarget final : public EditorProjectionDocumentTarget {
+class PreviewDocumentTarget final : public test_support::SceneProjectionTarget {
   public:
-    AuthoringSceneDocument document;
-
     explicit PreviewDocumentTarget(const AuthoringSceneDocument &source)
-        : document{source.stage(source.rawJson(),
-                                SceneRevision{source.revision().value + 1})} {}
-
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document;
-    }
-    SceneRevision nextProjectionRevision() const override {
-        return SceneRevision{document.revision().value + 1};
-    }
-    void publishProjectionDocument(AuthoringSceneDocument &&next) noexcept override {
-        document.swap(next);
-    }
+        : SceneProjectionTarget{AuthoringSceneAuthority::stage(
+              source,
+              AuthoringSceneAuthority::rawView(source).documentJson(),
+              SceneRevision{source.revision().value + 1})} {}
 };
 
 class RuntimeMirrorAdapter final : public EditorProjectionAdapter {
@@ -115,7 +95,8 @@ class RuntimeMirrorAdapter final : public EditorProjectionAdapter {
     }
     void prepare(const EditorProjectionPrepareContext &context) override {
         old_ = runtime_;
-        next_ = context.next_document.encodeSemantic();
+        next_ = AuthoringSceneAuthority::encodeSemantic(
+            context.next_document);
         published_ = false;
     }
     void publish() noexcept override {
@@ -1171,6 +1152,9 @@ TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequenc
                                  .at("components");
     REQUIRE(components.at(2).at("params").at("label") == "one-edited");
     REQUIRE(components.at(3).at("params").at("label") == "two");
+    std::cout << "WP360_BEHAVIOR_RAW_SLOT edited_component_index=2"
+                 " untouched_component_index=3 attachment_seq="
+              << identity.attachment_seq << '\n';
     REQUIRE(harness.lifecycle_trace[harness.lifecycle_trace.size() - 2] ==
             "event:one-edited");
     REQUIRE(harness.lifecycle_trace.back() == "update:one-edited");

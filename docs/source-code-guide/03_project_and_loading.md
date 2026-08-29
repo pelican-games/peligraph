@@ -18,9 +18,9 @@ Runtime object
 
 | データ | 純粋層 | runtime層 |
 |---|---|---|
-| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L460) |
+| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L462) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
-| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L271) |
+| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L288) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2695) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1055) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
@@ -37,48 +37,50 @@ Runtime object
 
 `project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L120) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。
 
-[`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L460) は検証済み封筒の`basic_config`を含む次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L58) へ渡します。
+[`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L462) は検証済み封筒の`basic_config`を含む次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L60) へ渡します。
 
 1. `raw_data` — API/起動時の上書き
 2. `project.json` の `basic_config`
 3. `engine://default_config.json`
 
-各fieldはこの順で最初に見つかった値が採用されます（[`JsonLoader::getVal()`](../../src/core/loader/basicconfig.cpp#L66)）。JSON object全体をdeep mergeするのではなく、必要fieldをpath単位で問い合わせる方式です。
+各fieldはこの順で最初に見つかった値が採用されます（[`JsonLoader::getVal()`](../../src/core/loader/basicconfig.cpp#L68)）。JSON object全体をdeep mergeするのではなく、必要fieldをpath単位で問い合わせる方式です。
 
-構築時にwindow、framerate、seed、camera、各データファイル参照を値として取り込みます。その後、assets/rendering/UI/input JSON本文はgetterの初回呼び出し時に読み、`mutable optional<string>`へcacheします（[basicconfig.hpp](../../src/core/loader/basicconfig.hpp#L92)）。
+構築時にwindow、framerate、seed、camera、各データファイル参照を値として取り込みます。その後、assets/rendering/UI/input JSON本文はgetterの初回呼び出し時に読み、`mutable optional<string>`へcacheします（[basicconfig.hpp](../../src/core/loader/basicconfig.hpp#L93)）。
 
 ### sceneだけはcacheではなくdocument
 
-sceneは単なる文字列cacheから **[`AuthoringSceneDocument`](../../src/core/loader/authoringscenedocument.hpp#L88) へ格上げ**されました（WP149 / WP166）。
+sceneは単なる文字列cacheから、**[`SceneProjectionState`](../../src/core/loader/resolvedscene.hpp#L120) が所有する `AuthoringSceneDocument` と `ResolvedScene` の不変pair**へ格上げされました（WP149 / WP166 / WP360）。
 
 格上げされたのがsceneだけなのは、編集の有無で必要な機能が違うからです。assets/rendering/UI/inputのJSONは読み取り専用で、cacheの役目は「二度目以降のファイル読みを省く」ことだけです。一方sceneはセッション中に書き換えられ、(a) ディスクへの書き戻し（本節の `saveSceneDocument()`）、(b) 改訂番号による競合検出（§3.12 のCAS）、(c) renameや並べ替えに耐えるobject単位の安定identity（§3.12 の `AuthoringObjectId`）を必要とします。`std::optional<std::string>` にはこの三つを置く場所がありません。
 
-保持しているのは次の四つです（[`basicconfig.hpp` 内](../../src/core/loader/basicconfig.hpp#L86)）。
+保持しているのは次の五つです（[`scene_projection`](../../src/core/loader/basicconfig.hpp#L86)）。
 
 ```cpp
-mutable std::optional<AuthoringSceneDocument> scene_document;
+mutable std::optional<SceneProjectionState> scene_projection;
 mutable std::optional<std::string> scene_baseline_digest;
 mutable std::uint64_t next_scene_revision = 1;
+mutable std::uint64_t next_scene_resolver_generation = 1;
 mutable std::uint64_t next_authoring_object_id = 1;
 ```
 
-そのため `sceneDataJson()` は**生ファイル文字列を返しません**（[`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L672)）。
+そのため [`sceneDataJson()`](../../src/core/loader/basicconfig.cpp#L780) は**生ファイル文字列を返しません**。
 
 ```cpp
 std::string ProjectBasicConfig::sceneDataJson() const {
-    return sceneDocument().encodeSemantic();
+    return AuthoringSceneAuthority::encodeSemantic(sceneDocument());
 }
 ```
 
-返るのは正規化済みのsemantic encodeです。読み書きのAPIは次の通りです。
+返るのはauthoring authorityによるsemantic encodeです。runtimeの読者はraw JSONではなく [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L583) を読み、両者とrevision / resolver generationは同じ `SceneProjectionState` から公開されます。読み書きのAPIは次の通りです。
 
 | API | 宣言 | 役割 |
 |---|---|---|
-| `sceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L560) | 現在の改訂を取得（初回は遅延load） |
-| `updateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L629) | scene v1バイト列で差し替え |
-| `invalidateSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L593) | 次回の再構築を強制 |
-| `importSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L579) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
-| `saveSceneDocument()` | [`basicconfig.cpp` 内](../../src/core/loader/basicconfig.cpp#L593) | ディスクへ書き戻し、`SceneSaveResult`（revision / digest / byte数）を返す |
+| `sceneProjectionState()` | [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L587) | authoring / resolved / revision / generation のpairを取得（初回は遅延load） |
+| `sceneDocument()` / `resolvedScene()` | [`sceneDocument()`](../../src/core/loader/basicconfig.cpp#L579) / [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L583) | 同じpairのauthoring側 / resolved側を取得 |
+| `updateSceneDocument()` | [`updateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L597) | scene v1バイト列をprepareしてpairで差し替え |
+| `invalidateSceneDocument()` | [`invalidateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L601) | pairを破棄し、次回の再構築を強制 |
+| `importSceneDocument()` | [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L606) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
+| `saveSceneDocument()` | [`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L691) | ディスクへ書き戻し、pairを公開し、`SceneSaveResult`（revision / digest / byte数）を返す |
 
 保存の失敗は型付きです。[`SceneSaveErrorCode`](../../src/core/loader/basicconfig.hpp#L19) は `ExternalModification` / `Unavailable` / `IoFailure` の三つで、[`SceneSaveError`](../../src/core/loader/basicconfig.hpp#L25) が保持します。`scene_baseline_digest` と保存直前のディスク内容を突き合わせるため、**エディタの外でファイルが書き換わっていれば `ExternalModification` で拒否**します。
 
@@ -86,24 +88,25 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 > **設計決定:** 保存経路の中断点を実装内部の分岐ではなくenumとして公開することで、「どの中断点でもディスク上のsceneが壊れない」という性質をテストから網羅的に叩けます。列挙名がそのまま保存手順の段階名になっています。
 
-> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L623))
+> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L691))
 >
 > **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。
 >
-> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([書く前の検査](../../src/core/loader/basicconfig.cpp#L615))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の検査](../../src/core/loader/basicconfig.cpp#L654))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
+> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([`disk_digest` の検査](../../src/core/loader/basicconfig.cpp#L717))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の `stableDiskDigest` 検査](../../src/core/loader/basicconfig.cpp#L762))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** にpair公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
 >
 > **骨子**:
 > ```text
-> semantic_bytes = source.encodeSemantic()      # SAVE0唯一の直列化
+> semantic_bytes = AuthoringSceneAuthority::encodeSemantic(source) # SAVE0唯一の直列化
 > disk_digest != baseline(1回目)   -> ExternalModification   # tmpを書く前
-> tmpへwrite → 読み戻し一致 → load し直して rawJson 一致
-> next_document = source.stage(...)             # 確保はここまで
+> tmpへwrite → 読み戻し一致 → load し直して authority raw view 一致
+> next_document = AuthoringSceneAuthority::stage(...)
+> next_state = ResolvedSceneResolver::prepare(next_document, generation, defaults) # 確保はここまで
 > disk_digest != baseline(2回目)   -> ExternalModification   # 置換の直前
 > replaceSceneFileAtomically(tmp, destination)
-> publishPreparedSceneDocument(next); baseline.swap(next_digest)   # 無throw / 比較ではなくbaseline更新
+> publishPreparedSceneState(next_state); baseline.swap(next_digest) # 無throw / 比較ではなくbaseline更新
 > ```
 >
-> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L341) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L579) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L414)「SAVE0 is failure-atomic at every prepare point」。
+> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L343) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L606) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L426)「SAVE0 is failure-atomic at every prepare point」。
 >
 > **不変条件**: 直列化は1回だけ(以降の全段が同じバイト列を消費する)。ファイル置換より後にthrowしうる処理を置かない。baseline digestの更新はファイル置換と同一の無throw区間で行う。
 
@@ -209,24 +212,24 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 > stack.pop(); state[i] = 2
 > ```
 >
-> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([前段の検査](../../src/project/sceneformat.cpp#L132))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L110) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
+> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([前段の検査](../../src/project/sceneformat.cpp#L132))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L112) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
 >
 > **不変条件**: 3値stateの `1` と `2` を統合しない。エラーには循環に参加する名前の並びを載せる(「循環あり」だけにしない)。重複名・未知親・曖昧親の検査はDFSより前に済ませる。
 
 ### 2. runtime用にcomponentを分類
 
-[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L93) はcomponentを四系統へ分けます。
+[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L113) はcomponentを四系統へ分けます。
 
 - `light`: ECSへ入れず`LightLoadEntry`へ
-- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L323)）
-- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L111) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L165) で特別扱い）
+- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L53)）
+- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L116) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L182) で特別扱い）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
 このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/collider/behaviorがECS Chunkに保存されるわけではありません。
 
 #### behaviorコンポーネント ✅実装済み
 
-behaviorはobject単位に束ねてから渡します（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L303)）。
+behaviorはobject単位に束ねてから渡します（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L310)）。
 
 ```cpp
 const auto behavior_availability = game_logic_status.loaded
@@ -245,7 +248,7 @@ auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_e
 | DLLロード済みで、未登録の型名 | エラー `Unknown behavior type '<type>' on object '<name>'` |
 | DLL不在で、未登録の型名 | warningを出して **pending** 扱いで続行 |
 
-公開は `arena.publishSceneAttachments(std::move(bound_behaviors))`（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L483)）で、失敗した場合は [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L486) してからrethrowします（[同](../../src/core/loader/scene.cpp#L486)）。
+公開は `arena.publishSceneAttachments(std::move(bound_behaviors))`（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L484)）で、失敗した場合は [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L519) してからrethrowします（[同](../../src/core/loader/scene.cpp#L487)）。
 
 > **設計決定:** game logic DLLが無い状態でsceneを開くのは、ツールや検証では正常なケースです。そこで「DLLが有るのに型名が引けない」ときだけfailにし、DLL不在は保留にしています。ロード可否がビルド構成に依存してぶれない、という線引きです。
 
@@ -264,7 +267,7 @@ auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_e
 
 ### 3. 旧sceneを破棄して新sceneを構築
 
-[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L271) は正規化と事前準備が成功した後、[`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L486) を呼びます。
+[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L288) は正規化と事前準備が成功した後、[`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L519) を呼びます。
 
 ```text
 object bindingをclear
@@ -273,11 +276,11 @@ object bindingをclear
 → PolygonInstanceContainerをclear
 ```
 
-その後、light、camera、ECS object、collider、behaviorを作ります。ECS objectは [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L337) のpopulate callback内でJSONを各Componentへロードします（transient glTF経路は[同](../../src/core/loader/scene.cpp#L693)）。
+その後、light、camera、ECS object、collider、behaviorを作ります。ECS objectは [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L338) のpopulate callback内でJSONを各Componentへロードします（transient glTF経路は[同](../../src/core/loader/scene.cpp#L693)）。
 
 ### 4. authored local TRSのworld投影
 
-ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子transformのworld解決を済ませます（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L382)）。
+ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子transformのworld解決を済ませます（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L383)）。
 
 ```cpp
 // Project authored local TRS to world before any SceneLoaded observer can
@@ -286,11 +289,11 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 
 これは `LocalTransformSystem` と同じ漸化式です。したがって `SceneLoaded` を受け取ったコードは、まだ1フレームも回っていない時点でも world transform を問い合わせられます。
 
-> 🧩 **難所 — preserve-worldの逆算**([`inverseLocal()`](../../src/core/loader/editorprojectiontransaction.cpp#L269) / [`makeReparentCommand()`](../../src/core/loader/editorprojectiontransaction.cpp#L485))
+> 🧩 **難所 — preserve-worldの逆算**([`inverseLocal()`](../../src/core/loader/editorprojectiontransaction.cpp#L284) / [`makeReparentCommand()`](../../src/core/loader/editorprojectiontransaction.cpp#L507))
 >
 > **何をする所か**: 同じ漸化式の逆向きです。エディタが `preserve: "world"` で親を付け替えるとき、新しい親のworld TRSから「worldを保ったままの子のlocal TRS」を逆算します。
 >
-> **素朴に読むと**: `local = parent^-1 * world` を書くだけに見えます。ところがTRS(平行移動・回転・非一様スケール)は逆演算に対して**閉じていません**。親が非一様スケールと回転を同時に持つと、真の相対変換はせん断を含み、正準TRSでは表現できません。せん断が出る仕組みは合成側([`composeWorld()`](../../src/core/loader/editorprojectiontransaction.cpp#L134))を見ると分かります — `world.pos = parent.pos + parent.R * (parent.S * local.pos)` / `world.R = parent.R * local.R` / `world.S = parent.S * local.S` で、**親のスケールは親の軸に沿って**掛かります。子が回転していると伸縮の軸と子の軸が揃わないので、子の直交していた軸が斜交します。これがせん断で、「回転させた直交軸に沿った軸別スケール」しか書けない正準TRSの表現範囲の外です。素朴に計算しても数値そのものは出るので、壊れ方は「公開した瞬間に物体が歪む/ずれる」という無音の形になります。だからこの関数は計算して終わりではなく、**逆算 → もう一度合成 → 元のworldと一致しなければ `TransformUnrepresentable` で拒否** という表現可能性の検査になっています。検査の位置も一律ではありません。除算の**前**に並ぶゼロスケール判定と親TRSの有限性判定([この2つ](../../src/core/loader/editorprojectiontransaction.cpp#L281))は `inf` / `NaN` を作らないためのガードで、クォータニオンのノルム判定([`norm_squared` の算出](../../src/core/loader/editorprojectiontransaction.cpp#L309))は除算の**後**に来る表現可能性検査の一部です — 前者は `TransformZeroParentScale` / `TransformNonFinite`、後者は `TransformUnrepresentable` と、出るエラーコードも別です。ただし「非有限の検査は除算前だけ」ではありません。逆算した結果そのものの有限性も除算の後にもう一度見ていて([結果側の判定](../../src/core/loader/editorprojectiontransaction.cpp#L304))、こちらのエラーコードは `TransformNonFinite` です。
+> **素朴に読むと**: `local = parent^-1 * world` を書くだけに見えます。ところがTRS(平行移動・回転・非一様スケール)は逆演算に対して**閉じていません**。親が非一様スケールと回転を同時に持つと、真の相対変換はせん断を含み、正準TRSでは表現できません。せん断が出る仕組みは合成側([`composeWorld()`](../../src/core/loader/editorprojectiontransaction.cpp#L143))を見ると分かります — `world.pos = parent.pos + parent.R * (parent.S * local.pos)` / `world.R = parent.R * local.R` / `world.S = parent.S * local.S` で、**親のスケールは親の軸に沿って**掛かります。子が回転していると伸縮の軸と子の軸が揃わないので、子の直交していた軸が斜交します。これがせん断で、「回転させた直交軸に沿った軸別スケール」しか書けない正準TRSの表現範囲の外です。素朴に計算しても数値そのものは出るので、壊れ方は「公開した瞬間に物体が歪む/ずれる」という無音の形になります。だからこの関数は計算して終わりではなく、**逆算 → もう一度合成 → 元のworldと一致しなければ `TransformUnrepresentable` で拒否** という表現可能性の検査になっています。検査の位置も一律ではありません。除算の**前**に並ぶゼロスケール判定と親TRSの有限性判定([この2つ](../../src/core/loader/editorprojectiontransaction.cpp#L296))は `inf` / `NaN` を作らないためのガードで、クォータニオンのノルム判定([`norm_squared` の算出](../../src/core/loader/editorprojectiontransaction.cpp#L324))は除算の**後**に来る表現可能性検査の一部です — 前者は `TransformZeroParentScale` / `TransformNonFinite`、後者は `TransformUnrepresentable` と、出るエラーコードも別です。ただし「非有限の検査は除算前だけ」ではありません。逆算した結果そのものの有限性も除算の後にもう一度見ていて([結果側の判定](../../src/core/loader/editorprojectiontransaction.cpp#L319))、こちらのエラーコードは `TransformNonFinite` です。
 >
 > **骨子**:
 > ```text
@@ -305,24 +308,24 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 > 全成分が相対許容差 32*FLT_EPSILON 内で一致しなければ TransformUnrepresentable
 > ```
 >
-> **手がかり**: 許容差のラムダ `32.0F * epsilon * max(1, |left|, |right|)` は**相対**許容差で、絶対値の大きい座標でも桁落ちで誤検出しません(下限 `1.0F` があるので原点近傍では絶対許容差として働きます)。`makeReparentCommand()` は [`buildTransformNodes()`](../../src/core/loader/editorprojectiontransaction.cpp#L197) を **3回** 呼びます — 変更前worldの採取、親エッジ書き換え後(コメント通り「staged graphそのものがサイクルのpreflight」)、local差し替え後の事後条件証明です。[`projectNode()`](../../src/core/loader/editorprojectiontransaction.cpp#L172) の `node.state` は 0=未訪問 / 1=訪問中 / 2=完了 の白灰黒DFSで、1へ再入したらそれが親サイクルです。テストは [`Transform projection recomputes descendants and reparent policies`](../../test/editorprojectiontransaction_test.cpp#L458)。
+> **手がかり**: 許容差のラムダ `32.0F * epsilon * max(1, |left|, |right|)` は**相対**許容差で、絶対値の大きい座標でも桁落ちで誤検出しません(下限 `1.0F` があるので原点近傍では絶対許容差として働きます)。`makeReparentCommand()` は [`buildTransformNodes()`](../../src/core/loader/editorprojectiontransaction.cpp#L206) を **3回** 呼びます — 変更前worldの採取、親エッジ書き換え後(コメント通り「staged graphそのものがサイクルのpreflight」)、local差し替え後の事後条件証明です。[`projectNode()`](../../src/core/loader/editorprojectiontransaction.cpp#L181) の `node.state` は 0=未訪問 / 1=訪問中 / 2=完了 の白灰黒DFSで、1へ再入したらそれが親サイクルです。テストは [`Transform projection recomputes descendants and reparent policies`](../../test/editorprojectiontransaction_test.cpp#L529)。
 >
 > **不変条件**: 再合成の検証はadapterのprepareより**前**に済ませる(ランタイムへ触った後に「実は表現できなかった」を出さない)。許容差を緩めると、無音でずれたreparentが通るようになります。
 
 ### 5. 名前binding
 
-名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L546)、呼び出しは [親子あり経路](../../src/core/loader/scene.cpp#L354) / [親子なし経路](../../src/core/loader/scene.cpp#L453)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
+名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L546)、呼び出しは [親子あり経路](../../src/core/loader/scene.cpp#L355) / [親子なし経路](../../src/core/loader/scene.cpp#L454)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
 
 bindingは生ポインタを保持しません。アクセス時に`tryComponent<TransformComponent>()`でIDのgenerationとComponent存在を再検証します。
 
 ### 6. SceneLoaded event
 
-ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L493)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
+ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L494)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
 
 ## 3.6 即時loadと要求load
 
 - `SceneLoader::load()`はその場で全sceneを置換。
-- [`requestLoad()`](../../src/core/loader/scene.cpp#L496) は存在確認後、scene IDだけをpendingへ保存。
+- [`requestLoad()`](../../src/core/loader/scene.cpp#L497) は存在確認後、scene IDだけをpendingへ保存。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L505) はフレームのゲーム更新末尾で実際にload。
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
@@ -490,7 +493,7 @@ RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core
 instances.publishModelInstance(std::move(staged_instance));
 ```
 
-`SceneLoader` には [`transient_models`](../../src/core/loader/scene.hpp#L39) / [`runtime_only_changes`](../../src/core/loader/scene.hpp#L43) / [`releaseTransientModels()`](../../src/core/loader/scene.hpp#L49) / [`hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L71) が追加されています。`runtime_only_changes` は編集RPC側で「これはruntime専用の変更なので保存できない」と判定するために使います。
+`SceneLoader` には [`transient_models`](../../src/core/loader/scene.hpp#L45) / [`runtime_only_changes`](../../src/core/loader/scene.hpp#L49) / [`releaseTransientModels()`](../../src/core/loader/scene.hpp#L55) / [`hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L77) が追加されています。`runtime_only_changes` は編集RPC側で「これはruntime専用の変更なので保存できない」と判定するために使います。
 
 ## 3.9 その他の純粋形式
 
@@ -721,9 +724,9 @@ struct ComponentCodec {
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L19) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
-この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L45)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L1050) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L329)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L354)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L45)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L1044) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L329)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L354)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
 
-現在の登録は7種です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L856)）。
+現在の登録は7種です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L852)）。
 
 | codec名 | `runtime_kind` |
 |---|---|
@@ -745,36 +748,36 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 
 ## 3.12 AuthoringSceneDocument ✅実装済み
 
-§3.2 で触れたsceneのdocument化の中身です。宣言は [`authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L88) です。
+§3.2 で触れたsceneのdocument化の中身です。宣言は [`authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L90) です。
 
 ### load とidentity
 
-[`AuthoringSceneDocument::load(scene_v1_bytes, revision, first_authoring_object_id)`](../../src/core/loader/authoringscenedocument.hpp#L105) が、`SceneRevision` とセッション内で安定な [`AuthoringObjectId`](../../src/core/loader/authoringscenedocument.hpp#L24) を割り当てます。`AuthoringObjectId` は名前でも配列添字でもないため、objectをrenameしても並べ替えても、エディタ側の参照は切れません。
+[`AuthoringSceneDocument::load(scene_v1_bytes, revision, first_authoring_object_id)`](../../src/core/loader/authoringscenedocument.hpp#L107) が、`SceneRevision` とセッション内で安定な [`AuthoringObjectId`](../../src/core/loader/authoringscenedocument.hpp#L26) を割り当てます。`AuthoringObjectId` は名前でも配列添字でもないため、objectをrenameしても並べ替えても、エディタ側の参照は切れません。
 
-### query
+### authoring query と raw authority
 
-[`query()`](../../src/core/loader/authoringscenedocument.hpp#L114) は三層のviewを返します。
+三層のauthoring viewは [`AuthoringSceneAuthority::query()`](../../src/core/loader/authoringsceneauthority.hpp#L42) だけが取得します。`AuthoringSceneDocument` 自身からraw JSONやquery viewを取り出すpublic APIはなく、保存・journal・編集transactionのauthoring authorityと [`ResolvedSceneResolver`](../../src/core/loader/resolvedscene.hpp#L142) だけが型付き [`AuthoringSceneRawView`](../../src/core/loader/authoringsceneauthority.hpp#L16) を取得できます。Camera / DLL reload / editor runtime queryなどの読者はauthority headerへ依存せず、`ResolvedScene` の `source_json_exact` と `effective_json` を用途に応じて読みます。
 
 | 型 | 内容 |
 |---|---|
-| [`AuthoringSceneView`](../../src/core/loader/authoringscenedocument.hpp#L53) | scene ID、authored JSON、object列 |
-| [`AuthoringObjectView`](../../src/core/loader/authoringscenedocument.hpp#L41) | `AuthoringObjectId`、宣言順、name/parent、runtime entity ID、component列 |
-| [`AuthoringComponentView`](../../src/core/loader/authoringscenedocument.hpp#L33) | 宣言順、authored JSON、`ComponentCodecQueryMetadata` |
+| [`AuthoringSceneView`](../../src/core/loader/authoringscenedocument.hpp#L55) | scene ID、authored JSON、object列 |
+| [`AuthoringObjectView`](../../src/core/loader/authoringscenedocument.hpp#L43) | `AuthoringObjectId`、宣言順、name/parent、runtime entity ID、component列 |
+| [`AuthoringComponentView`](../../src/core/loader/authoringscenedocument.hpp#L35) | 宣言順、authored JSON、`ComponentCodecQueryMetadata` |
 
 componentごとに §3.11 のcodec metadataが付くので、「宣言としては存在するが、このビルドでは編集できない」状態をそのまま表現できます。
 
 ### stage と構造編集
 
-改訂の作り方は二種類あります。
+改訂の作り方は二種類あり、どちらもauthoring authorityへ隔離されています。
 
-- [`stage(raw_document, revision)`](../../src/core/loader/authoringscenedocument.hpp#L121) — **オブジェクト宣言のidentityを固定したまま**の未公開改訂。component配列やparentエッジは変えられますが、object宣言のidentityは動きません。
-- [`structuralStage()`](../../src/core/loader/authoringscenedocument.hpp#L123) → [`AuthoringSceneDocumentStage`](../../src/core/loader/authoringscenedocument.hpp#L137) — object配列そのものを触る唯一の経路。`insertObject` / `removeObject` / `restoreObject` / `renameObject` / `reorderObject` を持ち、`finish(revision) &&` で確定します。変更種別は [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L70) の `Insert` / `Remove` / `Restore` / `Rename` / `Reorder` です。
+- [`AuthoringSceneAuthority::stage(raw_document, revision)`](../../src/core/loader/authoringsceneauthority.hpp#L52) — **オブジェクト宣言のidentityを固定したまま**の未公開改訂。component配列やparentエッジは変えられますが、object宣言のidentityは動きません。
+- [`AuthoringSceneAuthority::structuralStage()`](../../src/core/loader/authoringsceneauthority.hpp#L58) → [`AuthoringSceneDocumentStage`](../../src/core/loader/authoringscenedocument.hpp#L137) — object配列そのものを触る唯一の経路。`insertObject` / `removeObject` / `restoreObject` / `renameObject` / `reorderObject` を持ち、`finish(revision) &&` で確定します。変更種別は [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L72) の `Insert` / `Remove` / `Restore` / `Rename` / `Reorder` です。
 
-実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L785) がコマンド列を見て振り分けます（[その分岐](../../src/core/loader/editorprojectiontransaction.cpp#L813)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
+実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L802) がコマンド列を見てauthority経由で振り分けます（[その分岐](../../src/core/loader/editorprojectiontransaction.cpp#L834)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
 
-> **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L61) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L61)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
+> **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 
-> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L277) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L2057))
+> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L277) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L2068))
 >
 > **何をする所か**: commit済みのjournal recordに、spawnしたobjectのclosure(id + scene + 宣言index + 前後の兄弟id + authored JSON)を後から書き足し、再生時は同じidを同じ宣言区間へ戻します。
 >
@@ -789,15 +792,15 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 > restoreObject: index = next ? *next : (previous ? *previous+1 : min(saved, size))
 > ```
 >
-> **手がかり**: `previous_object_id` / `next_object_id` が「宣言区間」を index ではなく **id** で表しているのが要点です。`Insert` と `Restore` が別の [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L70) なのも同じ理由で、ランタイム側のadapterはこの種別で「新規entityを作るのか、同じauthoring idへ紐づけ直すのか」を決めます。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L965)(spawn undo redo)と [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L326)(destroy interval)。
+> **手がかり**: `previous_object_id` / `next_object_id` が「宣言区間」を index ではなく **id** で表しているのが要点です。`Insert` と `Restore` が別の [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L72) なのも同じ理由で、ランタイム側のadapterはこの種別で「新規entityを作るのか、同じauthoring idへ紐づけ直すのか」を決めます。テストは [`WP161 behavior attachment sequence survives spawn undo redo`](../../test/editorjournal_test.cpp#L1000) と [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L396)(destroy interval)。
 >
 > **不変条件**: journalに載るspawnは必ずclosure付き(closureなしspawnは「新規採番」を意味する)。restoreは保存indexを盲信せず必ず前後idから引き直す。同一idの二重生存は禁止。
 
-> 🧩 **難所 — 二段公開と巻き戻し順**([`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L785))
+> 🧩 **難所 — 二段公開と巻き戻し順**([`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L802))
 >
-> **何をする所か**: 上のstage / structuralStageを実際に使う側です。JSONコマンド列を未公開の文書へ適用し、全adapterを prepare → publish → 文書公開 → finish の順に流します。どこで失敗しても呼び出し前の状態へ戻します。
+> **何をする所か**: 上のstage / structuralStageを実際に使う側です。JSONコマンド列を未公開の文書へ適用し、resolverで `{Authoring, Resolved, revision, generation}` のcandidate pairをprepareしてから、全adapterを prepare → publish → pair公開 → finish の順に流します。どこで失敗しても呼び出し前のpairと全読者へ戻します。
 >
-> **素朴に読むと**: 最初に引っかかるのは `prepared.push_back(adapter)` が `adapter->prepare(context)` の**前**にあることです。順序ミスに見えますが意図的で、prepareが例外を投げたadapter自身も巻き戻し対象に入れるための前倒しです。逆にすると、途中まで状態を掴んだadapterがrollbackされずに残ります。次が `prepared.empty() ? Rejected : Failed` の分岐 — adapterに一度も触れていなければ「受理していない(Rejected)」、一つでも触れたなら「実行して失敗した(Failed)」で、RPC応答の `status` 文字列がここで決まります。そして `publish()` / `rollback()` / `finish()` は全て `noexcept` です([`publish()`](../../src/core/loader/editorprojectiontransaction.hpp#L166))。「非確保」まで明文化されているのは `rollback()` だけで、[宣言のコメント](../../src/core/loader/editorprojectiontransaction.hpp#L167) の `Both paths must be allocation-free.` はrollbackのpublish前/後の2経路を指します — `publish()` / `finish()` の非確保はヘッダに書かれておらず、実装側の慣行です。確保・decode・検証は全部prepareへ前倒しされていて、これを崩すと「publish途中でthrowして半分だけ公開」が起こりえます。
+> **素朴に読むと**: 最初に引っかかるのは `prepared.push_back(adapter)` が `adapter->prepare(context)` の**前**にあることです。順序ミスに見えますが意図的で、prepareが例外を投げたadapter自身も巻き戻し対象に入れるための前倒しです。逆にすると、途中まで状態を掴んだadapterがrollbackされずに残ります。次が `prepared.empty() ? Rejected : Failed` の分岐 — adapterに一度も触れていなければ「受理していない(Rejected)」、一つでも触れたなら「実行して失敗した(Failed)」で、RPC応答の `status` 文字列がここで決まります。そして `publish()` / `rollback()` / `finish()` は全て `noexcept` です([`publish()`](../../src/core/loader/editorprojectiontransaction.hpp#L179))。「非確保」まで明文化されているのは `rollback()` だけで、[宣言のコメント](../../src/core/loader/editorprojectiontransaction.hpp#L180) の `Both paths must be allocation-free.` はrollbackのpublish前/後の2経路を指します — `publish()` / `finish()` の非確保はヘッダに書かれておらず、実装側の慣行です。確保・decode・検証は全部prepareへ前倒しされていて、これを崩すと「publish途中でthrowして半分だけ公開」が起こりえます。
 >
 > **骨子**:
 > ```text
@@ -805,14 +808,14 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 > 構造編集があれば structural_stage 経由、無ければ stage(...)
 > for a in adapters: prepared.push_back(a); a->prepare()    # ここで throw しても巻き戻せる
 > for a in adapters: a->publish()                           # noexcept
-> document_target_.publishProjectionDocument(std::move(staged))   # 最後の不可逆点
+> document_target_.publishProjectionState(candidate_state)         # pairを一操作でswap
 > for a in reverse(prepared): a->finish()
 > catch: for a in reverse(prepared): a->rollback()
 > ```
 >
-> **手がかり**: [`EditorProjectionPublicationMode`](../../src/core/loader/editorprojectiontransaction.hpp#L34) の `StagedNoexcept` と `InverseToken` の差が効きます。publish後のfault注入が `InverseToken` にしか適用されないのは、publish後でも逆トークンで戻せるadapterだけがそこで失敗を許されるからです。`rollback()` は「publish前ならprepared状態の破棄、publish後なら逆トークンの適用」の**両義**で、[`TransformProjectionAdapter::rollback()`](../../src/core/loader/editorprojectiontransaction.cpp#L761) の `published_` 分岐がその実例です。テストは [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L225) / [`Structural spawn destroy and mixed command faults restore document and runtime exactly`](../../test/editorprojectiontransaction_test.cpp#L385)。
+> **手がかり**: [`EditorProjectionPublicationMode`](../../src/core/loader/editorprojectiontransaction.hpp#L34) の `StagedNoexcept` と `InverseToken` の差が効きます。publish後のfault注入が `InverseToken` にしか適用されないのは、publish後でも逆トークンで戻せるadapterだけがそこで失敗を許されるからです。`rollback()` は「publish前ならprepared状態の破棄、publish後なら逆トークンの適用」の**両義**で、[`TransformProjectionAdapter::rollback()`](../../src/core/loader/editorprojectiontransaction.cpp#L778) の `published_` 分岐がその実例です。テストは [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L213) / [`Structural spawn destroy and mixed command faults restore document and runtime exactly`](../../test/editorprojectiontransaction_test.cpp#L455)。
 >
-> **不変条件**: publish以降はthrowも確保もしない。文書公開はadapter publishの**後**、finishの**前**(入れ替えると、文書だけ新しくランタイムが古い中間状態を観測できます)。rollback / finish は必ず逆順。
+> **不変条件**: adapter publish以降の通常経路はthrowも確保もしない。pair公開はadapter publishの**後**、finishの**前**。`AfterPublication` faultではpairを旧版へswapし直してからadapterを逆順rollbackするため、authoringとresolvedの片側だけが残る状態はありません。rollback / finish は必ず逆順。
 
 fixtureは [`test/fixtures/authoring_scene/multi_scene_roundtrip.json`](../../test/fixtures/authoring_scene/multi_scene_roundtrip.json) です。
 

@@ -2,7 +2,7 @@
 
 #include "editorjournal.hpp"
 #include "editorpreviewservice.hpp"
-#include "../loader/authoringscenedocument.hpp"
+#include "../loader/resolvedscene.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -210,8 +210,10 @@ struct EditorSceneRevisionResult {
 
 struct EditorCommandServiceDependencies {
     std::function<const AuthoringSceneDocument &()> document;
+    std::function<const ResolvedScene &()> resolved_scene;
     std::function<std::string()> current_scene_id;
-    std::function<EditorRuntimeObjectState(const AuthoringSceneView &, const AuthoringObjectView &)> runtime_query;
+    std::function<EditorRuntimeObjectState(const ResolvedSceneView &,
+                                           const ResolvedObject &)> runtime_query;
     std::function<std::vector<EditorAssetQueryResult>()> assets;
     std::function<EditorSnapshotState()> snapshot_state;
     std::optional<EditorEditRuntimeDependencies> edit;
@@ -244,13 +246,16 @@ class EditorCommandService {
     std::unordered_map<std::uint64_t, std::string> actor_display_names_;
     mutable std::optional<EditorPreviewLeaseResult> preview_lease_;
     mutable std::vector<PendingPreviewWatchTransition> pending_preview_watch_;
+    mutable std::optional<ResolvedScene> fallback_resolved_;
 
     const AuthoringSceneDocument &document() const;
-    const AuthoringSceneView &selectScene(const std::vector<AuthoringSceneView> &scenes,
-                                          const std::optional<std::string> &requested_scene) const;
-    EditorObjectQueryResult queryObject(const AuthoringSceneDocument &document,
-                                        const AuthoringSceneView &scene,
-                                        const AuthoringObjectView &object) const;
+    const ResolvedScene &resolved() const;
+    const ResolvedSceneView &selectScene(
+        std::span<const ResolvedSceneView> scenes,
+        const std::optional<std::string> &requested_scene) const;
+    EditorObjectQueryResult queryObject(const ResolvedScene &document,
+                                        const ResolvedSceneView &scene,
+                                        const ResolvedObject &object) const;
     void trackPreviewTransition(const nlohmann::ordered_json &response,
                                 const nlohmann::json &params,
                                 PreviewWatchTransitionKind kind);

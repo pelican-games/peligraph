@@ -63,7 +63,7 @@ std::size_t AuthoringSceneDocument::objectCount() const noexcept {
     return count;
 }
 
-std::vector<AuthoringSceneView> AuthoringSceneDocument::query() const {
+std::vector<AuthoringSceneView> AuthoringSceneDocument::queryAuthoring() const {
     std::vector<AuthoringSceneView> result;
     result.reserve(scene_metadata_.size());
     const auto &scenes = raw_document_.at("scenes");
@@ -105,13 +105,13 @@ std::vector<AuthoringSceneView> AuthoringSceneDocument::query() const {
     return result;
 }
 
-std::string AuthoringSceneDocument::encodeSemantic() const {
+std::string AuthoringSceneDocument::encodeSemanticAuthoring() const {
     // nlohmann::json's default object type has a stable lexicographic key
     // order. Array declaration order and JSON scalar types remain untouched.
     return raw_document_.dump();
 }
 
-AuthoringSceneDocument AuthoringSceneDocument::stage(
+AuthoringSceneDocument AuthoringSceneDocument::stageAuthoring(
     nlohmann::json raw_document, SceneRevision revision) const {
     if (revision.value == 0 || revision.value <= revision_.value) {
         throw std::invalid_argument(
@@ -154,7 +154,7 @@ AuthoringSceneDocument AuthoringSceneDocument::stage(
     return result;
 }
 
-AuthoringSceneDocumentStage AuthoringSceneDocument::structuralStage() const {
+AuthoringSceneDocumentStage AuthoringSceneDocument::structuralStageAuthoring() const {
     return AuthoringSceneDocumentStage{*this};
 }
 

@@ -1,0 +1,10 @@
+test=behavior_dll_reload_version_bump_failure
+production_source=src/core/gamelogic/gamelogicreload.cpp
+mutation=replace `if (active)` guarding resolved behavior-source validation with `if (false && active)`
+baseline_ctest_exit=0
+baseline_error=schema_incompatible: stable_name='wp162_reload_behavior' version=1->2 scene='unused_scene' object_index=0 component_index=0 field='params.count'
+mutant_build_target=pelican_player Debug
+mutant_ctest_exit=8
+mutant_failure=FullyQualifiedErrorId : incompatible version bump was not rejected
+mutant_runtime_error=game logic DLL reload failed: field 'params.count' is out of range
+restoration=production source restored immediately after the mutant run

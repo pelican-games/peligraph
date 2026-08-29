@@ -46,6 +46,7 @@ using EditorPreviewGateProvider = std::function<EditorPreviewGateSnapshot()>;
 
 struct EditorPreviewServiceDependencies {
     std::function<const AuthoringSceneDocument &()> document;
+    std::function<const SceneProjectionState &()> projection_state;
     std::function<const PreviewGraphProgram &()> preview_graph;
     std::function<bool()> xr_active;
     std::function<PreviewEngineTimeSnapshot()> engine_time;

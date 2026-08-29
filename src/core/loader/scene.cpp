@@ -42,6 +42,23 @@
 
 namespace Pelican {
 
+void internal::validateResolvedSceneFeatureBindings(
+    const ResolvedSceneView &scene) {
+#if !PELICAN_WITH_PHYSICS
+    for (const auto &object : scene.objects) {
+        if (std::any_of(object.components.begin(), object.components.end(),
+                        [](const auto &component) {
+                            return component.name == "collider";
+                        })) {
+            throwBuildFeatureDisabled("PELICAN_WITH_PHYSICS",
+                                      "scene contains collider components");
+        }
+    }
+#else
+    (void)scene;
+#endif
+}
+
 SceneLoader::SceneLoader() {}
 SceneLoader::~SceneLoader() { releaseTransientModels(false); }
 
@@ -63,7 +80,7 @@ ComponentId getComponentIdForObject(ComponentInfoManager &component_info_manager
 
 struct EcsObjectLoad {
     struct ComponentLoad {
-        nlohmann::json authored_json;
+        nlohmann::json effective_json;
         const ComponentCodec *codec = nullptr;
         ComponentCodecValue decoded;
     };
@@ -78,40 +95,37 @@ struct EcsObjectLoad {
     std::vector<PreparedSceneBehaviorAttachment> behaviors;
 };
 
-ColliderComponent loadColliderComponent(const nlohmann::json &component, const std::string &object_name) {
+ColliderComponent loadColliderComponent(const ResolvedComponent &component,
+                                        const std::string &object_name) {
     try {
         ColliderComponent collider;
-        const auto &codec = requireComponentCodec("collider");
-        const auto decoded = codec.decodeAuthored(component);
-        codec.applyRuntime(decoded, &collider);
+        if (component.runtime_codec == nullptr) {
+            throw std::logic_error("resolved collider has no runtime codec");
+        }
+        component.runtime_codec->applyRuntime(component.requireRuntimeValue(),
+                                              &collider);
         return collider;
     } catch (const std::exception &ex) {
         throw std::runtime_error("Invalid collider on object '" + displayObjectName(object_name) + "': " + ex.what());
     }
 }
 
-std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects,
-                                                std::span<const AuthoringObjectView> authoring_objects,
+std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
                                                 ComponentInfoManager &component_info_manager,
                                                 std::vector<LightLoadEntry> &light_entries,
                                                 std::vector<PreparedSceneBehaviorAttachment> behavior_entries) {
-    if (objects.size() != authoring_objects.size()) {
-        throw std::logic_error(
-            "authoring scene view drifted from the runtime scene document");
-    }
     std::vector<EcsObjectLoad> ecs_objects;
-    ecs_objects.reserve(objects.size());
+    ecs_objects.reserve(scene.objects.size());
 
-    std::vector<std::vector<PreparedSceneBehaviorAttachment>> behaviors_by_object(objects.size());
+    std::vector<std::vector<PreparedSceneBehaviorAttachment>> behaviors_by_object(
+        scene.objects.size());
     for (auto &entry : behavior_entries) {
         behaviors_by_object.at(entry.object_index).push_back(std::move(entry));
     }
 
     std::unordered_set<std::string> parent_names;
-    for (const auto &object : objects) {
-        if (const auto parent = object.find("parent"); parent != object.end()) {
-            parent_names.insert(parent->get<std::string>());
-        }
+    for (const auto &object : scene.objects) {
+        if (object.parent) parent_names.insert(*object.parent);
     }
     const bool scene_uses_parents = !parent_names.empty();
     const auto local_transform_id = scene_uses_parents
@@ -119,26 +133,25 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects,
                                               component_info_manager.getComponentIdByName("localtransform")}
                                         : std::nullopt;
 
-    for (std::size_t object_index = 0; object_index < objects.size(); ++object_index) {
-        const auto &object = objects.at(object_index);
-        const auto object_name = object.value("name", std::string{});
-        const auto parent_name = object.value("parent", std::string{});
-        const auto &components_json = object.at("components");
+    for (std::size_t object_index = 0; object_index < scene.objects.size();
+         ++object_index) {
+        const auto &object = scene.objects[object_index];
+        const auto object_name = object.name.value_or(std::string{});
+        const auto parent_name = object.parent.value_or(std::string{});
 
         EcsObjectLoad ecs_object;
-        ecs_object.authoring_object_id =
-            authoring_objects[object_index].authoring_object_id;
+        ecs_object.authoring_object_id = object.authoring_object_id;
         ecs_object.name = object_name;
         ecs_object.parent = parent_name;
         ecs_object.hierarchy_participant = !parent_name.empty() || parent_names.contains(object_name);
         ecs_object.behaviors = std::move(behaviors_by_object[object_index]);
-        ecs_object.components.reserve(components_json.size());
-        ecs_object.components_id.reserve(components_json.size());
+        ecs_object.components.reserve(object.components.size());
+        ecs_object.components_id.reserve(object.components.size());
 
         bool has_transform = false;
         bool has_local_transform = false;
-        for (const auto &component : components_json) {
-            const auto component_name = component.at("name").get<std::string>();
+        for (const auto &component : object.components) {
+            const auto &component_name = component.name;
             has_transform = has_transform || component_name == "transform";
             has_local_transform = has_local_transform || component_name == "localtransform";
         }
@@ -147,15 +160,19 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects,
                                      "' requires a transform component");
         }
 
-        for (const auto &component : components_json) {
-            const std::string component_name = component.at("name");
+        for (const auto &component : object.components) {
+            const auto &component_name = component.name;
             if (component_name == "light") {
-                const auto &codec = requireComponentCodec("light");
-                const auto decoded = codec.decodeAuthored(component);
-                LightCodecData runtime;
-                codec.applyRuntime(decoded, &runtime);
+                try {
+                    (void)component.requireRuntimeValue();
+                } catch (const std::exception &error) {
+                    throw std::runtime_error(
+                        "Invalid light on object '" +
+                        displayObjectName(object_name) + "': " +
+                        error.what());
+                }
                 light_entries.push_back(LightLoadEntry{
-                    object_name, codec.encodeCanonical(codec.projectRuntime(&runtime))});
+                    object_name, component.effective_json});
                 continue;
             }
             if (component_name == "collider") {
@@ -166,20 +183,20 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects,
                 continue;
             }
 
-            const auto *codec = findComponentCodec(component_name);
-            auto decoded = codec != nullptr ? codec->decodeAuthored(component) : ComponentCodecValue{};
             ecs_object.components.push_back(EcsObjectLoad::ComponentLoad{
-                .authored_json = component,
-                .codec = codec,
-                .decoded = std::move(decoded),
+                .effective_json = component.effective_json,
+                .codec = component.runtime_codec,
+                .decoded = component.runtime_codec != nullptr
+                               ? component.requireRuntimeValue()
+                               : ComponentCodecValue{},
             });
             ecs_object.components_id.push_back(
                 getComponentIdForObject(component_info_manager, component_name, object_name));
             if (ecs_object.hierarchy_participant && component_name == "transform" && !has_local_transform) {
-                auto local_component = codec->encodeCanonical(ecs_object.components.back().decoded);
+                auto local_component = component.effective_json;
                 local_component["name"] = "localtransform";
                 ecs_object.components.push_back(EcsObjectLoad::ComponentLoad{
-                    .authored_json = std::move(local_component),
+                    .effective_json = std::move(local_component),
                 });
                 ecs_object.components_id.push_back(*local_transform_id);
             }
@@ -245,7 +262,7 @@ void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
 void applyComponentLoad(ComponentInfoManager &component_info_manager, void *target,
                         const EcsObjectLoad::ComponentLoad &component) {
     if (component.codec == nullptr || component.codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) {
-        component_info_manager.loadByJson(target, component.authored_json);
+        component_info_manager.loadByJson(target, component.effective_json);
         return;
     }
     if (component.codec->name == "transform") {
@@ -271,41 +288,32 @@ const EcsObjectLoad::ComponentLoad &transformLoad(const EcsObjectLoad &object) {
 void SceneLoader::load(SceneId scene_id) {
     auto &config = GET_MODULE(ProjectBasicConfig);
 
-    const auto &scene_document = config.sceneDocument();
+    const auto &scene_document = config.resolvedScene();
     for (const auto &warning : scene_document.warnings()) {
         if (logger != nullptr) {
             LOG_WARNING(logger, "{}", warning);
         }
     }
 
-    const auto &scenes = scene_document.scenesJson();
-    const auto scene_it = scenes.find(scene_id);
-    if (scene_it == scenes.end()) {
+    const auto *scene = scene_document.findScene(scene_id);
+    if (scene == nullptr) {
         throw std::runtime_error("scene not found: " + scene_id);
     }
+    internal::validateResolvedSceneFeatureBindings(*scene);
     if (runtime_scene_epoch == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("runtime scene epoch space exhausted");
     }
 
-    const auto authoring_scenes = scene_document.query();
-    const auto authoring_scene = std::find_if(
-        authoring_scenes.begin(), authoring_scenes.end(),
-        [&](const auto &candidate) { return candidate.scene_id == scene_id; });
-    if (authoring_scene == authoring_scenes.end()) {
-        throw std::logic_error(
-            "runtime scene is absent from the authoring scene view");
-    }
-
     std::vector<LightLoadEntry> light_entries;
-    const auto &objects = scene_it.value().at("objects");
     auto &component_info_manager = GET_MODULE(ComponentInfoManager);
     const auto game_logic_status = configuredGameLogicStatus();
     const auto behavior_availability = game_logic_status.loaded
                                            ? BehaviorRegistryAvailability::active
                                            : BehaviorRegistryAvailability::dll_unavailable;
-    auto behavior_entries = prepareSceneBehaviorAttachments(objects, behavior_availability);
-    auto ecs_objects = prepareSceneBindings(objects, authoring_scene->objects,
-                                            component_info_manager, light_entries,
+    auto behavior_entries = prepareResolvedSceneBehaviorAttachments(
+        scene->objects, behavior_availability);
+    auto ecs_objects = prepareSceneBindings(*scene, component_info_manager,
+                                            light_entries,
                                             std::move(behavior_entries));
 
     const auto transform_id = component_info_manager.getComponentIdByName("transform");
@@ -316,13 +324,6 @@ void SceneLoader::load(SceneId scene_id) {
 
 #if PELICAN_WITH_PHYSICS
     auto &phys_world = GET_MODULE(PhysWorld);
-#else
-    if (std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
-            return !object.colliders.empty();
-        })) {
-        throwBuildFeatureDisabled("PELICAN_WITH_PHYSICS",
-                                  "scene contains collider components");
-    }
 #endif
     const bool scene_uses_parents = std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
         return object.hierarchy_participant;
@@ -495,8 +496,7 @@ void SceneLoader::load(SceneId scene_id) {
 
 void SceneLoader::requestLoad(SceneId scene_id) {
     auto &config = GET_MODULE(ProjectBasicConfig);
-    const auto &scenes = config.sceneDocument().scenesJson();
-    if (scenes.find(scene_id) == scenes.end()) {
+    if (config.resolvedScene().findScene(scene_id) == nullptr) {
         throw std::runtime_error("scene not found: " + scene_id);
     }
     pending_scene_id = std::move(scene_id);

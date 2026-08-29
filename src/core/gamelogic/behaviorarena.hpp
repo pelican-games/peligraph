@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../userpublic/behavior.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
+#include "../loader/resolvedscene.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -107,6 +108,10 @@ std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
                                          std::size_t component_index);
 std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
     const nlohmann::json &objects, BehaviorRegistryAvailability availability);
+std::vector<PreparedSceneBehaviorAttachment>
+prepareResolvedSceneBehaviorAttachments(
+    std::span<const ResolvedObject> objects,
+    BehaviorRegistryAvailability availability);
 
 DECLARE_MODULE(BehaviorAttachmentArena) {
     friend class BehaviorCallbackScope;

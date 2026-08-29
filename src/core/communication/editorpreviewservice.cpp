@@ -356,7 +356,8 @@ EditorPreviewError::EditorPreviewError(EditorPreviewErrorCode code,
 
 EditorPreviewService::EditorPreviewService(EditorPreviewServiceDependencies dependencies)
     : dependencies_{std::move(dependencies)} {
-    if (!dependencies_.document || !dependencies_.preview_graph ||
+    if ((!dependencies_.document && !dependencies_.projection_state) ||
+        !dependencies_.preview_graph ||
         !dependencies_.engine_time || !dependencies_.shared_state_snapshot) {
         throw std::invalid_argument("EditorPreviewService requires document, graph, time, and state providers");
     }
@@ -376,8 +377,18 @@ OrderedJson EditorPreviewService::evalPreview(
         const auto overrides = params.value("overrides", Json::array());
         const auto queries = params.value("queries", Json::array());
         try {
+            const auto *projection_state = dependencies_.projection_state
+                                               ? &dependencies_.projection_state()
+                                               : nullptr;
+            const auto &document = projection_state
+                                       ? projection_state->authoring()
+                                       : dependencies_.document();
+            const auto defaults = projection_state
+                                      ? projection_state->resolved().defaults()
+                                      : ResolvedSceneDefaults{};
             auto prepared = prepareEditorPreviewProjection(
-                dependencies_.document(), overrides, dependencies_.projection_fault_hook);
+                document, overrides, defaults,
+                dependencies_.projection_fault_hook);
             const auto execution_gate = gate_provider();
             checkGate(method, execution_gate, accepted_gate.epoch);
             checkXr(method, dependencies_.xr_active);
@@ -385,7 +396,7 @@ OrderedJson EditorPreviewService::evalPreview(
             const auto results = EditorPreviewEvaluationContext{prepared}.evaluate(
                 queries, dependencies_.projection_fault_hook);
             return {{"status", "evaluated"},
-                    {"scene_revision", dependencies_.document().revision().value},
+                    {"scene_revision", document.revision().value},
                     {"graph", "preview"},
                     {"graph_generation", dependencies_.preview_graph().generation},
                     {"results", results}};
@@ -413,8 +424,18 @@ OrderedJson EditorPreviewService::renderPreview(
         auto parsed = parseCapture(params.at("capture"), dependencies_.preview_graph());
         const auto overrides = params.value("overrides", Json::array());
         try {
+            const auto *projection_state = dependencies_.projection_state
+                                               ? &dependencies_.projection_state()
+                                               : nullptr;
+            const auto &document = projection_state
+                                       ? projection_state->authoring()
+                                       : dependencies_.document();
+            const auto defaults = projection_state
+                                      ? projection_state->resolved().defaults()
+                                      : ResolvedSceneDefaults{};
             auto prepared = prepareEditorPreviewProjection(
-                dependencies_.document(), overrides, dependencies_.projection_fault_hook);
+                document, overrides, defaults,
+                dependencies_.projection_fault_hook);
             resolveCamera(parsed.camera, prepared, parsed.request);
             const auto execution_gate = gate_provider();
             checkGate(method, execution_gate, accepted_gate.epoch);
@@ -423,7 +444,7 @@ OrderedJson EditorPreviewService::renderPreview(
             auto result = executor_.execute(dependencies_.preview_graph(), prepared,
                                             parsed.request, dependencies_.engine_time());
             return {{"status", "rendered"},
-                    {"scene_revision", dependencies_.document().revision().value},
+                    {"scene_revision", document.revision().value},
                     {"graph", "preview"},
                     {"graph_generation", dependencies_.preview_graph().generation},
                     {"capture", {{"width", result.width},

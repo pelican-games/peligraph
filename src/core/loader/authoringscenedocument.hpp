@@ -19,6 +19,8 @@
 namespace Pelican {
 
 class ProjectBasicConfigProjectionTarget;
+class AuthoringSceneAuthority;
+class ResolvedSceneResolver;
 
 PELICAN_DEFINE_HANDLE(SceneRevision, std::uint64_t)
 PELICAN_DEFINE_HANDLE(AuthoringObjectId, std::uint64_t)
@@ -107,25 +109,23 @@ class AuthoringSceneDocument {
 
     SceneRevision revision() const noexcept { return revision_; }
     std::size_t objectCount() const noexcept;
-    const nlohmann::json &rawJson() const noexcept { return raw_document_; }
-    const nlohmann::json &scenesJson() const { return raw_document_.at("scenes"); }
     std::span<const std::string> warnings() const noexcept { return warnings_; }
-
-    std::vector<AuthoringSceneView> query() const;
-    std::string encodeSemantic() const;
-
-    // Build an unpublished revision while retaining the session-stable object
-    // identities of this document. Projection commands may change component
-    // arrays and parent edges, but object declaration identity is deliberately
-    // fixed until the later spawn/destroy work package.
-    AuthoringSceneDocument stage(nlohmann::json raw_document,
-                                 SceneRevision revision) const;
-    AuthoringSceneDocumentStage structuralStage() const;
     void swap(AuthoringSceneDocument &other) noexcept;
 
   private:
+    // Raw JSON is deliberately absent from the document's public surface.
+    // Only the authoring authority seam and the resolver may acquire a view;
+    // runtime readers receive ResolvedScene instead.
+    std::vector<AuthoringSceneView> queryAuthoring() const;
+    std::string encodeSemanticAuthoring() const;
+    AuthoringSceneDocument stageAuthoring(nlohmann::json raw_document,
+                                          SceneRevision revision) const;
+    AuthoringSceneDocumentStage structuralStageAuthoring() const;
+
     friend class ProjectBasicConfig;
     friend class ProjectBasicConfigProjectionTarget;
+    friend class AuthoringSceneAuthority;
+    friend class ResolvedSceneResolver;
     friend class AuthoringSceneDocumentStage;
 };
 

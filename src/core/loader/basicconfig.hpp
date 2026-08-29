@@ -1,6 +1,6 @@
 #include "../cameradefinition.hpp"
 #include "../container.hpp"
-#include "authoringscenedocument.hpp"
+#include "resolvedscene.hpp"
 
 #include <cstdint>
 #include <cstddef>
@@ -83,9 +83,10 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::optional<std::string> default_input_profile;
     bool project_source = false;
 
-    mutable std::optional<AuthoringSceneDocument> scene_document;
+    mutable std::optional<SceneProjectionState> scene_projection;
     mutable std::optional<std::string> scene_baseline_digest;
     mutable std::uint64_t next_scene_revision = 1;
+    mutable std::uint64_t next_scene_resolver_generation = 1;
     mutable std::uint64_t next_authoring_object_id = 1;
     std::optional<SceneSaveFaultPoint> scene_save_fault;
     std::optional<SceneImportFaultPoint> scene_import_fault;
@@ -96,7 +97,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     mutable std::unordered_map<std::string, std::string> input_profile_jsons;
 
     void publishSceneDocument(std::string_view scene_v1_bytes) const;
-    void publishPreparedSceneDocument(AuthoringSceneDocument &document) const noexcept;
+    void publishPreparedSceneState(SceneProjectionState &state) const noexcept;
 
   public:
     ProjectBasicConfig();
@@ -112,10 +113,13 @@ DECLARE_MODULE(ProjectBasicConfig) {
 
     std::string defaultSceneId() const;
     const AuthoringSceneDocument &sceneDocument() const;
+    const ResolvedScene &resolvedScene() const;
+    const SceneProjectionState &sceneProjectionState() const;
     void updateSceneDocument(std::string_view scene_v1_bytes);
     void invalidateSceneDocument() noexcept;
     SceneRevision importSceneDocument(std::string_view scene_v1_bytes,
                                       const std::function<void()> &reload);
+    void refreshResolvedScene(const std::function<void()> &reload);
     SceneSaveResult saveSceneDocument();
     void setSceneSaveFaultForTesting(
         std::optional<SceneSaveFaultPoint> fault) noexcept {

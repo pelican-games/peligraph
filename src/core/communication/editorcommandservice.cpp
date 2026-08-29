@@ -1,4 +1,6 @@
 #include "editorcommandservice.hpp"
+
+#include "../loader/sceneauthoringadapter.hpp"
 #include "schemavocabularyadapter.hpp"
 
 #include "renderconfigeditor.hpp"
@@ -300,8 +302,19 @@ const AuthoringSceneDocument &EditorCommandService::document() const {
     return dependencies_.document();
 }
 
-const AuthoringSceneView &
-EditorCommandService::selectScene(const std::vector<AuthoringSceneView> &scenes,
+const ResolvedScene &EditorCommandService::resolved() const {
+    if (dependencies_.resolved_scene) return dependencies_.resolved_scene();
+    const auto &source = document();
+    if (!fallback_resolved_ ||
+        fallback_resolved_->revision() != source.revision()) {
+        fallback_resolved_ = ResolvedSceneResolver::resolve(
+            source, SceneResolverGeneration{source.revision().value});
+    }
+    return *fallback_resolved_;
+}
+
+const ResolvedSceneView &
+EditorCommandService::selectScene(std::span<const ResolvedSceneView> scenes,
                                   const std::optional<std::string> &requested_scene) const {
     const auto scene_id = requested_scene.value_or(dependencies_.current_scene_id());
     const auto found = std::find_if(scenes.begin(), scenes.end(),
@@ -313,9 +326,9 @@ EditorCommandService::selectScene(const std::vector<AuthoringSceneView> &scenes,
     return *found;
 }
 
-EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDocument &source,
-                                                          const AuthoringSceneView &scene,
-                                                          const AuthoringObjectView &object) const {
+EditorObjectQueryResult EditorCommandService::queryObject(
+    const ResolvedScene &source, const ResolvedSceneView &scene,
+    const ResolvedObject &object) const {
     EditorRuntimeObjectState runtime;
     if (dependencies_.runtime_query) runtime = dependencies_.runtime_query(scene, object);
     if (!runtime.component_runtime_json.empty() &&
@@ -332,18 +345,18 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
 
     EditorObjectQueryResult result{.scene_revision = source.revision(),
                                    .authoring_object_id = object.authoring_object_id,
-                                   .declaration_index = object.declaration_index,
+                                   .declaration_index = object.authoring_object_index,
                                    .name = object.name,
                                    .parent = object.parent,
                                    .entity_id = runtime.entity_id};
     result.components.reserve(object.components.size());
     for (std::size_t index = 0; index < object.components.size(); ++index) {
         const auto &component = object.components[index];
-        const auto name = component.authoredJson().at("name").get<std::string>();
+        const auto &name = component.name;
         EditorComponentQueryResult component_result{
             .name = name,
-            .component_index = index,
-            .authored_json = component.authoredJson(),
+            .component_index = component.authoring_component_index,
+            .authored_json = component.source_json_exact,
             .editable = component.codec.editable,
             .codec_state = component.codec.state,
             .codec_name = std::string{component.codec.codec_name},
@@ -353,7 +366,7 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
             component_result.runtime_json = runtime.component_runtime_json[index];
         }
         if (name == "behavior") {
-            const auto stable_name = component_result.authored_json.value(
+            const auto stable_name = component.effective_json.value(
                 "type", std::string{});
             const auto *registration =
                 internal::getBehaviorRegisterer().findByName(stable_name);
@@ -367,12 +380,8 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
                     attachment.owner_generation;
                 component_result.pending = attachment.pending;
             }
-            if (registration != nullptr && !component_result.pending) {
-                const auto params = component_result.authored_json.contains("params")
-                                        ? component_result.authored_json.at("params")
-                                        : Json::object();
-                component_result.authored_json["params"] = Json::parse(
-                    registration->canonicalize_params(params));
+            if (registration != nullptr && !component_result.pending &&
+                component.behavior_canonical_params) {
                 component_result.editable = true;
                 component_result.codec_state = ComponentCodecState::Registered;
                 component_result.codec_name = "behavior_params";
@@ -393,9 +402,8 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
 }
 
 EditorSceneTreeResult EditorCommandService::sceneTree(const EditorSceneTreeRequest &request) const {
-    const auto &source = document();
-    const auto scenes = source.query();
-    const auto &scene = selectScene(scenes, request.scene_id);
+    const auto &source = resolved();
+    const auto &scene = selectScene(source.scenes(), request.scene_id);
     EditorSceneTreeResult result{.scene_revision = source.revision(), .scene_id = scene.scene_id};
     result.objects.reserve(scene.objects.size());
     for (const auto &object : scene.objects) result.objects.push_back(queryObject(source, scene, object));
@@ -404,7 +412,7 @@ EditorSceneTreeResult EditorCommandService::sceneTree(const EditorSceneTreeReque
 
 EditorSceneRevisionResult EditorCommandService::getSceneRevision() const {
     if (edit_) synchronizePreviewWatch();
-    const auto revision = document().revision();
+    const auto revision = resolved().revision();
     if (revision.value > maxExactEditorJsonInteger) {
         throw std::overflow_error("SceneRevision exceeds 2^53-1");
     }
@@ -441,9 +449,8 @@ EditorCommandService::getComponents(const EditorGetComponentsRequest &request) c
         throw EditorCommandError{EditorCommandErrorCode::InvalidParams,
                                  "get_components requires exactly one object selector"};
     }
-    const auto &source = document();
-    const auto scenes = source.query();
-    const auto &scene = selectScene(scenes, request.scene_id);
+    const auto &source = resolved();
+    const auto &scene = selectScene(source.scenes(), request.scene_id);
     const auto found = std::find_if(scene.objects.begin(), scene.objects.end(), [&](const auto &object) {
         if (request.authoring_object_id) return object.authoring_object_id == *request.authoring_object_id;
         return object.name && *object.name == *request.name;
@@ -496,11 +503,11 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
         throw std::overflow_error("SceneRevision exceeds 2^53-1");
     }
     const auto current_scene = dependencies_.current_scene_id();
-    if (source.scenesJson().find(current_scene) == source.scenesJson().end()) {
+    if (resolved().findScene(current_scene) == nullptr) {
         throw EditorCommandError{EditorCommandErrorCode::SceneNotFound,
                                  "scene not found: " + current_scene};
     }
-    auto bytes = source.encodeSemantic();
+    auto bytes = internal::encodeAuthoringSceneSemantic(source);
     if (bytes.size() > maxSceneSnapshotBytes) {
         throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
                                  "snapshot exceeds 64 MiB"};
@@ -551,8 +558,8 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
                                  "snapshot parse or semantic validation failed",
                                  error.what()};
     }
-    if (validated.scenesJson().find(request.current_scene_id) ==
-        validated.scenesJson().end()) {
+    if (!internal::authoringSceneContains(validated,
+                                          request.current_scene_id)) {
         throw EditorCommandError{
             EditorCommandErrorCode::SceneNotFound,
             "scene not found: " + request.current_scene_id};

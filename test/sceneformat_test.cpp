@@ -6,6 +6,7 @@
 #include "../src/core/loader/scene.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "../src/core/log.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -254,10 +256,13 @@ TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
 
                 const auto authored =
                     AuthoringSceneDocument::load(scenario.at("document").dump(), SceneRevision{1});
-                const auto encoded = authored.encodeSemantic();
+                const auto encoded =
+                    test_support::authoring(authored).encodeSemantic();
                 const auto fresh = AuthoringSceneDocument::load(encoded, SceneRevision{2});
-                REQUIRE(fresh.rawJson() == authored.rawJson());
-                REQUIRE(fresh.encodeSemantic() == encoded);
+                REQUIRE(test_support::authoring(fresh).rawJson() ==
+                        test_support::authoring(authored).rawJson());
+                REQUIRE(test_support::authoring(fresh).encodeSemantic() ==
+                        encoded);
             } else {
                 std::string message;
                 try {
@@ -290,12 +295,14 @@ TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component
     const auto document = AuthoringSceneDocument::load(source.dump(2), SceneRevision{41});
 
     REQUIRE(document.revision().value == 41);
-    REQUIRE(document.rawJson() == source);
+    REQUIRE(test_support::authoring(document).rawJson() == source);
     REQUIRE(document.objectCount() == 3);
-    REQUIRE(document.rawJson().contains("editor_envelope"));
+    REQUIRE(test_support::authoring(document)
+                .rawJson()
+                .contains("editor_envelope"));
 
-    const auto first_query = document.query();
-    const auto second_query = document.query();
+    const auto first_query = test_support::authoring(document).query();
+    const auto second_query = test_support::authoring(document).query();
     REQUIRE(first_query.size() == 2);
     REQUIRE(second_query.size() == first_query.size());
 
@@ -336,11 +343,11 @@ TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component
     REQUIRE(component_names.contains("collider"));
     REQUIRE(component_names.contains("unknown_read_only"));
 
-    const auto encoded = document.encodeSemantic();
-    REQUIRE(document.encodeSemantic() == encoded);
+    const auto encoded = test_support::authoring(document).encodeSemantic();
+    REQUIRE(test_support::authoring(document).encodeSemantic() == encoded);
     const auto fresh = AuthoringSceneDocument::load(encoded, SceneRevision{42}, 100);
-    REQUIRE(fresh.rawJson() == source);
-    REQUIRE(fresh.encodeSemantic() == encoded);
+    REQUIRE(test_support::authoring(fresh).rawJson() == source);
+    REQUIRE(test_support::authoring(fresh).encodeSemantic() == encoded);
 }
 
 TEST_CASE("ProjectBasicConfig has one authoring document cache authority", "[scene-format][authoring]") {
@@ -372,20 +379,23 @@ TEST_CASE("ProjectBasicConfig has one authoring document cache authority", "[sce
             REQUIRE(&config.sceneDocument() == &first);
             const auto first_revision = first.revision().value;
             std::uint64_t max_first_object_id = 0;
-            for (const auto &scene : first.query()) {
+            for (const auto &scene : test_support::authoring(first).query()) {
                 for (const auto &object : scene.objects) {
                     max_first_object_id = std::max(max_first_object_id, object.authoring_object_id.value);
                 }
             }
 
-            auto updated_json = first.rawJson();
+            auto updated_json = test_support::authoring(first).rawJson();
             updated_json["cache_update_marker"] = true;
             config.updateSceneDocument(updated_json.dump());
             const auto &updated = config.sceneDocument();
             REQUIRE(updated.revision().value > first_revision);
-            REQUIRE(updated.rawJson().at("cache_update_marker") == true);
-            REQUIRE(config.sceneDataJson() == updated.encodeSemantic());
-            for (const auto &scene : updated.query()) {
+            REQUIRE(test_support::authoring(updated)
+                        .rawJson()
+                        .at("cache_update_marker") == true);
+            REQUIRE(config.sceneDataJson() ==
+                    test_support::authoring(updated).encodeSemantic());
+            for (const auto &scene : test_support::authoring(updated).query()) {
                 for (const auto &object : scene.objects) {
                     REQUIRE(object.authoring_object_id.value > max_first_object_id);
                 }
@@ -400,8 +410,10 @@ TEST_CASE("ProjectBasicConfig has one authoring document cache authority", "[sce
             config.invalidateSceneDocument();
             const auto &reloaded = config.sceneDocument();
             REQUIRE(reloaded.revision().value > updated_revision);
-            REQUIRE(reloaded.rawJson() == source);
-            REQUIRE_FALSE(reloaded.rawJson().contains("cache_update_marker"));
+            REQUIRE(test_support::authoring(reloaded).rawJson() == source);
+            REQUIRE_FALSE(test_support::authoring(reloaded)
+                              .rawJson()
+                              .contains("cache_update_marker"));
         }
     } catch (...) {
         std::filesystem::remove_all(temp_dir);
@@ -496,9 +508,10 @@ TEST_CASE("SAVE0 is failure-atomic at every prepare point and reloads semantical
             // the whole cache, including non-current scenes and raw components.
             config.invalidateSceneDocument();
             const auto &same_process = config.sceneDocument();
-            REQUIRE(same_process.encodeSemantic() == expected_semantic);
-            REQUIRE(same_process.rawJson() == source);
-            REQUIRE(same_process.query().size() == 2);
+            REQUIRE(test_support::authoring(same_process).encodeSemantic() ==
+                    expected_semantic);
+            REQUIRE(test_support::authoring(same_process).rawJson() == source);
+            REQUIRE(test_support::authoring(same_process).query().size() == 2);
 
             const auto expected_path = temp_dir / "expected-semantic.json";
             writeText(expected_path, expected_semantic);
@@ -550,9 +563,13 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
             const auto &old_document = config.sceneDocument();
             const auto *old_cache = &old_document;
             const auto old_revision = old_document.revision();
-            const auto old_semantic = old_document.encodeSemantic();
+            const auto old_resolver_generation =
+                config.resolvedScene().resolverGeneration();
+            const auto old_semantic =
+                test_support::authoring(old_document).encodeSemantic();
             std::uint64_t old_max_object_id = 0;
-            for (const auto &scene : old_document.query()) {
+            for (const auto &scene :
+                 test_support::authoring(old_document).query()) {
                 for (const auto &object : scene.objects) {
                     old_max_object_id = std::max(
                         old_max_object_id, object.authoring_object_id.value);
@@ -561,11 +578,25 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
 
             auto snapshot = disk_document;
             snapshot["editor_envelope"]["snapshot_marker"] = "wp168";
+            auto &snapshot_light = snapshot["scenes"]["secondary"]["objects"]
+                                           [0]["components"][0];
+            snapshot_light["position"] = {7, 8, 9};
+            snapshot_light["intensity"] = 9.5f;
             const auto snapshot_bytes = snapshot.dump();
             const auto require_old_state = [&] {
                 REQUIRE(&config.sceneDocument() == old_cache);
                 REQUIRE(config.sceneDocument().revision() == old_revision);
-                REQUIRE(config.sceneDocument().encodeSemantic() == old_semantic);
+                REQUIRE(test_support::authoring(config.sceneDocument())
+                            .encodeSemantic() == old_semantic);
+                REQUIRE(config.resolvedScene().revision() == old_revision);
+                REQUIRE(config.resolvedScene().resolverGeneration() ==
+                        old_resolver_generation);
+                const auto *secondary =
+                    config.resolvedScene().findScene("secondary");
+                REQUIRE(secondary != nullptr);
+                REQUIRE_FALSE(secondary->objects.front()
+                                  .components.front()
+                                  .effective_json.contains("intensity"));
                 REQUIRE(readText(scene_path) == disk_bytes);
             };
 
@@ -579,6 +610,14 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
                         snapshot_bytes, [&] { ++reload_calls; }));
                     require_old_state();
                     REQUIRE(reload_calls == 0);
+                    if (point == SceneImportFaultPoint::AfterPublication) {
+                        std::cout << "WP360_SNAPSHOT_AFTER_PUBLICATION_ROLLBACK"
+                                     " revision=" << old_revision.value
+                                  << " generation="
+                                  << old_resolver_generation.value
+                                  << " candidate_light_intensity=9.5"
+                                     " restored_light_intensity=omitted\n";
+                    }
                 }
             }
             config.setSceneImportFaultForTesting(std::nullopt);
@@ -587,7 +626,14 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
             try {
                 (void)config.importSceneDocument(snapshot_bytes, [&] {
                     ++reload_calls;
-                    REQUIRE(config.sceneDocument().rawJson() == snapshot);
+                    REQUIRE(test_support::authoring(config.sceneDocument())
+                                .rawJson() == snapshot);
+                    const auto *secondary =
+                        config.resolvedScene().findScene("secondary");
+                    REQUIRE(secondary != nullptr);
+                    REQUIRE(secondary->objects.front()
+                                .components.front()
+                                .effective_json.at("intensity") == 9.5f);
                     throw std::runtime_error("injected loader fault");
                 });
             } catch (const std::runtime_error &error) {
@@ -599,14 +645,17 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
 
             const auto imported = config.importSceneDocument(snapshot_bytes, [&] {
                 ++reload_calls;
-                REQUIRE(config.sceneDocument().rawJson() == snapshot);
+                REQUIRE(test_support::authoring(config.sceneDocument())
+                            .rawJson() == snapshot);
             });
             REQUIRE(reload_calls == 2);
             REQUIRE(imported.value == old_revision.value + 1U);
             REQUIRE(config.sceneDocument().revision() == imported);
-            REQUIRE(config.sceneDocument().rawJson() == snapshot);
+            REQUIRE(test_support::authoring(config.sceneDocument()).rawJson() ==
+                    snapshot);
             REQUIRE(readText(scene_path) == disk_bytes);
-            for (const auto &scene : config.sceneDocument().query()) {
+            for (const auto &scene :
+                 test_support::authoring(config.sceneDocument()).query()) {
                 for (const auto &object : scene.objects) {
                     REQUIRE(object.authoring_object_id.value >
                             old_max_object_id);
@@ -632,9 +681,11 @@ TEST_CASE("SAVE0 new-process semantic reload probe",
     const auto expected_bytes = readText(expected_path);
     const auto fresh_process = AuthoringSceneDocument::load(
         disk_bytes, SceneRevision{1});
-    REQUIRE(fresh_process.encodeSemantic() == expected_bytes);
-    REQUIRE(fresh_process.rawJson() == nlohmann::json::parse(expected_bytes));
-    REQUIRE(fresh_process.query().size() == 2);
+    REQUIRE(test_support::authoring(fresh_process).encodeSemantic() ==
+            expected_bytes);
+    REQUIRE(test_support::authoring(fresh_process).rawJson() ==
+            nlohmann::json::parse(expected_bytes));
+    REQUIRE(test_support::authoring(fresh_process).query().size() == 2);
 }
 
 TEST_CASE("Scene format rejects legacy lights and names the v1 replacement", "[scene-format]") {

@@ -1,7 +1,10 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "editorpreviewprojection.hpp"
 
+#include "authoringsceneauthority.hpp"
+
 #include "componentcodec.hpp"
+#include "../build_features.hpp"
 #include "../phys/physworld.hpp"
 #include "../userpublic/components/collider.hpp"
 
@@ -128,17 +131,11 @@ OrderedJson trsJson(const EvaluatedTrs &value) {
                        {"scale", vecJson(value.scale)}};
 }
 
-EvaluatedTrs decodeLocalTrs(const Json &object) {
-    if (!object.contains("components") || !object.at("components").is_array()) {
-        return {};
-    }
-    for (const auto &component : object.at("components")) {
-        if (!component.is_object() ||
-            component.value("name", std::string{}) != "transform") {
-            continue;
-        }
-        const auto decoded = requireComponentCodec("transform").decodeAuthored(component);
-        const auto &value = std::any_cast<const TransformCodecData &>(decoded);
+EvaluatedTrs decodeLocalTrs(const ResolvedObject &object) {
+    for (const auto &component : object.components) {
+        if (component.name != "transform") continue;
+        const auto &value = std::any_cast<const TransformCodecData &>(
+            component.requireRuntimeValue());
         auto rotation = toGlm(value.rotation);
         const auto length = glm::length(rotation);
         if (!std::isfinite(length) || length <= 1.0e-8f) {
@@ -169,7 +166,7 @@ struct ObjectLocation {
 std::unordered_map<std::uint64_t, ObjectLocation>
 objectLocations(const AuthoringSceneDocument &document) {
     std::unordered_map<std::uint64_t, ObjectLocation> result;
-    const auto scenes = document.query();
+    const auto scenes = AuthoringSceneAuthority::query(document);
     for (std::size_t scene_index = 0; scene_index < scenes.size(); ++scene_index) {
         const auto &scene = scenes[scene_index];
         for (std::size_t object_index = 0; object_index < scene.objects.size();
@@ -263,8 +260,6 @@ void applyOverrides(Json &raw, const AuthoringSceneDocument &base,
         }
         try {
             (*component)[Json::json_pointer{field_path}] = override_value.at("value");
-            const auto decoded = codec->decodeAuthored(*component);
-            *component = Json::parse(codec->encodeCanonical(decoded).dump());
         } catch (const EditorPreviewProjectionError &) {
             throw;
         } catch (const std::exception &error) {
@@ -273,12 +268,12 @@ void applyOverrides(Json &raw, const AuthoringSceneDocument &base,
     }
 }
 
-OrderedJson evaluatedScene(const AuthoringSceneDocument &document) {
+OrderedJson evaluatedScene(const ResolvedScene &document) {
     auto result = OrderedJson{{"scenes", OrderedJson::array()},
                               {"colliders", OrderedJson::array()}};
-    for (const auto &scene : document.query()) {
+    for (const auto &scene : document.scenes()) {
         struct Node {
-            const AuthoringObjectView *view = nullptr;
+            const ResolvedObject *view = nullptr;
             EvaluatedTrs local;
             EvaluatedTrs world;
             enum class Visit : std::uint8_t { fresh, active, done } visit = Visit::fresh;
@@ -288,7 +283,7 @@ OrderedJson evaluatedScene(const AuthoringSceneDocument &document) {
         std::unordered_map<std::string, std::size_t> by_name;
         for (const auto &object : scene.objects) {
             nodes.push_back(Node{.view = &object,
-                                 .local = decodeLocalTrs(object.authoredJson())});
+                                 .local = decodeLocalTrs(object)});
             if (object.name) by_name.emplace(*object.name, nodes.size() - 1);
         }
         const auto resolve = [&](auto &&self, std::size_t index) -> void {
@@ -319,13 +314,7 @@ OrderedJson evaluatedScene(const AuthoringSceneDocument &document) {
             const auto &node = nodes[index];
             auto components = OrderedJson::array();
             for (const auto &component : node.view->components) {
-                const auto name = component.authoredJson().value("name", std::string{});
-                if (const auto *codec = findComponentCodec(name)) {
-                    components.push_back(codec->encodeCanonical(
-                        codec->decodeAuthored(component.authoredJson())));
-                } else {
-                    components.push_back(component.authoredJson());
-                }
+                components.push_back(component.effective_json);
             }
             auto evaluated = OrderedJson{
                 {"object_id", node.view->authoring_object_id.value},
@@ -339,11 +328,15 @@ OrderedJson evaluatedScene(const AuthoringSceneDocument &document) {
             };
             evaluated_objects.push_back(evaluated);
 
-            if (const auto *authored_collider =
-                    findComponent(node.view->authoredJson(), "collider")) {
+            const auto collider_component = std::find_if(
+                node.view->components.begin(), node.view->components.end(),
+                [](const auto &component) {
+                    return component.name == "collider";
+                });
+            if (collider_component != node.view->components.end()) {
                 ColliderComponent collider;
-                const auto &codec = requireComponentCodec("collider");
-                codec.applyRuntime(codec.decodeAuthored(*authored_collider), &collider);
+                collider_component->runtime_codec->applyRuntime(
+                    collider_component->requireRuntimeValue(), &collider);
                 const auto stable_collider_id =
                     (node.view->authoring_object_id.value << 8U) | UINT64_C(1);
                 const auto name = runtimeObjectIdentityName(
@@ -543,6 +536,14 @@ std::vector<phys::Collider> collidersFromScene(const OrderedJson &scene) {
 
 OrderedJson raycastResult(const OrderedJson &scene, const Json &query,
                           std::string_view context) {
+#if !PELICAN_WITH_PHYSICS
+    (void)scene;
+    (void)query;
+    (void)context;
+    throwBuildFeatureDisabled(
+        "PELICAN_WITH_PHYSICS",
+        "eval_preview raycast queries require physics support");
+#else
     if (!query.contains("ray") || !query.at("ray").is_object()) {
         schemaError(std::string{context} + "/ray", "raycast query requires ray object");
     }
@@ -577,10 +578,19 @@ OrderedJson raycastResult(const OrderedJson &scene, const Json &query,
                              {hit.normal.x, hit.normal.y, hit.normal.z})}});
     }
     return data;
+#endif
 }
 
 OrderedJson overlapResult(const OrderedJson &scene, const Json &query,
                           std::string_view context) {
+#if !PELICAN_WITH_PHYSICS
+    (void)scene;
+    (void)query;
+    (void)context;
+    throwBuildFeatureDisabled(
+        "PELICAN_WITH_PHYSICS",
+        "eval_preview overlap queries require physics support");
+#else
     if (!query.contains("shape")) {
         schemaError(std::string{context} + "/shape",
                     "overlap query requires shape");
@@ -595,6 +605,7 @@ OrderedJson overlapResult(const OrderedJson &scene, const Json &query,
                         {"collider_id", hit.identity.collider_id.value}});
     }
     return data;
+#endif
 }
 
 OrderedJson cameraResult(const OrderedJson &object, const Json &query,
@@ -676,7 +687,16 @@ EditorPreviewProjectionError::EditorPreviewProjectionError(
 PreparedProjection prepareEditorPreviewProjection(
     const AuthoringSceneDocument &base_document, const Json &overrides,
     const EditorPreviewProjectionFaultHook &fault_hook) {
-    auto raw = base_document.rawJson();
+    return prepareEditorPreviewProjection(base_document, overrides,
+                                          ResolvedSceneDefaults{}, fault_hook);
+}
+
+PreparedProjection prepareEditorPreviewProjection(
+    const AuthoringSceneDocument &base_document, const Json &overrides,
+    const ResolvedSceneDefaults &defaults,
+    const EditorPreviewProjectionFaultHook &fault_hook) {
+    auto raw =
+        AuthoringSceneAuthority::rawView(base_document).documentJson();
     applyOverrides(raw, base_document, overrides, fault_hook);
     AuthoringSceneDocument staged;
     try {
@@ -687,15 +707,20 @@ PreparedProjection prepareEditorPreviewProjection(
         // The unpublished document uses the same candidate revision that a
         // real projection transaction would validate.  It is never published;
         // the live SceneRevision therefore remains unchanged.
-        staged = base_document.stage(
-            std::move(raw), SceneRevision{base_document.revision().value + 1});
+        staged = AuthoringSceneAuthority::stage(
+            base_document, std::move(raw),
+            SceneRevision{base_document.revision().value + 1});
     } catch (const EditorPreviewProjectionError &) {
         throw;
     } catch (const std::exception &error) {
         schemaError("overrides", error.what());
     }
-    auto evaluated = evaluatedScene(staged);
-    return PreparedProjection{.document = std::move(staged),
+    auto state = ResolvedSceneResolver::prepare(
+        std::move(staged),
+        SceneResolverGeneration{base_document.revision().value + 1},
+        defaults);
+    auto evaluated = evaluatedScene(state.resolved());
+    return PreparedProjection{.state = std::move(state),
                               .evaluated_scene = std::move(evaluated)};
 }
 

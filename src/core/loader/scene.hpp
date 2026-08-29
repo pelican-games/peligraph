@@ -2,7 +2,7 @@
 
 #include "../container.hpp"
 #include "../model/modeltemplate.hpp"
-#include "authoringscenedocument.hpp"
+#include "resolvedscene.hpp"
 #include <details/ecs/entity.hpp>
 
 #include <filesystem>
@@ -28,6 +28,12 @@ struct SceneRuntimeObjectBinding {
     AuthoringObjectId authoring_object_id{};
     GameObjectId object_id = invalidGameObjectId;
 };
+
+namespace internal {
+// Pure resolved-projection gate used before SceneLoader mutates any runtime
+// state. It is also the configuration-matrix seam for named feature errors.
+void validateResolvedSceneFeatureBindings(const ResolvedSceneView &scene);
+} // namespace internal
 
 DECLARE_MODULE(SceneLoader) {
     struct ObjectBinding {

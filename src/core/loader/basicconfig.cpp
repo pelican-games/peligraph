@@ -1,4 +1,6 @@
 #include "basicconfig.hpp"
+
+#include "authoringsceneauthority.hpp"
 #include "../startup.hpp"
 #include "../log.hpp"
 #include "../watch/contentdigest.hpp"
@@ -540,31 +542,56 @@ void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) c
     if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
-    auto candidate = AuthoringSceneDocument::load(scene_v1_bytes, SceneRevision{next_scene_revision},
-                                                   next_authoring_object_id);
-    const auto next_object_id = candidate.next_authoring_object_id_value_;
-    scene_document = std::move(candidate);
-    ++next_scene_revision;
-    next_authoring_object_id = next_object_id;
+    if (next_scene_resolver_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneResolverGeneration space exhausted");
+    }
+    auto document = AuthoringSceneDocument::load(
+        scene_v1_bytes, SceneRevision{next_scene_revision},
+        next_authoring_object_id);
+    auto candidate = ResolvedSceneResolver::prepare(
+        std::move(document),
+        SceneResolverGeneration{next_scene_resolver_generation},
+        ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite});
+    if (scene_projection) {
+        publishPreparedSceneState(candidate);
+    } else {
+        scene_projection.emplace(std::move(candidate));
+        ++next_scene_revision;
+        ++next_scene_resolver_generation;
+        next_authoring_object_id =
+            scene_projection->authoring_.next_authoring_object_id_value_;
+    }
 }
 
-void ProjectBasicConfig::publishPreparedSceneDocument(
-    AuthoringSceneDocument &document) const noexcept {
-    const auto next_object_id = document.next_authoring_object_id_value_;
-    const auto revision = document.revision_.value;
-    scene_document->swap(document);
+void ProjectBasicConfig::publishPreparedSceneState(
+    SceneProjectionState &state) const noexcept {
+    const auto next_object_id =
+        state.authoring_.next_authoring_object_id_value_;
+    const auto revision = state.revision().value;
+    const auto generation = state.resolverGeneration().value;
+    scene_projection->swap(state);
     next_scene_revision = revision + 1U;
+    next_scene_resolver_generation = generation + 1U;
     next_authoring_object_id = next_object_id;
 }
 
 const AuthoringSceneDocument &ProjectBasicConfig::sceneDocument() const {
-    if (!scene_document) {
+    return sceneProjectionState().authoring();
+}
+
+const ResolvedScene &ProjectBasicConfig::resolvedScene() const {
+    return sceneProjectionState().resolved();
+}
+
+const SceneProjectionState &ProjectBasicConfig::sceneProjectionState() const {
+    if (!scene_projection) {
         auto bytes = GET_MODULE(PathResolver).loadText(scene_data_json_ref);
         auto baseline = sceneBytesDigest(bytes);
         publishSceneDocument(bytes);
         scene_baseline_digest = std::move(baseline);
     }
-    return *scene_document;
+    return *scene_projection;
 }
 
 void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
@@ -572,7 +599,7 @@ void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
 }
 
 void ProjectBasicConfig::invalidateSceneDocument() noexcept {
-    scene_document.reset();
+    scene_projection.reset();
     scene_baseline_digest.reset();
 }
 
@@ -585,14 +612,23 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
+    if (next_scene_resolver_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneResolverGeneration space exhausted");
+    }
 
     // Parse, semantic validation, fresh AuthoringObjectId allocation, and all
     // candidate allocation complete before the live cache is touched.
-    auto candidate = AuthoringSceneDocument::load(
+    auto candidate_document = AuthoringSceneDocument::load(
         scene_v1_bytes, SceneRevision{next_scene_revision},
         next_authoring_object_id);
+    auto candidate = ResolvedSceneResolver::prepare(
+        std::move(candidate_document),
+        SceneResolverGeneration{next_scene_resolver_generation},
+        ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite});
     const auto committed_revision = candidate.revision();
     const auto previous_next_revision = next_scene_revision;
+    const auto previous_next_generation = next_scene_resolver_generation;
     const auto previous_next_object_id = next_authoring_object_id;
     if (scene_import_fault == SceneImportFaultPoint::AfterCandidatePrepare) {
         throw std::runtime_error(
@@ -602,7 +638,7 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     // This is the same allocation-free document swap used by SAVE0. The disk
     // baseline is deliberately retained: snapshot import changes only the
     // in-memory scene source.
-    publishPreparedSceneDocument(candidate);
+    publishPreparedSceneState(candidate);
     try {
         if (scene_import_fault == SceneImportFaultPoint::AfterPublication) {
             throw std::runtime_error(
@@ -612,12 +648,44 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     } catch (...) {
         // candidate owns the old live document after the first swap. Restore
         // it without parse/allocation and rewind both allocation authorities.
-        scene_document->swap(candidate);
+        publishPreparedSceneState(candidate);
         next_scene_revision = previous_next_revision;
+        next_scene_resolver_generation = previous_next_generation;
         next_authoring_object_id = previous_next_object_id;
         throw;
     }
     return committed_revision;
+}
+
+void ProjectBasicConfig::refreshResolvedScene(
+    const std::function<void()> &reload) {
+    if (!reload) {
+        throw std::invalid_argument(
+            "resolved scene refresh requires a reload callback");
+    }
+    (void)sceneProjectionState();
+    if (next_scene_resolver_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneResolverGeneration space exhausted");
+    }
+
+    auto candidate = ResolvedSceneResolver::prepare(
+        scene_projection->authoring(),
+        SceneResolverGeneration{next_scene_resolver_generation},
+        scene_projection->resolved().defaults());
+    const auto previous_next_revision = next_scene_revision;
+    const auto previous_next_generation = next_scene_resolver_generation;
+    const auto previous_next_object_id = next_authoring_object_id;
+    publishPreparedSceneState(candidate);
+    try {
+        reload();
+    } catch (...) {
+        publishPreparedSceneState(candidate);
+        next_scene_revision = previous_next_revision;
+        next_scene_resolver_generation = previous_next_generation;
+        next_authoring_object_id = previous_next_object_id;
+        throw;
+    }
 }
 
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
@@ -629,10 +697,14 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
+    if (next_scene_resolver_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneResolverGeneration space exhausted");
+    }
 
     // This is deliberately the only serialization call in SAVE0. Everything
     // below consumes these exact semantic bytes.
-    auto semantic_bytes = source.encodeSemantic();
+    auto semantic_bytes = AuthoringSceneAuthority::encodeSemantic(source);
     const auto inject = [&](SceneSaveFaultPoint point) {
         if (scene_save_fault == point) {
             throw std::runtime_error("injected scene save fault at " +
@@ -662,15 +734,21 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     }
     const auto validated = AuthoringSceneDocument::load(
         temporary_bytes, source.revision(), source.next_authoring_object_id_value_);
-    if (validated.rawJson() != source.rawJson()) {
+    if (AuthoringSceneAuthority::rawView(validated).documentJson() !=
+        AuthoringSceneAuthority::rawView(source).documentJson()) {
         throw SceneSaveError{SceneSaveErrorCode::IoFailure,
                              "temporary scene semantic validation changed the document"};
     }
     inject(SceneSaveFaultPoint::AfterTemporaryValidation);
 
-    auto next_document = source.stage(source.rawJson(),
-                                      SceneRevision{next_scene_revision});
-    const auto committed_revision = next_document.revision();
+    auto next_document = AuthoringSceneAuthority::stage(
+        source, AuthoringSceneAuthority::rawView(source).documentJson(),
+        SceneRevision{next_scene_revision});
+    auto next_state = ResolvedSceneResolver::prepare(
+        std::move(next_document),
+        SceneResolverGeneration{next_scene_resolver_generation},
+        scene_projection->resolved().defaults());
+    const auto committed_revision = next_state.revision();
     auto next_baseline_digest = sceneBytesDigest(semantic_bytes);
     SceneSaveResult result{
         .scene_revision = committed_revision,
@@ -694,13 +772,13 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     // Publication after file replacement is allocation/decode/I/O-free. RPC
     // and ImGui call SAVE0 on the engine thread, so no reader can enter this
     // short no-throw interval and observe a mixed file/cache/revision state.
-    publishPreparedSceneDocument(next_document);
+    publishPreparedSceneState(next_state);
     scene_baseline_digest->swap(next_baseline_digest);
     return result;
 }
 
 std::string ProjectBasicConfig::sceneDataJson() const {
-    return sceneDocument().encodeSemantic();
+    return AuthoringSceneAuthority::encodeSemantic(sceneDocument());
 }
 
 std::string ProjectBasicConfig::assetDataJson() const {

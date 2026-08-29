@@ -1,5 +1,7 @@
 #include "editorprojectiontransaction.hpp"
 
+#include "authoringsceneauthority.hpp"
+
 #include "componentcodec.hpp"
 #include "basicconfig.hpp"
 #include "../../project/sceneformat.hpp"
@@ -26,6 +28,13 @@ std::string objectPath(std::string_view scene_id, std::string_view object_name) 
 
 std::string objectPath(std::string_view scene_id,
                        const AuthoringObjectView &object) {
+    if (object.name) return objectPath(scene_id, *object.name);
+    return "/scenes/" + std::string{scene_id} + "/authoring_objects/" +
+           std::to_string(object.authoring_object_id.value);
+}
+
+std::string objectPath(std::string_view scene_id,
+                       const ResolvedObject &object) {
     if (object.name) return objectPath(scene_id, *object.name);
     return "/scenes/" + std::string{scene_id} + "/authoring_objects/" +
            std::to_string(object.authoring_object_id.value);
@@ -228,14 +237,19 @@ struct AuthoringTransformNodes {
     std::unordered_map<std::uint64_t, std::size_t> by_id;
 };
 
-AuthoringTransformNodes buildAuthoringTransformNodes(
-    const AuthoringSceneView &scene) {
+AuthoringTransformNodes buildResolvedTransformNodes(
+    const ResolvedSceneView &scene) {
     AuthoringTransformNodes result;
     result.nodes.reserve(scene.objects.size());
     result.by_name.reserve(scene.objects.size());
     result.by_id.reserve(scene.objects.size());
     for (const auto &object : scene.objects) {
-        if (findComponent(object.authoredJson(), "transform") != nullptr) {
+        const auto component = std::find_if(
+            object.components.begin(), object.components.end(),
+            [](const auto &candidate) {
+                return candidate.name == "transform";
+            });
+        if (component != object.components.end()) {
             const auto path = objectPath(scene.scene_id, object);
             const auto index = result.nodes.size();
             if (!result.by_id
@@ -256,7 +270,8 @@ AuthoringTransformNodes buildAuthoringTransformNodes(
                 .name = name,
                 .parent = object.parent.value_or(std::string{}),
                 .path = path,
-                .local = decodeTransformObject(object.authoredJson(), path),
+                .local = std::any_cast<const TransformCodecData &>(
+                    component->requireRuntimeValue()),
             });
         }
     }
@@ -418,9 +433,9 @@ EditorProjectionException::EditorProjectionException(
                          ": " + message),
       code_(code), object_path_(std::move(object_path)) {}
 
-const AuthoringSceneDocument &
-ProjectBasicConfigProjectionTarget::projectionDocument() const {
-    return config_.sceneDocument();
+const SceneProjectionState &
+ProjectBasicConfigProjectionTarget::projectionState() const {
+    return config_.sceneProjectionState();
 }
 
 SceneRevision ProjectBasicConfigProjectionTarget::nextProjectionRevision() const {
@@ -432,13 +447,20 @@ SceneRevision ProjectBasicConfigProjectionTarget::nextProjectionRevision() const
     return SceneRevision{config_.next_scene_revision};
 }
 
-void ProjectBasicConfigProjectionTarget::publishProjectionDocument(
-    AuthoringSceneDocument &&document) noexcept {
-    const auto next_object_id = document.next_authoring_object_id_value_;
-    const auto revision = document.revision_.value;
-    config_.scene_document->swap(document);
-    config_.next_scene_revision = revision + 1;
-    config_.next_authoring_object_id = next_object_id;
+SceneResolverGeneration
+ProjectBasicConfigProjectionTarget::nextProjectionResolverGeneration() const {
+    (void)config_.sceneProjectionState();
+    if (config_.next_scene_resolver_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneResolverGeneration space exhausted");
+    }
+    return SceneResolverGeneration{
+        config_.next_scene_resolver_generation};
+}
+
+void ProjectBasicConfigProjectionTarget::publishProjectionState(
+    SceneProjectionState &candidate) noexcept {
+    config_.publishPreparedSceneState(candidate);
 }
 
 EditorProjectionCommand makeSetComponentValueCommand(
@@ -673,24 +695,19 @@ void TransformProjectionAdapter::prepare(
     prepared_.clear();
     published_ = false;
 
-    const auto document_scenes = context.next_document.query();
     std::unordered_map<std::string, AuthoringTransformNodes> scenes;
     scenes.reserve(bindings_.size());
     for (const auto &binding : bindings_) {
         if (scenes.contains(binding.scene_id)) continue;
-        const auto scene = std::find_if(
-            document_scenes.begin(), document_scenes.end(),
-            [&](const auto &candidate) {
-                return candidate.scene_id == binding.scene_id;
-            });
-        if (scene == document_scenes.end()) {
+        const auto *scene = context.next_resolved.findScene(binding.scene_id);
+        if (scene == nullptr) {
             projectionError(EditorProjectionErrorCode::ObjectNotFound,
                             "/scenes/" + binding.scene_id,
                             "authoring scene does not exist: " +
                                 binding.scene_id);
         }
         scenes.emplace(binding.scene_id,
-                       buildAuthoringTransformNodes(*scene));
+                       buildResolvedTransformNodes(*scene));
     }
 
     std::unordered_map<std::string,
@@ -788,8 +805,11 @@ EditorProjectionResult EditorProjectionTransaction::commit(
     EditorProjectionResult result;
     std::vector<EditorProjectionAdapter *> prepared;
     std::unordered_set<EditorProjectionAdapter *> published_during_prepare;
+    std::optional<SceneProjectionState> candidate_state;
+    bool document_published = false;
     try {
-        const auto &base = document_target_.projectionDocument();
+        const auto &base_state = document_target_.projectionState();
+        const auto &base = base_state.authoring();
         result.base_revision = base.revision();
         if (base.revision() != expected_base_revision_) {
             result.status = EditorProjectionStatus::Rejected;
@@ -802,7 +822,8 @@ EditorProjectionResult EditorProjectionTransaction::commit(
             return result;
         }
 
-        auto staged_json = base.rawJson();
+        auto staged_json =
+            AuthoringSceneAuthority::rawView(base).documentJson();
         std::optional<AuthoringSceneDocumentStage> structural_stage;
         for (const auto &command : commands) {
             if (!command.apply && !command.structural_apply) {
@@ -812,7 +833,8 @@ EditorProjectionResult EditorProjectionTransaction::commit(
             }
             if (command.structural_apply) {
                 if (!structural_stage) {
-                    structural_stage.emplace(base.structuralStage());
+                    structural_stage.emplace(
+                        AuthoringSceneAuthority::structuralStage(base));
                     structural_stage->rawJson() = std::move(staged_json);
                 }
                 command.structural_apply(*structural_stage);
@@ -834,9 +856,15 @@ EditorProjectionResult EditorProjectionTransaction::commit(
             staged = std::move(*structural_stage)
                          .finish(document_target_.nextProjectionRevision());
         } else {
-            staged = base.stage(std::move(staged_json),
-                                document_target_.nextProjectionRevision());
+            staged = AuthoringSceneAuthority::stage(
+                base, std::move(staged_json),
+                document_target_.nextProjectionRevision());
         }
+
+        candidate_state.emplace(ResolvedSceneResolver::prepare(
+            std::move(staged),
+            document_target_.nextProjectionResolverGeneration(),
+            base_state.resolved().defaults()));
 
         std::unordered_set<EditorProjectionAdapter *> adapter_addresses;
         std::unordered_set<std::string> adapter_names;
@@ -859,7 +887,9 @@ EditorProjectionResult EditorProjectionTransaction::commit(
 
         prepared.reserve(adapters.size());
         published_during_prepare.reserve(adapters.size());
-        const EditorProjectionPrepareContext context{base, staged};
+        const EditorProjectionPrepareContext context{
+            base, candidate_state->authoring(), base_state.resolved(),
+            candidate_state->resolved()};
         for (auto *adapter : adapters) {
             prepared.push_back(adapter);
             if (fault_injector_ != nullptr &&
@@ -918,8 +948,17 @@ EditorProjectionResult EditorProjectionTransaction::commit(
             adapter->publish();
         }
 
-        const auto committed_revision = staged.revision();
-        document_target_.publishProjectionDocument(std::move(staged));
+        const auto committed_revision = candidate_state->revision();
+        document_target_.publishProjectionState(*candidate_state);
+        document_published = true;
+        if (fault_injector_ != nullptr &&
+            fault_injector_->shouldFail(
+                EditorProjectionFaultPoint::AfterPublication,
+                "scene_pair")) {
+            projectionError(EditorProjectionErrorCode::AdapterPublishFailed,
+                            "/publication/scene_pair",
+                            "injected failure after scene pair publication");
+        }
         for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
             (*it)->finish();
         }
@@ -929,31 +968,47 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         result.removed_objects = std::move(removed_objects);
         return result;
     } catch (const std::exception &error) {
+        if (document_published && candidate_state) {
+            document_target_.publishProjectionState(*candidate_state);
+            document_published = false;
+        }
         for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
             (*it)->rollback();
         }
-        result.status = prepared.empty() ? EditorProjectionStatus::Rejected
-                                         : EditorProjectionStatus::Failed;
+        const auto transaction_failed =
+            candidate_state.has_value() || !prepared.empty();
+        result.status = transaction_failed ? EditorProjectionStatus::Failed
+                                           : EditorProjectionStatus::Rejected;
         result.error = errorFromException(
-            prepared.empty() ? EditorProjectionErrorCode::CommandInvalid
-                             : EditorProjectionErrorCode::AdapterPrepareFailed,
-            prepared.empty() ? "/commands"
-                             : "/adapters/" +
-                                   std::string{prepared.back()->name()},
+            transaction_failed
+                ? EditorProjectionErrorCode::AdapterPrepareFailed
+                : EditorProjectionErrorCode::CommandInvalid,
+            !prepared.empty() ? "/adapters/" +
+                                   std::string{prepared.back()->name()}
+                              : (transaction_failed ? "/projection"
+                                                    : "/commands"),
             error);
         return result;
     } catch (...) {
+        if (document_published && candidate_state) {
+            document_target_.publishProjectionState(*candidate_state);
+            document_published = false;
+        }
         for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
             (*it)->rollback();
         }
-        result.status = prepared.empty() ? EditorProjectionStatus::Rejected
-                                         : EditorProjectionStatus::Failed;
+        const auto transaction_failed =
+            candidate_state.has_value() || !prepared.empty();
+        result.status = transaction_failed ? EditorProjectionStatus::Failed
+                                           : EditorProjectionStatus::Rejected;
         result.error = EditorProjectionError{
-            prepared.empty() ? EditorProjectionErrorCode::CommandInvalid
-                             : EditorProjectionErrorCode::AdapterPrepareFailed,
-            prepared.empty() ? "/commands"
-                             : "/adapters/" +
-                                   std::string{prepared.back()->name()},
+            transaction_failed
+                ? EditorProjectionErrorCode::AdapterPrepareFailed
+                : EditorProjectionErrorCode::CommandInvalid,
+            !prepared.empty() ? "/adapters/" +
+                                   std::string{prepared.back()->name()}
+                              : (transaction_failed ? "/projection"
+                                                    : "/commands"),
             "unknown projection transaction failure"};
         return result;
     }

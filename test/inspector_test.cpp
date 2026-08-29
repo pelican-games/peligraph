@@ -2,6 +2,7 @@
 
 #include "../src/core/imgui/inspector.hpp"
 #include "../src/core/userpublic/behavior.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -50,39 +51,20 @@ Json inspectorFixture() {
     })json");
 }
 
-class DocumentTarget final : public EditorProjectionDocumentTarget {
+class DocumentTarget final : public test_support::SceneProjectionTarget {
   public:
-    AuthoringSceneDocument document{AuthoringSceneDocument::load(
-        inspectorFixture().dump(), SceneRevision{1})};
-
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document;
-    }
-    SceneRevision nextProjectionRevision() const override {
-        return SceneRevision{document.revision().value + 1U};
-    }
-    void publishProjectionDocument(AuthoringSceneDocument &&next) noexcept override {
-        document.swap(next);
-    }
+    DocumentTarget()
+        : SceneProjectionTarget{AuthoringSceneDocument::load(
+              inspectorFixture().dump(), SceneRevision{1})} {}
 };
 
-class PreviewTarget final : public EditorProjectionDocumentTarget {
+class PreviewTarget final : public test_support::SceneProjectionTarget {
   public:
-    AuthoringSceneDocument document;
-
     explicit PreviewTarget(const AuthoringSceneDocument &source)
-        : document{source.stage(source.rawJson(),
-                                SceneRevision{source.revision().value + 1U})} {}
-
-    const AuthoringSceneDocument &projectionDocument() const override {
-        return document;
-    }
-    SceneRevision nextProjectionRevision() const override {
-        return SceneRevision{document.revision().value + 1U};
-    }
-    void publishProjectionDocument(AuthoringSceneDocument &&next) noexcept override {
-        document.swap(next);
-    }
+        : SceneProjectionTarget{AuthoringSceneAuthority::stage(
+              source,
+              AuthoringSceneAuthority::rawView(source).documentJson(),
+              SceneRevision{source.revision().value + 1U})} {}
 };
 
 struct ServiceHarness {
@@ -96,10 +78,13 @@ struct ServiceHarness {
                 .document = [this]() -> const AuthoringSceneDocument & {
                     return target.document;
                 },
+                .resolved_scene = [this]() -> const ResolvedScene & {
+                    return target.projectionState().resolved();
+                },
                 .current_scene_id = [] { return std::string{"main"}; },
                 .runtime_query =
-                    [this](const AuthoringSceneView &,
-                           const AuthoringObjectView &object) {
+                    [this](const ResolvedSceneView &,
+                           const ResolvedObject &object) {
                         EditorRuntimeObjectState state;
                         state.component_runtime_json.resize(object.components.size());
                         state.component_pending.resize(object.components.size(), false);
@@ -110,7 +95,7 @@ struct ServiceHarness {
                         for (std::size_t index = 0; index < object.components.size();
                              ++index) {
                             const auto &authored =
-                                object.components[index].authoredJson();
+                                object.components[index].source_json_exact;
                             if (authored.value("name", std::string{}) != "behavior") {
                                 continue;
                             }
@@ -165,7 +150,8 @@ struct ServiceHarness {
                         target.document.rawJson(),
                         SceneRevision{target.document.revision().value + 1U});
                     const auto revision = next.revision();
-                    const auto bytes = next.encodeSemantic().size();
+                    const auto bytes =
+                        test_support::authoring(next).encodeSemantic().size();
                     target.document.swap(next);
                     return SaveSceneResult{
                         .scene_revision = revision,

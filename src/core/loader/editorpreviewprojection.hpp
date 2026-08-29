@@ -1,6 +1,6 @@
 #pragma once
 
-#include "authoringscenedocument.hpp"
+#include "resolvedscene.hpp"
 
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -41,13 +41,18 @@ using EditorPreviewProjectionFaultHook =
 // has no publish, commit, merge, or rollback operation: destruction is the only
 // terminal transition.
 struct PreparedProjection {
-    AuthoringSceneDocument document;
+    SceneProjectionState state;
     nlohmann::ordered_json evaluated_scene;
 };
 
 PreparedProjection prepareEditorPreviewProjection(
     const AuthoringSceneDocument &base_document,
     const nlohmann::json &overrides,
+    const EditorPreviewProjectionFaultHook &fault_hook = {});
+PreparedProjection prepareEditorPreviewProjection(
+    const AuthoringSceneDocument &base_document,
+    const nlohmann::json &overrides,
+    const ResolvedSceneDefaults &defaults,
     const EditorPreviewProjectionFaultHook &fault_hook = {});
 
 // Query adapter over an explicit PreparedProjection.  It never resolves a live

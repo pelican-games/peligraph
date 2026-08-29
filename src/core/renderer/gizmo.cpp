@@ -632,11 +632,11 @@ std::optional<GizmoTargetTransform> resolveGizmoTargetTransform(
     }
 
     std::optional<AuthoringObjectId> authoring_object_id;
-    for (const auto &scene : project_config.sceneDocument().query()) {
+    for (const auto &scene : project_config.resolvedScene().scenes()) {
         if (scene.scene_id != declaration.scene_id) continue;
         const auto object = std::find_if(
             scene.objects.begin(), scene.objects.end(), [&](const auto &candidate) {
-                return candidate.declaration_index ==
+                return candidate.authoring_object_index ==
                        declaration.declaration_index;
             });
         if (object != scene.objects.end()) {
