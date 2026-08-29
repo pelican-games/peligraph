@@ -14557,3 +14557,149 @@ Generated の契約は WP360 v2 レビューの処方箋(指摘 2〜5)を正と�
 パラメータ昇格(U3)/ spawn(U4)/ optional slot・variant / HDA / attributes。
 
 依存: WP358, WP359, WP360, WP360a。見積: **大**。
+
+#### WP361 仕様レビュー(v1、不合格・10 件)と v2 への分割
+
+前提の誤り 1 件(「Generated の席は named unsupported で確保済み」——実際の
+`ResolvedComponent` は authored-only + authored 偽装マーカーの拒否検出器だけで、
+variant は無い)+ 欠陥 10 件。**全件「直す」**。設計 v4 の矛盾 2 点
+(object パラメータの default 省略 vs default 欠落エラー / 歴史化した file:line)も
+design_prefabs.md 側を修正済み。v1 は上に残す。**v2 は WP361(エンジン)と
+WP362(永続化 + 編集)に分割**し、一体でレビューする。
+
+| # | v1 の壊れた点 | v2 の答え(置き場所) |
+|---|---|---|
+| 1 | 永続 wire 文法が未定義(project entry / scene instance / digest 対象が決定不能。規範例の default 省略が自規則違反) | WP361 §文法に厳密 schema + 正負例。省略 = required、`prefab_parameter_required` 追加(設計側も修正済み) |
+| 2 | named unsupported → Generated variant の移行契約が無い(旧 detector と正規展開の 3 通りの失敗分岐) | WP361 §移行表: trusted constructor 経由・JSON マーカー非経由、detector は維持、新 code 2 件 |
+| 3 | `stable_generated_id` が session-local な AuthoringObjectId 依存(snapshot import で再採番) | scene v2 の **bytes に永続 `instance_id`**。導出から AID を排除 |
+| 4 | 再展開が原子的所有に合流していない(atomic unit が pair のみ / kind:object の間接依存が digest CAS を素通り) | WP362 §atomic: unit を closure まで拡張、closure generation の CAS、set/unset/undo/redo × 全 fault point |
+| 5 | closure が resolver 入力(camera defaults 等)を閉じない | WP362: `resolver_inputs_fingerprint` を closure に追加 |
+| 6 | provider fingerprint の生成規則・lifecycle 未定義(関数ポインタからは作れない / 登録順・reload 依存) | WP361 §provider: canonical descriptor 列挙 → 決定的直列化 → fingerprint。stable name ソート、active/candidate 明示の immutable snapshot |
+| 7 | kind:object の全展開後 barrier が無い(宣言順依存になる自然実装が緑) | WP361 §resolver 4 相の固定。前方・後方・self・authored/generated 両供給の検査 |
+| 8 | SnapshotV2 の wire・全 scene read-set・save baseline の受け入れ皆無 | WP362 §snapshot: 完全 wire schema、inactive-only prefab、save fault point |
+| 9 | read-only と identity のオラクルが代理(UI 非生成のみ / 「全比較」の期待値未定義) | WP361: 実 RpcServer::run へ直接 mutation、操作別期待表 |
+| 10 | 最終 component 合成規則と matrix の入力閉包が無い(transform 0/2 件、authored+generated 重複、`"prefab":null`) | WP361 §合成規則 + matrix はキーの「存在」判定、3 入口別走行 |
+
+### WP361 v2: プレファブ・エンジン側 —— 文法、展開、identity、wire union
+
+**§4 規則 11 上段。仕様(WP362 と一体)+ コードレビュー。見積: 大。**
+**規範は design_prefabs.md v4(修正済み)。以下は v1 の範囲宣言に対する差分と確定契約。**
+
+#### 文法(永続 wire。これが正で、実装はこれに合わせる)
+
+- project.json:
+  `"prefabs": [{ "name": "enemy_grunt", "path": "prefabs/enemy_grunt.prefab.json" }]`。
+  `name` は文書内 `name` と一致必須(不一致は名前付きエラー)。
+  **digest = prefab ファイルの raw bytes の SHA-256**(canonical 化しない —— 保存形式が正)
+- scene v2 の instance:
+  ```json
+  { "name": "grunt_01",
+    "components": [ { "name": "transform", "position": [0, 0, 0] } ],
+    "prefab": { "ref": "enemy_grunt", "instance_id": "gi_7f3a",
+                "parameters": { "hp": 55, "target": "player" } } }
+  ```
+  `instance_id` は **scene bytes に永続**(load 時採番ではない)。scene 内一意、
+  重複は `prefab_instance_id_collision`。手書き v2 では作者が付ける
+- parameters の値: scalar/vec は leaf 検証(WP358)。`kind:"asset"` は asset 名文字列、
+  `kind:"object"` は **authored object 名文字列**(picker/rename 連動は U2)
+- **default 省略 = instance 必須**。未指定は `prefab_parameter_required`
+- `stable_generated_id` 導出 = `{scene stable id, instance_id, prefab 内 component 順序位置}`
+  の決定的関数。**session 依存要素(AuthoringObjectId・採番 counter)を含めない**
+
+#### Generated 移行表(WP360 detector との共存)
+
+- expander は resolver 内部の **trusted constructor** で provenance を作る。
+  JSON マーカーを経由しない
+- authored payload の generated / origin マーカー検出器は**そのまま維持**
+  (正規 prefab 成功と authored 偽装拒否を**同一 fixture** で。detector 削除変異で落ちる対照)
+- 新 code: `prefab_generated_id_collision` / `prefab_generated_read_only`
+
+#### resolver 4 相(順序固定。宣言順非依存)
+
+1. 全 prefab の raw placeholder/parameter 検証・置換 → 2. 全 object の最終 component 集合
++ provenance を materialize → 3. **object index freeze 後**に kind:object 参照と
+required_components を検証 → 4. codec/behavior canonicalization。
+受け入れ: 前方参照・後方参照・self・参照先 required が authored 供給/generated 供給の
+両方・欠落・順序反転を同一テスト群で。**object 宣言順を反転しても結果が一致**すること
+
+#### 合成規則(最終 merged object に対して)
+
+- transform は instance 側 authored に exactly-one:
+  0 件 `prefab_instance_transform_missing` / 2 件以上 `prefab_instance_transform_duplicate`
+- 非 behavior component の名前重複(authored × generated 含む)は `prefab_component_duplicate`
+
+#### wire union と read-only(実配線オラクル)
+
+- get_components: Authored branch は**親版 bytes 完全一致**(WP360 fixture 続用)。
+  Generated branch は `{stable_generated_id, source: {prefab, ref, instance_id, digest},
+  resolved_json, editable: false}`、authored index を持たない
+- **実 `RpcServer::run` へ Generated 宛て `set_component_value` を直接送る**:
+  `prefab_generated_read_only`、scene bytes・revision・ECS・arena 全て不変
+- Studio/ImGui は実応答取込で read-only 表示 + mutation UI 非生成(補助条件に格下げ)
+
+#### identity 期待表(v1 の「全比較」を置換)
+
+| 操作 | authored index | Generated ID | behavior seq |
+|---|---|---|---|
+| set→undo→redo | set 後 = redo 後 | 同 | 同 |
+| object remove→undo | remove 前 = undo 後 | 同 | 同 |
+| 無関係 authored の前方挿入 | **期待量だけ変化** | **不変** | **不変** |
+
++ **採番履歴の異なる 2 session**(片方で object 作成・削除後に import)で
+Generated ID・seq・RPC bytes 一致。arena identity は `Authored | Generated` variant、
+Generated seq は authored と衝突しない決定的符号化(衝突は名前付きエラー)
+
+#### BindableProvider(fingerprint の生成規則)
+
+- bindable path / 型 / 種別 / discriminant 条件を**関数ポインタでなく canonical
+  descriptor(data)として列挙**し、stable name ソートの決定的直列化から fingerprint
+- resolver へは active/candidate owner を明示した immutable snapshot で渡す
+- 受け入れ: applicability descriptor の変更で fingerprint が変わる(semantic mutation)/
+  登録順反転で不変 / semantic no-op reload で不変
+
+#### matrix と入口
+
+- 判定は `prefab` **キーの存在**(`null`・不正型も v1 scene ではまず
+  `prefab_requires_scene_v2`)
+- 入口別に走らせる: engine load / studio offline open。
+  **RPC snapshot(V1)は prefab 使用 scene で名前付き拒否**(V2 は WP362)
+- 出荷 4 project の scene・RPC bytes・golden 完全不変 / 構成 matrix・全数 2 回は v1 どおり
+
+### WP362: プレファブ永続化と編集 —— SnapshotV2、原子的合流、set/unset
+
+**WP361 に依存。§4 規則 11 上段。見積: 中〜大。**
+
+#### SnapshotV2 wire(完全定義)
+
+- request / response / import の三 struct を V2 化。field・型・canonical ordering・
+  digest algorithm(scene / prefab とも raw bytes SHA-256)・V1/V2 routing・
+  validation order を実装前に本文へ(strict parser は現行 V1 の流儀)
+- closure = 文書中**全 scene**(inactive 含む)の prefab read-set +
+  prefab digest + behavior `{stable_name, schema_version, params_schema_fingerprint}` +
+  provider fingerprint(WP361 の canonical descriptor 由来) +
+  **`resolver_inputs_fingerprint`**(camera defaults 等、resolver へ渡した project 入力の
+  canonical digest)
+- 受け入れ: inactive scene だけが prefab を使う文書 / unused registry entry /
+  camera defaults だけ違う 2 project(scene bytes 同一)で `prefab_dependency_mismatch` /
+  V1 は prefab 非使用 scene で従来 bytes 不変
+
+#### save baseline
+
+- `save_scene` baseline を `{scene_digest, prefab read-set}` の不可分 snapshot に。
+  prefab ファイルの save 前・途中変更で名前付き拒否(fault point 別)
+
+#### set/unset_prefab_parameter と原子的合流
+
+- atomic unit を `{AuthoringSceneDocument, ResolvedScene, PrefabResolutionClosure,
+  registry_generation, provider_generation}` へ拡張。request は
+  **closure generation の CAS**(対象 prefab digest 単独では kind:object の間接依存
+  —— 参照先 B の prefab 変更 —— を閉じられない。これを負例で)
+- provider generation の owner と publication 順序を明記(reload 中の旧 generation 窓を
+  受け入れ条件で検査。`prefab_provider_stale`)
+- set / unset / undo / redo × Prepare / Publish / AfterPublication 全 fault point で
+  authoring・resolved・ECS・arena・closure が同じ旧版へ戻る
+- `unset` の意味: default ありは default へ / **required(default 省略)への unset は
+  `prefab_parameter_required` で拒否**
+- 表示: 解決値 + 出所(default / 束縛)。WP361 の read-only 表示に出所列を追加
+
+依存: WP362 は WP361 に依存。やらないこと(両 WP 共通): v1 の「やらないこと」+ U2〜U4 全部。

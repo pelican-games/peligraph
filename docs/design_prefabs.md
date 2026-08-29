@@ -26,8 +26,9 @@ AI・外部データからの一括流し込み / 将来の HDA・attribute。
 **オブジェクトの 1:1 は保てても、component は 1:N に展開される**
 (著作 1 component(transform)+ prefab 由来 N)。そして現行は
 **生の scene JSON を読む消費者が複数ある** —— `SceneLoader` だけでなく、
-**`Camera` subsystem は `sceneDocument().scenesJson()` を自分で再走査する**
-(`camera.cpp:634,677`)。editor runtime query は著作 component 数で配列を確保し
+**`Camera` subsystem は `sceneDocument().scenesJson()` を自分で再走査していた**
+(v4 執筆時点の `camera.cpp:634,677`。**WP360 で解消済み** —— 現 HEAD の Camera は
+ResolvedScene を読む。本節は seam を要求した歴史的根拠として残す)。editor runtime query は著作 component 数で配列を確保し
 同じ添字で runtime 値を対応させる(`editorruntimefactory.cpp:1044`)。
 
 **したがって展開は「SceneLoader の中」ではなく、名前のある単一 seam にする:**
@@ -77,7 +78,9 @@ AI・外部データからの一括流し込み / 将来の HDA・attribute。
   - **behavior 側は codec ではない**: DLL の `BehaviorRegistration`
     (params schema + fingerprint)から供給する。**両者を同じ provider interface に統合**し、
     provider は fingerprint / generation を持つ(reload 跨ぎの stale 検出)
-- 文法の閉包: prefab 名・parameter 名の重複、default 欠落、非 behavior component の重複、
+- **default の省略は「instance で必須」の意味**(規範例の `target` がこれ)。
+  instance が値を与えなければ `prefab_parameter_required`。scalar/asset/object の別を問わない
+- 文法の閉包: prefab 名・parameter 名の重複、非 behavior component の重複、
   未知 instance parameter は全て名前付きエラー(§6 の code 一覧)
 
 ## 3. scene 側: version 2 ゲートと互換 matrix
@@ -124,7 +127,10 @@ prefab_duplicate_name / prefab_parameter_unknown / prefab_parameter_duplicate /
 prefab_parameter_type / prefab_parameter_unused / prefab_binding_not_bindable /
 prefab_binding_inactive(discriminant で無効な path)/ prefab_object_ref_unresolved /
 prefab_object_ref_missing_component / prefab_transform_forbidden /
-prefab_dependency_mismatch / prefab_nested_unsupported / prefab_provider_stale`。
+prefab_dependency_mismatch / prefab_nested_unsupported / prefab_provider_stale /
+prefab_parameter_required / prefab_instance_id_collision / prefab_generated_read_only /
+prefab_generated_id_collision / prefab_instance_transform_missing /
+prefab_instance_transform_duplicate / prefab_component_duplicate`。
 文脈: scene_id / instance / prefab / parameter / JSON pointer / (取込時)行 index。
 
 ## 7. 出荷単位と、多オブジェクトへの送り
